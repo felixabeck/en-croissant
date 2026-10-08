@@ -889,9 +889,9 @@ struct EngineRuntime {
 type ActorTerminationOutcome = Arc<OnceLock<Result<(), Arc<Error>>>>;
 type ActorJoin = Shared<BoxFuture<'static, Result<(), Arc<Error>>>>;
 
-/// Cloneable client handle for the single-owner engine task. No caller holds a
-/// mutex over process I/O: an in-flight stdout read is always selected against
-/// control messages by the owning task.
+/// Cloneable client handle for the single-owner engine task. Search-output reads
+/// select against control messages, while command writes and terminal-line or
+/// configuration reads select against the termination interrupt via `exchange_io`.
 #[derive(Clone)]
 pub struct EngineActor {
     tx: mpsc::Sender<EngineCommand>,
@@ -1834,7 +1834,18 @@ impl EngineSupervisor {
                 .filter(|entry| entry.generation == generation);
             if let Some(current) = &current {
                 current.mark_cancelled();
-                current.actor.interrupt.cancel();
+            }
+            let targeted = current
+                .map(|entry| entry.actor)
+                .or_else(|| {
+                    self.pending_actors
+                        .get(&generation)
+                        .filter(|entry| &entry.key == key)
+                        .map(|entry| entry.actor.clone())
+                })
+                .or(observed);
+            if let Some(actor) = &targeted {
+                actor.interrupt.cancel();
             }
             if let Some(admission) = self
                 .admissions
@@ -1844,7 +1855,7 @@ impl EngineSupervisor {
             {
                 self.cancel_admission(key, &admission);
             }
-            current.map(|entry| entry.actor).or(observed)
+            targeted
         };
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
@@ -3100,10 +3111,10 @@ impl EngineRuntime {
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
         self.send("uci", Some(cancellation)).await?;
-        self.wait_for_cancellable("uciok", self.deadlines.uciok, cancellation)
+        self.wait_for("uciok", self.deadlines.uciok, Some(cancellation))
             .await?;
         self.send("isready", Some(cancellation)).await?;
-        self.wait_for_cancellable("readyok", self.deadlines.readyok, cancellation)
+        self.wait_for("readyok", self.deadlines.readyok, Some(cancellation))
             .await
     }
 
@@ -3359,15 +3370,6 @@ impl EngineRuntime {
             line.trim() == expected
         })
         .await
-    }
-
-    async fn wait_for_cancellable(
-        &mut self,
-        expected: &str,
-        wait: Duration,
-        cancellation: &CancellationToken,
-    ) -> Result<(), Error> {
-        self.wait_for(expected, wait, Some(cancellation)).await
     }
 
     async fn read_until<F>(
@@ -11012,154 +11014,197 @@ mod tests {
         }
     }
 
+    struct ExchangeCase {
+        name: &'static str,
+        command: ExchangeCommand,
+        state: EngineState,
+        search_output_unsynchronized: bool,
+        lines: Vec<&'static str>,
+        point: ExchangePoint,
+    }
+
     #[tokio::test]
     async fn termination_preempts_every_actor_exchange() {
         use ExchangeCommand::*;
         let write = |command: &str| ExchangePoint::Write(command.into());
         let read = |command: &str| ExchangePoint::ReadAfter(command.into());
+        let searching = EngineState::Searching {
+            request_id: EngineRequestId(1),
+        };
         let cases = vec![
-            ("init uci write", Init, false, false, vec![], write("uci")),
-            (
-                "init isready write",
-                Init,
-                false,
-                false,
-                vec!["uciok"],
-                write("isready"),
-            ),
-            ("init uciok read", Init, false, false, vec![], read("uci")),
-            (
-                "init readyok read",
-                Init,
-                false,
-                false,
-                vec!["uciok"],
-                read("isready"),
-            ),
-            (
-                "configure uci write",
-                ConfigureStart,
-                false,
-                false,
-                vec![],
-                write("uci"),
-            ),
-            (
-                "configuration read",
-                ConfigureNext,
-                false,
-                false,
-                vec![],
-                read(""),
-            ),
-            (
-                "setoption write",
-                SetOption,
-                false,
-                false,
-                vec![],
-                write("setoption name Threads value 2"),
-            ),
-            (
-                "position write",
-                SetPosition,
-                false,
-                false,
-                vec![],
-                write("position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-            ),
-            (
-                "ensure isready write",
-                EnsureReady,
-                false,
-                false,
-                vec![],
-                write("isready"),
-            ),
-            (
-                "ensure readyok read",
-                EnsureReady,
-                false,
-                false,
-                vec![],
-                read("isready"),
-            ),
-            (
-                "start implicit stop write",
-                StartSearch,
-                true,
-                true,
-                vec![],
-                write("stop"),
-            ),
-            (
-                "start implicit bestmove read",
-                StartSearch,
-                true,
-                true,
-                vec![],
-                read("stop"),
-            ),
-            (
-                "start resynchronizing readyok read",
-                StartSearch,
-                false,
-                true,
-                vec![],
-                read("isready"),
-            ),
-            (
-                "start go write",
-                StartSearch,
-                false,
-                false,
-                vec![],
-                write("go infinite"),
-            ),
-            ("loop stop drain", Stop, true, true, vec![], read("stop")),
-            (
-                "loop stop request drain",
-                StopRequest,
-                true,
-                true,
-                vec![],
-                read("stop"),
-            ),
-            (
-                "search control stop drain",
-                SearchStop {
+            ExchangeCase {
+                name: "init uci write",
+                command: Init,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write("uci"),
+            },
+            ExchangeCase {
+                name: "init isready write",
+                command: Init,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec!["uciok"],
+                point: write("isready"),
+            },
+            ExchangeCase {
+                name: "init uciok read",
+                command: Init,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: read("uci"),
+            },
+            ExchangeCase {
+                name: "init readyok read",
+                command: Init,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec!["uciok"],
+                point: read("isready"),
+            },
+            ExchangeCase {
+                name: "configure uci write",
+                command: ConfigureStart,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write("uci"),
+            },
+            ExchangeCase {
+                name: "configuration read",
+                command: ConfigureNext,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: read(""),
+            },
+            ExchangeCase {
+                name: "setoption write",
+                command: SetOption,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write("setoption name Threads value 2"),
+            },
+            ExchangeCase {
+                name: "position write",
+                command: SetPosition,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write(
+                    "position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                ),
+            },
+            ExchangeCase {
+                name: "ensure isready write",
+                command: EnsureReady,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write("isready"),
+            },
+            ExchangeCase {
+                name: "ensure readyok read",
+                command: EnsureReady,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: read("isready"),
+            },
+            ExchangeCase {
+                name: "start implicit stop write",
+                command: StartSearch,
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: write("stop"),
+            },
+            ExchangeCase {
+                name: "start implicit bestmove read",
+                command: StartSearch,
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
+            ExchangeCase {
+                name: "start resynchronizing readyok read",
+                command: StartSearch,
+                state: EngineState::Idle,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("isready"),
+            },
+            ExchangeCase {
+                name: "start go write",
+                command: StartSearch,
+                state: EngineState::Idle,
+                search_output_unsynchronized: false,
+                lines: vec![],
+                point: write("go infinite"),
+            },
+            ExchangeCase {
+                name: "loop stop drain",
+                command: Stop,
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
+            ExchangeCase {
+                name: "loop stop request drain",
+                command: StopRequest,
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
+            ExchangeCase {
+                name: "search control stop drain",
+                command: SearchStop {
                     control: true,
                     request: false,
                 },
-                true,
-                true,
-                vec![],
-                read("stop"),
-            ),
-            (
-                "search control stop request drain",
-                SearchStop {
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
+            ExchangeCase {
+                name: "search control stop request drain",
+                command: SearchStop {
                     control: true,
                     request: true,
                 },
-                true,
-                true,
-                vec![],
-                read("stop"),
-            ),
-            (
-                "search normal stop drain",
-                SearchStop {
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
+            ExchangeCase {
+                name: "search normal stop drain",
+                command: SearchStop {
                     control: false,
                     request: false,
                 },
-                true,
-                true,
-                vec![],
-                read("stop"),
-            ),
+                state: searching,
+                search_output_unsynchronized: true,
+                lines: vec![],
+                point: read("stop"),
+            },
         ];
-        for (name, command, searching, unsynchronized, lines, point) in cases {
+        for ExchangeCase {
+            name,
+            command,
+            state,
+            search_output_unsynchronized,
+            lines,
+            point,
+        } in cases
+        {
             let (started_tx, started) = oneshot::channel();
             let read_started = Arc::new(AtomicBool::new(false));
             let mut io = FakeIo::new(
@@ -11183,13 +11228,11 @@ mod tests {
                     ..EngineDeadlines::default()
                 },
             );
-            if searching {
-                runtime.state = EngineState::Searching {
-                    request_id: EngineRequestId(1),
-                };
+            runtime.state = state;
+            if matches!(state, EngineState::Searching { .. }) {
                 runtime.next_request = 1;
             }
-            runtime.search_output_unsynchronized = unsynchronized;
+            runtime.search_output_unsynchronized = search_output_unsynchronized;
             let actor = Arc::new(EngineActor::from_runtime(runtime));
             let search_read = if matches!(command, SearchStop { .. }) {
                 let actor = actor.clone();
@@ -11428,6 +11471,182 @@ mod tests {
         gate.open();
         assert_same_termination_failure(&drain.await.unwrap().unwrap_err(), &failure);
         assert_eq!(reaps.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn termination_preempts_a_pending_replacements_stop() {
+        let mut missed_bounds = Vec::new();
+        for through_drain in [true, false] {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let key = EngineKey::new("pending-replacement-stop".into(), "engine".into()).unwrap();
+            let (started_tx, started) = oneshot::channel();
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.pending_when_empty = true;
+            io.exchange_observation = Some((ExchangePoint::ReadAfter("stop".into()), started_tx));
+            let reaps = io.terminate_calls.clone();
+            let actor = Arc::new(EngineActor::new(
+                Box::new(io),
+                EngineDeadlines {
+                    readyok: Duration::from_secs(30),
+                    uciok: Duration::from_secs(30),
+                    stop: Duration::from_secs(30),
+                    search: Duration::from_secs(30),
+                    ..EngineDeadlines::default()
+                },
+            ));
+            let current = supervisor
+                .replace_handle(
+                    key.clone(),
+                    actor.clone(),
+                    key.engine.clone(),
+                    path_ref("old-pending-stop"),
+                )
+                .await
+                .unwrap();
+            actor.start_search(&GoMode::Infinite).await.unwrap();
+            let gate = TerminationReplyGate::new();
+            let drain = if through_drain {
+                DRAIN_SNAPSHOT_GATES.arm((key.clone(), current.generation), gate.clone());
+                let supervisor = supervisor.clone();
+                let tab = key.tab.clone();
+                let drain = tokio::spawn(async move { supervisor.terminate_tab(&tab).await });
+                wait_for_flag(&gate.parked, "drain snapshot before replacement").await;
+                Some(drain)
+            } else {
+                None
+            };
+            // Exercise publication itself, including handoff and its graceful
+            // Stop under the lifecycle lease, rather than constructing pending state.
+            let replacement = tokio::spawn({
+                let supervisor = supervisor.clone();
+                let key = key.clone();
+                async move {
+                    supervisor
+                        .replace_handle(
+                            key.clone(),
+                            Arc::new(EngineActor::new(
+                                Box::new(FakeIo::new(Arc::default(), [])),
+                                EngineDeadlines::default(),
+                            )),
+                            key.engine.clone(),
+                            path_ref("new-pending-stop"),
+                        )
+                        .await
+                }
+            });
+            timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(supervisor.get_exact(&key).is_none());
+            assert!(supervisor
+                .pending_actors
+                .get(&current.generation)
+                .is_some_and(|pending| pending.key == key && Arc::ptr_eq(&pending.actor, &actor)));
+            assert!(!actor.interrupt.is_cancelled());
+            let mut termination = match drain {
+                Some(drain) => {
+                    gate.open();
+                    drain
+                }
+                None => tokio::spawn({
+                    let supervisor = supervisor.clone();
+                    let key = key.clone();
+                    async move { supervisor.terminate_exact(&key, current.generation).await }
+                }),
+            };
+            match timeout(Duration::from_millis(500), &mut termination).await {
+                Ok(result) => result.unwrap().unwrap(),
+                Err(_) => {
+                    missed_bounds.push(if through_drain {
+                        "drain"
+                    } else {
+                        "direct exact"
+                    });
+                    // Keep the deliberate removal probe bounded and reap its fake
+                    // runtime before proceeding to the other table row.
+                    actor.terminate().await.unwrap();
+                    termination.await.unwrap().unwrap();
+                }
+            }
+            let result = timeout(Duration::from_millis(500), replacement)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::EngineDisconnected)),
+                "through_drain={through_drain}: {:?}",
+                result.map(|_| ())
+            );
+            assert_eq!(reaps.load(Ordering::SeqCst), 1);
+            assert!(!supervisor.pending_actors.contains_key(&current.generation));
+            assert!(supervisor.get_exact(&key).is_none());
+        }
+        assert!(
+            missed_bounds.is_empty(),
+            "termination failed the 500 ms bound: {missed_bounds:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_terminators_share_reap_and_join_failures() {
+        for abort_task in [false, true] {
+            let failure = Arc::new(Error::RootFailure {
+                error: Box::new(Error::EngineTimeout("concurrent final reap failure".into())),
+                reason: crate::error::RootFailure::Unusable,
+            });
+            let gate = TerminationReplyGate::new();
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.termination_gate = Some(gate.clone());
+            io.termination_error = Some(failure.clone());
+            let reaps = io.terminate_calls.clone();
+            let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+            let abort = actor.task.lock().await.as_ref().unwrap().abort_handle();
+            let first = tokio::spawn({
+                let actor = actor.clone();
+                async move { actor.terminate().await }
+            });
+            wait_for_flag(&gate.parked, "first termination parked in runtime teardown").await;
+            let second = tokio::spawn({
+                let actor = actor.clone();
+                async move { actor.terminate().await }
+            });
+            // The first request is being serviced and the second is queued.
+            // Both callers must still be waiting before teardown is released.
+            timeout(Duration::from_secs(2), async {
+                while actor.control_tx.capacity() == actor.control_tx.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!first.is_finished());
+            assert!(!second.is_finished());
+            if abort_task {
+                abort.abort();
+            } else {
+                gate.open();
+            }
+            let first = timeout(Duration::from_millis(500), first)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            let second = timeout(Duration::from_millis(500), second)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_same_termination_failure(&second, &first);
+            if abort_task {
+                assert!(matches!(first, Error::OperationAndCleanup { .. }));
+                assert!(first.diagnostic().contains("engine actor task failed"));
+                assert_eq!(reaps.load(Ordering::SeqCst), 0);
+            } else {
+                assert_same_termination_failure(&first, &failure);
+                assert_eq!(reaps.load(Ordering::SeqCst), 1);
+            }
+        }
     }
 
     fn fake_io() -> FakeIo {
