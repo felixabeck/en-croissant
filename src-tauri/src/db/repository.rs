@@ -49,6 +49,8 @@ use super::{
 const MAX_OPEN_DATABASES: usize = 16;
 #[cfg(test)]
 const RELEASE_DELAY: Duration = Duration::from_millis(150);
+#[cfg(all(test, unix))]
+const DRAIN_START_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 fn spawn_after_release_delay<'scope, 'env, F>(
@@ -2574,7 +2576,7 @@ mod tests {
             done.send(result).unwrap();
         });
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + DRAIN_START_TIMEOUT;
         while !repository.deletion_is_waiting(&target).unwrap() {
             assert!(
                 Instant::now() < deadline,
@@ -2612,7 +2614,7 @@ mod tests {
             let release_connections = Arc::clone(&entry.connections);
             let started = spawn_after_release_delay(scope, move || {
                 // Cancel only after deletion has begun draining connections.
-                let deadline = Instant::now() + Duration::from_secs(2);
+                let deadline = Instant::now() + DRAIN_START_TIMEOUT;
                 while !release_connections.snapshot().closed {
                     assert!(
                         Instant::now() < deadline,
