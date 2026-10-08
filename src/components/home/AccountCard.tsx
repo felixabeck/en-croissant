@@ -31,6 +31,7 @@ import {
 } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
 import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
+import { accountDatabaseFilename } from "./accountDatabase";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -76,7 +77,7 @@ export async function ensureAccountDatabaseHandle(
 ): Promise<DatabaseHandle> {
   if (existing) return existing;
   const root = await tauri.getDatabaseWorkspace();
-  const filename = `${title}_${type}.db3`;
+  const filename = accountDatabaseFilename(title, type);
   const registered = (await tauri.listWorkspaceDatabases(root)).find(
     (candidate) => candidate.filename === filename,
   );

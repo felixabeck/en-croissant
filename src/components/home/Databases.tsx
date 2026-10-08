@@ -1,5 +1,6 @@
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import {
+  Alert,
   Center,
   Loader,
   Paper,
@@ -15,20 +16,27 @@ import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
-import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
+import type { PlayerGameInfo } from "@/bindings";
 import { notifyListenerError } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { sessionsAtom } from "@/state/atoms";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
-import { databaseHandleKey, getDatabases, query_players } from "@/utils/db";
+import {
+  databaseHandleKey,
+  getDatabases,
+  query_players,
+  type ManagedDatabaseInfo,
+} from "@/utils/db";
+import { accountDatabaseFilename } from "./accountDatabase";
 import { collectSequential } from "@/utils/collectSequential";
 import type { Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
 
-type DatabaseInfo = PlainDatabaseInfo & {
-  username?: string;
+type PersonalDatabase = {
+  db: ManagedDatabaseInfo;
+  username: string;
 };
 
 function getSessionUsername(session: Session): string {
@@ -39,23 +47,72 @@ function getSessionUsername(session: Session): string {
   return username;
 }
 
-function isDatabaseFromSession(db: DatabaseInfo, sessions: Session[]) {
-  const session = sessions.find((session) => db.filename.includes(getSessionUsername(session)));
-
-  if (session !== undefined) {
-    db.username = getSessionUsername(session);
+function sessionAccountDatabase(
+  session: Session,
+): { filename: string; username: string } | undefined {
+  const lichessUsername = session.lichess?.account?.username;
+  if (typeof lichessUsername === "string" && lichessUsername.length > 0) {
+    return {
+      username: lichessUsername,
+      filename: accountDatabaseFilename(lichessUsername, "lichess"),
+    };
   }
-  return session !== undefined;
+  const chessComUsername = session.chessCom?.username;
+  if (typeof chessComUsername === "string" && chessComUsername.length > 0) {
+    return {
+      username: chessComUsername,
+      filename: accountDatabaseFilename(chessComUsername, "chesscom"),
+    };
+  }
+  return undefined;
 }
 
 interface PersonalInfo {
-  db: DatabaseInfo;
+  db: ManagedDatabaseInfo;
   info: PlayerGameInfo;
 }
 
+interface PersonalSummary {
+  entries: PersonalInfo[];
+  failed: ManagedDatabaseInfo[];
+}
+
+function StatisticsNotice({
+  failed,
+  incomplete = false,
+}: {
+  failed: ManagedDatabaseInfo[];
+  incomplete?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Alert
+      color="yellow"
+      mt="xs"
+      title={
+        incomplete
+          ? t("Home.Databases.Incomplete.Title", { defaultValue: "Statistics are incomplete" })
+          : undefined
+      }
+      style={{ flexShrink: 0 }}
+    >
+      {t("Home.Databases.Incomplete.Description", {
+        defaultValue: "These databases could not be read: {{databases}}",
+        databases: failed
+          .map((db) => (db.type === "success" ? db.title || db.filename : db.filename))
+          .join(", "),
+      })}
+    </Alert>
+  );
+}
+
 /** Stable identity matching the `["personalInfo", name, databases]` SWR key. */
-function personalInfoProgressKey(name: string, databases: DatabaseInfo[]): string {
-  return JSON.stringify(["personalInfo", name, databases.map((db) => databaseHandleKey(db.file))]);
+function personalInfoProgressKey(name: string, databases: PersonalDatabase[]): string {
+  return JSON.stringify([
+    "personalInfo",
+    name,
+    databases.map(({ db }) => databaseHandleKey(db.file)),
+  ]);
 }
 
 /**
@@ -78,9 +135,10 @@ function Databases() {
       .filter(
         (s) => s.player === name || s.lichess?.username === name || s.chessCom?.username === name,
       )
-      .map((s) =>
-        s.chessCom ? `${s.chessCom.username} Chess.com` : `${s.lichess?.username} Lichess`,
-      ),
+      .flatMap((s) => {
+        const account = sessionAccountDatabase(s);
+        return account ? [account.filename] : [];
+      }),
   }));
 
   const [name, setName] = useState("");
@@ -92,10 +150,15 @@ function Databases() {
 
   const databasesKey = sessions.length === 0 ? null : ["personalDatabases", sessions];
   const databasesOwner = useNativeRequestOwner(databasesKey);
-  const { data: databases } = useSWRImmutable<DatabaseInfo[]>(databasesKey, () =>
+  const { data: databases } = useSWRImmutable<PersonalDatabase[]>(databasesKey, () =>
     databasesOwner!.run(async (signal) => {
-      const dbs = (await getDatabases({ signal })).filter((db) => db.type === "success");
-      return dbs.filter((db) => isDatabaseFromSession(db, sessions));
+      const dbs = await getDatabases({ signal });
+      return dbs.flatMap((db) => {
+        const account = sessions
+          .map(sessionAccountDatabase)
+          .find((account) => db.filename === account?.filename);
+        return account ? [{ db, username: account.username }] : [];
+      });
     }),
   );
 
@@ -105,26 +168,24 @@ function Databases() {
     data: personalInfo,
     isLoading,
     error,
-  } = useSWRImmutable<PersonalInfo[]>(
+  } = useSWRImmutable<PersonalSummary>(
     personalKey,
-    ([, playerName, playerDatabases]: [string, string, DatabaseInfo[]]) =>
+    ([, playerName, playerDatabases]: [string, string, PersonalDatabase[]]) =>
       personalOwner!.run(async (signal) => {
         const progressKey = personalInfoProgressKey(playerName, playerDatabases);
         const map = new Map<string, number>();
         ownedProgressByKey.clear();
         ownedProgressByKey.set(progressKey, map);
         const playerDbs = playerDbNames.find((p) => p.name === playerName)?.databases;
-        if (!playerDbs) return [];
-        const candidates = playerDatabases.filter((db) =>
-          playerDbs.includes((db.type === "success" && db.title) || ""),
-        );
-        return collectSequential(
-          candidates,
-          async (db) => {
+        if (!playerDbs) return { entries: [], failed: [] };
+        const candidates = playerDatabases.filter(({ db }) => playerDbs.includes(db.filename));
+        const { values, failures } = await collectSequential(
+          candidates.filter(({ db }) => db.type === "success"),
+          async ({ db, username }) => {
             const players = await query_players(
               db.file,
               {
-                name: db.username,
+                name: username,
                 options: {
                   pageSize: 1,
                   direction: "asc",
@@ -135,7 +196,7 @@ function Databases() {
               { signal },
             );
             if (players.data.length === 0) {
-              throw new Error("Player not found in database");
+              return null;
             }
             const player = players.data[0];
             const progressId = crypto.randomUUID();
@@ -145,8 +206,19 @@ function Databases() {
             });
             return { db, info };
           },
-          { signal, operation: "personal database summary" },
+          {
+            signal,
+            operation: "personal database summary",
+            describe: ({ db }) => (db.type === "success" ? db.title || db.filename : db.filename),
+          },
         );
+        const failedItems = new Set(failures.map(({ item }) => item));
+        return {
+          entries: values.filter((entry): entry is PersonalInfo => entry !== null),
+          failed: candidates
+            .filter((item) => item.db.type === "error" || failedItems.has(item))
+            .map(({ db }) => db),
+        };
       }),
   );
 
@@ -203,7 +275,7 @@ function Databases() {
       )}
       {error && <Text ta="center">{t("Home.Databases.ErrorLoading", { error })}</Text>}
       {personalInfo &&
-        (personalInfo.length === 0 ? (
+        (personalInfo.entries.length === 0 ? (
           <Paper
             h="100%"
             shadow="sm"
@@ -220,10 +292,20 @@ function Databases() {
                 <ThemeIcon size={80} radius="100%" variant="light" color="blue">
                   <IconDatabaseOff size={40} />
                 </ThemeIcon>
-                <Title order={3}>{t("Home.Databases.Empty.Title")}</Title>
-                <Text c="dimmed" ta="center" maw={400}>
-                  {t("Home.Databases.Empty.Description")}
-                </Text>
+                <Title order={3}>
+                  {personalInfo.failed.length > 0
+                    ? t("Home.Databases.Failed.Title", {
+                        defaultValue: "Could not load statistics",
+                      })
+                    : t("Home.Databases.Empty.Title")}
+                </Title>
+                {personalInfo.failed.length > 0 ? (
+                  <StatisticsNotice failed={personalInfo.failed} />
+                ) : (
+                  <Text c="dimmed" ta="center" maw={400}>
+                    {t("Home.Databases.Empty.Description")}
+                  </Text>
+                )}
 
                 <Select
                   value={name}
@@ -249,8 +331,13 @@ function Databases() {
               name={name}
               setName={setName}
               info={{
-                site_stats_data: personalInfo.flatMap((i) => i.info.site_stats_data),
+                site_stats_data: personalInfo.entries.flatMap((i) => i.info.site_stats_data),
               }}
+              notice={
+                personalInfo.failed.length > 0 ? (
+                  <StatisticsNotice failed={personalInfo.failed} incomplete />
+                ) : undefined
+              }
             />
           </DatabaseViewStateContext.Provider>
         ))}

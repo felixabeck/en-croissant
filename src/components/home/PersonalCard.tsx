@@ -1,7 +1,7 @@
 import { Box, Flex, Paper, Select, Tabs, Text } from "@mantine/core";
 import { IconInfoCircle } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useContext, useState } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import type { PlayerGameInfo } from "@/bindings";
@@ -19,11 +19,13 @@ function PersonalPlayerCard({
   setName,
   info,
   isDatabase,
+  notice,
 }: {
   name: string;
   setName?: (name: string) => void;
   info: PlayerGameInfo;
   isDatabase?: boolean;
+  notice?: ReactNode;
 }) {
   const { t } = useTranslation();
   const store = useContext(DatabaseViewStateContext)!;
@@ -79,6 +81,7 @@ function PersonalPlayerCard({
           </Text>
         )}
       </Box>
+      {notice}
       <Tabs
         mt="xs"
         keepMounted={false}

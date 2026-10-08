@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount, getStats } from "@/utils/chess.com/api";
 import type { ManagedDatabaseInfo } from "@/utils/db";
+import { accountDatabaseFilename } from "../home/accountDatabase";
 import { getLichessAccount } from "@/utils/lichess/api";
 import type { Session } from "@/utils/session";
 import { AccountCard } from "../home/AccountCard";
@@ -213,7 +214,10 @@ function LichessOrChessCom({
         authenticated={Boolean(lichessSession.handle)}
         accountHandle={lichessSession.handle}
         type="lichess"
-        database={findAccountDatabase(databases, `${account.username}_lichess.db3`)}
+        database={findAccountDatabase(
+          databases,
+          accountDatabaseFilename(account.username, "lichess"),
+        )}
         title={account.username}
         updatedAt={session.updatedAt}
         total={totalGames}
@@ -272,7 +276,10 @@ function LichessOrChessCom({
         key={session.chessCom.username}
         type="chesscom"
         title={session.chessCom.username}
-        database={findAccountDatabase(databases, `${session.chessCom.username}_chesscom.db3`)}
+        database={findAccountDatabase(
+          databases,
+          accountDatabaseFilename(session.chessCom.username, "chesscom"),
+        )}
         updatedAt={session.updatedAt}
         total={totalGames}
         stats={getStats(session.chessCom.stats)}

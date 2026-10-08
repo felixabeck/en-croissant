@@ -21,9 +21,19 @@ describe("collectSequential", () => {
             },
             { operation: "metadata" },
         );
-        expect(result).toEqual(["FIRST", "THIRD"]);
+        expect(result).toEqual({
+            values: ["FIRST", "THIRD"],
+            failures: [
+                {
+                    item: "failed",
+                    index: 1,
+                    failure: { category: "unexpected", message: "broken" },
+                },
+            ],
+        });
         expect(indices).toEqual([0, 1, 2]);
         expect(mocks.logError).toHaveBeenCalledOnce();
+        expect(mocks.logError).toHaveBeenCalledWith("metadata item 1 failed: broken");
     });
 
     test("cancellation after the final mapper resolution rejects without a diagnostic", async () => {
@@ -54,7 +64,7 @@ describe("collectSequential", () => {
             },
             { operation: "metadata" },
         );
-        expect(result).toEqual([2]);
+        expect(result.values).toEqual([2]);
         expect(fallback).toHaveBeenCalledWith("Sequential collection logging failed", {
             operation: "metadata",
             itemIndex: 0,
@@ -80,7 +90,14 @@ describe("collectSequential", () => {
             { operation: "metadata" },
         );
 
-        expect(result).toEqual([2]);
+        expect(result.values).toEqual([2]);
+        expect(result.failures).toEqual([
+            {
+                item: 1,
+                index: 0,
+                failure: { category: "unexpected", message: "token=[redacted] at [path]" },
+            },
+        ]);
         expect(mocks.logError.mock.calls[0][0]).not.toContain("primary-secret");
         const fallbackContext = JSON.stringify(fallback.mock.calls[0]);
         expect(fallbackContext).not.toContain("primary-secret");
@@ -88,5 +105,53 @@ describe("collectSequential", () => {
         expect(fallbackContext).not.toContain("/home/user");
         expect(fallbackContext).not.toContain("/tmp/private-logger.log");
         fallback.mockRestore();
+    });
+
+    test("describe names the original item in the native log and fallback context", async () => {
+        mocks.logError.mockRejectedValue(new Error("logger unavailable"));
+        const fallback = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const item = { title: "Magnus Lichess" };
+        const result = await collectSequential(
+            [item],
+            async () => {
+                throw new Error("broken");
+            },
+            {
+                operation: "summary",
+                describe: (item) => item.title,
+            },
+        );
+        expect(result.failures[0].item).toBe(item);
+        expect(mocks.logError).toHaveBeenCalledWith(
+            "summary item 0 (Magnus Lichess) failed: broken",
+        );
+        expect(fallback).toHaveBeenCalledWith(
+            "Sequential collection logging failed",
+            expect.objectContaining({ item: "Magnus Lichess", itemIndex: 0 }),
+        );
+        fallback.mockRestore();
+    });
+
+    test.each([
+        new DOMException("Cancellation", "AbortError"),
+        { category: "cancelled", message: "owner retired" },
+    ])("mapper cancellation rejects without recording or logging a failure", async (cause) => {
+        const mapper = vi.fn().mockRejectedValue(cause);
+        await expect(collectSequential([1, 2], mapper, { operation: "summary" })).rejects.toBe(
+            cause,
+        );
+        expect(mapper).toHaveBeenCalledOnce();
+        expect(mocks.logError).not.toHaveBeenCalled();
+    });
+
+    test("an already aborted owner never maps or logs", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const mapper = vi.fn();
+        await expect(
+            collectSequential([1], mapper, { operation: "summary", signal: controller.signal }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(mapper).not.toHaveBeenCalled();
+        expect(mocks.logError).not.toHaveBeenCalled();
     });
 });

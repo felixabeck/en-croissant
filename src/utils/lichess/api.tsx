@@ -197,7 +197,7 @@ export async function convertToNormalized(
   data: PositionGames,
   options?: { signal?: AbortSignal },
 ): Promise<NormalizedGame[]> {
-  return await collectSequential(
+  const { values } = await collectSequential(
     data,
     async (game, i) => {
       const pgn = await getLichessGame(game.id);
@@ -219,6 +219,7 @@ export async function convertToNormalized(
     },
     { signal: options?.signal, operation: "Lichess game normalization" },
   );
+  return values;
 }
 
 export type PositionData = {

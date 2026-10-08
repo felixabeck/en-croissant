@@ -227,11 +227,12 @@ export async function getDatabases(
 ): Promise<ManagedDatabaseInfo[]> {
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
-    return collectSequential(
+    const { values } = await collectSequential(
         databases,
         (database, index) => getDatabase(database.handle, database.filename, index, options.signal),
         { signal: options.signal, operation: "getDatabases metadata" },
     );
+    return values;
 }
 
 async function getDatabase(

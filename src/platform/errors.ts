@@ -233,6 +233,7 @@ export type FailureLogContext = {
     operation: string;
     primaryFailure: SafeFailureContext;
     itemIndex?: number;
+    item?: string;
     game?: GameFailureContext;
 };
 
