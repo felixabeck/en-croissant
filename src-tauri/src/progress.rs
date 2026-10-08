@@ -19,6 +19,22 @@ const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProgressGeneration(u64);
 
+impl ProgressGeneration {
+    fn parse_canonical(value: &str) -> Result<Self, String> {
+        if value.is_empty()
+            || value.len() > 20
+            || (value.len() > 1 && value.starts_with('0'))
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err("invalid progress generation".into());
+        }
+        value
+            .parse::<u64>()
+            .map(Self)
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl PartialEq<u64> for ProgressGeneration {
     fn eq(&self, other: &u64) -> bool {
         self.0 == *other
@@ -40,17 +56,7 @@ impl Serialize for ProgressGeneration {
 impl<'de> Deserialize<'de> for ProgressGeneration {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        if value.is_empty()
-            || value.len() > 20
-            || (value.len() > 1 && value.starts_with('0'))
-            || !value.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(serde::de::Error::custom("invalid progress generation"));
-        }
-        value
-            .parse::<u64>()
-            .map(Self)
-            .map_err(serde::de::Error::custom)
+        Self::parse_canonical(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -578,21 +584,129 @@ mod tests {
     use super::*;
     use tauri::Manager;
 
-    #[test]
-    fn generations_round_trip_as_exact_decimal_strings_on_every_surface() {
+    // None represents an omitted field, distinct from a JSON null generation.
+    fn generation_protocol_cases() -> Vec<(Option<serde_json::Value>, Result<u64, &'static str>)> {
+        let mut cases = Vec::new();
         for number in [
             0,
             9_007_199_254_740_991,
             9_007_199_254_740_992,
             9_007_199_254_740_993,
+            9_007_199_254_740_994,
+            u64::MAX - 1,
             u64::MAX,
         ] {
-            let digits = serde_json::Value::String(number.to_string());
-            let lease: ProgressLease =
-                serde_json::from_value(serde_json::json!({ "id": "job", "generation": digits }))
-                    .unwrap();
-            let generation = lease.generation;
-            assert_eq!(serde_json::to_value(generation).unwrap(), digits);
+            cases.push((Some(serde_json::json!(number.to_string())), Ok(number)));
+        }
+        for value in [
+            "",
+            "00",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "١",
+            "184467440737095516160",
+        ] {
+            cases.push((
+                Some(serde_json::json!(value)),
+                Err("invalid progress generation"),
+            ));
+        }
+        cases.push((
+            Some(serde_json::json!("18446744073709551616")),
+            Err("number too large to fit in target type"),
+        ));
+        for (value, message) in [
+            (
+                serde_json::json!(1),
+                "invalid type: integer `1`, expected a string",
+            ),
+            (
+                serde_json::json!(null),
+                "invalid type: null, expected a string",
+            ),
+            (
+                serde_json::json!(true),
+                "invalid type: boolean `true`, expected a string",
+            ),
+            (
+                serde_json::json!(1.5),
+                "invalid type: floating point `1.5`, expected a string",
+            ),
+            (
+                serde_json::json!([]),
+                "invalid type: sequence, expected a string",
+            ),
+            (
+                serde_json::json!({}),
+                "invalid type: map, expected a string",
+            ),
+        ] {
+            cases.push((Some(value), Err(message)));
+        }
+        cases.push((None, Err("missing field `generation`")));
+        cases
+    }
+
+    fn assert_generation_protocol_case<T>(payload: serde_json::Value, expected: Result<T, &str>)
+    where
+        T: serde::de::DeserializeOwned + Serialize + PartialEq + std::fmt::Debug,
+    {
+        let wire = payload.to_string();
+        for (boundary, decoded) in [
+            ("from_value", serde_json::from_value::<T>(payload.clone())),
+            ("from_str", serde_json::from_str::<T>(&wire)),
+        ] {
+            let context = format!("{} {boundary}: {wire}", std::any::type_name::<T>());
+            match &expected {
+                Ok(expected) => {
+                    let actual = decoded.unwrap_or_else(|error| panic!("{context}: {error}"));
+                    assert_eq!(&actual, expected, "{context}");
+                    assert_eq!(serde_json::to_value(&actual).unwrap(), payload, "{context}");
+                }
+                Err(expected_message) => {
+                    let error =
+                        decoded.expect_err(&format!("{context}: accepted invalid generation"));
+                    assert_eq!(
+                        error.classify(),
+                        serde_json::error::Category::Data,
+                        "{context}"
+                    );
+                    let message = error.to_string();
+                    let location = format!(" at line {} column {}", error.line(), error.column());
+                    assert_eq!(
+                        message.strip_suffix(&location).unwrap_or(&message),
+                        *expected_message,
+                        "{context} error compatibility"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generations_round_trip_as_exact_decimal_strings_on_every_surface() {
+        for (digits, expected) in generation_protocol_cases() {
+            let Ok(number) = expected else { continue };
+            let digits = digits.unwrap();
+            let generation = ProgressGeneration(number);
+            assert_eq!(
+                serde_json::to_string(&generation).unwrap(),
+                format!("\"{number}\"")
+            );
+            assert_generation_protocol_case(digits.clone(), Ok(generation));
+            let lease = ProgressLease {
+                id: "job".into(),
+                generation,
+            };
+            assert_generation_protocol_case(
+                serde_json::json!({ "id": "job", "generation": digits }),
+                Ok(lease),
+            );
             let item = ProgressItem {
                 id: "job".into(),
                 generation,
@@ -608,54 +722,33 @@ mod tests {
                 state: ProgressState::Running,
                 cleared: false,
             };
-            assert_eq!(serde_json::to_value(&lease).unwrap()["generation"], digits);
             assert_eq!(serde_json::to_value(&item).unwrap()["generation"], digits);
-            assert_eq!(serde_json::to_value(&event).unwrap()["generation"], digits);
-            assert_eq!(
-                serde_json::from_value::<ProgressLease>(serde_json::to_value(&lease).unwrap())
-                    .unwrap(),
-                lease
-            );
-            assert_eq!(
-                serde_json::from_value::<ProgressEvent>(serde_json::to_value(&event).unwrap())
-                    .unwrap(),
-                event
+            assert_generation_protocol_case(
+                serde_json::json!({
+                    "id": "job", "generation": digits, "progress": 30.0,
+                    "finished": false, "state": "running", "cleared": false,
+                }),
+                Ok(event),
             );
         }
     }
 
     #[test]
     fn generations_reject_noncanonical_or_out_of_range_wire_values() {
-        for value in [
-            serde_json::json!(1),
-            serde_json::json!(null),
-            serde_json::json!(true),
-        ] {
-            assert!(serde_json::from_value::<ProgressLease>(
-                serde_json::json!({ "id": "job", "generation": value })
-            )
-            .is_err());
-        }
-        for value in [
-            "",
-            "00",
-            "01",
-            "+1",
-            "-1",
-            " 1",
-            "1 ",
-            "1.0",
-            "1e3",
-            "١",
-            "18446744073709551616",
-        ] {
-            assert!(
-                serde_json::from_value::<ProgressLease>(
-                    serde_json::json!({ "id": "job", "generation": value })
-                )
-                .is_err(),
-                "accepted {value}"
-            );
+        for (value, expected) in generation_protocol_cases() {
+            let Err(message) = expected else { continue };
+            let mut lease = serde_json::json!({ "id": "job" });
+            let mut event = serde_json::json!({
+                "id": "job", "progress": 30.0,
+                "finished": false, "state": "running", "cleared": false,
+            });
+            if let Some(value) = value {
+                assert_generation_protocol_case::<ProgressGeneration>(value.clone(), Err(message));
+                lease["generation"] = value.clone();
+                event["generation"] = value;
+            }
+            assert_generation_protocol_case::<ProgressLease>(lease, Err(message));
+            assert_generation_protocol_case::<ProgressEvent>(event, Err(message));
         }
     }
 
