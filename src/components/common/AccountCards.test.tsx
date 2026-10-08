@@ -53,7 +53,13 @@ vi.mock("@mantine/core", () => ({
   ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  TextInput: () => null,
+  TextInput: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange: React.ChangeEventHandler<HTMLInputElement>;
+  }) => <input value={value} onChange={onChange} />,
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -160,6 +166,39 @@ describe("Player session grouping", () => {
     });
 
     expect(getDefaultStore().get(sessionsAtom)).toEqual([collidingSessions[1]]);
+  });
+
+  test("renaming a player group preserves another player's matching username", async () => {
+    getDefaultStore().set(sessionsAtom, collidingSessions);
+    await renderCards();
+    const group = playerGroup("bob");
+
+    await act(async () => {
+      group
+        .querySelector('button[aria-label="Accounts.EditName"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const input = group.querySelector("input");
+    if (!input) throw new Error("Player name input not found");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        input,
+        "Robert",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      group
+        .querySelector('button[aria-label="Accounts.SaveName"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([
+      { ...collidingSessions[0], player: "Robert" },
+      collidingSessions[1],
+    ]);
   });
 });
 
