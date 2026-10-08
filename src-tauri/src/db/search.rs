@@ -1003,17 +1003,20 @@ mod descriptor_identity_tests {
     use crate::db::{legacy_index_path, SearchIndexChunk};
     use crate::infra::path_authority::opened_file_identity;
 
-    fn descriptor_fixture() -> (
+    pub(super) fn preferred_sidecar_test_case(
+        file_stem: &str,
+        operations: Vec<PathOperation>,
+        archive: SearchIndexChunk,
+    ) -> (
         tempfile::TempDir,
         tauri::AppHandle<tauri::test::MockRuntime>,
         DatabaseHandle,
+        std::path::PathBuf,
         DatabaseFileTarget,
         IndexSource,
     ) {
-        let (dir, app, handle, database) = super::super::schema_database_case(
-            "descriptor",
-            vec![PathOperation::DatabaseRead, PathOperation::DatabaseMutate],
-        );
+        let (dir, app, handle, database) =
+            super::super::schema_database_case(file_stem, operations);
         let state = app.state::<AppState>();
         let target = super::super::resolve_database(
             &state.pgn_path_authority,
@@ -1026,10 +1029,25 @@ mod descriptor_identity_tests {
             .database_identity_expected(&target, target.identity(), None)
             .unwrap();
         let source = IndexSource::from_database_identity(&database_identity).unwrap();
-        SearchIndexChunk::default()
+        archive
             .write_to_with_source(get_index_path(&database), source.clone())
             .unwrap()
             .expect_durable();
+        (dir, app, handle, database, target, source)
+    }
+
+    fn descriptor_fixture() -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        DatabaseFileTarget,
+        IndexSource,
+    ) {
+        let (dir, app, handle, _database, target, source) = preferred_sidecar_test_case(
+            "descriptor",
+            vec![PathOperation::DatabaseRead, PathOperation::DatabaseMutate],
+            SearchIndexChunk::default(),
+        );
         (dir, app, handle, target, source)
     }
 
@@ -1072,11 +1090,11 @@ mod descriptor_identity_tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            identity.object, original_object,
+            identity.sidecar_object, original_object,
             "identity must stamp the opened descriptor A"
         );
         assert_ne!(
-            identity.object, replacement_object,
+            identity.sidecar_object, replacement_object,
             "identity must not stamp replacement B"
         );
         assert_eq!(identity.length, original_metadata.len());
@@ -1192,42 +1210,28 @@ mod tests {
         DatabaseHandle,
         PathBuf,
     ) {
-        let case = loader_test_case(vec![PathOperation::DatabaseRead]);
-        let (_, app, handle, database) = &case;
-        let state = app.state::<AppState>();
-        let target = super::super::resolve_database(
-            &state.pgn_path_authority,
-            handle,
-            PathOperation::DatabaseRead,
-        )
-        .unwrap();
-        let identity = state
-            .database_repository
-            .database_identity_expected(&target, target.identity(), None)
-            .unwrap();
-        SearchIndexChunk {
-            entries: vec![crate::db::SearchGameEntry {
-                id: 1,
-                white_id: 0,
-                black_id: 0,
-                date: None,
-                result: GameResult::Draw,
-                pawn_home: 0,
-                white_material: 0,
-                black_material: 0,
-                white_elo: 0,
-                black_elo: 0,
-                fen: None,
-                moves: vec![],
-            }],
-        }
-        .write_to_with_source(
-            get_index_path(database),
-            IndexSource::from_database_identity(&identity).unwrap(),
-        )
-        .unwrap()
-        .expect_durable();
-        case
+        let (dir, app, handle, database, _target, _source) =
+            super::descriptor_identity_tests::preferred_sidecar_test_case(
+                "search",
+                vec![PathOperation::DatabaseRead],
+                SearchIndexChunk {
+                    entries: vec![crate::db::SearchGameEntry {
+                        id: 1,
+                        white_id: 0,
+                        black_id: 0,
+                        date: None,
+                        result: GameResult::Draw,
+                        pawn_home: 0,
+                        white_material: 0,
+                        black_material: 0,
+                        white_elo: 0,
+                        black_elo: 0,
+                        fen: None,
+                        moves: vec![],
+                    }],
+                },
+            );
+        (dir, app, handle, database)
     }
 
     fn load_preferred_after_probe(

@@ -182,7 +182,7 @@ fn estimated_search_result_bytes(value: &SearchResult) -> usize {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SearchIndexIdentity {
     pub database: PathBuf,
-    object: (u64, u64),
+    sidecar_object: (u64, u64),
     source: IndexSource,
     length: u64,
     modified: Duration,
@@ -198,11 +198,11 @@ impl SearchIndexIdentity {
         if FAIL_NEXT_SIDECAR_STAMP.with(|fail| fail.replace(false)) {
             return Err(io::Error::other("injected sidecar descriptor stamp failure").into());
         }
-        let object = crate::infra::path_authority::opened_file_identity(file)?;
+        let sidecar_object = crate::infra::path_authority::opened_file_identity(file)?;
         let metadata = file.metadata()?;
         Ok(Self {
             database: target.path().to_path_buf(),
-            object,
+            sidecar_object,
             source,
             length: metadata.len(),
             modified: metadata
@@ -2560,12 +2560,12 @@ mod search_cache_tests {
         .unwrap();
         let preferred_file = std::fs::File::open(&preferred).unwrap();
         assert_eq!(
-            identity.object,
+            identity.sidecar_object,
             crate::infra::path_authority::opened_file_identity(&preferred_file).unwrap()
         );
         assert_eq!(identity.length, preferred_file.metadata().unwrap().len());
         assert_ne!(
-            identity.object,
+            identity.sidecar_object,
             crate::infra::path_authority::opened_file_identity(
                 &std::fs::File::open(&legacy).unwrap()
             )
