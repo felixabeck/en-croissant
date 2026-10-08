@@ -13898,3 +13898,29 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Found by:** records lens r4 on the `f-20260927-06` push range, drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f, 2026-10-08; verified by reading `src/utils/engines.ts:355-374`.
 * **Correction (2026-10-08, records lens on the push of this entry, verified by the orchestrator):** the **Change** bullet's "(currently blocked on a first-run profile by `f-20261002-05`)" is superseded: since `870da73b` startup runs `admit_instance` (`src-tauri/src/main.rs:2213`), which creates the configuration root before the path registry opens (`src-tauri/src/infra/path_authority/mod.rs:2593-2604`, `:2776-2779`), so `f-20261002-05` is probably resolved and awaits remeasurement (its 2026-10-08 annotation). Restate the passages without naming it as a current blocker unless that remeasurement still fails.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4cd0dc6b2821c3a77a32f8f3507e8e8d0550cc149196b58831449bcb920c25af","input_sha256":"360f8abd3af045f539a3d87804b57bfe9740a1fba7c0a30370d790510ecc471b","kind":"mutation-receipt","operation":"b1102e91d14956210a57f85fe7f2c294db8c29f8e6288fc8de9c377f1dace2ff","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-11"],"target":"f-20261008-11","v":1} -->
+
+---
+
+## 2026-10-08 — filed through the inbox spool
+
+### Compact Settings rows retain a horizontal copy basis as vertical blank space
+* **ID:** f-20261008-12 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 024337df-ae8f-4ffb-b722-de20a7620f5d · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-024337df-ae8f-4ffb-b722-de20a7620f5d-1.jsonl
+
+* **Where:** `src/components/settings/SettingsPage.module.css`, `.settingCopy` and the compact `.item` rules. Shared consumer `SettingsLayout.tsx` renders both tab-panel and search-result rows.
+* **Defect:** `.settingCopy` keeps `flex: 1 1 18rem` when its parent changes to `flex-direction: column`. The width-oriented basis becomes a height basis, leaving a large gap between a short setting description and its control. At 200% the basis is 576px. The font-size search card showed this large blank area during f-20260927-08 clipping investigation.
+* **Evidence:** The CSS basis and compact column direction coexist in BASE `53a2a911` and the preserved compact rules after that finding's breakpoint correction. Mantine Group is the shared row parent. This is an existing compact-layout spacing defect, not caused by font-scaled breakpoint arithmetic or the slider-label flow-space correction.
+* **Fix:** Keep the horizontal copy basis in the wide layout and reset its flex sizing in the shared compact layout so its height follows the text. Cover both tab and search rows through the shared rule.
+* **Proof:** A pinned-container geometry check on compact font-size rows should compare the copy's height with its text content and verify the control follows the copy with the intended spacing. Keep wide-row behavior and existing snapshots stable, inspecting any expected compact snapshot change.
+* **Related:** f-20260927-08 and handled f-20260829-02 concern the same Settings surface. They do not share this flex-axis cause. This run preserves all original compact rules under its adopted O3 contract, so the spacing correction is separate work.
+
+### Compact Settings tab list retains a full-height inline style
+* **ID:** f-20261008-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 024337df-ae8f-4ffb-b722-de20a7620f5d · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-024337df-ae8f-4ffb-b722-de20a7620f5d-1.jsonl
+
+* **Where:** `src/components/settings/SettingsPage.tsx`, unconditional `<Tabs.List h="100%">`, and `SettingsPage.module.css`, compact tablist `height: auto` rule.
+* **Defect:** Mantine emits the `h` prop as an inline height. The compact CSS height rule cannot override it. The horizontal tab list therefore fills the Settings area instead of taking its content height, pushing the panel below the initial viewport. At 1400px and 200% in real WebKitGTK, the captured view contains oversized wrapped tab rows and no panel content before scrolling.
+* **Evidence:** The unconditional prop is present at BASE `53a2a911`. Mantine Box merges parsed inline style props into the element style. The final f-20260927-08 native screenshot `/tmp/build-aa086ec3/webkit-200.png` shows the oversized tab list, while the 100% view shows the normal vertical list and panel. This remains after the breakpoint correction, which preserves the original compact rules and existing 320px snapshots.
+* **Fix:** Make the tab-list height follow the existing compact boolean, retaining full height for the wide vertical list and allowing intrinsic height for the compact horizontal list. Keep orientation, height and compact CSS driven by that same boolean.
+* **Proof:** A compact Settings viewport test must verify the tab list takes intrinsic height and the panel heading begins within the initial viewport. `toBeVisible` alone is insufficient because it does not require intersection with the viewport. Verify wide layout unchanged and inspect the resulting expected compact screenshot updates in the pinned container. Confirm the native WebKitGTK view too.
+* **Related:** f-20260927-08 and handled f-20260829-02 concern this Settings surface. The inline-height priority is a separate cause from media-query scaling and setting-copy flex sizing. Their existing compact baseline is deliberately preserved in the current run.
