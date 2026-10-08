@@ -11784,6 +11784,9 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Open question:** choose one wire-safe generation representation for events, command arguments and returns, and preserve the monotonic stale-event fence across every consumer. Regenerate bindings and cover the real IPC boundary. The current player-statistics plan does not change these shared types or `useProgress`; this is a separate cross-app contract repair.
 * **Related:** `f-20260904-02` and `f-20260906-07` addressed other progress subscription/cancellation paths, not the generation wire type. `f-20260919-12` concerns a stored running bar after `begin_progress` emission failure.
 
+Implementation update (2026-10-08): b325df83 replaces numeric progress generations with canonical decimal strings on every native wire surface and bigint renderer-domain normalization. Decisions d-20261008-23..25 settle representation, exhaustion and native measurement. Root native probes pass normal transport and generation 9007199254740993 with rejected-clear fencing and an updating retry. The original Defect and Open question above describe the pre-repair implementation. Final closure remains pending cumulative review repairs, final browser proof and affected push gates. Review is repairing two existing subscription wrappers that discard decoder error callbacks and three verifier bookkeeping/prerequisite issues.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9bdd81b779cf808911c21a2c4f186b8276f3bd9ced25595c47dcbf6af9ded0e2","input_sha256":"3d3d2da7f66906ea226cb23b0b8433b3bf9dc5367176348333eab08e15959d38","kind":"mutation-receipt","operation":"7294b7c5464b5a48ecbfc3fe99644caaf588fca54156b8a82d4bd2d52c6cf8a0","options":{"section":null},"request_id_sha256":null,"results":["f-20260925-02"],"target":"f-20260925-02","v":1} -->
+
 ---
 
 ## 2026-09-25 — filed through the inbox spool
