@@ -2230,6 +2230,10 @@ pub struct StartupPathOwners {
 /// Maximum number of IDs accepted in one trusted attachment-owner request in normal state.
 const MAX_AUTHORITY_REQUEST_IDS: usize = MAX_AUTHORITY_IDS;
 
+/// Headroom for retained IDs native does not know (stale renderer IDs), added to the
+/// registry-dependent limit only for startup owner reconciliation.
+const MAX_STARTUP_OWNER_UNKNOWN_IDS: usize = 16 * MAX_AUTHORITY_IDS;
+
 /// Prepare marks the supplied current-session attachments as prepared without retiring omitted
 /// IDs; an empty list is an explicit prepare with no retained attachments.
 /// Reconcile with `Some([])` is a trusted complete owner snapshot and permits retirement of
@@ -7308,7 +7312,10 @@ impl PathAuthority {
         &mut self,
         owners: StartupPathOwners,
     ) -> Result<CommitDurability, Error> {
-        if owners.retained_ids.len() > self.authority_id_input_limit()
+        if owners.retained_ids.len()
+            > self
+                .authority_id_input_limit()
+                .saturating_add(MAX_STARTUP_OWNER_UNKNOWN_IDS)
             || owners.trusted_families.len() > MAX_TRUSTED_OWNER_FAMILIES
         {
             return Err(Error::ResourceLimit(
@@ -11338,6 +11345,141 @@ pub(crate) mod portable_tests {
     }
     pub(super) fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
+    }
+
+    #[test]
+    fn stale_startup_owner_ids_allow_durable_sweep_across_trusted_families() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let book_path = dir.path().join("live.book");
+        let puzzle_path = dir.path().join("live.puzzle");
+        let unowned_path = dir.path().join("unowned.book");
+        for path in [&book_path, &puzzle_path, &unowned_path] {
+            fs::write(path, b"fixture").unwrap();
+        }
+        let (book_id, puzzle_id, unowned_id) = {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let book = initial.register_opening_book(&book_path, "live").unwrap();
+            let puzzle = initial
+                .get_or_create_persistent_file(
+                    &puzzle_path,
+                    "live",
+                    canonical_operations(EntryPurpose::PuzzleFile),
+                )
+                .unwrap();
+            let unowned = initial
+                .register_opening_book(&unowned_path, "unowned")
+                .unwrap();
+            (book.id, puzzle.id, unowned.id)
+        };
+        let live_ids = vec![book_id.clone(), puzzle_id.clone()];
+        let unknown_ids = (0..=MAX_AUTHORITY_IDS)
+            .map(|index| PathRef {
+                id: format!(
+                    "stale-{}-{index}",
+                    ["book", "puzzle", "workspace"][index % 3]
+                ),
+            })
+            .collect::<Vec<_>>();
+        let mut retained_ids = live_ids.clone();
+        retained_ids.extend(unknown_ids.iter().cloned());
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        assert_eq!(
+            authority
+                .reconcile_startup_owners(StartupPathOwners {
+                    retained_ids,
+                    trusted_families: vec![
+                        PathOwnerFamily::OpeningBook,
+                        PathOwnerFamily::PuzzleDatabase,
+                    ],
+                })
+                .unwrap(),
+            CommitDurability::Durable
+        );
+        assert!(!authority.persistent.contains_key(&unowned_id.id));
+        assert_eq!(
+            authority.startup_retained_ids,
+            live_ids.iter().map(|id| id.id.clone()).collect()
+        );
+        for id in &unknown_ids {
+            assert!(!authority.startup_retained_ids.contains(&id.id));
+        }
+        for (id, operation) in [
+            (&book_id, PathOperation::OpeningBookRead),
+            (&puzzle_id, PathOperation::PuzzleRead),
+        ] {
+            assert!(authority.persistent.contains_key(&id.id));
+            assert!(authority.resolve(id, operation, &[]).is_ok());
+        }
+        drop(authority);
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(!reloaded.persistent.contains_key(&unowned_id.id));
+        for (id, operation) in [
+            (&book_id, PathOperation::OpeningBookRead),
+            (&puzzle_id, PathOperation::PuzzleRead),
+        ] {
+            assert!(reloaded.persistent.contains_key(&id.id));
+            assert!(reloaded.resolve(id, operation, &[]).is_ok());
+        }
+    }
+
+    #[test]
+    fn startup_owner_raw_input_cap_accepts_boundary_and_preserves_state_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let live_path = dir.path().join("live.book");
+        let unowned_path = dir.path().join("unowned.book");
+        fs::write(&live_path, b"live").unwrap();
+        fs::write(&unowned_path, b"unowned").unwrap();
+        let (live_id, unowned_id) = {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let live = initial.register_opening_book(&live_path, "live").unwrap();
+            let unowned = initial
+                .register_opening_book(&unowned_path, "unowned")
+                .unwrap();
+            (live.id, unowned.id)
+        };
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let input_limit = authority.authority_id_input_limit() + MAX_STARTUP_OWNER_UNKNOWN_IDS;
+        let mut retained_ids = vec![live_id.clone()];
+        retained_ids.extend((0..input_limit - 1).map(|index| PathRef {
+            id: format!("unknown-{index}"),
+        }));
+        assert_eq!(retained_ids.len(), input_limit);
+        assert_eq!(
+            authority
+                .reconcile_startup_owners(StartupPathOwners {
+                    retained_ids: retained_ids.clone(),
+                    trusted_families: vec![PathOwnerFamily::PuzzleDatabase],
+                })
+                .unwrap(),
+            CommitDurability::Durable
+        );
+        assert!(authority.persistent.contains_key(&unowned_id.id));
+        assert_eq!(authority.startup_retained_ids, BTreeSet::from([live_id.id]));
+        assert_eq!(
+            authority.completed_owner_families,
+            BTreeSet::from([PathOwnerFamily::PuzzleDatabase])
+        );
+        let persistent_before = authority.persistent.clone();
+        let retained_before = authority.startup_retained_ids.clone();
+        let completed_before = authority.completed_owner_families.clone();
+        let disk_before = fs::read(&registry).unwrap();
+        retained_ids.push(PathRef {
+            id: "one-too-many".into(),
+        });
+        assert_eq!(retained_ids.len(), input_limit + 1);
+        assert!(matches!(
+            authority.reconcile_startup_owners(StartupPathOwners {
+                retained_ids,
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.persistent == persistent_before);
+        assert_eq!(authority.startup_retained_ids, retained_before);
+        assert_eq!(authority.completed_owner_families, completed_before);
+        assert_eq!(fs::read(&registry).unwrap(), disk_before);
     }
 
     #[cfg(windows)]
@@ -22527,7 +22669,7 @@ mod tests {
     fn oversized_startup_input_and_unknown_ids_do_not_mutate_or_accumulate() {
         let dir = tempfile::tempdir().unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
-        let oversized = (0..=MAX_AUTHORITY_IDS)
+        let oversized = (0..=authority.authority_id_input_limit() + MAX_STARTUP_OWNER_UNKNOWN_IDS)
             .map(|index| PathRef {
                 id: format!("unknown-{index}"),
             })
