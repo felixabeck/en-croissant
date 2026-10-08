@@ -6562,3 +6562,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The first full gate reported 351/398 branches against327/360. Actual LCOV identifies seven reachable missing outcomes and ten validation outcomes duplicated into Serde's MissingFieldDeserializer after an unconditional missing-field error. A concrete parser gives successful strings one authoritative domain implementation and makes those unreachable adapter copies disappear without excluding any production source. Reversal path: measured evidence that the domain parser is duplicated or a different existing boundary owns the same validation with equivalent full-range and error-compatibility proof.
 * **Decided by:** Codex, autonomously during the full-auto coverage repair · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"98285a428fe5e611e8687f0dc338646e02d7657aa6d03939cd59f18a7e24f82a","input_sha256":"a1131057d448a766f077f35247a5e35aea91adfadebd133e94b423b64b9cce42","kind":"mutation-receipt","operation":"475968a048abc8b95aa243aab0525ea65be911e6eea312935d2d09b960371605","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-27 — Should local command placement use a second map or generalize the existing placement registry?
+
+* **Question:** Should local command placement use a second map or generalize the existing placement registry?
+* **Governs:** f-20260926-01
+* **Chosen:** One internal placement registry with script and exact-command selectors, and separate CI-required metadata in `scripts/check-gate-routing.mjs`.
+* **Rejected:** A second placement validator or a workflow-absence requirement for every local command.
+* **Reason:** Both selector forms express the same domain contract and need the same section identity and diagnostics. Several raw commands are shared with CI. A second validator creates drift, and blanket absence conflicts with the live workflow. Reversal path: change the internal registry representation and its independent test cases while preserving the required placement and CI contracts.
+* **Decided by:** Codex, adopted full-auto build for f-20260926-01, 2026-10-08 · **Superseded-by:** -
+
+### d-20261008-28 — What is explicitly outside the local gate placement repair?
+
+* **Question:** What is explicitly outside the local gate placement repair?
+* **Governs:** f-20260926-01
+* **Chosen:** Runtime scheduling, gate membership/toolchains, app behavior, and unrelated gate-scripts findings.
+* **Rejected:** Folding scheduler design or other gate tooling into a placement repair.
+* **Reason:** The finding authorizes source-policy placement verification. Current scheduler execution has an independent owner. Reversal requires a separate finding with evidence that this boundary prevents satisfying the mandate.
+* **Decided by:** Codex, adopted full-auto build for f-20260926-01, 2026-10-08 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"5b4a214dc4230ae12eaf1fa7333b291d97ecbe166d30d4e7024ea8356430ddae","input_sha256":"7e262955c36f3ecc6df8ccfdcfd1d624f864bc50888124d364f977dc4b0e6abb","kind":"mutation-receipt","operation":"cbdc88974e583d682436bb661a323fbaf767e0fa6b1e53e97535682e5064fcff","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-27","d-20261008-28"],"target":"decisions-ledger","v":1} -->
