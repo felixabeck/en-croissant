@@ -493,17 +493,18 @@ const tauriBootstrap = () => {
         if (response.delay)
             await new Promise((resolve) => window.setTimeout(resolve, response.delay));
         const outcome = response.outcomes?.shift();
-        if (outcome) {
-            if ("error" in outcome) {
-                if (typeof outcome.error === "string") throw new Error(outcome.error);
-                throw outcome.error;
-            }
-            return outcome.result;
+        const failure = outcome
+            ? "error" in outcome
+                ? outcome
+                : undefined
+            : "error" in response
+              ? response
+              : undefined;
+        if (failure) {
+            if (typeof failure.error === "string") throw new Error(failure.error);
+            throw failure.error;
         }
-        if ("error" in response) {
-            if (typeof response.error === "string") throw new Error(response.error);
-            throw response.error;
-        }
+        if (outcome) return outcome.result;
         let retainedSearch = false;
         if (command === "kill_engines") {
             for (const [key, actor] of actors) {
