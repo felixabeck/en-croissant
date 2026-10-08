@@ -8,6 +8,8 @@ type MockCommand = {
     result?: unknown;
     /** Sequential command results model polling and post-mutation refreshes. */
     results?: unknown[];
+    /** Sequential command outcomes model successful calls followed by failures. */
+    outcomes?: ({ result: unknown } | { error: string | ErrorPayload })[];
 };
 
 export type MockScenario = {
@@ -490,6 +492,14 @@ const tauriBootstrap = () => {
         }
         if (response.delay)
             await new Promise((resolve) => window.setTimeout(resolve, response.delay));
+        const outcome = response.outcomes?.shift();
+        if (outcome) {
+            if ("error" in outcome) {
+                if (typeof outcome.error === "string") throw new Error(outcome.error);
+                throw outcome.error;
+            }
+            return outcome.result;
+        }
         if ("error" in response) {
             if (typeof response.error === "string") throw new Error(response.error);
             throw response.error;

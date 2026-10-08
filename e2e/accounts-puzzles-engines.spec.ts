@@ -1,4 +1,163 @@
-import { expect, test } from "./fixtures";
+import { expect, test, type MockScenario } from "./fixtures";
+
+const summaryLichessDatabase = {
+    handle: { id: { id: "summary-lichess" }, kind: "database" },
+    filename: "alex_lichess.db3",
+    availability: "available",
+};
+const summaryChessComDatabase = {
+    handle: { id: { id: "summary-chesscom" }, kind: "database" },
+    filename: "alex_chesscom.db3",
+    availability: "available",
+};
+const summaryDatabaseInfo = {
+    description: "",
+    player_count: 1,
+    event_count: 1,
+    game_count: 8,
+    storage_size: 1024,
+    indexed: true,
+};
+const summaryLichessInfo = {
+    ...summaryDatabaseInfo,
+    title: "Alex Lichess",
+    filename: summaryLichessDatabase.filename,
+};
+const summaryChessComInfo = {
+    ...summaryDatabaseInfo,
+    title: "Alex Chess.com",
+    filename: summaryChessComDatabase.filename,
+};
+const summaryStatistics = {
+    site_stats_data: [
+        {
+            site: "Lichess",
+            player: "alex",
+            daily: [
+                {
+                    date: "2026.10.04",
+                    time_control: "600+0",
+                    won: 5,
+                    drawn: 2,
+                    lost: 1,
+                    max_player_elo: 1500,
+                },
+            ],
+            openings: [],
+        },
+    ],
+};
+
+for (const state of ["partial", "failed"] as const) {
+    test(`accounts-puzzles-engines: home summary ${state} statistics`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem(
+                "sessions",
+                JSON.stringify([
+                    {
+                        player: "Alex",
+                        updatedAt: Date.UTC(2026, 9, 4),
+                        lichess: {
+                            username: "alex",
+                            account: {
+                                id: "alex",
+                                username: "alex",
+                                perfs: { rapid: { rating: 1500, games: 8, prog: 0 } },
+                            },
+                        },
+                    },
+                    {
+                        player: "Alex",
+                        updatedAt: Date.UTC(2026, 9, 4),
+                        chessCom: {
+                            username: "alex",
+                            stats: {
+                                chess_rapid: {
+                                    last: { rating: 1500, date: 1791072000, rd: 50 },
+                                    record: { win: 5, loss: 1, draw: 2 },
+                                },
+                            },
+                        },
+                    },
+                ]),
+            );
+        });
+        const statisticsRead: NonNullable<MockScenario["commands"]>[string] = {
+            outcomes: [
+                state === "partial"
+                    ? { result: summaryStatistics }
+                    : { error: "Lichess statistics unreadable" },
+                { error: "Chess.com statistics unreadable" },
+            ],
+            error: "Statistics unreadable",
+        };
+        await mockScenario({
+            commands: {
+                list_workspace_databases: {
+                    result: [summaryLichessDatabase, summaryChessComDatabase],
+                },
+                get_db_info: {
+                    // Accounts and the summary read metadata concurrently, each in database order.
+                    // A different interleaving fails the failed-state test loudly because the notice
+                    // would name the same database twice.
+                    results: [
+                        summaryLichessInfo,
+                        summaryLichessInfo,
+                        summaryChessComInfo,
+                        summaryChessComInfo,
+                    ],
+                    result: summaryChessComInfo,
+                },
+                get_players: { result: { data: [{ id: 7, name: "alex", elo: 1500 }], count: 1 } },
+                get_players_game_info: statisticsRead,
+            },
+        });
+        await page.goto("/accounts");
+
+        const title =
+            state === "partial" ? "Statistics are incomplete" : "Could not load statistics";
+        const failedDatabases =
+            state === "partial" ? "Alex Chess.com" : "Alex Lichess, Alex Chess.com";
+        await expect(page.getByText(title, { exact: true })).toBeVisible();
+        await expect(
+            page.getByText(`These databases could not be read: ${failedDatabases}`, {
+                exact: true,
+            }),
+        ).toBeVisible();
+        if (state === "partial") {
+            await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeVisible();
+            const total = page.getByText("8 Games", { exact: true });
+            const overview = page.getByRole("tabpanel", { name: "Overview", exact: true });
+            await overview.hover({ position: { x: 10, y: 10 } });
+            await expect(async () => {
+                await page.mouse.wheel(0, 100);
+                await expect(total).toBeInViewport({ timeout: 250 });
+            }).toPass({ timeout: 8000 });
+            await page.mouse.move(0, 0);
+            await overview.evaluate((panel) => panel.scrollTo(0, 0));
+        } else {
+            await expect(page.getByText("No games found", { exact: true })).toHaveCount(0);
+        }
+        const statisticsFiles = await page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "get_players_game_info")
+                .map(({ args }) => (args as { file: unknown }).file),
+        );
+        expect(statisticsFiles).toEqual([
+            summaryLichessDatabase.handle,
+            summaryChessComDatabase.handle,
+        ]);
+        await capture(`home-summary-${state}-statistics`);
+        await expect(page).toHaveScreenshot(`home-summary-${state}-statistics.png`, {
+            fullPage: true,
+        });
+    });
+}
 
 test("accounts-puzzles-engines: warns when a downloaded game file's save is not confirmed", async ({
     page,
