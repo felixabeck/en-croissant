@@ -12050,7 +12050,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### Responsive breakpoints ignore the app font scale, so compact layouts switch on at the wrong width
 
-* **ID:** f-20260927-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260927-08 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/settings/SettingsPage.tsx:126` (`useMediaQuery("(max-width: 50rem)")`), `src/components/settings/SettingsPage.module.css:60` (`@media (max-width: 50rem)`), and the Mantine `SimpleGrid cols` breakpoints at `src/components/files/FilesPage.tsx:217`, `src/components/databases/DatabasesPage.tsx:185,254`, `src/components/engines/EnginesPage.tsx:133`, `src/components/tabs/NewTabHome.tsx:241`, `src/components/engines/AddEngine.tsx:90,115`, `src/components/databases/AddDatabase.tsx:156`.
 * **Defect:** `App.tsx:209` scales the root font (`document.documentElement.style.fontSize = fontSize%`), but `rem`/`em` inside a media query resolve against the initial 16px, never the scaled root. So every breakpoint means the same pixel width at every app font scale: at 200% a 1000px window is only 31 root-em wide, yet Settings stays in its two-column layout (threshold 800px) and the grids stay multi-column, into widths the scaled content cannot fit.
 * **Evidence:** root cause 2 of `f-20260829-02` (its 2026-08-31 investigation). That run's 320px matrix never exercises it, because at 320px every breakpoint is already in its narrowest state; the f-20260829-02 plan review (2026-09-27, issue I3, lenses review-plan and review-root-cause) ruled a scale-aware breakpoint outside that finding's mandate because it changes behaviour only at other widths.
@@ -12058,6 +12058,17 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Open question:** one mechanism for all sites (atom-derived pixel query vs. container queries vs. rem flex-basis wrapping), and whether Mantine's theme breakpoints should be rewritten globally or per site.
 * **Proof:** an e2e project at e.g. 1000px / 200% font scale whose Settings and a SimpleGrid page pass `assertNothingClipped(page.locator("body"), { scrollable: "reachable" })` and switch to their compact layout.
 * **Related:** f-20260829-02 (root cause 2).
+
+Resolved in code commits e4cf2b80, 2345d764 and bad84bf1. One em-scaling function drives Mantine default breakpoints and the shared Settings/Files query hook. App rebuilds the theme when font size changes. Settings' outer compact marker covers tabs and search. Shared compact slider flow space keeps both font and volume marks reachable.
+
+Root proof passed302 phase1 unit tests,168 repair unit tests,96 full pinned-container cases, contract and pre-review gates. The eleven-case behavior project covers100%,200%,50%/700px, live slider changes, both Settings branches, database pane geometry and Files dialogs at800px. Isolated withdrawals reject unscaled queries, misplaced markers, removed compact styles, removed slider label space and a Files-only fixed query. Exact restoration passes.
+
+Current real WebKitGTK binary passes1400px Settings orientation at200% and100%. Each native acceptance assertion has a valid controlled failure and restored positive proof. The two approved200% stacked-pane PNG updates are named in the Phase1 commit. Phase2 and repairs preserve all29 existing PNG baselines.
+
+Seven cumulative plan rounds and two cumulative diff rounds close all obligations. Decisions d-20261008-18..22. Complete inherited and implementation review evidence is in tasks/handoffs/2026-10-08-font-scaled-breakpoints-review.md and tasks/handoffs/2026-10-08-f-20260927-08-implementation-review.md. Final gates, push, required CI and installation are recorded after they happen in tasks/build-ledger.md. Two separate pre-existing compact Settings spacing/height issues were published to the findings inbox for subsequent work.
+
+Original plan authorship and arbitration shared one context. Root adopted the plan and arbitrated implementation. Detection used the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":9,"effect_sha256":"8cf669ac671222083c571c07235d92c5b4314f46a98ccfe21ef94de911e150d4","header_sha256":"1a9edd8f15f2d49eb0929508ed924dfecaf6af5acfea32d33ea15d13066ed719","header_status":"handled","input_sha256":"9e8d233d6119dd4ba2e80f3cc2195bbc9455176dce5e7216cf5797bfedd941ac","kind":"mutation-receipt","operation":"db6bab739369a7a19145e3ac30cd35ef0a2f31e95b1231867e671c71df48e9fa","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-08"],"target":"f-20260927-08","v":1} -->
 
 ### At 320px / 200% the title-bar menu is reachable only by scrolling a 104px strip, with no visible affordance
 
