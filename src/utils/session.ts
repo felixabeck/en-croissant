@@ -22,6 +22,11 @@ export type Session = {
     updatedAt: number;
 };
 
+/** The name a session is grouped under: its player alias, else its Lichess username, else its Chess.com username. */
+export function sessionPlayerName(session: Session): string {
+    return session.player || session.lichess?.username || session.chessCom?.username || "";
+}
+
 /** Storage boundary: the Lichess object is deliberately `strip`ped so an old `accessToken`
  * field can never be hydrated into Jotai state, even when Account screens never mount. */
 export const sessionSchema = z

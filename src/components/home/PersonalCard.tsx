@@ -8,6 +8,7 @@ import type { PlayerGameInfo } from "@/bindings";
 import { sessionsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import type { DatabaseViewStore } from "@/state/store/database";
+import { sessionPlayerName } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import FideInfo from "../databases/FideInfo";
 import OpeningsPanel from "./PersonalCardPanels/OpeningsPanel";
@@ -34,9 +35,7 @@ function PersonalPlayerCard({
 
   const [opened, setOpened] = useState(false);
   const sessions = useAtomValue(sessionsAtom);
-  const players = Array.from(
-    new Set(sessions.map((s) => s.player || s.lichess?.username || s.chessCom?.username || "")),
-  );
+  const players = Array.from(new Set(sessions.map(sessionPlayerName)));
 
   return (
     <Paper

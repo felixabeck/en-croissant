@@ -16,7 +16,11 @@ vi.mock("@/bindings/generated", () => ({
 }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: mocks.getLichessAccount }));
 
-import { initializePersistedSessions, SessionSanitizationError } from "./session";
+import {
+    initializePersistedSessions,
+    sessionPlayerName,
+    SessionSanitizationError,
+} from "./session";
 
 beforeEach(() => {
     vi.restoreAllMocks();
@@ -24,6 +28,22 @@ beforeEach(() => {
     vi.clearAllMocks();
     mocks.listLichessAccounts.mockResolvedValue([]);
     mocks.revokeLegacyLichessToken.mockReset().mockResolvedValue({ status: "ok", data: null });
+});
+
+test("session player names prefer the alias, then Lichess, then Chess.com, then empty", () => {
+    const session = {
+        player: "Alias",
+        updatedAt: 1,
+        lichess: { username: "lichess", account: { id: "account", username: "Account" } },
+        chessCom: { username: "chesscom", stats: {} },
+    };
+    expect(sessionPlayerName(session)).toBe("Alias");
+    expect(sessionPlayerName({ ...session, player: undefined })).toBe("lichess");
+    expect(sessionPlayerName({ ...session, player: "" })).toBe("lichess");
+    expect(sessionPlayerName({ ...session, player: undefined, lichess: undefined })).toBe(
+        "chesscom",
+    );
+    expect(sessionPlayerName({ updatedAt: 1 })).toBe("");
 });
 
 describe("initializePersistedSessions", () => {

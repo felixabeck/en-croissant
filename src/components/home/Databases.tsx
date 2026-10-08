@@ -30,7 +30,7 @@ import {
 } from "@/utils/db";
 import { accountDatabaseFilename } from "./accountDatabase";
 import { collectSequential } from "@/utils/collectSequential";
-import type { Session } from "@/utils/session";
+import { sessionPlayerName, type Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
 
@@ -38,10 +38,6 @@ type PersonalDatabase = {
   db: ManagedDatabaseInfo;
   username: string;
 };
-
-function sessionPlayerName(session: Session): string {
-  return session.player || session.lichess?.username || session.chessCom?.username || "";
-}
 
 function databaseLabel(db: ManagedDatabaseInfo): string {
   return db.type === "success" ? db.title || db.filename : db.filename;
@@ -104,7 +100,7 @@ function StatisticsNotice({
   );
 }
 
-/** Stable identity matching the `["personalInfo", name, databases]` SWR key. */
+/** Stable identity matching the `["personalInfo", name, playerDatabases]` SWR key. */
 function personalInfoProgressKey(name: string, databases: PersonalDatabase[]): string {
   return JSON.stringify([
     "personalInfo",
@@ -158,7 +154,9 @@ function Databases() {
       }),
   );
 
-  const personalKey = databases && name ? ["personalInfo", name, databases] : null;
+  const selectedFilenames = playerDbNames.find((p) => p.name === name)?.databases ?? [];
+  const playerDatabases = databases?.filter(({ db }) => selectedFilenames.includes(db.filename));
+  const personalKey = playerDatabases && name ? ["personalInfo", name, playerDatabases] : null;
   const personalOwner = useNativeRequestOwner(personalKey);
   const {
     data: personalInfo,
@@ -172,9 +170,7 @@ function Databases() {
         const map = new Map<string, number>();
         ownedProgressByKey.clear();
         ownedProgressByKey.set(progressKey, map);
-        const playerDbs = playerDbNames.find((p) => p.name === playerName)?.databases;
-        if (!playerDbs) return { entries: [], failed: [] };
-        const candidates = playerDatabases.filter(({ db }) => playerDbs.includes(db.filename));
+        const candidates = playerDatabases;
         const { values, failures } = await collectSequential(
           candidates.filter(({ db }) => db.type === "success"),
           async ({ db, username }) => {
@@ -228,10 +224,10 @@ function Databases() {
   useTauriListener(
     subscribeProgress,
     (e) => {
-      if (!databases || !name) {
+      if (!playerDatabases || !name) {
         return;
       }
-      const map = ownedProgressByKey.get(personalInfoProgressKey(name, databases));
+      const map = ownedProgressByKey.get(personalInfoProgressKey(name, playerDatabases));
       if (!map?.has(e.payload.id)) {
         return;
       }

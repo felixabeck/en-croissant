@@ -573,6 +573,57 @@ test.each([false, true])(
   },
 );
 
+test("changing session membership refetches the selected player's summary with unchanged databases", async () => {
+  const bobSession = {
+    player: "Bob",
+    updatedAt: 1,
+    lichess: { username: "bob", account: { id: "bob", username: "bob" } },
+  };
+  const aliceSession = {
+    player: "Alice",
+    updatedAt: 1,
+    chessCom: { username: "alice", stats: {} },
+  };
+  getDefaultStore().set(sessionsAtom, [bobSession, aliceSession]);
+  const bobDatabase = { ...database("db-1"), filename: "bob_lichess.db3" };
+  const aliceDatabase = { ...database("db-2"), filename: "alice_chesscom.db3" };
+  const bobRecord = { site: "Lichess", player: "bob", daily: [], openings: [] };
+  const aliceRecord = { site: "Chess.com", player: "alice", daily: [], openings: [] };
+  mocks.getDatabases.mockResolvedValue([bobDatabase, aliceDatabase]);
+  mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => ({
+    site_stats_data: [file.id.id === "db-1" ? bobRecord : aliceRecord],
+  }));
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [bobRecord] });
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce();
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledWith(
+    expect.any(String),
+    bobDatabase.file,
+    7,
+    expect.anything(),
+  );
+
+  await act(async () => {
+    getDefaultStore().set(sessionsAtom, [bobSession, { ...aliceSession, player: "Bob" }]);
+  });
+  await vi.waitFor(() => expect(mocks.getDatabases).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() =>
+    expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+      site_stats_data: [bobRecord, aliceRecord],
+    }),
+  );
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledTimes(3);
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledWith(
+    expect.any(String),
+    aliceDatabase.file,
+    7,
+    expect.anything(),
+  );
+  expect(mocks.personalCardNotice).toHaveBeenLastCalledWith(undefined);
+});
+
 test("a database listing failure renders the loading error", async () => {
   mocks.getDatabases.mockRejectedValue(new Error("workspace unreadable"));
 
