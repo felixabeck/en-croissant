@@ -1,16 +1,57 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import fs from "node:fs";
 import { createServer } from "node:http";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import {
   Session,
+  APP_BINARY,
   appProcesses,
   cleanUpResources,
   cleanUpWithProfiles,
   createSharedShutdown,
+  requirePrerequisites,
 } from "./app-driver.mjs";
+
+test("prerequisites check the selected application even when the default binary is absent", (t) => {
+  const application = join(tmpdir(), "app-driver-selected-application");
+  const missingApplication = join(tmpdir(), "app-driver-missing-application");
+  const exists = t.mock.method(
+    fs,
+    "existsSync",
+    (path) => path === "/usr/bin/WebKitWebDriver" || path === application,
+  );
+  const execute = t.mock.method(childProcess, "execFileSync", () => Buffer.alloc(0));
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+
+  assert.equal(fs.existsSync(APP_BINARY), false);
+  assert.doesNotThrow(() => requirePrerequisites(application));
+  assert.deepEqual(
+    execute.mock.calls.map(({ arguments: [command, args] }) => [command, args]),
+    [
+      ["sh", ["-c", "command -v tauri-driver"]],
+      ["sh", ["-c", "command -v kwin_wayland"]],
+      ["gst-inspect-1.0", ["--exists", "fakeaudiosink"]],
+    ],
+  );
+  assert.ok(exists.mock.calls.some(({ arguments: [path] }) => path === application));
+  assert.throws(
+    () => requirePrerequisites(missingApplication),
+    (error) => error.message.includes(`${missingApplication} — build it with: pnpm build`),
+  );
+  assert.throws(
+    () => requirePrerequisites(),
+    (error) => error.message.includes(`${APP_BINARY} — build it with: pnpm build`),
+  );
+});
 
 async function webdriverServer() {
   const server = createServer(async (request, response) => {

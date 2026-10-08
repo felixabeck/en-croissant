@@ -14,6 +14,9 @@
 // [Progress runtime proof](../tasks/handoffs/2026-10-08-f-20260925-02-review.md)
 // Supplemental logs, exact mutations, commands, input/binary hashes and screenshots:
 // /tmp/build-progress-aa086ec3/runtime/proof-report.md and manifest.json
+// Original raw verifier SHA-256: c76499e2850dd1e1f99ea6237482aed271625f81db5c4d6ce7fb5534a5f0c457.
+// Historical executable-body byte identity covers the matrix documentation step before the
+// cumulative-review prerequisite and named timing-constant repairs below.
 // Normal transport 13/13, high rejected-clear renderer 17/17, restoration 13/13, all exit 0.
 // High clock seed 9007199254740992, first exact string generation 9007199254740993.
 // Failure message -> application-input case (all exit 1):
@@ -50,7 +53,7 @@
 // exercises the production pre-claim cancellation and failed-clear cleanup without a network
 // download, while a native lease already drives the real facade, hook and ProgressButton.
 //
-// It asserts seventy-three independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts eighty-six independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -75,6 +78,10 @@
 //                      +1 conditional Reload-from-disk check
 //   titlebar/process | 3: rendered controls, process-before-close, process-after-close
 //   shutdown | 3: start, bounded completion, sound signal
+//   progress | 13: listener registration, start lease, running event, state-update identity,
+//                  snapshot, terminal update, terminal event, malformed-lease refusal,
+//                  invalid-clear refusal, clear return, cleared event, cleared snapshot,
+//                  listener release
 //
 // Staged-failure record for the single-instance checks (2026-10-07).
 // Extended on 2026-10-08 for the distinct application-data, configuration and local-data roots.
@@ -502,6 +509,8 @@ const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
 // interval, or WebKitGTK delivers two single clicks and the scenario proves nothing.
 const DOUBLE_CLICK_GAP_MS = 60;
+// Allow a queued native frame and React render to settle before observing the stale event.
+const PROGRESS_STALE_EVENT_OBSERVATION_DELAY_MS = 100;
 const filesWorkspaceId = "verify-files-workspace";
 const filesRowName = "verify-sample";
 const filesMetadataRowName = "verify-metadata-only";
@@ -1157,8 +1166,7 @@ async function verifyProgressCancellation(session, invoke) {
     progress: 75,
     progressState: "running",
   });
-  // Queue a second WebDriver turn after React has processed the native event.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, PROGRESS_STALE_EVENT_OBSERVATION_DELAY_MS));
   const delayed = await card();
   check(
     delayed.progress === null && !delayed.cancel,
@@ -3491,7 +3499,7 @@ try {
   ) {
     throw new Error("disposable progress measurement options require --progress-contract");
   }
-  requirePrerequisites();
+  requirePrerequisites(progressContractOnly ? progressApplication : APP_BINARY);
 
   const { socket } = await startCompositor();
   const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });

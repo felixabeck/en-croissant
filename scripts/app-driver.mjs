@@ -131,7 +131,7 @@ export async function waitFor(label, probe, { timeoutMs = 45_000, everyMs = 200 
   }
 }
 
-export function requirePrerequisites() {
+export function requirePrerequisites(application = APP_BINARY) {
   const missing = [];
   if (!existsSync("/usr/bin/WebKitWebDriver")) {
     missing.push("WebKitWebDriver — install with: sudo apt install webkit2gtk-driver");
@@ -156,8 +156,8 @@ export function requirePrerequisites() {
       "GStreamer fakeaudiosink — install with: sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-tools",
     );
   }
-  if (!existsSync(APP_BINARY)) {
-    missing.push(`${APP_BINARY} — build it with: pnpm build`);
+  if (!existsSync(application)) {
+    missing.push(`${application} — build it with: pnpm build`);
   }
   if (missing.length > 0) {
     throw new Error(`missing prerequisites:\n  - ${missing.join("\n  - ")}`);
