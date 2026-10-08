@@ -27,7 +27,7 @@ import { useProgress } from "./useProgress";
 
 type Progress = {
   id: string;
-  generation: bigint | number;
+  generation: string;
   progress: number;
   finished: boolean;
   state: "running" | "succeeded" | "failed" | "cancelled";
@@ -58,7 +58,7 @@ beforeEach(() => {
   root = createRoot(container);
   eventHandler = undefined;
   mocks.clearProgress.mockReset();
-  mocks.clearProgress.mockResolvedValue({ status: "ok", data: BigInt(0) });
+  mocks.clearProgress.mockResolvedValue({ status: "ok", data: "0" });
   mocks.getProgress.mockReset();
   mocks.listen.mockReset();
   mocks.notifyListenerError.mockReset();
@@ -74,14 +74,57 @@ afterEach(async () => {
 });
 
 describe("useProgress", () => {
-  test("fence(null) discards terminal progress from a numeric wire event", async () => {
+  test.each(["9007199254740993", "18446744073709551615"])(
+    "a null fence hides %s and rejects old snapshots and malformed events",
+    async (generation) => {
+      let resolveInitial!: (value: Progress) => void;
+      mocks.getProgress.mockReturnValue(
+        new Promise<Progress>((resolve) => {
+          resolveInitial = resolve;
+        }),
+      );
+      await act(async () => root.render(<Probe id="job" />));
+      const payload: Progress = {
+        id: "job",
+        generation,
+        progress: 35,
+        finished: false,
+        state: "running",
+        cleared: false,
+      };
+      await act(async () => eventHandler?.({ payload }));
+      expect(container.querySelector("output")?.dataset.generation).toBe(generation);
+      await act(async () =>
+        eventHandler?.({ payload: { ...payload, generation: "01", progress: 99, cleared: true } }),
+      );
+      expect(container.querySelector("output")?.textContent).toBe("35:false");
+      expect(mocks.notifyListenerError).toHaveBeenCalledOnce();
+      await act(async () => container.querySelectorAll("button")[2]?.click());
+      await act(async () => {
+        eventHandler?.({ payload: { ...payload, progress: 90 } });
+        resolveInitial({ ...payload, progress: 100, finished: true, state: "failed" });
+      });
+      expect(container.querySelector("output")?.dataset.generation).toBe("none");
+      if (generation !== "18446744073709551615") {
+        await act(async () =>
+          eventHandler?.({
+            payload: { ...payload, generation: (BigInt(generation) + 1n).toString(), progress: 20 },
+          }),
+        );
+      }
+      expect(container.querySelector("output")?.dataset.generation).toBe(
+        generation === "18446744073709551615" ? "none" : "9007199254740994",
+      );
+    },
+  );
+  test("fence(null) discards terminal progress from a decimal string wire event", async () => {
     mocks.getProgress.mockResolvedValue(null);
     await act(async () => root.render(<Probe id="job" />));
     await act(async () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: 5,
+          generation: "5",
           progress: 100,
           finished: true,
           state: "failed",
@@ -96,7 +139,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: 5,
+          generation: "5",
           progress: 100,
           finished: true,
           state: "failed",
@@ -109,7 +152,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: 6,
+          generation: "6",
           progress: 10,
           finished: false,
           state: "running",
@@ -133,7 +176,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(2),
+          generation: "2",
           progress: 60,
           finished: false,
           state: "running",
@@ -144,7 +187,7 @@ describe("useProgress", () => {
     await act(async () => {
       resolveInitial({
         id: "job",
-        generation: BigInt(1),
+        generation: "1",
         progress: 100,
         finished: true,
         state: "succeeded",
@@ -164,7 +207,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 80,
           finished: true,
           state: "succeeded",
@@ -174,7 +217,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 40,
           finished: false,
           state: "running",
@@ -213,7 +256,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 50,
           finished: false,
           state: "running",
@@ -223,7 +266,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 0,
           finished: true,
           state: "cancelled",
@@ -242,7 +285,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(9),
+          generation: "9",
           progress: 0,
           finished: true,
           state: "cancelled",
@@ -252,7 +295,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(10),
+          generation: "10",
           progress: 50,
           finished: false,
           state: "running",
@@ -262,7 +305,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(7),
+          generation: "7",
           progress: 0,
           finished: true,
           state: "cancelled",
@@ -272,7 +315,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(8),
+          generation: "8",
           progress: 100,
           finished: true,
           state: "succeeded",
@@ -292,7 +335,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(3),
+          generation: "3",
           progress: 40,
           finished: false,
           state: "running",
@@ -307,7 +350,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 100,
           finished: true,
           state: "succeeded",
@@ -321,7 +364,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(5),
+          generation: "5",
           progress: 20,
           finished: false,
           state: "running",
@@ -339,7 +382,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(5),
+          generation: "5",
           progress: 50,
           finished: false,
           state: "running",
@@ -354,7 +397,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(6),
+          generation: "6",
           progress: 10,
           finished: false,
           state: "running",
@@ -369,7 +412,7 @@ describe("useProgress", () => {
     mocks.listen.mockRejectedValueOnce(new Error("listener unavailable"));
     mocks.getProgress.mockResolvedValue({
       id: "job",
-      generation: BigInt(2),
+      generation: "2",
       progress: 25,
       finished: false,
       state: "running",
@@ -383,7 +426,7 @@ describe("useProgress", () => {
 
   test("clear establishes a generation floor that ignores an old producer", async () => {
     mocks.getProgress.mockResolvedValue(null);
-    mocks.clearProgress.mockResolvedValue({ status: "ok", data: 8 });
+    mocks.clearProgress.mockResolvedValue({ status: "ok", data: "8" });
     await act(async () => root.render(<Probe id="job" />));
     await act(async () => {
       container.querySelector("button")?.click();
@@ -392,7 +435,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(7),
+          generation: "7",
           progress: 100,
           finished: true,
           state: "succeeded",
@@ -410,7 +453,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 50,
           finished: false,
           state: "running",
@@ -420,7 +463,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(5),
+          generation: "5",
           progress: 0,
           finished: true,
           state: "cancelled",
@@ -430,7 +473,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(4),
+          generation: "4",
           progress: 100,
           finished: true,
           state: "succeeded",
@@ -449,7 +492,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "job",
-          generation: BigInt(1),
+          generation: "1",
           progress: 40,
           finished: false,
           state: "running",
@@ -459,7 +502,7 @@ describe("useProgress", () => {
       eventHandler?.({
         payload: {
           id: "other-job",
-          generation: BigInt(2),
+          generation: "2",
           progress: 90,
           finished: true,
           state: "succeeded",
@@ -477,14 +520,14 @@ describe("useProgress", () => {
       id === "first"
         ? {
             id,
-            generation: BigInt(8),
+            generation: "8",
             progress: 50,
             finished: false,
             state: "running",
           }
         : {
             id,
-            generation: BigInt(1),
+            generation: "1",
             progress: 25,
             finished: false,
             state: "running",
@@ -497,7 +540,7 @@ describe("useProgress", () => {
   });
 
   test("an old clear acknowledgement cannot clear a replacement id", async () => {
-    let resolveClear: (value: { status: "ok"; data: bigint }) => void = () => undefined;
+    let resolveClear: (value: { status: "ok"; data: string }) => void = () => undefined;
     mocks.clearProgress.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveClear = resolve;
@@ -507,7 +550,7 @@ describe("useProgress", () => {
       id === "second"
         ? {
             id,
-            generation: BigInt(1),
+            generation: "1",
             progress: 35,
             finished: false,
             state: "running",
@@ -519,7 +562,7 @@ describe("useProgress", () => {
     await act(async () => root.render(<Probe id="second" />));
     expect(container.querySelector("output")?.textContent).toBe("35:false");
 
-    await act(async () => resolveClear({ status: "ok", data: BigInt(9) }));
+    await act(async () => resolveClear({ status: "ok", data: "9" }));
     expect(container.querySelector("output")?.textContent).toBe("35:false");
     expect(container.querySelector("output")?.dataset.generation).toBe("1");
   });

@@ -197,7 +197,7 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
                 },
             },
             create_workspace_database: { result: databaseHandle },
-            start_progress: { result: { id: "chesscom_download-player", generation: 1 } },
+            start_progress: { result: { id: "chesscom_download-player", generation: "1" } },
             convert_pgn: { result: null },
             set_progress_state: { result: null },
             delete_empty_games: { result: null },

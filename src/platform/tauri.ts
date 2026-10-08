@@ -7,11 +7,11 @@ import {
     type GameOverEvent,
     type GameState,
     type OpeningBookConfig,
-    type ProgressEvent,
-    type ProgressLease,
+    type ProgressEvent as WireProgressEvent,
     type Result as GeneratedResult,
     type TimeControl,
 } from "@/bindings/generated";
+import type { ProgressEvent, ProgressItem, ProgressLease, ProgressState } from "@/bindings";
 import { normalizeError } from "./errors";
 import { error as logError, getCurrentWindow } from "./native";
 
@@ -84,8 +84,27 @@ function normalizeCounterPair<T extends GameCounterFields>(
     };
 }
 
-function normalizeProgressGeneration<T extends { generation: bigint }>(value: T): T {
-    return { ...value, generation: decodeCounter(value.generation, "generation") };
+const MAX_PROGRESS_GENERATION = 18446744073709551615n;
+
+function decodeProgressGeneration(value: unknown): bigint {
+    if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value) && value.length <= 20) {
+        const generation = BigInt(value);
+        if (generation <= MAX_PROGRESS_GENERATION) return generation;
+    }
+    throw new TypeError("generation must be a canonical unsigned u64 decimal string");
+}
+
+function encodeProgressGeneration(value: bigint): string {
+    if (typeof value !== "bigint" || value < 0n || value > MAX_PROGRESS_GENERATION) {
+        throw new TypeError("generation must be an unsigned u64 bigint");
+    }
+    return value.toString();
+}
+
+function normalizeProgressGeneration<T extends { generation: string }>(
+    value: T,
+): Omit<T, "generation"> & { generation: bigint } {
+    return { ...value, generation: decodeProgressGeneration(value.generation) };
 }
 
 type CommandResult<T> = GeneratedResult<T, unknown>;
@@ -126,7 +145,23 @@ type NativeReadFacade<T> = T extends (
 ) => Promise<infer Result>
     ? (...args: [...Args, NativeReadOptions?]) => Promise<Result>
     : never;
-type TauriCommands = Omit<GeneratedCommands, "startGame" | NativeReadCommandName> & {
+type TauriCommands = Omit<
+    GeneratedCommands,
+    | "startGame"
+    | NativeReadCommandName
+    | "startProgress"
+    | "getProgress"
+    | "setProgressState"
+    | "clearProgress"
+> & {
+    startProgress: (id: string) => Promise<ProgressLease>;
+    getProgress: (id: string) => Promise<ProgressItem | null>;
+    clearProgress: (id: string) => Promise<bigint>;
+    setProgressState: (
+        lease: ProgressLease,
+        progress: number,
+        progressState: ProgressState,
+    ) => ReturnType<GeneratedCommands["setProgressState"]>;
     /** Pair retirement preserves the engine id and readmits its current binary. */
     retireEngineBinary: GeneratedCommands["retireEngineBinary"];
     startGame: (
@@ -182,16 +217,16 @@ const GAME_STATE_COMMANDS = new Set<PropertyKey>([
 type EventEnvelope<T> = { payload: T };
 type EventAdapterError<T> = (error: unknown, event: EventEnvelope<T>) => void;
 
-function eventSubscription<T>(
-    subscribe: (callback: (event: EventEnvelope<T>) => void) => Promise<() => void>,
-    normalize: (payload: T) => T,
+function eventSubscription<T, Wire = T>(
+    subscribe: (callback: (event: EventEnvelope<Wire>) => void) => Promise<() => void>,
+    normalize: (payload: Wire) => T,
 ) {
     return (callback: (event: EventEnvelope<T>) => void, onError?: EventAdapterError<T>) =>
         subscribe((event) => {
             try {
                 callback({ ...event, payload: normalize(event.payload) });
             } catch (error) {
-                onError?.(normalizeError(error), event);
+                onError?.(normalizeError(error), event as unknown as EventEnvelope<T>);
             }
         });
 }
@@ -385,12 +420,12 @@ export const tauri: TauriCommands = new Proxy(commands, {
                     const lease = args[0] as ProgressLease;
                     args[0] = {
                         ...lease,
-                        generation: encodeCounter(lease.generation, "generation"),
+                        generation: encodeProgressGeneration(lease.generation),
                     };
                 }
                 const result = await command(...args);
                 const value = isCommandResult(result) ? unwrapCommand(result) : result;
-                if (property === "clearProgress") return decodeCounter(value, "generation");
+                if (property === "clearProgress") return decodeProgressGeneration(value);
                 if (property === "getProgress") {
                     return value === null ? null : normalizeProgressGeneration(value);
                 }
@@ -435,7 +470,7 @@ export const tauriSubscriptions = {
         (callback) => events.gameOverEvent.listen(callback),
         normalizeGameOverEvent,
     ),
-    progress: eventSubscription<ProgressEvent>(
+    progress: eventSubscription<ProgressEvent, WireProgressEvent>(
         (callback) => events.progressEvent.listen(callback),
         normalizeProgressGeneration,
     ),

@@ -46,6 +46,24 @@ beforeEach(() => {
 });
 
 describe("download jobs", () => {
+    test("returns a null cleanup floor after a rejected clear and permits a retry", async () => {
+        mocks.clearProgress.mockRejectedValueOnce(new Error("clear rejected"));
+        let rejectRun!: (error: unknown) => void;
+        const running = runDownloadJob(
+            "job",
+            () =>
+                new Promise<never>((_resolve, reject) => {
+                    rejectRun = reject;
+                }),
+        );
+        const settled = running.catch((error: unknown) => error);
+        const cancel = cancelDownloadJob("job");
+        rejectRun(cancellationError());
+        expect(await settled).toMatchObject({ message: "Cancellation" });
+        await expect(cancel).resolves.toEqual({ clearedGeneration: null });
+        expect(mocks.warn).toHaveBeenCalledOnce();
+        await expect(runDownloadJob("job", async () => "retry")).resolves.toBe("retry");
+    });
     test("passes the prepared ticket to the download and removes the entry", async () => {
         const result = await runDownloadJob("job", async (ticket) => ticket);
 

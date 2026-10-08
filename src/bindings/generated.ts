@@ -1098,7 +1098,7 @@ async setProgressState(lease: ProgressLease, progress: number, progressState: Pr
     else return { status: "error", error: e  as any };
 }
 },
-async clearProgress(id: string) : Promise<Result<bigint, ErrorPayload>> {
+async clearProgress(id: string) : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("clear_progress", { id }) };
 } catch (e) {
@@ -1311,9 +1311,9 @@ export type PracticeReviewEntry = { id: string; entry: string }
 export type PracticeReviewPage = { entries: PracticeReviewEntry[]; nextCursor: string | null }
 export type PracticeStoreAnomaly = { kind: PracticeStoreAnomalyKind; leaf: string; fileId: string | null; game: number | null }
 export type PracticeStoreAnomalyKind = "OrphanShard" | "DamagedDeck" | "IdentityMismatch" | "Unreadable" | "NotARegularFile" | "StrandedMigration"
-export type ProgressEvent = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState; cleared: boolean }
-export type ProgressItem = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState }
-export type ProgressLease = { id: string; generation: bigint }
+export type ProgressEvent = { id: string; generation: string; progress: number; finished: boolean; state: ProgressState; cleared: boolean }
+export type ProgressItem = { id: string; generation: string; progress: number; finished: boolean; state: ProgressState }
+export type ProgressLease = { id: string; generation: string }
 export type ProgressState = "running" | "succeeded" | "failed" | "cancelled"
 export type PublicChessComRequest = { kind: "account"; player: string } | { kind: "game"; game_type: string; game_id: string }
 export type PublicLichessRequest = { kind: "account"; username: string } | { kind: "cloud_eval"; fen: string; multi_pv: number } | { kind: "game"; game_id: string } | { kind: "tablebase"; fen: string } | { kind: "fide"; query: string }

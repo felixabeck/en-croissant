@@ -92,6 +92,7 @@ export function useProgress(id: string) {
     const fence = useCallback((generation: bigint | null) => {
         setItem((current) => {
             const floor = generation ?? (current ? current.generation + BigInt(1) : null);
+            // u64::MAX + 1 is a local visibility sentinel, never a native lease.
             if (floor === null) return current;
             if (minimumGeneration.current < floor) minimumGeneration.current = floor;
             return current && current.generation < floor ? null : current;

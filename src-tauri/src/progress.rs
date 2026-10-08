@@ -15,6 +15,60 @@ const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
 const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
 
+/// Progress identities retain the full u64 range across JSON without rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProgressGeneration(u64);
+
+impl PartialEq<u64> for ProgressGeneration {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<ProgressGeneration> for u64 {
+    fn eq(&self, other: &ProgressGeneration) -> bool {
+        *self == other.0
+    }
+}
+
+impl Serialize for ProgressGeneration {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProgressGeneration {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.is_empty()
+            || value.len() > 20
+            || (value.len() > 1 && value.starts_with('0'))
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(serde::de::Error::custom("invalid progress generation"));
+        }
+        value
+            .parse::<u64>()
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl Type for ProgressGeneration {
+    fn inline(
+        type_map: &mut specta::TypeMap,
+        generics: specta::Generics,
+    ) -> specta::datatype::DataType {
+        String::inline(type_map, generics)
+    }
+}
+
+impl std::fmt::Display for ProgressGeneration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 #[cfg(test)]
 static CLEAR_DECISION_HOOKS: crate::infra::test_hooks::KeyedTestHooks<String> =
     crate::infra::test_hooks::KeyedTestHooks::new();
@@ -38,13 +92,13 @@ impl ProgressState {
 #[serde(rename_all = "camelCase")]
 pub struct ProgressLease {
     pub id: String,
-    pub generation: u64,
+    pub generation: ProgressGeneration,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
 pub struct ProgressItem {
     pub id: String,
-    pub generation: u64,
+    pub generation: ProgressGeneration,
     pub progress: f32,
     pub finished: bool,
     pub state: ProgressState,
@@ -53,7 +107,7 @@ pub struct ProgressItem {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, Type, Event)]
 pub struct ProgressEvent {
     pub id: String,
-    pub generation: u64,
+    pub generation: ProgressGeneration,
     pub progress: f32,
     pub finished: bool,
     pub state: ProgressState,
@@ -96,9 +150,13 @@ impl ProgressStore {
         state.access_clock
     }
 
-    fn next_generation(state: &mut ProgressStoreState) -> u64 {
-        state.generation_clock = state.generation_clock.saturating_add(1);
-        state.generation_clock
+    fn next_generation(state: &mut ProgressStoreState) -> Result<ProgressGeneration, Error> {
+        let next = state
+            .generation_clock
+            .checked_add(1)
+            .ok_or_else(|| Error::Conflict("progress generation exhausted".into()))?;
+        state.generation_clock = next;
+        Ok(ProgressGeneration(next))
     }
 
     fn purge_expired_at(state: &mut ProgressStoreState, now: Instant) {
@@ -139,11 +197,11 @@ impl ProgressStore {
             .state
             .lock()
             .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
+        let generation = Self::next_generation(&mut state)?;
         Self::purge_expired_at(&mut state, now);
         // Starting the same ID deliberately invalidates its former producer.
         state.entries.remove(&id);
         Self::evict_to_capacity(&mut state);
-        let generation = Self::next_generation(&mut state);
         let last_access = Self::tick_access(&mut state);
         state.entries.insert(
             id.clone(),
@@ -241,7 +299,7 @@ impl ProgressStore {
 
     /// Clearing removes visible state and advances the global generation clock,
     /// preventing an old producer from recreating the cleared ID.
-    pub fn clear(&self, id: &str) -> Result<u64, Error> {
+    pub fn clear(&self, id: &str) -> Result<ProgressGeneration, Error> {
         self.clear_unless_live_running(id, false)
             .map(|(generation, _)| generation)
     }
@@ -250,7 +308,7 @@ impl ProgressStore {
         &self,
         id: &str,
         live_download: bool,
-    ) -> Result<(u64, bool), Error> {
+    ) -> Result<(ProgressGeneration, bool), Error> {
         let mut state = self
             .state
             .lock()
@@ -264,8 +322,9 @@ impl ProgressStore {
                 }
             }
         }
+        let generation = Self::next_generation(&mut state)?;
         state.entries.remove(id);
-        Ok((Self::next_generation(&mut state), true))
+        Ok((generation, true))
     }
 }
 
@@ -474,7 +533,7 @@ pub fn clear_progress(
     id: String,
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
-) -> Result<u64, Error> {
+) -> Result<ProgressGeneration, Error> {
     clear_progress_with(&state.progress_state, &state.operations, id, &mut |item| {
         emit(&app, item, true)
     })
@@ -485,7 +544,7 @@ fn clear_progress_with(
     operations: &OperationRegistry,
     id: String,
     emit_cleared: &mut dyn FnMut(ProgressItem) -> Result<(), Error>,
-) -> Result<u64, Error> {
+) -> Result<ProgressGeneration, Error> {
     let (generation, cleared) =
         operations.with_live_download_for_progress(&id, |live_download| {
             if live_download {
@@ -518,6 +577,165 @@ mod tests {
 
     use super::*;
     use tauri::Manager;
+
+    #[test]
+    fn generations_round_trip_as_exact_decimal_strings_on_every_surface() {
+        for number in [
+            0,
+            9_007_199_254_740_991,
+            9_007_199_254_740_992,
+            9_007_199_254_740_993,
+            u64::MAX,
+        ] {
+            let digits = serde_json::Value::String(number.to_string());
+            let lease: ProgressLease =
+                serde_json::from_value(serde_json::json!({ "id": "job", "generation": digits }))
+                    .unwrap();
+            let generation = lease.generation;
+            assert_eq!(serde_json::to_value(generation).unwrap(), digits);
+            let item = ProgressItem {
+                id: "job".into(),
+                generation,
+                progress: 30.0,
+                finished: false,
+                state: ProgressState::Running,
+            };
+            let event = ProgressEvent {
+                id: "job".into(),
+                generation,
+                progress: 30.0,
+                finished: false,
+                state: ProgressState::Running,
+                cleared: false,
+            };
+            assert_eq!(serde_json::to_value(&lease).unwrap()["generation"], digits);
+            assert_eq!(serde_json::to_value(&item).unwrap()["generation"], digits);
+            assert_eq!(serde_json::to_value(&event).unwrap()["generation"], digits);
+            assert_eq!(
+                serde_json::from_value::<ProgressLease>(serde_json::to_value(&lease).unwrap())
+                    .unwrap(),
+                lease
+            );
+            assert_eq!(
+                serde_json::from_value::<ProgressEvent>(serde_json::to_value(&event).unwrap())
+                    .unwrap(),
+                event
+            );
+        }
+    }
+
+    #[test]
+    fn generations_reject_noncanonical_or_out_of_range_wire_values() {
+        for value in [
+            serde_json::json!(1),
+            serde_json::json!(null),
+            serde_json::json!(true),
+        ] {
+            assert!(serde_json::from_value::<ProgressLease>(
+                serde_json::json!({ "id": "job", "generation": value })
+            )
+            .is_err());
+        }
+        for value in [
+            "",
+            "00",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "١",
+            "18446744073709551616",
+        ] {
+            assert!(
+                serde_json::from_value::<ProgressLease>(
+                    serde_json::json!({ "id": "job", "generation": value })
+                )
+                .is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_generations_remain_distinct_and_exhaustion_preserves_the_store() {
+        let store = ProgressStore::default();
+        store.state.lock().unwrap().generation_clock = 9_007_199_254_740_992;
+        let first = store.start("job".into()).unwrap();
+        let second = store.start("job".into()).unwrap();
+        assert_eq!(first.generation, 9_007_199_254_740_993);
+        assert_eq!(second.generation, 9_007_199_254_740_994);
+        assert!(matches!(
+            store.transition(&first, 50.0, ProgressState::Running),
+            Err(Error::StaleProgressLease)
+        ));
+
+        let now = Instant::now();
+        for index in 0..PROGRESS_CAPACITY {
+            store.start_at(format!("capacity-{index}"), now).unwrap();
+        }
+        store.state.lock().unwrap().generation_clock = u64::MAX - 1;
+        let last = store.start_at("job".into(), now).unwrap();
+        assert_eq!(last.generation, u64::MAX);
+        let before = {
+            let state = store.state.lock().unwrap();
+            (state.entries.clone(), state.access_clock)
+        };
+        for id in ["job", "new"] {
+            assert!(matches!(
+                store.start_at(id.into(), now + RUNNING_TTL),
+                Err(Error::Conflict(_))
+            ));
+            assert!(matches!(store.clear(id), Err(Error::Conflict(_))));
+        }
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.generation_clock, u64::MAX);
+        assert_eq!(state.access_clock, before.1);
+        assert_eq!(state.entries.len(), before.0.len());
+        for (id, entry) in &before.0 {
+            let after = &state.entries[id];
+            assert_eq!(after.item, entry.item);
+            assert_eq!(after.updated_at, entry.updated_at);
+            assert_eq!(after.last_access, entry.last_access);
+        }
+        drop(state);
+        assert!(matches!(
+            store.transition(&second, 50.0, ProgressState::Running),
+            Err(Error::StaleProgressLease)
+        ));
+        assert!(store
+            .transition(&last, 50.0, ProgressState::Running)
+            .is_ok());
+    }
+
+    #[test]
+    fn exhaustion_keeps_live_download_noop_clear_and_rejects_other_clears_without_emitting() {
+        let store = ProgressStore::default();
+        let operations = OperationRegistry::default();
+        let ticket = operations.prepare_download("main").unwrap();
+        let download = operations
+            .claim_download(&ticket, "main", "download", "job", "job", false, 8)
+            .unwrap();
+        store.state.lock().unwrap().generation_clock = u64::MAX - 1;
+        let lease = store.start("job".into()).unwrap();
+        let mut emit = |_| -> Result<(), Error> { panic!("exhausted clear must not emit") };
+        assert_eq!(
+            clear_progress_with(&store, &operations, "job".into(), &mut emit).unwrap(),
+            lease.generation
+        );
+        drop(download);
+        assert!(matches!(
+            clear_progress_with(&store, &operations, "job".into(), &mut emit),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            store.get("job").unwrap().unwrap().generation,
+            lease.generation
+        );
+        assert_eq!(store.state.lock().unwrap().generation_clock, u64::MAX);
+    }
 
     #[test]
     fn stale_reporter_is_rejected_after_restart_and_clear() {
@@ -596,7 +814,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(generation > 0);
+        assert_ne!(generation, 0);
         assert!(store.get("job").unwrap().is_none());
     }
 
@@ -683,7 +901,7 @@ mod tests {
             let previous_generation = if let Some(terminal) = terminal {
                 let lease = store.start("job".into()).unwrap();
                 store.transition(&lease, 35.0, terminal).unwrap();
-                lease.generation
+                lease.generation.to_string().parse::<u64>().unwrap()
             } else {
                 0
             };
@@ -693,7 +911,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-            assert!(generation > previous_generation);
+            assert!(generation.to_string().parse::<u64>().unwrap() > previous_generation);
             assert!(store.get("job").unwrap().is_none());
             assert_eq!(emitted.len(), 1);
             assert_eq!(emitted[0].generation, generation);

@@ -3,6 +3,17 @@
 //
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
+//   pnpm verify:app --progress-contract  run only the progress transport/cancellation scenario
+//     --application /absolute/binary    select a disposable measurement binary
+//     --expect-progress-generation N    require the first lease's exact decimal digits
+//     --expect-clear-rejection          expect the disposable binary's typed clear failure
+//
+// Progress assertions below have unique messages. Their staged-failure matrix is pending the
+// orchestrator's disposable-binary measurements. No runtime or staged-failure proof is claimed
+// by this implementation. The cancellation probe replays the catalog button's production
+// onClick handler and presses Cancel synchronously before prepare_download can settle. This
+// exercises the production pre-claim cancellation and failed-clear cleanup without a network
+// download, while a native lease already drives the real facade, hook and ProgressButton.
 //
 // It asserts seventy-three independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
@@ -408,7 +419,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Chess, makeSquare } from "chessops";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
@@ -432,6 +443,14 @@ import {
 
 const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
+const progressContractOnly = process.argv.includes("--progress-contract");
+const expectClearRejection = process.argv.includes("--expect-clear-rejection");
+const applicationIndex = process.argv.indexOf("--application");
+const progressGenerationIndex = process.argv.indexOf("--expect-progress-generation");
+const progressApplication =
+  applicationIndex === -1 ? APP_BINARY : process.argv[applicationIndex + 1];
+const expectedProgressGeneration =
+  progressGenerationIndex === -1 ? undefined : process.argv[progressGenerationIndex + 1];
 const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const IPC_PROBE_TIMEOUT_MS = 5_000;
 const INSTANCE_PROBE_TIMEOUT_MS = 15_000;
@@ -856,6 +875,314 @@ async function invokeJsonAndWait(session, label, globalName, invokeExpression) {
   }
 }
 
+async function verifyProgressContract(session, { cancellation = false } = {}) {
+  const id = `verify-progress:${randomUUID()}`;
+  const ipc = (command, args) =>
+    `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`;
+  const invoke = (command, args) =>
+    invokeJsonAndWait(session, command, "__verifyProgressResult", ipc(command, args));
+  const canonical = canonicalProgressGeneration;
+  const exact = (value, expected) => canonical(value) && value === expected;
+  await session.execute(`
+    window.__verifyProgressEvents = [];
+    window.__verifyProgressHandler = window.__TAURI_INTERNALS__.transformCallback(event => {
+      window.__verifyProgressEvents.push(event.payload);
+    });
+    return true;
+  `);
+  const registration = await invokeJsonAndWait(
+    session,
+    "progress listener registration",
+    "__verifyProgressRegistration",
+    `window.__TAURI_INTERNALS__.invoke("plugin:event|listen", { event: "progress-event", target: { kind: "Any" }, handler: window.__verifyProgressHandler })`,
+  );
+  check(
+    typeof registration.value === "number",
+    "progress native event listener registers",
+    JSON.stringify(registration),
+  );
+  const event = async (description, predicate, generation, extra) => {
+    const observed = await waitFor(
+      description,
+      () =>
+        session.execute(
+          `return window.__verifyProgressEvents.find(payload => payload.id === arguments[0] && (${predicate})) || false`,
+          [id],
+        ),
+      { timeoutMs: IPC_PROBE_TIMEOUT_MS },
+    ).catch((error) => ({ error: error.message }));
+    check(
+      exact(observed.generation, generation) && extra(observed),
+      description,
+      JSON.stringify(observed),
+    );
+    return observed;
+  };
+  try {
+    const start = await invoke("start_progress", { id });
+    const generation = start.value?.generation;
+    check(
+      canonical(generation) &&
+        start.value.id === id &&
+        (expectedProgressGeneration === undefined || generation === expectedProgressGeneration),
+      "progress start lease has exact canonical string generation",
+      JSON.stringify(start),
+    );
+    if (!canonical(generation)) return;
+    console.log(`  ..  progress start wire: ${JSON.stringify(start.value)}`);
+    await event(
+      "progress running event has exact canonical string generation",
+      'payload.state === "running" && payload.progress === 0',
+      generation,
+      (payload) => payload.finished === false && payload.cleared === false,
+    );
+    const running = await invoke("set_progress_state", {
+      lease: start.value,
+      progress: 35,
+      progressState: "running",
+    });
+    const snapshot = await invoke("get_progress", { id });
+    check(
+      running.value === null &&
+        exact(snapshot.value?.generation, generation) &&
+        snapshot.value?.progress === 35 &&
+        snapshot.value?.state === "running",
+      "progress state-update string lease reaches native with exact identity",
+      JSON.stringify({ running, snapshot }),
+    );
+    check(
+      exact(snapshot.value?.generation, generation) &&
+        snapshot.value?.id === id &&
+        snapshot.value?.finished === false,
+      "progress snapshot has exact canonical string generation",
+      JSON.stringify(snapshot),
+    );
+    const terminal = await invoke("set_progress_state", {
+      lease: start.value,
+      progress: 100,
+      progressState: "failed",
+    });
+    check(
+      terminal.value === null,
+      "progress terminal state update accepts the string lease",
+      JSON.stringify(terminal),
+    );
+    await event(
+      "progress terminal event has exact canonical string generation",
+      'payload.state === "failed"',
+      generation,
+      (payload) =>
+        payload.finished === true && payload.progress === 100 && payload.cleared === false,
+    );
+    const invalid = await invoke("set_progress_state", {
+      lease: { id, generation: "01" },
+      progress: 50,
+      progressState: "running",
+    });
+    const unchanged = await invoke("get_progress", { id });
+    check(
+      typeof invalid.result.rejected === "string" &&
+        JSON.stringify(unchanged.value) ===
+          JSON.stringify({ ...snapshot.value, progress: 100, finished: true, state: "failed" }),
+      "progress malformed lease rejects without changing the snapshot",
+      JSON.stringify({ invalid, unchanged }),
+    );
+    const malformedClear = await invoke("clear_progress", { id: null });
+    check(
+      typeof malformedClear.result.rejected === "string",
+      "progress invalid clear rejects as a native IPC operation",
+      JSON.stringify(malformedClear),
+    );
+    const cleared = await invoke("clear_progress", { id });
+    if (expectClearRejection) {
+      let rejection = null;
+      try {
+        if (typeof cleared.result.rejected === "string")
+          rejection = JSON.parse(cleared.result.rejected);
+      } catch {
+        // The assertion below identifies a malformed rejection envelope too.
+      }
+      check(
+        rejection?.tag === "backend-error" && rejection.category === "conflict",
+        "progress deliberate clear failure returns a typed native rejection",
+        JSON.stringify(cleared),
+      );
+    } else {
+      const floor = (BigInt(generation) + 1n).toString();
+      check(
+        exact(cleared.value, floor),
+        "progress clear return has exact canonical string generation",
+        JSON.stringify(cleared),
+      );
+      await event(
+        "progress cleared event has exact canonical string generation",
+        "payload.cleared === true",
+        floor,
+        (payload) =>
+          payload.finished === true && payload.state === "cancelled" && payload.progress === 0,
+      );
+      const empty = await invoke("get_progress", { id });
+      check(
+        empty.value === null,
+        "progress clear removes the native snapshot",
+        JSON.stringify(empty),
+      );
+    }
+    if (cancellation && expectClearRejection) await verifyProgressCancellation(session, invoke);
+  } finally {
+    await session.execute(
+      `window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("progress-event", arguments[0]); return true;`,
+      [registration.value],
+    );
+    const unlisten = await invokeJsonAndWait(
+      session,
+      "progress listener cleanup",
+      "__verifyProgressUnlisten",
+      `window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "progress-event", eventId: ${JSON.stringify(registration.value)} })`,
+    );
+    check(
+      unlisten.value === null,
+      "progress native event listener is released",
+      JSON.stringify(unlisten),
+    );
+    await session.execute(
+      `window.__TAURI_INTERNALS__.unregisterCallback(window.__verifyProgressHandler); delete window.__verifyProgressEvents; delete window.__verifyProgressHandler; return true;`,
+    );
+  }
+}
+
+async function verifyProgressCancellation(session, invoke) {
+  const catalog = JSON.parse(
+    await readFile(new URL("../src/catalogs/databases.json", import.meta.url), "utf8"),
+  )[0];
+  const id = `db:${catalog.downloadLink}`;
+  await session.execute(`document.querySelector('a[href="/databases"]').click(); return true;`);
+  await waitFor("progress database catalog opener", () =>
+    session.execute(
+      `const button = document.querySelector('button[aria-label="Add New"]'); if (!button) return false; button.click(); return true;`,
+    ),
+  );
+  await waitFor("progress database catalog card", () =>
+    session.execute(
+      `
+    const title = [...document.querySelectorAll('[role="dialog"] p')].find(node => node.textContent === arguments[0]);
+    const card = title?.closest('.mantine-Paper-root');
+    const action = card && [...card.querySelectorAll('button')].find(button => button.textContent.trim() === "Install");
+    if (!action || action.disabled) return false;
+    window.__verifyProgressCard = card;
+    window.__verifyProgressAction = action[Object.keys(action).find(key => key.startsWith('__reactProps$'))]?.onClick;
+    return typeof window.__verifyProgressAction === 'function';
+  `,
+      [catalog.title],
+    ),
+  );
+  const lease = await invoke("start_progress", { id });
+  await invoke("set_progress_state", {
+    lease: lease.value,
+    progress: 35,
+    progressState: "running",
+  });
+  const card = async () =>
+    session.execute(`
+    const card = window.__verifyProgressCard;
+    return { progress: card.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') ?? null,
+      cancel: !!card.querySelector('button[aria-label="Cancel"]'),
+      action: [...card.querySelectorAll('button')].some(button => button.textContent.trim() === 'Install' && !button.disabled) };
+  `);
+  const visible = await waitFor("progress high-generation running UI", async () => {
+    const state = await card();
+    return state.progress === "35" && state.cancel ? state : false;
+  }).catch((error) => ({ error: error.message }));
+  check(
+    visible.progress === "35" &&
+      canonicalProgressLease(lease.value) &&
+      BigInt(lease.value.generation) > 9007199254740991n,
+    "progress high-generation wire event drives the real renderer bar",
+    JSON.stringify({ lease, visible }),
+  );
+  const pressed = await session.execute(`
+    window.__verifyProgressAction();
+    const cancel = window.__verifyProgressCard.querySelector('button[aria-label="Cancel"]');
+    if (!cancel) return false;
+    cancel.click();
+    return true;
+  `);
+  check(pressed === true, "progress cancellation presses the production pre-claim job button");
+  const hidden = await waitFor("progress rejected-clear cancellation fence", async () => {
+    const state = await card();
+    return state.progress === null && !state.cancel && state.action ? state : false;
+  }).catch((error) => ({ error: error.message }));
+  check(
+    hidden.progress === null && hidden.cancel === false && hidden.action === true,
+    "progress rejected-clear null acknowledgement hides the cancelled generation",
+    JSON.stringify(hidden),
+  );
+  await invoke("set_progress_state", {
+    lease: lease.value,
+    progress: 75,
+    progressState: "running",
+  });
+  // Queue a second WebDriver turn after React has processed the native event.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const delayed = await card();
+  check(
+    delayed.progress === null && !delayed.cancel,
+    "progress fenced old native event cannot resurrect the bar",
+    JSON.stringify(delayed),
+  );
+  const retry = await invoke("start_progress", { id });
+  await invoke("set_progress_state", {
+    lease: retry.value,
+    progress: 45,
+    progressState: "running",
+  });
+  const retryVisible = await waitFor("progress retry UI", async () => {
+    const state = await card();
+    return state.progress === "45" && state.cancel ? state : false;
+  }).catch((error) => ({ error: error.message }));
+  check(
+    canonicalProgressLease(retry.value) &&
+      canonicalProgressLease(lease.value) &&
+      BigInt(retry.value.generation) === BigInt(lease.value.generation) + 1n &&
+      retryVisible.progress === "45" &&
+      retryVisible.cancel === true,
+    "progress newer retry remains distinct and visible after rejected clear",
+    JSON.stringify({ retry, retryVisible }),
+  );
+  await invoke("set_progress_state", {
+    lease: retry.value,
+    progress: 65,
+    progressState: "running",
+  });
+  const updating = await waitFor("progress retry update UI", async () => {
+    const state = await card();
+    return state.progress === "65" ? state : false;
+  }).catch((error) => ({ error: error.message }));
+  check(
+    updating.progress === "65",
+    "progress newer retry continues updating through the real facade",
+    JSON.stringify(updating),
+  );
+  if (screenshotPath)
+    await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
+  await session.execute(
+    "delete window.__verifyProgressAction; delete window.__verifyProgressCard; return true;",
+  );
+}
+
+function canonicalProgressLease(lease) {
+  return canonicalProgressGeneration(lease?.generation);
+}
+
+function canonicalProgressGeneration(value) {
+  return (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]*)$/.test(value) &&
+    value.length <= 20 &&
+    BigInt(value) <= 18446744073709551615n
+  );
+}
+
 async function loadPracticeDeckThroughIpc(session, fileId, game, globalName) {
   return invokeJsonAndWait(
     session,
@@ -1058,11 +1385,7 @@ const handleSignal = () => {
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
 
-try {
-  requirePrerequisites();
-
-  const { socket } = await startCompositor();
-  const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });
+async function verifyFullApplication(profileDirectory, appEnvironment) {
   const practiceGame = 0;
   const largePracticeId = "verify-practice-large-00000000-0000-4000-8000-000000000001";
   const legacyPracticeId = "verify-practice-legacy-00000000-0000-4000-8000-000000000002";
@@ -1389,6 +1712,7 @@ try {
     (await session.execute("return document.title")) === "ChessFable",
     "the real renderer exposes the ChessFable document title",
   );
+  await verifyProgressContract(session);
 
   const waitForPracticeOwners = async (label) =>
     waitFor(
@@ -3113,6 +3437,42 @@ try {
       selectedRootCheck,
       `${error.message}; db exists: ${existsSync(selectedDatabaseRoot)}`,
     );
+  }
+}
+
+try {
+  if (!isAbsolute(progressApplication) || !existsSync(progressApplication)) {
+    throw new Error("progress application must name an existing absolute binary path");
+  }
+  if (
+    expectedProgressGeneration !== undefined &&
+    !canonicalProgressGeneration(expectedProgressGeneration)
+  ) {
+    throw new Error("expected progress generation must be a canonical unsigned u64 decimal string");
+  }
+  if (
+    !progressContractOnly &&
+    (applicationIndex !== -1 || progressGenerationIndex !== -1 || expectClearRejection)
+  ) {
+    throw new Error("disposable progress measurement options require --progress-contract");
+  }
+  requirePrerequisites();
+
+  const { socket } = await startCompositor();
+  const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });
+  if (progressContractOnly) {
+    const progressSession = await Session.open(progressApplication);
+    try {
+      await waitFor("progress renderer startup", () => progressSession.execute(closeControlProbe));
+      await verifyProgressContract(progressSession, { cancellation: true });
+      if (screenshotPath && !expectClearRejection) {
+        await writeFile(screenshotPath, Buffer.from(await progressSession.screenshot(), "base64"));
+      }
+    } finally {
+      await progressSession.quit();
+    }
+  } else {
+    await verifyFullApplication(profileDirectory, appEnvironment);
   }
 } catch (error) {
   console.error(`\nverify:app could not run: ${error.message}`);

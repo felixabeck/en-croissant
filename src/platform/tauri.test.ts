@@ -151,11 +151,11 @@ describe("tauri command facade", () => {
             TauriCommandError,
         );
     });
-    test("normalizes progress event generations from numeric wire values", async () => {
+    test("normalizes progress event generations from decimal string wire values", async () => {
         const callback = vi.fn();
         const payload = {
             id: "job",
-            generation: 7,
+            generation: "7",
             progress: 100,
             finished: true,
             state: "succeeded",
@@ -177,10 +177,109 @@ describe("tauri command facade", () => {
         unlisten();
     });
 
+    test.each([
+        "0",
+        "9007199254740991",
+        "9007199254740992",
+        "9007199254740993",
+        "9007199254740994",
+        "18446744073709551615",
+    ])("preserves exact progress generation %s across every adapter", async (generation) => {
+        const item = {
+            id: "job",
+            generation,
+            progress: 35,
+            finished: false,
+            state: "running" as const,
+        };
+        const expected = { ...item, generation: BigInt(generation) };
+        mocks.getProgress.mockResolvedValueOnce({ status: "ok", data: item });
+        await expect(tauri.getProgress("job")).resolves.toEqual(expected);
+        mocks.startProgress.mockResolvedValueOnce({
+            status: "ok",
+            data: { id: "job", generation },
+        });
+        const lease = await tauri.startProgress("job");
+        expect(lease.generation).toBe(BigInt(generation));
+        mocks.setProgressState.mockClear().mockResolvedValueOnce({ status: "ok", data: null });
+        await tauri.setProgressState(lease, 35, "running");
+        expect(JSON.stringify(mocks.setProgressState.mock.calls[0])).toBe(
+            JSON.stringify([{ id: "job", generation }, 35, "running"]),
+        );
+        mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: generation });
+        await expect(tauri.clearProgress("job")).resolves.toBe(BigInt(generation));
+        const callback = vi.fn();
+        const unlisten = await tauriSubscriptions.progress(callback);
+        mocks.listeners.get("progressEvent")?.({ payload: { ...item, cleared: false } });
+        expect(callback.mock.calls[0][0].payload).toEqual({ ...expected, cleared: false });
+        unlisten();
+    });
+
+    test.each([
+        0,
+        1n,
+        null,
+        "",
+        "00",
+        "01",
+        "+1",
+        "-1",
+        " 1",
+        "1 ",
+        "1.0",
+        "1e3",
+        "١",
+        "18446744073709551616",
+    ])(
+        "rejects malformed incoming generation %s through command and listener errors",
+        async (generation) => {
+            const item = {
+                id: "job",
+                generation,
+                progress: 20,
+                finished: false,
+                state: "running",
+                cleared: false,
+            };
+            mocks.getProgress.mockResolvedValueOnce({ status: "ok", data: item });
+            await expect(tauri.getProgress("job")).rejects.toBeInstanceOf(TauriCommandError);
+            mocks.startProgress.mockResolvedValueOnce({ status: "ok", data: item });
+            await expect(tauri.startProgress("job")).rejects.toBeInstanceOf(TauriCommandError);
+            mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: generation });
+            await expect(tauri.clearProgress("job")).rejects.toBeInstanceOf(TauriCommandError);
+            const callback = vi.fn();
+            const onError = vi.fn();
+            const unlisten = await tauriSubscriptions.progress(callback, onError);
+            const event = { payload: item };
+            mocks.listeners.get("progressEvent")?.(event);
+            expect(callback).not.toHaveBeenCalled();
+            expect(onError).toHaveBeenCalledWith(
+                expect.objectContaining({ message: expect.stringContaining("generation") }),
+                event,
+            );
+            unlisten();
+        },
+    );
+
+    test.each([-1n, 18446744073709551616n, "1", 1, null])(
+        "rejects invalid outgoing generation %s before invoking native",
+        async (generation) => {
+            mocks.setProgressState.mockClear();
+            await expect(
+                tauri.setProgressState(
+                    { id: "job", generation: generation as bigint },
+                    50,
+                    "running",
+                ),
+            ).rejects.toBeInstanceOf(TauriCommandError);
+            expect(mocks.setProgressState).not.toHaveBeenCalled();
+        },
+    );
+
     test("normalizes progress snapshots, leases and the generation used by download cancellation", async () => {
         const item = {
             id: "job",
-            generation: 7,
+            generation: "7",
             progress: 20,
             finished: false,
             state: "running",
@@ -191,14 +290,14 @@ describe("tauri command facade", () => {
         await expect(tauri.getProgress("missing")).resolves.toBeNull();
         mocks.startProgress.mockResolvedValueOnce({
             status: "ok",
-            data: { id: "job", generation: 8 },
+            data: { id: "job", generation: "8" },
         });
         const lease = await tauri.startProgress("job");
         expect(lease).toEqual({ id: "job", generation: 8n });
         mocks.setProgressState.mockResolvedValueOnce({ status: "ok", data: null });
         await tauri.setProgressState(lease, 100, "succeeded");
         expect(mocks.setProgressState).toHaveBeenCalledWith(
-            { id: "job", generation: 8 },
+            { id: "job", generation: "8" },
             100,
             "succeeded",
         );
@@ -210,7 +309,7 @@ describe("tauri command facade", () => {
         mocks.cancelDownloadForProgress.mockResolvedValueOnce({ status: "ok", data: true });
         await expect(tauri.cancelDownloadForProgress("job")).resolves.toBe(true);
         expect(mocks.cancelDownloadForProgress).toHaveBeenCalledWith("job");
-        mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: 9 });
+        mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: "9" });
         await expect(tauri.clearProgress("job")).resolves.toBe(9n);
     });
 

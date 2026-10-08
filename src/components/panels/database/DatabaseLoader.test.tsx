@@ -37,7 +37,7 @@ function renderLoader(isLoading: boolean, tab: string | null) {
 
 type Progress = {
   id: string;
-  generation: bigint;
+  generation: string;
   progress: number;
   finished: boolean;
   state: "running" | "succeeded" | "failed" | "cancelled";
@@ -59,7 +59,7 @@ async function emit(payload: Partial<Progress> & { progress: number }) {
     eventHandler?.({
       payload: {
         id: "tab-1",
-        generation: BigInt(1),
+        generation: "1",
         finished: false,
         state: "running",
         cleared: false,

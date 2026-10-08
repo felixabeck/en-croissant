@@ -3,12 +3,18 @@ import type {
     DatabaseHandle,
     DatabaseInfo as DatabaseInfoT,
     GameQuery,
+    ProgressEvent as ProgressEventT,
+    ProgressItem as ProgressItemT,
+    ProgressLease as ProgressLeaseT,
     Score as ScoreT,
     ScoreValue as ScoreValueT,
 } from "./generated";
 
 /** Renderer callers may import generated types, never generated command/event values. */
 export type * from "./generated";
+export type ProgressLease = Omit<ProgressLeaseT, "generation"> & { generation: bigint };
+export type ProgressItem = Omit<ProgressItemT, "generation"> & { generation: bigint };
+export type ProgressEvent = Omit<ProgressEventT, "generation"> & { generation: bigint };
 export type ScoreValue = ScoreValueT | { type: "dtz"; value: number };
 export type Score = Omit<ScoreT, "value"> & { value: ScoreValue };
 export type BestMoves = Omit<BestMovesT, "score"> & {
