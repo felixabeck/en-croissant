@@ -13,7 +13,7 @@ import {
 } from "@mantine/core";
 import { IconDatabaseOff } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { PlayerGameInfo } from "@/bindings";
@@ -230,13 +230,8 @@ function Databases() {
 
   const loadError = databasesError ?? error;
   const [progress, setProgress] = useState(0);
-  const subscribeProgress = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.progress>[0]) =>
-      tauriSubscriptions.progress(listener),
-    [],
-  );
   useTauriListener(
-    subscribeProgress,
+    tauriSubscriptions.progress,
     (e) => {
       if (!playerDatabases || !name) {
         return;

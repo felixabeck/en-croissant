@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type ProgressEvent, type ProgressItem } from "@/bindings";
+import { type ProgressItem } from "@/bindings";
 import { notifyListenerError } from "@/components/files/notifyError";
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -56,16 +56,8 @@ export function useProgress(id: string) {
         };
     }, [id, listenerSettled]);
 
-    const subscribeProgress = useCallback(
-        (
-            listener: (event: { payload: ProgressEvent }) => void,
-            onError?: (error: unknown, event: { payload: ProgressEvent }) => void,
-        ) => tauriSubscriptions.progress(listener, onError),
-        [],
-    );
-
     useTauriListener(
-        subscribeProgress,
+        tauriSubscriptions.progress,
         ({ payload }) => {
             if (payload.id === id) {
                 if (payload.cleared) {

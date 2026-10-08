@@ -12,7 +12,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useAtom, useStore } from "jotai";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
@@ -212,13 +212,8 @@ export function AccountCard({
     );
   }
 
-  const subscribeProgress = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.progress>[0]) =>
-      tauriSubscriptions.progress(listener),
-    [],
-  );
   useTauriListener(
-    subscribeProgress,
+    tauriSubscriptions.progress,
     (e) => {
       const ticket = store.get(accountDownloadsInFlightAtom).get(accountKey);
       if (typeof ticket === "string" && e.payload.id === ticket) {

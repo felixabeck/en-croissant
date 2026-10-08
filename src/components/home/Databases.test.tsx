@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   query_players: vi.fn(),
   getPlayersGameInfo: vi.fn(),
   progress: vi.fn(),
+  notifyListenerError: vi.fn(),
   logError: vi.fn(),
   personalCardInfo: vi.fn(),
   personalCardNotice: vi.fn(),
@@ -41,7 +42,9 @@ vi.mock("react-i18next", () => ({
     },
   }),
 }));
-vi.mock("@/components/files/notifyError", () => ({ notifyListenerError: vi.fn() }));
+vi.mock("@/components/files/notifyError", () => ({
+  notifyListenerError: mocks.notifyListenerError,
+}));
 vi.mock("./PersonalCard", () => ({
   default: ({ info, notice }: { info: unknown; notice?: React.ReactNode }) => {
     mocks.personalCardInfo(info);
@@ -167,6 +170,40 @@ test("a ProgressEvent under the id passed to getPlayersGameInfo moves the bar", 
 
   expect(displayedProgress()).toContain("40%");
   expect(container.querySelector("[data-testid='progress']")?.textContent).toBe("40");
+});
+
+test("an adapter decoding error notifies only while mounted and leaves progress unchanged", async () => {
+  let reportError: ((error: unknown, event: { payload: unknown }) => void) | undefined;
+  const unlisten = vi.fn();
+  mocks.progress.mockImplementation(async (listener: typeof progressListener, onError) => {
+    progressListener = listener;
+    reportError = onError;
+    return unlisten;
+  });
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalled());
+  const ownedId = mocks.getPlayersGameInfo.mock.calls[0][0] as string;
+  await act(async () => progressListener(progressEvent(ownedId, 40)));
+  const error = new TypeError("generation must be a canonical unsigned u64 decimal string");
+  const malformed = { payload: { id: ownedId, generation: "01", progress: 99 } };
+
+  // The adapter drops the frame and reports its decoding error through the supplied callback.
+  await act(async () => reportError?.(error, malformed));
+  expect(mocks.notifyListenerError).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ message: error.message }),
+    malformed,
+  );
+  expect(container.querySelector("[data-testid='progress']")?.textContent).toBe("40");
+  expect(displayedProgress()).not.toContain("99%");
+
+  await act(async () => root.render(null));
+  expect(unlisten).toHaveBeenCalledOnce();
+  await act(async () => {
+    reportError?.(error, malformed);
+    progressListener(progressEvent(ownedId, 99));
+  });
+  expect(mocks.notifyListenerError).toHaveBeenCalledOnce();
+  expect(container.textContent).toBe("");
 });
 
 test("an owned ProgressEvent moves the bar when another player's database is present", async () => {
