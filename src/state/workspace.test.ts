@@ -209,32 +209,32 @@ test("sweeps valid orphan trees during the first successful legacy migration", (
     expect(sessionStorage.getItem(workspace.tabs[0]!.value)).not.toBeNull();
 });
 
-test.each([false, true])(
-    "an unowned undecodable UUID without intent survives loading with uncertain ownership %s",
-    (uncertain) => {
-        sessionStorage.clear();
-        const retained = { ...legacyTab, value: crypto.randomUUID() };
-        const unownedId = crypto.randomUUID();
-        sessionStorage.setItem(unownedId, "not a tree");
-        sessionStorage.setItem(
-            WORKSPACE_STORAGE_KEY,
-            serializeStorageValue({
-                version: 1,
-                tabs: [retained],
-                activeTab: retained.value,
-                ...(uncertain ? { treeOwnershipUncertain: true } : {}),
-            }),
-        );
+test.each([
+    { scenario: "an authoritative orphan sweep", uncertain: false },
+    { scenario: "an uncertain-ownership snapshot", uncertain: true },
+])("an unowned undecodable UUID without intent survives $scenario", ({ uncertain }) => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const unownedId = crypto.randomUUID();
+    sessionStorage.setItem(unownedId, "not a tree");
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [retained],
+            activeTab: retained.value,
+            ...(uncertain ? { treeOwnershipUncertain: true } : {}),
+        }),
+    );
 
-        const workspace = loadStoredWorkspace();
+    const workspace = loadStoredWorkspace();
 
-        expect(sessionStorage.getItem(unownedId)).toBe("not a tree");
-        expect(workspace).not.toHaveProperty("treeOwnershipPendingRemovalIds");
-        expect(workspace.treeOwnershipUncertain).toBe(uncertain ? true : undefined);
-        expect(workspace.treeOwnershipProtectedIds).toEqual(uncertain ? [] : undefined);
-        expect(readStoredWorkspace()).toEqual(workspace);
-    },
-);
+    expect(sessionStorage.getItem(unownedId)).toBe("not a tree");
+    expect(workspace).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+    expect(workspace.treeOwnershipUncertain).toBe(uncertain ? true : undefined);
+    expect(workspace.treeOwnershipProtectedIds).toEqual(uncertain ? [] : undefined);
+    expect(readStoredWorkspace()).toEqual(workspace);
+});
 
 test("a failed removal of a legacy non-UUID tree does not abort startup and retries", () => {
     sessionStorage.clear();

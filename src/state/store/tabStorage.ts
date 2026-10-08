@@ -693,7 +693,12 @@ export class TabStorageRepository {
         return raw !== null && this.isDecodableTreeValue(raw);
     }
 
-    /** Check whether a recorded removal intent still has an authorized stored value to remove. */
+    /**
+     * A decodable tree is a target under any id. An absent value ends the intent (d-20261008-09).
+     * Present but undecodable bytes are a target only under a UUID id, because only the tree
+     * repository writes under a workspace tab id and the id came from crypto.randomUUID().
+     * A legacy non-UUID id may name another store's session key.
+     */
     hasPendingRemovalTarget(tabId: string): boolean {
         const raw = sessionStorage.getItem(tabId);
         if (raw === null) return false;
