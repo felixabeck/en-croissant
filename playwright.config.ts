@@ -62,6 +62,11 @@ export default defineConfig({
             use: { ...chromium, viewport: { width: 320, height: 720 }, colorScheme: "light" },
         },
         {
+            name: "font-scaled-breakpoints",
+            testMatch: /font-scaled-breakpoints\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1000, height: 720 }, colorScheme: "light" },
+        },
+        {
             name: "async-errors",
             testMatch: /async-errors\.spec\.ts/,
             use: { ...chromium, viewport: { width: 320, height: 720 }, colorScheme: "dark" },

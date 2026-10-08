@@ -102,4 +102,11 @@
     width: 100%;
     min-width: 0;
   }
+
+  .settingControl:has(:global(.mantine-Slider-markLabel)) {
+    /* Slider marks paint below its fixed height. Keep their line and gap in the Card's flow. */
+    padding-bottom: calc(
+      var(--mantine-font-size-sm) * var(--mantine-line-height) + var(--mantine-spacing-xs) / 2
+    );
+  }
 }

@@ -359,6 +359,7 @@ const fontScaleByProject: Record<string, number> = {
     "database-files": 200,
     "accounts-puzzles-engines": 200,
     "settings-responsive": 200,
+    "font-scaled-breakpoints": 200,
     "async-errors": 200,
     "security-consent": 200,
     "file-freshness": 100,
