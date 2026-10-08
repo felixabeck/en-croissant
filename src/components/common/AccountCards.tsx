@@ -10,7 +10,7 @@ import { getChessComAccount, getStats } from "@/utils/chess.com/api";
 import type { ManagedDatabaseInfo } from "@/utils/db";
 import { accountDatabaseFilename } from "../home/accountDatabase";
 import { getLichessAccount } from "@/utils/lichess/api";
-import type { Session } from "@/utils/session";
+import { type Session, sessionPlayerName } from "@/utils/session";
 import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
 import IconAction from "./IconAction";
@@ -32,15 +32,11 @@ function AccountCards({
   onAddAccount: () => void;
 }) {
   const sessions = useAtomValue(sessionsAtom);
-  const playerNames = Array.from(
-    new Set(sessions.map((s) => s.player ?? s.lichess?.username ?? s.chessCom?.username)),
-  );
+  const playerNames = Array.from(new Set(sessions.map(sessionPlayerName)));
 
   const playerSessions = playerNames.map((name) => ({
     name,
-    sessions: sessions.filter(
-      (s) => s.player === name || s.lichess?.username === name || s.chessCom?.username === name,
-    ),
+    sessions: sessions.filter((s) => sessionPlayerName(s) === name),
   }));
 
   if (sessions.length === 0) {
@@ -51,7 +47,7 @@ function AccountCards({
     <ScrollArea offsetScrollbars>
       <Stack>
         {playerSessions.map(({ name, sessions }) => (
-          <PlayerSession key={name} name={name!} sessions={sessions} databases={databases} />
+          <PlayerSession key={name} name={name} sessions={sessions} databases={databases} />
         ))}
       </Stack>
     </ScrollArea>
@@ -142,14 +138,7 @@ function PlayerSession({
             variant="subtle"
             color="red"
             onClick={() =>
-              setSessions((sessions) =>
-                sessions.filter(
-                  (s) =>
-                    s.player !== name &&
-                    s.lichess?.username !== name &&
-                    s.chessCom?.username !== name,
-                ),
-              )
+              setSessions((sessions) => sessions.filter((s) => sessionPlayerName(s) !== name))
             }
           >
             <IconX />

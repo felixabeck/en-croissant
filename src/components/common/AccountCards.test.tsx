@@ -21,10 +21,14 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock("@/utils/chess.com/api", () => ({ getChessComAccount: vi.fn(), getStats: vi.fn() }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: vi.fn() }));
 vi.mock("../home/AccountCard", () => ({
-  AccountCard: (props: { logout: () => Promise<void> }) => {
+  AccountCard: (props: { title: string; logout: () => Promise<void> }) => {
     mocks.accountCard(props);
     return (
-      <button type="button" onClick={() => void props.logout()}>
+      <button
+        type="button"
+        aria-label={`Log out ${props.title}`}
+        onClick={() => void props.logout()}
+      >
         Log out
       </button>
     );
@@ -33,7 +37,11 @@ vi.mock("../home/AccountCard", () => ({
 vi.mock("../home/EmptyAccounts", () => ({ EmptyAccounts: () => <div>Empty</div> }));
 import AccountCards from "./AccountCards";
 
-vi.mock("./IconAction", () => ({ default: () => null }));
+vi.mock("./IconAction", () => ({
+  default: ({ label, onClick }: { label: string; onClick: () => void }) => (
+    <button type="button" aria-label={label} onClick={onClick} />
+  ),
+}));
 vi.mock("@tabler/icons-react", () => ({
   IconCheck: () => null,
   IconEdit: () => null,
@@ -63,6 +71,34 @@ const session = {
   },
 };
 
+const collidingSessions = [
+  {
+    player: "bob",
+    updatedAt: 1,
+    lichess: {
+      username: "carol",
+      account: { id: "carol", username: "carol" },
+    },
+  },
+  {
+    player: "Alice",
+    updatedAt: 1,
+    lichess: {
+      username: "bob",
+      account: { id: "bob", username: "bob" },
+    },
+  },
+];
+
+function playerGroup(name: string) {
+  const heading = Array.from(container.querySelectorAll("span")).find(
+    (element) => element.textContent === name,
+  );
+  const group = heading?.parentElement?.parentElement;
+  if (!group) throw new Error(`Player group ${name} not found`);
+  return group;
+}
+
 async function renderCards(databases: ManagedDatabaseInfo[] = []) {
   await act(async () => {
     root.render(<AccountCards databases={databases} onAddAccount={vi.fn()} />);
@@ -71,7 +107,9 @@ async function renderCards(databases: ManagedDatabaseInfo[] = []) {
 
 async function logout() {
   await act(async () => {
-    container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    container
+      .querySelector('button[aria-label^="Log out "]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await Promise.resolve();
   });
 }
@@ -88,6 +126,41 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+});
+
+describe("Player session grouping", () => {
+  test("groups by player alias when another account has the same username", async () => {
+    getDefaultStore().set(sessionsAtom, collidingSessions);
+    await renderCards();
+
+    expect(
+      Array.from(container.querySelectorAll("span"), (element) => element.textContent),
+    ).toEqual(["bob", "Alice"]);
+    expect(
+      Array.from(playerGroup("bob").querySelectorAll('button[aria-label^="Log out "]'), (button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Log out carol"]);
+    expect(
+      Array.from(
+        playerGroup("Alice").querySelectorAll('button[aria-label^="Log out "]'),
+        (button) => button.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Log out bob"]);
+  });
+
+  test("removing a player group preserves another player's matching username", async () => {
+    getDefaultStore().set(sessionsAtom, collidingSessions);
+    await renderCards();
+
+    await act(async () => {
+      playerGroup("bob")
+        .querySelector('button[aria-label="Accounts.Remove"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([collidingSessions[1]]);
+  });
 });
 
 describe("Lichess account removal", () => {
