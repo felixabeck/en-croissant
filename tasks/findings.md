@@ -11848,6 +11848,9 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
   * Deferred to the inbox: substring owner lookup in `get_players` (db-search) and group removal without credential revocation (oauth-credentials). Rejected: an anonymous "incomplete" marker and failing the whole summary (d-20261008-03).
 <!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"23c6c9b3cac5a53f4f28f5066b33d5102e25c05125db813aed6a72b65ef361c9","header_sha256":"8aa234dd65a70dc0c65786055bb6ca13e8b4702a02f1bea287d8e9cd94b31eed","header_status":"handled","input_sha256":"318e8288f9e49eb4ec786a63f92c4bbaaa131c259896848fe0d2f6067b14e12b","kind":"mutation-receipt","operation":"c86879a719cd749c694185cb337116b76168184192cb76f6cb29524a93156df5","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-02"],"target":"f-20260926-02","v":1} -->
 
+* **Remote CI repair 2026-10-08** (same drain session): Test run 37722100347 on 77f9a865 showed the listing-failure line from 73fe4567 interpolating the raw native diagnostic (`e2e/async-errors.spec.ts:430`). Fixed in e9dad46f (diagnostic-free `Home.Databases.Failed.Title` for both hooks, native log for the listing failure), b84c734d (long-word wrap at 320 px / 200 %) and bfe21b4a (the spec no longer passes vacuously before the delayed failure renders). History: `tasks/handoffs/2026-10-08-f-20260926-02-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0ef2ef0739948739d954c510058c1312a628ae545b6a8301a55fc169677ff400","input_sha256":"d818f098425e66a124e8eb582ee8651fdd94ab68b65efd829f10a4b4433228a2","kind":"mutation-receipt","operation":"bef6e230066afa07e1e66af9e8d2b8b7d9db897643bae2a5b9399ff41b7cd542","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-02"],"target":"f-20260926-02","v":1} -->
+
 ---
 
 ## 2026-09-26 — filed through the inbox spool
