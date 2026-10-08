@@ -13843,3 +13843,29 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Fix:** trace whether the 1 s wait is the only cause (coverage-instrumented spawn on a loaded runner) or whether the observer can miss the child on this path (e.g. a spawn failure path that returns before the observer fires); then bind the wait to the spawn's own completion instead of a wall-clock budget, or derive it from `EngineDeadlines`, so the assertion fails only when the observer genuinely never fires. Lens: `review-engine-protocol` (test reliability of process lifecycle) or `review-tests`.
 * **Proof:** the test passes repeatedly under `pnpm gate:ensure backend-coverage` with a CPU-stress background load, and a deliberately removed observer call still fails it.
 * **Related:** f-20260917-09 and the macOS intermittent-assertion finding at "`production_game_engine_directory_replacement_is_refused_before_any_option` fails intermittently on the macOS runner" (same class of timing-blind test assertion, different test).
+
+---
+
+## 2026-10-08 — filed through the inbox spool
+
+### The persisted app font scale is accepted at any finite value, so a corrupt `font-size` makes the app unusable
+
+* **ID:** f-20261008-10 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 8bbaeb31-3e89-42fc-b718-16465f54845c
+* **Where:** `src/state/atoms.ts:271-275` (`fontSizeAtom` = `atomWithStorage("font-size", …, createPreferenceStorage(…))`), `src/state/utils.ts:88` (`schemaForDefault` → `z.number().finite()`), applied unclamped at `src/App.tsx:210`.
+* **Defect:** the only UI that writes the value, `src/components/settings/FontSizeSlider.tsx`, offers 50–200 % in steps of 10, but hydration validates only "finite number". A corrupt or hand-edited `localStorage["font-size"]` such as `5000`, `1` or `-20` hydrates as valid, is never repaired, and is written straight into `document.documentElement.style.fontSize`: at 5000 % every rem-sized control is fifty times its size and the Settings page that could reset it is unreachable, so the only recovery is clearing web storage by hand. `createPreferenceStorage` exists precisely to repair corrupt preferences (`getItem` writes the initial value back on a schema failure), so the range is the missing half of that contract.
+* **Evidence:** read during the f-20260927-08 plan (2026-10-08): `schemaForDefault` maps a numeric default to `z.number().finite()` with no bound, and `fontSizeAtom` uses no dedicated schema although `createZodStorage` is available for domain-shaped values.
+* **Fix:** give `fontSizeAtom` a dedicated schema for the slider's domain (integer 50–200, step 10, or clamp) through `createZodStorage`, so an out-of-range value is repaired to the default on hydration; keep the slider bounds and the schema in one shared constant.
+* **Proof:** a unit test seeding `font-size` with `5000`, `0` and `-20` hydrates the default 100 and rewrites storage; a valid `150` survives unchanged.
+* **Related:** f-20260927-08 (scales the layout breakpoints by the same value; not dependent on this fix).
+
+### The app-driver header and CLAUDE.md still say no engine can be registered without the native picker
+
+* **ID:** f-20261008-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 316cfcb2-f270-4c92-b083-cfe5aa290e0f
+* **Where:** `scripts/app-driver.mjs:12-15` ("`issue_engine_binary` in particular always opens a native picker, so no engine can be registered from here — a check that needs a live engine child is still Felix's"); repo-root `CLAUDE.md`, section "Verifying UI changes", last paragraph ("`issue_engine_binary` always opens a native picker, so registering an engine (and therefore any check needing a live engine child) cannot be automated this way").
+* **Defect:** both texts state that the real-window driver cannot register an engine. Catalog engines register without any picker (`installCatalogEngine`, `src/utils/engines.ts:355-374`), and a scratch script on `scripts/app-driver.mjs` has driven catalog install in a throwaway HOME (the `f-20261002-05` investigation, which also found the first-run-profile workspace failure). An agent reading either text concludes a live-engine product check is impossible and hands it to Felix or skips it — this push's own closing note repeated the claim and needed a correction annotation.
+* **Change:** restate both passages: local-file registration goes through the native picker and is not automatable; catalog registration is reachable from the page (currently blocked on a first-run profile by `f-20261002-05`); a repeatable real-catalog check is `f-20261002-08`.
+* **Proof required:** `git grep -n "no engine can be registered\|cannot be automated this way"` returns nothing stale; `pnpm gates:contract:check` green.
+* **Related:** `f-20261002-05` (open; first-run workspace failure), `f-20261002-08` (open; no repeatable real-catalog check), `f-20260927-06` (handled; the closing-note correction that surfaced it).
+* **Found by:** records lens r4 on the `f-20260927-06` push range, drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f, 2026-10-08; verified by reading `src/utils/engines.ts:355-374`.
