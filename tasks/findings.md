@@ -13970,13 +13970,18 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### Upstream macOS ARM platform CI job was cancelled
 
-* **ID:** f-20261008-14 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261008-14 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 765c4c8c-60f4-49b7-80b5-a4a1b939f9fe · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-765c4c8c-60f4-49b7-80b5-a4a1b939f9fe-1.jsonl
 * **Where:** GitHub Test run 37798936026 on eb0b812d19395f7d79b278b28b25aea1e51d5d09, job 113385662769, rust-platform (macos-latest, aarch64-apple-darwin).
 * **Defect:** The newest completed macOS ARM platform job is cancelled. The required pnpm ci:remote:check exited 1 during f-20260925-02 preflight, so the upstream has no passing current result for this lane and push policy refuses release.
 * **Proof:** Rerun the cancelled job, inspect its completed conclusion and run pnpm ci:remote:check. It must return 0 before release. The other platform jobs in this run were successful when inspected.
 * **Found by:** Codex orchestrator, pinned progress-generation drain preflight, 2026-10-08.
 * **Related:** No related entry names this cancelled job. Existing Windows and macOS test failures have different mechanisms.
+
+Recovered before this inbox entry was merged. GitHub Test run 37798936026 on `eb0b812d19395f7d79b278b28b25aea1e51d5d09` replaced cancelled job 113385662769 with job 113401978712. The replacement `rust-platform (macos-latest, aarch64-apple-darwin)` completed successfully at 2026-10-08T15:49:08Z, and the run completed successfully. The root independently confirmed both results through `gh api` on 2026-10-08. `pnpm ci:remote:check` returned 0 at this drain's preflight.
+
+The earlier cancellation remains historical evidence, superseded by the successful replacement. Committed cancellation and recovery snapshots are in `tasks/handoffs/2026-10-08-f-20260925-02-review.md`, under Local remote-CI result artifacts. No workflow source change was required.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"19d250523ad9157bc7fcf293fd52c6fd6d080ea785d8420dc47091aa36f70404","header_sha256":"458e0b6ae5237251185d85ad466857dba52bca3f8b392846fec36c7af8997b8f","header_status":"handled","input_sha256":"4a73c674af268396d336d56ded5c7e7629df5cc694f7acf798fc92bb6bb0f823","kind":"mutation-receipt","operation":"3389943677bff0dd9ab118b3183ddbc4fed2b1b00096326dc7cd84cb7e2ed7ca","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-14"],"target":"f-20261008-14","v":1} -->
 
 ### Reclosing a reopened finding fails against its earlier close receipt
 
