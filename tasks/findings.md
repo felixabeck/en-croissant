@@ -13671,3 +13671,40 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Found by:** locate probe of the `f-20260924-01` plan-only run, drain session 2a22787f-5af5-4f83-a7b0-3e9cbecbc726, 2026-10-07.
 * **Correction (2026-10-08, records lens of the f-20260922-07 cumulative review, drain session fa6786ed-3e23-4701-b1a3-05a243d9a80b):** two consequences in **Defect** are overstated. (1) A stale id does not refuse *every* engine edit: `enqueueEngineOwnerSave` (`src/state/engineOwnerStorage.ts:180-187`) builds the `prepare` set from the changed key's *proposed* ids plus the other keys' persisted ids, so a save that replaces or removes the sole stale id held by that key succeeds; the refusal hits every save whose resulting union still contains the stale id. (2) Managed-image cleanup is not lost entirely: a failed startup reconcile skips its own cleanup call, but `shutdown_engine_attachments` (`src-tauri/src/main.rs`) runs `cleanup_engine_images` independently at exit, so already recorded cleanup intents are still processed. The open question is unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9918efb8a7cb34fb20a7fd6bb9eb7e60fd76301f92db5697a41ee034b87b1b3b","input_sha256":"eda6991716855dd7942de906a5ea42a75d865e431bcc32f7d90307ead5bd638e","kind":"mutation-receipt","operation":"f13230fb79424d21de6e6c24e4bbea955b63b34d84e60deb1f2575a4ce12388e","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-09"],"target":"f-20261007-09","v":1} -->
+
+---
+
+## 2026-10-08 — filed through the inbox spool
+
+### Lichess explorer game list silently drops games whose fetch or parse failed
+
+* **ID:** f-20261007-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 91715a90-5bd9-4b06-8b71-e1e551fbf59f
+* **Where:** `src/utils/lichess/api.tsx:196-222` (`convertToNormalized` maps every explorer game through `collectSequential`), `src/components/panels/database/DatabasePanel.tsx:108` (the Lichess explorer fetcher publishes the retained games), `src/components/panels/database/DatabasePanel.tsx:239` (the Matches header), `GamesTable.tsx:89` ("No games found" when every game failed).
+* **Defect:** `collectSequential` keeps successful siblings and only logs a failed item by index, so a game whose `getLichessGame` fetch or PGN parse fails disappears from the explorer's Games list without any indication. The opening statistics stay unchanged, the list shows fewer rows than the explorer returned, and when every game fails the panel says "No games found" although Lichess returned games. Pinned only at the helper level (`src/utils/lichess/api.test.ts:96`); `DatabasePanel.test.tsx:207` asserts a surviving game but no partial-failure presentation.
+* **Open question:** how should the explorer panel mark a partial game list — a notice with the failed count above the Games table, or a distinct "could not load games" state when every game failed — and should the Matches header keep counting games that could not be loaded?
+* **Relation:** same defect class as `f-20260926-02` (home personal summary hides per-database statistics failures), whose plan changes `collectSequential` to return its failures alongside the retained values and surfaces them only on the home summary; this entry is the explorer-panel presentation, a separate surface and design question. No shared `Root` is asserted: the two surfaces are fixed independently once the primitive returns failures.
+* **Proof sought:** a mounted `DatabasePanel` test with two explorer games, one whose fetch rejects, asserting the visible partial-list indication; and one where every game fails, asserting the panel does not claim "No games found".
+* **Found by:** Codex locate probe (`probe-2-r1`) during the PLAN-ONLY run for `f-20260926-02`, drain session 91715a90-5bd9-4b06-8b71-e1e551fbf59f, 2026-10-07; outside that run's surface (the plan touches `api.tsx` only to adapt to the new return shape), so filed rather than fixed.
+
+### `verify:app` Files-metadata Repertoire checks failed once in an otherwise unrelated run
+
+* **ID:** f-20261008-01 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** fa6786ed-3e23-4701-b1a3-05a243d9a80b
+* **Where:** `scripts/verify-app.mjs`, the Files metadata-edit block — checks "the Repertoire filter lists the metadata-edited workspace file" and "the metadata-edited workspace sidecar records repertoire on disk".
+* **Defect:** during the `f-20260922-07` staged-failure run B1 (2026-10-07/08, release binary with the instance lock bypassed — a change that cannot reach these checks, which run in the single primary session before any second process is launched), both checks printed FAIL; the original Phase 2 run, B2, B3 and the final run on `cd058c1a` passed them. One observation, so either a timing-dependent verifier wait (a flake that makes `verify:app` green non-reproducible) or a real intermittent defect in the metadata edit → sidecar write → Repertoire filter path.
+* **Why it matters:** `verify:app` is the only check that drives the real window; an intermittent red on a check the change cannot affect costs every later run a re-investigation, and an intermittent real defect would lose a user's repertoire classification.
+* **Open question:** is the failure a verifier wait that races the sidecar write / filter refresh (repair the wait), or does the metadata edit intermittently not persist `repertoire` (repair the product)? Reproduce by looping the block before choosing.
+* **Evidence:** the B1 transcript is in the Codex leaf thread `01a11844-671e-70d0-8bb2-cc54a66030ee` (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a, `/tmp/build-fa6786ed/phase-2.jsonl`); the staged-failure record in the `verify-app.mjs` header (single-instance block) notes the two extra FAIL lines.
+* **Related:** f-20261005-07 (the three `$8` board-hint checks, red on every run — a different, deterministic failure).
+* **Found by:** Codex write leaf during `f-20260922-07` Phase 2 staging, reported to the Claude Code orchestrator, drain session fa6786ed-3e23-4701-b1a3-05a243d9a80b.
+
+### The Overview month chart drops or mislabels months for users west of UTC
+
+* **ID:** f-20261008-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** fa6786ed-3e23-4701-b1a3-05a243d9a80b
+* **Where:** `src/components/home/PersonalCardPanels/OverviewPanel.tsx`, `fillMissingMonths` (parses `${name}-01` with `new Date(...)`, which is UTC midnight; subtracts `getTimezoneOffset()`; advances with local `setMonth`).
+* **Defect:** under a negative UTC offset the first month's UTC midnight minus the offset lands on the previous month's last day, and local `setMonth(+1)` from there skips forward, so the month list is wrong. Probe (2026-10-08, `TZ=America/New_York node`, the same loop over `2026-09` … `2026-10`): it yields `['2026-08']` instead of `['2026-09', '2026-10']`, so the chart shows a month with no games and loses every real month's count. Positive offsets (Europe, where the tests and CI run) are unaffected, which is why `statisticsPanels.test.tsx` stays green.
+* **Why it matters:** every user in the Americas sees a wrong games-per-month chart on the home Overview panel.
+* **Fix direction:** generate the month sequence from integer year/month arithmetic on the `YYYY-MM` strings (no `Date`, no timezone), and run the Overview test under at least one negative-offset timezone (e.g. a `TZ`-pinned vitest case or a pure-function test of `fillMissingMonths` exported for test).
+* **Found by:** `review-correctness` closure lens on the `f-20260922-07` gate repair `29584ac0` (which pinned the clock in `statisticsPanels.test.tsx`), drain session fa6786ed-3e23-4701-b1a3-05a243d9a80b; claim verified by the probe above.
