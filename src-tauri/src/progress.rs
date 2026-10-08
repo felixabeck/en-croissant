@@ -14,6 +14,7 @@ use crate::{error::Error, infra::operations::OperationRegistry, AppState};
 const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
 const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
+const U64_MAX_DECIMAL_DIGITS: usize = 20;
 
 /// Progress identities retain the full u64 range across JSON without rounding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -22,7 +23,7 @@ pub struct ProgressGeneration(u64);
 impl ProgressGeneration {
     fn parse_canonical(value: &str) -> Result<Self, String> {
         if value.is_empty()
-            || value.len() > 20
+            || value.len() > U64_MAX_DECIMAL_DIGITS
             || (value.len() > 1 && value.starts_with('0'))
             || !value.bytes().all(|byte| byte.is_ascii_digit())
         {
