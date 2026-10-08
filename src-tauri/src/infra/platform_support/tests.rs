@@ -3488,9 +3488,9 @@ fn search_index_generation_mutates_once_between_invalidations() {
     assert_in_order(
         &body,
         &[
-            "search_cache.invalidate_database(target.path());",
+            "search_cache.invalidate_database(target);",
             "search_index::write_entries_to_at(",
-            "search_cache.invalidate_database(target.path());",
+            "search_cache.invalidate_database(target);",
         ],
     );
     assert_eq!(body.matches("write_entries_to_at(").count(), 1, "{body}");
@@ -3518,9 +3518,9 @@ fn search_index_deletion_unlinks_once_between_invalidations() {
     assert_in_order(
         closure,
         &[
-            "search_cache.invalidate_database(target.path());",
+            "search_cache.invalidate_database(&target);",
             "unlink_database_files(&target,&expected_source);",
-            "search_cache.invalidate_database(target.path());",
+            "search_cache.invalidate_database(&target);",
             "letresult=result?;",
         ],
     );
@@ -3567,6 +3567,7 @@ fn search_index_reader_opens_preferred_leaf_before_cancellable_mapping() {
         &open,
         &[
             "open_regular_at(",
+            "SearchIndexIdentity::from_opened_sidecar(target,expected_source.clone(),&file)?",
             "MmapSearchIndex::open_file_cancellable(file,cancellation)",
         ],
     );
@@ -3577,6 +3578,7 @@ fn search_index_reader_opens_preferred_leaf_before_cancellable_mapping() {
         "{cache}"
     );
     assert!(!cache.contains("indexes.lock()"), "{cache}");
+    assert!(!cache.contains("from_opened_sidecar("), "{cache}");
     assert_no_mapping_gate_symbols();
 }
 

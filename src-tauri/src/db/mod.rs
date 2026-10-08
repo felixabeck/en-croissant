@@ -88,10 +88,8 @@ use self::encoding::{
 };
 pub use self::repository::{DatabaseIdentity, DatabaseRepository};
 #[cfg(test)]
-pub use self::search_index::SearchIndexChunk;
-pub use self::search_index::{
-    get_index_path, legacy_index_path, IndexSource, MmapSearchIndex, SearchGameEntry,
-};
+pub use self::search_index::{get_index_path, legacy_index_path, SearchIndexChunk};
+pub use self::search_index::{IndexSource, MmapSearchIndex, SearchGameEntry};
 
 pub use self::models::NormalizedGame;
 pub use self::models::Puzzle;
@@ -275,15 +273,15 @@ fn bump_revision_in_transaction<T>(
 fn finish_search_cache_after_transaction(
     result: Result<(), Error>,
     search_cache: &SearchCache,
-    path: &std::path::Path,
+    target: &DatabaseFileTarget,
 ) -> Result<(), Error> {
     match result {
         Ok(()) => {
-            search_cache.invalidate_database(path);
+            search_cache.invalidate_database(target);
             Ok(())
         }
         Err(error @ Error::Diesel(_)) => {
-            search_cache.invalidate_database(path);
+            search_cache.invalidate_database(target);
             Err(error)
         }
         Err(error) => Err(error),
@@ -313,7 +311,7 @@ fn with_validated_mutation(
         }
         Ok(())
     });
-    finish_search_cache_after_transaction(result, search_cache, target.path())
+    finish_search_cache_after_transaction(result, search_cache, target)
 }
 
 #[derive(Debug)]
@@ -789,7 +787,7 @@ fn seed_search_cache_for_database(
         .write_to_with_source(&index_path, source.clone())
         .unwrap()
         .expect_durable();
-    let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
+    let identity = crate::SearchIndexIdentity::for_test_database(database, source).unwrap();
     let key = crate::SearchResultKey::new(GameQuery::new(), identity);
     app.state::<AppState>()
         .search_cache
@@ -1067,7 +1065,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
         }
         Ok(())
     });
-    finish_search_cache_after_transaction(result, search_cache, target.path())?;
+    finish_search_cache_after_transaction(result, search_cache, &target)?;
 
     let _ = ConvertProgress {
         id: progress_id,
@@ -1179,7 +1177,7 @@ fn generate_search_index_locked(
                     cancellation,
                 )
             });
-        search_cache.invalidate_database(target.path());
+        search_cache.invalidate_database(target);
         search_index::write_entries_to_at(target.parent(), &index_leaf, source, rows, cancellation)
     })?;
     // Publication has committed once `write_entries_to_at` returns. From here on the durability
@@ -1188,7 +1186,7 @@ fn generate_search_index_locked(
         outcome,
         crate::error::DurabilityStage::SearchIndexReplacement,
     );
-    search_cache.invalidate_database(target.path());
+    search_cache.invalidate_database(target);
     durability?;
 
     info!("Search index generated in {:?}", start.elapsed());
@@ -2870,9 +2868,9 @@ fn delete_database_blocking(
     let expected_source = IndexSource::from_database_identity(&identity)?;
     let mut committed_removal: Option<CommittedRemoval> = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
-        search_cache.invalidate_database(target.path());
+        search_cache.invalidate_database(&target);
         let result = unlink_database_files(&target, &expected_source);
-        search_cache.invalidate_database(target.path());
+        search_cache.invalidate_database(&target);
         let result = result?;
         committed_removal = Some(result);
         Ok(())
@@ -4570,7 +4568,7 @@ mod tests {
 
         let source = include_str!("search.rs");
         let production = source
-            .split("#[cfg(all(test, unix))]\nmod tests")
+            .split("#[cfg(test)]\nmod descriptor_identity_tests")
             .next()
             .unwrap();
         assert_eq!(production.matches("resolve_database(").count(), 6);
@@ -6249,7 +6247,7 @@ mod tests {
         let (_dir, app, handle, database) = blocking_database_case();
         let index = get_index_path(&database);
         std::fs::write(&index, b"cache identity").unwrap();
-        let identity = crate::SearchIndexIdentity::for_database(
+        let identity = crate::SearchIndexIdentity::for_test_database(
             &database,
             crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
         )
@@ -6338,7 +6336,7 @@ mod tests {
         let (dir, app, handle, database) = blocking_database_case();
         let index = get_index_path(&database);
         std::fs::write(&index, b"cache identity").unwrap();
-        let identity = crate::SearchIndexIdentity::for_database(
+        let identity = crate::SearchIndexIdentity::for_test_database(
             &database,
             crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
         )
@@ -6609,7 +6607,7 @@ mod tests {
             let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
             let index = get_index_path(&database);
             std::fs::write(&index, b"matrix cache identity").unwrap();
-            let identity = crate::SearchIndexIdentity::for_database(
+            let identity = crate::SearchIndexIdentity::for_test_database(
                 &database,
                 crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
             )
@@ -6774,7 +6772,7 @@ mod tests {
             let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
             let index = get_index_path(&database);
             std::fs::write(&index, b"matrix error cache identity").unwrap();
-            let identity = crate::SearchIndexIdentity::for_database(
+            let identity = crate::SearchIndexIdentity::for_test_database(
                 &database,
                 crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
             )
@@ -8411,7 +8409,7 @@ mod tests {
             .source()
             .clone();
         let index_identity =
-            crate::SearchIndexIdentity::for_database(&database, source_identity).unwrap();
+            crate::SearchIndexIdentity::for_test_database(&database, source_identity).unwrap();
         assert!(state.search_cache.get_index(&index_identity).is_some());
         assert!(state
             .search_cache
@@ -10734,7 +10732,7 @@ mod tests {
             .write_to_with_source(&index_path, source.clone())
             .unwrap()
             .expect_durable();
-        let identity = crate::SearchIndexIdentity::for_database(&database, source).unwrap();
+        let identity = crate::SearchIndexIdentity::for_test_database(&database, source).unwrap();
         let key = crate::SearchResultKey::new(GameQuery::new(), identity);
         let cache = SearchCache::default();
         cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
@@ -10751,7 +10749,7 @@ mod tests {
             .write_to_with_source(&index_path, source.clone())
             .unwrap()
             .expect_durable();
-        let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
+        let identity = crate::SearchIndexIdentity::for_test_database(database, source).unwrap();
         let index = MmapSearchIndex::open(&index_path).unwrap();
         let key = crate::SearchResultKey::new(GameQuery::new(), identity.clone());
         let cache = &app.state::<AppState>().search_cache;
@@ -10763,12 +10761,22 @@ mod tests {
     #[test]
     fn finish_search_cache_after_transaction_classifies_errors() {
         let (_dir, cache, path, key) = cached_result_fixture();
-        assert!(finish_search_cache_after_transaction(Ok(()), &cache, &path).is_ok());
+        assert!(finish_search_cache_after_transaction(
+            Ok(()),
+            &cache,
+            &DatabaseFileTarget::for_test_path(&path).unwrap()
+        )
+        .is_ok());
         assert!(cache.get_result(&key).is_none());
 
         let (_dir, cache, path, key) = cached_result_fixture();
         let diesel_error = Error::Diesel(Box::new(diesel::result::Error::NotFound));
-        assert!(finish_search_cache_after_transaction(Err(diesel_error), &cache, &path).is_err());
+        assert!(finish_search_cache_after_transaction(
+            Err(diesel_error),
+            &cache,
+            &DatabaseFileTarget::for_test_path(&path).unwrap()
+        )
+        .is_err());
         assert!(cache.get_result(&key).is_none());
 
         for error in [
@@ -10777,7 +10785,12 @@ mod tests {
             Error::InvalidInput("DataRevision overflow".into()),
         ] {
             let (_dir, cache, path, key) = cached_result_fixture();
-            assert!(finish_search_cache_after_transaction(Err(error), &cache, &path).is_err());
+            assert!(finish_search_cache_after_transaction(
+                Err(error),
+                &cache,
+                &DatabaseFileTarget::for_test_path(&path).unwrap()
+            )
+            .is_err());
             assert!(cache.get_result(&key).is_some());
         }
 
@@ -10797,7 +10810,12 @@ mod tests {
             Ok(_) => panic!("exhausted pool unexpectedly yielded a connection"),
         };
         let error = Error::R2d2(Box::new(pool_error));
-        assert!(finish_search_cache_after_transaction(Err(error), &cache, &path).is_err());
+        assert!(finish_search_cache_after_transaction(
+            Err(error),
+            &cache,
+            &DatabaseFileTarget::for_test_path(&path).unwrap()
+        )
+        .is_err());
         assert!(cache.get_result(&key).is_some());
     }
 
@@ -11428,7 +11446,8 @@ mod tests {
                 .unwrap()
                 .source()
                 .clone();
-            let identity = crate::SearchIndexIdentity::for_database(&database, source).unwrap();
+            let identity =
+                crate::SearchIndexIdentity::for_test_database(&database, source).unwrap();
             let key = crate::SearchResultKey::new(GameQuery::new(), identity);
             state
                 .search_cache

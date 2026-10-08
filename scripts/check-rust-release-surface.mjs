@@ -55,22 +55,8 @@ const CLIPPY_SUPPRESSING_LINTS = Object.freeze([
   "warnings",
 ]);
 
-const INITIAL_PATH_EXPECT_BASELINE = Object.freeze([
-  Object.freeze({
-    path: "src-tauri/src/main.rs",
-    function: "for_database",
-    sha256: "42ecbf0e672cdd02a81410085b044647eb7122a03ec7f2f4cac66aa0c8deb1a5",
-    methods: Object.freeze({ canonicalize: 2, exists: 2, metadata: 1 }),
-  }),
-  Object.freeze({
-    path: "src-tauri/src/main.rs",
-    function: "invalidate_database",
-    sha256: "7a52b20055efa987d6fd6dcdffbeb9765ba50246385ef0451d279d912b7043fa",
-    methods: Object.freeze({ canonicalize: 1 }),
-  }),
-]);
-
-const PATH_EXPECT_BASELINE = INITIAL_PATH_EXPECT_BASELINE;
+const INITIAL_PATH_EXPECT_BASELINE = Object.freeze([]);
+const PATH_EXPECT_BASELINE = Object.freeze([]);
 const INITIAL_GATE_REGION_BASELINE = Object.freeze([
   Object.freeze({
     path: "src-tauri/src/main.rs",

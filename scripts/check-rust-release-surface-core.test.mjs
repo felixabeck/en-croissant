@@ -747,44 +747,42 @@ describe("R5 suppression containment and counted statements", () => {
     ).toEqual([]);
   });
   test("O3.2 pins each counted function and rejects an expectation outside its function", () => {
-    const relocated = CHECKOUT_MAIN.replace(
-      /        #\[expect\(\s*clippy::disallowed_methods,\s*reason = "[^"]*SearchIndexIdentity::for_database database\.canonicalize"\s*\)\]\n        let database = database\.canonicalize\(\)\?;/,
-      "        let database = database.canonicalize()?;",
-    );
-    const movedSite = `${relocated}\nfn moved_site(path: &Path) {\n    #[expect(clippy::disallowed_methods)]\n    let _ = path.canonicalize();\n}\n`;
-    expectR5Diagnostic(
-      pathMethodViolations(movedSite, "src-tauri/src/main.rs"),
-      "pinned function for_database changed from its recorded text",
-    );
-
-    const elsewhere =
+    const contents =
       "fn for_database(p: &Path) {\n" +
-      "    #[expect(clippy::disallowed_methods)]\n    let _ = p.exists();\n}\n" +
+      "    #[expect(clippy::disallowed_methods)]\n    let _ = p.exists();\n}\n";
+    const entry = customExpectBaseline("src-tauri/src/main.rs", contents, "for_database", {
+      exists: 1,
+    });
+    const elsewhere =
+      contents +
       "fn another(p: &Path) {\n" +
       "    #[expect(clippy::disallowed_methods)]\n    let _ = p.exists();\n}\n";
     expectR5Diagnostic(
-      pathMethodViolations(elsewhere, "src-tauri/src/main.rs"),
+      pathMethodViolations(elsewhere, "src-tauri/src/main.rs", {
+        initialBaseline: [entry],
+        baseline: [entry],
+      }),
       "counted expect in another has no pinned baseline entry",
     );
   });
-  test("O3.2 CLI rejects a one-byte edit to a pinned function", async () => {
-    const edited = CHECKOUT_MAIN.replace(
-      "SearchIndexIdentity::for_database index.metadata",
-      "SearchIndexIdentity::for_database index.metadatA",
-    );
-    expect(edited).not.toBe(CHECKOUT_MAIN);
-    const result = await runCheckerOver([{ path: "src-tauri/src/main.rs", contents: edited }]);
-    expectCliStatus(result, 1);
-    expect(result.output).toContain(
-      "R5: pinned function for_database changed from its recorded text",
+  test("O3.2 rejects a one-byte edit to a synthetic pinned function", () => {
+    const contents =
+      'fn for_database(p: &Path) {\n    #[expect(clippy::disallowed_methods, reason = "stamp")]\n    let _ = p.exists();\n}\n';
+    const entry = customExpectBaseline("src-tauri/src/main.rs", contents, "for_database", {
+      exists: 1,
+    });
+    const edited = contents.replace("stamp", "stamP");
+    expect(edited).not.toBe(contents);
+    expectR5Diagnostic(
+      pathMethodViolations(edited, "src-tauri/src/main.rs", {
+        initialBaseline: [entry],
+        baseline: [entry],
+      }),
+      "pinned function for_database changed from its recorded text",
     );
   });
-  test("O3.2 CLI rejects relocating a counted expectation into another function", async () => {
-    const withoutOriginal = CHECKOUT_MAIN.replace(
-      '        #[expect(\n            clippy::disallowed_methods,\n            reason = "f-20260927-07: SearchIndexIdentity::for_database database.canonicalize"\n        )]\n        let database = database.canonicalize()?;',
-      "        let database = database.canonicalize()?;",
-    );
-    const moved = `${withoutOriginal}\nfn moved_site(path: &Path) {\n    #[expect(clippy::disallowed_methods)]\n    let _ = path.canonicalize();\n}\n`;
+  test("O3.2 CLI rejects a counted expectation added to the checkout with an empty baseline", async () => {
+    const moved = `${CHECKOUT_MAIN}\nfn moved_site(path: &Path) {\n    #[expect(clippy::disallowed_methods)]\n    let _ = path.canonicalize();\n}\n`;
     const result = await runCheckerOver([{ path: "src-tauri/src/main.rs", contents: moved }]);
     expectCliStatus(result, 1);
     expect(result.output).toContain(

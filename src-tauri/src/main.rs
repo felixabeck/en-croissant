@@ -178,59 +178,31 @@ fn estimated_search_result_bytes(value: &SearchResult) -> usize {
     position_bytes.saturating_add(game_bytes)
 }
 
-/// A stable cache identity for a generated index. Canonical paths prevent
-/// aliases from crossing database boundaries; the index revision prevents a
-/// replacement from serving results computed from an older archive.
+/// A cache identity bound to the authorized database and mapped sidecar descriptor.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SearchIndexIdentity {
     pub database: PathBuf,
-    pub index: PathBuf,
+    object: (u64, u64),
     source: IndexSource,
     length: u64,
     modified: Duration,
 }
 
 impl SearchIndexIdentity {
-    pub(crate) fn for_database(database: &Path, source: IndexSource) -> io::Result<Self> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database database.canonicalize"
-        )]
-        let database = database.canonicalize()?;
-        let preferred_index = db::get_index_path(&database);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database preferred_index.exists"
-        )]
-        let preferred_exists = preferred_index.exists();
-        let index = if preferred_exists {
-            preferred_index
-        } else {
-            let legacy = db::legacy_index_path(&database);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database legacy.exists"
-            )]
-            let legacy_exists = legacy.exists();
-            if legacy_exists {
-                legacy
-            } else {
-                preferred_index
-            }
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database index.canonicalize"
-        )]
-        let index = index.canonicalize()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database index.metadata"
-        )]
-        let metadata = index.metadata()?;
+    pub(crate) fn from_opened_sidecar(
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        source: IndexSource,
+        file: &std::fs::File,
+    ) -> Result<Self, Error> {
+        #[cfg(test)]
+        if FAIL_NEXT_SIDECAR_STAMP.with(|fail| fail.replace(false)) {
+            return Err(io::Error::other("injected sidecar descriptor stamp failure").into());
+        }
+        let object = crate::infra::path_authority::opened_file_identity(file)?;
+        let metadata = file.metadata()?;
         Ok(Self {
-            database,
-            index,
+            database: target.path().to_path_buf(),
+            object,
             source,
             length: metadata.len(),
             modified: metadata
@@ -239,6 +211,28 @@ impl SearchIndexIdentity {
                 .map_err(io::Error::other)?,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_database(database: &Path, source: IndexSource) -> Result<Self, Error> {
+        let target = crate::infra::path_authority::DatabaseFileTarget::for_test_path(database)?;
+        let file = crate::infra::fs::open_regular_at(
+            target.parent(),
+            db::get_index_path(target.path())
+                .file_name()
+                .ok_or_else(|| Error::InvalidInput("sidecar path needs a leaf name".into()))?,
+            crate::infra::fs::RegularFileAccess::ReadOnly,
+        )?;
+        Self::from_opened_sidecar(&target, source, &file)
+    }
+
+    fn matches_database(&self, target: &crate::infra::path_authority::DatabaseFileTarget) -> bool {
+        self.database == target.path() || self.source.object == target.identity()
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_NEXT_SIDECAR_STAMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -346,7 +340,7 @@ impl SearchCache {
         self.invalidation_counter.load(Ordering::SeqCst)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn cached_index_count(&self) -> usize {
         self.indexes
             .lock()
@@ -387,9 +381,7 @@ impl SearchCache {
         }
     }
 
-    // Callers live in `#[cfg(all(test, unix))]` modules. A Windows test
-    // build otherwise trips `dead_code` under rust-platform clippy.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn get_index(&self, identity: &SearchIndexIdentity) -> Option<MmapSearchIndex> {
         self.indexes
             .lock()
@@ -439,24 +431,20 @@ impl SearchCache {
     /// Invalidates before eviction so publication under the indexes mutex either
     /// precedes the eviction or sees the changed counter and stays uncached.
     /// Readers retain their own mapped generation without waiting (d-20261005-06).
-    pub(crate) fn invalidate_database(&self, database: &Path) {
+    pub(crate) fn invalidate_database(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) {
         self.invalidation_counter.fetch_add(1, Ordering::SeqCst);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-cache invalidation by canonical path); counted by R5 until f-20260927-07 migrates it: SearchCache::invalidate_database database.canonicalize"
-        )]
-        let database = database
-            .canonicalize()
-            .unwrap_or_else(|_| database.to_path_buf());
         self.results
             .lock()
             .expect("search result cache poisoned")
-            .retain(|key, _| key.identity.database != database);
+            .retain(|key, _| !key.identity.matches_database(target));
         let evicted = self
             .indexes
             .lock()
             .expect("search index cache poisoned")
-            .retain(|identity, _| identity.database != database);
+            .retain(|identity, _| !identity.matches_database(target));
         drop(evicted);
     }
 }
@@ -2535,12 +2523,12 @@ mod search_cache_tests {
             .write_to(db::get_index_path(&second_database))
             .unwrap();
 
-        let first = SearchIndexIdentity::for_database(
+        let first = SearchIndexIdentity::for_test_database(
             &first_database,
             IndexSource::from_database(&first_database, 0).unwrap(),
         )
         .unwrap();
-        let second = SearchIndexIdentity::for_database(
+        let second = SearchIndexIdentity::for_test_database(
             &second_database,
             IndexSource::from_database(&second_database, 0).unwrap(),
         )
@@ -2550,29 +2538,121 @@ mod search_cache_tests {
     }
 
     #[test]
-    fn identity_falls_back_to_the_legacy_index_only_without_a_preferred_one() {
+    fn identity_uses_only_the_preferred_sidecar_descriptor() {
         let directory = tempdir().unwrap();
         let database = directory.path().join("legacy.db");
         std::fs::write(&database, []).unwrap();
         let legacy = db::legacy_index_path(&database);
         std::fs::write(&legacy, [0_u8; 3]).unwrap();
 
-        let identity = SearchIndexIdentity::for_database(
+        let absent = SearchIndexIdentity::for_test_database(
             &database,
             IndexSource::from_database(&database, 0).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(identity.index, legacy.canonicalize().unwrap());
-        assert_eq!(identity.length, 3);
+        );
+        assert!(absent.is_err());
 
         let preferred = db::get_index_path(&database);
         SearchIndexChunk::default().write_to(&preferred).unwrap();
-        let identity = SearchIndexIdentity::for_database(
+        let identity = SearchIndexIdentity::for_test_database(
             &database,
             IndexSource::from_database(&database, 0).unwrap(),
         )
         .unwrap();
-        assert_eq!(identity.index, preferred.canonicalize().unwrap());
+        let preferred_file = std::fs::File::open(&preferred).unwrap();
+        assert_eq!(
+            identity.object,
+            crate::infra::path_authority::opened_file_identity(&preferred_file).unwrap()
+        );
+        assert_eq!(identity.length, preferred_file.metadata().unwrap().len());
+        assert_ne!(
+            identity.object,
+            crate::infra::path_authority::opened_file_identity(
+                &std::fs::File::open(&legacy).unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn invalidation_matches_replaced_database_at_the_same_path() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        std::fs::rename(&database, directory.path().join("old.db")).unwrap();
+        std::fs::write(&database, b"replacement").unwrap();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&database).unwrap();
+        assert_ne!(identity.source.object, target.identity());
+        assert_eq!(identity.database, target.path());
+        cache.invalidate_database(&target);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "same-path replacement must evict the index"
+        );
+        assert!(
+            cache.get_result(&key).is_none(),
+            "same-path replacement must evict results"
+        );
+    }
+
+    #[test]
+    fn invalidation_matches_the_database_object_through_a_hard_link() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        let alias = directory.path().join("alias.db");
+        std::fs::hard_link(&database, &alias).unwrap();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&alias).unwrap();
+        assert_eq!(identity.source.object, target.identity());
+        assert_ne!(identity.database, target.path());
+        cache.invalidate_database(&target);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "hard-link alias must evict the index"
+        );
+        assert!(
+            cache.get_result(&key).is_none(),
+            "hard-link alias must evict results"
+        );
+    }
+
+    #[test]
+    fn invalidation_keeps_another_database_object_at_another_path() {
+        let (directory, cache, _database, identity, key) = invalidation_fixture();
+        let other = directory.path().join("other.db");
+        std::fs::write(&other, b"other").unwrap();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&other).unwrap();
+        assert_ne!(identity.source.object, target.identity());
+        assert_ne!(identity.database, target.path());
+        cache.invalidate_database(&target);
+        assert!(
+            cache.get_index(&identity).is_some(),
+            "unrelated database must keep the index"
+        );
+        assert!(
+            cache.get_result(&key).is_some(),
+            "unrelated database must keep results"
+        );
+    }
+
+    fn invalidation_fixture() -> (
+        tempfile::TempDir,
+        SearchCache,
+        PathBuf,
+        SearchIndexIdentity,
+        SearchResultKey,
+    ) {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("cached.db");
+        std::fs::write(&database, b"database").unwrap();
+        let preferred = db::get_index_path(&database);
+        SearchIndexChunk::default().write_to(&preferred).unwrap();
+        let source = IndexSource::from_database(&database, 0).unwrap();
+        let identity = SearchIndexIdentity::for_test_database(&database, source).unwrap();
+        let index = MmapSearchIndex::open(&preferred).unwrap();
+        let key = SearchResultKey::new(GameQuery::new(), identity.clone());
+        let cache = SearchCache::default();
+        cache.insert_index(identity.clone(), index, cache.invalidation_snapshot());
+        cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
+        (directory, cache, database, identity, key)
     }
 
     #[test]

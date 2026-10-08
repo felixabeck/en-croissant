@@ -884,6 +884,7 @@ pub(crate) fn integrity_stamp_leaf(database_leaf: &OsStr) -> OsString {
 /// Keep discovery separate from new writes, which always use `foo.db3.ecsi`
 /// and therefore cannot collide with a database whose base name differs only
 /// by extension.
+#[cfg(test)]
 pub fn legacy_index_path(db_path: &Path) -> PathBuf {
     let filename = db_path
         .file_name()
