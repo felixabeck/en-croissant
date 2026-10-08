@@ -26,6 +26,8 @@ mod progress;
 mod puzzle;
 mod sound;
 
+#[cfg(any(test, debug_assertions))]
+use std::path::Path;
 #[cfg(test)]
 use std::sync::{Barrier, OnceLock};
 use std::{
@@ -33,7 +35,7 @@ use std::{
     ffi::OsStr,
     io,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
