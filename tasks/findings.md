@@ -11840,7 +11840,7 @@ The fresh full verifier passed 83 checks and failed the three existing $8 hint s
 
 ### Local-only push gates are not pinned to the §2 subsection whose paths trigger them
 
-* **ID:** f-20260926-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260926-01 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Found by:** plan review of f-20260924-07 (build run 2026-09-26, `review-plan` r2 confidence 97, `review-tests` r3 confidence 95).
 * **Files:** `scripts/check-gate-routing.mjs:22-32, 553-586`, `scripts/check-gate-routing-tests.mjs`, `.claude/skills/push/SKILL.md` §2.
 
@@ -11853,6 +11853,11 @@ The fresh full verifier passed 83 checks and failed the three existing $8 hint s
 
 **Inherited review history.** This finding is issue **I10** of the f-20260924-07 plan review. Load `tasks/handoffs/2026-09-26-f-20260924-07-review.md` before planning or review. It holds the raw `review-plan` (r2) and `review-tests` (r3) witnesses, the traced checker lines, the Skip → Defer disposition under push-review-policy §4, and the reason the gate change itself did not need this pinning.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fba50cc4932bc00c6628b1a17bb2252d15ceb8dffe20c7315fe97d85186470f2","input_sha256":"fad0efbe413a24a726f837ba3a6ebedab6377cc12e130b9bfcdd03ee55a68eab","kind":"mutation-receipt","operation":"df6237f7014f6772b4ddbabb4094f8f96a063712908f39d9707180dc8bf6ca8d","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-01"],"target":"f-20260926-01","v":1} -->
+
+Implemented one placement registry with separate CI membership and genuine, unambiguous §2 subsection homes. Independent tests reject every added local command moved between selected homes without changing the fence union. The unchanged production CLI produced 135 expected failure diagnostics with exit 1, followed by 135 restored controls with exit 0. The Git-derived BASE checker failed all six moved-command assertions with the new tests retained, and the fixed checker passed. The orchestrator reran `pnpm gates:contract:check && pnpm checks:pre-review`, exit 0.
+
+The complete inherited I10 and adopted plan-review history, implementation evidence and cumulative review record are preserved in `tasks/handoffs/2026-10-08-f-20260926-01-review.md`. This closes the source-policy placement obligation. Scheduler runtime execution is outside this finding.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"56a0694ec63c26a6ae9cac840134d3372914cc4bf457d467f0cad5d64bacdbe4","header_sha256":"66d5161558a57b7e237a5cbb9e0c8dda0ecb746346fe6ae247c0cc5c9a2bb237","header_status":"handled","input_sha256":"a33710d7fc49c157a720c66863c76c29dc2bd9c32a0b1c0d01de106128239c38","kind":"mutation-receipt","operation":"e5c7840bafa3895da935413ac3ac8691eed56e6aaca6612d573cdc16a78d28d7","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-01"],"target":"f-20260926-01","v":1} -->
 
 ---
 
