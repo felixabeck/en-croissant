@@ -6429,3 +6429,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `Ok` from a terminator must mean the reap that ended the actor succeeded. Reversal path: restore the `EngineDisconnected → Ok` mapping in `EngineActor::terminate` and the `Ok(())` "not observed" return in `terminate_exact` (`src-tauri/src/engine/process.rs`).
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"af42e8087e75407853aaaa69357fac1dddf728d9c9b4309532da911a5ba82354","input_sha256":"d61f6e2f40adcda19a91651a40d3c711a7613a571fe93fc7100ab7b612fcab7e","kind":"mutation-receipt","operation":"a00ec821debdc18eadd388b11b987126584d51d62073fbaafa99ae2bcc56d8c0","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-13 — Do engine release and stop paths preempt the in-flight exchange too?
+
+* **Question:** With termination preempting exchanges (f-20260927-06), should `release_generation` / `stop_search` also cancel the actor's `interrupt`?
+* **Governs:** f-20260927-06
+* **Chosen:** No. Release and stop keep their graceful `stop` before the reap; only exact, all, tab, retirement and Kill terminations preempt.
+* **Rejected:** cancelling `interrupt` inside `SupervisedEngine::mark_cancelled` — every release would abort its own `stop`, turning a clean release into an `EngineDisconnected` failure.
+* **Reason:** Release and stop are not on the shutdown path. Known limit: a release racing a Kill or shutdown on the same actor now sees its `stop` fail with `EngineDisconnected` promptly instead of after the exchange — the same outcome the race already had once `Terminate` closed the channel. Reversal path: cancel `interrupt` in the release path in `src-tauri/src/engine/process.rs`.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1954abf80a2a67aa82fabe376ca631793707912d203ca20ef1721a5df8f7edf6","input_sha256":"87b234a9f2c5c24816d581409dca38c3527cbe06dbe415de6b3f4822f680b3fb","kind":"mutation-receipt","operation":"a6416d1462f580d780a3fa3b7c2efb7f91faddbf34722bb341fad5ee5e455342","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-13"],"target":"decisions-ledger","v":1} -->
