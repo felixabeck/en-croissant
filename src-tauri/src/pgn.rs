@@ -91,6 +91,7 @@ const MAX_PAGE_BYTES: usize = MAX_PGN_BYTES;
 const IO_CHUNK_LEN: usize = 64 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
 const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REVISION_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileRevision {
@@ -192,6 +193,23 @@ std::thread_local! {
     static TEST_READ_CHUNK_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
     static TEST_COPY_CHUNK_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEST_SCAN_LINE_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
+    static TEST_SCAN_ATTEMPT_ACTION: std::cell::RefCell<Option<RevisionAttemptAction>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+type RevisionAttemptAction = Arc<dyn Fn() + Send + Sync>;
+
+#[cfg(test)]
+fn set_scan_attempt_action(action: Option<RevisionAttemptAction>) {
+    TEST_SCAN_ATTEMPT_ACTION.with(|cell| *cell.borrow_mut() = action);
+}
+
+#[cfg(test)]
+fn observe_scan_attempt_action() {
+    let action = TEST_SCAN_ATTEMPT_ACTION.with(|cell| cell.borrow().clone());
+    if let Some(action) = action {
+        action();
+    }
 }
 
 #[cfg(test)]
@@ -233,6 +251,10 @@ struct PgnRepositoryInner {
     #[cfg(test)]
     scan_line_hook: Option<BoundedHook>,
     #[cfg(test)]
+    scan_attempt_action: Option<RevisionAttemptAction>,
+    #[cfg(test)]
+    read_attempt_action: Option<RevisionAttemptAction>,
+    #[cfg(test)]
     edit_worker_hook: Option<BoundedHook>,
     #[cfg(test)]
     edit_lock_wait_signal: Option<OneShotSignal>,
@@ -264,6 +286,32 @@ impl Default for PgnRepository {
 }
 
 impl PgnRepository {
+    #[cfg(test)]
+    fn set_scan_attempt_action(&self, action: Option<RevisionAttemptAction>) -> Result<(), Error> {
+        self.inner()?.scan_attempt_action = action;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn scan_attempt_action(&self) -> Result<Option<RevisionAttemptAction>, Error> {
+        Ok(self.inner()?.scan_attempt_action.clone())
+    }
+
+    #[cfg(test)]
+    fn set_read_attempt_action(&self, action: Option<RevisionAttemptAction>) -> Result<(), Error> {
+        self.inner()?.read_attempt_action = action;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn observe_read_attempt_action(&self) -> Result<(), Error> {
+        let action = self.inner()?.read_attempt_action.clone();
+        if let Some(action) = action {
+            action();
+        }
+        Ok(())
+    }
+
     fn inner(&self) -> Result<std::sync::MutexGuard<'_, PgnRepositoryInner>, Error> {
         self.inner
             .lock()
@@ -568,6 +616,7 @@ fn scan_games_cancelled<R: Read + Seek>(
     cancellation: &CancellationToken,
 ) -> io::Result<Vec<GameRange>> {
     let mut reader = BufReader::new(reader);
+    reader.seek(SeekFrom::Start(0))?;
     let mut bom = [0; 3];
     let initial = reader.read(&mut bom)?;
     let start = if initial == bom.len() && bom == [0xEF, 0xBB, 0xBF] {
@@ -581,6 +630,8 @@ fn scan_games_cancelled<R: Read + Seek>(
     let mut game_start = None;
     let mut has_movetext = false;
     let mut in_brace_comment = false;
+    #[cfg(test)]
+    let mut observed_attempt = false;
     loop {
         if cancellation.is_cancelled() {
             return Err(io::Error::new(
@@ -596,6 +647,11 @@ fn scan_games_cancelled<R: Read + Seek>(
         #[cfg(test)]
         if let Some(hook) = current_scan_line_hook() {
             hook.notify_and_wait();
+        }
+        #[cfg(test)]
+        if !observed_attempt {
+            observed_attempt = true;
+            observe_scan_attempt_action();
         }
         let line = std::str::from_utf8(&line).map_err(|_| malformed("PGN is not valid UTF-8"))?;
         let header = is_tag_header(line, in_brace_comment);
@@ -639,17 +695,47 @@ fn scan_games_cancelled<R: Read + Seek>(
 }
 
 fn scan_file(
-    snapshot: crate::infra::path_authority::PgnSnapshot,
+    snapshot: &crate::infra::path_authority::PgnSnapshot,
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
-    let key = snapshot_key(&snapshot);
-    let games = scan_games_cancelled(snapshot.file, cancellation)
+    let key = snapshot_key(snapshot);
+    let games = scan_games_cancelled(snapshot.file.try_clone()?, cancellation)
         .map_err(|error| crate::cancellable_read::map_read_error(error, cancellation))?
         .into();
     Ok((key, games))
 }
 
 type ScanCacheLookup = (CacheKey, Option<Arc<[GameRange]>>);
+
+fn fresh_snapshot(
+    snapshot: &crate::infra::path_authority::PgnSnapshot,
+) -> Result<crate::infra::path_authority::PgnSnapshot, Error> {
+    Ok(crate::infra::path_authority::PgnSnapshot {
+        file: snapshot.file.try_clone()?,
+        identity: snapshot.identity.clone(),
+        revision: snapshot.current_revision()?,
+    })
+}
+
+fn revision_matches(
+    snapshot: &crate::infra::path_authority::PgnSnapshot,
+    key: &CacheKey,
+) -> Result<bool, Error> {
+    let revision = snapshot.current_revision()?;
+    Ok(revision.size == key.revision.size
+        && revision.mtime_nanos == key.revision.mtime_nanos
+        && revision.ctime_nanos == key.revision.ctime_nanos)
+}
+
+fn retry_changed_revision(attempt: usize, cancellation: &CancellationToken) -> Result<(), Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    if attempt + 1 >= MAX_REVISION_ATTEMPTS {
+        return Err(Error::StaleGame);
+    }
+    Ok(())
+}
 
 fn cached_scan(
     snapshot: &crate::infra::path_authority::PgnSnapshot,
@@ -673,7 +759,7 @@ fn cached_scan(
 }
 
 fn scan_current_blocking(
-    snapshot: crate::infra::path_authority::PgnSnapshot,
+    mut snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
@@ -683,22 +769,42 @@ fn scan_current_blocking(
     #[cfg(test)]
     let scan_line_hook = repository.scan_line_hook()?;
     #[cfg(test)]
-    let _guard = scan_line_hook.map(|hook| {
-        set_scan_line_hook(Some(hook));
+    let _guard = {
+        set_scan_line_hook(scan_line_hook);
+        set_scan_attempt_action(repository.scan_attempt_action()?);
         struct HookGuard;
         impl Drop for HookGuard {
             fn drop(&mut self) {
                 set_scan_line_hook(None);
+                set_scan_attempt_action(None);
             }
         }
         HookGuard
-    });
-    let (key, games) = scan_file(snapshot, cancellation)?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
+    };
+    let mut attempt = 0;
+    loop {
+        let (key, cached) = cached_scan(&snapshot, repository, cancellation)?;
+        if let Some(games) = cached {
+            return Ok((key, games));
+        }
+        let outcome = scan_file(&snapshot, cancellation);
+        if cancellation.is_cancelled() || matches!(outcome, Err(Error::Cancellation)) {
+            return Err(Error::Cancellation);
+        }
+        let unchanged = revision_matches(&snapshot, &key);
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        if unchanged? {
+            let (key, games) = outcome?;
+            repository.retain_if_within_budget(key.clone(), games.clone())?;
+            return Ok((key, games));
+        }
+        repository.invalidate(&snapshot.identity)?;
+        retry_changed_revision(attempt, cancellation)?;
+        snapshot = fresh_snapshot(&snapshot)?;
+        attempt += 1;
     }
-    repository.retain_if_within_budget(key.clone(), games.clone())?;
-    Ok((key, games))
 }
 
 async fn scan_current(
@@ -781,41 +887,74 @@ fn read_ranges(
     Ok(games)
 }
 
-async fn scan_and_read_ranges<T>(
+async fn scan_and_read_ranges<T: Send + 'static>(
     resolved: crate::infra::path_authority::ResolvedPath,
     repository: &PgnRepository,
     cancellation: &CancellationToken,
-    select: impl FnOnce(&CacheKey, &[GameRange]) -> Result<(T, Vec<GameRange>), Error>,
+    select: impl FnMut(&CacheKey, &[GameRange]) -> Result<(T, Vec<GameRange>), Error> + Send + 'static,
+) -> Result<(CacheKey, T, Vec<String>), Error> {
+    let repository = repository.clone();
+    BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            scan_and_read_ranges_blocking(resolved.pgn_snapshot()?, &repository, token, select)
+        })
+        .await
+}
+
+fn scan_and_read_ranges_blocking<T>(
+    mut snapshot: crate::infra::path_authority::PgnSnapshot,
+    repository: &PgnRepository,
+    cancellation: &CancellationToken,
+    mut select: impl FnMut(&CacheKey, &[GameRange]) -> Result<(T, Vec<GameRange>), Error>,
 ) -> Result<(CacheKey, T, Vec<String>), Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let snapshot = resolved.pgn_snapshot()?;
-    let read_file = snapshot.file.try_clone()?;
-    let (key, games) = scan_current(snapshot, repository, cancellation).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let (selection, requested) = select(&key, &games)?;
     #[cfg(test)]
     let test_hook = repository.read_chunk_hook()?;
-    let values = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation.clone(), move |token| {
-            #[cfg(test)]
-            let _guard = test_hook.map(|hook| {
-                set_read_chunk_hook(Some(hook));
-                struct HookGuard;
-                impl Drop for HookGuard {
-                    fn drop(&mut self) {
-                        set_read_chunk_hook(None);
-                    }
-                }
-                HookGuard
-            });
-            read_ranges(read_file, requested, token)
-        })
-        .await?;
-    Ok((key, selection, values))
+    #[cfg(test)]
+    let _guard = {
+        set_read_chunk_hook(test_hook);
+        struct HookGuard;
+        impl Drop for HookGuard {
+            fn drop(&mut self) {
+                set_read_chunk_hook(None);
+            }
+        }
+        HookGuard
+    };
+    let mut attempt = 0;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let mut key = snapshot_key(&snapshot);
+        let outcome = (|| {
+            let (scanned_key, games) =
+                scan_current_blocking(fresh_snapshot(&snapshot)?, repository, cancellation)?;
+            key = scanned_key;
+            let (selection, requested) = select(&key, &games)?;
+            let values = read_ranges(snapshot.file.try_clone()?, requested, cancellation)?;
+            Ok((selection, values))
+        })();
+        if cancellation.is_cancelled() || matches!(outcome, Err(Error::Cancellation)) {
+            return Err(Error::Cancellation);
+        }
+        #[cfg(test)]
+        repository.observe_read_attempt_action()?;
+        let unchanged = revision_matches(&snapshot, &key);
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        if unchanged? {
+            let (selection, values) = outcome?;
+            return Ok((key, selection, values));
+        }
+        repository.invalidate(&snapshot.identity)?;
+        retry_changed_revision(attempt, cancellation)?;
+        snapshot = fresh_snapshot(&snapshot)?;
+        attempt += 1;
+    }
 }
 
 fn game_stamp(bytes: &[u8]) -> String {
@@ -1029,34 +1168,35 @@ pub async fn read_games_core(
     repository: &PgnRepository,
 ) -> Result<Vec<StampedGame>, Error> {
     let (start, count) = checked_range(start, end)?;
-    let (key, (), values) = scan_and_read_ranges(resolved, repository, cancellation, |_, games| {
-        let end = start
-            .checked_add(count)
-            .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
-        let requested = if games.is_empty() && start == 0 && count == 1 {
-            Vec::new()
-        } else {
-            let requested = games
-                .get(start..end)
-                .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
-            let mut total_bytes = 0_u64;
-            let mut selected_len = 0;
-            for (index, range) in requested.iter().enumerate() {
-                let bytes = range.byte_len()?;
-                let Some(next_bytes) = total_bytes.checked_add(bytes) else {
-                    break;
-                };
-                if index > 0 && next_bytes > MAX_PAGE_BYTES as u64 {
-                    break;
+    let (key, (), values) =
+        scan_and_read_ranges(resolved, repository, cancellation, move |_, games| {
+            let end = start
+                .checked_add(count)
+                .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
+            let requested = if games.is_empty() && start == 0 && count == 1 {
+                Vec::new()
+            } else {
+                let requested = games
+                    .get(start..end)
+                    .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
+                let mut total_bytes = 0_u64;
+                let mut selected_len = 0;
+                for (index, range) in requested.iter().enumerate() {
+                    let bytes = range.byte_len()?;
+                    let Some(next_bytes) = total_bytes.checked_add(bytes) else {
+                        break;
+                    };
+                    if index > 0 && next_bytes > MAX_PAGE_BYTES as u64 {
+                        break;
+                    }
+                    total_bytes = next_bytes;
+                    selected_len = index + 1;
                 }
-                total_bytes = next_bytes;
-                selected_len = index + 1;
-            }
-            requested[..selected_len].to_vec()
-        };
-        Ok(((), requested))
-    })
-    .await?;
+                requested[..selected_len].to_vec()
+            };
+            Ok(((), requested))
+        })
+        .await?;
     let revision = revision_string_for_key(&key);
     Ok(values
         .into_iter()
@@ -1133,7 +1273,7 @@ async fn read_game_core(
 ) -> Result<StampedGame, Error> {
     let n = checked_index(n)?;
     let (key, present, values) =
-        scan_and_read_ranges(resolved, repository, cancellation, |_key, games| {
+        scan_and_read_ranges(resolved, repository, cancellation, move |_key, games| {
             if n < games.len() {
                 Ok((true, vec![games[n]]))
             } else if n == games.len() {
@@ -1508,6 +1648,301 @@ mod tests {
         resolved_for(directory, path)
             .pgn_snapshot()
             .expect("snapshot PGN")
+    }
+
+    async fn assert_read_rewrite(original: &[u8], rewritten: &[u8], page: bool) {
+        assert_ne!(original.len(), rewritten.len());
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("read-revision.pgn");
+        std::fs::write(&path, original).expect("write original PGN");
+        let repository = PgnRepository::default();
+        let resolved = resolved_for(&directory, &path);
+        let identity = resolved.pgn_snapshot().expect("original snapshot").identity;
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_read_chunk_hook(Some(hook))
+            .expect("read hook");
+        let task = tokio::spawn(async move {
+            let token = CancellationToken::new();
+            if page {
+                read_games_core(resolved, 0, 1, &token, &repository).await
+            } else {
+                read_game_core(resolved, 0, &token, &repository)
+                    .await
+                    .map(|game| vec![game])
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("read hook timeout")
+            .expect("read hook entered");
+        std::fs::write(&path, rewritten).expect("rewrite same inode");
+        drop(release);
+        let actual = task
+            .await
+            .expect("join read")
+            .expect("read retries rewrite");
+        let token = CancellationToken::new();
+        let fresh_repository = PgnRepository::default();
+        let expected = if page {
+            read_games_core(
+                resolved_for(&directory, &path),
+                0,
+                1,
+                &token,
+                &fresh_repository,
+            )
+            .await
+            .expect("fresh page")
+        } else {
+            vec![read_game_core(
+                resolved_for(&directory, &path),
+                0,
+                &token,
+                &fresh_repository,
+            )
+            .await
+            .expect("fresh game")]
+        };
+        assert_eq!(actual, expected);
+        let snapshot = snapshot_for(&directory, &path);
+        assert_eq!(snapshot.identity, identity);
+        let ranges = scan_games(snapshot.file).expect("rewritten ranges");
+        assert_eq!(ranges.len(), if page { 2 } else { 1 });
+        let revision = file_revision_core(resolved_for(&directory, &path), &token)
+            .await
+            .expect("fresh revision");
+        for (game, range) in actual.iter().zip(ranges) {
+            assert!(game.present);
+            assert_eq!(game.revision, revision);
+            assert_eq!(
+                game.pgn.as_bytes(),
+                &rewritten[range.start as usize..range.end as usize]
+            );
+            assert_eq!(game.stamp, game_stamp(game.pgn.as_bytes()));
+        }
+    }
+
+    #[tokio::test]
+    async fn read_revision_retry_preserves_bom_and_page_bytes() {
+        assert_read_rewrite(
+            b"\xef\xbb\xbf[Event \"Old A\"]\n[Site \"Old\"]\n\n1. e4 *\n[Event \"Old B\"]\n\n1. d4 *\n",
+            b"\xef\xbb\xbf[Event \"Rewritten first game\"]\n[Site \"New site\"]\n\n1. c4 e5 *\n[Event \"Rewritten second game\"]\n\n1. Nf3 d5 *\n",
+            true,
+        ).await;
+    }
+
+    #[tokio::test]
+    async fn read_revision_retry_binds_single_game_stamp() {
+        assert_read_rewrite(
+            b"\xef\xbb\xbf[Event \"Old A\"]\n[Site \"Old\"]\n\n1. e4 *\n[Event \"Old B\"]\n\n1. d4 *\n",
+            b"\xef\xbb\xbf[Event \"One rewritten game with padding\"]\n[Site \"New site\"]\n\n1. c4 e5 {padding to change the size of the file} *\n",
+            false,
+        ).await;
+    }
+
+    #[tokio::test]
+    async fn read_revision_retry_discards_shortening_eof_error() {
+        assert_read_rewrite(
+            b"[Event \"Old first game with padding\"]\n\n1. e4 {old first padding} *\n[Event \"Old second game with padding\"]\n\n1. d4 {old second padding} *\n",
+            b"[Event \"A\"]\n\n1. c4 *\n[Event \"B\"]\n\n1. Nf3 *\n",
+            true,
+        ).await;
+    }
+
+    #[tokio::test]
+    async fn read_revision_retry_reselects_missing_game() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("append-revision.pgn");
+        let first = "[Event \"A\"]\n\n1. e4 *\n";
+        let second = "[Event \"Appended\"]\n\n1. d4 *\n";
+        std::fs::write(&path, first).expect("first game");
+        let repository = PgnRepository::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let action_attempts = attempts.clone();
+        let action_path = path.clone();
+        repository
+            .set_read_attempt_action(Some(Arc::new(move || {
+                if action_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    std::fs::write(&action_path, format!("{first}{second}"))
+                        .expect("append in place");
+                }
+            })))
+            .expect("attempt action");
+        let token = CancellationToken::new();
+        let game = read_game_core(resolved_for(&directory, &path), 1, &token, &repository)
+            .await
+            .expect("missing selection retried");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(game.present);
+        assert_eq!(game.pgn, second);
+        assert_eq!(game.stamp, game_stamp(second.as_bytes()));
+        assert_eq!(
+            game.revision,
+            file_revision_core(resolved_for(&directory, &path), &token)
+                .await
+                .expect("revision")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_revision_exhaustion_is_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("read-churn.pgn");
+        std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
+        let repository = PgnRepository::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let action_attempts = attempts.clone();
+        let action_path = path.clone();
+        repository
+            .set_read_attempt_action(Some(Arc::new(move || {
+                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                std::fs::write(
+                    &action_path,
+                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
+                )
+                .expect("rewrite on every read");
+            })))
+            .expect("attempt action");
+        let result = read_game_core(
+            resolved_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::StaleGame)), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_REVISION_ATTEMPTS);
+        assert!(repository.inner().expect("cache").cache.is_empty());
+    }
+
+    async fn assert_scan_rewrite(original: &[u8], rewritten: &[u8], expected_count: i32) {
+        assert_ne!(original.len(), rewritten.len());
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("scan-revision.pgn");
+        std::fs::write(&path, original).expect("original PGN");
+        let repository = PgnRepository::default();
+        let resolved = resolved_for(&directory, &path);
+        let old_key = snapshot_key(&resolved.pgn_snapshot().expect("snapshot"));
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_scan_line_hook(Some(hook))
+            .expect("scan hook");
+        let task_repository = repository.clone();
+        let task = tokio::spawn(async move {
+            count_pgn_games_core(resolved, &CancellationToken::new(), &task_repository).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("scan timeout")
+            .expect("scan entered");
+        std::fs::write(&path, rewritten).expect("rewrite during scan");
+        drop(release);
+        assert_eq!(
+            task.await
+                .expect("join scan")
+                .expect("scan retries rewrite"),
+            expected_count
+        );
+        assert!(repository.get(&old_key).expect("old cache key").is_none());
+        let snapshot = snapshot_for(&directory, &path);
+        assert_eq!(snapshot.identity, old_key.identity);
+        assert!(repository
+            .get(&snapshot_key(&snapshot))
+            .expect("verified cache key")
+            .is_some());
+        assert_eq!(
+            count_pgn_games_core_blocking(snapshot, &CancellationToken::new(), &repository)
+                .expect("blocking count"),
+            expected_count
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_revision_retry_retains_only_verified_ranges() {
+        assert_scan_rewrite(
+            b"[Event \"Old\"]\n\n1. e4 *\n",
+            b"[Event \"New A\"]\n\n1. c4 *\n[Event \"New B\"]\n\n1. d4 *\n",
+            2,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scan_revision_exhaustion_is_bounded_and_uncached() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("scan-churn.pgn");
+        std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
+        let repository = PgnRepository::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let action_attempts = attempts.clone();
+        let action_path = path.clone();
+        repository
+            .set_scan_attempt_action(Some(Arc::new(move || {
+                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                std::fs::write(
+                    &action_path,
+                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
+                )
+                .expect("rewrite on every scan");
+            })))
+            .expect("scan action");
+        let result = count_pgn_games_core(
+            resolved_for(&directory, &path),
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::StaleGame)), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_REVISION_ATTEMPTS);
+        assert!(repository.inner().expect("cache").cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn revision_retry_cancellation_takes_precedence() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cancel-retry.pgn");
+        std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
+        let repository = PgnRepository::default();
+        let token = CancellationToken::new();
+        let action_token = token.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let action_attempts = attempts.clone();
+        let action_path = path.clone();
+        repository
+            .set_read_attempt_action(Some(Arc::new(move || {
+                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                std::fs::write(
+                    &action_path,
+                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
+                )
+                .expect("rewrite read attempt");
+                if count == 2 {
+                    action_token.cancel();
+                }
+            })))
+            .expect("attempt action");
+        let result = read_game_core(resolved_for(&directory, &path), 0, &token, &repository).await;
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn scan_revision_retry_discards_mixed_utf8_error() {
+        // The first old line consumes the entire BufReader buffer. The rewrite places a
+        // multi-byte character across that boundary, so the resumed scan starts at its tail.
+        let original = format!(
+            "[Event \"{}\"]\n\n1. e4 *\n[Event \"B\"]\n\n1. d4 *\n",
+            "x".repeat(8181)
+        );
+        assert_eq!(original.find('\n').expect("first newline") + 1, 8192);
+        let rewritten = format!("[Event \"{}é\"]\n\n1. c4 *\n", "y".repeat(8183));
+        assert_eq!(rewritten.as_bytes()[8192], 0xa9);
+        assert_scan_rewrite(original.as_bytes(), rewritten.as_bytes(), 1).await;
     }
 
     fn with_line_ending(value: &str, line_ending: &str) -> Vec<u8> {
@@ -3408,7 +3843,7 @@ mod tests {
         let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
         assert!(snapshot.revision.size > 300 * 1024 * 1024);
         let expected_size = snapshot.revision.size;
-        let (_, games) = scan_file(snapshot, &CancellationToken::new()).expect("scan large PGN");
+        let (_, games) = scan_file(&snapshot, &CancellationToken::new()).expect("scan large PGN");
         assert_eq!(games.len(), 301);
         assert_eq!(games[300].end, expected_size);
         let late_page = read_ranges(read_file, games[300..].to_vec(), &CancellationToken::new())
@@ -3432,7 +3867,7 @@ mod tests {
         let snapshot = snapshot_for(&directory, &path);
         let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
         let (_, games) =
-            scan_file(snapshot, &CancellationToken::new()).expect("scan many-game PGN");
+            scan_file(&snapshot, &CancellationToken::new()).expect("scan many-game PGN");
         assert_eq!(games.len(), 100_005);
         let late_page = read_ranges(
             read_file,
