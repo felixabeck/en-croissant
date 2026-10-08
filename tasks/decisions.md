@@ -6514,3 +6514,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** this screen renders without App, so the root is unscaled, and storage failure is why it exists. Reversal path: change its explicit theme input if its startup contract later changes.
 * **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"54f6dfb0b50c1b4c122579cabfa65dbf0cb5c82dc14cd55c3b9ba6dab963ee8a","input_sha256":"7dda73d3ad204821846dac3d58367e35a209e8730fd1108d1384e1dbfb6dc58b","kind":"mutation-receipt","operation":"ca999b0ada33c71b679aaa1eb7f9d4703efad2e4ee23698800f24fab72d34295","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-18","d-20261008-19","d-20261008-20","d-20261008-21"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-22 — Where does compact Settings reserve slider mark space?
+
+* **Question:** How does the newly active compact Settings layout keep labelled slider marks inside the last search-result card?
+* **Governs:** f-20260927-08
+* **Chosen:** Reserve the mark label line height and vertical gap in the shared compact Settings control layout when it contains labelled slider marks.
+* **Rejected:** Increasing every card's fixed padding, allowing clipped card content to overflow, weakening the clipping assertion, duplicating fixes in font-size and volume sliders, or changing global wide-layout slider defaults.
+* **Reason:** Mantine paints marks below the measured slider root. The 200% search proof reproduced content at 819px against a 794px Card. Shared compact flow space covers both Settings sliders with font-scaled variables while preserving the 100% layout. Reversal path: remove the compact reservation if Mantine begins counting mark labels in slider layout, supported by the same clipping proofs.
+* **Decided by:** Codex, full auto, measured Phase 2 proof and reviewed plan amendment. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e6294ede4887ae03e8bc5c45fe681b0f415747140367ec6dfa837ec7a9e68b9f","input_sha256":"6a9461b4cc3c06c2d04019af1279d939c77b394169ca73cc3bfc3a0fb71ff01b","kind":"mutation-receipt","operation":"fcc34167f181b0271e129cc05345edaf2f6c60baaf780b41b21c3476993872c7","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-22"],"target":"decisions-ledger","v":1} -->
