@@ -167,6 +167,42 @@ test("a ProgressEvent under the id passed to getPlayersGameInfo moves the bar", 
   expect(container.querySelector("[data-testid='progress']")?.textContent).toBe("40");
 });
 
+test("an owned ProgressEvent moves the bar when another player's database is present", async () => {
+  getDefaultStore().set(sessionsAtom, [
+    {
+      player: "Bob",
+      updatedAt: 1,
+      lichess: { username: "bob", account: { id: "bob", username: "bob" } },
+    },
+    {
+      player: "Alice",
+      updatedAt: 1,
+      chessCom: { username: "alice", stats: {} },
+    },
+  ]);
+  const bobDatabase = { ...database("db-1"), filename: "bob_lichess.db3" };
+  const aliceDatabase = { ...database("db-2"), filename: "alice_chesscom.db3" };
+  mocks.getDatabases.mockResolvedValue([bobDatabase, aliceDatabase]);
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce());
+  const ownedId = mocks.getPlayersGameInfo.mock.calls[0][0] as string;
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledWith(
+    ownedId,
+    bobDatabase.file,
+    7,
+    expect.anything(),
+  );
+  expect(displayedProgress()).toContain("0%");
+
+  await act(async () => {
+    progressListener(progressEvent(ownedId, 40));
+  });
+
+  expect(displayedProgress()).toContain("40%");
+  expect(container.querySelector("[data-testid='progress']")?.textContent).toBe("40");
+});
+
 test("a ProgressEvent under a foreign PlayerCard id does not move the bar", async () => {
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalled());
