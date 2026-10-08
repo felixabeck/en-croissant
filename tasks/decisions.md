@@ -6524,3 +6524,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Mantine paints marks below the measured slider root. The 200% search proof reproduced content at 819px against a 794px Card. Shared compact flow space covers both Settings sliders with font-scaled variables while preserving the 100% layout. Reversal path: remove the compact reservation if Mantine begins counting mark labels in slider layout, supported by the same clipping proofs.
 * **Decided by:** Codex, full auto, measured Phase 2 proof and reviewed plan amendment. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e6294ede4887ae03e8bc5c45fe681b0f415747140367ec6dfa837ec7a9e68b9f","input_sha256":"6a9461b4cc3c06c2d04019af1279d939c77b394169ca73cc3bfc3a0fb71ff01b","kind":"mutation-receipt","operation":"fcc34167f181b0271e129cc05345edaf2f6c60baaf780b41b21c3476993872c7","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-22"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-23 — Which progress generation wire representation preserves the native range?
+
+* **Question:** Which progress wire representation preserves the native generation range?
+* **Governs:** f-20260925-02
+* **Chosen:** Canonical decimal strings on all progress IPC surfaces and bigint in renderer domain state.
+* **Rejected:** Numeric JSON with a native safe-integer ceiling, blanket recursive bigint conversion, and lexicographic string comparisons.
+* **Reason:** Strings preserve the full u64 domain and existing numeric fence semantics. This follows the lossless-contract reversal path of d-20260908-09 without changing game counters. Reversal path: a newly evidenced restricted progress domain with native allocation bounds and equivalent transport proof.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+
+### d-20261008-24 — What happens when progress generation allocation is exhausted?
+
+* **Question:** What happens when the progress generation space is exhausted?
+* **Governs:** f-20260925-02
+* **Chosen:** Typed conflict before destructive start or clear mutation. Live-download no-op clears still return their existing generation floor.
+* **Rejected:** Saturation and wraparound.
+* **Reason:** Repeated identities violate stale-producer and event fencing. This preserves d-20261005-10's surviving-download rule. Reversal path: a reviewed identity scheme that remains strictly ordered without reuse.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+
+### d-20261008-25 — How is actual progress IPC above 2^53 measured?
+
+* **Question:** How is actual IPC above 2^53 exercised without a production test interface?
+* **Governs:** f-20260925-02
+* **Chosen:** Extend the existing scripts/verify-app.mjs verifier and measure disposable seeded and failure binaries plus the normal release binary.
+* **Rejected:** A shipped seed environment variable, a test IPC command, a second driver, and TypeScript-only wire mocks.
+* **Reason:** The actual producer, serializer and transport require measurement. Disposable binaries preserve production source and installed application data. Reversal path: an existing production-native proof route covering the same boundary.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"eec6bdf02fd2d89b667e860293260310907433604e31311b0fdd8b320f5f8a5f","input_sha256":"24a4c387221f8ea0020490f67cba5cfde4feb8e4a14a2c029ad9d65118b3c208","kind":"mutation-receipt","operation":"491c71fce87c6ae0fe3d0f641c3bb21fa0757525556c1b70f4fdb65985165b39","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-23","d-20261008-24","d-20261008-25"],"target":"decisions-ledger","v":1} -->
