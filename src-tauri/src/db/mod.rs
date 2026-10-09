@@ -8398,7 +8398,12 @@ mod tests {
     #[test]
     fn failed_import_preserves_cached_index_query_and_success_refreshes_it() {
         let (dir, app, handle, database) = blocking_database_case();
-        mount_convert_progress_events(&app);
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                ConvertProgress,
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
         let query = GameQuery::new().position(PositionQueryJs {
             fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
             type_: "exact".into(),
@@ -8413,6 +8418,22 @@ mod tests {
         )
         .unwrap();
         assert!(get_index_path(&database).exists());
+        let progress = crate::progress::JobProgress::new(app.clone(), "cache-seed".into()).unwrap();
+        let seed = search::search_position_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            state.new_request.clone().try_acquire_owned().unwrap(),
+            progress.lease(),
+            app.clone(),
+            handle.clone(),
+            query.clone(),
+            &CancellationToken::new(),
+            None,
+        )
+        .unwrap();
+        progress.complete(crate::progress::ProgressState::Succeeded);
+        assert!(seed.0.is_empty() && seed.1.is_empty());
         assert!(!search::is_position_in_db(
             &state.pgn_path_authority,
             &state.database_repository,
@@ -8428,10 +8449,8 @@ mod tests {
         let index_identity =
             crate::SearchIndexIdentity::for_test_database(&database, source_identity).unwrap();
         assert!(state.search_cache.get_index(&index_identity).is_some());
-        assert!(state
-            .search_cache
-            .get_result(&crate::SearchResultKey::new(query.clone(), index_identity,))
-            .is_some());
+        let result_key = crate::SearchResultKey::new(query.clone(), index_identity.clone());
+        assert!(state.search_cache.get_result(&result_key).is_some());
         #[derive(QueryableByName)]
         struct JournalMode {
             #[diesel(sql_type = Text)]
@@ -8478,6 +8497,10 @@ mod tests {
         )
         .unwrap());
 
+        assert!(state.search_cache.get_index(&index_identity).is_some());
+        let preserved = state.search_cache.get_result(&result_key).unwrap();
+        assert!(preserved.0.is_empty() && preserved.1.is_empty());
+
         run_import(
             &app,
             handle.clone(),
@@ -8485,6 +8508,8 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(state.search_cache.get_index(&index_identity).is_none());
+        assert!(state.search_cache.get_result(&result_key).is_none());
         assert!(search::is_position_in_db(
             &state.pgn_path_authority,
             &state.database_repository,

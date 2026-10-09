@@ -649,7 +649,7 @@ const POSITION_SEARCH_PROGRESS_INTERVAL: usize = 50_000;
 // `'static` and AppState is not Clone. A bundle type was rejected (plan
 // decision D-B).
 #[allow(clippy::too_many_arguments)]
-fn search_position_blocking<R: tauri::Runtime>(
+pub(super) fn search_position_blocking<R: tauri::Runtime>(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
@@ -956,17 +956,16 @@ pub(crate) fn is_position_in_db_cancellable(
     let start = Instant::now();
     info!("start loading games for is_position_in_db");
 
-    let (identity, mmap_index) = load_search_index_cancellable(
+    let (_identity, mmap_index) = load_search_index_cancellable(
         authority,
         repository,
         search_cache,
         database_handle,
         cancellation,
     )?;
-    let cache_key = SearchResultKey::new(query.clone(), identity);
-    if let Some(result) = search_cache.get_result(&cache_key) {
-        return Ok(!result.0.is_empty());
-    }
+    // Presence checks occurrences. Nonempty explorer statistics prove an occurrence,
+    // but empty statistics can reflect outcome or other filters and cannot prove absence.
+    // Presence therefore uses its own occurrence scan.
 
     let exists = AtomicBool::new(false);
     let check_entry = |entry: SearchGameEntryRef<'_>| -> Result<(), Error> {
@@ -1010,13 +1009,6 @@ pub(crate) fn is_position_in_db_cancellable(
     let exists = exists.load(Ordering::Relaxed);
 
     info!("finished search in {:?}", start.elapsed());
-
-    if !exists {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        search_cache.insert_result(cache_key, (vec![], vec![]));
-    }
 
     Ok(exists)
 }
@@ -1506,17 +1498,56 @@ mod progress_error_tests {
 }
 
 #[cfg(test)]
+fn run_position_search(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    handle: &DatabaseHandle,
+    query: GameQuery,
+    progress_id: &str,
+) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
+    let state = app.state::<AppState>();
+    let progress = JobProgress::new(app.clone(), progress_id.into()).unwrap();
+    let permit = state.new_request.clone().try_acquire_owned().unwrap();
+    search_position_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        &state.search_cache,
+        permit,
+        progress.lease(),
+        app.clone(),
+        handle.clone(),
+        query,
+        &CancellationToken::new(),
+        None,
+    )
+}
+
+#[cfg(test)]
+fn exact_position_query(fen: &str) -> GameQuery {
+    GameQuery::new().position(PositionQueryJs {
+        fen: fen.to_string(),
+        type_: "exact".to_string(),
+    })
+}
+
+#[cfg(test)]
 mod setup_policy_tests {
     use super::*;
 
     const NINE_PAWN_FEN: &str = "4k3/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1";
     const KINGS_FEN: &str = "4k3/8/8/8/8/8/8/4K3 w - - 0 1";
+    const AFTER_E4_FEN: &str = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+    const ABSENT_FEN: &str = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2";
 
-    fn assert_imported_too_much_material_search(query_fen: &str, query_type: &str) {
-        // Reuse the portable schema and capability fixture. This runs the actual
-        // PGN conversion, index generation, search and normalized-game decoder.
+    fn imported_search_database(
+        pgn: &str,
+    ) -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        std::path::PathBuf,
+    ) {
         let (dir, app, handle, database) = super::super::schema_database_case(
-            "setup-policy",
+            "imported-search",
             vec![
                 PathOperation::DatabaseCreate,
                 PathOperation::DatabaseRead,
@@ -1529,21 +1560,15 @@ mod setup_policy_tests {
                 super::super::ConvertProgress
             ))
             .mount_events(&app);
-        let pgn_path = dir.path().join("nine-pawns.pgn");
-        std::fs::write(
-            &pgn_path,
-            format!(
-                "[Event \"Setup policy\"]\n[Site \"Fixture\"]\n[White \"Nine pawns\"]\n[Black \"King\"]\n[Result \"1-0\"]\n[SetUp \"1\"]\n[FEN \"{NINE_PAWN_FEN}\"]\n\n1. a4 1-0\n"
-            ),
-        )
-        .unwrap();
+        let pgn_path = dir.path().join("fixture.pgn");
+        std::fs::write(&pgn_path, pgn).unwrap();
         let state = app.state::<AppState>();
         let file = state
             .pgn_path_authority
             .with_mut(|authority| {
                 let grant = authority.grant_persistent_file_for_test(
                     &pgn_path,
-                    "nine-pawns.pgn",
+                    "fixture.pgn",
                     vec![PathOperation::ReadPgn],
                 );
                 super::super::FileWorkspaceHandle::new(grant.id)
@@ -1557,12 +1582,22 @@ mod setup_policy_tests {
             handle.clone(),
             None,
             app.clone(),
-            "Setup policy".into(),
+            "Imported search".into(),
             None,
-            "setup-policy-import".into(),
+            "imported-search".into(),
             &CancellationToken::new(),
         )
         .unwrap();
+        (dir, app, handle, database)
+    }
+
+    fn assert_imported_too_much_material_search(query_fen: &str, query_type: &str) {
+        // Reuse the portable schema and capability fixture. This runs the actual
+        // PGN conversion, index generation, search and normalized-game decoder.
+        let (_dir, app, handle, database) = imported_search_database(&format!(
+            "[Event \"Setup policy\"]\n[Site \"Fixture\"]\n[White \"Nine pawns\"]\n[Black \"King\"]\n[Result \"1-0\"]\n[SetUp \"1\"]\n[FEN \"{NINE_PAWN_FEN}\"]\n\n1. a4 1-0\n"
+        ));
+        let state = app.state::<AppState>();
 
         let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
         let imported = games::table.load::<Game>(&mut connection).unwrap();
@@ -1636,6 +1671,140 @@ mod setup_policy_tests {
     #[test]
     fn too_much_material_import_is_searchable_by_exact_setup() {
         assert_imported_too_much_material_search(NINE_PAWN_FEN, "exact");
+    }
+
+    fn imported_e4_e5(
+        result: &str,
+    ) -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        std::path::PathBuf,
+    ) {
+        let fixture = imported_search_database(&format!(
+            "[Event \"Presence\"]\n[Site \"Fixture\"]\n[White \"White\"]\n[Black \"Black\"]\n[Result \"{result}\"]\n\n1. e4 e5 {result}\n"
+        ));
+        let (_, _, _, database) = &fixture;
+        let mut db = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        let imported = games::table.load::<Game>(&mut db).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].result.as_deref(), Some(result));
+        assert_eq!(imported[0].moves.len(), 2);
+        fixture
+    }
+
+    fn presence(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &DatabaseHandle,
+        query: &GameQuery,
+    ) -> bool {
+        let state = app.state::<AppState>();
+        is_position_in_db_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            query,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn imported_presence_and_explorer_have_independent_predicates_in_both_orders() {
+        for result in ["*", "1-0"] {
+            for presence_first in [false, true] {
+                let (_dir, app, handle, _database) = imported_e4_e5(result);
+                let state = app.state::<AppState>();
+                for (fen, expected_presence) in [(AFTER_E4_FEN, true), (ABSENT_FEN, false)] {
+                    let query = exact_position_query(fen);
+                    let prior_tuples = state.search_cache.results.lock().unwrap().values.len();
+                    if presence_first {
+                        assert_eq!(presence(&app, &handle, &query), expected_presence);
+                        assert_eq!(
+                            state.search_cache.results.lock().unwrap().values.len(),
+                            prior_tuples,
+                            "presence must not publish explorer tuples"
+                        );
+                    }
+                    let explorer =
+                        run_position_search(&app, &handle, query.clone(), "explorer").unwrap();
+                    if result == "1-0" && expected_presence {
+                        assert_eq!(explorer.0.len(), 1);
+                        assert_eq!(explorer.0[0].move_, "e5");
+                        assert_eq!(
+                            (explorer.0[0].white, explorer.0[0].draw, explorer.0[0].black),
+                            (1, 0, 0)
+                        );
+                        assert_eq!(explorer.1.len(), 1);
+                    } else {
+                        assert!(explorer.0.is_empty() && explorer.1.is_empty());
+                    }
+                    let (identity, _) = load_search_index_cancellable(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        &handle,
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                    let key = SearchResultKey::new(query.clone(), identity);
+                    let cached = state.search_cache.get_result(&key).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&cached).unwrap(),
+                        serde_json::to_value(&explorer).unwrap()
+                    );
+                    assert_eq!(
+                        presence(&app, &handle, &query),
+                        expected_presence,
+                        "explorer statistics must not change occurrence presence for {result}"
+                    );
+                    let reused =
+                        run_position_search(&app, &handle, query, "explorer-cached").unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&reused).unwrap(),
+                        serde_json::to_value(&explorer).unwrap()
+                    );
+                    assert_eq!(
+                        state.search_cache.results.lock().unwrap().values.len(),
+                        prior_tuples + 1
+                    );
+                }
+                assert_eq!(state.search_cache.cached_index_count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn novelty_lookup_keeps_unfinished_import_present_after_empty_explorer_statistics() {
+        let (_dir, app, handle, _database) = imported_e4_e5("*");
+        let state = app.state::<AppState>();
+        let present = exact_position_query(AFTER_E4_FEN);
+        let absent = exact_position_query(ABSENT_FEN);
+        assert!(
+            presence(&app, &handle, &present),
+            "cold unfinished occurrence"
+        );
+        let explorer =
+            run_position_search(&app, &handle, present.clone(), "unfinished-explorer").unwrap();
+        assert!(explorer.0.is_empty() && explorer.1.is_empty());
+        assert_eq!(state.search_cache.results.lock().unwrap().values.len(), 1);
+        let found = crate::chess::novelty_lookup_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            state.new_request.clone().try_acquire_owned().unwrap(),
+            handle,
+            vec![present, absent],
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            [true, false],
+            "warmed occurrence precedes genuine absence"
+        );
+        assert_eq!(state.search_cache.results.lock().unwrap().values.len(), 1);
     }
 
     #[test]
@@ -3024,36 +3193,6 @@ mod tests {
         (dir, app, handle, database)
     }
 
-    fn run_position_search(
-        app: &tauri::AppHandle<tauri::test::MockRuntime>,
-        handle: &DatabaseHandle,
-        query: GameQuery,
-        progress_id: &str,
-    ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
-        let state = app.state::<AppState>();
-        let progress = JobProgress::new(app.clone(), progress_id.into()).unwrap();
-        let permit = state.new_request.clone().try_acquire_owned().unwrap();
-        search_position_blocking(
-            &state.pgn_path_authority,
-            &state.database_repository,
-            &state.search_cache,
-            permit,
-            progress.lease(),
-            app.clone(),
-            handle.clone(),
-            query,
-            &CancellationToken::new(),
-            None,
-        )
-    }
-
-    fn exact_position_query(fen: &str) -> GameQuery {
-        GameQuery::new().position(PositionQueryJs {
-            fen: fen.to_string(),
-            type_: "exact".to_string(),
-        })
-    }
-
     #[test]
     fn is_position_in_db_finds_a_played_position_and_rejects_an_unplayed_one() {
         let (_dir, app, handle, _database) = position_search_database();
@@ -3095,7 +3234,7 @@ mod tests {
         .unwrap();
         assert!(
             !absent_again,
-            "a repeated miss must stay a miss when served from the search cache"
+            "a repeated occurrence scan must still report the unplayed position absent"
         );
 
         let no_position = is_position_in_db(
