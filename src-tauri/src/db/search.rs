@@ -1530,7 +1530,7 @@ fn exact_position_query(fen: &str) -> GameQuery {
 }
 
 #[cfg(test)]
-mod setup_policy_tests {
+mod imported_search_tests {
     use super::*;
 
     const NINE_PAWN_FEN: &str = "4k3/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1";
@@ -1619,19 +1619,7 @@ mod setup_policy_tests {
             type_: query_type.into(),
         });
         for progress_id in ["setup-policy-first", "setup-policy-cached"] {
-            let progress = JobProgress::new(app.clone(), progress_id.into()).unwrap();
-            let result = search_position_blocking(
-                &state.pgn_path_authority,
-                &state.database_repository,
-                &state.search_cache,
-                state.new_request.clone().try_acquire_owned().unwrap(),
-                progress.lease(),
-                app.clone(),
-                handle.clone(),
-                query.clone(),
-                &CancellationToken::new(),
-                None,
-            );
+            let result = run_position_search(&app, &handle, query.clone(), progress_id);
             assert!(
                 result.is_ok(),
                 "imported nine-pawn setup must be searchable by {query_type}: {:?}",
