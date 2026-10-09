@@ -6859,3 +6859,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Removes the three copies at their shared owner without changing production sequencing or introducing a broader API. Preserves d-20260929-03's probe linearization, d-20261005-06's snapshot ordering and d-20261008-15's descriptor identity. Reversal path: move the closure to a module helper only if another caller needs this same read-attempt contract.
 * **Decided by:** Codex, full auto drain session f622f6f4-dc6f-4f74-91c1-091d4cde09cc, 2026-10-10. Plan authorship and arbitration shared one context. Detection runs on the same model family as the code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"697e8e26cb28d3ea239576f05d735af60f74d53c558336658c64efeadb555170","input_sha256":"1efcf7af12a629e5b25bd68d59310905a2687021459f85b2abfd164c992febe5","kind":"mutation-receipt","operation":"c20e01f977beb04a585f438c5b8fdd5f2d3843f491a2e47649c1003a5625e47c","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261010-02 — Which game-opening gesture is primary?
+
+* **Question:** Which open gesture is primary on the named database and file surfaces?
+* **Governs:** f-20261001-08
+* **Chosen:** Visible localized Open database and Open game buttons, with single-click selection and game-row double-click and Enter shortcuts.
+* **Rejected:** Single-click game opening or icon-only controls.
+* **Reason:** The finding requests labels and shortcuts. Existing selection and stationary-row behavior are governed by d-20260919-11 and d-20260919-12. Reversal path: source controls and shared activation wiring.
+* **Decided by:** Codex, autonomously under full auto, adopted reviewed plan, 2026-10-10 · **Superseded-by:** -
+
+### d-20261010-03 — Where does shared game-opening behavior live?
+
+* **Question:** Where does the shared game-opening affordance live?
+* **Governs:** f-20261001-08
+* **Chosen:** A small common game-affordance unit with source-owned callbacks, one opener owned by GameTable for its preview, and FileCard's explicit-index opener.
+* **Rejected:** Duplicate tab creators or a storage-format library abstraction.
+* **Reason:** Two production lists share one interaction while their destination and loading contracts differ. Reversal path: common unit and its two list integrations.
+* **Decided by:** Codex, autonomously under full auto, adopted reviewed plan, 2026-10-10 · **Superseded-by:** -
+
+### d-20261010-04 — Who verifies the opening controls and what stays outside this task?
+
+* **Question:** Who performs visual acceptance and which surfaces are in scope?
+* **Governs:** f-20261001-08
+* **Chosen:** The agent performs container pixel and real WebKitGTK acceptance for the database card and two game-list flows, including the existing InfoPanel consumer regression.
+* **Rejected:** Felix manually accepting web content and folding in library or splitter redesigns.
+* **Reason:** Full auto and the named finding use existing automated harnesses. Reversal path: acceptance assignment and separate findings, with no production data change.
+* **Decided by:** Codex, autonomously under full auto, adopted reviewed plan, 2026-10-10 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"5a6c483a4f182a67da657287bfa63944fd8bb6e928bf422b81874bbc16d2498a","input_sha256":"aed626612ebdbc14638022a55e02b3ca4d82a2880f1862fbb814904beaaa6f7b","kind":"mutation-receipt","operation":"77ec07830f37bfadc9f6f9b837725d0a14bf5a2567d93384b3c85d213d7f88e5","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-02","d-20261010-03","d-20261010-04"],"target":"decisions-ledger","v":1} -->
