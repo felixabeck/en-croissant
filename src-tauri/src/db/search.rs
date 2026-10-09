@@ -4,8 +4,7 @@ use log::info;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shakmaty::{
-    fen::Fen, san::SanPlus, Bitboard, ByColor, CastlingMode, Chess, Color, EnPassantMode,
-    FromSetup, Position, Setup,
+    fen::Fen, san::SanPlus, Bitboard, ByColor, Chess, Color, EnPassantMode, Position, Setup,
 };
 use specta::Type;
 use std::{
@@ -26,7 +25,9 @@ use crate::db::search_index::{
 };
 use crate::{
     db::{
-        encoding::{decode_move, try_iter_mainline_move_bytes_cancellable},
+        encoding::{
+            database_setup_to_chess, decode_move, try_iter_mainline_move_bytes_cancellable,
+        },
         get_db_or_create, get_material_count, get_pawn_home,
         models::*,
         normalize_games,
@@ -76,9 +77,7 @@ pub enum PositionQuery {
 impl PositionQuery {
     pub fn exact_from_fen(fen: &str) -> Result<PositionQuery, Error> {
         let fen = Fen::from_ascii(fen.as_bytes())?;
-        let setup = fen.into_setup();
-        let castling_mode = CastlingMode::detect(&setup);
-        let position: Chess = setup.position(castling_mode)?;
+        let position = database_setup_to_chess(fen.into_setup())?;
         let pawn_home = get_pawn_home(position.board());
         let material = get_material_count(position.board());
         Ok(PositionQuery::Exact(ExactData {
@@ -506,9 +505,7 @@ fn get_move_after_match(
         let fen = Fen::from_ascii(fen.as_bytes()).map_err(|error| {
             Error::InvalidInput(format!("game {game_id} has invalid FEN: {error}"))
         })?;
-        let setup = fen.into_setup();
-        let castling_mode = CastlingMode::detect(&setup);
-        Chess::from_setup(setup, castling_mode).map_err(|error| {
+        database_setup_to_chess(fen.into_setup()).map_err(|error| {
             Error::InvalidInput(format!("game {game_id} has invalid FEN setup: {error}"))
         })?
     } else {
@@ -1511,6 +1508,182 @@ mod progress_error_tests {
     }
 }
 
+#[cfg(test)]
+mod setup_policy_tests {
+    use super::*;
+
+    const NINE_PAWN_FEN: &str = "4k3/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1";
+    const KINGS_FEN: &str = "4k3/8/8/8/8/8/8/4K3 w - - 0 1";
+
+    fn assert_imported_too_much_material_search(query_fen: &str, query_type: &str) {
+        // Reuse the portable schema and capability fixture. This runs the actual
+        // PGN conversion, index generation, search and normalized-game decoder.
+        let (dir, app, handle, database) = super::super::schema_database_case(
+            "setup-policy",
+            vec![
+                PathOperation::DatabaseCreate,
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+            ],
+        );
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent,
+                super::super::ConvertProgress
+            ))
+            .mount_events(&app);
+        let pgn_path = dir.path().join("nine-pawns.pgn");
+        std::fs::write(
+            &pgn_path,
+            format!(
+                "[Event \"Setup policy\"]\n[Site \"Fixture\"]\n[White \"Nine pawns\"]\n[Black \"King\"]\n[Result \"1-0\"]\n[SetUp \"1\"]\n[FEN \"{NINE_PAWN_FEN}\"]\n\n1. a4 1-0\n"
+            ),
+        )
+        .unwrap();
+        let state = app.state::<AppState>();
+        let file = state
+            .pgn_path_authority
+            .with_mut(|authority| {
+                let grant = authority.grant_persistent_file_for_test(
+                    &pgn_path,
+                    "nine-pawns.pgn",
+                    vec![PathOperation::ReadPgn],
+                );
+                super::super::FileWorkspaceHandle::new(grant.id)
+            })
+            .unwrap();
+        super::super::convert_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            vec![file],
+            handle.clone(),
+            None,
+            app.clone(),
+            "Setup policy".into(),
+            None,
+            "setup-policy-import".into(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        let imported = games::table.load::<Game>(&mut connection).unwrap();
+        assert_eq!(imported.len(), 1, "the nine-pawn PGN must be imported");
+        assert_eq!(imported[0].fen.as_deref(), Some(NINE_PAWN_FEN));
+        assert_eq!(imported[0].moves.len(), 1);
+        assert_eq!(
+            super::super::encoding::decode_game_to_movetext(
+                &imported[0].moves,
+                NINE_PAWN_FEN.parse().unwrap(),
+            )
+            .unwrap(),
+            "1. a4"
+        );
+        drop(connection);
+
+        let query = GameQuery::new().position(PositionQueryJs {
+            fen: query_fen.into(),
+            type_: query_type.into(),
+        });
+        for progress_id in ["setup-policy-first", "setup-policy-cached"] {
+            let progress = JobProgress::new(app.clone(), progress_id.into()).unwrap();
+            let result = search_position_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                state.new_request.clone().try_acquire_owned().unwrap(),
+                progress.lease(),
+                app.clone(),
+                handle.clone(),
+                query.clone(),
+                &CancellationToken::new(),
+                None,
+            );
+            assert!(
+                result.is_ok(),
+                "imported nine-pawn setup must be searchable by {query_type}: {:?}",
+                result.as_ref().err()
+            );
+            let (stats, samples) = result.unwrap();
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].move_, "a4");
+            assert_eq!((stats[0].white, stats[0].draw, stats[0].black), (1, 0, 0));
+            assert_eq!(samples.len(), 1);
+            assert_eq!(samples[0].id, imported[0].id);
+            assert_eq!(samples[0].fen, NINE_PAWN_FEN);
+            assert_eq!(samples[0].moves, "1. a4 1-0");
+
+            let cache = state.search_cache.results.lock().unwrap();
+            assert_eq!(cache.values.len(), 1);
+            let (key, cached) = cache.values.iter().next().unwrap();
+            assert_eq!(key.query, query);
+            assert_eq!(
+                serde_json::to_value(&cached.value).unwrap(),
+                serde_json::to_value(&(stats, samples)).unwrap()
+            );
+        }
+        let index = MmapSearchIndex::open(get_index_path(&database)).unwrap();
+        assert_eq!(index.len(), 1);
+        let entry = index.get_entry_ref(0).unwrap();
+        assert_eq!(entry.id, imported[0].id);
+        assert_eq!(entry.fen, Some(NINE_PAWN_FEN));
+        assert_eq!(entry.moves, imported[0].moves);
+    }
+
+    #[test]
+    fn too_much_material_import_is_searchable_by_partial_kings() {
+        assert_imported_too_much_material_search(KINGS_FEN, "partial");
+    }
+
+    #[test]
+    fn too_much_material_import_is_searchable_by_exact_setup() {
+        assert_imported_too_much_material_search(NINE_PAWN_FEN, "exact");
+    }
+
+    #[test]
+    fn search_rejects_malformed_fen_invalid_kings_and_move_blobs() {
+        let partial = PositionQuery::partial_from_fen(KINGS_FEN).unwrap();
+        for (fen, message) in [
+            ("invalid fen", "game 42 has invalid FEN:"),
+            (
+                "8/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1",
+                "game 42 has invalid FEN setup:",
+            ),
+            (
+                "4k3/8/8/8/8/P7/PPPPPPPP/3KK3 w - - 0 1",
+                "game 42 has invalid FEN setup:",
+            ),
+        ] {
+            assert!(PositionQuery::exact_from_fen(fen).is_err());
+            let error =
+                get_move_after_match(42, &[], &Some(fen), &partial, &CancellationToken::new())
+                    .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidInput(ref cause) if cause.starts_with(message)),
+                "{error}"
+            );
+        }
+        for (blob, message) in [
+            (&[251][..], "game 42 has illegal encoded move 251"),
+            (&[253, 1][..], "game 42 has invalid move stream:"),
+        ] {
+            let error = get_move_after_match(
+                42,
+                blob,
+                &Some(NINE_PAWN_FEN),
+                &partial,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidInput(ref cause) if cause.starts_with(message)),
+                "{error}"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -1526,6 +1699,7 @@ mod tests {
     };
     use diesel::Connection;
     use parking_lot::Mutex as ParkingMutex;
+    use shakmaty::FromSetup;
     use std::{hash::Hash, path::PathBuf, sync::Arc};
     use tempfile::TempDir;
 

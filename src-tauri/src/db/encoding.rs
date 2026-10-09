@@ -1,6 +1,6 @@
 use crate::error::Error;
 use shakmaty::{
-    fen::Fen, san::SanPlus, CastlingMode, Chess, FromSetup, Move, Position, PositionError,
+    fen::Fen, san::SanPlus, CastlingMode, Chess, FromSetup, Move, Position, PositionError, Setup,
 };
 use std::io::{self, ErrorKind};
 use tokio_util::sync::CancellationToken;
@@ -10,6 +10,14 @@ pub const VARIATION_END_MARKER: u8 = 254;
 pub const COMMENT_MARKER: u8 = 253;
 pub const NAG_MARKER: u8 = 252;
 const ANNOTATION_CHECKPOINT_BYTES: usize = 4 * 1024;
+
+/// Reconstructs database setups with the same policy used when importing PGN headers.
+pub(crate) fn database_setup_to_chess(setup: Setup) -> Result<Chess, Error> {
+    let castling_mode = CastlingMode::detect(&setup);
+    Chess::from_setup(setup, castling_mode)
+        .or_else(PositionError::ignore_too_much_material)
+        .map_err(Error::from)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -277,10 +285,7 @@ fn decode_game_cancellable_with_checkpoint(
     checkpoint: &mut dyn FnMut(),
 ) -> Result<DecodedGame, Error> {
     cancellation_check(cancellation, checkpoint)?;
-    let setup = initial_fen.into_setup();
-    let castling_mode = CastlingMode::detect(&setup);
-    let root_position = Chess::from_setup(setup, castling_mode)
-        .or_else(PositionError::ignore_too_much_material)
+    let root_position = database_setup_to_chess(initial_fen.into_setup())
         .map_err(|error| invalid_data(&format!("Invalid initial FEN setup: {error}")))?;
 
     let mut stack = vec![DecodeFrame {
@@ -806,6 +811,43 @@ mod tests {
         assert_eq!(error.to_string(), "I/O failure");
         let source = std::error::Error::source(&error).expect("Io keeps its cause");
         assert!(source.to_string().starts_with("Invalid initial FEN setup:"));
+    }
+
+    #[test]
+    fn too_much_material_decodes_legal_moves_but_rejects_invalid_blobs() {
+        let fen: Fen = "4k3/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1".parse().unwrap();
+        let chess = database_setup_to_chess(fen.clone().into_setup()).unwrap();
+        let m = SanPlus::from_ascii(b"a4")
+            .unwrap()
+            .san
+            .to_move(&chess)
+            .unwrap();
+        let bytes = [encode_move(&m, &chess).unwrap()];
+        assert_eq!(
+            decode_game_to_movetext(&bytes, fen.clone()).unwrap(),
+            "1. a4"
+        );
+
+        for (blob, message) in [
+            (&[251][..], "Invalid move index for current position"),
+            (&[COMMENT_MARKER, 1][..], "Truncated comment length marker"),
+        ] {
+            let error = decode_game_to_movetext(blob, fen.clone()).unwrap_err();
+            let cause = std::error::Error::source(&error).unwrap().to_string();
+            assert_eq!(cause, message);
+        }
+    }
+
+    #[test]
+    fn too_much_material_does_not_hide_invalid_king_setups() {
+        for fen in [
+            "8/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1",
+            "4k3/8/8/8/8/P7/PPPPPPPP/3KK3 w - - 0 1",
+        ] {
+            let error = decode_game(&[], fen.parse().unwrap()).unwrap_err();
+            let cause = std::error::Error::source(&error).unwrap().to_string();
+            assert!(cause.starts_with("Invalid initial FEN setup:"), "{cause}");
+        }
     }
 
     #[test]

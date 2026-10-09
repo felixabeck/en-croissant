@@ -25,8 +25,8 @@ use crate::{
     cancellable_read::{map_read_error, CancellableRead, SourceRead, SourceReadState},
     db::{
         encoding::{
-            decode_game_to_movetext, decode_game_to_movetext_cancellable, decode_move,
-            iter_mainline_move_bytes, try_iter_mainline_move_bytes_cancellable,
+            database_setup_to_chess, decode_game_to_movetext, decode_game_to_movetext_cancellable,
+            decode_move, iter_mainline_move_bytes, try_iter_mainline_move_bytes_cancellable,
         },
         models::*,
         ops::*,
@@ -59,10 +59,7 @@ use diesel::{
 use pgn_reader::{BufferedReader, Nag, RawHeader, SanPlus, Skip, Visitor};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shakmaty::{
-    fen::Fen, Board, ByColor, CastlingMode, Chess, EnPassantMode, FromSetup, Piece, Position,
-    PositionError,
-};
+use shakmaty::{fen::Fen, Board, ByColor, Chess, EnPassantMode, Piece, Position};
 use specta::Type;
 use std::ffi::OsStr;
 #[cfg(all(test, unix))]
@@ -492,11 +489,7 @@ impl Visitor for Importer {
                 let fen = Fen::from_ascii(value.as_bytes());
                 if let Ok(fen) = fen {
                     self.game.fen = Some(value.decode_utf8_lossy().into_owned());
-                    let setup = fen.into_setup();
-                    let castling_mode = CastlingMode::detect(&setup);
-                    if let Ok(setup) = Chess::from_setup(setup, castling_mode)
-                        .or_else(PositionError::ignore_too_much_material)
-                    {
+                    if let Ok(setup) = database_setup_to_chess(fen.into_setup()) {
                         self.game.position = setup;
                     } else {
                         self.skip = true;
@@ -11784,6 +11777,26 @@ mod tests {
             .load::<InfoValue>(&mut connection)
             .map(|rows| !rows.is_empty())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod setup_policy_tests {
+    use super::*;
+
+    #[test]
+    fn importer_rejects_malformed_fen_and_invalid_king_setups() {
+        for fen in [
+            "invalid fen",
+            "8/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1",
+            "4k3/8/8/8/8/P7/PPPPPPPP/3KK3 w - - 0 1",
+        ] {
+            let pgn = format!("[SetUp \"1\"]\n[FEN \"{fen}\"]\n\n*\n");
+            let mut reader = BufferedReader::new(pgn.as_bytes());
+            let mut importer = Importer::new(None);
+            assert!(reader.read_game(&mut importer).unwrap().unwrap().is_none());
+            assert!(reader.read_game(&mut importer).unwrap().is_none());
+        }
     }
 }
 
