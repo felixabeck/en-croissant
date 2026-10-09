@@ -493,6 +493,23 @@ fn invalid_move_stream(game_id: i32, error: Error) -> Error {
     }
 }
 
+fn matched_position_continuation(
+    game_id: i32,
+    chess: Chess,
+    next_byte: Option<u8>,
+) -> Result<String, Error> {
+    let Some(next_byte) = next_byte else {
+        return Ok("*".to_string());
+    };
+    let next_move = decode_move(next_byte, &chess).ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "game {game_id} has illegal encoded move {next_byte}"
+        ))
+    })?;
+    let san = SanPlus::from_move(chess, &next_move);
+    Ok(san.to_string())
+}
+
 fn get_move_after_match(
     game_id: i32,
     move_blob: &[u8],
@@ -518,16 +535,7 @@ fn get_move_after_match(
         let mut mainline = try_iter_mainline_move_bytes_cancellable(move_blob, cancellation)
             .map_err(|error| invalid_move_stream(game_id, error))?
             .peekable();
-        let Some(next_byte) = mainline.peek().copied() else {
-            return Ok(Some("*".to_string()));
-        };
-        let next_move = decode_move(next_byte, &chess).ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "game {game_id} has illegal encoded move {next_byte}"
-            ))
-        })?;
-        let san = SanPlus::from_move(chess, &next_move);
-        return Ok(Some(san.to_string()));
+        return matched_position_continuation(game_id, chess, mainline.peek().copied()).map(Some);
     }
 
     let mut mainline = try_iter_mainline_move_bytes_cancellable(move_blob, cancellation)
@@ -553,16 +561,8 @@ fn get_move_after_match(
             }
         }
         if query.matches(&chess) {
-            let Some(next_byte) = mainline.peek().copied() else {
-                return Ok(Some("*".to_string()));
-            };
-            let next_move = decode_move(next_byte, &chess).ok_or_else(|| {
-                Error::InvalidInput(format!(
-                    "game {game_id} has illegal encoded move {next_byte}"
-                ))
-            })?;
-            let san = SanPlus::from_move(chess, &next_move);
-            return Ok(Some(san.to_string()));
+            return matched_position_continuation(game_id, chess, mainline.peek().copied())
+                .map(Some);
         }
     }
     Ok(None)
