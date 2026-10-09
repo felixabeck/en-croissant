@@ -6697,3 +6697,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Inspection failure cannot prove the opened inode is not another bound database. Reuse d-20260930-10 ownership and retain Linux O_PATH leaf handling. Reversal path: a measured alternative that never opens a lockable unknown inode can replace this contract.
 * **Decided by:** Codex, adopted full-auto plan, 2026-10-09 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"2dd9373fcf237e7a6ccbc95b95c6d56f7ea59c266eb7824bd33f7772c0359fbb","input_sha256":"674127f5fd5aab70f37f2a95dc455fddd02f0b4ab3972bad45a51601c8c5d962","kind":"mutation-receipt","operation":"10d1747aa489390fd4dea1392c1a3195e7061887b5bf10d57ba326888380e45b","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-08","d-20261009-09","d-20261009-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-11 — Where does synchronous workspace hydration execute?
+
+* **Question:** Where does synchronous workspace hydration execute?
+* **Governs:** f-20260929-09
+* **Chosen:** One synchronous atom-owned initializer, explicitly invoked before renderer bootstrap and lazily reached by direct workspace atom callers and the shared tab staging boundary. Cache only the successful initial snapshot, shared across new Jotai stores while their later edits remain local.
+* **Rejected:** Async effect hydration exposes incomplete state. Bootstrap-only initialization forces direct and test callers to wire readiness. Hydration after staging permits the orphan sweep to delete the new tree before metadata admission.
+* **Reason:** Existing callers synchronously read and write workspace atoms. The traced stageAndCommitTab path can be the first workspace operation. Initialization before ID allocation preserves same-call semantics and existing cleanup authority. Reversal requires updating atom initialization, bootstrap and tab admission with importer, mutation and real-app evidence.
+* **Decided by:** Codex interactive drain a06c11d8-21d1-4e54-8b45-64966eca9cb5, reviewed plan r5 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4cbac6e788769f27859271ad74c83a31189cce00454f9548794a0f0620c13ba3","input_sha256":"b4f6ad2dcb6bd38afed84cecca5999b09fdf1fb19d0f5aecd7e419055e5089b5","kind":"mutation-receipt","operation":"57f391286690f0881ba33bab3ee0090124ea0ceb2af5e867f4ac900b24b572a3","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-11"],"target":"decisions-ledger","v":1} -->
