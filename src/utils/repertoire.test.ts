@@ -89,6 +89,89 @@ test("iterative tree stats match the previous varied-tree counts", () => {
     });
 });
 
+test.each(["forward", "reverse"] as const)(
+    "overlapping identical-position fetches keep distinct operation ids and results in %s completion order",
+    async (completionOrder) => {
+        type SearchResult = Awaited<ReturnType<typeof import("./db").searchPosition>>;
+        let resolveFirst!: (result: SearchResult) => void;
+        let resolveSecond!: (result: SearchResult) => void;
+        const firstSearch = new Promise<SearchResult>((resolve) => {
+            resolveFirst = resolve;
+        });
+        const secondSearch = new Promise<SearchResult>((resolve) => {
+            resolveSecond = resolve;
+        });
+        mocks.searchPosition
+            .mockImplementationOnce(() => firstSearch)
+            .mockImplementationOnce(() => secondSearch);
+        const firstSignal = new AbortController().signal;
+        const secondSignal = new AbortController().signal;
+        const fen = defaultTree().root.fen;
+
+        const first = fetchPositionMoves(database, fen, firstSignal);
+        const second = fetchPositionMoves(database, fen, secondSignal);
+
+        expect(mocks.searchPosition).toHaveBeenCalledTimes(2);
+        const [firstCall, secondCall] = mocks.searchPosition.mock.calls;
+        const options = {
+            path: database,
+            type: "exact",
+            fen,
+            color: "white",
+            player: null,
+            result: "any",
+        };
+        expect(firstCall[0]).toEqual(options);
+        expect(secondCall[0]).toEqual(options);
+        expect(firstCall[2]).toBe(firstSignal);
+        expect(secondCall[2]).toBe(secondSignal);
+        expect(firstSignal).not.toBe(secondSignal);
+        expect(firstCall[1]).not.toBe(secondCall[1]);
+        expect(firstCall[1]).toMatch(/^coverage-calc:.+$/);
+        expect(secondCall[1]).toMatch(/^coverage-calc:.+$/);
+
+        const firstMove = { move: "e4", white: 10, draw: 2, black: 3 };
+        const secondMove = { move: "d4", white: 4, draw: 5, black: 6 };
+        const firstData: SearchResult = [
+            [firstMove, { move: "*", white: 1, draw: 2, black: 3 }],
+            [],
+        ];
+        const secondData: SearchResult = [[secondMove], []];
+        const firstOperation = {
+            resolve: resolveFirst,
+            data: firstData,
+            promise: first,
+            expected: { moves: [firstMove], total: 21 },
+        };
+        const secondOperation = {
+            resolve: resolveSecond,
+            data: secondData,
+            promise: second,
+            expected: { moves: [secondMove], total: 15 },
+        };
+        const [earlier, later] =
+            completionOrder === "reverse"
+                ? [secondOperation, firstOperation]
+                : [firstOperation, secondOperation];
+        earlier.resolve(earlier.data);
+        await expect(earlier.promise).resolves.toEqual(earlier.expected);
+        later.resolve(later.data);
+        await expect(later.promise).resolves.toEqual(later.expected);
+
+        mocks.searchPosition.mockResolvedValueOnce([[], []]);
+        await expect(fetchPositionMoves(database, fen)).resolves.toEqual({ moves: [], total: 0 });
+        expect(mocks.searchPosition).toHaveBeenCalledTimes(3);
+        const [repeatedOptions, repeatedId, repeatedSignal] = mocks.searchPosition.mock.calls[2];
+        expect(repeatedOptions).toEqual(options);
+        expect(repeatedId).not.toBe(firstCall[1]);
+        expect(repeatedId).not.toBe(secondCall[1]);
+        expect(repeatedId).toMatch(/^coverage-calc:.+$/);
+        expect(repeatedSignal).toBeUndefined();
+        expect(firstSignal.aborted).toBe(false);
+        expect(secondSignal.aborted).toBe(false);
+    },
+);
+
 test("native cancellation propagates even when the renderer signal itself was not aborted", async () => {
     mocks.searchPosition.mockRejectedValue({
         tag: "backend-error",

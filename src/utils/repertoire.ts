@@ -35,7 +35,7 @@ export async function fetchPositionMoves(
             player: null,
             result: "any",
         } as LocalOptions,
-        "coverage-calc",
+        `coverage-calc:${crypto.randomUUID()}`,
         signal,
     );
     const summary = openings.find((op) => op.move === "*");
