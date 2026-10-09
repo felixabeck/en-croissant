@@ -2,6 +2,8 @@
 
 Source implementation and cumulative repair review are complete through a47c7461. The real-app candidate and restored controls each passed 88 checks. The deliberate application-input fault produced exactly both new unique FAIL messages and verifier exit 1, with 86 other checks green. All 100 pinned container scenarios passed without snapshot changes. Root inspected all three workspace screenshots. The full matrix, commands, actual messages, hashes and exact temporary source patch are preserved below. The following comment-only verifier evidence update and finding closure precede the final gates. Final gate, push, remote CI and install results belong to the post-delivery build-ledger row, which does not predict them here.
 
+The completed-evidence comments and handoff were committed as d7ce2ae4. The locked writer closed f-20260929-09 in d6e510d6. Cumulative review round 3 examined a47c7461..d6e510d6 with full base-to-tip context. Correctness approved as not applicable to comments-only executable change, tests and root-cause approved against the actual staged runtime evidence, and records approved source, history, raw mutation archives, runtime transcripts and receipt hashes. All four canonical leaves completed, zero new issues, no Skip, Defer or carried obligation. Root read and arbitrated every raw verdict. Wall elapsed 234.2 seconds including root inspection and arbitration, active review wall and categorized non-overlapping waits unknown. REVIEWED_THROUGH=d6e510d6c859995b8163250b3e62095d9050dec3 before this final records-only publication. Three completed cumulative code/records rounds have 20 completed lens reports and five unique Fix, all closed. The final records-only publication receives its own final records check before the full gates. Its raw verdict and actual delivery results are recorded in the build-ledger row after delivery.
+
 The current root revalidated and authored the adopted plan and arbitrated every review. Plan authorship and arbitration shared one context. Detection ran in fresh Codex contexts on the same OpenAI model family and model as the sensitive functional source writers. Functional source and repair writers used gpt-6.1-sol high. Code lenses used gpt-6.1-sol medium, plan lenses high. The later comments-only runtime evidence update used the mechanical gpt-6-luna max profile, with executable-body byte equality proof. No cross-family independence is claimed. The inherited draft history is preserved verbatim below, including its own authorship and raw reports.
 
 The successful initial document snapshot is loaded synchronously before bootstrap and before UUID allocation or seeded tab staging. Direct atom callers retain lazy same-tick initialization. New stores share that successful initial snapshot, later edits and empty state are store-local, and failed loads do not populate the success cache. Original path owners are captured before repair. Validation graphs are built once within their consuming synchronous operation, save operations construct only the live graph, recursive tree schemas return the same graph within a parse, and legacy annotation graphs are shared within a migration. Singleton storage ownership, persisted format, validation policy and cleanup authority are preserved.
@@ -1205,6 +1207,10 @@ The initial phase needed two source proof repairs. Repair 1 corrected module-ins
 Round 2 reviewed 46762c78..a47c7461 with full b2663061..a47c7461 context. All eight canonical leaves approved. The root read and arbitrated every raw report. D1-D5 are closed, with zero new issues, no carried obligation, no Defer or Skip. Runtime O4 remains the explicit next proof obligation. Wall elapsed was 235.1 seconds including root report inspection and arbitration. Active wall time and categorized non-overlapping waits are unknown. The code-quality and minimalism witnesses confirm the repaired bounds, factories, serializer and all five cleanup callers. Records independently inspected raw mutation reports, source bytes, counts and timing evidence in this round.
 
 Plan authorship and arbitration share this root context. Detection runs on the same OpenAI model family as the code, with fresh lens contexts and no family-separation claim.
+
+After round 2, runtime O4 completed: healthy 88/88, deliberate defaulting fault exactly two unique failures with full verifier exit 1 and 86 other checks green, and byte-restored fresh build 88/88. All 100 container scenarios passed without snapshot changes. Root inspected all three screenshots and read the full actual transcripts. The comment-only evidence update and durable handoff are committed in d7ce2ae4 after root executable-body equality, syntax, six driver tests and pre-review green. The locked finding close is d6e510d6. Round 3 now reviews a47c7461..d6e510d6. There is no functional source repair in this delta. Earlier pending runtime states in raw historical reports are explicitly superseded by completed evidence. Final gates and live release claims remain pending, with their eventual actual results reserved for the post-delivery build-ledger row. The mechanical comment writer used gpt-6-luna max, while functional writers and code detection use gpt-6.1-sol on the same family.
+
+Round 3 completed with all four canonical lenses APPROVED and zero new issues. Correctness is explicitly NOT APPLICABLE to the comments-only code delta. Tests inspected the exact rendered identities/selection assertions and actual counterfactual, root-cause checked cumulative cause/history and timing limitations, and records confirmed raw mutation archives, full runtime transcripts and receipt hashes. Root read and arbitrated every raw report. Wall 234.2 seconds including root inspection and arbitration, active wall and categorized non-overlapping waits unknown. REVIEWED_THROUGH d6e510d6c859995b8163250b3e62095d9050dec3. A final records-only publication now preserves this round's full raw reports and arbitration, then receives one records lens under the narrative-only exception. No source repair, new issue, reopening, withdrawal or split was needed.
 ````
 
 
@@ -5270,6 +5276,17 @@ VERDICT: APPROVED
 ````
 
 
+## Cumulative code or records review raw report: lens-correctness-r3.txt
+
+Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
+
+````text
+NOT APPLICABLE: The reviewed delta changes only verifier comments and evidence records. No executable code, predicates, state transitions, or caller/callee contracts change, so correctness defects in changed code cannot occur (confidence: 100). Earlier functional changes were not re-reviewed.
+
+VERDICT: APPROVED
+````
+
+
 ## Cumulative code or records review raw report: lens-error-handling-r1.txt
 
 Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
@@ -5382,6 +5399,19 @@ VERDICT: APPROVED
 ````
 
 
+## Cumulative code or records review raw report: lens-records-r3.txt
+
+Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
+
+````text
+No record findings. Source, history, raw mutation archives, runtime transcripts and receipt hashes support the claims. Historical pending states are explicitly superseded.
+
+Final gates, push, CI and installation remain pending. No gates or live-service queries ran. Review shares the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+````
+
+
 ## Cumulative code or records review raw report: lens-root-cause-r1.txt
 
 Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
@@ -5407,6 +5437,23 @@ Historical or raw evidence, quoted verbatim. Statements of pending work describe
 No findings. Import-time hydration and schema construction caused the static-mutant cost. The implementation moves both into synchronous operations, and this repair removes unnecessary load-schema allocation from saves. Supplied measurements show 281 → 19 static mutants with 100% mutation coverage. History inspection found no reintroduced prior fix.
 
 Limitation: O4’s real-app reload, staged defaulting fault and restored-green proof remain pending. No gates ran in this read-only review (confidence: 100).
+
+VERDICT: APPROVED
+````
+
+
+## Cumulative code or records review raw report: lens-root-cause-r3.txt
+
+Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
+
+````text
+No findings in this lens.
+
+The cumulative fix removes the cause: import-time hydration and schema construction move into synchronous operations, with initialization before bootstrap and tree staging. Recorded measurements show static mutants decreasing from 281 to 19 while retaining 100% mutation coverage.
+
+The closure delta changes comments and records only. The runtime transcripts show both exact-identity assertions failing against the deliberate defaulting fault, then passing after source restoration and rebuild. History inspection found no reintroduced pending-removal or legacy-NAG defect.
+
+Limitation: timing variance prevents a stable percentage speedup claim (confidence: 100). Review used a fresh context on the same model family as the functional code.
 
 VERDICT: APPROVED
 ````
@@ -5443,6 +5490,19 @@ No findings. Restoring eager hydration would fail `atoms.test.ts`’s zero-load 
 Named limitation: real Tauri execution, staged defaulting failure, restored-green verification and container e2e remain pending. Raw mutation archives and native Node codec proof were not independently inspected in this review (confidence: 100).
 
 Review used a fresh context in the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+````
+
+
+## Cumulative code or records review raw report: lens-tests-r3.txt
+
+Historical or raw evidence, quoted verbatim. Statements of pending work describe the time of this artifact. The current status above supersedes those pending states.
+
+````text
+No findings. `verify-app.mjs:3422` and `:3428` assert exact rendered tab identities and selection. The unchanged verifier detected both failures in the defaulting build and exited 1. Healthy and restored runs passed. Unit anchors also catch eager hydration and initialization after tree staging.
+
+Limitation: inspected source and recorded transcripts without rerunning gates (confidence: 100). Review shares the code’s OpenAI model family.
 
 VERDICT: APPROVED
 ````
