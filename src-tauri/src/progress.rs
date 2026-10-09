@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -8,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::Manager;
 use tauri_specta::Event;
+use tokio_util::sync::CancellationToken;
 
 use crate::{error::Error, infra::operations::OperationRegistry, AppState};
 
@@ -388,6 +392,33 @@ fn update_progress_with_emitter(
     let (item, changed) = store.transition(lease, progress, state)?;
     if changed {
         emit_item(item)?;
+    }
+    Ok(())
+}
+
+/// Running updates are best effort, except a revoked lease cancels a token-owning operation.
+pub(crate) fn handle_running_progress_result(
+    result: Result<(), Error>,
+    operation: &str,
+    lease: &ProgressLease,
+    diagnosed: &AtomicBool,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), Error> {
+    if let Err(error) = result {
+        if matches!(error, Error::StaleProgressLease) {
+            if let Some(cancellation) = cancellation {
+                cancellation.cancel();
+                return Err(Error::Cancellation);
+            }
+            return Ok(());
+        }
+        if !diagnosed.swap(true, Ordering::Relaxed) {
+            log::error!(
+                "{operation} progress update failed for {} generation {}: {error:?}",
+                lease.id,
+                lease.generation
+            );
+        }
     }
     Ok(())
 }

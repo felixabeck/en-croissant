@@ -42,8 +42,8 @@ use crate::{
     },
     opening::get_opening_from_setup,
     progress::{
-        complete_preserving_result, update_progress_with_state, JobProgress, ProgressLease,
-        ProgressState,
+        complete_preserving_result, handle_running_progress_result, update_progress_with_state,
+        JobProgress, ProgressLease, ProgressState,
     },
     AppState, SearchCache,
 };
@@ -2407,6 +2407,40 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     lease: Option<ProgressLease>,
     cancellation: &CancellationToken,
 ) -> Result<PlayerGameInfo, Error> {
+    get_players_game_info_with_progress_blocking(
+        authority,
+        repository,
+        file,
+        id,
+        PlayerStatisticsProgress {
+            app,
+            lease,
+            #[cfg(test)]
+            update: None,
+        },
+        cancellation,
+    )
+}
+
+#[cfg(test)]
+type PlayerStatisticsProgressUpdate =
+    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Send + Sync;
+
+struct PlayerStatisticsProgress<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    lease: Option<ProgressLease>,
+    #[cfg(test)]
+    update: Option<Box<PlayerStatisticsProgressUpdate>>,
+}
+
+fn get_players_game_info_with_progress_blocking<R: tauri::Runtime>(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    id: i32,
+    progress: PlayerStatisticsProgress<R>,
+    cancellation: &CancellationToken,
+) -> Result<PlayerGameInfo, Error> {
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
@@ -2421,16 +2455,37 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
         .filter(games::white_id.eq(id).or(games::black_id.eq(id)))
         .filter(games::fen.is_null());
 
+    let progress_error_diagnosed = std::sync::atomic::AtomicBool::new(false);
     let emit_progress = |kept_rows, total_rows| {
-        if let Some(lease) = &lease {
-            let _ = update_progress_with_state(
-                &app.state::<AppState>().progress_state,
-                &app,
+        if let Some(lease) = &progress.lease {
+            let percent =
+                (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32;
+            let report_progress = || {
+                update_progress_with_state(
+                    &progress.app.state::<AppState>().progress_state,
+                    &progress.app,
+                    lease,
+                    percent,
+                    ProgressState::Running,
+                )
+            };
+            #[cfg(test)]
+            let progress_result = progress
+                .update
+                .as_ref()
+                .and_then(|update| update(lease, percent))
+                .unwrap_or_else(report_progress);
+            #[cfg(not(test))]
+            let progress_result = report_progress();
+            handle_running_progress_result(
+                progress_result,
+                "get_players_game_info",
                 lease,
-                (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32,
-                ProgressState::Running,
-            );
+                &progress_error_diagnosed,
+                None,
+            )?;
         }
+        Ok::<(), Error>(())
     };
 
     let mut accumulator = PlayerStatisticsAccumulator::default();
@@ -2466,7 +2521,7 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                     accumulator.add(row);
                     kept_rows = kept_rows.saturating_add(1);
                     if (kept_rows - 1).is_multiple_of(1000) {
-                        emit_progress(kept_rows, total_rows);
+                        emit_progress(kept_rows, total_rows)?;
                     }
                 }
 
@@ -2478,7 +2533,7 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
 
     cancellation_check(cancellation)?;
     if kept_rows > 0 {
-        emit_progress(kept_rows, total_rows);
+        emit_progress(kept_rows, total_rows)?;
     }
 
     let game_info = accumulator.into_player_game_info();
@@ -10124,8 +10179,12 @@ mod tests {
         frames
     }
 
-    #[test]
-    fn get_players_game_info_blocking_emits_a_nonzero_running_frame_for_two_kept_rows() {
+    fn two_kept_player_games_fixture() -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        i32,
+    ) {
         let (_dir, app, handle, database) = blocking_database_case();
         mount_progress_events(&app);
         let player_id = {
@@ -10142,6 +10201,152 @@ mod tests {
             insert_kept_player_game(&mut db, white.id, black.id, event.id, site.id);
             white.id
         };
+        (_dir, app, handle, player_id)
+    }
+
+    #[test]
+    fn get_players_game_info_production_progress_failures_log_once_and_preserve_statistics() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            for store_failure in [false, true] {
+                let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
+                let expected = load_player_statistics(&app, handle.clone(), player_id);
+                assert_eq!(expected.site_stats_data[0].daily[0].won, 2);
+                let state = app.state::<AppState>();
+                let lease = state
+                    .progress_state
+                    .start("player-info-best-effort".into())
+                    .unwrap();
+                let checkpoints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let observed = checkpoints.clone();
+                let update_app = app.clone();
+                let update = move |lease: &ProgressLease, percent: f32| {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Some(if store_failure {
+                        Err(Error::Conflict("injected statistics store failure".into()))
+                    } else {
+                        update_app
+                            .state::<AppState>()
+                            .progress_state
+                            .transition(lease, percent, ProgressState::Running)
+                            .unwrap();
+                        Err(Error::Tauri(Box::new(tauri::Error::Io(
+                            std::io::Error::other("injected statistics emitter failure"),
+                        ))))
+                    })
+                };
+                let cancellation = CancellationToken::new();
+                let capture = crate::error::LogCaptureScope::start();
+                let actual = get_players_game_info_with_progress_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    handle,
+                    player_id,
+                    PlayerStatisticsProgress {
+                        app: app.clone(),
+                        lease: Some(lease.clone()),
+                        update: Some(Box::new(update)),
+                    },
+                    &cancellation,
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+                assert!(!cancellation.is_cancelled());
+                assert_eq!(checkpoints.load(std::sync::atomic::Ordering::SeqCst), 2);
+                let diagnostics: Vec<_> = capture
+                    .records()
+                    .into_iter()
+                    .filter(|record| record.level == log::Level::Error)
+                    .collect();
+                assert_eq!(
+                    diagnostics.len(),
+                    1,
+                    "statistics update failures must emit exactly one native ERROR record per operation"
+                );
+                assert!(diagnostics[0]
+                    .message
+                    .contains("get_players_game_info progress update failed"));
+                assert!(diagnostics[0].message.contains(&lease.id));
+                assert!(diagnostics[0]
+                    .message
+                    .contains(&format!("generation {}", lease.generation)));
+                assert!(diagnostics[0].message.contains(if store_failure {
+                    "injected statistics store failure"
+                } else {
+                    "injected statistics emitter failure"
+                }));
+                assert_eq!(
+                    state.progress_state.get(&lease.id).unwrap().unwrap().progress,
+                    if store_failure { 0.0 } else { 100.0 }
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn get_players_game_info_production_stale_progress_preserves_statistics_and_newer_generation() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            for clear in [false, true] {
+                let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
+                let expected = load_player_statistics(&app, handle.clone(), player_id);
+                let state = app.state::<AppState>();
+                let lease = state
+                    .progress_state
+                    .start("player-info-stale".into())
+                    .unwrap();
+                let replacement = if clear {
+                    state.progress_state.clear(&lease.id).unwrap();
+                    None
+                } else {
+                    let replacement = state.progress_state.start(lease.id.clone()).unwrap();
+                    state
+                        .progress_state
+                        .transition(&replacement, 17.0, ProgressState::Running)
+                        .unwrap();
+                    state.progress_state.get(&lease.id).unwrap()
+                };
+                let cancellation = CancellationToken::new();
+                let capture = crate::error::LogCaptureScope::start();
+                let actual = get_players_game_info_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    handle,
+                    player_id,
+                    app.clone(),
+                    Some(lease.clone()),
+                    &cancellation,
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+                assert!(!cancellation.is_cancelled());
+                assert_eq!(state.progress_state.get(&lease.id).unwrap(), replacement);
+                if let Some(replacement) = replacement {
+                    assert!(replacement.generation > lease.generation);
+                }
+                assert!(capture
+                    .records()
+                    .iter()
+                    .all(|record| record.level != log::Level::Error));
+            }
+        });
+    }
+
+    #[test]
+    fn get_players_game_info_blocking_emits_a_nonzero_running_frame_for_two_kept_rows() {
+        let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
         let progress_id = "player-info-two-kept";
         let lease = {
             let state = app.state::<AppState>();

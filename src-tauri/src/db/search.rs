@@ -44,7 +44,10 @@ use crate::{
             ProbeErrorClass,
         },
     },
-    progress::{update_progress_with_state, JobProgress, ProgressLease, ProgressState},
+    progress::{
+        handle_running_progress_result, update_progress_with_state, JobProgress, ProgressLease,
+        ProgressState,
+    },
     AppState, SearchCache, SearchIndexIdentity, SearchResultKey,
 };
 
@@ -641,29 +644,9 @@ async fn acquire_search_request(
     }
 }
 
-/// A revoked lease cancels the search. Delivery and store failures remain best effort.
-fn handle_search_progress_result(
-    result: Result<(), Error>,
-    lease: &ProgressLease,
-    cancellation: &CancellationToken,
-    diagnosed: &AtomicBool,
-    diagnose: impl FnOnce(String),
-) -> Result<(), Error> {
-    if let Err(error) = result {
-        if matches!(error, Error::StaleProgressLease) {
-            cancellation.cancel();
-            return Err(Error::Cancellation);
-        }
-        if !diagnosed.swap(true, Ordering::Relaxed) {
-            diagnose(format!(
-                "position search progress update failed for {} generation {}: {error:?}",
-                lease.id, lease.generation
-            ));
-        }
-    }
-    Ok(())
-}
+const POSITION_SEARCH_PROGRESS_INTERVAL: usize = 50_000;
 
+/// None runs the production update after hook side effects. Some(result) substitutes its result.
 #[cfg(test)]
 type SearchProgressUpdate<'a> =
     dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Sync + 'a;
@@ -671,7 +654,6 @@ type SearchProgressUpdate<'a> =
 #[cfg(test)]
 struct SearchProgressTestHooks<'a> {
     update: &'a SearchProgressUpdate<'a>,
-    diagnose: &'a (dyn Fn(&str) + Sync),
 }
 
 // Individual Arc handles the closure must own: BlockingGateway::spawn is
@@ -780,7 +762,7 @@ fn search_position_blocking<R: tauri::Runtime>(
             return Err(Error::Cancellation);
         }
         let index = processed.fetch_add(1, Ordering::Relaxed) + 1;
-        if index.is_multiple_of(50000) {
+        if index.is_multiple_of(POSITION_SEARCH_PROGRESS_INTERVAL) {
             let percent = search_progress_percent(index, game_count);
             let report_progress = || {
                 update_progress_with_state(
@@ -797,18 +779,12 @@ fn search_position_blocking<R: tauri::Runtime>(
                 .unwrap_or_else(report_progress);
             #[cfg(not(test))]
             let progress_result = report_progress();
-            handle_search_progress_result(
+            handle_running_progress_result(
                 progress_result,
+                "position search",
                 &lease,
-                cancellation,
                 &progress_error_diagnosed,
-                |message| {
-                    log::error!("{message}");
-                    #[cfg(test)]
-                    if let Some(hooks) = progress_hooks {
-                        (hooks.diagnose)(&message);
-                    }
-                },
+                Some(cancellation),
             )?;
         }
 
@@ -1238,6 +1214,7 @@ mod descriptor_identity_tests {
 mod progress_error_tests {
     use super::*;
     use crate::db::{SearchGameEntry, SearchIndexChunk};
+    use crate::error::LogCaptureScope;
     use crate::progress::ProgressStore;
 
     fn checkpoint_fixture(
@@ -1332,119 +1309,137 @@ mod progress_error_tests {
 
     #[test]
     fn production_checkpoint_revoked_lease_cancels_without_publishing_results() {
-        for clear in [false, true] {
-            let (_dir, app, handle) = checkpoint_fixture(100_000);
-            let state = app.state::<AppState>();
-            let progress = JobProgress::new(app.clone(), "revoked-search".into()).unwrap();
-            let lease = progress.lease();
-            let newer = Mutex::new(None);
-            let checkpoints = AtomicUsize::new(0);
-            let revoke = |old: &ProgressLease, _percent: f32| {
-                if checkpoints.fetch_add(1, Ordering::SeqCst) == 0 {
-                    if clear {
-                        state.progress_state.clear(&old.id).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            for clear in [false, true] {
+                let capture = LogCaptureScope::start();
+                let (_dir, app, handle) = checkpoint_fixture(100_000);
+                let state = app.state::<AppState>();
+                let progress = JobProgress::new(app.clone(), "revoked-search".into()).unwrap();
+                let lease = progress.lease();
+                let newer = Mutex::new(None);
+                let checkpoints = AtomicUsize::new(0);
+                let revoke = |old: &ProgressLease, _percent: f32| {
+                    if checkpoints.fetch_add(1, Ordering::SeqCst) == 0 {
+                        if clear {
+                            state.progress_state.clear(&old.id).unwrap();
+                        }
+                        let replacement = state.progress_state.start(old.id.clone()).unwrap();
+                        state
+                            .progress_state
+                            .transition(&replacement, 17.0, ProgressState::Running)
+                            .unwrap();
+                        *newer.lock().unwrap() = state.progress_state.get(&old.id).unwrap();
                     }
-                    let replacement = state.progress_state.start(old.id.clone()).unwrap();
-                    state
-                        .progress_state
-                        .transition(&replacement, 17.0, ProgressState::Running)
-                        .unwrap();
-                    *newer.lock().unwrap() = state.progress_state.get(&old.id).unwrap();
-                }
-                // Let the actual typed production update reject the stale lease.
-                None
-            };
-            let diagnostics = Mutex::new(Vec::new());
-            let diagnose = |message: &str| diagnostics.lock().unwrap().push(message.to_owned());
-            let hooks = SearchProgressTestHooks {
-                update: &revoke,
-                diagnose: &diagnose,
-            };
-            let cancellation = CancellationToken::new();
-            let result = run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks);
-            assert!(
-                matches!(result, Err(Error::Cancellation)),
-                "revoked search must return Cancellation, got error {:?}",
-                result.as_ref().err()
-            );
-            assert!(
-                cancellation.is_cancelled(),
-                "Rayon sibling token must be cancelled"
-            );
-            assert!((1..=2).contains(&checkpoints.load(Ordering::SeqCst)));
-            assert!(state.search_cache.results.lock().unwrap().values.is_empty());
-            assert!(diagnostics.lock().unwrap().is_empty());
-            progress.complete(ProgressState::Cancelled);
-            drop(progress);
-            let current = state.progress_state.get(&lease.id).unwrap();
-            assert_eq!(current, *newer.lock().unwrap());
-            assert!(current.unwrap().generation > lease.generation);
-        }
+                    // Let the actual typed production update reject the stale lease.
+                    None
+                };
+                let hooks = SearchProgressTestHooks { update: &revoke };
+                let cancellation = CancellationToken::new();
+                let result =
+                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks);
+                assert!(
+                    matches!(result, Err(Error::Cancellation)),
+                    "revoked search must return Cancellation, got error {:?}",
+                    result.as_ref().err()
+                );
+                assert!(
+                    cancellation.is_cancelled(),
+                    "Rayon sibling token must be cancelled"
+                );
+                assert!((1..=2).contains(&checkpoints.load(Ordering::SeqCst)));
+                assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+                assert!(capture
+                    .records()
+                    .iter()
+                    .all(|record| record.level != log::Level::Error));
+                progress.complete(ProgressState::Cancelled);
+                drop(progress);
+                let current = state.progress_state.get(&lease.id).unwrap();
+                assert_eq!(current, *newer.lock().unwrap());
+                assert!(current.unwrap().generation > lease.generation);
+            }
+        });
     }
 
     #[test]
     fn production_checkpoint_delivery_failures_diagnose_once_and_publish_results() {
-        for store_failure in [false, true] {
-            let (_dir, app, handle) = checkpoint_fixture(100_000);
-            let state = app.state::<AppState>();
-            let progress = JobProgress::new(app.clone(), "best-effort-search".into()).unwrap();
-            let lease = progress.lease();
-            let checkpoints = AtomicUsize::new(0);
-            let fail = |lease: &ProgressLease, percent: f32| {
-                checkpoints.fetch_add(1, Ordering::SeqCst);
-                Some(if store_failure {
-                    Err(Error::Conflict("injected progress store failure".into()))
-                } else {
-                    // An emitter fails after the store has accepted the transition.
-                    state
-                        .progress_state
-                        .transition(lease, percent, ProgressState::Running)
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            for store_failure in [false, true] {
+                let capture = LogCaptureScope::start();
+                let (_dir, app, handle) = checkpoint_fixture(100_000);
+                let state = app.state::<AppState>();
+                let progress = JobProgress::new(app.clone(), "best-effort-search".into()).unwrap();
+                let lease = progress.lease();
+                let checkpoints = AtomicUsize::new(0);
+                let fail = |lease: &ProgressLease, percent: f32| {
+                    checkpoints.fetch_add(1, Ordering::SeqCst);
+                    Some(if store_failure {
+                        Err(Error::Conflict("injected progress store failure".into()))
+                    } else {
+                        // An emitter fails after the store has accepted the transition.
+                        state
+                            .progress_state
+                            .transition(lease, percent, ProgressState::Running)
+                            .unwrap();
+                        Err(Error::Tauri(Box::new(tauri::Error::Io(
+                            std::io::Error::other("injected native emitter failure"),
+                        ))))
+                    })
+                };
+                let hooks = SearchProgressTestHooks { update: &fail };
+                let cancellation = CancellationToken::new();
+                let (stats, games) =
+                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks)
                         .unwrap();
-                    Err(Error::Tauri(Box::new(tauri::Error::Io(
-                        std::io::Error::other("injected native emitter failure"),
-                    ))))
-                })
-            };
-            let diagnostics = Mutex::new(Vec::new());
-            let diagnose = |message: &str| diagnostics.lock().unwrap().push(message.to_owned());
-            let hooks = SearchProgressTestHooks {
-                update: &fail,
-                diagnose: &diagnose,
-            };
-            let cancellation = CancellationToken::new();
-            let (stats, games) =
-                run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks).unwrap();
-            assert!(!cancellation.is_cancelled());
-            assert_eq!(
-                checkpoints.load(Ordering::SeqCst),
-                2,
-                "keep the 50,000-game cadence"
-            );
-            assert_eq!(stats.len(), 1);
-            assert_eq!(stats[0].move_, "*");
-            assert_eq!(stats[0].draw, 1);
-            assert!(games.is_empty());
-            let cache = state.search_cache.results.lock().unwrap();
-            assert_eq!(
-                cache.values.len(),
-                1,
-                "successful results must be published"
-            );
-            drop(cache);
-            let diagnostics = diagnostics.lock().unwrap();
-            assert_eq!(
-                diagnostics.len(),
-                1,
-                "checkpoint failures must diagnose once per search"
-            );
-            assert!(diagnostics[0].contains(&lease.id));
-            assert!(diagnostics[0].contains(&format!("generation {}", lease.generation)));
-            assert!(diagnostics[0].contains(if store_failure {
-                "injected progress store failure"
-            } else {
-                "injected native emitter failure"
-            }));
-        }
+                assert!(!cancellation.is_cancelled());
+                assert_eq!(
+                    checkpoints.load(Ordering::SeqCst),
+                    2,
+                    "keep the 50,000-game cadence"
+                );
+                assert_eq!(stats.len(), 1);
+                assert_eq!(stats[0].move_, "*");
+                assert_eq!(stats[0].draw, 1);
+                assert!(games.is_empty());
+                let cache = state.search_cache.results.lock().unwrap();
+                assert_eq!(
+                    cache.values.len(),
+                    1,
+                    "successful results must be published"
+                );
+                drop(cache);
+                let diagnostics: Vec<_> = capture
+                    .records()
+                    .into_iter()
+                    .filter(|record| record.level == log::Level::Error)
+                    .collect();
+                assert_eq!(
+                    diagnostics.len(),
+                    1,
+                    "checkpoint failures must emit exactly one native ERROR record per search"
+                );
+                assert!(diagnostics[0]
+                    .message
+                    .contains("position search progress update failed"));
+                assert!(diagnostics[0].message.contains(&lease.id));
+                assert!(diagnostics[0]
+                    .message
+                    .contains(&format!("generation {}", lease.generation)));
+                assert!(diagnostics[0].message.contains(if store_failure {
+                    "injected progress store failure"
+                } else {
+                    "injected native emitter failure"
+                }));
+            }
+        });
     }
 
     #[test]
@@ -1453,28 +1448,35 @@ mod progress_error_tests {
         let lease = store.start("policy".into()).unwrap();
         let cancellation = CancellationToken::new();
         let diagnosed = AtomicBool::new(false);
-        let mut diagnostics = Vec::new();
-        handle_search_progress_result(
+        let capture = LogCaptureScope::start();
+        handle_running_progress_result(
             Err(Error::Conflict("store failure".into())),
+            "position search",
             &lease,
-            &cancellation,
             &diagnosed,
-            |message| diagnostics.push(message),
+            Some(&cancellation),
         )
         .unwrap();
         assert!(!cancellation.is_cancelled());
         assert!(matches!(
-            handle_search_progress_result(
+            handle_running_progress_result(
                 Err(Error::StaleProgressLease),
+                "position search",
                 &lease,
-                &cancellation,
                 &diagnosed,
-                |message| diagnostics.push(message),
+                Some(&cancellation),
             ),
             Err(Error::Cancellation)
         ));
         assert!(cancellation.is_cancelled());
-        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.level == log::Level::Error)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1483,19 +1485,27 @@ mod progress_error_tests {
         let lease = store.start("concurrent-policy".into()).unwrap();
         for _ in 0..2 {
             let diagnosed = AtomicBool::new(false);
-            let diagnostics = Mutex::new(Vec::new());
             let cancellation = CancellationToken::new();
-            (0..32).into_par_iter().for_each(|_| {
-                handle_search_progress_result(
-                    Err(Error::Conflict("concurrent store failure".into())),
-                    &lease,
-                    &cancellation,
-                    &diagnosed,
-                    |message| diagnostics.lock().unwrap().push(message),
-                )
-                .unwrap();
-            });
-            assert_eq!(diagnostics.lock().unwrap().len(), 1);
+            let diagnostics: usize = (0..32)
+                .into_par_iter()
+                .map(|_| {
+                    let capture = LogCaptureScope::start();
+                    handle_running_progress_result(
+                        Err(Error::Conflict("concurrent store failure".into())),
+                        "position search",
+                        &lease,
+                        &diagnosed,
+                        Some(&cancellation),
+                    )
+                    .unwrap();
+                    capture
+                        .records()
+                        .iter()
+                        .filter(|record| record.level == log::Level::Error)
+                        .count()
+                })
+                .sum();
+            assert_eq!(diagnostics, 1);
             assert!(!cancellation.is_cancelled());
         }
     }
