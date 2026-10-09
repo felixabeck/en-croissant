@@ -208,17 +208,20 @@ pub(crate) fn load_search_index_cancellable(
         return Err(Error::Cancellation);
     }
     // Snapshot before the identity probe for every attempt (plan O3 / d-20261005-06).
-    let probe_attempt = |target: &DatabaseFileTarget| {
+    let probe_attempt = || {
+        let target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
         let invalidation_snapshot = search_cache.invalidation_snapshot();
-        let db_identity =
-            repository.database_identity_expected(target, target.identity(), Some(cancellation))?;
-        Ok::<_, Error>((invalidation_snapshot, db_identity))
+        let db_identity = repository.database_identity_expected(
+            &target,
+            target.identity(),
+            Some(cancellation),
+        )?;
+        let expected_source = IndexSource::from_database_identity(&db_identity)?;
+        Ok::<_, Error>((target, invalidation_snapshot, db_identity, expected_source))
     };
-    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
+    let (read_target, invalidation_snapshot, _, expected_source) = probe_attempt()?;
     #[cfg(test)]
     run_after_fast_identity_probe_hook();
-    let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some((identity, index)) =
         open_valid_preferred(&read_target, &expected_source, cancellation)?
     {
@@ -236,9 +239,7 @@ pub(crate) fn load_search_index_cancellable(
     let generation_lease = search_cache.generation_lock(get_index_path(read_target.path()));
     let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
-    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
-    let expected_source = IndexSource::from_database_identity(&db_identity)?;
+    let (read_target, invalidation_snapshot, db_identity, expected_source) = probe_attempt()?;
     if let Some((identity, index)) =
         open_valid_preferred(&read_target, &expected_source, cancellation)?
     {
@@ -291,9 +292,7 @@ pub(crate) fn load_search_index_cancellable(
         Err(error) => return Err(error),
     };
 
-    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
-    let expected_source = IndexSource::from_database_identity(&db_identity)?;
+    let (read_target, invalidation_snapshot, _, expected_source) = probe_attempt()?;
     let Some((identity, index)) =
         open_valid_preferred(&read_target, &expected_source, cancellation)?
     else {
