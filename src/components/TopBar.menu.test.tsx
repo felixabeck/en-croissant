@@ -25,6 +25,10 @@ vi.mock("react-i18next", () => {
 
 import TopBar from "./TopBar";
 
+// This 175 ms settling interval exceeds the 150 ms submenu close grace and Mantine 8.3.14's
+// 16 ms scheduled focus transfer.
+const MENU_KEYBOARD_SETTLE_DELAY_MS = 175;
+
 let root: Root;
 let host: HTMLDivElement;
 let store: ReturnType<typeof createStore>;
@@ -84,7 +88,7 @@ async function click(label: string) {
 async function key(element: HTMLElement, value: string) {
   await act(async () => {
     element.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 175));
+    await new Promise((resolve) => setTimeout(resolve, MENU_KEYBOARD_SETTLE_DELAY_MS));
   });
 }
 

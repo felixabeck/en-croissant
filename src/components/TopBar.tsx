@@ -20,6 +20,8 @@ import classes from "./TopBar.module.css";
 
 const appWindow = getCurrentWebviewWindow();
 const COMPACT_TITLE_BAR_WIDTH_EM = 48;
+// Below-parent placement needs pointer travel grace before the submenu closes.
+const SUBMENU_HOVER_CLOSE_DELAY_MS = 150;
 
 function MenuOptions({ options }: { options: MenuGroup["options"] }) {
   return options.map((option, i) =>
@@ -59,7 +61,7 @@ function CompactMenuGroup({ group }: { group: MenuGroup }) {
       width="min(20rem, calc(100vw - 16px))"
       position="bottom-start"
       floatingStrategy="fixed"
-      closeDelay={150}
+      closeDelay={SUBMENU_HOVER_CLOSE_DELAY_MS}
     >
       <Menu.Sub.Target>
         <Menu.Sub.Item

@@ -64,8 +64,8 @@
   align-self: stretch;
 }
 
-/* Three controls at their 2.8125rem basis, shrinking to their squared minimum and never below it:
-   past that the menu strip scrolls instead. */
+/* Wide layout: three controls use their 2.8125rem basis and shrink to their squared minimum
+   without going below it. Past that, the menu strip scrolls. Compact layouts replace this strip. */
 .windowControls {
   flex: 0 1 calc(3 * 2.8125rem);
 }
