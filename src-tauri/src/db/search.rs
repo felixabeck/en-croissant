@@ -2427,7 +2427,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_search_index_is_no_index_and_generation_replaces_it() {
+    fn symlinked_search_index_is_rejected_without_modifying_target() {
         use std::os::unix::fs::symlink;
 
         let (_dir, app, handle, database) = loader_test_case(vec![
