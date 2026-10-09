@@ -4604,7 +4604,9 @@ mod tests {
             .split("#[cfg(test)]\nmod descriptor_identity_tests")
             .next()
             .unwrap();
-        assert_eq!(production.matches("resolve_database(").count(), 6);
+        // Four sites: shared loader read attempt, loader mutation resolution,
+        // search_position, and is_position_in_db.
+        assert_eq!(production.matches("resolve_database(").count(), 4);
         assert_eq!(production.matches("database_file_target(").count(), 0);
         assert!(!production.contains("canonicalize("));
         assert!(!production.contains("DatabaseFileTarget {"));
