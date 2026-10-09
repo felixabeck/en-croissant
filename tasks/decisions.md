@@ -6631,3 +6631,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Portable tests directly control cancellation boundaries. The existing harness verifies product wiring without changing the native-picker contract. Reversal path: extend actual-product checks only if an authorized native registration route becomes available.
 * **Decided by:** Codex, full auto adoption of reviewed plan, 2026-10-09. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"39641b9e544e3296db638398e82212313b24c93d01c8e8d1ad2ba12151fa8fb9","input_sha256":"61d64947249617ba9b6cdc572f90d2c21d921398c7c8fb67293279b78561aacc","kind":"mutation-receipt","operation":"14c893f7304d13d9ff44be3bb53311714632e435e54f0efacc4525adf6da46e2","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-01","d-20261009-02","d-20261009-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-04 — How should the native NAG verifier survive board layout wrappers?
+
+* **Question:** How should the native NAG verifier survive board layout wrappers?
+* **Governs:** f-20261005-07
+* **Chosen:** Stable data attributes on the common board surface and actual annotation badge, with a board-scoped native probe retaining independent path, title, dimensions and ancestor visibility assertions.
+* **Rejected:** Walking a fixed number of parents, searching every SVG in the document, moving the rendered hint or weakening the assertions.
+* **Reason:** BoardFrame wraps the grid while AnnotationHint remains its sibling in the outer Group. The current probe searches only inside BoardFrame. Earlier native screenshot evidence shows the actual glyph. Reversal path: replace these selectors with another explicit board-scoped semantic contract, demonstrated by the same native positive and deliberate failing-input checks.
+* **Decided by:** Codex, required real-product gate repair in full-auto drain, 2026-10-09. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"497878f7832570c53dac1d914a2a8217c8e27aad4dfebc9a2163062f40f15066","input_sha256":"1b7378522ec0b5e277b0e25ea6c2ade9f320e0fc86c14da4dc8650e13f2907ba","kind":"mutation-receipt","operation":"bd8aa5103ce370e8b648159313069d4a4bc630a8302923141f85b6e613a50117","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-04"],"target":"decisions-ledger","v":1} -->
