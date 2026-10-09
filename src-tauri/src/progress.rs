@@ -203,7 +203,11 @@ impl ProgressStore {
         }
     }
 
-    fn start_at(&self, id: String, now: Instant) -> Result<ProgressLease, Error> {
+    fn start_with_snapshot_at(
+        &self,
+        id: String,
+        now: Instant,
+    ) -> Result<(ProgressLease, ProgressItem), Error> {
         let mut state = self
             .state
             .lock()
@@ -214,25 +218,33 @@ impl ProgressStore {
         state.entries.remove(&id);
         Self::evict_to_capacity(&mut state);
         let last_access = Self::tick_access(&mut state);
+        let item = ProgressItem {
+            id: id.clone(),
+            generation,
+            progress: 0.0,
+            finished: false,
+            state: ProgressState::Running,
+        };
         state.entries.insert(
             id.clone(),
             StoredProgress {
-                item: ProgressItem {
-                    id: id.clone(),
-                    generation,
-                    progress: 0.0,
-                    finished: false,
-                    state: ProgressState::Running,
-                },
+                item: item.clone(),
                 updated_at: now,
                 last_access,
             },
         );
-        Ok(ProgressLease { id, generation })
+        Ok((ProgressLease { id, generation }, item))
     }
 
+    #[cfg(test)]
+    fn start_at(&self, id: String, now: Instant) -> Result<ProgressLease, Error> {
+        self.start_with_snapshot_at(id, now).map(|(lease, _)| lease)
+    }
+
+    #[cfg(test)]
     pub fn start(&self, id: String) -> Result<ProgressLease, Error> {
-        self.start_at(id, Instant::now())
+        self.start_with_snapshot_at(id, Instant::now())
+            .map(|(lease, _)| lease)
     }
 
     fn transition_at(
@@ -364,11 +376,23 @@ pub fn begin_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     id: String,
 ) -> Result<ProgressLease, Error> {
-    let lease = store.start(id)?;
-    let item = store
-        .get(&lease.id)?
-        .ok_or_else(|| Error::Conflict("new progress entry disappeared".into()))?;
-    emit(app, item, false)?;
+    begin_progress_with_emitter(store, id, |item| emit(app, item, false))
+}
+
+fn begin_progress_with_emitter(
+    store: &ProgressStore,
+    id: String,
+    emit_item: impl FnOnce(ProgressItem) -> Result<(), Error>,
+) -> Result<ProgressLease, Error> {
+    let (lease, item) = store.start_with_snapshot_at(id, Instant::now())?;
+    // Delivery failure must not leave a successfully started job without its owner.
+    if let Err(error) = emit_item(item) {
+        log::error!(
+            "progress start event failed for {} generation {}: {error:?}",
+            lease.id,
+            lease.generation
+        );
+    }
     Ok(lease)
 }
 
@@ -813,6 +837,14 @@ mod tests {
                 store.start_at(id.into(), now + RUNNING_TTL),
                 Err(Error::Conflict(_))
             ));
+            let capture = crate::error::LogCaptureScope::start();
+            assert!(matches!(
+                begin_progress_with_emitter(&store, id.into(), |_| panic!(
+                    "exhausted start must not emit"
+                )),
+                Err(Error::Conflict(message)) if message == "progress generation exhausted"
+            ));
+            assert!(capture.records().is_empty());
             assert!(matches!(store.clear(id), Err(Error::Conflict(_))));
         }
         let state = store.state.lock().unwrap();
@@ -1181,6 +1213,158 @@ mod tests {
             .mount_events(&app);
         app.manage(crate::AppState::default());
         app.handle().clone()
+    }
+
+    fn assert_initial_snapshot(item: &ProgressItem, lease: &ProgressLease) {
+        assert_eq!(item.id, lease.id);
+        assert_eq!(item.generation, lease.generation);
+        assert_eq!(item.progress, 0.0);
+        assert_eq!(item.state, ProgressState::Running);
+        assert!(!item.finished);
+    }
+
+    fn assert_initial_emit_diagnostic(
+        capture: &crate::error::LogCaptureScope,
+        lease: &ProgressLease,
+        error_debug: &str,
+    ) {
+        let records = capture.records();
+        assert_eq!(records.len(), 1, "one native initialization diagnostic");
+        assert_eq!(records[0].level, log::Level::Error);
+        assert_eq!(
+            records[0].message,
+            format!(
+                "progress start event failed for {} generation {}: {error_debug}",
+                lease.id, lease.generation
+            )
+        );
+    }
+
+    fn initial_emit_failure_lease(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        id: &str,
+    ) -> ProgressLease {
+        let capture = crate::error::LogCaptureScope::start();
+        let store = &app.state::<AppState>().progress_state;
+        let error = Error::Tauri(Box::new(tauri::Error::Io(std::io::Error::other(
+            "injected native initial emitter failure",
+        ))));
+        let error_debug = format!("{error:?}");
+        let mut initial = None;
+        let lease = begin_progress_with_emitter(store, id.into(), |item| {
+            assert_eq!(store.get(id).unwrap().as_ref(), Some(&item));
+            initial = Some(item);
+            Err(error)
+        })
+        .expect("failed initial delivery must return the initialized lease to its owner");
+        assert_initial_snapshot(&initial.unwrap(), &lease);
+        assert_initial_emit_diagnostic(&capture, &lease, &error_debug);
+        lease
+    }
+
+    #[test]
+    fn initial_emit_failure_returns_owned_lease_for_terminal_completion() {
+        for terminal in [
+            ProgressState::Succeeded,
+            ProgressState::Failed,
+            ProgressState::Cancelled,
+        ] {
+            let app = job_progress_test_app();
+            let lease = initial_emit_failure_lease(&app, "initial-complete");
+            let progress = JobProgress {
+                app: app.clone(),
+                lease: lease.clone(),
+            };
+            progress.complete(terminal);
+            let store = &app.state::<AppState>().progress_state;
+            let item = store.get(&lease.id).unwrap().unwrap();
+            assert_eq!(item.generation, lease.generation);
+            assert_eq!(item.state, terminal);
+            assert!(item.finished);
+            assert_eq!(
+                item.progress,
+                if terminal == ProgressState::Succeeded {
+                    100.0
+                } else {
+                    0.0
+                }
+            );
+            drop(progress);
+            assert_eq!(store.get(&lease.id).unwrap().unwrap(), item);
+        }
+    }
+
+    #[test]
+    fn initial_emit_failure_returns_owned_lease_for_drop() {
+        let app = job_progress_test_app();
+        let lease = initial_emit_failure_lease(&app, "initial-drop");
+        drop(JobProgress {
+            app: app.clone(),
+            lease: lease.clone(),
+        });
+        let item = app
+            .state::<AppState>()
+            .progress_state
+            .get(&lease.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.generation, lease.generation);
+        assert_eq!(item.state, ProgressState::Cancelled);
+        assert!(item.finished);
+        assert_eq!(item.progress, 0.0);
+    }
+
+    #[test]
+    fn initial_emit_failure_preserves_a_concurrently_newer_generation() {
+        let app = job_progress_test_app();
+        let store = &app.state::<AppState>().progress_state;
+        let capture = crate::error::LogCaptureScope::start();
+        let error = Error::Tauri(Box::new(tauri::Error::Io(std::io::Error::other(
+            "injected initial delivery failure after replacement",
+        ))));
+        let error_debug = format!("{error:?}");
+        let mut initial = None;
+        let mut replacement = None;
+        let lease = begin_progress_with_emitter(store, "initial-replaced".into(), |item| {
+            let concurrent_store = store.clone();
+            let id = item.id.clone();
+            replacement = Some(
+                thread::spawn(move || {
+                    let newer = concurrent_store.start(id).unwrap();
+                    let item = concurrent_store
+                        .transition(&newer, 61.0, ProgressState::Running)
+                        .unwrap()
+                        .0;
+                    (newer, item)
+                })
+                .join()
+                .unwrap(),
+            );
+            initial = Some(item);
+            Err(error)
+        })
+        .expect("failed initial delivery must return even a superseded lease to its owner");
+        assert_initial_snapshot(&initial.unwrap(), &lease);
+        assert_initial_emit_diagnostic(&capture, &lease, &error_debug);
+        let (newer, before) = replacement.unwrap();
+        assert!(newer.generation > lease.generation);
+        assert_eq!(
+            store.state.lock().unwrap().generation_clock,
+            newer.generation
+        );
+        assert_eq!(store.get(&lease.id).unwrap().unwrap(), before);
+        let progress = JobProgress {
+            app: app.clone(),
+            lease: lease.clone(),
+        };
+        progress.complete(ProgressState::Succeeded);
+        drop(progress);
+        assert_eq!(store.get(&newer.id).unwrap().unwrap(), before);
+        assert_eq!(
+            store.state.lock().unwrap().generation_clock,
+            newer.generation
+        );
+        assert_initial_emit_diagnostic(&capture, &lease, &error_debug);
     }
 
     #[test]
