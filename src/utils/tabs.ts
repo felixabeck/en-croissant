@@ -8,7 +8,13 @@ import type { WriteExpectation } from "@/bindings";
 import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
-import { activeTabAtom, closingTabsAtom, reclaimTabLocalState, tabsAtom } from "@/state/atoms";
+import {
+    activeTabAtom,
+    closingTabsAtom,
+    initializeWorkspace,
+    reclaimTabLocalState,
+    tabsAtom,
+} from "@/state/atoms";
 import { closeTreeStore, type TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame, writeFileGame } from "./files";
@@ -69,6 +75,7 @@ function stageAndCommitTab({
     existingTabIds?: Iterable<string>;
     commit: (freshId: string) => boolean;
 }): StagedAdmissionResult {
+    initializeWorkspace();
     const id = genID(existingTabIds);
     if (seed) {
         try {

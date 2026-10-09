@@ -11,6 +11,7 @@ const {
   closeSplashscreen,
   initializeI18n,
   releasePreviousDocumentOperations,
+  initializeWorkspace,
 } = vi.hoisted(() => {
   const render = vi.fn();
   return {
@@ -20,11 +21,13 @@ const {
     closeSplashscreen: vi.fn().mockResolvedValue(undefined),
     initializeI18n: vi.fn().mockResolvedValue(undefined),
     releasePreviousDocumentOperations: vi.fn().mockResolvedValue(null),
+    initializeWorkspace: vi.fn(),
   };
 });
 
 vi.mock("react-dom/client", () => ({ createRoot }));
 vi.mock("./App", () => ({ default: () => null }));
+vi.mock("./state/atoms", () => ({ initializeWorkspace }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
 vi.mock("./platform/errors", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./platform/errors")>()),
@@ -52,6 +55,7 @@ beforeEach(() => {
   logFailureSafely.mockClear();
   closeSplashscreen.mockClear();
   releasePreviousDocumentOperations.mockReset().mockResolvedValue(null);
+  initializeWorkspace.mockReset();
   localStorage.clear();
   vi.resetModules();
 });
@@ -66,6 +70,10 @@ test("awaits the previous-document sweep before sessions, i18n and rendering", a
     }),
   );
   const { applicationStartup } = await import("./index");
+  expect(initializeWorkspace).toHaveBeenCalledExactlyOnceWith();
+  expect(initializeWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
+    releasePreviousDocumentOperations.mock.invocationCallOrder[0] ?? 0,
+  );
   expect(releasePreviousDocumentOperations).toHaveBeenCalledExactlyOnceWith();
   expect(sessions.initializePersistedSessions).not.toHaveBeenCalled();
   expect(initializeI18n).not.toHaveBeenCalled();
@@ -75,6 +83,23 @@ test("awaits the previous-document sweep before sessions, i18n and rendering", a
   expect(sessions.initializePersistedSessions).toHaveBeenCalledTimes(1);
   expect(initializeI18n).toHaveBeenCalledTimes(1);
   expect(renderedChild().type).toBe(App);
+});
+
+test("a refused synchronous workspace initialization prevents bootstrap and rendering", async () => {
+  const failure = new DOMException("workspace read refused", "SecurityError");
+  initializeWorkspace.mockImplementationOnce(() => {
+    throw failure;
+  });
+  const sessions = await import("./utils/session");
+  vi.mocked(sessions.initializePersistedSessions).mockClear();
+
+  await expect(import("./index")).rejects.toBe(failure);
+
+  expect(releasePreviousDocumentOperations).not.toHaveBeenCalled();
+  expect(sessions.initializePersistedSessions).not.toHaveBeenCalled();
+  expect(initializeI18n).not.toHaveBeenCalled();
+  expect(createRoot).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
 });
 
 test("logs a rejected previous-document sweep and still renders the application", async () => {

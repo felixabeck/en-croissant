@@ -53,7 +53,14 @@
 // exercises the production pre-claim cancellation and failed-clear cleanup without a network
 // download, while a native lease already drives the real facade, hook and ProgressButton.
 //
-// It asserts eighty-six independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// Workspace reload assertion staging: PENDING root proof after cumulative review.
+//   application-input case       | assertion/message                                                                  | evidence
+//   publish a fresh default      | a real document reload preserves both exact seeded workspace tab identities         | PENDING
+//   publish a fresh default      | a real document reload selects the second seeded workspace tab                      | PENDING
+// The root must build the deliberate fault in a scratch checkout with this unchanged verifier,
+// retain each unique FAIL and exit 1, restore production source, rebuild and rerun green.
+//
+// It asserts eighty-eight independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -68,6 +75,7 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 6: mint, cancel, cancelled-ticket refusal, document-reload sweep, retained ticket,
 //                     destroyed-window log
+//   workspace reload | 2: exact seeded tab identities, second-tab selection after DOM readiness
 //   Files | 7: seeded-row-render, double-click-route, opened-game-notation,
 //              metadata-dialog-no-error, metadata-repertoire-filter, metadata-sidecar-type,
 //              metadata-filename-preserved
@@ -490,6 +498,7 @@ import { Chess, makeSquare } from "chessops";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { createEmptyCard } from "ts-fsrs";
+import LZString from "lz-string";
 import {
   APP_BINARY,
   Session,
@@ -3308,6 +3317,21 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   }
 
   const reloadCheck = "a real document reload cancels the previous document's retained reservation";
+  const workspaceTabsCheck =
+    "a real document reload preserves both exact seeded workspace tab identities";
+  const workspaceSelectionCheck = "a real document reload selects the second seeded workspace tab";
+  const seededWorkspaceTabs = ["verify:workspace:first", "verify:workspace:second"].map((name) => ({
+    name,
+    value: randomUUID(),
+    type: "new",
+    gameOrigin: { kind: "none" },
+  }));
+  const seededWorkspace = {
+    version: 1,
+    tabs: seededWorkspaceTabs,
+    activeTab: seededWorkspaceTabs[1].value,
+  };
+  let workspaceReloadPrepared = false;
   try {
     const previousDocumentRead = await invokeAndWait(
       session,
@@ -3323,6 +3347,23 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       );
     }
     const previousDocumentTicket = previousDocumentRead.value;
+    await waitFor(
+      "the board route before seeding the reload workspace",
+      () =>
+        session
+          .execute(
+            `const link = document.querySelector('a[href="/"]');
+         if (link && location.pathname !== "/") link.click();
+         return location.pathname === "/" && !!document.querySelector('[role="tablist"] [role="tab"]');`,
+          )
+          .catch(() => false),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    // Equivalent to serializeStorageValue: the supported compressed version-1 envelope.
+    await session.execute('sessionStorage.setItem("workspace", arguments[0]); return true;', [
+      LZString.compressToUTF16(JSON.stringify(seededWorkspace)),
+    ]);
+    workspaceReloadPrepared = true;
     await session.call("POST", "/refresh", {});
     await waitFor(
       "the reloaded renderer and its previous-document reservation sweep",
@@ -3347,6 +3388,49 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     check(true, reloadCheck);
   } catch (error) {
     check(false, reloadCheck, error.message);
+  }
+
+  try {
+    if (!workspaceReloadPrepared) throw new Error("the workspace reload fixture was not prepared");
+    // Native sweep logging precedes render. Wait for a rendered board tablist independently,
+    // without waiting for the expected identities that the assertions themselves must verify.
+    const renderedWorkspace = await waitFor(
+      "the reloaded workspace DOM",
+      () =>
+        session
+          .execute(
+            `if (document.readyState !== "complete" || location.pathname !== "/") return false;
+         const tablist = document.querySelector('[role="tablist"]');
+         const tabs = [...(tablist?.querySelectorAll('[role="tab"]') ?? [])];
+         if (tabs.length === 0 || !tabs.some((tab) => tab.getAttribute("aria-selected") === "true")) return false;
+         return {
+           ids: tabs.map((tab) => tab.getAttribute("aria-controls")?.split("-panel-").at(-1) ?? null),
+           selectedIds: tabs.filter((tab) => tab.getAttribute("aria-selected") === "true")
+             .map((tab) => tab.getAttribute("aria-controls")?.split("-panel-").at(-1) ?? null),
+         };`,
+          )
+          .catch(() => false),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    check(
+      renderedWorkspace.ids.length === 2 &&
+        renderedWorkspace.ids.every((id, index) => id === seededWorkspaceTabs[index].value),
+      workspaceTabsCheck,
+      `rendered tab ids: ${JSON.stringify(renderedWorkspace.ids)}`,
+    );
+    check(
+      renderedWorkspace.selectedIds.length === 1 &&
+        renderedWorkspace.selectedIds[0] === seededWorkspace.activeTab,
+      workspaceSelectionCheck,
+      `selected tab ids: ${JSON.stringify(renderedWorkspace.selectedIds)}`,
+    );
+    if (screenshotPath) {
+      await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
+      console.log(`  ..  Reloaded workspace screenshot written to ${screenshotPath}`);
+    }
+  } catch (error) {
+    check(false, workspaceTabsCheck, error.message);
+    check(false, workspaceSelectionCheck, error.message);
   }
 
   // The reload log wait above confirms the startup sweep ran before this new-document reservation.

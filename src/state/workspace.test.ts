@@ -53,9 +53,10 @@ function storeUnownedDirtyTree() {
 }
 
 afterEach(() => {
+    vi.restoreAllMocks();
+    for (const id of tabStorage.flush()) tabStorage.remove(id);
     native.warn.mockClear();
     persistError.reportPersistError.mockClear();
-    vi.restoreAllMocks();
 });
 
 test("default workspace is a complete, current envelope with one active new tab", () => {
@@ -72,8 +73,7 @@ test("default workspace is a complete, current envelope with one active new tab"
     expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
 });
 
-test("evaluates the complete static workspace schema on a fresh ESM module instance", async () => {
-    vi.resetModules();
+test("workspace load operations validate schema boundaries and preserve uncertain trees", async () => {
     const fresh = await import("./workspace");
     const freshStorage = (await import("./store/tabStorage")).tabStorage;
     sessionStorage.clear();
@@ -727,6 +727,29 @@ test("the first uncertain-ownership load does not sweep a tree created after its
     expect(sessionStorage.getItem(laterId)).toBeNull();
 });
 
+test("an empty first ownership snapshot preserves a later dirty tree until the next load", () => {
+    sessionStorage.clear();
+    let later: ReturnType<typeof storeUnownedDirtyTree>;
+    const originalSnapshot = tabStorage.snapshotStoredTreeKeys.bind(tabStorage);
+    const snapshot = vi
+        .spyOn(tabStorage, "snapshotStoredTreeKeys")
+        .mockImplementation((maxTreeKeys, maxKeyLength, excludedKeys) => {
+            const keys = originalSnapshot(maxTreeKeys, maxKeyLength, excludedKeys);
+            expect(keys).toEqual([]);
+            later = storeUnownedDirtyTree();
+            return keys;
+        });
+
+    const workspace = loadStoredWorkspace();
+
+    snapshot.mockRestore();
+    expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
+    expect(readStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem(later!.treeId)).toBe(later!.storedTree);
+    loadStoredWorkspace();
+    expect(sessionStorage.getItem(later!.treeId)).toBeNull();
+});
+
 test("an oversized legacy workspace is not authority to sweep stored trees", () => {
     sessionStorage.clear();
     const tabs = Array.from({ length: MAX_WORKSPACE_TABS + 1 }, () => ({
@@ -882,25 +905,53 @@ test("salvages valid version-0 tabs while retaining a dirty tree from a malforme
     expect(readStoredWorkspace()).toEqual(workspace);
 });
 
-test("treats a fully valid version-0 envelope as authority for orphan cleanup", () => {
-    sessionStorage.clear();
-    const validTab = { ...legacyTab, value: crypto.randomUUID() };
-    const { treeId } = storeUnownedDirtyTree();
-    sessionStorage.setItem(
-        WORKSPACE_STORAGE_KEY,
-        serializeStorageValue({
-            version: LEGACY_WORKSPACE_VERSION,
-            tabs: [validTab],
-            activeTab: validTab.value,
-        }),
-    );
+test.each([LEGACY_WORKSPACE_VERSION, undefined])(
+    "treats a fully valid legacy envelope with version %s as authority for orphan cleanup",
+    (version) => {
+        sessionStorage.clear();
+        const validTab = { ...legacyTab, value: crypto.randomUUID() };
+        const { treeId } = storeUnownedDirtyTree();
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({
+                version,
+                tabs: [validTab],
+                activeTab: validTab.value,
+            }),
+        );
 
-    const workspace = loadStoredWorkspace();
+        const workspace = loadStoredWorkspace();
 
-    expect(workspace.tabs).toEqual([validTab]);
-    expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
-    expect(sessionStorage.getItem(treeId)).toBeNull();
-});
+        expect(workspace.tabs).toEqual([validTab]);
+        expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
+        expect(sessionStorage.getItem(treeId)).toBeNull();
+    },
+);
+
+test.each([true, false, undefined])(
+    "legacy repair preserves unowned trees only for an explicit true uncertainty marker (%s)",
+    (marker) => {
+        sessionStorage.clear();
+        const validTab = { ...legacyTab, value: crypto.randomUUID() };
+        const { treeId, storedTree } = storeUnownedDirtyTree();
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({
+                version: LEGACY_WORKSPACE_VERSION,
+                tabs: [validTab],
+                activeTab: 42,
+                treeOwnershipUncertain: marker,
+            }),
+        );
+
+        const workspace = loadStoredWorkspace();
+
+        expect(workspace.tabs).toEqual([validTab]);
+        expect(workspace.activeTab).toBe(validTab.value);
+        expect(workspace.treeOwnershipUncertain).toBe(marker === true ? true : undefined);
+        expect(sessionStorage.getItem(treeId)).toBe(marker === true ? storedTree : null);
+    },
+);
 
 test("uncertain migration reclaims only sources whose own clone is durable", () => {
     sessionStorage.clear();

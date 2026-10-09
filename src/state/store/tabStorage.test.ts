@@ -30,7 +30,11 @@ beforeEach(() => {
     persistError.reportPersistError.mockClear();
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+    vi.restoreAllMocks();
+    for (const id of storage.flush()) storage.remove(id);
+    vi.useRealTimers();
+});
 
 function treeWith(value: (tree: ReturnType<typeof defaultTree>) => void) {
     const tree = structuredClone(defaultTree());
@@ -416,10 +420,8 @@ test("accepts both coordinate move boundaries and both header orientations", () 
     expectSeedRejected(treeWith((tree) => (tree.headers.orientation = "green" as never)));
 });
 
-test("evaluates the complete static schema on a fresh ESM module instance", async () => {
-    vi.resetModules();
-    const { TabStorageRepository: FreshRepository } = await import("./tabStorage");
-    const fresh = new FreshRepository();
+test("tree seed and read operations validate the complete schema boundaries", () => {
+    const fresh = storage;
     const tree = treeWith((state) => {
         state.root.move = { from: 0, to: 63, promotion: "queen" };
         state.root.score = { value: { type: "cp", value: 0 }, wdl: [0, 1, 0] };
@@ -709,10 +711,8 @@ test("scrubs legacy-only fields and supplies missing versioned tree fields befor
     );
 });
 
-test("fresh migration evaluation supplies defaults for each omitted legacy field", async () => {
-    vi.resetModules();
-    const { TabStorageRepository: FreshRepository } = await import("./tabStorage");
-    const fresh = new FreshRepository();
+test("legacy tree read supplies defaults for each omitted field", () => {
+    const fresh = storage;
     const legacy = structuredClone(defaultTree()) as unknown as Record<string, unknown>;
     delete legacy.position;
     delete legacy.dirty;

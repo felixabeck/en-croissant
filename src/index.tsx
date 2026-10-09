@@ -9,6 +9,9 @@ import { I18nextProvider } from "react-i18next";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
 import { logFailureSafely, safeFailureContext } from "./platform/errors";
 import { tauri } from "./platform/tauri";
+import { initializeWorkspace } from "./state/atoms";
+
+initializeWorkspace();
 
 dayjs.extend(customParseFormat);
 

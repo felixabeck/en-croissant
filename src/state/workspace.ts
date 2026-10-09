@@ -3,14 +3,13 @@ import { z } from "zod";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
-import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
+import { createTabIdSchema, persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
 const WORKSPACE_VERSION = 1;
 export const LEGACY_WORKSPACE_VERSION = 0;
-const uuidSchema = z.string().uuid();
 
 /**
  * Ownership snapshots persist at most 1,024 tree keys, each no longer than 128 characters.
@@ -18,10 +17,6 @@ const uuidSchema = z.string().uuid();
  */
 export const MAX_PROTECTED_TREE_KEYS = 1_024;
 export const MAX_PROTECTED_TREE_KEY_LENGTH = 128;
-const protectedTreeKeysSchema = z
-    .array(z.string().min(1).max(MAX_PROTECTED_TREE_KEY_LENGTH))
-    .max(MAX_PROTECTED_TREE_KEYS)
-    .optional();
 
 export type Workspace = {
     version: typeof WORKSPACE_VERSION;
@@ -34,28 +29,51 @@ export type Workspace = {
 
 export const MAX_WORKSPACE_TABS = 100;
 export const MAX_PENDING_TREE_REMOVALS = 100;
-const workspaceInputSchema = z.object({
-    version: z.number().int().nonnegative().optional().catch(undefined),
-    // Scrub individual legacy/corrupt tabs while keeping every independently
-    // valid tab recoverable. A corrupt entry must not erase its neighbours.
-    tabs: z
-        .array(tabSchema.nullable().catch(null))
-        .max(MAX_WORKSPACE_TABS)
-        .transform((tabs) => tabs.filter((tab): tab is Tab => tab !== null)),
-    activeTab: z.string().max(128).nullable().catch(null),
-});
-const liveTabsSchema = z.array(tabSchema).max(MAX_WORKSPACE_TABS);
-const workspaceLiveSchema = z.object({
-    version: z.literal(WORKSPACE_VERSION),
-    tabs: liveTabsSchema,
-    activeTab: z.string().max(128).nullable(),
-    treeOwnershipUncertain: z.literal(true).optional(),
-    treeOwnershipProtectedIds: protectedTreeKeysSchema,
-    treeOwnershipPendingRemovalIds: z
-        .array(z.string().min(1))
-        .max(MAX_PENDING_TREE_REMOVALS)
-        .optional(),
-});
+function createWorkspaceSchemas() {
+    const uuidSchema = createTabIdSchema();
+    const protectedTreeKeysSchema = z
+        .array(z.string().min(1).max(MAX_PROTECTED_TREE_KEY_LENGTH))
+        .max(MAX_PROTECTED_TREE_KEYS)
+        .optional();
+    const workspaceInputSchema = z.object({
+        version: z.number().int().nonnegative().optional().catch(undefined),
+        // Scrub individual legacy/corrupt tabs while keeping every independently
+        // valid tab recoverable. A corrupt entry must not erase its neighbours.
+        tabs: z
+            .array(tabSchema.nullable().catch(null))
+            .max(MAX_WORKSPACE_TABS)
+            .transform((tabs) => tabs.filter((tab): tab is Tab => tab !== null)),
+        activeTab: z.string().max(128).nullable().catch(null),
+    });
+    const liveTabsSchema = z.array(tabSchema).max(MAX_WORKSPACE_TABS);
+    const legacyWorkspaceSchema = workspaceInputSchema.extend({
+        version: z.literal(LEGACY_WORKSPACE_VERSION).optional(),
+        tabs: liveTabsSchema,
+    });
+    const workspaceLiveSchema = z.object({
+        version: z.literal(WORKSPACE_VERSION),
+        tabs: liveTabsSchema,
+        activeTab: z.string().max(128).nullable(),
+        treeOwnershipUncertain: z.literal(true).optional(),
+        treeOwnershipProtectedIds: protectedTreeKeysSchema,
+        treeOwnershipPendingRemovalIds: z
+            .array(z.string().min(1))
+            .max(MAX_PENDING_TREE_REMOVALS)
+            .optional(),
+    });
+    const uncertainOwnershipSchema = workspaceLiveSchema
+        .pick({ treeOwnershipUncertain: true })
+        .required();
+    return {
+        workspaceInputSchema,
+        workspaceLiveSchema,
+        legacyWorkspaceSchema,
+        uncertainOwnershipSchema,
+        uuidSchema,
+    };
+}
+
+type WorkspaceSchemas = ReturnType<typeof createWorkspaceSchemas>;
 
 function newTab(used: Iterable<string>): Tab {
     return {
@@ -81,7 +99,10 @@ function resolveActiveTab(tabs: readonly Tab[], legacyActive: string | null): st
     return tabs.some((tab) => tab.value === legacyActive) ? legacyActive! : tabs[0]!.value;
 }
 
-function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
+function planWorkspaceRepair(
+    input: unknown,
+    { workspaceInputSchema, uuidSchema }: WorkspaceSchemas,
+): WorkspaceRepairPlan {
     const inputResult = workspaceInputSchema.safeParse(input);
     if (!inputResult.success) {
         const workspace = defaultWorkspace();
@@ -179,6 +200,7 @@ export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string
 }
 
 function workspaceFromValue(value: unknown): Workspace | null {
+    const { workspaceLiveSchema } = createWorkspaceSchemas();
     const parsed = workspaceLiveSchema.safeParse(value);
     if (!parsed.success) return null;
     const tabs = parsed.data.tabs;
@@ -221,22 +243,10 @@ export function saveWorkspace(
     }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    // A direct true fault makes the fresh-module workspace test fail on null metadata.
-    // Stryker disable next-line ConditionalExpression: static mutant is not activated.
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isValidLegacyWorkspace(value: unknown): boolean {
-    if (!isRecord(value)) return false;
-    const version = value.version;
-    if (version !== undefined && version !== LEGACY_WORKSPACE_VERSION) return false;
-    if (!workspaceInputSchema.safeParse(value).success) return false;
-    return Array.isArray(value.tabs) && value.tabs.every((tab) => tabSchema.safeParse(tab).success);
-}
-
 /** Migrates separate legacy tabs/activeTab keys into one repairable envelope. */
 export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
+    const schemas = createWorkspaceSchemas();
+    const { workspaceLiveSchema, legacyWorkspaceSchema, uncertainOwnershipSchema } = schemas;
     const storedWorkspace = storage.getItem(key);
     const current = readStoredWorkspaceValue(storage, key);
     const currentResult = workspaceLiveSchema.safeParse(current);
@@ -254,12 +264,12 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             tabs: readStoredWorkspaceValue(storage, "tabs"),
             activeTab: readStoredWorkspaceValue(storage, "activeTab"),
         } as const);
-    const validMigrationSource = isValidLegacyWorkspace(
+    const validMigrationSource = legacyWorkspaceSchema.safeParse(
         storedWorkspace === null ? legacy : current,
-    );
+    ).success;
     const legacyStoragePresent =
         storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
-    const plan = planWorkspaceRepair(legacy);
+    const plan = planWorkspaceRepair(legacy, schemas);
     const repairedRetainedIds = new Set(plan.workspace.tabs.map((tab) => tab.value));
     const failedAdmissions = tabStorage.replayFailedAdmissions(repairedRetainedIds);
     const missingWorkspaceTreeSnapshot =
@@ -271,7 +281,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
               )
             : undefined;
     const treeOwnershipUncertain =
-        (isRecord(current) && current.treeOwnershipUncertain === true) ||
+        uncertainOwnershipSchema.safeParse(current).success ||
         (storedWorkspace !== null && !hasAuthoritativeWorkspace && !validMigrationSource) ||
         (storedWorkspace === null &&
             !validMigrationSource &&
@@ -401,8 +411,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
-    // A direct true fault deletes the unowned tree in the fresh-module workspace test.
-    // Stryker disable next-line ConditionalExpression: static mutant is not activated.
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
         sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedKnownRemovals);
     } else if (treeOwnershipUncertain && !takingFreshOwnershipSnapshot) {

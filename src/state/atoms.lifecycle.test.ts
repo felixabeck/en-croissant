@@ -31,6 +31,13 @@ const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
 
 const replacementTabIds = new Set<string>();
+const repositories = new Set([tabStorage]);
+
+async function importFreshAtoms() {
+    const atoms = await import("./atoms");
+    repositories.add((await import("./store/tabStorage")).tabStorage);
+    return atoms;
+}
 
 afterEach(() => {
     persistError.reportPersistError.mockClear();
@@ -40,6 +47,11 @@ afterEach(() => {
         tabStorage.remove(tabId);
     }
     replacementTabIds.clear();
+    for (const repository of repositories) {
+        for (const id of repository.flush()) repository.remove(id);
+    }
+    repositories.clear();
+    repositories.add(tabStorage);
 });
 
 function refuseWorkspaceWrites() {
@@ -677,7 +689,8 @@ test("a failed close removal is retried after uncertain workspace ownership", as
     );
     tabStorage.seed(tabId, defaultTree());
     vi.resetModules();
-    const freshAtoms = await import("./atoms");
+    const freshAtoms = await importFreshAtoms();
+    freshAtoms.initializeWorkspace();
     const store = createStore();
     const deny = denyStorageRemoval(tabId);
 
@@ -712,7 +725,8 @@ test.each([
             serializeStorageValue({ version: 1, tabs: [tab, other], activeTab: tabId }),
         );
         vi.resetModules();
-        const freshAtoms = await import("./atoms");
+        const freshAtoms = await importFreshAtoms();
+        freshAtoms.initializeWorkspace();
         const store = createStore();
         const deny = denyStorageRemoval(tabId);
 
@@ -769,7 +783,8 @@ test("a refused close save preserves protected ownership through reload", async 
     );
     tabStorage.seed(tabId, defaultTree());
     vi.resetModules();
-    const freshAtoms = await import("./atoms");
+    const freshAtoms = await importFreshAtoms();
+    freshAtoms.initializeWorkspace();
     const store = createStore();
     const deny = refuseWorkspaceWrites();
 
@@ -806,7 +821,8 @@ test("a failed close removal retries even when the ownership snapshot overflows"
         }),
     );
     vi.resetModules();
-    const freshAtoms = await import("./atoms");
+    const freshAtoms = await importFreshAtoms();
+    freshAtoms.initializeWorkspace();
     const store = createStore();
     const deny = denyStorageRemoval(tabId);
 
@@ -850,7 +866,8 @@ test("closing a tab frees capacity from completed removal intents", async () => 
     );
     const deny = denyStorageRemoval((id) => id.startsWith("pending-tree-"));
     vi.resetModules();
-    const freshAtoms = await import("./atoms");
+    const freshAtoms = await importFreshAtoms();
+    freshAtoms.initializeWorkspace();
     const store = createStore();
     persistError.reportPersistError.mockClear();
 

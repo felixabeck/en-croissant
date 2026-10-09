@@ -19,7 +19,6 @@ const NON_TREE_SESSION_KEYS = new Set([
     "database-view",
     "expanded-directories",
 ]);
-const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
 const MAX_NODE_NAGS = 1_024;
@@ -27,122 +26,137 @@ const MAX_NODE_NAGS = 1_024;
 // no parsed string — a header, a comment, its commands — is longer than its source. So any parsed
 // tree rehydrates; a lower bound once made a tab with one long comment unreadable.
 export const PGN_TEXT_MAX = 10 * 1024 * 1024;
-const boundedText = z.string().max(PGN_TEXT_MAX);
-const pathSchema = z.array(z.number().int().nonnegative()).max(MAX_TREE_DEPTH);
-const annotationSchema = z.enum([
-    "",
-    "!",
-    "!!",
-    "?",
-    "??",
-    "!?",
-    "?!",
-    "+-",
-    "±",
-    "⩲",
-    "=",
-    "∞",
-    "⩱",
-    "∓",
-    "-+",
-    "N",
-    "↑↑",
-    "↑",
-    "→",
-    "⇆",
-    "=∞",
-    "⊕",
-    "∆",
-    "□",
-    "⨀",
-    "⊗",
-]);
-const scoreSchema = z.object({
-    value: z.discriminatedUnion("type", [
-        z.object({ type: z.literal("cp"), value: z.number().finite() }),
-        z.object({ type: z.literal("mate"), value: z.number().int() }),
-    ]),
-    wdl: z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]).nullable(),
-});
-const roleSchema = z.enum(["pawn", "knight", "bishop", "rook", "queen", "king"]);
-const boardSquareSchema = z
-    .number()
-    .int()
-    .refine((square) => square >= 0 && square <= 63);
-const moveSchema = z.union([
-    z.object({
-        from: boardSquareSchema,
-        to: boardSquareSchema,
-        promotion: roleSchema.optional(),
-    }),
-    z.object({ role: roleSchema, to: boardSquareSchema }),
-]);
-const shapeSchema = z.object({
-    orig: z.string().regex(/^[a-h][1-8]$/),
-    dest: z.string().regex(/^[a-h][1-8]$/),
-    brush: z.string().max(64),
-    modifiers: z
-        .object({
-            lineWidth: z.number().finite().optional(),
-            opacity: z.number().finite().optional(),
-        })
-        .optional(),
-});
-const headersSchema = z.object({
-    id: z.number().int(),
-    fen: boundedText,
-    event: boundedText,
-    site: boundedText,
-    date: boundedText.nullable().optional(),
-    time: boundedText.nullable().optional(),
-    round: boundedText.nullable().optional(),
-    white: boundedText,
-    white_elo: z.number().int().nullable().optional(),
-    black: boundedText,
-    black_elo: z.number().int().nullable().optional(),
-    result: z.enum(["1-0", "0-1", "1/2-1/2", "*"]),
-    time_control: boundedText.nullable().optional(),
-    white_time_control: boundedText.nullable().optional(),
-    black_time_control: boundedText.nullable().optional(),
-    eco: boundedText.nullable().optional(),
-    variant: boundedText.nullable().optional(),
-    other: z.record(boundedText).optional(),
-    start: pathSchema.optional(),
-    orientation: z
-        .string()
-        .refine((orientation) => orientation === "white" || orientation === "black")
-        .optional(),
-});
+/** A game stamp is the lowercase hex SHA-256 of the game's exact bytes (`read_game`). */
+const STAMP_PATTERN = /^[a-f0-9]{64}$/;
 
-type PersistedTreeNode = {
-    fen: string;
-    move:
-        | { from: number; to: number; promotion?: z.infer<typeof roleSchema> }
-        | { role: z.infer<typeof roleSchema>; to: number }
-        | null;
-    san: string | null;
-    children: PersistedTreeNode[];
-    score: {
-        value: { type: "cp"; value: number } | { type: "mate"; value: number };
-        wdl: [number, number, number] | null;
-    } | null;
-    depth: number | null;
-    halfMoves: number;
-    shapes: Array<{
-        orig: string;
-        dest: string;
-        brush: string;
-        modifiers?: { lineWidth?: number; opacity?: number };
-    }>;
-    nags: number[];
-    comment: string;
-    commands?: string;
-    startingComment?: string;
-    clock?: number;
-};
+export function createTabIdSchema() {
+    return z.string().uuid();
+}
 
-const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
-    z.object({
+function createLegacyAnnotationsSchema() {
+    return z
+        .array(
+            z.enum([
+                "",
+                "!",
+                "!!",
+                "?",
+                "??",
+                "!?",
+                "?!",
+                "+-",
+                "±",
+                "⩲",
+                "=",
+                "∞",
+                "⩱",
+                "∓",
+                "-+",
+                "N",
+                "↑↑",
+                "↑",
+                "→",
+                "⇆",
+                "=∞",
+                "⊕",
+                "∆",
+                "□",
+                "⨀",
+                "⊗",
+            ]),
+        )
+        .max(MAX_NODE_NAGS);
+}
+
+function createPersistedTreeSchema() {
+    const boundedText = z.string().max(PGN_TEXT_MAX);
+    const pathSchema = z.array(z.number().int().nonnegative()).max(MAX_TREE_DEPTH);
+    const scoreSchema = z.object({
+        value: z.discriminatedUnion("type", [
+            z.object({ type: z.literal("cp"), value: z.number().finite() }),
+            z.object({ type: z.literal("mate"), value: z.number().int() }),
+        ]),
+        wdl: z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]).nullable(),
+    });
+    const roleSchema = z.enum(["pawn", "knight", "bishop", "rook", "queen", "king"]);
+    const boardSquareSchema = z
+        .number()
+        .int()
+        .refine((square) => square >= 0 && square <= 63);
+    const moveSchema = z.union([
+        z.object({
+            from: boardSquareSchema,
+            to: boardSquareSchema,
+            promotion: roleSchema.optional(),
+        }),
+        z.object({ role: roleSchema, to: boardSquareSchema }),
+    ]);
+    const shapeSchema = z.object({
+        orig: z.string().regex(/^[a-h][1-8]$/),
+        dest: z.string().regex(/^[a-h][1-8]$/),
+        brush: z.string().max(64),
+        modifiers: z
+            .object({
+                lineWidth: z.number().finite().optional(),
+                opacity: z.number().finite().optional(),
+            })
+            .optional(),
+    });
+    const headersSchema = z.object({
+        id: z.number().int(),
+        fen: boundedText,
+        event: boundedText,
+        site: boundedText,
+        date: boundedText.nullable().optional(),
+        time: boundedText.nullable().optional(),
+        round: boundedText.nullable().optional(),
+        white: boundedText,
+        white_elo: z.number().int().nullable().optional(),
+        black: boundedText,
+        black_elo: z.number().int().nullable().optional(),
+        result: z.enum(["1-0", "0-1", "1/2-1/2", "*"]),
+        time_control: boundedText.nullable().optional(),
+        white_time_control: boundedText.nullable().optional(),
+        black_time_control: boundedText.nullable().optional(),
+        eco: boundedText.nullable().optional(),
+        variant: boundedText.nullable().optional(),
+        other: z.record(boundedText).optional(),
+        start: pathSchema.optional(),
+        orientation: z
+            .string()
+            .refine((orientation) => orientation === "white" || orientation === "black")
+            .optional(),
+    });
+
+    type PersistedTreeNode = {
+        fen: string;
+        move:
+            | { from: number; to: number; promotion?: z.infer<typeof roleSchema> }
+            | { role: z.infer<typeof roleSchema>; to: number }
+            | null;
+        san: string | null;
+        children: PersistedTreeNode[];
+        score: {
+            value: { type: "cp"; value: number } | { type: "mate"; value: number };
+            wdl: [number, number, number] | null;
+        } | null;
+        depth: number | null;
+        halfMoves: number;
+        shapes: Array<{
+            orig: string;
+            dest: string;
+            brush: string;
+            modifiers?: { lineWidth?: number; opacity?: number };
+        }>;
+        nags: number[];
+        comment: string;
+        commands?: string;
+        startingComment?: string;
+        clock?: number;
+    };
+
+    const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() => treeNodeObjectSchema);
+    const treeNodeObjectSchema = z.object({
         fen: boundedText,
         move: moveSchema.nullable(),
         san: boundedText.nullable(),
@@ -156,25 +170,22 @@ const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
         commands: boundedText.optional(),
         startingComment: boundedText.optional(),
         clock: z.number().finite().optional(),
-    }),
-);
+    });
 
-/** A game stamp is the lowercase hex SHA-256 of the game's exact bytes (`read_game`). */
-const STAMP_PATTERN = /^[a-f0-9]{64}$/;
-
-const persistedTreeSchema = z.object({
-    root: treeNodeSchema,
-    headers: headersSchema,
-    position: pathSchema,
-    dirty: z.boolean(),
-    sourceStamp: z.string().regex(STAMP_PATTERN).nullable(),
-    appendAttempted: z.boolean(),
-    report: z.object({
-        inProgress: z.boolean(),
-        operationId: z.string().nullable().optional(),
-    }),
-    practicePath: pathSchema.nullable().optional(),
-});
+    return z.object({
+        root: treeNodeSchema,
+        headers: headersSchema,
+        position: pathSchema,
+        dirty: z.boolean(),
+        sourceStamp: z.string().regex(STAMP_PATTERN).nullable(),
+        appendAttempted: z.boolean(),
+        report: z.object({
+            inProgress: z.boolean(),
+            operationId: z.string().nullable().optional(),
+        }),
+        practicePath: pathSchema.nullable().optional(),
+    });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -215,11 +226,15 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
  * Legacy glyph arrays become canonical NAG codes, preserving their order and multiplicity.
  * The empty glyph has lost its code already; invalid legacy glyphs remain unreadable.
  */
-function migrateLegacyNode(node: unknown, depth = 0): unknown {
+function migrateLegacyNode(
+    node: unknown,
+    legacyAnnotationsSchema: ReturnType<typeof createLegacyAnnotationsSchema>,
+    depth = 0,
+): unknown {
     if (!isRecord(node) || depth > MAX_TREE_DEPTH) return node;
     const migrated: Record<string, unknown> = { ...node };
     if (!Object.prototype.hasOwnProperty.call(node, "nags") && Array.isArray(node.annotations)) {
-        const legacy = z.array(annotationSchema).max(MAX_NODE_NAGS).safeParse(node.annotations);
+        const legacy = legacyAnnotationsSchema.safeParse(node.annotations);
         if (legacy.success) {
             migrated.nags = legacy.data
                 .filter((glyph) => glyph !== "")
@@ -228,7 +243,9 @@ function migrateLegacyNode(node: unknown, depth = 0): unknown {
         }
     }
     if (Array.isArray(node.children)) {
-        migrated.children = node.children.map((child) => migrateLegacyNode(child, depth + 1));
+        migrated.children = node.children.map((child) =>
+            migrateLegacyNode(child, legacyAnnotationsSchema, depth + 1),
+        );
     }
     if (
         !Object.prototype.hasOwnProperty.call(node, "commands") &&
@@ -244,10 +261,11 @@ function migrateLegacyNode(node: unknown, depth = 0): unknown {
 /** Adds fields that were absent before TreeState persistence was versioned. */
 export function migrateTreeForStorage(value: unknown): unknown {
     if (!isRecord(value)) return value;
+    const legacyAnnotationsSchema = createLegacyAnnotationsSchema();
     const hasAppendAttempted = Object.prototype.hasOwnProperty.call(value, "appendAttempted");
     return {
         ...value,
-        root: migrateLegacyNode(value.root),
+        root: migrateLegacyNode(value.root, legacyAnnotationsSchema),
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
         sourceStamp:
@@ -261,7 +279,7 @@ export function migrateTreeForStorage(value: unknown): unknown {
 }
 
 type StoredTree = StorageValue<unknown>;
-type ValidatedStoredTree = StorageValue<z.infer<typeof persistedTreeSchema>>;
+type ValidatedStoredTree = StorageValue<z.infer<ReturnType<typeof createPersistedTreeSchema>>>;
 
 export type TabTreeStorageStatus =
     | { kind: "not-read" }
@@ -286,7 +304,7 @@ const NOT_READ_STATUS: TabTreeStorageStatus = { kind: "not-read" };
 function parseTree(value: unknown): ValidatedStoredTree | null {
     const candidate = migrateTreeForStorage(value);
     if (!isBoundedTreeForStorage(candidate)) return null;
-    const parsed = persistedTreeSchema.safeParse(candidate);
+    const parsed = createPersistedTreeSchema().safeParse(candidate);
     if (!parsed.success) return null;
 
     // A stored path is repaired against the tree it was stored with: the cursor and the drill path
@@ -596,6 +614,7 @@ export class TabStorageRepository {
 
     /** Replay only explicit refused-admission markers, independent of ownership snapshots. */
     replayFailedAdmissions(retainedIds: ReadonlySet<string>) {
+        const tabIdSchema = createTabIdSchema();
         const markedIds = new Set<string>();
         const failedIds = new Set<string>();
         try {
@@ -703,7 +722,7 @@ export class TabStorageRepository {
         const raw = sessionStorage.getItem(tabId);
         if (raw === null) return false;
         if (this.isDecodableTreeValue(raw)) return true;
-        return tabIdSchema.safeParse(tabId).success;
+        return createTabIdSchema().safeParse(tabId).success;
     }
 
     private isDecodableTreeValue(raw: string): boolean {

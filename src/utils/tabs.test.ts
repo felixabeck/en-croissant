@@ -21,6 +21,16 @@ const mocks = vi.hoisted(() => ({
     writeGame: vi.fn(),
 }));
 
+const repositories = new Set([tabStorage]);
+
+async function importFreshAdmission() {
+    vi.resetModules();
+    const atoms = await import("@/state/atoms");
+    const repository = (await import("@/state/store/tabStorage")).tabStorage;
+    repositories.add(repository);
+    return { atoms, repository, tabs: await import("./tabs") };
+}
+
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (reason?: unknown) => void;
@@ -55,13 +65,18 @@ import {
 } from "./tabs";
 
 afterEach(() => {
-    sessionStorage.clear();
+    vi.restoreAllMocks();
     closeTreeStore("save-test");
     closeTreeStore("save-as-test");
     removeFileFreshness("save-test");
     removeFileFreshness("save-as-test");
+    for (const repository of repositories) {
+        for (const id of repository.flush()) repository.remove(id);
+    }
+    repositories.clear();
+    repositories.add(tabStorage);
+    sessionStorage.clear();
     vi.clearAllMocks();
-    vi.restoreAllMocks();
     vi.useRealTimers();
 });
 
@@ -140,6 +155,109 @@ test("commitNewTab commits tab and selection together", () => {
     });
     expect(id).not.toBeNull();
     expect(setTabs).toHaveBeenCalledOnce();
+});
+
+test.each(["commitNewTab", "createTab"] as const)(
+    "%s initializes before its first seeded admission and preserves the tree through reload",
+    async (operation) => {
+        sessionStorage.clear();
+        const retained: Tab = {
+            name: "Retained",
+            value: crypto.randomUUID(),
+            type: "analysis",
+            gameOrigin: { kind: "none" },
+        };
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+        );
+        const { createStore } = await import("jotai");
+        const { atoms, repository, tabs } = await importFreshAdmission();
+        const workspace = await import("@/state/workspace");
+        const hydrate = vi.spyOn(workspace, "loadWorkspace");
+        const allocate = vi.spyOn(crypto, "randomUUID");
+        const seed = vi.spyOn(repository, "seed");
+        const store = createStore();
+        const setTabs = vi.fn((update: Tab[] | ((previous: Tab[]) => Tab[]), active?: string) =>
+            store.set(atoms.tabsAtom, update, active),
+        );
+        const tree = defaultTree();
+        tree.headers.event = "First operation seeded tree";
+        tree.dirty = true;
+
+        const id =
+            operation === "commitNewTab"
+                ? tabs.commitNewTab({
+                      tab: { name: "Seeded", type: "analysis", gameOrigin: { kind: "none" } },
+                      seed: (id) => repository.seed(id, tree),
+                      setTabs,
+                  })
+                : await tabs.createTab({
+                      tab: { name: "Seeded", type: "analysis" },
+                      initialTree: tree,
+                      setTabs,
+                  });
+
+        expect(id).not.toBeNull();
+        expect(hydrate).toHaveBeenCalledOnce();
+        expect(allocate).toHaveBeenCalledOnce();
+        expect(hydrate.mock.invocationCallOrder[0]).toBeLessThan(
+            allocate.mock.invocationCallOrder[0]!,
+        );
+        expect(allocate.mock.invocationCallOrder[0]).toBeLessThan(
+            seed.mock.invocationCallOrder[0]!,
+        );
+        expect(seed.mock.invocationCallOrder[0]).toBeLessThan(setTabs.mock.invocationCallOrder[0]!);
+        expect(store.get(atoms.tabsAtom).map((tab) => tab.value)).toEqual([retained.value, id]);
+        expect(store.get(atoms.activeTabAtom)).toBe(id);
+        expect(repository.read(id!)?.state).toMatchObject({
+            dirty: true,
+            headers: { event: tree.headers.event },
+        });
+
+        const reload = await importFreshAdmission();
+        const reloadedStore = createStore();
+        expect(reloadedStore.get(reload.atoms.tabsAtom).map((tab) => tab.value)).toEqual([
+            retained.value,
+            id,
+        ]);
+        expect(reloadedStore.get(reload.atoms.activeTabAtom)).toBe(id);
+        expect(reload.repository.read(id!)?.state).toMatchObject({
+            dirty: true,
+            headers: { event: tree.headers.event },
+        });
+    },
+);
+
+test("a refused initialization precedes ID allocation, seed and caller-supplied admission", async () => {
+    sessionStorage.clear();
+    const { tabs, repository } = await importFreshAdmission();
+    const failure = new DOMException("workspace read refused", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const refusal = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (this === sessionStorage && key === WORKSPACE_STORAGE_KEY) throw failure;
+            return originalGetItem.call(this, key);
+        });
+    const allocate = vi.spyOn(crypto, "randomUUID");
+    const seed = vi.fn((id: string) => repository.seed(id, defaultTree()));
+    const setTabs = vi.fn(() => true);
+
+    expect(() =>
+        tabs.commitNewTab({
+            tab: { name: "Never staged", type: "analysis", gameOrigin: { kind: "none" } },
+            seed,
+            setTabs,
+        }),
+    ).toThrow(failure);
+
+    expect(allocate).not.toHaveBeenCalled();
+    expect(seed).not.toHaveBeenCalled();
+    expect(setTabs).not.toHaveBeenCalled();
+    expect(repository.pendingCount()).toBe(0);
+    refusal.mockRestore();
+    expect(sessionStorage.length).toBe(0);
 });
 
 test("commitNewTab reports a seed failure once without attempting admission", () => {
@@ -604,9 +722,7 @@ test("a stale-game rejection becomes a conflict without clearing edits", async (
     ).resolves.toBe("conflict");
 
     expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
-    expect((await import("@/state/fileFreshness")).getFileFreshness("save-test").state).toBe(
-        "conflict",
-    );
+    expect(getFileFreshness("save-test").state).toBe("conflict");
 });
 
 test("a committed save whose follow-up failed is verified by text instead of by its old stamp", async () => {
@@ -656,7 +772,7 @@ test("a generic native conflict stays unverified and returns its typed save fail
             message: "Conflict: PGN changed after scan",
         },
     });
-    expect((await import("@/state/fileFreshness")).getFileFreshness("save-test")).toMatchObject({
+    expect(getFileFreshness("save-test")).toMatchObject({
         state: "unverified",
         errorMessage: "Conflict: PGN changed after scan",
     });

@@ -68,7 +68,16 @@ void originalPathOwnersSnapshot;
 
 // Tabs
 
-const workspaceAtom = atom(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY));
+let initialWorkspace: Workspace | undefined;
+
+/** One successful document snapshot, shared by new stores without replacing their later edits. */
+export function initializeWorkspace(): Workspace {
+    initialWorkspace ??= loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    return initialWorkspace;
+}
+
+const committedWorkspaceAtom = atom<Workspace | null>(null);
+const workspaceAtom = atom((get) => get(committedWorkspaceAtom) ?? initializeWorkspace());
 const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
     const previous = get(workspaceAtom);
     const retainedIds = new Set(workspace.tabs.map((tab) => tab.value));
@@ -94,7 +103,7 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
     };
     const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
     if (!saved) return false;
-    set(workspaceAtom, saved);
+    set(committedWorkspaceAtom, saved);
     return true;
 });
 

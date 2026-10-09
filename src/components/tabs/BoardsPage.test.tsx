@@ -85,6 +85,7 @@ vi.mock("@/state/atoms", async () => {
     },
   );
   return {
+    initializeWorkspace: vi.fn(),
     activeTabAtom,
     closeWorkspaceTabAtom: atom(null, (get, set, tabId: string) => {
       if (!fixtures.closeReceipt) return false;
