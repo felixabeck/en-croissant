@@ -3654,7 +3654,6 @@ mod bound_sqlite_witnesses {
         assert_eq!(retained.len(), admission_limit);
         assert_descriptors_have_identity(&retained, retained_identity);
         assert_sqlite_shared_read_lock_is_held(&probe);
-        assert_sqlite_shared_read_lock_is_held(&probe);
 
         let overflow_fd = fs::File::open(retained_path)
             .expect("open descriptor beyond admission limit")
@@ -3663,7 +3662,6 @@ mod bound_sqlite_witnesses {
         let over_limit = inspect_descriptors();
         assert_eq!(over_limit.len(), admission_limit + 1);
         assert_descriptors_have_identity(&over_limit, retained_identity);
-        assert_sqlite_shared_read_lock_is_held(&probe);
         assert_sqlite_shared_read_lock_is_held(&probe);
 
         (probe, reader, hook_ran)
@@ -4228,7 +4226,6 @@ mod bound_sqlite_witnesses {
         assert!(result.is_err());
         assert!(bound.refusal_count() > 0);
         assert_sqlite_shared_read_lock_is_held(&b_probe);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
         drop(second);
         drop(b_probe);
         drop(bound);
@@ -4271,7 +4268,6 @@ mod bound_sqlite_witnesses {
             swapped.load(Ordering::SeqCst),
             "the pre-open swap seam did not run"
         );
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
         assert_sqlite_shared_read_lock_is_held(&b_probe);
         assert_eq!(open_descriptor_count(b_identity), before);
 
@@ -4319,7 +4315,6 @@ mod bound_sqlite_witnesses {
             "the pre-reopen swap seam did not run"
         );
         assert_sqlite_shared_read_lock_is_held(&b_probe);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
         assert_eq!(open_descriptor_count(a_identity), before);
 
         drop(b_reader);
@@ -4345,7 +4340,6 @@ mod bound_sqlite_witnesses {
 
         assert!(open_bound_connection(&bound).is_err());
         assert_sqlite_shared_read_lock_is_held(&probe);
-        assert_sqlite_shared_read_lock_is_held(&probe);
         assert_eq!(open_descriptor_count(identity), before);
 
         drop(reader);
@@ -4368,7 +4362,6 @@ mod bound_sqlite_witnesses {
         bound.fail_next_proc_reopen_with(libc::ENOENT).unwrap();
 
         assert!(open_bound_connection(&bound).is_err());
-        assert_sqlite_shared_read_lock_is_held(&probe);
         assert_sqlite_shared_read_lock_is_held(&probe);
         assert_eq!(open_descriptor_count(identity), before);
 
@@ -4572,14 +4565,12 @@ mod bound_sqlite_witnesses {
             "the pre-open swap seam did not run"
         );
         assert_sqlite_shared_read_lock_is_held(&b_probe);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
 
         let quarantined = quarantined_descriptor_fds(b_identity);
         assert_descriptors_have_identity(&quarantined, b_identity);
         drop(bound_a);
         let retained_after_a_drops = quarantined_descriptor_fds(b_identity);
         assert_descriptors_have_identity(&retained_after_a_drops, b_identity);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
         assert_sqlite_shared_read_lock_is_held(&b_probe);
 
         drop(b_reader);
@@ -4630,12 +4621,10 @@ mod bound_sqlite_witnesses {
                 let retained = unclassified_descriptor_fds();
                 assert_descriptors_have_identity(&retained, b_identity);
                 assert_sqlite_shared_read_lock_is_held(&b_probe);
-                assert_sqlite_shared_read_lock_is_held(&b_probe);
 
                 drop(bound_a);
                 let retained_after_a_drops = unclassified_descriptor_fds();
                 assert_descriptors_have_identity(&retained_after_a_drops, b_identity);
-                assert_sqlite_shared_read_lock_is_held(&b_probe);
                 assert_sqlite_shared_read_lock_is_held(&b_probe);
 
                 drop(b_reader);

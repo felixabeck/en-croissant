@@ -30,9 +30,10 @@ use crate::{
 
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
-/// While any per-identity or unclassified retained set holds this many descriptors,
-/// bound lockable opens are refused with `EMFILE`; admitted opens can still push a set past
-/// the limit, and exceeding it never closes descriptors.
+/// A full unclassified bucket refuses sidecar opens with `EMFILE` on every Unix.
+/// Non-Linux leaf opens also check per-identity buckets. Linux `O_PATH` leaf opens and
+/// verified-inode reopens bypass these checks. Already admitted opens can exceed the limit,
+/// and a full bucket never causes retained descriptors to close.
 #[cfg(unix)]
 const QUARANTINE_ADMISSION_LIMIT: usize = 8;
 
@@ -1132,16 +1133,20 @@ mod unix_hooks {
         let _ = (registration, name);
     }
 
-    unsafe fn fstat_leaf_descriptor(
+    unsafe fn fstat_descriptor(
         registration: &Registration,
         fd: c_int,
         output: *mut libc::stat,
+        is_leaf: bool,
     ) -> c_int {
         #[cfg(test)]
         {
-            let error = registration
-                .binding
-                .leaf_fstat_error
+            let slot = if is_leaf {
+                &registration.binding.leaf_fstat_error
+            } else {
+                &registration.binding.sidecar_fstat_error
+            };
+            let error = slot
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take();
@@ -1151,7 +1156,7 @@ mod unix_hooks {
             }
         }
         #[cfg(not(test))]
-        let _ = registration;
+        let _ = (registration, is_leaf);
         unsafe { libc::fstat(fd, output) }
     }
 
@@ -1180,7 +1185,7 @@ mod unix_hooks {
         }
         let path_file = unsafe { File::from_raw_fd(path_fd) };
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe { fstat_leaf_descriptor(registration, path_fd, stat.as_mut_ptr()) } != 0 {
+        if unsafe { fstat_descriptor(registration, path_fd, stat.as_mut_ptr(), true) } != 0 {
             let error = last_errno();
             drop(path_file);
             return syscall_failure(error);
@@ -1265,26 +1270,7 @@ mod unix_hooks {
         is_leaf: bool,
     ) -> c_int {
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        #[cfg(test)]
-        let injected_error = if is_leaf {
-            None
-        } else {
-            registration
-                .binding
-                .sidecar_fstat_error
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-        };
-        #[cfg(not(test))]
-        let injected_error: Option<c_int> = None;
-        let result = match injected_error {
-            Some(error) => syscall_failure(error),
-            None if is_leaf => unsafe {
-                fstat_leaf_descriptor(registration, fd, stat.as_mut_ptr())
-            },
-            None => unsafe { libc::fstat(fd, stat.as_mut_ptr()) },
-        };
+        let result = unsafe { fstat_descriptor(registration, fd, stat.as_mut_ptr(), is_leaf) };
         if result != 0 {
             let error = last_errno();
             retain_unclassified_descriptor(fd);
@@ -1304,6 +1290,44 @@ mod unix_hooks {
             return syscall_failure(libc::EINVAL);
         }
         fd
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn bound_sqlite_nonregular_acceptance_closes_rejected_descriptors() {
+        crate::db::test_support::run_isolated(
+            "db::bound_sqlite::unix_hooks::bound_sqlite_nonregular_acceptance_closes_rejected_descriptors",
+            || {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("cleanup.db3");
+                std::fs::write(&path, b"database").unwrap();
+                let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+                let bound = BoundDatabase::acquire(&target).unwrap();
+                let sidecar = root.path().join("cleanup.db3-shm");
+                let name = CString::new(sidecar.as_os_str().as_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                for directory in [false, true] {
+                    if directory {
+                        std::fs::remove_file(&sidecar).unwrap();
+                        std::fs::create_dir(&sidecar).unwrap();
+                    }
+                    let fd =
+                        unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+                    assert!(fd >= 0, "open nonregular descriptor without a FIFO peer");
+                    assert_eq!(
+                        unsafe { accept_regular_descriptor(&bound.0, fd, false) },
+                        -1
+                    );
+                    assert_eq!(last_errno(), libc::EINVAL);
+                    assert_eq!(
+                        unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                        -1,
+                        "nonregular acceptance must close the rejected descriptor (directory={directory})"
+                    );
+                    assert_eq!(last_errno(), libc::EBADF);
+                }
+            },
+        );
     }
 
     pub(super) unsafe fn open_hook_inner(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
