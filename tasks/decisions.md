@@ -6641,3 +6641,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** BoardFrame wraps the grid while AnnotationHint remains its sibling in the outer Group. The current probe searches only inside BoardFrame. Earlier native screenshot evidence shows the actual glyph. Reversal path: replace these selectors with another explicit board-scoped semantic contract, demonstrated by the same native positive and deliberate failing-input checks.
 * **Decided by:** Codex, required real-product gate repair in full-auto drain, 2026-10-09. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"497878f7832570c53dac1d914a2a8217c8e27aad4dfebc9a2163062f40f15066","input_sha256":"1b7378522ec0b5e277b0e25ea6c2ade9f320e0fc86c14da4dc8650e13f2907ba","kind":"mutation-receipt","operation":"bd8aa5103ce370e8b648159313069d4a4bc630a8302923141f85b6e613a50117","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-05 — Which trigger selects compact title-bar chrome?
+
+* **Question:** Which trigger selects compact title-bar chrome?
+* **Governs:** f-20260927-09
+* **Chosen:** use the existing scale-aware hook at 48em.
+* **Rejected:** a new overflow-measuring ResizeObserver and an unscaled breakpoint.
+* **Reason:** the settled zoom-equivalence contract and a fixed compact form avoid another resource lifecycle. Reversal path: change TopBar's threshold or trigger after new browser evidence, preserving responsive tests.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
+
+### d-20261009-06 — Which compact title-bar menu form is used?
+
+* **Question:** Which compact title-bar menu form is used?
+* **Governs:** f-20260927-09
+* **Chosen:** one icon target with File/View/Help Mantine Menu.Sub submenus and a shared action renderer.
+* **Rejected:** removing only the logo, a variable-height wrapped header, and a flat action list.
+* **Reason:** removing the logo alone does not expose three groups within 104px, the shell reserves a fixed-height header, and a flat 200% action list pushes categories below the popup. Reversal path: replace compact rendering while retaining callbacks and acceptance contracts.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
+
+### d-20261009-07 — Who verifies compact-title-bar pixels and what is excluded?
+
+* **Question:** Who verifies compact-title-bar pixels and what is excluded?
+* **Governs:** f-20260927-09
+* **Chosen:** the agent verifies pinned-container screenshots and interactions. Scope covers custom TopBar, directly affected tests and screenshots.
+* **Rejected:** relying on Felix or expanding into native GTK chrome, general Settings layout or unrelated findings.
+* **Reason:** full auto removes visual approval and the project has a renderer proof path. Reversal path: change the acceptance owner if Felix asks.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"5e52e16c476b217ebb1b15df6c1d72fae40bcd16107cb0fa1b67166359f5a4b0","input_sha256":"9a9dd1623784a8850f556597bba485e0ea7934536e96538103dc8c36cb14c91b","kind":"mutation-receipt","operation":"accdc1ddec88faea840a87fb31d48dfa10cb401052b3f78ff1b997480a52bb65","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-05","d-20261009-06","d-20261009-07"],"target":"decisions-ledger","v":1} -->
