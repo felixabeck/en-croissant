@@ -14400,3 +14400,51 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261001-13 concerns hydration validation in the same store. It does not cover write refusal. f-20261001-08 concerns discoverable opening controls. Its plan review identified this independent persistence hazard and retains the existing persistence limitation without adding a new storage mechanism to that mandate.
 * **Proof required:** real-store tests with `setItem` refusing after a seeded previous value, assertions for both memory and stored state, reload, a successful retry, and affected database-route consumer behavior. Preserve previous stored bytes and user tab trees.
 * **Found by:** Codex `review-persisted-state`, game-opening plan review round 1, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran in a separate session on the same model family as prospective code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### The database preview's Delete game action drops native deletion and refresh failures
+
+* **ID:** f-20261010-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 1305e490-16a2-4c86-8522-235b3acc3583 · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-0/run/attempt-1305e490-16a2-4c86-8522-235b3acc3583-1.jsonl
+* **Where:** `src/components/databases/GameCard.tsx:63-72`.
+* **Defect:** the Delete game click handler starts `void tauri.deleteDbGame(file, game.id).then(...)` with no rejection handler. Inside its successful branch, `mutate()` and `globalMutate(...)` are also unawaited. A refused deletion or failed refresh can therefore reject without the component reporting the failure. A successful deletion followed by failed refresh may leave the visible result list stale.
+* **Change:** own the complete deletion and cache-refresh operation, apply the existing cancellation-aware error presentation, and preserve the distinction between a refused mutation and a completed mutation whose refresh failed. Inspect the native mutation outcome contract before choosing recovery behavior. Review with the error-handling lens.
+* **Related:** f-20261001-08 changes the preview's opening controls, not its destructive operation. Build step 4 keeps this independently existing delete-operation hazard as a named pre-change limit rather than adding a deletion mechanism to the opening mandate. No duplicate was found in the ledger or pending inbox.
+* **Proof required:** component tests for rejected native deletion, successful deletion plus rejected refresh, cancellation and successful refresh, with no unhandled rejection and the correct visible failure/recovery behavior.
+* **Found by:** Codex locate probe 1 and orchestrator source confirmation during game-opening planning, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+
+### Tournament game pagination always slices 25 rows while its page-size selector changes the paginator
+
+* **ID:** f-20261010-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 08351eaf-aeac-45f2-aac0-9ca5f71e144a · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-1/run/attempt-08351eaf-aeac-45f2-aac0-9ca5f71e144a-1.jsonl
+* **Where:** `src/components/databases/TournamentCard.tsx` defines `pageSize` and passes it to `recordsPerPage`, but `paginatedGames` slices with `(page - 1) * 25` and a length of 25.
+* **Defect:** choosing 10 or 50 records per page changes the paginator while the rendered records still use 25-row chunks. For example, page two with size 10 starts at the 26th game instead of the 11th, and size 50 still renders only 25 games.
+* **Change:** derive the game slice from the selected page size, preserve sorting, and keep the current page valid when its size or result count changes. Review with review-correctness.
+* **Related:** f-20261001-09 changes shared pane geometry, not tournament result pagination. This pre-change data-pagination defect is a separate obligation from the layout mandate, not a reason to add paging changes to its plan. No matching ledger or pending-inbox entry was found.
+* **Proof required:** component regression tests with more than 50 distinguishable games, page sizes 10 and 50, a second page, and page-size changes asserting the actual displayed records and paginator state.
+* **Found by:** Codex orchestrator while tracing GridLayout's TournamentTable consumer, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+
+### Player and tournament ArrowDown navigation indexes beyond the loaded page
+
+* **ID:** f-20261010-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 08351eaf-aeac-45f2-aac0-9ca5f71e144a · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-1/run/attempt-08351eaf-aeac-45f2-aac0-9ca5f71e144a-1.jsonl
+* **Where:** `src/components/databases/PlayerTable.tsx:48-55`, `src/components/databases/TournamentTable.tsx:44-51`.
+* **Defect:** both ArrowDown handlers compare the next index against total database result count, then read the loaded page array at that index. At the last row of a 25-row page with more than 25 results, the guard passes for index 25 and reading `.id` from the absent row throws.
+* **Change:** share a page-local bounded navigation operation between the two approximately similar handlers. Preserve selection identity and existing page behavior without indexing outside loaded records. Review with review-correctness.
+* **Related:** f-20261001-09 changes pane geometry, not selection paging. This independently existing page-navigation defect is a named pre-change limit of the layout plan. No duplicate was found in the ledger or the two pending entries checked before filing.
+* **Proof:** component regression tests exercising ArrowDown at the last loaded row with total count greater than page length, first/last boundaries and selection changes, with no thrown exception or invalid selection.
+* **Found by:** Codex locate probe 1 and orchestrator source confirmation during layout planning, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+
+### Tauri security review lens directs reviewers to the retired path_authority.rs file
+
+* **ID:** f-20261010-05 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** f622f6f4-dc6f-4f74-91c1-091d4cde09cc · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-f622f6f4-dc6f-4f74-91c1-091d4cde09cc-1.jsonl
+* **Where:** `.claude/agents/review-tauri-security.md:54-55,98`.
+* **Defect:** The security lens's grounding and containment hunt direct reviewers to `src-tauri/src/infra/path_authority.rs`, which no longer exists. Path authority is now the module under `src-tauri/src/infra/path_authority/`, with `mod.rs`, `resolved.rs`, `verified.rs` and `shared.rs`. The old file and line anchors cannot lead a reviewer to the current implementation.
+* **Change:** Refresh the three retired path references to the current definitions and recheck the cited containment/identity claims against them. Prefer symbols alongside current files so the next movement is discoverable. Keep the lens's security ownership and hunts intact.
+* **Related:** f-20261009-06 records a different stale instruction in the IPC lens. No shared causal root is established.
+* **Proof required:** Every named local source file exists, each cited definition supports its statement, and the project instruction/contract checks pass. This proves instruction accuracy, not model obedience.
+* **Found by:** Codex orchestrator while loading the mandatory security lens for the snapshot-locator repair in f-20260914-04, 2026-10-10. Deferred to the separate reviewer-instruction area. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
