@@ -8698,6 +8698,10 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 * **Disclosure:** Plan authorship and arbitration share one context. Detection ran on the same model family as the code in fresh contexts.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"4354012732af4a9223613b6c63286df2f70d203094512d7107d5138c1e2d2820","input_sha256":"3dd392b16ce8bbe2df21f06a7f5d1012aeb9b23e902a96b8343f2544d7cf5e17","kind":"mutation-receipt","operation":"fb5b753f911323cf763c017e1775f3aceb358cb22799933ee73632497fa2ed9a","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-03"],"target":"f-20260914-03","v":1} -->
 
+* **R3 mechanism judgment:** The first fresh focused review-plan pass approved the two stronger proof boundaries and found R3-PF1, an existing import invalidation fixture that seeds an explorer tuple through presence. Fix adopted in candidate v2, migrating the seed through the actual generic explorer core while preserving cache assertions. The parent MockRuntime fixture cannot call the Wry-only IPC entry, so the existing core receives only parent-module visibility. The cache repair also owns that fixture's isolated db/mod.rs hunk, sequentially after the proof-strengthening package. A second fresh judgment is pending. No source repair began before it.
+* **Disclosure:** Plan authorship and arbitration share one context. Detection ran on the same model family as the code.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"844b04e24c928009706c35e34c9b84a0eee9037312411f3f5788d5b9810ab26d","input_sha256":"d9b2acba37a798339563e2faf8a6a69a59bb47c0597fa647df7bf6989e84d30d","kind":"mutation-receipt","operation":"b046febd3bbd015684a348927e065fedb457f999b6fbc14abbda83c385eef47e","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-03"],"target":"f-20260914-03","v":1} -->
+
 ### Search index loading repeats target resolution and source derivation three times
 
 * **ID:** f-20260914-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
