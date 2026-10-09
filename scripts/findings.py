@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 4dea910968a8bb23cd81b0f9b1d21f0a53954e82a41c08e10181c63efae4f428
+# agent-kit-sha256: 136925bfae23ece2785b5399b67cffb292ba8a54d2456bb2aa9e0aaa8bd318a2
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -3540,8 +3540,9 @@ def _warn_pending_inbox(inbox: Path) -> None:
     if any(p.parent == claim for p in sources):
         try:
             intent = _read_claim_intent(claim)
-        except LedgerError:
-            intent = None
+        except LedgerError as exc:
+            print(f"NOTE claim intent could not be read: {exc}", file=sys.stderr)
+            return
         if intent is not None and intent.phase == "prepared":
             print(
                 f"NOTE a prepared claim at {claim} awaits proof that its ledger "
