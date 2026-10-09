@@ -315,6 +315,10 @@ fn with_validated_mutation(
     finish_search_cache_after_transaction(result, search_cache, target)
 }
 
+/// The material tracker starts at standard material (39) and only decreases,
+/// capping persisted minima at 39 even for excess-material setups.
+const STANDARD_MATERIAL_BASELINE: u16 = 39;
+
 #[derive(Debug)]
 pub struct MaterialColor {
     white: u16,
@@ -334,8 +338,8 @@ impl MaterialColor {
 impl Default for MaterialColor {
     fn default() -> Self {
         Self {
-            white: 39,
-            black: 39,
+            white: STANDARD_MATERIAL_BASELINE,
+            black: STANDARD_MATERIAL_BASELINE,
         }
     }
 }
