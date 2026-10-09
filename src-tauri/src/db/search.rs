@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 use crate::db::search_index::{
     legacy_sidecar_leaf, preferred_sidecar_leaf, promote_legacy_index_sidecar_at,
 };
+#[cfg(test)]
+use crate::progress::ProgressUpdateHook;
 use crate::{
     db::{
         encoding::{
@@ -643,16 +645,6 @@ async fn acquire_search_request(
 
 const POSITION_SEARCH_PROGRESS_INTERVAL: usize = 50_000;
 
-/// None runs the production update after hook side effects. Some(result) substitutes its result.
-#[cfg(test)]
-type SearchProgressUpdate<'a> =
-    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Sync + 'a;
-
-#[cfg(test)]
-struct SearchProgressTestHooks<'a> {
-    update: &'a SearchProgressUpdate<'a>,
-}
-
 // Individual Arc handles the closure must own: BlockingGateway::spawn is
 // `'static` and AppState is not Clone. A bundle type was rejected (plan
 // decision D-B).
@@ -667,7 +659,7 @@ fn search_position_blocking<R: tauri::Runtime>(
     file: DatabaseHandle,
     query: GameQuery,
     cancellation: &CancellationToken,
-    #[cfg(test)] progress_hooks: Option<&SearchProgressTestHooks<'_>>,
+    #[cfg(test)] progress_update: Option<&ProgressUpdateHook<'_>>,
 ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
@@ -771,8 +763,8 @@ fn search_position_blocking<R: tauri::Runtime>(
                 )
             };
             #[cfg(test)]
-            let progress_result = progress_hooks
-                .and_then(|hooks| (hooks.update)(&lease, percent))
+            let progress_result = progress_update
+                .and_then(|update| update(&lease, percent))
                 .unwrap_or_else(report_progress);
             #[cfg(not(test))]
             let progress_result = report_progress();
@@ -1282,7 +1274,7 @@ mod progress_error_tests {
         handle: DatabaseHandle,
         lease: ProgressLease,
         cancellation: &CancellationToken,
-        hooks: &SearchProgressTestHooks<'_>,
+        progress_update: &ProgressUpdateHook<'_>,
     ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
         let state = app.state::<AppState>();
         let mut query = GameQuery::new().position(PositionQueryJs {
@@ -1300,7 +1292,7 @@ mod progress_error_tests {
             handle,
             query,
             cancellation,
-            Some(hooks),
+            Some(progress_update),
         )
     }
 
@@ -1334,10 +1326,9 @@ mod progress_error_tests {
                     // Let the actual typed production update reject the stale lease.
                     None
                 };
-                let hooks = SearchProgressTestHooks { update: &revoke };
                 let cancellation = CancellationToken::new();
                 let result =
-                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks);
+                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &revoke);
                 assert!(
                     matches!(result, Err(Error::Cancellation)),
                     "revoked search must return Cancellation, got error {:?}",
@@ -1393,10 +1384,9 @@ mod progress_error_tests {
                         ))))
                     })
                 };
-                let hooks = SearchProgressTestHooks { update: &fail };
                 let cancellation = CancellationToken::new();
                 let (stats, games) =
-                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &hooks)
+                    run_checkpoint_search(&app, handle, lease.clone(), &cancellation, &fail)
                         .unwrap();
                 assert!(!cancellation.is_cancelled());
                 assert_eq!(

@@ -106,6 +106,12 @@ pub struct ProgressLease {
     pub generation: ProgressGeneration,
 }
 
+/// Borrowed per-call test hook for running progress updates.
+/// None runs the production update after callback side effects. Some(result) substitutes its result.
+#[cfg(test)]
+pub(crate) type ProgressUpdateHook<'a> =
+    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Sync + 'a;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
 pub struct ProgressItem {
     pub id: String,

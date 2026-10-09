@@ -1,5 +1,7 @@
 #[cfg(test)]
 use crate::infra::path_authority::PathAuthority;
+#[cfg(test)]
+use crate::progress::ProgressUpdateHook;
 #[cfg(all(test, unix))]
 pub(crate) mod allocation_probe;
 mod bound_sqlite;
@@ -2394,11 +2396,6 @@ pub async fn get_players_game_info(
     .await
 }
 
-/// None runs the production update after callback side effects. Some(result) substitutes its result.
-#[cfg(test)]
-type PlayerStatisticsProgressUpdate<'a> =
-    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Sync + 'a;
-
 fn get_players_game_info_blocking<R: tauri::Runtime>(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
@@ -2406,7 +2403,7 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     id: i32,
     (app, lease): (tauri::AppHandle<R>, Option<ProgressLease>),
     cancellation: &CancellationToken,
-    #[cfg(test)] progress_update: Option<&PlayerStatisticsProgressUpdate<'_>>,
+    #[cfg(test)] progress_update: Option<&ProgressUpdateHook<'_>>,
 ) -> Result<PlayerGameInfo, Error> {
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
