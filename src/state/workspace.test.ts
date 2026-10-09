@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
+import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { defaultTree } from "@/utils/treeReducer";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
@@ -25,6 +26,8 @@ const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) })
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
 vi.mock("./persistError", () => persistError);
+
+const tabStorageCleanup = createTabStorageCleanup(tabStorage);
 
 const legacyTab = {
     name: "Legacy",
@@ -54,7 +57,7 @@ function storeUnownedDirtyTree() {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    for (const id of tabStorage.flush()) tabStorage.remove(id);
+    tabStorageCleanup.drain();
     native.warn.mockClear();
     persistError.reportPersistError.mockClear();
 });
@@ -179,6 +182,28 @@ test("keeps the active tab selected when its legacy ID is migrated", () => {
     expect(workspace.tabs[0]).toEqual(first);
     expect(workspace.tabs[1]!.value).not.toBe(second.value);
     expect(workspace.activeTab).toBe(workspace.tabs[1]!.value);
+});
+
+test.each([128, 129])("legacy active-tab IDs of length %s keep the repair boundary", (length) => {
+    sessionStorage.clear();
+    const first = { ...legacyTab, value: crypto.randomUUID() };
+    const second = { ...legacyTab, name: "Active", value: "x".repeat(length) };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: LEGACY_WORKSPACE_VERSION,
+            tabs: [first, second],
+            activeTab: second.value,
+        }),
+    );
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs).toHaveLength(2);
+    expect(workspace.tabs[0]).toEqual(first);
+    expect(workspace.tabs[1]!.value).not.toBe(second.value);
+    expect(workspace.activeTab).toBe(workspace.tabs[length === 128 ? 1 : 0]!.value);
+    expect(readStoredWorkspace()).toEqual(workspace);
 });
 
 test("sweeps valid orphan trees during the first successful legacy migration", () => {
@@ -1868,6 +1893,26 @@ test("saveWorkspace reports storage write failures", () => {
 
     expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
     setItem.mockRestore();
+});
+
+test("saveWorkspace accepts a 128-character active ID and refuses a 129-character ID", () => {
+    sessionStorage.clear();
+    const tab = { ...legacyTab, value: "x".repeat(128) };
+    const workspace = { version: 1 as const, tabs: [tab], activeTab: tab.value };
+
+    expect(saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, workspace)).toEqual(workspace);
+    const storedAtBoundary = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    expect(readStoredWorkspace()).toEqual(workspace);
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+
+    expect(
+        saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+            ...workspace,
+            activeTab: "x".repeat(129),
+        }),
+    ).toBeNull();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storedAtBoundary);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
 });
 
 test("saveWorkspace refuses invalid and 101-tab live writes while preserving durable tabs", () => {

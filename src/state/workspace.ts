@@ -18,48 +18,44 @@ export const LEGACY_WORKSPACE_VERSION = 0;
 export const MAX_PROTECTED_TREE_KEYS = 1_024;
 export const MAX_PROTECTED_TREE_KEY_LENGTH = 128;
 
-export type Workspace = {
-    version: typeof WORKSPACE_VERSION;
-    tabs: Tab[];
-    activeTab: string | null;
-    treeOwnershipUncertain?: true;
-    treeOwnershipProtectedIds?: string[];
-    treeOwnershipPendingRemovalIds?: string[];
-};
+export type Workspace = z.infer<ReturnType<typeof createLiveWorkspaceSchema>>;
 
 export const MAX_WORKSPACE_TABS = 100;
 export const MAX_PENDING_TREE_REMOVALS = 100;
-function createWorkspaceSchemas() {
-    const uuidSchema = createTabIdSchema();
-    const protectedTreeKeysSchema = z
-        .array(z.string().min(1).max(MAX_PROTECTED_TREE_KEY_LENGTH))
-        .max(MAX_PROTECTED_TREE_KEYS)
-        .optional();
+const MAX_ACTIVE_TAB_ID_LENGTH = 128;
+
+function createLiveWorkspaceSchema() {
+    return z.object({
+        version: z.literal(WORKSPACE_VERSION),
+        tabs: z.array(tabSchema).max(MAX_WORKSPACE_TABS),
+        activeTab: z.string().max(MAX_ACTIVE_TAB_ID_LENGTH).nullable(),
+        treeOwnershipUncertain: z.literal(true).optional(),
+        treeOwnershipProtectedIds: z
+            .array(z.string().min(1).max(MAX_PROTECTED_TREE_KEY_LENGTH))
+            .max(MAX_PROTECTED_TREE_KEYS)
+            .optional(),
+        treeOwnershipPendingRemovalIds: z
+            .array(z.string().min(1))
+            .max(MAX_PENDING_TREE_REMOVALS)
+            .optional(),
+    });
+}
+
+function createWorkspaceLoadSchemas() {
+    const workspaceLiveSchema = createLiveWorkspaceSchema();
     const workspaceInputSchema = z.object({
         version: z.number().int().nonnegative().optional().catch(undefined),
         // Scrub individual legacy/corrupt tabs while keeping every independently
         // valid tab recoverable. A corrupt entry must not erase its neighbours.
         tabs: z
-            .array(tabSchema.nullable().catch(null))
+            .array(workspaceLiveSchema.shape.tabs.element.nullable().catch(null))
             .max(MAX_WORKSPACE_TABS)
             .transform((tabs) => tabs.filter((tab): tab is Tab => tab !== null)),
-        activeTab: z.string().max(128).nullable().catch(null),
+        activeTab: workspaceLiveSchema.shape.activeTab.catch(null),
     });
-    const liveTabsSchema = z.array(tabSchema).max(MAX_WORKSPACE_TABS);
     const legacyWorkspaceSchema = workspaceInputSchema.extend({
         version: z.literal(LEGACY_WORKSPACE_VERSION).optional(),
-        tabs: liveTabsSchema,
-    });
-    const workspaceLiveSchema = z.object({
-        version: z.literal(WORKSPACE_VERSION),
-        tabs: liveTabsSchema,
-        activeTab: z.string().max(128).nullable(),
-        treeOwnershipUncertain: z.literal(true).optional(),
-        treeOwnershipProtectedIds: protectedTreeKeysSchema,
-        treeOwnershipPendingRemovalIds: z
-            .array(z.string().min(1))
-            .max(MAX_PENDING_TREE_REMOVALS)
-            .optional(),
+        tabs: workspaceLiveSchema.shape.tabs,
     });
     const uncertainOwnershipSchema = workspaceLiveSchema
         .pick({ treeOwnershipUncertain: true })
@@ -69,11 +65,11 @@ function createWorkspaceSchemas() {
         workspaceLiveSchema,
         legacyWorkspaceSchema,
         uncertainOwnershipSchema,
-        uuidSchema,
+        uuidSchema: createTabIdSchema(),
     };
 }
 
-type WorkspaceSchemas = ReturnType<typeof createWorkspaceSchemas>;
+type WorkspaceLoadSchemas = ReturnType<typeof createWorkspaceLoadSchemas>;
 
 function newTab(used: Iterable<string>): Tab {
     return {
@@ -101,7 +97,7 @@ function resolveActiveTab(tabs: readonly Tab[], legacyActive: string | null): st
 
 function planWorkspaceRepair(
     input: unknown,
-    { workspaceInputSchema, uuidSchema }: WorkspaceSchemas,
+    { workspaceInputSchema, uuidSchema }: WorkspaceLoadSchemas,
 ): WorkspaceRepairPlan {
     const inputResult = workspaceInputSchema.safeParse(input);
     if (!inputResult.success) {
@@ -200,7 +196,7 @@ export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string
 }
 
 function workspaceFromValue(value: unknown): Workspace | null {
-    const { workspaceLiveSchema } = createWorkspaceSchemas();
+    const workspaceLiveSchema = createLiveWorkspaceSchema();
     const parsed = workspaceLiveSchema.safeParse(value);
     if (!parsed.success) return null;
     const tabs = parsed.data.tabs;
@@ -245,7 +241,7 @@ export function saveWorkspace(
 
 /** Migrates separate legacy tabs/activeTab keys into one repairable envelope. */
 export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
-    const schemas = createWorkspaceSchemas();
+    const schemas = createWorkspaceLoadSchemas();
     const { workspaceLiveSchema, legacyWorkspaceSchema, uncertainOwnershipSchema } = schemas;
     const storedWorkspace = storage.getItem(key);
     const current = readStoredWorkspaceValue(storage, key);

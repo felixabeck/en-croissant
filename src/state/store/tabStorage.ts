@@ -22,6 +22,8 @@ const NON_TREE_SESSION_KEYS = new Set([
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
 const MAX_NODE_NAGS = 1_024;
+const MAX_SHAPE_BRUSH_LENGTH = 64;
+const MAX_NODE_SHAPES = 10_000;
 // Tree text comes out of a lexed PGN, which the backend caps at 10 MiB (`validate_pgn_len`), and
 // no parsed string — a header, a comment, its commands — is longer than its source. So any parsed
 // tree rehydrates; a lower bound once made a tab with one long comment unreadable.
@@ -94,7 +96,7 @@ function createPersistedTreeSchema() {
     const shapeSchema = z.object({
         orig: z.string().regex(/^[a-h][1-8]$/),
         dest: z.string().regex(/^[a-h][1-8]$/),
-        brush: z.string().max(64),
+        brush: z.string().max(MAX_SHAPE_BRUSH_LENGTH),
         modifiers: z
             .object({
                 lineWidth: z.number().finite().optional(),
@@ -164,7 +166,7 @@ function createPersistedTreeSchema() {
         score: scoreSchema.nullable(),
         depth: z.number().int().nonnegative().nullable(),
         halfMoves: z.number().int().nonnegative(),
-        shapes: z.array(shapeSchema).max(10_000),
+        shapes: z.array(shapeSchema).max(MAX_NODE_SHAPES),
         nags: z.array(z.number().int().min(0).max(MAX_NAG)).max(MAX_NODE_NAGS),
         comment: boundedText,
         commands: boundedText.optional(),

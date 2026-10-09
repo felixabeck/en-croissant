@@ -498,7 +498,7 @@ import { Chess, makeSquare } from "chessops";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { createEmptyCard } from "ts-fsrs";
-import LZString from "lz-string";
+import { serializeStorageValue } from "../src/state/store/debouncedStorage.ts";
 import {
   APP_BINARY,
   Session,
@@ -3359,9 +3359,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
           .catch(() => false),
       { timeoutMs: FILES_PROBE_TIMEOUT_MS },
     );
-    // Equivalent to serializeStorageValue: the supported compressed version-1 envelope.
     await session.execute('sessionStorage.setItem("workspace", arguments[0]); return true;', [
-      LZString.compressToUTF16(JSON.stringify(seededWorkspace)),
+      serializeStorageValue(seededWorkspace),
     ]);
     workspaceReloadPrepared = true;
     await session.call("POST", "/refresh", {});

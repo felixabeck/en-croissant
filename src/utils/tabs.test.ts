@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
+import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
@@ -21,13 +22,13 @@ const mocks = vi.hoisted(() => ({
     writeGame: vi.fn(),
 }));
 
-const repositories = new Set([tabStorage]);
+const tabStorageCleanup = createTabStorageCleanup(tabStorage);
 
 async function importFreshAdmission() {
     vi.resetModules();
     const atoms = await import("@/state/atoms");
     const repository = (await import("@/state/store/tabStorage")).tabStorage;
-    repositories.add(repository);
+    tabStorageCleanup.track(repository);
     return { atoms, repository, tabs: await import("./tabs") };
 }
 
@@ -70,11 +71,7 @@ afterEach(() => {
     closeTreeStore("save-as-test");
     removeFileFreshness("save-test");
     removeFileFreshness("save-as-test");
-    for (const repository of repositories) {
-        for (const id of repository.flush()) repository.remove(id);
-    }
-    repositories.clear();
-    repositories.add(tabStorage);
+    tabStorageCleanup.drain();
     sessionStorage.clear();
     vi.clearAllMocks();
     vi.useRealTimers();

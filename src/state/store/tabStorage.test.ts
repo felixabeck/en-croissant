@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
+import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
 import {
     canRehydrate,
@@ -21,10 +22,12 @@ vi.mock("@/platform/native", () => native);
 vi.mock("@/state/persistError", () => persistError);
 
 let storage: TabStorageRepository;
+const tabStorageCleanup = createTabStorageCleanup();
 
 beforeEach(() => {
     sessionStorage.clear();
     storage = new TabStorageRepository();
+    tabStorageCleanup.track(storage);
     vi.useFakeTimers();
     native.warn.mockClear();
     persistError.reportPersistError.mockClear();
@@ -32,7 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    for (const id of storage.flush()) storage.remove(id);
+    tabStorageCleanup.drain();
     vi.useRealTimers();
 });
 
