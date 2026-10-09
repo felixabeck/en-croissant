@@ -10141,7 +10141,9 @@ mod tests {
         frames
     }
 
-    fn two_kept_player_games_fixture() -> (
+    fn kept_player_games_fixture(
+        row_count: usize,
+    ) -> (
         tempfile::TempDir,
         tauri::AppHandle<tauri::test::MockRuntime>,
         DatabaseHandle,
@@ -10159,8 +10161,13 @@ mod tests {
             let black = create_player(&mut db, "Black").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
             let site = create_site(&mut db, "Site").unwrap();
-            insert_kept_player_game(&mut db, white.id, black.id, event.id, site.id);
-            insert_kept_player_game(&mut db, white.id, black.id, event.id, site.id);
+            db.transaction::<_, diesel::result::Error, _>(|db| {
+                for _ in 0..row_count {
+                    insert_kept_player_game(db, white.id, black.id, event.id, site.id);
+                }
+                Ok(())
+            })
+            .unwrap();
             white.id
         };
         (_dir, app, handle, player_id)
@@ -10174,7 +10181,7 @@ mod tests {
             .unwrap();
         pool.install(|| {
             for store_failure in [false, true] {
-                let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
+                let (_dir, app, handle, player_id) = kept_player_games_fixture(2);
                 let expected = load_player_statistics(&app, handle.clone(), player_id);
                 assert_eq!(expected.site_stats_data[0].daily[0].won, 2);
                 let state = app.state::<AppState>();
@@ -10253,7 +10260,7 @@ mod tests {
             .unwrap();
         pool.install(|| {
             for clear in [false, true] {
-                let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
+                let (_dir, app, handle, player_id) = kept_player_games_fixture(2);
                 let expected = load_player_statistics(&app, handle.clone(), player_id);
                 let state = app.state::<AppState>();
                 let lease = state
@@ -10302,7 +10309,7 @@ mod tests {
 
     #[test]
     fn get_players_game_info_blocking_emits_a_nonzero_running_frame_for_two_kept_rows() {
-        let (_dir, app, handle, player_id) = two_kept_player_games_fixture();
+        let (_dir, app, handle, player_id) = kept_player_games_fixture(2);
         let progress_id = "player-info-two-kept";
         let lease = {
             let state = app.state::<AppState>();
@@ -10337,6 +10344,52 @@ mod tests {
         );
         let item = state.progress_state.get(progress_id).unwrap().unwrap();
         assert_eq!(item.state, crate::progress::ProgressState::Running);
+        assert_eq!(item.progress, 100.0);
+    }
+
+    #[test]
+    fn get_players_game_info_blocking_emits_exact_kept_row_checkpoints() {
+        const KEPT_ROWS: usize = 1_002;
+        let (_dir, app, handle, player_id) = kept_player_games_fixture(KEPT_ROWS);
+        let progress_id = "player-info-checkpoints";
+        let state = app.state::<AppState>();
+        let lease =
+            crate::progress::begin_progress(&state.progress_state, &app, progress_id.into())
+                .unwrap();
+        let frames = capture_events::<crate::progress::ProgressEvent>(&app);
+        let info = get_players_game_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            player_id,
+            (app.clone(), Some(lease.clone())),
+            &CancellationToken::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.site_stats_data[0].daily[0].won, 1_002);
+
+        let captured = frames.lock().expect("progress frames");
+        assert_eq!(
+            captured.len(),
+            3,
+            "expected Running checkpoints at kept rows 1, 1001 and final 1002, got {captured:?}"
+        );
+        for (frame, kept_rows) in captured.iter().zip([1, 1_001, KEPT_ROWS]) {
+            assert_eq!(frame.id, lease.id);
+            assert_eq!(frame.generation, lease.generation);
+            assert_eq!(frame.state, ProgressState::Running);
+            assert!(!frame.finished);
+            assert!(!frame.cleared);
+            let expected = (kept_rows as f64 / KEPT_ROWS as f64 * 100.0) as f32;
+            assert_eq!(
+                frame.progress, expected,
+                "checkpoint at kept row {kept_rows}"
+            );
+        }
+        let item = state.progress_state.get(progress_id).unwrap().unwrap();
+        assert_eq!(item.generation, lease.generation);
+        assert_eq!(item.state, ProgressState::Running);
         assert_eq!(item.progress, 100.0);
     }
 

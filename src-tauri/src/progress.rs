@@ -213,6 +213,7 @@ impl ProgressStore {
         &self,
         id: String,
         now: Instant,
+        #[cfg(test)] observe: Option<&mut dyn FnMut()>,
     ) -> Result<(ProgressLease, ProgressItem), Error> {
         let mut state = self
             .state
@@ -239,17 +240,24 @@ impl ProgressStore {
                 last_access,
             },
         );
-        Ok((ProgressLease { id, generation }, item))
+        let lease = ProgressLease { id, generation };
+        drop(state);
+        #[cfg(test)]
+        if let Some(observe) = observe {
+            observe();
+        }
+        Ok((lease, item))
     }
 
     #[cfg(test)]
     fn start_at(&self, id: String, now: Instant) -> Result<ProgressLease, Error> {
-        self.start_with_snapshot_at(id, now).map(|(lease, _)| lease)
+        self.start_with_snapshot_at(id, now, None)
+            .map(|(lease, _)| lease)
     }
 
     #[cfg(test)]
     pub fn start(&self, id: String) -> Result<ProgressLease, Error> {
-        self.start_with_snapshot_at(id, Instant::now())
+        self.start_with_snapshot_at(id, Instant::now(), None)
             .map(|(lease, _)| lease)
     }
 
@@ -390,7 +398,12 @@ fn begin_progress_with_emitter(
     id: String,
     emit_item: impl FnOnce(ProgressItem) -> Result<(), Error>,
 ) -> Result<ProgressLease, Error> {
-    let (lease, item) = store.start_with_snapshot_at(id, Instant::now())?;
+    let (lease, item) = store.start_with_snapshot_at(
+        id,
+        Instant::now(),
+        #[cfg(test)]
+        None,
+    )?;
     // Delivery failure must not leave a successfully started job without its owner.
     if let Err(error) = emit_item(item) {
         log::error!(
@@ -1227,6 +1240,42 @@ mod tests {
         assert_eq!(item.progress, 0.0);
         assert_eq!(item.state, ProgressState::Running);
         assert!(!item.finished);
+    }
+
+    #[test]
+    fn start_snapshot_retains_atomic_identity_after_store_replacement() {
+        let store = ProgressStore::default();
+        let id = "atomic-start";
+        let mut replacement = None;
+        let mut observe = || {
+            let newer = store.start(id.into()).unwrap();
+            let item = store
+                .transition(&newer, 61.0, ProgressState::Running)
+                .unwrap()
+                .0;
+            replacement = Some((newer, item));
+        };
+        let (lease, item) = store
+            .start_with_snapshot_at(id.into(), Instant::now(), Some(&mut observe))
+            .unwrap();
+
+        assert_eq!(lease.id, id);
+        assert_eq!(lease.generation, 1);
+        assert_eq!(
+            item.generation, lease.generation,
+            "initial snapshot must belong to the original start lease"
+        );
+        assert_initial_snapshot(&item, &lease);
+        let (newer, stored) = replacement.unwrap();
+        assert_eq!(newer.id, id);
+        assert!(newer.generation > lease.generation);
+        assert_eq!(stored.generation, newer.generation);
+        assert_eq!(stored.progress, 61.0);
+        assert_eq!(store.get(id).unwrap().unwrap(), stored);
+        assert_eq!(
+            store.state.lock().unwrap().generation_clock,
+            newer.generation
+        );
     }
 
     fn assert_initial_emit_diagnostic(
