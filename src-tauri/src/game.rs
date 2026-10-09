@@ -7592,28 +7592,17 @@ done
             "mixed_retirement_failure_is_logged_before_cancellation_and_remainder_finishes";
         let manager = Arc::new(GameManager::new());
         let supervisor = Arc::new(EngineSupervisor::default());
-        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
         let error_text = format!("{game_id}-white-termination-error");
-        let white = register_test_game_engine_with_actor(
-            &supervisor,
-            game_id,
-            1,
-            "white",
-            "mixed-failing-white",
-            "mixed-failing-white-handle",
-            EngineActor::failing_terminate_test_actor(error_text.clone()),
-        )
-        .await;
         let (black_actor, black_started) =
             EngineActor::delayed_terminate_test_actor(Duration::from_millis(200));
-        let black = register_test_game_engine_with_actor(
+        let (live, [white, black], unrelated) = published_teardown_fixture(
+            &manager,
             &supervisor,
             game_id,
-            1,
-            "black",
-            "mixed-delayed-black",
-            "mixed-delayed-black-handle",
-            black_actor,
+            [
+                EngineActor::failing_terminate_test_actor(error_text.clone()),
+                black_actor,
+            ],
         )
         .await;
         let white_key = white.key.clone();
@@ -7621,14 +7610,6 @@ done
         let black_key = black.key.clone();
         let black_generation = black.generation;
         assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
-        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
-        set_session_engines(&controller, Some(white), Some(black)).await;
-        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
-        match live.join.lock() {
-            Ok(mut slot) => *slot = Some(join),
-            Err(poisoned) => *poisoned.into_inner() = Some(join),
-        }
-        publish_test_session(&manager, game_id, live.clone()).await;
         assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
         let retirement = tokio::spawn({
             let manager = manager.clone();
