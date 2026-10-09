@@ -53,12 +53,19 @@
 // exercises the production pre-claim cancellation and failed-clear cleanup without a network
 // download, while a native lease already drives the real facade, hook and ProgressButton.
 //
-// Workspace reload assertion staging: PENDING root proof after cumulative review.
-//   application-input case       | assertion/message                                                                  | evidence
-//   publish a fresh default      | a real document reload preserves both exact seeded workspace tab identities         | PENDING
-//   publish a fresh default      | a real document reload selects the second seeded workspace tab                      | PENDING
-// The root must build the deliberate fault in a scratch checkout with this unchanged verifier,
-// retain each unique FAIL and exit 1, restore production source, rebuild and rerun green.
+// Workspace reload assertion staging: completed 2026-10-09 against disposable application inputs.
+// The ordinary unchanged full verifier ran against a separately built application-input fault.
+// No focused mode or --application routing option was used. Both unique workspace checks emitted
+// FAIL, the verifier exited 1, and the other 86 checks passed. The byte-restored source was rebuilt
+// and the full verifier exited 0 with 88 reported checks.
+//   application-input case       | assertion/message                                                                | result
+//   publish a fresh default      | a real document reload preserves both exact seeded workspace tab identities       | FAIL, full verifier exit 1
+//   publish a fresh default      | a real document reload selects the second seeded workspace tab                    | FAIL, full verifier exit 1
+// Durable record of exact commands, messages, hashes and source patch:
+// [Workspace initialization runtime proof](../tasks/handoffs/2026-10-09-workspace-initialization.md)
+// Original staging SHA-256: verifier f09d930fb0c721db26f21283a049a2a1671eca99841d20521283bc707f660e4b,
+// app-driver 727687d7b7a93b1544ecee582f73c8e903b4a8ae50b68f6f78b6bfb42a0cbd69.
+// This is a later comments-only update. Staging used the unchanged verifier and driver above.
 //
 // It asserts eighty-eight independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
