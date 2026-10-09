@@ -4152,6 +4152,8 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 * **The decision against `WEBKIT_DISABLE_DMABUF_RENDERER=1` stands unchanged** and was not reopened
   here. The recurrence is recorded as evidence; the call is Felix's.
 * **Also updated by:** Claude, 2026-08-30 evening, on Felix's request to investigate the two new cores.
+* **Observation (2026-10-09, drain native-proof repair):** the first release run with the corrected NAG selectors stopped after the practice migration/rating scenario and stale-file rewrite, before the NAG assertions. The driver output included `corrupted double-linked list`, connection refusal and incomplete-message errors, followed by `AbortError: This operation was aborted`, exit 1. Full log and completion are in `/tmp/build-a51461c5-317b-40c0-8297-ab16a2fc6904/phase-2-evidence/gate-phase2-green.vH3gwe/`. This is the same diagnostic already recorded here, including earlier off-screen harness occurrences, but this run did not capture a stack and does not independently establish its cause. The failed run is not positive proof. No driver workaround, acceleration change or reversal of the recorded decision is proposed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8d23a9f348afa4c4f7a9dbc5c04c5c5dddfd029d89a8bfbc8a84f7475881b040","input_sha256":"818f9bbfb58550f63a352a4d3509ffeea980e6c4431b894448ff45b43666450f","kind":"mutation-receipt","operation":"281af689b5c45bae9574c603259df8eec409011af11542ca4783c22e4f913ebb","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-50"],"target":"f-20260830-50","v":1} -->
 
 ---
 
