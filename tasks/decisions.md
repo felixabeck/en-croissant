@@ -6717,3 +6717,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The existing per-test coverage mutation gate must execute schema construction under the relevant test's active mutant. Operation ownership removes the import-time execution without weakening scope, schema policy or thresholds. Reversal requires matched runtime and mutation evidence establishing another lifetime with equivalent coverage.
 * **Decided by:** Codex interactive drain a06c11d8-21d1-4e54-8b45-64966eca9cb5, reviewed plan r5 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"12310d0f1992efe8af0d9313f76fd3f5f61dc320c6ccdf2ef2f3c75a5641adfc","input_sha256":"08eca42ee193189c563d176c846295a86785e8ce47bb63682ff72df78b66dbef","kind":"mutation-receipt","operation":"6463b218bb46b15c87ec84a902564b8617bfad7e7c8298c454a7fe4fa4839acc","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-13 — Who verifies the workspace startup lifecycle change?
+
+* **Question:** Who verifies the workspace startup lifecycle change?
+* **Governs:** f-20260929-09
+* **Chosen:** The adopting agent verifies importer tests, container pixel tests and the existing real-app driver. Seed two exact workspace tab identities and the second selection before document reload. Stage the new assertion against a defaulting application fault in a disposable checkout with the identical ordinary verifier and canonical binary.
+* **Rejected:** Asking Felix to check startup manually leaves a recurring implementation verification step to him. Treating successful renderer startup alone as hydration proof cannot detect the wrong restored workspace.
+* **Reason:** Hydration timing and exact restored state are machine-verifiable lifecycle behavior. Native GTK chrome and product taste do not change. Reversal follows the existing verify-ui contract if an actual driver limitation emerges, with the unavailable evidence named.
+* **Decided by:** Codex interactive drain a06c11d8-21d1-4e54-8b45-64966eca9cb5, reviewed plan r5 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d3f4ca90769e211ac33bb191034f939457da0199f438aa43000afb02d8e93e94","input_sha256":"09e3ddd5c0d6869ee65fd7504c65de746f522a46c65082e901108d88a579b7d7","kind":"mutation-receipt","operation":"ce22415c9413fa637c2112dc8813fd0fff5e9cf0feea906224a95915fbfaf1b6","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-13"],"target":"decisions-ledger","v":1} -->
