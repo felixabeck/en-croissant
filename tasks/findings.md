@@ -12119,13 +12119,24 @@ Original plan authorship and arbitration shared one context. Root adopted the pl
 
 ### At 320px / 200% the title-bar menu is reachable only by scrolling a 104px strip, with no visible affordance
 
-* **ID:** f-20260927-09 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260927-09 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/TopBar.tsx:97-160`, `src/components/TopBar.module.css` (`.menuArea` scroll strip).
 * **Defect:** since `c36c3279` (f-20260829-02) the custom title bar stays one row at 320px with the 200% app font scale: the window controls shrink to 72px squares and File/View/Help sit in a horizontal scroll strip with a hidden scrollbar. Measured at 320px / 200% de-DE: the strip is 104px wide, the logo and its padding take 84px, so only the first ~20px of "Datei" is visible and "Ansicht"/"Hilfe" start at x 176 / 292, beyond it. The menus are reachable (Tab focus scrolls them into view, Shift+wheel scrolls), which satisfies `d-20260831-16`, but a mouse user sees no menu and no hint that one exists — and the menu is the custom bar's only route to Exit and About.
 * **Fix:** a narrow-width form of the menu that is visible without scrolling — e.g. collapse File/View/Help into one "☰" menu (nested submenus) when the strip cannot hold them, or drop the logo below a width. Keep 100% / wide layouts unchanged.
 * **Open question:** which trigger decides "narrow" (strip overflow measured with a ResizeObserver, a scale-aware width query as in the breakpoint finding, or always-collapsed under the compact width), and whether nested Mantine menus are acceptable for keyboard navigation.
 * **Proof:** at 320px / 200% (async-errors, de-DE) every top-level menu entry is visible without scrolling and opens by mouse and keyboard; the 1280px / 100% bar measures as before; the page-wide `assertNothingClipped` stays green.
 * **Related:** f-20260829-02 (root cause 3, the scroll-strip fix this refines).
+
+2026-10-09: Handled by ff4ed679 and e99492f1. The existing scaled 48em hook now selects one visible, localized application-menu target with File/View/Help groups and shared actions. Mouse and Enter/Space/arrow navigation, root dismissal, submenu return, focus ownership across live width/font changes, no-controls geometry and the exact 1280px/100% baseline are covered.
+
+Root independently passed 56 unit tests and 58 targeted browser scenarios, contract and managed pre-review. Source withdrawal makes the new compact-affordance assertion red and restoration green. Tooltip-layer withdrawal makes the new open-root snapshot red with 14,704 differing pixels and restoration green. The final full pinned renderer suite passed all 100 scenarios, with all six acceptance captures inspected. The repaired five-test menu suite, contract and pre-review also passed independently. No native GTK or drag verification is claimed.
+
+Complete inherited plan-review history: tasks/handoffs/2026-10-08-compact-title-bar-menu-review.md. Complete implementation proof and cumulative review: tasks/handoffs/2026-10-09-f-20260927-09-implementation-review.md. Load both before reviewing this lineage. P1/P2 and CQ-1/CQ-2/CQ-3 are closed. D1 tooltip evidence and D2 Settings focus synchronization were corrected before final source review. No title-bar obligation remains open. The stale ledger preamble stays with its existing maintenance finding f-20261009-01.
+
+Decisions d-20261009-05 through -07 record the rejection of overflow observation, a flat action list, and relying on Felix for visual acceptance in favor of existing scale/query and menu components with pinned renderer evidence. Reversal paths remain in those entries. No new dependency, setting, watcher, storage format or IPC was introduced. Delivery gate, push, required remote CI and installation outcomes are recorded after observation in tasks/build-ledger.md.
+
+Plan authorship and original arbitration shared one context. This adopting Codex root arbitrated the implementation. Detection ran on the same Codex model family as the code, in fresh sessions.
+<!-- ledger-meta {"command":"close","effect_lines":9,"effect_sha256":"c1cc36fe6e05b3ceeefe47668da42b262ce09ae71b93ba5d52139509c8839966","header_sha256":"2feb93484c54f73ca81b2a8a48ce6db98aa1a3dcabb58977b166a2862053f1cf","header_status":"handled","input_sha256":"ef3752c1c1579997ea2ac118105ed4b583eb265c2bc4e1d4103b14d19c1dde2b","kind":"mutation-receipt","operation":"7deaf15074f43f9d82f03b161e1d05e3a4eecaeed87799f6785739436626d4db","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-09"],"target":"f-20260927-09","v":1} -->
 
 ### No e2e journey renders the personal player card, so its narrow-width wrapping is unverified
 
