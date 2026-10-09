@@ -1376,8 +1376,10 @@ mod progress_error_tests {
                 let progress = JobProgress::new(app.clone(), "best-effort-search".into()).unwrap();
                 let lease = progress.lease();
                 let checkpoints = AtomicUsize::new(0);
+                let checkpoint_percentages = Mutex::new(Vec::new());
                 let fail = |lease: &ProgressLease, percent: f32| {
                     checkpoints.fetch_add(1, Ordering::SeqCst);
+                    checkpoint_percentages.lock().unwrap().push(percent);
                     Some(if store_failure {
                         Err(Error::Conflict("injected progress store failure".into()))
                     } else {
@@ -1401,6 +1403,11 @@ mod progress_error_tests {
                     checkpoints.load(Ordering::SeqCst),
                     2,
                     "keep the 50,000-game cadence"
+                );
+                assert_eq!(
+                    *checkpoint_percentages.lock().unwrap(),
+                    [50.0, 100.0],
+                    "checkpoints must report 50 and 100 percent over 100,000 entries"
                 );
                 assert_eq!(stats.len(), 1);
                 assert_eq!(stats[0].move_, "*");

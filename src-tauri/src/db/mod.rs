@@ -103,6 +103,8 @@ const DELETE_INDEXES_SQL: &str = include_str!("delete_indexes.sql");
 const OPENING_STATISTICS_PLY_LIMIT: usize = 55;
 const PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET: usize = 1024 * 1024;
 const PLAYER_STATISTICS_BATCH_ROW_LIMIT: usize = 256;
+/// Emit on kept rows 1, 1001 and subsequent intervals.
+const PLAYER_STATISTICS_PROGRESS_INTERVAL: usize = 1_000;
 
 fn cancellation_check(cancellation: &CancellationToken) -> Result<(), Error> {
     if cancellation.is_cancelled() {
@@ -2376,9 +2378,10 @@ pub async fn get_players_game_info(
                     &repository,
                     file,
                     id,
-                    worker_app,
-                    lease,
+                    (worker_app, lease),
                     token,
+                    #[cfg(test)]
+                    None,
                 );
                 complete_preserving_result(result, |state| {
                     if let Some(progress) = &progress {
@@ -2391,48 +2394,19 @@ pub async fn get_players_game_info(
     .await
 }
 
+/// None runs the production update after callback side effects. Some(result) substitutes its result.
+#[cfg(test)]
+type PlayerStatisticsProgressUpdate<'a> =
+    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Sync + 'a;
+
 fn get_players_game_info_blocking<R: tauri::Runtime>(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     id: i32,
-    app: tauri::AppHandle<R>,
-    lease: Option<ProgressLease>,
+    (app, lease): (tauri::AppHandle<R>, Option<ProgressLease>),
     cancellation: &CancellationToken,
-) -> Result<PlayerGameInfo, Error> {
-    get_players_game_info_with_progress_blocking(
-        authority,
-        repository,
-        file,
-        id,
-        PlayerStatisticsProgress {
-            app,
-            lease,
-            #[cfg(test)]
-            update: None,
-        },
-        cancellation,
-    )
-}
-
-#[cfg(test)]
-type PlayerStatisticsProgressUpdate =
-    dyn Fn(&ProgressLease, f32) -> Option<Result<(), Error>> + Send + Sync;
-
-struct PlayerStatisticsProgress<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
-    lease: Option<ProgressLease>,
-    #[cfg(test)]
-    update: Option<Box<PlayerStatisticsProgressUpdate>>,
-}
-
-fn get_players_game_info_with_progress_blocking<R: tauri::Runtime>(
-    authority: &crate::infra::path_authority::SharedPathAuthority,
-    repository: &DatabaseRepository,
-    file: DatabaseHandle,
-    id: i32,
-    progress: PlayerStatisticsProgress<R>,
-    cancellation: &CancellationToken,
+    #[cfg(test)] progress_update: Option<&PlayerStatisticsProgressUpdate<'_>>,
 ) -> Result<PlayerGameInfo, Error> {
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
@@ -2450,22 +2424,20 @@ fn get_players_game_info_with_progress_blocking<R: tauri::Runtime>(
 
     let progress_error_diagnosed = std::sync::atomic::AtomicBool::new(false);
     let emit_progress = |kept_rows, total_rows| {
-        if let Some(lease) = &progress.lease {
+        if let Some(lease) = &lease {
             let percent =
                 (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32;
             let report_progress = || {
                 update_progress_with_state(
-                    &progress.app.state::<AppState>().progress_state,
-                    &progress.app,
+                    &app.state::<AppState>().progress_state,
+                    &app,
                     lease,
                     percent,
                     ProgressState::Running,
                 )
             };
             #[cfg(test)]
-            let progress_result = progress
-                .update
-                .as_ref()
+            let progress_result = progress_update
                 .and_then(|update| update(lease, percent))
                 .unwrap_or_else(report_progress);
             #[cfg(not(test))]
@@ -2513,7 +2485,7 @@ fn get_players_game_info_with_progress_blocking<R: tauri::Runtime>(
                     cancellation_check(cancellation)?;
                     accumulator.add(row);
                     kept_rows = kept_rows.saturating_add(1);
-                    if (kept_rows - 1).is_multiple_of(1000) {
+                    if (kept_rows - 1).is_multiple_of(PLAYER_STATISTICS_PROGRESS_INTERVAL) {
                         emit_progress(kept_rows, total_rows)?;
                     }
                 }
@@ -4723,9 +4695,9 @@ mod tests {
                 &state.database_repository,
                 handle,
                 player_id,
-                app.clone(),
-                None,
+                (app.clone(), None),
                 &CancellationToken::new(),
+                None,
             )
         });
         let info = result.unwrap();
@@ -4759,9 +4731,9 @@ mod tests {
                 &state.database_repository,
                 handle,
                 player_id,
-                app.clone(),
-                None,
+                (app.clone(), None),
                 &CancellationToken::new(),
+                None,
             )
         });
         let info = result.unwrap();
@@ -5698,9 +5670,9 @@ mod tests {
                 &state.database_repository,
                 handle,
                 1,
-                app.clone(),
-                None,
+                (app.clone(), None),
                 &CancellationToken::new(),
+                None,
             )
         })
         .is_ok());
@@ -6030,9 +6002,9 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     handle,
                     1,
-                    app.clone(),
-                    None,
+                    (app.clone(), None),
                     &CancellationToken::new(),
+                    None,
                 )
                 .map(|_| ())
             },
@@ -9417,9 +9389,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app.clone(),
-            None,
+            (app.clone(), None),
             &CancellationToken::new(),
+            None,
         )
         .unwrap()
     }
@@ -10151,9 +10123,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app.clone(),
-            None,
+            (app.clone(), None),
             &cancellation,
+            None,
         );
         assert!(matches!(result, Err(Error::Cancellation)));
     }
@@ -10213,16 +10185,13 @@ mod tests {
                     .progress_state
                     .start("player-info-best-effort".into())
                     .unwrap();
-                let checkpoints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let observed = checkpoints.clone();
-                let update_app = app.clone();
-                let update = move |lease: &ProgressLease, percent: f32| {
-                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+                let update = |lease: &ProgressLease, percent: f32| {
+                    checkpoints.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Some(if store_failure {
                         Err(Error::Conflict("injected statistics store failure".into()))
                     } else {
-                        update_app
-                            .state::<AppState>()
+                        state
                             .progress_state
                             .transition(lease, percent, ProgressState::Running)
                             .unwrap();
@@ -10233,17 +10202,14 @@ mod tests {
                 };
                 let cancellation = CancellationToken::new();
                 let capture = crate::error::LogCaptureScope::start();
-                let actual = get_players_game_info_with_progress_blocking(
+                let actual = get_players_game_info_blocking(
                     &state.pgn_path_authority,
                     &state.database_repository,
                     handle,
                     player_id,
-                    PlayerStatisticsProgress {
-                        app: app.clone(),
-                        lease: Some(lease.clone()),
-                        update: Some(Box::new(update)),
-                    },
+                    (app.clone(), Some(lease.clone())),
                     &cancellation,
+                    Some(&update),
                 )
                 .unwrap();
                 assert_eq!(
@@ -10315,9 +10281,9 @@ mod tests {
                     &state.database_repository,
                     handle,
                     player_id,
-                    app.clone(),
-                    Some(lease.clone()),
+                    (app.clone(), Some(lease.clone())),
                     &cancellation,
+                    None,
                 )
                 .unwrap();
                 assert_eq!(
@@ -10353,9 +10319,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app.clone(),
-            Some(lease),
+            (app.clone(), Some(lease)),
             &CancellationToken::new(),
+            None,
         )
         .unwrap();
 
@@ -10408,9 +10374,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app.clone(),
-            Some(lease),
+            (app.clone(), Some(lease)),
             &CancellationToken::new(),
+            None,
         )
         .unwrap();
 
@@ -10456,9 +10422,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app.clone(),
-            Some(lease),
+            (app.clone(), Some(lease)),
             &CancellationToken::new(),
+            None,
         )
         .unwrap();
 
@@ -10644,9 +10610,9 @@ mod tests {
             &state.database_repository,
             handle,
             player_id,
-            app_handle,
-            None,
+            (app_handle, None),
             &cancellation,
+            None,
         );
         assert_eq!(
             checkpoints.load(Ordering::SeqCst),
