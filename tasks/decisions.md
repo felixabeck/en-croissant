@@ -6707,3 +6707,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Existing callers synchronously read and write workspace atoms. The traced stageAndCommitTab path can be the first workspace operation. Initialization before ID allocation preserves same-call semantics and existing cleanup authority. Reversal requires updating atom initialization, bootstrap and tab admission with importer, mutation and real-app evidence.
 * **Decided by:** Codex interactive drain a06c11d8-21d1-4e54-8b45-64966eca9cb5, reviewed plan r5 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4cbac6e788769f27859271ad74c83a31189cce00454f9548794a0f0620c13ba3","input_sha256":"b4f6ad2dcb6bd38afed84cecca5999b09fdf1fb19d0f5aecd7e419055e5089b5","kind":"mutation-receipt","operation":"57f391286690f0881ba33bab3ee0090124ea0ceb2af5e867f4ac900b24b572a3","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-12 — What lifetime should workspace and tree validation schemas have?
+
+* **Question:** What lifetime should workspace and tree validation schemas have?
+* **Governs:** f-20260929-09
+* **Chosen:** Construct validation schemas within each top-level synchronous validation or migration operation. Share recursive graphs within that operation and retain one canonical definition for each domain schema.
+* **Rejected:** Import-time schemas preserve the static mutant cost. A module-wide lazy cache attributes construction only to the first covering test and requires reset plumbing to measure later mutations.
+* **Reason:** The existing per-test coverage mutation gate must execute schema construction under the relevant test's active mutant. Operation ownership removes the import-time execution without weakening scope, schema policy or thresholds. Reversal requires matched runtime and mutation evidence establishing another lifetime with equivalent coverage.
+* **Decided by:** Codex interactive drain a06c11d8-21d1-4e54-8b45-64966eca9cb5, reviewed plan r5 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"12310d0f1992efe8af0d9313f76fd3f5f61dc320c6ccdf2ef2f3c75a5641adfc","input_sha256":"08eca42ee193189c563d176c846295a86785e8ce47bb63682ff72df78b66dbef","kind":"mutation-receipt","operation":"6463b218bb46b15c87ec84a902564b8617bfad7e7c8298c454a7fe4fa4839acc","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-12"],"target":"decisions-ledger","v":1} -->
