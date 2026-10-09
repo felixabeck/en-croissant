@@ -84,14 +84,7 @@ async function buildDbCache(
         const fen = fenList[i];
         const data = await fetchPositionMoves(dbPath, fen, signal);
 
-        const enrichedMoves = data.moves.map((m) => ({
-            move: m.move,
-            white: m.white,
-            draw: m.draw,
-            black: m.black,
-        }));
-        const total = data.total;
-        cache.set(fen, { moves: enrichedMoves, total });
+        cache.set(fen, data);
     }
     return cache;
 }
