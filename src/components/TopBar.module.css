@@ -20,6 +20,41 @@
   display: none;
 }
 
+.compactMenuArea {
+  flex: 0 0 auto;
+  padding-inline: 0.25rem;
+}
+
+.compactTarget {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+}
+
+.compactMenuArea + .dragRegion {
+  min-width: 0.5rem;
+}
+
+.compactOptions {
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+
+.compactOptions :global(.mantine-Menu-item) {
+  flex-wrap: wrap;
+}
+
+.compactOptions :global(.mantine-Menu-itemLabel) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.compactOptions :global(.mantine-Menu-itemSection[data-position="right"]) {
+  margin-inline-start: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .logo {
   flex: 0 0 auto;
 }

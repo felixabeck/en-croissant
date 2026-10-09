@@ -25,9 +25,18 @@ test("settings-responsive: preserves keyboard focus at narrow 200% font scale", 
     await capture("settings-responsive");
     await expect(page).toHaveScreenshot("settings-responsive.png", { fullPage: true });
 
-    await page.getByRole("button", { name: /^help$/i }).focus();
+    await page.getByRole("button", { name: "Application menu", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await page.getByRole("menuitem", { name: /^about$/i }).press("Enter");
+    await expect(page.locator("[data-autofocus]")).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("menuitem", { name: /^help$/i })).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("menuitem", { name: /^documentation$/i })).toBeFocused();
+    await page.keyboard.press("End");
+    await expect(page.getByRole("menuitem", { name: /^about$/i })).toBeFocused();
+    await page.keyboard.press("Enter");
     const about = page.getByRole("dialog", { name: "ChessFable" });
     await expect(about).toBeVisible();
     await expect(about).toHaveCSS("opacity", "1");

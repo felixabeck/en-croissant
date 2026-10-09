@@ -1,13 +1,87 @@
-import { Box, Button, Group, Image, Menu, Text, useComputedColorScheme } from "@mantine/core";
+import {
+  Box,
+  Button,
+  getDefaultZIndex,
+  Group,
+  Image,
+  Menu,
+  Text,
+  useComputedColorScheme,
+} from "@mantine/core";
 import { getCurrentWebviewWindow } from "@/platform/native";
-import { useEffect, useMemo, useState } from "react";
+import { IconMenu2 } from "@tabler/icons-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { bindWindowControls, watchMaximized, type MenuGroup } from "@/routes/-appMenu";
 import { IconAction } from "./common/IconAction";
 import classes from "./TopBar.module.css";
 
 const appWindow = getCurrentWebviewWindow();
+const COMPACT_TITLE_BAR_WIDTH_EM = 48;
+
+function MenuOptions({ options }: { options: MenuGroup["options"] }) {
+  return options.map((option, i) =>
+    option.kind === "separator" ? (
+      <Menu.Divider key={i} />
+    ) : (
+      <Menu.Item
+        fz="0.8rem"
+        key={option.label}
+        rightSection={
+          option.shortcut && (
+            <Text size="xs" c="dimmed">
+              {option.shortcut}
+            </Text>
+          )
+        }
+        onClick={option.action}
+      >
+        {option.label}
+      </Menu.Item>
+    ),
+  );
+}
+
+function CompactMenuGroup({ group }: { group: MenuGroup }) {
+  const target = useRef<HTMLButtonElement>(null);
+  // Menu.Sub supplies arrow navigation and hover. Click/Enter/Space also enter the
+  // group through that same ArrowRight handler, including its first-item focus.
+  // Opening below the group keeps hover from covering its click target with an action.
+  const enterGroup = () => {
+    target.current?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+    );
+  };
+  return (
+    <Menu.Sub
+      width="min(20rem, calc(100vw - 16px))"
+      position="bottom-start"
+      floatingStrategy="fixed"
+      closeDelay={150}
+    >
+      <Menu.Sub.Target>
+        <Menu.Sub.Item
+          ref={target}
+          fz="0.8rem"
+          onClick={enterGroup}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              enterGroup();
+            }
+          }}
+        >
+          {group.label}
+        </Menu.Sub.Item>
+      </Menu.Sub.Target>
+      <Menu.Sub.Dropdown className={classes.compactOptions}>
+        <MenuOptions options={group.options} />
+      </Menu.Sub.Dropdown>
+    </Menu.Sub>
+  );
+}
 
 function IconMinimize() {
   return (
@@ -74,6 +148,31 @@ function TopBar({
   showWindowControls?: boolean;
 }) {
   const { t } = useTranslation();
+  const compact = useScaledMaxWidth(COMPACT_TITLE_BAR_WIDTH_EM);
+  const menuArea = useRef<HTMLDivElement>(null);
+  const menuFocus = useRef<HTMLElement | null>(null);
+  const focusHandlers = {
+    onFocusCapture: (event: React.FocusEvent<HTMLElement>) => {
+      menuFocus.current = event.target;
+    },
+    onBlurCapture: () => {
+      menuFocus.current = null;
+    },
+  };
+  const [openedMenu, setOpenedMenu] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    setOpenedMenu(null);
+    // Removing a focused node does not fire blur. Only reclaim focus when that
+    // remembered menu node disappeared and the browser left focus on the body.
+    if (
+      menuFocus.current &&
+      !menuFocus.current.isConnected &&
+      document.activeElement === document.body
+    ) {
+      menuArea.current?.querySelector("button")?.focus({ preventScroll: true });
+    }
+  }, [compact]);
   // Mantine's own scheme, not the OS preference. `useColorScheme` from @mantine/hooks
   // reads prefers-color-scheme and ignores the in-app Theme setting entirely, so a dark
   // app on a light desktop painted these labels dark-7 on the dark bar and the menu bar
@@ -96,69 +195,81 @@ function TopBar({
 
   return (
     <Group gap={0} className={classes.root}>
-      <Box className={classes.menuArea}>
-        <Group gap="xs" px="sm" wrap="nowrap">
-          <Box h="1.25rem" w="1.25rem" className={classes.logo} data-tauri-drag-region>
-            <Image src="/logo.png" alt="" fit="fill" />
-          </Box>
-          <Group gap={0} wrap="nowrap">
-            {menuActions.map((action) => (
-              <Menu
-                key={action.label}
-                offset={2}
-                shadow="md"
-                width={200}
-                position="bottom-start"
-                transitionProps={{ duration: 0 }}
-              >
-                <Menu.Target>
-                  <Button
-                    styles={{
-                      root: {
-                        transform: "none",
-                        color:
-                          colorScheme === "dark"
-                            ? "var(--mantine-color-gray-2)"
-                            : "var(--mantine-color-dark-7)",
-                      },
-                      label: {
-                        fontWeight: "normal",
-                      },
-                    }}
-                    fz="0.8rem"
-                    variant="subtle"
-                    color={colorScheme === "dark" ? "gray" : "dark"}
-                    size="compact-xs"
-                  >
-                    {action.label}
-                  </Button>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  {action.options.map((option, i) =>
-                    option.kind === "separator" ? (
-                      <Menu.Divider key={i} />
-                    ) : (
-                      <Menu.Item
-                        fz="0.8rem"
-                        key={option.label}
-                        rightSection={
-                          option.shortcut && (
-                            <Text size="xs" c="dimmed">
-                              {option.shortcut}
-                            </Text>
-                          )
-                        }
-                        onClick={option.action}
-                      >
-                        {option.label}
-                      </Menu.Item>
-                    ),
-                  )}
-                </Menu.Dropdown>
-              </Menu>
-            ))}
+      <Box
+        ref={menuArea}
+        {...focusHandlers}
+        className={compact ? classes.compactMenuArea : classes.menuArea}
+      >
+        {compact ? (
+          <Menu
+            key="compact"
+            opened={openedMenu === "compact"}
+            onChange={(opened) => setOpenedMenu(opened ? "compact" : null)}
+            offset={2}
+            shadow="md"
+            zIndex={getDefaultZIndex("popover") + 1}
+            width="min(12rem, calc(100vw - 16px))"
+            position="bottom-start"
+            transitionProps={{ duration: 0 }}
+          >
+            <Menu.Target>
+              <IconAction label={t("Menu.Application.Menu")} className={classes.compactTarget}>
+                <IconMenu2 size="1.25rem" />
+              </IconAction>
+            </Menu.Target>
+            <Menu.Dropdown {...focusHandlers}>
+              {menuActions.map((group) => (
+                <CompactMenuGroup key={group.label} group={group} />
+              ))}
+            </Menu.Dropdown>
+          </Menu>
+        ) : (
+          <Group gap="xs" px="sm" wrap="nowrap">
+            <Box h="1.25rem" w="1.25rem" className={classes.logo} data-tauri-drag-region>
+              <Image src="/logo.png" alt="" fit="fill" />
+            </Box>
+            <Group gap={0} wrap="nowrap">
+              {menuActions.map((action) => (
+                <Menu
+                  key={action.label}
+                  opened={openedMenu === action.label}
+                  onChange={(opened) => setOpenedMenu(opened ? action.label : null)}
+                  offset={2}
+                  shadow="md"
+                  width={200}
+                  position="bottom-start"
+                  transitionProps={{ duration: 0 }}
+                >
+                  <Menu.Target>
+                    <Button
+                      styles={{
+                        root: {
+                          transform: "none",
+                          color:
+                            colorScheme === "dark"
+                              ? "var(--mantine-color-gray-2)"
+                              : "var(--mantine-color-dark-7)",
+                        },
+                        label: {
+                          fontWeight: "normal",
+                        },
+                      }}
+                      fz="0.8rem"
+                      variant="subtle"
+                      color={colorScheme === "dark" ? "gray" : "dark"}
+                      size="compact-xs"
+                    >
+                      {action.label}
+                    </Button>
+                  </Menu.Target>
+                  <Menu.Dropdown {...focusHandlers}>
+                    <MenuOptions options={action.options} />
+                  </Menu.Dropdown>
+                </Menu>
+              ))}
+            </Group>
           </Group>
-        </Group>
+        )}
       </Box>
       <Box className={classes.dragRegion} data-tauri-drag-region />
       {showWindowControls && (
