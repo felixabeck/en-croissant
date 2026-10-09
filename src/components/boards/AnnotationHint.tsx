@@ -29,6 +29,7 @@ export default function AnnotationHint({
       <Box pl="90%">
         {
           <Box
+            data-board-annotation-hint
             style={{
               transform: "translateY(-40%) translateX(-50%)",
               zIndex: 100,

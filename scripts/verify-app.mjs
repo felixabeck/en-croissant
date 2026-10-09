@@ -350,6 +350,30 @@
 // setup, not assertions: a setup failure prints FAIL on every dependent assertion above with
 // "not attempted: <step>: <error>", as run B2 shows for the four preserves-* checks.
 
+// Board-surface selector repair staging (f-20261005-07), 2026-10-09. The corrected verifier
+// stayed byte-identical in all three runs. Each changed only one AnnotationHint renderer input,
+// built the real release successfully (exit 0), then ran pnpm verify:app (exit 1, exactly one
+// failure and 85 successes). In every run the other two $8 assertions, unknown-$220 absence
+// and all NAG-save assertions stayed green. The 2026-10-03 evidence above remains historical.
+//   check            | renderer input             | actual unique message printed                                      | exit
+//   hint-glyph-path  | square glyph paths removed | FAIL  the $8 board hint is rendered with a glyph path               | 1
+//   hint-title       | incorrect square title     | FAIL  the $8 board hint SVG title is □                              | 1
+//   hint-visibility  | actual square badge opacity 0 | FAIL  the $8 board hint has a visible box and positive opacity through its board ancestors | 1
+// Path run observed rendered=true, path=false, title=□, visible=true. Title run observed
+// rendered=true, path=true, title="incorrect square title", visible=true. Opacity run observed
+// rendered=true, path=true, title=□, visible=false, badge opacity="0" and all ancestor opacities="1".
+// All three observed badge dimensions were 18 by 18.15625. Full observed ancestor JSON, complete
+// output, source snapshots and named completion records are retained under:
+// /tmp/build-a51461c5-317b-40c0-8297-ab16a2fc6904/phase-2-evidence/
+//   path:    gate-phase2-path.3BVzvg/{log,completion.record}, AnnotationHint.path-staged.tsx
+//   title:   gate-phase2-title.NDZGFb/{log,completion.record}, AnnotationHint.title-staged.tsx
+//   opacity: gate-phase2-opacity.SF8Rs4/{log,completion.record}, AnnotationHint.opacity-staged.tsx
+// Before each next stage, apply_patch restored the intended source byte-for-byte. All three
+// restoration SHA-256 values were 1304089c32f62fed2f62e7cbb1340496d1ce22f6a08fc4641559c47f059e35b9.
+// Evidence: {path,title,opacity}-restored.sha256, corresponding *-restoration-check.log files
+// and AnnotationHint.intended.tsx. The corrected verifier's unchanged SHA-256 during staging
+// was b90067266716202d90f88c27f66d0faa8199d7bc8f3667cafbda69989108e198 (intended.sha256).
+
 // Staged-failure record for the file-freshness checks (2026-09-25). Each break was restored
 // before the next run. The in-place row replaced the file by rename. The read row did not
 // install the recorder. The apply row set the ceiling to 0. The withhold row deleted the PGN
@@ -2836,10 +2860,10 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   const hintProbe = () =>
     session.execute(`
     const board = document.querySelector('[role="grid"]');
-    // The hint overlays the grid as its sibling inside the common board wrapper.
-    const wrapper = board?.parentElement;
-    const svg = wrapper?.querySelector('svg > title')?.parentElement;
-    const hint = svg?.parentElement;
+    // The hint overlays BoardFrame inside the common board surface.
+    const wrapper = board?.closest('[data-board-surface]');
+    const hint = wrapper?.querySelector('[data-board-annotation-hint]');
+    const svg = hint?.querySelector(':scope > svg');
     if (!hint) return { rendered: false, title: null, path: false, width: 0, height: 0, ancestors: [], visible: false };
     const box = hint.getBoundingClientRect();
     const ancestors = [];
@@ -2852,8 +2876,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       element = element.parentElement;
     }
     return {
-      rendered: true, title: svg.querySelector('title')?.textContent,
-      path: Boolean(svg.querySelector('g path')),
+      rendered: true, title: svg?.querySelector('title')?.textContent ?? null,
+      path: Boolean(svg?.querySelector('g path')),
       width: box.width, height: box.height, ancestors,
       visible: reachedBoardWrapper && box.width > 0 && box.height > 0 && ancestors.every((style) =>
         style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&

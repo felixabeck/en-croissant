@@ -460,6 +460,7 @@ function Board({
             )}
           </BoardBar>
           <Group
+            data-board-surface
             style={{
               position: "relative",
               flexWrap: "nowrap",
