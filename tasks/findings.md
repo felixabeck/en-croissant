@@ -8648,12 +8648,19 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 
 ### Position search discards progress-store and progress-event errors
 
-* **ID:** f-20260914-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-03 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs:682-689` — `let _ = update_progress_with_state(...)` inside the per-entry closure of the position search.
 * **Defect:** every 50 000 games the search updates its progress lease and emits the event, and any error from that (stale lease, store failure, emit failure) is dropped. The search keeps running and later reports success while the UI's bar has stopped, and nothing is logged, so the stall cannot be diagnosed.
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` — errors are returned or reported with context, never swallowed; `.claude/rules/ipc-events.md` — progress is part of the operation's observable contract.
 * **Fix shape:** at minimum log the error once with the lease id; if the error is a stale/cancelled lease, treat it as cancellation of the search rather than continuing.
 * **Found by:** `review-error-handling` plan lens (Codex), 2026-09-14, confidence 91, f-20260830-06 slice-1 plan review; the `let _ =` was confirmed by reading lines 672-695.
+* **Handled:** Position search now cancels its shared token and returns `Error::Cancellation` on a stale progress lease. Other progress-store or delivery errors are diagnosed once per search with lease id, generation and native context. The 50,000-game cadence and shared typed channel are preserved.
+* **Commit:** e5985540 implements the fix and four regression tests. Decision record: 7f76a6a2. `pnpm checks:pre-review` passed before the implementation commit. Release review, real-product verification and final gates follow through the project's push skill.
+* **Decision:** d-20261009-15 records the local policy and rejected alternatives. Entry revalidation retained `lens` after tracing `search_position_blocking`, the shared progress store, and native cancellation ownership. Mandatory release lens: `review-error-handling`.
+* **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml --locked db::search:: -- --nocapture` passed all 62 tests. The new checkpoint fixtures use authenticated 100,000-entry sidecars. A Git-derived reverse patch removed only the production policy call while keeping tests and injections. The two production regressions failed with exit 101 on cancelled-search success and diagnostics count 0 rather than 1. Exact restoration returned both tests to green. Portable policy tests cover once-only concurrent diagnostics and stale cancellation after an earlier diagnostic. Windows GNU lint and formatting passed after test-support repairs.
+* **Scope:** f-20260915-04 and f-20260915-06 stay open at lens tier because their commands and areas are separate from this slice. A stale IPC-lens instruction was filed separately in the docs-agent-config inbox.
+* **Review disclosure:** Plan authorship and arbitration share one context. Detection uses the same model family as the code, with fresh reviewer sessions.
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"5496c2f78464a434e1e25fb5c9851b6e24d4398d3fd2e1145bc691c755ffa215","header_sha256":"8497c689fcffd55697a8f726331e8d33dc34a985332b4b0edc0119176211f941","header_status":"handled","input_sha256":"6a589fc8ce4917cefae9511a7324ba036c3e23f98842f2b0e653ed43f1c94ea9","kind":"mutation-receipt","operation":"6784441b6698d3a607a78c98300571e46bb36a2ab0924eb1301d807a237375fd","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-03"],"target":"f-20260914-03","v":1} -->
 
 ### Search index loading repeats target resolution and source derivation three times
 
