@@ -6669,3 +6669,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** full auto removes visual approval and the project has a renderer proof path. Reversal path: change the acceptance owner if Felix asks.
 * **Decided by:** Codex, full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"5e52e16c476b217ebb1b15df6c1d72fae40bcd16107cb0fa1b67166359f5a4b0","input_sha256":"9a9dd1623784a8850f556597bba485e0ea7934536e96538103dc8c36cb14c91b","kind":"mutation-receipt","operation":"accdc1ddec88faea840a87fb31d48dfa10cb401052b3f78ff1b997480a52bb65","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-05","d-20261009-06","d-20261009-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261009-08 — Refuse special files in bound Unix SQLite opens
+
+* **Question:** Should bound Unix SQLite sidecar and non-Linux leaf opens accept an indefinite FIFO wait?
+* **Governs:** f-20260929-03
+* **Chosen:** Open bound sidecars and non-Linux lockable leaves with O_NONBLOCK and accept only verified regular descriptors, preserving parent and identity binding.
+* **Rejected:** Document the FIFO wait as a residual.
+* **Reason:** Bundled SQLite's read-only SHM fallback stalled in the planner's actual producer probe. This extends d-20260929-04 without changing its VFS contract. Reversal path: restore the previous bound Unix open contract and reopen the finding.
+* **Decided by:** Codex, adopted full-auto plan, 2026-10-09 · **Superseded-by:** -
+
+### d-20261009-09 — Retain nonblocking on verified regular SQLite descriptors
+
+* **Question:** Should the hook clear O_NONBLOCK after validating a regular descriptor?
+* **Governs:** f-20260929-03
+* **Chosen:** Leave O_NONBLOCK set on accepted regular descriptors.
+* **Rejected:** Add fallible F_SETFL cleanup after opening a possibly locked inode.
+* **Reason:** Regular-file I/O accepts the flag and clearing it introduces a new failure ownership path. Native macOS runtime proof remains mandatory. Reversal path: replace this with a measured flag-clearing route that preserves locks on every failure.
+* **Decided by:** Codex, adopted full-auto plan, 2026-10-09 · **Superseded-by:** -
+
+### d-20261009-10 — Quarantine unclassified sidecar descriptors on every Unix platform
+
+* **Question:** Who owns a sidecar descriptor whose metadata inspection fails?
+* **Governs:** f-20260929-03
+* **Chosen:** Extend the existing registry's unclassified quarantine to all Unix platforms, preserving inspection errno, admission threshold 8 and last-live-registration cleanup.
+* **Rejected:** Close an unknown lockable inode, or leak it without admission and cleanup.
+* **Reason:** Inspection failure cannot prove the opened inode is not another bound database. Reuse d-20260930-10 ownership and retain Linux O_PATH leaf handling. Reversal path: a measured alternative that never opens a lockable unknown inode can replace this contract.
+* **Decided by:** Codex, adopted full-auto plan, 2026-10-09 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"2dd9373fcf237e7a6ccbc95b95c6d56f7ea59c266eb7824bd33f7772c0359fbb","input_sha256":"674127f5fd5aab70f37f2a95dc455fddd02f0b4ab3972bad45a51601c8c5d962","kind":"mutation-receipt","operation":"10d1747aa489390fd4dea1392c1a3195e7061887b5bf10d57ba326888380e45b","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-08","d-20261009-09","d-20261009-10"],"target":"decisions-ledger","v":1} -->
