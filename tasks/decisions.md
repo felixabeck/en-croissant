@@ -6847,3 +6847,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Every board has64 squares, so u16 safely represents every weighted total. Existing minimum tracking starts at39 and only decreases, leaving every importer-produced stored value representable in the current index. Reversal path: revise the calculator, minimum tracker and both persistence consumers together only with a changed domain requirement, retaining actual import/replacement/index and promotion proof. A future stored-format migration needs its own measured requirement. d23/d24 query and archive policies carry forward.
 * **Decided by:** Codex, autonomously under the authorized full-auto drain 477eec91-af67-4fe3-9bac-5c66560ee1d9 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"66908052e8a30a8d3af364dbeec184bece711a2a0e7ef2f84bcf1fc00611ce7d","input_sha256":"345914fdedbe135d88448180a832dfd39b71766cd6fbbd5d0e84663e4919082c","kind":"mutation-receipt","operation":"23d39510c6e4868533079e4331e7c636fbad5a8bae290325ce22ffedb47849ea","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-25"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-10 — recorded through the decisions lock
+
+### d-20261010-01 — Where should the search-index read-attempt preparation be shared?
+
+* **Question:** Should the three search-index loader read attempts use one local closure or a new module helper?
+* **Governs:** f-20260914-04
+* **Chosen:** Extend the loader's existing local probe_attempt closure to resolve its DatabaseRead target, snapshot invalidation, probe its identity and derive IndexSource, returning all four values together to each read attempt. DatabaseMutate resolution remains separate.
+* **Rejected:** A new cross-module helper or configurable operation parameter. All three consumers belong to this loader, while mutation authorization has a different purpose and does not perform the same probe.
+* **Reason:** Removes the three copies at their shared owner without changing production sequencing or introducing a broader API. Preserves d-20260929-03's probe linearization, d-20261005-06's snapshot ordering and d-20261008-15's descriptor identity. Reversal path: move the closure to a module helper only if another caller needs this same read-attempt contract.
+* **Decided by:** Codex, full auto drain session f622f6f4-dc6f-4f74-91c1-091d4cde09cc, 2026-10-10. Plan authorship and arbitration shared one context. Detection runs on the same model family as the code. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"697e8e26cb28d3ea239576f05d735af60f74d53c558336658c64efeadb555170","input_sha256":"1efcf7af12a629e5b25bd68d59310905a2687021459f85b2abfd164c992febe5","kind":"mutation-receipt","operation":"c20e01f977beb04a585f438c5b8fdd5f2d3843f491a2e47649c1003a5625e47c","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-01"],"target":"decisions-ledger","v":1} -->
