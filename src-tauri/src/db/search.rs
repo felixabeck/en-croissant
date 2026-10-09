@@ -1614,6 +1614,130 @@ mod imported_search_tests {
         assert_imported_too_much_material_search(NINE_PAWN_FEN, "exact");
     }
 
+    #[test]
+    fn import_and_replacement_preserve_material_minima_and_index() {
+        fn material_pgn(fen: &str, movetext: &str) -> String {
+            format!("[SetUp \"1\"]\n[FEN \"{fen}\"]\n[Result \"*\"]\n\n{movetext}\n")
+        }
+
+        let cases = [
+            (
+                "kr6/pp6/8/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQ3/7K w - - 0 1",
+                "*",
+                (39, 7),
+                None,
+            ),
+            (
+                "7k/qqqqq3/qqqqqqqq/qqqqqqqq/qqqqqqqq/8/PP6/KR6 b - - 0 1",
+                "*",
+                (7, 39),
+                None,
+            ),
+            (
+                "7k/P7/8/8/8/8/8/7K w - - 0 1",
+                "1. a8=Q+ *",
+                (1, 0),
+                Some(("a8=Q+", "Q6k/8/8/8/8/8/8/7K b - - 0 1")),
+            ),
+            (
+                "7k/8/8/8/8/8/p7/7K b - - 0 1",
+                "1... a1=Q+ *",
+                (0, 1),
+                Some(("a1=Q+", "7k/8/8/8/8/8/8/q6K w - - 0 2")),
+            ),
+        ];
+
+        // Validate the supplied promotion SAN and full final FEN before exercising
+        // the actual import, replacement and index pipeline for every case.
+        for &(fen, _, _, promotion) in &cases {
+            let mut position =
+                database_setup_to_chess(fen.parse::<Fen>().unwrap().into_setup()).unwrap();
+            if let Some((san, final_fen)) = promotion {
+                let m = SanPlus::from_ascii(san.as_bytes())
+                    .unwrap()
+                    .san
+                    .to_move(&position)
+                    .unwrap();
+                assert!(m.is_promotion());
+                position.play_unchecked(&m);
+                assert!(position.is_check());
+                assert_eq!(
+                    Fen::from_position(position, EnPassantMode::Always).to_string(),
+                    final_fen
+                );
+            }
+        }
+
+        for (case_index, &(fen, movetext, _, _)) in cases.iter().enumerate() {
+            let pgn = material_pgn(fen, movetext);
+            let (_dir, app, handle, database) = imported_search_database(&pgn);
+            let state = app.state::<AppState>();
+            let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+            let imported = games::table.load::<Game>(&mut connection).unwrap();
+            assert_eq!(imported.len(), 1, "setup must be imported: {fen}");
+            let game_id = imported[0].id;
+            drop(connection);
+
+            // Adjacent cases are opposite colours. Keep one row identity through
+            // both operations and use the same assertions for excess and promotion.
+            for (operation, &(fen, movetext, minimum, promotion)) in
+                [cases[case_index], cases[case_index ^ 1]]
+                    .iter()
+                    .enumerate()
+            {
+                if operation == 1 {
+                    super::super::write_db_game_blocking(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        handle.clone(),
+                        game_id,
+                        material_pgn(fen, movetext),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                }
+
+                let mut connection =
+                    SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+                let saved = games::table.load::<Game>(&mut connection).unwrap();
+                assert_eq!(saved.len(), 1);
+                let saved = &saved[0];
+                assert_eq!(saved.id, game_id);
+                assert_eq!(saved.fen.as_deref(), Some(fen));
+                assert_eq!(saved.result.as_deref(), Some("*"));
+                assert_eq!(
+                    (saved.white_material, saved.black_material),
+                    minimum,
+                    "persisted minimum for operation {operation}, setup {fen}"
+                );
+                assert_eq!(saved.ply_count, Some(i32::from(promotion.is_some())));
+                assert_eq!(saved.moves.len(), usize::from(promotion.is_some()));
+                drop(connection);
+
+                super::super::generate_search_index(
+                    &handle,
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+                let index = MmapSearchIndex::open(get_index_path(&database)).unwrap();
+                assert_eq!(index.len(), 1);
+                let entry = index.get_entry_ref(0).unwrap();
+                assert_eq!(entry.id, game_id);
+                assert_eq!(entry.fen, Some(fen));
+                assert_eq!(entry.moves, saved.moves);
+                drop(index);
+                assert!(presence(&app, &handle, &exact_position_query(fen)));
+                if let Some((_, final_fen)) = promotion {
+                    assert!(presence(&app, &handle, &exact_position_query(final_fen)));
+                }
+            }
+        }
+    }
+
     fn imported_e4_e5(
         result: &str,
     ) -> (

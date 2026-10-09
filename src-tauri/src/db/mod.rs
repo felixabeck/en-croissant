@@ -129,15 +129,15 @@ const BLACK_PAWN: Piece = Piece {
     role: shakmaty::Role::Pawn,
 };
 
-type MaterialCount = ByColor<u8>;
+type MaterialCount = ByColor<u16>;
 
 fn get_material_count(board: &Board) -> MaterialCount {
     board.material().map(|material| {
-        material.pawn
-            + material.knight * 3
-            + material.bishop * 3
-            + material.rook * 5
-            + material.queen * 9
+        u16::from(material.pawn)
+            + u16::from(material.knight) * 3
+            + u16::from(material.bishop) * 3
+            + u16::from(material.rook) * 5
+            + u16::from(material.queen) * 9
     })
 }
 
@@ -317,8 +317,18 @@ fn with_validated_mutation(
 
 #[derive(Debug)]
 pub struct MaterialColor {
-    white: u8,
-    black: u8,
+    white: u16,
+    black: u16,
+}
+
+impl MaterialColor {
+    fn minimum_material(&self, board: &Board) -> MaterialCount {
+        let final_material = get_material_count(board);
+        ByColor {
+            white: self.white.min(final_material.white),
+            black: self.black.min(final_material.black),
+        }
+    }
 }
 
 impl Default for MaterialColor {
@@ -378,9 +388,9 @@ impl TempGame {
         };
 
         let ply_count = iter_mainline_move_bytes(&self.moves).count() as i32;
-        let final_material = get_material_count(self.position.board());
-        let minimal_white_material = self.material_count.white.min(final_material.white) as i32;
-        let minimal_black_material = self.material_count.black.min(final_material.black) as i32;
+        let minimum_material = self.material_count.minimum_material(self.position.board());
+        let minimal_white_material = i32::from(minimum_material.white);
+        let minimal_black_material = i32::from(minimum_material.black);
 
         let new_game = NewGame {
             white_id,
@@ -3839,9 +3849,11 @@ fn write_parsed_db_game(
         0
     };
 
-    let final_material = get_material_count(temp_game.position.board());
-    let minimal_white_material = temp_game.material_count.white.min(final_material.white) as i32;
-    let minimal_black_material = temp_game.material_count.black.min(final_material.black) as i32;
+    let minimum_material = temp_game
+        .material_count
+        .minimum_material(temp_game.position.board());
+    let minimal_white_material = i32::from(minimum_material.white);
+    let minimal_black_material = i32::from(minimum_material.black);
     let pawn_home = get_pawn_home(temp_game.position.board()) as i32;
     let ply_count = iter_mainline_move_bytes(&temp_game.moves).count() as i32;
 
