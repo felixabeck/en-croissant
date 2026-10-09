@@ -14374,3 +14374,19 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Found by:** Codex while loading the required push review lens during the f-20260914-03 drain, 2026-10-09. Deferred to the separate reviewer-instruction area.
 * **Source-reference correction (2026-10-10):** At commit `8bccb79c`, the stale live-exception claim is in `.claude/agents/review-ipc-contract.md:34-39`, and its reference paragraph is at `:54-56`. These replace the earlier `Where` ranges `:42-47` and `:64-66`. The defect and proposed correction remain unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5d64b8c30722f7dafecfcd7b571e714dcd5190f60065effd85149018367eacad","input_sha256":"a7a4d3a893977a53ee4a2f039682dd25d8557287d83c1944befb4fce5e9a32ae","kind":"mutation-receipt","operation":"60541b08f93865d0cc3f5ef6287b9af52cf3fd39fc0cc669d7e920023a64f2ad","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-06"],"target":"f-20261009-06","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Database-view persistence can throw after publishing memory, leaving navigation state ahead of durable storage
+
+* **ID:** f-20261010-01 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 1305e490-16a2-4c86-8522-235b3acc3583 · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-0/run/attempt-1305e490-16a2-4c86-8522-235b3acc3583-1.jsonl
+* **Where:** `src/state/store/database.ts:112-124,201-204`, `src/components/databases/DatabasesPage.tsx:315-319`.
+* **Defect:** `activeDatabaseViewStore` uses raw `createJSONStorage(() => sessionStorage)`. Its setters publish in-memory state through Zustand and persist without a handled storage-write contract. A refused `database-view` write, such as shared session-storage quota exhaustion, escapes `setDatabase` after memory changes. The existing database double-click path navigates and calls that setter without catching the refusal. Later reload restores the previous stored database-view value.
+* **Open question:** what is the durable admission and refusal contract for all database-view setters, including clear, selection and filter writes, and which existing storage adapter should own it? Resolve memory/durable-state agreement together with failure reporting, rather than adding a catch only to one new opening control.
+* **Why build:** the design must settle whether a database-view mutation is refused atomically or admitted transiently with an explicit durability state, and route every setter/reader through the same contract. This is a separate persisted-state ownership problem. It exists independently of which visible button or row gesture invokes database opening.
+* **Related:** f-20261001-13 concerns hydration validation in the same store. It does not cover write refusal. f-20261001-08 concerns discoverable opening controls. Its plan review identified this independent persistence hazard and retains the existing persistence limitation without adding a new storage mechanism to that mandate.
+* **Proof required:** real-store tests with `setItem` refusing after a seeded previous value, assertions for both memory and stored state, reload, a successful retry, and affected database-route consumer behavior. Preserve previous stored bytes and user tab trees.
+* **Found by:** Codex `review-persisted-state`, game-opening plan review round 1, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran in a separate session on the same model family as prospective code.
