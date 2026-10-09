@@ -14400,6 +14400,8 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261001-13 concerns hydration validation in the same store. It does not cover write refusal. f-20261001-08 concerns discoverable opening controls. Its plan review identified this independent persistence hazard and retains the existing persistence limitation without adding a new storage mechanism to that mandate.
 * **Proof required:** real-store tests with `setItem` refusing after a seeded previous value, assertions for both memory and stored state, reload, a successful retry, and affected database-route consumer behavior. Preserve previous stored bytes and user tab trees.
 * **Found by:** Codex `review-persisted-state`, game-opening plan review round 1, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran in a separate session on the same model family as prospective code.
+* **Review inheritance:** P2 of game-opening plan review is owned by this finding. Load `tasks/handoffs/2026-10-10-f-20261001-08-review.md` before review. It preserves the full issue, raw witnesses, disposition and merged entry. The opening-controls run keeps the named pre-change persistence limit and introduces no new storage contract.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd0da9c90351fd1126c90b346b251d90fcc94219358206a0e4527176002691d4","input_sha256":"1b8b38bfa3df23edaa30014ce03c2e53de90f16dc55b9f13f460b4760671224a","kind":"mutation-receipt","operation":"7182f836e0136faa50021f6b956e317c9c119ec1a76b862fba641653a59248d4","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-01"],"target":"f-20261010-01","v":1} -->
 
 ---
 
