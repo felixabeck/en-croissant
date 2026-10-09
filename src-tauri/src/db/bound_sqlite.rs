@@ -31,9 +31,9 @@ use crate::{
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
 /// While any per-identity or unclassified retained set holds this many descriptors,
-/// every leaf open is refused with `EMFILE`; admitted opens can still push a set past
+/// bound lockable opens are refused with `EMFILE`; admitted opens can still push a set past
 /// the limit, and exceeding it never closes descriptors.
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(unix)]
 const QUARANTINE_ADMISSION_LIMIT: usize = 8;
 
 type VfsOpenFn = unsafe extern "C" fn(
@@ -93,6 +93,8 @@ struct Binding {
     before_proc_reopen: Mutex<Option<BindingTestHook>>,
     #[cfg(all(test, unix))]
     leaf_fstat_error: Mutex<Option<std::os::raw::c_int>>,
+    #[cfg(all(test, unix))]
+    sidecar_fstat_error: Mutex<Option<std::os::raw::c_int>>,
     #[cfg(all(test, target_os = "linux"))]
     proc_reopen_error: Mutex<Option<std::os::raw::c_int>>,
     #[cfg(all(test, unix))]
@@ -135,7 +137,7 @@ struct Registry {
     creating: HashMap<BindingKey, u64>,
     #[cfg(all(unix, not(target_os = "linux")))]
     quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     unclassified_descriptors: Vec<File>,
     #[cfg(test)]
     creation_hooks: HashMap<BindingKey, RegistryTestHook>,
@@ -236,6 +238,8 @@ impl BoundDatabase {
                 before_proc_reopen: Mutex::new(None),
                 #[cfg(all(test, unix))]
                 leaf_fstat_error: Mutex::new(None),
+                #[cfg(all(test, unix))]
+                sidecar_fstat_error: Mutex::new(None),
                 #[cfg(all(test, target_os = "linux"))]
                 proc_reopen_error: Mutex::new(None),
                 #[cfg(all(test, unix))]
@@ -362,6 +366,13 @@ impl BoundDatabase {
         }
         *slot = Some(error);
         Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn fail_next_sidecar_fstat_with(&self, error: libc::c_int) {
+        let mut slot = self.0.binding.sidecar_fstat_error.lock().unwrap();
+        assert!(slot.is_none(), "sidecar fstat injection already pending");
+        *slot = Some(error);
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -553,6 +564,9 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
             // between the last-registration check and closing the quarantined descriptors.
             drop(registry.quarantined_descriptors.remove(&identity));
         }
+    }
+    #[cfg(unix)]
+    {
         if !registry
             .by_key
             .values()
@@ -604,7 +618,7 @@ fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
     }
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(unix)]
 fn retain_unclassified_descriptor(fd: libc::c_int) {
     use std::os::fd::FromRawFd;
 
@@ -620,8 +634,8 @@ fn retain_unclassified_descriptor(fd: libc::c_int) {
     registry.unclassified_descriptors.push(file);
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
-fn leaf_open_is_admitted() -> bool {
+#[cfg(unix)]
+fn lockable_open_is_admitted(is_leaf: bool) -> bool {
     let Some(registry_mutex) = REGISTRY.get() else {
         return true;
     };
@@ -629,11 +643,18 @@ fn leaf_open_is_admitted() -> bool {
         Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    !registry
-        .quarantined_descriptors
-        .values()
-        .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
-        && registry.unclassified_descriptors.len() < QUARANTINE_ADMISSION_LIMIT
+    #[cfg(not(target_os = "linux"))]
+    if is_leaf
+        && registry
+            .quarantined_descriptors
+            .values()
+            .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
+    {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    let _ = is_leaf;
+    registry.unclassified_descriptors.len() < QUARANTINE_ADMISSION_LIMIT
 }
 
 #[cfg(all(test, unix, not(target_os = "linux")))]
@@ -652,7 +673,7 @@ pub(super) fn quarantined_descriptor_fds(identity: (u64, u64)) -> Vec<std::os::f
         .unwrap_or_default()
 }
 
-#[cfg(all(test, unix, not(target_os = "linux")))]
+#[cfg(all(test, unix))]
 pub(super) fn unclassified_descriptor_fds() -> Vec<std::os::fd::RawFd> {
     use std::os::fd::AsRawFd;
 
@@ -669,7 +690,7 @@ pub(super) fn unclassified_descriptor_fds() -> Vec<std::os::fd::RawFd> {
         .unwrap_or_default()
 }
 
-#[cfg(all(test, unix, not(target_os = "linux")))]
+#[cfg(all(test, unix))]
 pub(super) const fn quarantine_admission_limit() -> usize {
     QUARANTINE_ADMISSION_LIMIT
 }
@@ -690,6 +711,22 @@ pub(super) fn open_bound_leaf_for_test(bound: &BoundDatabase) -> Result<libc::c_
     let path = CString::new(format!("{RESERVED_PREFIX}{}/{leaf}", bound.0.token))
         .map_err(|_| libc::EINVAL)?;
     let fd = unsafe { unix_hooks::open_hook_inner(path.as_ptr(), libc::O_RDONLY, 0) };
+    if fd < 0 {
+        Err(unix_hooks::last_errno())
+    } else {
+        Ok(fd)
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn open_bound_sidecar_for_test(
+    bound: &BoundDatabase,
+    suffix: &str,
+    flags: libc::c_int,
+) -> Result<libc::c_int, libc::c_int> {
+    let leaf = bound.0.binding.leaf.to_string_lossy();
+    let path = CString::new(format!("{RESERVED_PREFIX}{}/{leaf}{suffix}", bound.token())).unwrap();
+    let fd = unsafe { unix_hooks::open_hook(path.as_ptr(), flags, 0o600) };
     if fd < 0 {
         Err(unix_hooks::last_errno())
     } else {
@@ -1220,6 +1257,55 @@ mod unix_hooks {
         }
     }
 
+    /// Both sidecars and non-Linux leaves are lockable. Unknown identities must stay owned
+    /// by the registry because closing any descriptor can release this process's SQLite locks.
+    unsafe fn accept_regular_descriptor(
+        registration: &Registration,
+        fd: c_int,
+        is_leaf: bool,
+    ) -> c_int {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        let injected_error = if is_leaf {
+            None
+        } else {
+            registration
+                .binding
+                .sidecar_fstat_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+        };
+        #[cfg(not(test))]
+        let injected_error: Option<c_int> = None;
+        let result = match injected_error {
+            Some(error) => syscall_failure(error),
+            None if is_leaf => unsafe {
+                fstat_leaf_descriptor(registration, fd, stat.as_mut_ptr())
+            },
+            None => unsafe { libc::fstat(fd, stat.as_mut_ptr()) },
+        };
+        if result != 0 {
+            let error = last_errno();
+            retain_unclassified_descriptor(fd);
+            return syscall_failure(error);
+        }
+        let stat = unsafe { stat.assume_init() };
+        let regular = stat.st_mode & libc::S_IFMT == libc::S_IFREG;
+        #[cfg(not(target_os = "linux"))]
+        if is_leaf && (!regular || !leaf_identity_matches(registration, &stat)) {
+            increment_refusal(&registration.binding);
+            retain_mismatched_descriptor(fd, raw_libc_stat_identity(&stat));
+            return syscall_failure(libc::ESTALE);
+        }
+        if !regular {
+            // A classified special sidecar cannot be a registered regular database inode.
+            unsafe { libc::close(fd) };
+            return syscall_failure(libc::EINVAL);
+        }
+        fd
+    }
+
     pub(super) unsafe fn open_hook_inner(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
         match resolve(path) {
             Resolution::Unbound => match ORIGINALS.get() {
@@ -1246,7 +1332,7 @@ mod unix_hooks {
 
                     #[cfg(all(unix, not(target_os = "linux")))]
                     {
-                        if !leaf_open_is_admitted() {
+                        if !lockable_open_is_admitted(true) {
                             return syscall_failure(libc::EMFILE);
                         }
 
@@ -1269,6 +1355,9 @@ mod unix_hooks {
                         }
                     }
                 }
+                if !is_leaf && !lockable_open_is_admitted(false) {
+                    return syscall_failure(libc::EMFILE);
+                }
                 #[cfg(all(test, unix, not(target_os = "linux")))]
                 if is_leaf {
                     invoke_binding_test_hook(&registration.binding.before_openat);
@@ -1277,27 +1366,16 @@ mod unix_hooks {
                     libc::openat(
                         registration.binding.parent.as_raw_fd(),
                         name.as_ptr(),
-                        flags | libc::O_NOFOLLOW,
+                        flags | libc::O_NOFOLLOW | libc::O_NONBLOCK,
                         mode as libc::c_uint,
                     )
                 };
                 if fd < 0 {
                     return fd;
                 }
-                #[cfg(all(unix, not(target_os = "linux")))]
-                if is_leaf {
-                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                    if unsafe { fstat_leaf_descriptor(&registration, fd, stat.as_mut_ptr()) } != 0 {
-                        let error = last_errno();
-                        retain_unclassified_descriptor(fd);
-                        return syscall_failure(error);
-                    }
-                    let stat = unsafe { stat.assume_init() };
-                    if !leaf_identity_matches(&registration, &stat) {
-                        increment_refusal(&registration.binding);
-                        retain_mismatched_descriptor(fd, raw_libc_stat_identity(&stat));
-                        return syscall_failure(libc::ESTALE);
-                    }
+                let fd = unsafe { accept_regular_descriptor(&registration, fd, is_leaf) };
+                if fd < 0 {
+                    return fd;
                 }
                 set_opened_name(&registration, OsStr::from_bytes(name.as_bytes()));
                 fd
@@ -2970,6 +3048,50 @@ mod tests {
             let callback = (*vfs).xDelete.unwrap();
             callback(vfs, name.as_ptr(), 0)
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_sqlite_sidecars_refuse_special_files_and_retain_nonblocking() {
+        crate::db::test_support::run_isolated(
+            "db::bound_sqlite::tests::bound_sqlite_sidecars_refuse_special_files_and_retain_nonblocking",
+            || {
+                use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("special.db3");
+                std::fs::write(&path, b"database").unwrap();
+                let bound = BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&path).unwrap()).unwrap();
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    let sidecar = path.with_file_name(format!("special.db3{suffix}"));
+                    let name = CString::new(sidecar.as_os_str().as_bytes()).unwrap();
+                    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                    let reserved = CString::new(format!("{RESERVED_PREFIX}{}/special.db3{suffix}", bound.token())).unwrap();
+                    assert_eq!(call_vfs_access(&bound, &reserved), (ffi::SQLITE_OK, 1), "FIFO remains present to xAccess");
+                    for flags in [libc::O_RDONLY, libc::O_RDWR] {
+                        assert_eq!(open_bound_sidecar_for_test(&bound, suffix, flags), Err(libc::EINVAL), "FIFO descriptor must be refused without a peer");
+                    }
+                    assert_eq!(bound.refusal_count(), 0, "sidecar kind refusal is not an identity refusal");
+                    std::fs::remove_file(&sidecar).unwrap();
+                    let fd = open_bound_sidecar_for_test(&bound, suffix, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL).unwrap();
+                    assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK, 0, "accepted regular sidecar retains O_NONBLOCK");
+                    let file = unsafe { File::from_raw_fd(fd) };
+                    assert!(file.metadata().unwrap().is_file());
+                    drop(file);
+                    assert_eq!(open_bound_sidecar_for_test(&bound, suffix, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL), Err(libc::EEXIST), "open syscall errno survives");
+                    std::fs::remove_file(&sidecar).unwrap();
+                    std::fs::create_dir(&sidecar).unwrap();
+                    assert_eq!(open_bound_sidecar_for_test(&bound, suffix, libc::O_RDONLY), Err(libc::EINVAL), "directory descriptor is refused");
+                    std::fs::remove_dir(&sidecar).unwrap();
+                    std::os::unix::fs::symlink(&path, &sidecar).unwrap();
+                    assert_eq!(open_bound_sidecar_for_test(&bound, suffix, libc::O_RDONLY), Err(libc::ELOOP), "no-follow errno survives");
+                    std::fs::remove_file(&sidecar).unwrap();
+                    let socket = std::os::unix::net::UnixListener::bind(&sidecar).unwrap();
+                    assert!(open_bound_sidecar_for_test(&bound, suffix, libc::O_RDONLY).is_err(), "socket is refused");
+                    drop(socket);
+                    std::fs::remove_file(&sidecar).unwrap();
+                }
+            },
+        );
     }
 
     #[cfg(unix)]

@@ -3296,6 +3296,8 @@ mod bound_sqlite_witnesses {
         infra::path_authority::database_test_support::replace_parent_with_same_inode_hard_link,
     };
     use diesel::connection::SimpleConnection as _;
+    #[cfg(unix)]
+    use diesel::Connection as _;
     use rusqlite::Connection;
     use std::{
         collections::BTreeSet,
@@ -3473,21 +3475,7 @@ mod bound_sqlite_witnesses {
         query
     }
 
-    #[cfg(target_os = "linux")]
-    fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
-        use std::os::fd::AsRawFd;
-
-        let mut lock = sqlite_shared_read_lock_query();
-        let result = unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) };
-        assert_eq!(result, 0, "query SQLite shared-byte locks");
-        assert_ne!(
-            lock.l_type,
-            libc::F_UNLCK as libc::c_short,
-            "a fresh descriptor must still see the held SQLite read lock"
-        );
-    }
-
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
         use std::os::fd::AsRawFd;
 
@@ -3534,7 +3522,7 @@ mod bound_sqlite_witnesses {
             .count()
     }
 
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     fn assert_descriptors_have_identity(fds: &[libc::c_int], identity: (u64, u64)) {
         use crate::infra::fs::raw_libc_stat_identity;
 
@@ -4387,6 +4375,163 @@ mod bound_sqlite_witnesses {
         drop(reader);
         drop(probe);
         drop(bound);
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn bound_sqlite_fifo_leaf_swap_finishes_without_a_writer() {
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::bound_sqlite_fifo_leaf_swap_finishes_without_a_writer",
+            || {
+                use std::os::unix::ffi::OsStrExt;
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("fifo-leaf.db3");
+                seed_database(&path, 7, "DELETE");
+                let target = test_target(&path);
+                let bound = BoundDatabase::acquire(&target).unwrap();
+                let fifo_path = path.clone();
+                bound.set_before_openat_hook(move || {
+                    fs::rename(&fifo_path, fifo_path.with_extension("backup")).unwrap();
+                    let name = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+                    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                }).unwrap();
+                let result = DatabaseRepository::default().read_revision(&target, &CancellationToken::new());
+                assert!(matches!(result, Err(Error::Conflict(_))), "FIFO leaf swap must return Conflict: {result:?}");
+                assert!(bound.refusal_count() > 0, "FIFO leaf refusal increments identity counter");
+                fs::remove_file(&path).unwrap();
+                fs::rename(path.with_extension("backup"), &path).unwrap();
+                let fd = crate::db::bound_sqlite::open_bound_leaf_for_test(&bound).unwrap();
+                assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK, 0, "regular non-Linux leaf retains O_NONBLOCK");
+                assert_eq!(unsafe { libc::close(fd) }, 0);
+                assert_eq!(DatabaseRepository::default().read_revision(&target, &CancellationToken::new()).unwrap(), 7);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_sqlite_sidecar_metadata_failure_preserves_locks_errno_admission_and_cleanup() {
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::bound_sqlite_sidecar_metadata_failure_preserves_locks_errno_admission_and_cleanup",
+            || {
+                use crate::db::bound_sqlite::{open_bound_sidecar_for_test, quarantine_admission_limit, unclassified_descriptor_fds};
+                let root = tempfile::tempdir().unwrap();
+                let path_a = root.path().join("owner-a.db3");
+                let path_b = root.path().join("locked-b.db3");
+                seed_database(&path_a, 1, "DELETE");
+                seed_database(&path_b, 2, "DELETE");
+                let target_a = test_target(&path_a);
+                let target_b = test_target(&path_b);
+                let bound_a = BoundDatabase::acquire(&target_a).unwrap();
+                let bound_b = BoundDatabase::acquire(&target_b).unwrap();
+                // This hard link injects an unknown lockable database inode at a sidecar name.
+                // It is not an acceptance policy for ordinary hard-linked WAL sidecars.
+                fs::hard_link(&path_b, root.path().join("owner-a.db3-shm")).unwrap();
+                let probe = fs::File::open(&path_b).unwrap();
+                let reader = open_bound_connection(&bound_b).unwrap();
+                reader.execute_batch("BEGIN; SELECT Value FROM Info WHERE Name='DataRevision';").unwrap();
+                assert_sqlite_shared_read_lock_is_held(&probe);
+                for count in 1..=quarantine_admission_limit() {
+                    bound_a.fail_next_sidecar_fstat_with(libc::EIO);
+                    assert_eq!(open_bound_sidecar_for_test(&bound_a, "-shm", libc::O_RDONLY), Err(libc::EIO), "metadata failure preserves inspection errno");
+                    let retained = unclassified_descriptor_fds();
+                    assert_eq!(retained.len(), count, "unknown descriptor remains registry-owned");
+                    assert_descriptors_have_identity(&retained, target_b.identity());
+                    assert_sqlite_shared_read_lock_is_held(&probe);
+                }
+                let retained = unclassified_descriptor_fds();
+                for bound in [&bound_a, &bound_b] {
+                    for suffix in ["-wal", "-shm", "-journal"] {
+                        assert_eq!(open_bound_sidecar_for_test(bound, suffix, libc::O_RDWR | libc::O_CREAT), Err(libc::EMFILE), "full unknown bucket refuses sidecar admission");
+                    }
+                }
+                assert_eq!(bound_a.refusal_count(), 0, "metadata and admission failures leave identity counter unchanged");
+                assert_eq!(bound_b.refusal_count(), 0);
+                assert_eq!(unclassified_descriptor_fds(), retained, "full bucket never closes retained descriptors");
+                assert_sqlite_shared_read_lock_is_held(&probe);
+                drop(bound_a);
+                assert_eq!(unclassified_descriptor_fds(), retained, "another live registration retains unknown descriptors");
+                assert_sqlite_shared_read_lock_is_held(&probe);
+                drop(reader);
+                drop(probe);
+                drop(bound_b);
+                assert!(unclassified_descriptor_fds().is_empty(), "last registration drains unknown bucket");
+                for fd in retained {
+                    assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "cleanup closes the retained descriptor");
+                    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+                }
+                let reopened = BoundDatabase::acquire(&target_a).unwrap();
+                let fd = open_bound_sidecar_for_test(&reopened, "-journal", libc::O_RDWR | libc::O_CREAT).unwrap();
+                assert_eq!(unsafe { libc::close(fd) }, 0);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    fn assert_fifo_shm_query_error(result: Result<u64, Error>) {
+        assert!(
+            matches!(&result, Err(Error::Diesel(error)) if matches!(
+                error.as_ref(),
+                diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::Unknown, info)
+                    if info.message() == "unable to open database file"
+            )),
+            "query-time SHM refusal retains concrete Diesel/SQLite error: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_sqlite_fifo_shm_repository_failures_and_regular_fallback_recovery() {
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::bound_sqlite_fifo_shm_repository_failures_and_regular_fallback_recovery",
+            || {
+                use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+                let root = tempfile::tempdir().unwrap();
+                let source = root.path().join("source.db3");
+                seed_database(&source, 9, "WAL");
+                let writer = Connection::open(&source).unwrap();
+                writer.execute_batch("PRAGMA wal_autocheckpoint=0; UPDATE Info SET Value='10' WHERE Name='DataRevision';").unwrap();
+                let path = root.path().join("fallback.db3");
+                fs::copy(&source, &path).unwrap();
+                fs::copy(root.path().join("source.db3-wal"), root.path().join("fallback.db3-wal")).unwrap();
+                let shm = root.path().join("fallback.db3-shm");
+                let good_shm = root.path().join("good-shm");
+                fs::copy(root.path().join("source.db3-shm"), &good_shm).unwrap();
+                let name = std::ffi::CString::new(shm.as_os_str().as_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o400) }, 0);
+                let target = test_target(&path);
+                let bound = BoundDatabase::acquire(&target).unwrap();
+                // Prove the real read-only fallback is reachable, rather than merely arranging
+                // a FIFO that a privileged process could open read-write.
+                assert_eq!(crate::db::bound_sqlite::open_bound_sidecar_for_test(&bound, "-shm", libc::O_RDWR), Err(libc::EACCES), "fixture must force SQLite's read-only SHM fallback");
+                let repository = DatabaseRepository::default();
+                let mut established = SqliteConnection::establish(&bound.uri(SqliteMode::ReadOnly).unwrap()).expect("establish succeeds before SHM query");
+                let query = read_data_revision(&mut established);
+                eprintln!("FIFO SHM after establish: {query:?}");
+                assert_fifo_shm_query_error(query);
+                drop(established);
+                let revision = repository.read_revision(&target, &CancellationToken::new());
+                eprintln!("FIFO SHM revision boundary: {revision:?}");
+                assert_fifo_shm_query_error(revision);
+                assert!(matches!(repository.database_identity(&target), Err(Error::Diesel(_))), "FIFO SHM must not hydrate a successful identity");
+                let pool = repository.initialization_connection(&target, None);
+                match &pool {
+                    Err(error) => eprintln!("FIFO SHM pool boundary: {error:?}"),
+                    Ok(_) => panic!("FIFO SHM pool unexpectedly succeeded"),
+                }
+                assert!(matches!(pool, Err(Error::R2d2(ref error)) if error.to_string().contains("unable to open database file")), "pool retains concrete bounded acquisition error");
+                assert_eq!(bound.refusal_count(), 0, "FIFO sidecar failure is not Conflict");
+                fs::remove_file(&shm).unwrap();
+                fs::copy(&good_shm, &shm).unwrap();
+                fs::set_permissions(&shm, fs::Permissions::from_mode(0o400)).unwrap();
+                assert_eq!(repository.read_revision(&target, &CancellationToken::new()).unwrap(), 10, "read-only regular SHM fallback reads WAL revision");
+                fs::set_permissions(&shm, fs::Permissions::from_mode(0o600)).unwrap();
+                let mut connection = repository.initialization_connection(&target, None).unwrap();
+                connection.batch_execute("UPDATE Info SET Value='11' WHERE Name='DataRevision'; PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+                assert_eq!(read_data_revision(&mut connection).unwrap(), 11, "regular WAL write and checkpoint succeed after replacement");
+                drop(writer);
+            },
+        );
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
