@@ -14417,6 +14417,8 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261001-08 changes the preview's opening controls, not its destructive operation. Build step 4 keeps this independently existing delete-operation hazard as a named pre-change limit rather than adding a deletion mechanism to the opening mandate. No duplicate was found in the ledger or pending inbox.
 * **Proof required:** component tests for rejected native deletion, successful deletion plus rejected refresh, cancellation and successful refresh, with no unhandled rejection and the correct visible failure/recovery behavior.
 * **Found by:** Codex locate probe 1 and orchestrator source confirmation during game-opening planning, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+* **Review inheritance:** P3 of game-opening plan review is owned by this finding. Load `tasks/handoffs/2026-10-10-f-20261001-08-review.md` before review. It preserves the full issue, locate evidence, disposition and merged entry. The opening-controls run keeps the named pre-change delete-operation limit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6a97f9931741bc31af5797bebc0385267da921699b748a3b629e47b991178788","input_sha256":"4e2b2f8a04d82c581a65f67391871ecc07e29fa6728ce6e11e0051701cb4d4a4","kind":"mutation-receipt","operation":"08a0d3c948bed8d52ad419cbdf13cb72668d82be5fc70c2c7ee69206107bde70","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-02"],"target":"f-20261010-02","v":1} -->
 
 ### Tournament game pagination always slices 25 rows while its page-size selector changes the paginator
 
