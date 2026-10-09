@@ -8837,11 +8837,15 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 
 ### Search index loading repeats target resolution and source derivation three times
 
-* **ID:** f-20260914-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-04 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs:204-246` and `:285-307` (`load_search_index_cancellable` and its neighbours), calls to `resolve_database` at `search.rs:204,231,248,285`.
 * **Defect:** the same database-target resolution plus identity/`IndexSource` derivation is written out three times in one flow. Universal rule 11 (extract at the second copy): a later change to the provenance or identity check must be mirrored by hand at each copy, which is exactly how one copy drifts.
 * **Fix shape:** one helper returning the validated target and source, all three sites routed through it; no behaviour change.
 * **Found by:** `review-minimalism` plan lens (Codex), 2026-09-14, confidence 96, f-20260830-06 slice-1 plan review. Not read line by line in that run; verify the three copies before extracting.
+* **Handled 2026-10-10:** `1d6362e9` routes all three DatabaseRead attempts in `load_search_index_cancellable` through the existing local `probe_attempt` closure, which now owns target resolution, invalidation snapshot, database identity probing and IndexSource derivation. DatabaseMutate resolution stays separate. Production behavior is preserved, including snapshot-before-probe ordering, generation locking, legacy promotion and typed errors. Decision `d-20261010-01` chose the local closure over a new module API, retaining `d-20260929-03`, `d-20261005-06` and `d-20261008-15`.
+* **Proof before closure:** `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed. `cargo test --manifest-path src-tauri/Cargo.toml --locked db::search::` passed 69 tests. `pnpm checks:pre-review` passed its selected format, backend mapping and Windows clippy lanes. This is an extraction with no runtime behavior fix, so existing tests protect preservation and do not enforce duplication through source-text assertions.
+* **Review route:** lens tier retained after tracing current source. `review-minimalism` is mandatory in push round 1. The project push skill reviews the entire unpushed range before final backend gates and release. Plan authorship and arbitration share this context. Detection runs in separate sessions on the same model family as the code. No related cluster members are selected or left open.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"fef35fa01583cffcf0a2f8650e38ca6432076e973e39f4a388526ae5c79de965","header_sha256":"e4a783fc355b7a4b178abf40df4d866ce4a2046377ab703ba9e3cd4e08ddf29c","header_status":"handled","input_sha256":"e16a0ab9bd1848c70fe203c91ab9768e292087be3fb8e22905f3b6161ee85227","kind":"mutation-receipt","operation":"1a9ba96023398534864d7162bf45531d5773aff608f74b7f30bd9b84abf6f398","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-04"],"target":"f-20260914-04","v":1} -->
 
 ### PGN page reads are bounded by game count, not by bytes
 
