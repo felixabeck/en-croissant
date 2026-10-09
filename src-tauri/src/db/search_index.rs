@@ -496,8 +496,6 @@ pub struct SearchGameEntryRef<'a> {
     pub date: Option<&'a str>,
     pub result: GameResult,
     pub pawn_home: u16,
-    pub white_material: u8,
-    pub black_material: u8,
     pub white_elo: i16,
     pub black_elo: i16,
     pub fen: Option<&'a str>,
@@ -513,8 +511,6 @@ impl<'a> From<&'a SearchGameEntry> for SearchGameEntryRef<'a> {
             date: entry.date.as_deref(),
             result: entry.result,
             pawn_home: entry.pawn_home,
-            white_material: entry.white_material,
-            black_material: entry.black_material,
             white_elo: entry.white_elo,
             black_elo: entry.black_elo,
             fen: entry.fen.as_deref(),
@@ -538,8 +534,6 @@ impl<'a> From<&'a ArchivedSearchGameEntry> for SearchGameEntryRef<'a> {
                 ArchivedGameResult::Other => GameResult::Other,
             },
             pawn_home: entry.pawn_home.into(),
-            white_material: entry.white_material,
-            black_material: entry.black_material,
             white_elo: entry.white_elo.into(),
             black_elo: entry.black_elo.into(),
             fen: entry.fen.as_ref().map(|fen| fen.as_str()),
@@ -1237,6 +1231,7 @@ mod tests {
         let index = MmapSearchIndex::open(&path).unwrap();
         assert_eq!(index.len(), entries.len());
 
+        let archived = index.archived_chunk(&index.chunks[0]);
         for (i, original) in entries.iter().enumerate() {
             let loaded = index.get_entry_ref(i).unwrap();
             assert_eq!(loaded.id, original.id);
@@ -1244,8 +1239,8 @@ mod tests {
             assert_eq!(loaded.black_id, original.black_id);
             assert_eq!(loaded.result, original.result);
             assert_eq!(loaded.pawn_home, original.pawn_home);
-            assert_eq!(loaded.white_material, original.white_material);
-            assert_eq!(loaded.black_material, original.black_material);
+            assert_eq!(archived.entries[i].white_material, original.white_material);
+            assert_eq!(archived.entries[i].black_material, original.black_material);
             assert_eq!(loaded.fen, original.fen.as_deref());
             assert_eq!(loaded.moves, original.moves);
         }

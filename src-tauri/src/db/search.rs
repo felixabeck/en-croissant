@@ -3,9 +3,7 @@ use diesel::prelude::*;
 use log::info;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shakmaty::{
-    fen::Fen, san::SanPlus, Bitboard, ByColor, Chess, Color, EnPassantMode, Position, Setup,
-};
+use shakmaty::{fen::Fen, san::SanPlus, Bitboard, Chess, Color, EnPassantMode, Position, Setup};
 use specta::Type;
 use std::{
     cmp::Reverse,
@@ -30,14 +28,14 @@ use crate::{
         encoding::{
             database_setup_to_chess, decode_move, try_iter_mainline_move_bytes_cancellable,
         },
-        get_db_or_create, get_material_count, get_pawn_home,
+        get_db_or_create, get_pawn_home,
         models::*,
         normalize_games,
         schema::*,
         search_index::{
             get_index_path, GameResult, IndexSource, MmapSearchIndex, SearchGameEntryRef,
         },
-        DatabaseRepository, MaterialCount,
+        DatabaseRepository,
     },
     error::Error,
     infra::{
@@ -59,21 +57,13 @@ use super::GameQuery;
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct ExactData {
     pawn_home: u16,
-    material: MaterialCount,
     position: Chess,
-}
-
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct PartialData {
-    // piece_counts: Vec<(Piece, u8)>,
-    piece_positions: Setup,
-    material: MaterialCount,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub enum PositionQuery {
     Exact(ExactData),
-    Partial(PartialData),
+    Partial(Setup),
 }
 
 impl PositionQuery {
@@ -81,22 +71,15 @@ impl PositionQuery {
         let fen = Fen::from_ascii(fen.as_bytes())?;
         let position = database_setup_to_chess(fen.into_setup())?;
         let pawn_home = get_pawn_home(position.board());
-        let material = get_material_count(position.board());
         Ok(PositionQuery::Exact(ExactData {
             pawn_home,
-            material,
             position,
         }))
     }
 
     pub fn partial_from_fen(fen: &str) -> Result<PositionQuery, Error> {
         let fen = Fen::from_ascii(fen.as_bytes())?;
-        let setup = fen.into_setup();
-        let material = get_material_count(&setup.board);
-        Ok(PositionQuery::Partial(PartialData {
-            piece_positions: setup,
-            material,
-        }))
+        Ok(PositionQuery::Partial(fen.into_setup()))
     }
 }
 
@@ -131,7 +114,7 @@ impl PositionQuery {
                         == position.ep_square(EnPassantMode::Legal)
             }
             PositionQuery::Partial(ref data) => {
-                let query_board = &data.piece_positions.board;
+                let query_board = &data.board;
                 let tested_board = position.board();
 
                 is_contained(tested_board.pawns(), query_board.pawns())
@@ -152,25 +135,16 @@ impl PositionQuery {
         }
     }
 
-    fn is_reachable_by(&self, material: &MaterialCount, pawn_home: u16) -> bool {
+    fn is_reachable_by(&self, pawn_home: u16) -> bool {
         match self {
-            PositionQuery::Exact(ref data) => {
-                let _ = material;
-                is_end_reachable(data.pawn_home, pawn_home)
-            }
-            PositionQuery::Partial(_) => {
-                let _ = material;
-                true
-            }
+            PositionQuery::Exact(ref data) => is_end_reachable(data.pawn_home, pawn_home),
+            PositionQuery::Partial(_) => true,
         }
     }
 
-    fn can_reach(&self, material: &MaterialCount, pawn_home: u16) -> bool {
+    fn can_reach(&self, pawn_home: u16) -> bool {
         match self {
-            PositionQuery::Exact(ref data) => {
-                let _ = material;
-                is_end_reachable(pawn_home, data.pawn_home)
-            }
+            PositionQuery::Exact(ref data) => is_end_reachable(pawn_home, data.pawn_home),
             PositionQuery::Partial(_) => true,
         }
     }
@@ -556,7 +530,7 @@ fn get_move_after_match(
 
         if is_irreversible {
             let board = chess.board();
-            if !query.is_reachable_by(&get_material_count(board), get_pawn_home(board)) {
+            if !query.is_reachable_by(get_pawn_home(board)) {
                 return Ok(None);
             }
         }
@@ -819,11 +793,7 @@ pub(super) fn search_position_blocking<R: tauri::Runtime>(
         }
 
         if let Some(position_query) = &parsed_position_query {
-            let end_material: MaterialCount = ByColor {
-                white: entry.white_material,
-                black: entry.black_material,
-            };
-            if position_query.can_reach(&end_material, entry.pawn_home) {
+            if position_query.can_reach(entry.pawn_home) {
                 if let Some(m) = get_move_after_match(
                     entry.id,
                     entry.moves,
@@ -966,21 +936,10 @@ pub(crate) fn is_position_in_db_cancellable(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        try_iter_mainline_move_bytes_cancellable(entry.moves, cancellation).map_err(|error| {
-            if matches!(error, Error::Cancellation) {
-                return Error::Cancellation;
-            }
-            Error::InvalidInput(format!(
-                "game {} has invalid move stream: {error}",
-                entry.id
-            ))
-        })?;
-        let end_material: MaterialCount = ByColor {
-            white: entry.white_material,
-            black: entry.black_material,
-        };
+        try_iter_mainline_move_bytes_cancellable(entry.moves, cancellation)
+            .map_err(|error| invalid_move_stream(entry.id, error))?;
         if let Some(position_query) = &parsed_position_query {
-            if position_query.can_reach(&end_material, entry.pawn_home)
+            if position_query.can_reach(entry.pawn_home)
                 && get_move_after_match(
                     entry.id,
                     entry.moves,
@@ -1832,13 +1791,35 @@ mod imported_search_tests {
     }
 }
 
+#[cfg(test)]
+mod position_query_tests {
+    use super::*;
+
+    #[test]
+    fn partial_constructor_preserves_a_full_board_of_queens() {
+        let query = PositionQuery::partial_from_fen(
+            "QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ w - - 0 1",
+        )
+        .unwrap();
+        let PositionQuery::Partial(data) = &query else {
+            panic!("partial constructor must produce a partial query");
+        };
+        assert_eq!(data.board.queens(), Bitboard::FULL);
+        assert_eq!(data.board.by_color(Color::White), Bitboard::FULL);
+        let chess = Chess::default();
+        assert!(query.is_reachable_by(0));
+        assert!(query.can_reach(0));
+        assert!(!query.matches(&chess));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::infra::keyed_locks::KeyedLockLease;
     use crate::{
         db::{
-            legacy_index_path,
+            get_material_count, legacy_index_path,
             models::NewGame,
             ops::{create_event, create_game, create_player, create_site},
             SearchIndexChunk,
@@ -2633,30 +2614,21 @@ mod tests {
             PositionQuery::exact_from_fen("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR")
                 .unwrap();
         let chess = Chess::default();
-        assert!(query.is_reachable_by(
-            &get_material_count(chess.board()),
-            get_pawn_home(chess.board())
-        ));
+        assert!(query.is_reachable_by(get_pawn_home(chess.board())));
     }
 
     #[test]
     fn correct_partial_is_reachable() {
         let query = PositionQuery::partial_from_fen("8/8/8/8/8/8/8/8").unwrap();
         let chess = Chess::default();
-        assert!(query.is_reachable_by(
-            &get_material_count(chess.board()),
-            get_pawn_home(chess.board())
-        ));
+        assert!(query.is_reachable_by(get_pawn_home(chess.board())));
     }
 
     #[test]
     fn correct_partial_can_reach() {
         let query = PositionQuery::partial_from_fen("8/8/8/8/8/8/8/8").unwrap();
         let chess = Chess::default();
-        assert!(query.can_reach(
-            &get_material_count(chess.board()),
-            get_pawn_home(chess.board())
-        ));
+        assert!(query.can_reach(get_pawn_home(chess.board())));
     }
 
     #[test]
@@ -2809,8 +2781,7 @@ mod tests {
     #[test]
     fn promotion_material_is_not_pruned_as_unreachable() {
         let query = PositionQuery::exact_from_fen("7k/Q7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
-        let before_promotion: MaterialCount = ByColor { white: 1, black: 0 };
-        assert!(query.is_reachable_by(&before_promotion, 0));
+        assert!(query.is_reachable_by(0));
     }
 
     #[test]
