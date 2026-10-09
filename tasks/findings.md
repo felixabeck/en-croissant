@@ -14357,3 +14357,18 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Found by:** Codex review-plan, cumulative plan review round 2, f-20260929-03 refresh. The adopting f-20260929-03 session must preserve `tasks/plans/reviews-handoff.md` as a tracked review record before final gates. This entry inherits issue I1 only, which is out of its SQLite mandate. Load that record before reviewing the workflow correction. Plan authorship and arbitration shared one context, and detection ran on the same OpenAI model family as the planned code.
 * **Adoption record (2026-10-09, Codex):** This finding owns inherited review issue I1 only. The complete tracked history is [tasks/handoffs/2026-10-09-f-20260929-03-review.md](handoffs/2026-10-09-f-20260929-03-review.md). Load that file before reviewing the workflow correction. This durable path supersedes the historical ignored `tasks/plans/reviews-handoff.md` preservation instruction above. The SQLite parent remains independently governed by O1–O3.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"add120d6dadd3cfc4e8e30994c744df97a26ec2fc13b46d94df5dfe7b2a019bb","input_sha256":"70716177cd7257e585b7b7205547b968244163c834998d99e1207891576cbc2e","kind":"mutation-receipt","operation":"5ff980490ff8b05c22f5e1f6274b184adc4b14fafadf0b6f12ee7822240c8cf1","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-05"],"target":"f-20261009-05","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### IPC review lens still describes the retired search_progress exception as live
+
+* **ID:** f-20261009-06 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 477eec91-af67-4fe3-9bac-5c66560ee1d9 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-477eec91-af67-4fe3-9bac-5c66560ee1d9-1.jsonl
+* **Where:** `.claude/agents/review-ipc-contract.md:42-47` and `:64-66`.
+* **Defect:** The lens says `search_progress` is live at HEAD, emitted in `db/search.rs`, consumed by a handwritten listener in `DatabaseLoader.tsx`, and absent from the Specta registry. Current `db/search.rs` reports through `update_progress_with_state` and the registered `ProgressEvent`. The canonical `ipc-events.md` rule already records the retired exception and its repair.
+* **Why it matters:** This is operative reviewer context. It directs fresh leaves toward a nonexistent exception and contradicts the rule they must read.
+* **Fix shape:** Replace the live-exception claim with dated history of the retired channel, and update the reference paragraph to describe the current shared typed progress contract. Preserve the incident as evidence.
+* **Proof:** Compare the lens text with `src-tauri/src/db/search.rs`, `src/components/panels/database/DatabaseLoader.tsx`, and `.claude/rules/ipc-events.md`, then run `pnpm gates:contract:check`. Text consistency proof does not prove model obedience.
+* **Found by:** Codex while loading the required push review lens during the f-20260914-03 drain, 2026-10-09. Deferred to the separate reviewer-instruction area.
