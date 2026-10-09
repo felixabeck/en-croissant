@@ -518,9 +518,6 @@ fn get_move_after_match(
         let mut mainline = try_iter_mainline_move_bytes_cancellable(move_blob, cancellation)
             .map_err(|error| invalid_move_stream(game_id, error))?
             .peekable();
-        if mainline.peek().is_none() {
-            return Ok(Some("*".to_string()));
-        }
         let Some(next_byte) = mainline.peek().copied() else {
             return Ok(Some("*".to_string()));
         };
@@ -556,9 +553,6 @@ fn get_move_after_match(
             }
         }
         if query.matches(&chess) {
-            if mainline.peek().is_none() {
-                return Ok(Some("*".to_string()));
-            }
             let Some(next_byte) = mainline.peek().copied() else {
                 return Ok(Some("*".to_string()));
             };
