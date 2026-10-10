@@ -31,6 +31,173 @@ beforeEach(() => {
     mocks.lexPgn.mockReset();
 });
 
+test.each([
+    {
+        name: "initial three-square pawn advance",
+        fen: INITIAL_FEN,
+        illegal: "e2e5",
+        legal: "e2e4",
+        san: "e4",
+    },
+    { name: "wrong side", fen: INITIAL_FEN, illegal: "e7e5", legal: "g1f3", san: "Nf3" },
+    {
+        name: "exposed king",
+        fen: "k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+        illegal: "e2f2",
+        legal: "e2e3",
+        san: "Re3",
+    },
+    {
+        name: "custom Black target",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23",
+        illegal: "e2e4",
+        legal: "e7e5",
+        san: "e5",
+    },
+])(
+    "parsePGN skips illegal UCI at $name and continues from the same position",
+    async ({ fen, illegal, legal, san }) => {
+        mocks.lexPgn.mockResolvedValueOnce(tokens(fen, illegal));
+        const rejected = await parsePGN(`1. ${illegal} *`);
+        expect(rejected.root.fen).toBe(fen);
+        expect(rejected.root.children).toEqual([]);
+        expect(rejected.position).toEqual([]);
+
+        mocks.lexPgn.mockResolvedValueOnce([
+            ...tokens(fen, illegal),
+            { type: "San", value: "not-a-move" },
+            { type: "San", value: legal },
+        ] satisfies Token[]);
+        const continued = await parsePGN(`1. ${illegal} not-a-move ${legal} *`);
+        expect(continued.root.children).toHaveLength(1);
+        expect(continued.root.children[0]).toMatchObject({
+            san,
+            move: parseUci(legal),
+            halfMoves: rejected.root.halfMoves + 1,
+            children: [],
+        });
+    },
+);
+
+test("parsePGN tests UCI legality at the evolving target rather than the initial root", async () => {
+    mocks.lexPgn.mockResolvedValueOnce([
+        { type: "San", value: "e2e4" },
+        { type: "San", value: "g1f3" },
+        { type: "San", value: "e7e5" },
+    ] satisfies Token[]);
+    const tree = await parsePGN("1. e2e4 g1f3 e7e5 *");
+    const first = tree.root.children[0];
+    expect(first.san).toBe("e4");
+    expect(first.children).toHaveLength(1);
+    expect(first.children[0]).toMatchObject({ san: "e5", halfMoves: 2, children: [] });
+    expect(first.children[0].fen).toBe(
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+    );
+});
+
+test("parsePGN initialFen override governs legality instead of a conflicting FEN header", async () => {
+    const blackFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
+    mocks.lexPgn.mockResolvedValueOnce([
+        ...tokens(INITIAL_FEN, "e2e4"),
+        { type: "San", value: "e7e5" },
+    ] satisfies Token[]);
+    const tree = await parsePGN("1. e2e4 e7e5 *", blackFen);
+    expect(tree.root.fen).toBe(blackFen);
+    expect(tree.root.children).toHaveLength(1);
+    expect(tree.root.children[0]).toMatchObject({ san: "e5", halfMoves: 46, children: [] });
+});
+
+test.each([
+    {
+        name: "SAN",
+        fen: INITIAL_FEN,
+        value: "e4",
+        san: "e4",
+        after: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+    },
+    {
+        name: "UCI",
+        fen: INITIAL_FEN,
+        value: "e2e4",
+        san: "e4",
+        after: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+    },
+    {
+        name: "SAN castling",
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        value: "O-O",
+        san: "O-O",
+        after: "4k3/8/8/8/8/8/8/R4RK1 b - - 1 1",
+    },
+    {
+        name: "UCI king-destination castling",
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        value: "e1g1",
+        san: "O-O",
+        after: "4k3/8/8/8/8/8/8/R4RK1 b - - 1 1",
+    },
+    {
+        name: "UCI king-to-rook castling",
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        value: "e1a1",
+        san: "O-O-O",
+        after: "4k3/8/8/8/8/8/8/2KR3R b - - 1 1",
+    },
+    {
+        name: "Chess960 kingside castling",
+        fen: "4k3/8/8/8/8/8/8/1R1K1R2 w KQ - 0 1",
+        value: "d1f1",
+        san: "O-O",
+        after: "4k3/8/8/8/8/8/8/1R3RK1 b - - 1 1",
+    },
+    {
+        name: "Chess960 queenside castling",
+        fen: "4k3/8/8/8/8/8/8/1R1K1R2 w KQ - 0 1",
+        value: "d1b1",
+        san: "O-O-O",
+        after: "4k3/8/8/8/8/8/8/2KR1R2 b - - 1 1",
+    },
+    {
+        name: "promotion",
+        fen: "7k/P7/8/8/8/8/8/4K3 w - - 0 1",
+        value: "a7a8q",
+        san: "a8=Q+",
+        after: "Q6k/8/8/8/8/8/8/4K3 b - - 0 1",
+    },
+    {
+        name: "SAN underpromotion",
+        fen: "7k/P7/8/8/8/8/8/4K3 w - - 0 1",
+        value: "a8=N",
+        san: "a8=N",
+        after: "N6k/8/8/8/8/8/8/4K3 b - - 0 1",
+    },
+])("parsePGN preserves legal $name", async ({ fen, value, san, after }) => {
+    // The renderer receives source-square notation as San tokens from the native lexer.
+    mocks.lexPgn.mockResolvedValueOnce(tokens(fen, value));
+    const tree = await parsePGN(value);
+    expect(tree.root.children).toHaveLength(1);
+    expect(tree.root.children[0]).toMatchObject({ san, fen: after, children: [] });
+});
+
+test("parsePGN applies legality independently inside SAN/UCI variations", async () => {
+    mocks.lexPgn.mockResolvedValueOnce([
+        { type: "San", value: "e4" },
+        { type: "ParenOpen" },
+        { type: "San", value: "e2e5" },
+        { type: "San", value: "d2d4" },
+        { type: "San", value: "d5" },
+        { type: "ParenClose" },
+        { type: "San", value: "e7e5" },
+    ] satisfies Token[]);
+    const tree = await parsePGN("1. e4 (1. e2e5 d2d4 d5) e7e5 *");
+    expect(tree.root.children.map((node) => node.san)).toEqual(["e4", "d4"]);
+    expect(tree.root.children[0].children.map((node) => node.san)).toEqual(["e5"]);
+    expect(tree.root.children[1].children.map((node) => node.san)).toEqual(["d5"]);
+    expect(tree.root.children[1].children[0].fen).toBe(
+        "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+    );
+});
+
 test("lossless NAG round trip preserves every code and multiplicity", async () => {
     const pgn =
         "1. e4 $8 $8 c6 $11 2. d4 $1 $2 d5 $14 $1 3. Nc3 $220 dxe4 $6 $146 4. Nxe4 $0 Bf5 $255";

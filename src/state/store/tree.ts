@@ -719,6 +719,8 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
             },
         });
         const capturedCreator: typeof persistedCreator = (set, get, api) => {
+            // Capture the original setter outside persist so installing an already durably
+            // seeded tree does not queue another persistence write.
             install = set;
             return persistedCreator(set, get, api);
         };
@@ -765,7 +767,6 @@ function makeMove({
     if (!pos) return;
     if (!pos.isLegal(move)) return;
     const san = makeSan(pos, move);
-    if (san === "--") return; // invalid move
     pos.play(move);
     if (sound) {
         playSound(san.includes("x"), san.includes("+"));

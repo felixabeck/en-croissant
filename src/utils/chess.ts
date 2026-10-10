@@ -1,10 +1,10 @@
 import { cancellationError, tauri } from "@/platform/tauri";
 import type { DrawShape } from "@lichess-org/chessground/draw";
-import { type Color, type Move, makeSquare, makeUci, parseUci, type Role } from "chessops";
+import { type Color, type Move, makeSquare, makeUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns } from "chessops/pgn";
-import { makeSan, parseSan } from "chessops/san";
+import { makeSan } from "chessops/san";
 import { type Outcome, type Score, type Token } from "@/bindings";
 import { isBasicAnnotation, isNagCode, nagGlyph, sortedNags } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
@@ -453,12 +453,9 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
             if (error) {
                 continue;
             }
-            let move = parseSan(pos, token.value);
+            const move = parseSanOrUci(pos, token.value);
             if (!move) {
-                move = parseUci(token.value);
-                if (!move) {
-                    continue;
-                }
+                continue;
             }
             const san = makeSan(pos, move);
             pos.play(move);

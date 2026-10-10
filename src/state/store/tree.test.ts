@@ -1338,7 +1338,7 @@ test.each([
     expect(store.getState().dirty).toBe(false);
 });
 
-test("appendMove admits a legal mainline reply while the cursor stays at the root", () => {
+test("appendMove admits a legal mainline reply while the cursor starts at root", () => {
     const store = createTreeStore();
     store.getState().makeMove({ payload: parseUci("e2e4")! });
     store.getState().goToStart();

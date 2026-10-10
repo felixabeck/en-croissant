@@ -54,6 +54,68 @@ describe("warnSafely", () => {
 });
 
 describe("normalizeError", () => {
+    test("retains sanitized causes of an empty-message subscriber AggregateError", () => {
+        const error = new AggregateError([
+            new Error("Subscriber failed at /private/game.pgn token=secret"),
+        ]);
+        expect(normalizeError(error)).toEqual({
+            category: "unexpected",
+            message: "Aggregate error: Subscriber failed at [path] token=[redacted]",
+        });
+    });
+
+    test("retains both aggregate message and contained cause without a duplicate diagnostic", () => {
+        expect(
+            normalizeError(new AggregateError([new Error("Observer failed")], "Update failed")),
+        ).toEqual({
+            category: "unexpected",
+            message: "Aggregate error: Update failed | Observer failed",
+        });
+    });
+
+    test("retains nested aggregate causes and terminates cyclic aggregates", () => {
+        const inner = new AggregateError([
+            new Error("Nested failure at /private/game.pgn password=hunter2"),
+        ]);
+        const outer = new AggregateError([inner], "Publish failed");
+        inner.errors.push(outer);
+        expect(normalizeError(outer)).toEqual({
+            category: "unexpected",
+            message:
+                "Aggregate error: Publish failed | Aggregate error: Nested failure at [path] password=[redacted] | [circular]",
+        });
+    });
+
+    test.each(["", "Update failed"])(
+        "keeps an empty aggregate visible with outer message %j",
+        (message) => {
+            const normalized = normalizeError(new AggregateError([], message));
+            expect(normalized).toEqual({
+                category: "unexpected",
+                message: `Aggregate error: ${message || "Unexpected error"}`,
+            });
+            expect(errorUnlessCancelled(normalized)).toBe(normalized);
+        },
+    );
+
+    test.each(["Cancellation", "Analysis cancelled", "connection aborted"])(
+        "keeps aggregate cause %s unexpected and visible",
+        (message) => {
+            const error = new AggregateError(
+                [
+                    new Error(message),
+                    { tag: "backend-error", category: "cancellation", message: "Cancellation" },
+                ],
+                "Cancellation",
+            );
+            expect(normalizeError(error)).toEqual({
+                category: "unexpected",
+                message: `Aggregate error: Cancellation | ${message} | Cancellation`,
+            });
+            expect(errorUnlessCancelled(error)).not.toBeNull();
+        },
+    );
+
     test.each(["changed", "missing", "unusable", "permission", "too-large"] as const)(
         "carries rootFailure %s from the payload and command details",
         (rootFailure) => {

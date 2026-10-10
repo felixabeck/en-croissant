@@ -26,6 +26,7 @@ import { defaultPGN } from "@/utils/chess";
 import { defaultTree } from "@/utils/treeReducer";
 import {
   AddGameContext,
+  getAddGameLease,
   getTabTreeKey,
   isFileBackedTab,
   replaceFileGame,
@@ -1286,7 +1287,7 @@ describe("BoardAnalysis add game durability", () => {
         if (threw || treeStore.getState().sourceStamp !== "b".repeat(64)) return;
         threw = true;
         expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 3 });
-        throw new Error("Retarget follow-up failed");
+        throw new Error("Retarget follow-up failed at /private/game.pgn token=secret");
       };
       const unsubscribe =
         subscriber === "workspace"
@@ -1342,6 +1343,10 @@ describe("BoardAnalysis add game durability", () => {
         );
         const cause = mocks.notifyUnlessCancelled.mock.calls[0]?.[1];
         expect(cause).toMatchObject({ category: "unexpected" });
+        const message = `FileFreshness.AddGameMayHaveBeenAdded ${subscriber === "workspace" ? "Aggregate error: " : ""}Retarget follow-up failed at [path] token=[redacted]`;
+        expect(normalizeError(cause).message).toBe(message);
+        expect(mocks.showNotification.mock.calls[0]?.[0].message).toBe(message);
+        expect(getAddGameLease(treeStore)).toBeNull();
         expect(mocks.readGame.mock.calls.map(([, page]) => page)).toEqual([3]);
         await act(async () =>
           read.resolve({

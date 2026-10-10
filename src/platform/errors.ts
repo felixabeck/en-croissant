@@ -83,6 +83,21 @@ function errorSource(error: unknown): string {
     return safelyStringify(error);
 }
 
+function aggregateErrorSource(error: AggregateError, seen: WeakSet<object>): string {
+    if (seen.has(error)) return "[circular]";
+    seen.add(error);
+    const messages = [
+        error.message,
+        ...error.errors.map((cause: unknown) =>
+            cause instanceof AggregateError
+                ? aggregateErrorSource(cause, seen)
+                : normalizeError(cause).message,
+        ),
+    ].filter(Boolean);
+    // Keep aggregate failures visible even when every contained cause says Cancellation.
+    return `Aggregate error: ${messages.join(" | ") || "Unexpected error"}`;
+}
+
 function redactSecrets(value: string): string {
     return value
         .replace(PREFIX_SECRET_PATTERN, (_match, prefix: string) => `${prefix}[redacted]`)
@@ -203,6 +218,12 @@ export function normalizeError(error: unknown): AppError {
     if (error instanceof Error) {
         const details = (error as { details?: unknown }).details;
         if (isAppError(details)) return details;
+    }
+    if (error instanceof AggregateError) {
+        return {
+            category: "unexpected",
+            message: redact(aggregateErrorSource(error, new WeakSet())),
+        };
     }
     const source = errorSource(error) || "Unexpected error";
     return { category: classify(source), message: redact(source) };
