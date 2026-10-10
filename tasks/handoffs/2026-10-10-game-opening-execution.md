@@ -1,5 +1,7 @@
 # f-20261001-08 execution evidence
 
+Latest source checkpoint: verified R4 repairs are committed in `099bfa21`, `db6ac190` and `4ee4ff12`. Independent root proof passed 517 tests across eleven suites, 46 separate parser tests, scoped checks, full pre-review and contract. Workspace-storage and tree/path mutation scores remain 100%. Actual bundle total is 1,619,967 against unchanged 1,620,000. Full raw R4 and focused mechanism history is in `2026-10-10-game-opening-round4.md`. Source closure, pixels, real app, all fourteen native failure/restoration stages, final gates and push remain pending. Earlier phase states below are historical checkpoints.
+
 ## Current state at phase completion
 
 Implementation commit: `e72f8008`. Pixel verification, full native verification, all 13 new standalone assertion staging cases, cumulative review, final gates, push and install remain pending at this checkpoint. The finding is still open. Later sections record their outcomes.
