@@ -406,7 +406,10 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 node.clock = comment.clock;
             }
 
-            node.comment = comment.text;
+            if (comment.text) {
+                // Match starting comments: a space replaces the boundary between comment tokens.
+                node.comment = node.comment ? `${node.comment} ${comment.text}` : comment.text;
+            }
             if (comment.commands) {
                 // The space stands in for the braces around this comment, so `commands` never
                 // grows past its source.

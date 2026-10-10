@@ -298,6 +298,105 @@ function san(value: string): Token {
     return { type: "San", value };
 }
 
+function mockCommentLexer() {
+    // Match the native Visitor's tokens for these fixtures, including separate brace comments.
+    // Only lexing is replaced. parsePGN, splitPgnComment and getPGN stay real on both passes.
+    mocks.lexPgn.mockImplementation(async (source: string): Promise<Token[]> => {
+        const result: Token[] = [];
+        const words = source.matchAll(/\[([\w]+) "([^"]*)"\]|\{([^}]*)\}|[^\s(){}]+|[()]/g);
+        for (const [word, tag, value, text] of words) {
+            if (tag) result.push({ type: "Header", value: { tag, value } });
+            else if (text !== undefined) result.push(comment(text));
+            else if (word === "(") result.push({ type: "ParenOpen" });
+            else if (word === ")") result.push({ type: "ParenClose" });
+            else if (/^\$\d+$/.test(word)) result.push({ type: "Nag", value: word });
+            else if (["*", "1-0", "0-1", "1/2-1/2"].includes(word)) {
+                result.push({ type: "Outcome", value: word });
+            } else if (!/^\d+\.(?:\.\.)?$/.test(word)) result.push(san(word));
+        }
+        return result;
+    });
+}
+
+test.each([
+    { command: "[%clk 0:05:00]", annotation: { clock: 300 } },
+    {
+        command: "[%eval 0.34,61]",
+        annotation: { score: { value: { type: "cp", value: 34 }, wdl: null }, depth: 61 },
+    },
+    { command: "[%csl Ga1]", annotation: { shapes: [{ orig: "a1", dest: "a1", brush: "green" }] } },
+    { command: "[%cal Re2e4]", annotation: { shapes: [{ orig: "e2", dest: "e4", brush: "red" }] } },
+    { command: "[%evp 0,34,61]", annotation: { commands: "[%evp 0,34,61]" } },
+    { command: "", annotation: {} },
+])(
+    "prose survives a later command-only comment $command through save and reparse",
+    async ({ command, annotation }) => {
+        mockCommentLexer();
+        const source = `1. e4 {Keep this explanation} {${command}} e5 *`;
+        const parsed = await parsePGN(source);
+        const e4 = parsed.root.children[0];
+
+        expect(e4.comment).toBe("Keep this explanation");
+        expect(e4).toMatchObject(annotation);
+        const written = getPGN(parsed.root, { ...ALL_MARKUPS, headers: null });
+        expect(written).toContain("Keep this explanation");
+        const reparsed = await parsePGN(written);
+        expect(reparsed.root.children[0].comment).toBe("Keep this explanation");
+        expect(reparsed.root).toEqual(parsed.root);
+        expect(mocks.lexPgn).toHaveBeenNthCalledWith(1, source, undefined);
+        expect(mocks.lexPgn).toHaveBeenNthCalledWith(2, written, undefined);
+    },
+);
+
+test("multiple prose comments and annotations retain their placement through save and reparse", async () => {
+    mockCommentLexer();
+    const source = `[Event "Comment round trip"]
+[Site "Fixture"]
+[Date "2026.10.10"]
+[Annotator "Fixture"]
+[Start "[0,1]"]
+
+{Root first} {Root second} 1. e4 $8 {First explanation} {[%clk 0:05:00]}
+{Second explanation [%evp 1,2]} {[%eval 0.34,61]} {[%csl Ga1]} {[%cal Re2e4]}
+{Third explanation [%emt 0:00:01]} e5 {Reply first} {Reply second}
+( {Variation first} {[%evp 0,34] second} 1... c5 {Sicilian first} {Sicilian second} {[%clk 0:04:59]} ) *`;
+    const parsed = await parsePGN(source);
+    const e4 = parsed.root.children[0];
+    expect(parsed.root.comment).toBe("Root first Root second");
+    expect(e4.comment).toBe("First explanation Second explanation Third explanation");
+    expect(e4).toMatchObject({
+        clock: 300,
+        score: { value: { type: "cp", value: 34 }, wdl: null },
+        depth: 61,
+        shapes: [
+            { orig: "a1", dest: "a1", brush: "green" },
+            { orig: "e2", dest: "e4", brush: "red" },
+        ],
+        commands: "[%evp 1,2] [%emt 0:00:01]",
+        nags: [8],
+    });
+    expect(e4.children[0].comment).toBe("Reply first Reply second");
+    expect(e4.children[1]).toMatchObject({
+        san: "c5",
+        startingComment: "Variation first [%evp 0,34] second",
+        comment: "Sicilian first Sicilian second",
+        clock: 299,
+    });
+    expect(parsed.position).toEqual([0, 1]);
+    expect(parsed.headers).toMatchObject({
+        event: "Comment round trip",
+        other: { Annotator: "Fixture" },
+    });
+
+    const written = getPGN(parsed.root, { ...ALL_MARKUPS, headers: parsed.headers });
+    expect(written).toContain("First explanation Second explanation Third explanation");
+    expect(written).toContain("{Variation first [%evp 0,34] second} 1... c5");
+    const reparsed = await parsePGN(written);
+    expect(reparsed.root).toEqual(parsed.root);
+    expect(reparsed.headers).toEqual(parsed.headers);
+    expect(reparsed.position).toEqual(parsed.position);
+});
+
 test("an unmodeled command is hidden from the comment and written back on save", async () => {
     const { root } = await parseTokens([comment("[%evp 0,34,61] sofort vertreiben"), san("e4")]);
 
@@ -343,7 +442,7 @@ test("commands from several comments on one move accumulate in order", async () 
     ]);
     const e4 = root.children[0];
 
-    expect(e4.comment).toBe("second");
+    expect(e4.comment).toBe("first second");
     expect(e4.commands).toBe("[%evp 1,2] [%emt 0:00:01]");
 });
 
@@ -351,9 +450,9 @@ test("commands survive a later plain prose comment on one move", async () => {
     const { root } = await parseTokens([san("e4"), comment("[%evp 1,2] first"), comment("second")]);
     const e4 = root.children[0];
 
-    expect(e4.comment).toBe("second");
+    expect(e4.comment).toBe("first second");
     expect(e4.commands).toBe("[%evp 1,2]");
-    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain("{[%evp 1,2] second}");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain("{[%evp 1,2] first second}");
 });
 
 test("modeled commands still parse into the score, clock and shapes", async () => {
