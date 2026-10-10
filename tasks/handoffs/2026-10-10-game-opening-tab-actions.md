@@ -920,3 +920,168 @@ Limitation (confidence: 100): consolidation does not establish sufficient compre
 Read-only review. No files changed or tests run. Detection ran on the code model family. Plan authorship and arbitration shared one context.
 
 VERDICT: APPROVED
+
+
+## Final bounded round failed and root push refusal
+
+The second and LAST bounded round completed at actual supplied launch/EOS HEAD `0df48b8dfe9f88ac115c7d547bc437a5660bee5c`. Root read the complete raw report and complete launch-to-EOS three-path patch. It preserves all 114 existing callbacks and adds two meaningful behavior checks. Whole tabs.ts and Gate operation/recovery boundaries remain byte-identical. Of the 34 retained unique source-fault patches, 33 hashes are identical to round1 final-proof and autosave's patch only adapts its line context. All category names are retained. Root mechanically reconstructed all 34 exact forward/inverse patches, checked final unchanged test manifests and full 292-test restoration exits. This is integrity and retained-regression evidence, not fresh cumulative source closure. The new presentation tests are not additional counted fault categories. No independent claim that every new presentation guard has a staged fault is made.
+
+The writer retained its new real-Mantine harness matchMedia failure and a type setup failure. Its preliminary lint output was overwritten by a later local run, so that specific raw artifact is unavailable. The final static and frozen fault evidence remain intact. This limitation is retained rather than presented as a fully preserved setup history.
+
+Root independently ran the complete integrated 12-suite command and parser command. Actual results are 640 tests in 12 suites and 46 parser tests, exit 0. Scoped nine-file formatting and lint, type checks, verifier syntax and diff checks pass. Actual main frontend build passes. Canonical bundle check exits 1. Root independently imports buildBundleReport and measures entry 541012, largest lazy 517077 and total 1623042 gzip bytes against unchanged total limit1620000. The candidate remains 3042 bytes over budget. This is 266 bytes below round1, with no function-level compressed attribution. Root gate `root-tab-actions-round2-preflight.ej8okO` completed exit1 at actual launch HEAD and has a red resolution. Its complete log was read. Root intentionally rebuilt main dist only after EOS. Earlier leaf integrity claims refer to their own frozen execution intervals.
+
+The phase is FAILED under build step5's two-proof-fix-round bound and the supplied final-round contract. No third repair, design/build candidate or renamed phase evades it. The nine task-owned dirty product files stay unstaged as evidence. No source commit is made on red. Existing plan-level closures stand as plan evidence only. R5's f-20261010-18 through f-20261010-24, root f-20261010-25 and f-20261010-26 and the primary f-20261001-08 remain open. Their implementations and regression witnesses are pending current source closure and delivery. f-20261010-01 and f-20261010-02 stay separate pre-existing design obligations. No product decision is requested or attributed to Felix.
+
+Root ran the project push skill itself through its scope and refusal path. The branch is master tracking origin/master. Both remote URLs are the expected SSH felixabeck/en-croissant remote with no separate pushurl. The index is empty. All nine dirty product paths are owned by this run, so no foreign-work rationale blocks release. The 53 already-ahead commits at refusal assessment are all Codex commits with the requested drain committer email and belong in the reviewed range. They are preserved, not excluded. The actual blocker is required bundle gate red after autonomous repairs, under push-review-policy section8 and the project's push section4. The current repair tree has no source closure. Final full push gates, pixels, native verification, all fourteen runtime fault stages, push, pushed-SHA CI and installation do not run on this failed prerequisite. Earlier green pre-review/mutation/contract receipts are historical candidate evidence, not current delivery proof. No HEAD=upstream claim is made. Root's current record-only contract validation does not license release of the mixed range. The post-push ledger release exception cannot apply while inherited implementation commits remain unpushed.
+
+All child leaves have EOS. Root preserves the finding claim through this failed session for resumption. The complete final writer report follows. The original cumulative and companion histories remain linked in tasks/handoffs/2026-10-10-game-opening-execution.md, 2026-10-10-durable-page-replacement.md, 2026-10-10-durable-page-replacement-execution.md, 2026-10-10-game-opening-round4.md and 2026-10-10-game-opening-round5.md. Any successor must load those histories and this file before touching or reviewing the nine source paths. Source reviewed-through remains a210ba87797002871b705caa41d319094265a6df, not the current failed candidate. Prepared R6, pixel and native scripts are unexecuted preparation, not evidence.
+
+Plan authorship and arbitration shared one context. Detection ran on the same code model family. The configured normal and sensitive writer rungs both resolve to gpt-6.1-sol high, which supplies no model or effort separation.
+
+### Full raw final-round writer report
+
+# Tab-action source phase, second and final repair round
+
+The approved J4 local presentation and annotation consolidations are implemented. Local tests, static checks, all 34 retained unique semantic fault/restoration pairs and ownership integrity pass. The **single isolated build succeeds**, but the canonical bundle gate remains **RED**: **1,623,042 / 1,620,000 gzip bytes**, an excess of **3,042 bytes**. This is the LAST bounded repair round. No source change, second design, second build candidate or renamed phase follows this result. EOS leaves source closure blocked.
+
+Plan authorship and arbitration shared one context. Detection ran on the code model family. Both configured normal and sensitive writer roles resolve to gpt-6.1-sol high, so this round claims no model or effort separation. Root owns current integrated canonical pre-review, mutation, contract, source review and closure. Pixels, native verification, commit and push remain pending and root-owned.
+
+## Actual launch and ownership
+
+- Actual frozen launch and EOS HEAD: `0df48b8dfe9f88ac115c7d547bc437a5660bee5c`, matching the supplied final packet.
+- Actual launch and EOS index byte SHA-256: `85b16eb1f731e86d5bc910172306113c9d50cb29b2df8c26726bc1328a89b824`. The launch byte hash was captured before editing. `launch-index.txt` and `eos-index.txt` match. `eos-index.bin` is a later exact binary snapshot verified against that launch hash. HEAD and index were never mutated by this leaf.
+- All six owned paths and the three foreign peer paths were already dirty at launch. This round changed only `BoardAnalysis.tsx`, `BoardAnalysis.test.tsx` and `FileFreshnessGate.tsx`. The other three owned files remain byte-identical to round launch. All six cumulative owned modifications remain unstaged.
+- `phase-owned.patch` is the exact launch-to-EOS delta, **203 insertions and 55 deletions across three paths**. `candidate.patch` is the separate cumulative binary HEAD-to-worktree delta, including preserved foreign work.
+- Every tracked path outside the six-file assignment matches launch. Both tree paths, `utils/chess.ts`, all records, verifier/driver files, bindings, configuration and budgets remain byte-identical.
+- Root intentionally rebuilt main `dist` after the prior EOS. This round captured the actual launch manifest of 166 files and preserved it exactly. Main `dist` was not built or modified by this leaf.
+- All 19 prior scratch directories match their actual launch manifests, including `tab-actions-proof`, round1's superseded first pass, its definitive `final-proof`, rejected artifacts and every earlier red bundle. Manifests exclude linked dependencies, `node_modules`, `.git` and prohibited environment-file paths.
+- No skill, agent, tracked record edit, new production module, repository tool/config change, staging, commit, push, deployment, UI/native verification or external action occurred. No `.env` or full project `CLAUDE.md` was read. Manual source and scratch proof-script/report edits used `apply_patch`.
+
+`launch.json`, `starting/`, the launch/EOS index and status listings, `eos-head.txt` and full manifests retain actual ownership evidence.
+
+| Protected peer | Launch and EOS SHA-256 |
+| --- | --- |
+| `src/state/store/tree.ts` | `b36532534443a1d44fb4fb49c5638cd782fb801b113c5072c6f86f022d549300` |
+| `src/state/store/tree.test.ts` | `7031b80f89e000ab83e2775f95c1326cf4fd438c530edd7cc1e4a0b6c3e1203e` |
+| `src/utils/chess.ts` | `07ea714be999ba44c80b8b451f4df8fef96eb6c4a9a6431a68dfc585bf468906` |
+
+| Path | Final SHA-256 |
+| --- | --- |
+| `src/components/boards/BoardAnalysis.test.tsx` | `e1ebd7c2f18f98ac8520734b9413fa31875d59e33be3e7f5bd50c76b19469a71` |
+| `src/components/boards/BoardAnalysis.tsx` | `c00c2ecc68bfaaddecee7ca80c0c65a9f7335f1d6cacc9a8d3839ca10dc18765` |
+| `src/components/tabs/FileFreshnessGate.test.tsx` | `5550a5f0fd53480f4ded1ee943aa6cff651f989b40e3eb0698cf37e33c72f45c` |
+| `src/components/tabs/FileFreshnessGate.tsx` | `6accff92e4fdbe91ac8c82f6334527e5c84c4b6b66e2d9bc34d8e1cee029bd3a` |
+| `src/utils/tabs.test.ts` | `52c3c6ba9bbae33843d91174dd6ad29cfe3551c80e7ddb2eb384900b8e0a787e` |
+| `src/utils/tabs.ts` | `dbc3f069798dc4c31d87eb32f62b8357a8be4d8925b3d88aa124cb6494c3fbfc` |
+
+## Implemented mechanism
+
+`BoardAnalysis` now renders the five genuine tab headings through one local mapping. Each translated title remains an explicit literal `t("Board.Tabs.…")` call. Practice remains conditional on repertoire metadata and first in the heading order. Analysis, Database, Annotate and Info retain their order and icons. No heading wrapper or generic tab framework was introduced.
+
+Existing Mantine `Tabs.styles.panel` owns `flex:1` and `overflowY:"hidden"` for every existing panel. The installed real `TabsPanel` consumes `ctx.getStyles("panel", …)`. The five panel declarations and their ordering remain explicit. InfoPanel keeps its Add Game callback, `keepMounted={false}` remains in place, and inactive panel children still unmount. The real Mantine behavior witness verifies resulting panel styles and Add Game child mounting rather than copying the style object into an expectation.
+
+One local annotation dispatch owns the practice-rating guard for all six literal key bindings and glyphs. The three consecutive Database/Annotate/Info shortcuts share tuple-to-handler mapping. The Analysis shortcut remains explicit to preserve the original registration order around the distinct report handler. Practice retains its explicit repertoire restriction. Report retains analysis selection, report selection, modal opening and `preventDefault`. All engine, Save and Clear Shapes handlers are unchanged.
+
+The Gate selects appending, unverified or overdue content inside one full-height centered Stack. Appending retains Loader and Adding Game. Unverified retains the checking Loader or existing diagnostic and Retry callback. Overdue retains File Not Responding. Fragments introduce no DOM node. The wrapper, withheld children and verified provider remain unchanged. The separate recovery panel and its children are byte-identical.
+
+**Complete `tabs.ts` is byte-identical to launch**, including O1/O2, the narrow context, independent cached-store/generation lease, subscription operations, Add Game continuation and entire Save suffix. Gate source before the changed status branch is byte-identical. `runAction`, reload, recovery Save As New Game and its registration are byte-identical, as is the recovery rendering suffix. No workspace operation, cancellation authority, guard, diagnostic or wording was removed or rewritten.
+
+All O1–O4 contracts remain retained: actual provider-local lookup and durable refusal, logical/effective physical ownership, independent synchronous admission, remount presentation despite competing Save, identity-checked release, independent stores, inactive terminal completion, replacement/removal suppression, current metadata, count retry, uncertainty, dirty confirmation and save continuation. Recovery retains its distinct captured payload, persistent appendAttempted marker, retry prohibition, actual registered-handler failure and native runAction cancellation.
+
+## Reads, earlier rejection and scope
+
+Read the complete current tracked handoff, final revision3 body and cumulative approved plan/reviews, all six named rule files, initial and round1 reports, root rejection, J3 and both complete focused J4 judgments, definitive round1 final-proof runner/evidence and exact named decisions. Reopened complete owned production sources and Board/Gate tests and retained the prior complete six-path and integration reads in this same writer context. Installed Mantine panel and native hotkey item APIs were traced read-only.
+
+Root's round1 independent 638 tests plus 46 parser tests, green static/build checks and red 1,623,308-byte total are historical candidate evidence. Root inspected all 34 definitive round1 categories and accepted the strengthened count publication and newer Save revision observations. This does not establish acceptance of this new source candidate or its current integrated gates.
+
+The initial identity-only `count-result-owner` patch remains root-rejected and untouched. Round1's preliminary proof pass remains superseded by its definitive final-proof. Neither is counted again. The real synchronous updateTab path and genuine outer post-count guard remain unchanged in this round. The current fault still exposes actual obsolete replacement `numGames` publication from 3 to 99. The newer-Save fault still exposes saved revision changing to original-revision.
+
+## Local and retained test proof
+
+Exact command, used for final local, disposable baseline and **every full restoration**:
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/boards/BoardAnalysis.test.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts
+```
+
+Final local result: **292 tests in six suites, exit 0**, retained in `local-final.log` and `.exit`. Scoped six-file `pnpm exec oxfmt --check`, `pnpm exec oxlint --deny-warnings`, `pnpm exec tsgo --noEmit` and `git diff --check` all exit 0. `run-local.sh` and `run-static.sh` retain exact command arguments and separate full final logs/exits. No heavy canonical gate was queued.
+
+All 114 existing test callback definitions are byte-identical to round launch. The original 96 callback bodies also remain byte-identical. AST proof is retained in `retained-tests.mjs`, `.json`, log and exit 0. No retained assertions or helpers were weakened or deleted. Two new callback definitions add two actual behavior witnesses:
+
+1. All six registered annotation handlers mutate the real cached tree to their expected NAG and dirty state. Practice correct/rating blocks every handler. Practice waiting and correct outside practice allow annotation.
+2. Real installed Mantine Tabs render existing heading order and conditional repertoire practice, retain actual panel flex/overflow, unmount InfoPanel's Add Game child outside Info, execute all ordinary panel shortcuts, reject practice for ordinary games, admit repertoire practice and preserve report's distinct transitions and prevented default event.
+
+Existing meaningful Gate tests cover appending, unverified checking/error, actual retry presentation and overdue withholding. The composed real Board/Gate/provider/cached-tree tests remain unchanged and run in every full restoration. New Mantine tabs are enabled only in the new behavior witness. All existing composed witnesses still use their original component boundaries.
+
+The first local run exposed the new real Mantine harness's absent matchMedia. Its raw failure remains in `local-first.log`, followed by passing `local-second` and final local. A scoped lint warning arose from a wrapped vi.mocked chain in new tests, then optional-child mock types failed tsgo. Both were corrected only in the new harness. `static-before-type-fix/` retains the type failure. The preliminary lint log was overwritten by the subsequent local scoped run, so its original raw output is available in the conversation rather than a separate retained log. This is a local setup evidence-retention limitation. Final static evidence and all fault/restoration evidence are complete. No fault candidate or frozen test was changed for these setup corrections.
+
+## Fresh disposable proof and 34 unique categories
+
+`head.tar` is a Git archive of the actual frozen launch HEAD. `candidate.patch` is the exact binary worktree delta. A fresh disposable candidate was extracted from those artifacts, validated with `git apply --check`, applied with `git apply`, and linked only to existing dependencies. Its source/test manifests match main. Final tests froze before baseline and fault execution.
+
+Complete manifests cover **519 source/assets/scripts files** and **205 test files**. Each category retains its unique production-only forward patch, apply_patch input/log, exact selected command JSON with cwd/timestamps/same-run exit, full test log, named semantic diagnosis, fault source/test manifests, inverse patch and restore log, restored source/test manifests and full selected-command restoration log/exit. Faults never touched main source. All 34 current production patch hashes are unique. Final tests stayed unchanged throughout.
+
+Every category produced a named outward semantic **FAIL** with `AssertionError`, **exit 1**, and no unhandled infrastructure errors or zero-selected run. Every exact restoration passed the FULL **292-test command, exit 0**. Writer inspected all target diagnoses. Examples include two admitted parses, wrongly exposed pending Board, failed inactive appended origin, an obsolete native write, overwritten replacement tree/header/stamp, actual count 3→99, replacement verified→unverified, saved→original-revision, lost notification, cleared dirty and incorrect registered recovery failure. Equal-content identity-only failures are not used as target proof.
+
+| Final fault | Meaningful guarantee or witness |
+| --- | --- |
+| `shared-physical-owner` | Real physical replacement affects shared recovery, Save and Add Game authority |
+| `shared-logical-owner` | Logical identity comparison result |
+| `provider-local-lookup` | Actual provider-local tab data, not default-store data |
+| `shared-durable-refusal` | Refused durable update result remains observable |
+| `synchronous-admission` | Two parses become admitted if acquisition is delayed |
+| `freshness-independent-admission` | Competing Save causes a second parse if freshness governs admission |
+| `remount-pending-presentation` | Verified Save status incorrectly exposes the pending Board |
+| `generation-admission` | A newer generation is incorrectly prevented from parsing |
+| `identity-checked-release` | Obsolete release exposes a still-pending newer Board |
+| `independent-store-admission` | Shared singleton admission breaks independent owner presentation |
+| `inactive-workspace-completion` | A surviving inactive owner fails to receive the appended origin |
+| `cached-store-owner` | Retired store starts an obsolete native append |
+| `obsolete-view-notifications` | An absent Gate emits an obsolete operation notification |
+| `parse-owner-before-write` | Physically replaced owner starts an obsolete native append |
+| `write-result-owner` | Replacement tree content is overwritten by obsolete blank completion |
+| `count-result-owner` | Replacement `numGames` changes from 3 to obsolete 99 |
+| `count-settlement-owner` | Replacement verified freshness becomes unverified |
+| `parse-terminal-state` | Parse failure leaves appending instead of terminal presentation |
+| `newer-save-freshness` | Saved revision becomes the captured original revision |
+| `add-game-origin-durability` | Refused durable origin incorrectly installs verified blank completion |
+| `blank-tree-installation` | Blank tree and returned stamp fail to install |
+| `current-file-metadata` | Live file metadata is replaced by old metadata |
+| `save-shared-source-owner` | Retained stale source continuation changes replacement diagnostics |
+| `save-first-source-outcome` | Retained first-source outcome permits obsolete continuation |
+| `save-post-picker-source-outcome` | Retained second-source outcome permits another source operation |
+| `save-picker-owner` | Retained obsolete picker result continues destination work |
+| `save-destination-owner` | Retained obsolete destination result starts native write |
+| `save-completion-owner` | Retained database owner completion resets newer content dirty state |
+| `save-database-dirty` | Retained database save marks newer edited content clean |
+| `save-autosave-failure` | Retained current-owner typed autosave failure disappears |
+| `save-catch-entry-owner` | Retained obsolete Save rejection changes replacement freshness |
+| `recovery-reload-rejection` | Retained obsolete reload rejection marks replacement unavailable |
+| `recovery-append-rejection` | Retained registered rejection alters persistent uncertainty state |
+| `recovery-append-fulfillment` | Retained obsolete unknown outcome publishes an incorrect recovery panel |
+
+Shared physical ownership counts once, including retained fulfilled reload, Save and composed Add Game witnesses. All nine retained Save categories and the other three distinct recovery categories remain present. No duplicate patch, manufactured guard or test mutation inflates the 34 count. Prior candidates' pairs are not added to the current total. Presentation changes required no changed semantic fault anchors. Actual patch contexts adapt naturally to the new source line positions.
+
+`proof.log`, `fault-pairs.json`, `proof-integrity.json` and `proof.exit` retain the completed loop. `verify-evidence.py` independently reconstructs every forward and inverse patch, verifies unique hashes, semantic diagnoses, same-run exits, every full 292 restoration, complete test manifests, and exact restored sources. Explicit count 3/99 and saved/original-revision checks pass. `pre-bundle-integrity-final` passes before building. `evidence-integrity` passes after building, both exit 0. It checks complete tabs.ts, unchanged Gate operation/recovery boundaries, main/disposable/bundle equality, protected tracked paths, HEAD/index, prior directories and main dist. Mechanical reconstruction is integrity evidence, not independent semantic endorsement. Root owns current source and semantic acceptance.
+
+The earlier `pre-bundle-integrity.log` inherited an inaccurate final label saying all three copies while only main and the disposable copy existed. Its actual checks passed only those two. The label was corrected in the scratch verifier and `pre-bundle-integrity-final` rerun before building. That first log is retained as historical output, not three-copy evidence. Final post-build verification checks all three copies.
+
+## One isolated build, actual measurement and EOS blocker
+
+Only after final local, all 34 semantic pairs and pre-build integrity, a separate fresh Git-derived bundle candidate was reconstructed from the same actual HEAD archive and binary delta. Exactly one `pnpm build-vite` was run there. Source and test manifests match before/after. Main dist remains unchanged.
+
+| Command or metric | Actual same-run result |
+| --- | --- |
+| `pnpm build-vite` | Exit0 |
+| Canonical `pnpm bundle:check` | **Exit1** |
+| Imported actual `buildBundleReport` from `scripts/check-bundle-budget.mjs` | Exit0 |
+| Entry | **541,012 / 550,000** gzip bytes |
+| Largest lazy | **517,077 / 550,000** gzip bytes, `src/routes/index.lazy.tsx` |
+| Total | **1,623,042 / 1,620,000** gzip bytes |
+| Excess | **3,042** gzip bytes |
+
+Complete build/check/measurement commands, timings, logs, same-run exits, actual measurement JSON, before/after manifests and `bundle.receipt.json` are retained. `bundle.exit` is 0 because the runner retained the requested evidence successfully, not because the budget passed. The receipt records build 0, canonical check 1 and measurement 0 explicitly.
+
+The missing premise is that the approved repeated local presentation consolidation supplies enough net emitted-byte reduction to meet the unchanged total budget while preserving the required independent lease/subscription, workspace continuation and view adapter. The complete candidate is 266 gzip bytes below the measured round1 total, but remains 3,042 bytes above the limit. That is a whole-candidate comparison, with no per-function attribution or assumed savings. No compiler directive, compression spelling/order manipulation, minifier/configuration change, loading split, budget adjustment or removed safety protection was used.
+
+The last-round bound is binding. Source changes and all builds stopped immediately after this red result. Final verified ownership was checked at EOS. The owned cumulative six-path delta remains unstaged, with only the three approved paths changed in this round. There is no current source closure, integrated canonical mutation/contract claim or runtime/push claim. Root must stop the phase on this failed budget prerequisite under the supplied bound.
