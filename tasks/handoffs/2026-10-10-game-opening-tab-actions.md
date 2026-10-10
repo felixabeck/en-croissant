@@ -695,3 +695,228 @@ VERDICT: APPROVED
 ```
 
 Root disposition: Fix the rejected count-result witness and relocate the existing workspace operation and narrow context to tabs.ts, keeping the gate view adapter and lease subscription. Both focused judgments APPROVED this implementation boundary, without approving bundle acceptance. O1-O4 and the final revision3 plan are unchanged. This is proof-fix round1 of the new tab-action phase, with at most one measured final candidate. Initial raw evidence remains intact. No source closure, current mutation acceptance, pixels, native or push claim follows from this record. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+
+## Tab-action source phase, first repair round and final-round boundary
+
+The actual first-round launch and EOS HEAD were `2b843dbb8b9a2041cb7696676353da08c6dfac8f`. Root omitted the promised separate final SHA line from the prompt. The writer independently captured the actual launch HEAD and index, which remained unchanged until EOS. This is a packet omission, not a retroactive approval or an authority change. The next prompt must contain its actual launch SHA before launch.
+
+Root read the full final report, final four-path patch and current production paths. The definitive evidence is `tab-actions-round1/final-proof`, not the superseded first pass. Root inspected all 34 unique final fault patches and meaningful target diagnoses, including physical replacement reload, Save and Add Game. The count fault now publishes 99 instead of 3 and the newer Save fault overwrites `saved` with `original-revision`. All selected 290-test restoration runs pass with unchanged final tests. Existing 96 callback bodies remain unchanged. One additional assertion was strengthened to check revision value before identity. Mechanical evidence reconstruction is separately verified and does not alone establish semantic quality.
+
+Root independently ran 638 tests in 12 suites and 46 parser tests, scoped formatting, lint, type checks, syntax checks, diff checks and a real build. All passed. The canonical bundle check failed. The actual bundle is entry 541018, lazy 517330 and total 1623308 gzip bytes against the unchanged 1620000 limit. The 120-byte reduction is a whole-candidate measurement and is not attributed to a function. Gate `root-tab-actions-round1-preflight.U3RDWV` completed with exit 1 at the actual launch HEAD and has a red resolution. Root intentionally rebuilt main dist after leaf EOS. The leaf's unchanged-dist evidence applies only to its own launch-to-EOS interval.
+
+No current source closure, pixels, native verification, commit of the nine product files or push is established. The two focused J4 judgments below approve only the prospective local consolidation, not bundle sufficiency or cumulative source closure. Root adopts both with Fix. Preserve explicit practice eligibility, literal translations, panel order, InfoPanel Add Game placement, hotkey bindings and special-handler policies. Use Mantine's existing panel style API and one shared centered status shell. Preserve domain operations and all Save, recovery and lease contracts. Do not create a generic framework or change compiler, minifier, loading, budgets or floors.
+
+The next resume is the second and final repair round of this frozen source phase. It uses the sensitive role. Both configured writer rungs currently resolve to gpt-6.1-sol high, so this does not claim a different model or effort. One final isolated candidate build follows local and fault proof. If the bundle remains red, stop this phase under the two-round bound. No third round or renamed successor phase may evade that bound. The project push skill remains root-owned and cannot release known-red source.
+
+Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Raw final round-one writer report
+
+# Tab-action ownership proof-fix round1
+
+The approved lifetime/cohesion relocation and meaningful count proof are implemented. Final local tests, scoped static checks, fault/restoration proof and ownership integrity pass. The round's **single isolated build succeeds**, but canonical `pnpm bundle:check` remains **RED**: **1,623,308 / 1,620,000 gzip bytes**, an excess of **3,308 bytes**. Source closure is blocked. No source change, second design or second build candidate followed that result.
+
+The definitive final proof is under **`final-proof/`**. Top-level candidate, fault logs and manifests are the retained first proof pass, superseded for final-candidate evidence after strengthening one Save witness. They must not be mistaken for the final test freeze or counted as additional unique pairs. This remains one bounded proof-fix round of unchanged O1–O4, not another R5 iteration.
+
+Plan authorship and arbitration shared one context. Detection ran on the Codex code model family. Focused J3 approvals cover the relocation boundary, not bundle acceptance. Root source review, current integrated canonical pre-review/mutation/contract, pixels, native verification, commit and push remain pending. There is no root acceptance claim for either the initial 34 pairs or the current 34 pairs.
+
+## Actual launch, scope and ownership
+
+- Actual Git launch and EOS HEAD: `2b843dbb8b9a2041cb7696676353da08c6dfac8f`.
+- Actual index SHA-256 at launch and EOS: `3a2cd68703c41f6819f6d00047d5b9c165c3021d6338afad8f3c2d3e45f4f5ec`.
+- `launch-index.txt` and `eos-index.txt` are identical. This leaf never wrote HEAD or index.
+- A separate promised launch/freeze packet did not arrive. The launch value was read from Git and snapshotted before source edits. EOS verifies the same actual HEAD and index. No historical SHA was used as launch authority.
+- The six owned paths and the three protected peer paths were already dirty at launch. This leaf changed only four of the six owned paths in this round. `src/utils/tabs.test.ts` and `src/components/tabs/FileFreshnessGate.test.tsx` are byte-identical to round launch.
+- `final-phase-owned.patch` is the round's exact launch-to-EOS delta: **201 insertions and 174 deletions across four paths**. It is distinct from the cumulative HEAD-to-worktree delta and from the retained first-pass `phase-owned.patch`.
+- Every tracked path outside the six-path assignment matches launch, including the three dirty peer paths, records, configuration, budgets, bindings, verifier and driver files.
+- The main `dist` was intentionally rebuilt by root after the initial leaf EOS. This round recorded that actual launch `dist`, containing 166 files, and preserved it exactly. It did not compare against the old leaf interval or build into main `dist`.
+- All **18** prior scratch-directory manifests match launch: the earlier 17 directories plus `tab-actions-proof`. Dependency symlinks, `node_modules`, `.git` and prohibited `.env` entries are excluded. Earlier reports, raw rejected patches, fault logs, restoration logs and red bundles remain intact.
+- No skill, agent, tracked record edit, stage, commit, push, deployment, UI/native verification or external action was performed. `.env` files and full project `CLAUDE.md` were not read. Manual source and scratch script edits used `apply_patch`.
+
+The launch snapshot is `launch.json` with exact owned launch bytes in `starting/`. The copied final-proof launch snapshot retains the same original launch, not a later invented baseline.
+
+Protected peer SHA-256 values at launch and EOS:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/state/store/tree.ts` | `b36532534443a1d44fb4fb49c5638cd782fb801b113c5072c6f86f022d549300` |
+| `src/state/store/tree.test.ts` | `7031b80f89e000ab83e2775f95c1326cf4fd438c530edd7cc1e4a0b6c3e1203e` |
+| `src/utils/chess.ts` | `07ea714be999ba44c80b8b451f4df8fef96eb6c4a9a6431a68dfc585bf468906` |
+
+Final owned hashes are retained in `final-proof/frozen-owned.sha256.json`:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/utils/tabs.ts` | `dbc3f069798dc4c31d87eb32f62b8357a8be4d8925b3d88aa124cb6494c3fbfc` |
+| `src/utils/tabs.test.ts` | `52c3c6ba9bbae33843d91174dd6ad29cfe3551c80e7ddb2eb384900b8e0a787e` |
+| `src/components/boards/BoardAnalysis.tsx` | `4b06d3d77740c2ad9af83ab6d9d5e5c14aa369cdf2fe61f5fa0bc89ab5a7309f` |
+| `src/components/boards/BoardAnalysis.test.tsx` | `4f17eb413330d5a6d213fe5c219a36bdc2b31b051fd0cc7f6bcb97943a9d7aea` |
+| `src/components/tabs/FileFreshnessGate.tsx` | `3cbe4ea58ab2accd63046bc78cec90f1ee2d1d0d36b6a0c823ed6ffd0d8ca849` |
+| `src/components/tabs/FileFreshnessGate.test.tsx` | `5550a5f0fd53480f4ded1ee943aa6cff651f989b40e3eb0698cf37e33c72f45c` |
+
+## Source mechanism and preserved contracts
+
+`tabs.ts` now owns the existing Add Game narrow context, captured ownership predicate, transient cached-store/generation lease operations, and plain asynchronous `appendBlankGame` operation. The operation accepts the existing provider-local live lookup and durable update callbacks, cached tree store, localized messages and a reporting callback. Localized messages are presentation data, not a configurable operation policy. No module, factory, generic transaction layer or persisted state was added.
+
+`FileFreshnessGate` retains the small view adapter. It subscribes with `useSyncExternalStore`, reflects the live lease independently of mutable freshness, translates existing messages, and gates notifications using its existing view ref. The domain operation checks workspace ownership before reporting. Workspace continuation does not depend on the gate mounting or on recovery cancellation. `BoardAnalysis` imports the narrow context from its existing `tabs.ts` dependency, eliminating the renderer-to-Gate context dependency. Its button, dirty confirmation, ordinary Save, save continuation and notification contract are unchanged.
+
+Admission remains synchronous before parsing, store-specific and captured-generation-specific. Identity-checked release cannot clear a newer lease. A surviving inactive workspace owner completes. Removed, physically replaced or retired-store owners publish nothing and start no obsolete continuation write. Competing Save may publish freshness without releasing Add Game admission. Parse failure restores only its own exact claim. Save stamp, revision and diagnostics remain preserved. Unknown native outcomes, count/write failures and origin durability refusal settle truthfully. Successful blank-tree installation preserves current unrelated metadata.
+
+The shared provider-local hook and common logical/effective-physical comparison from O1/O2 are retained. Save still composes its stricter origin contract. File/page, legacy effective-key fallback, cached-store, replacement, discard and durability policies remain intact.
+
+All existing `tabs.ts` implementations from `type StagedAdmissionResult` to EOF are byte-identical to round launch. This covers tab creation/replacement, snapshot/discard admission and the complete Save implementation with its physical-generation, source-null, source reads, picker/destination, database dirty, typed catch, unknown-write, metadata and origin behavior. The entire Gate suffix from `runAction` to EOF is also byte-identical. Recovery reload, Save As New Game payload, persistent `appendAttempted`, uncertainty retry prohibition, registered-handler error propagation and actual native cancellation are retained exactly. No diagnostic, wording, configuration, compiler directive, load split, minifier option or budget was changed.
+
+## Synchronous count trace and repaired witness
+
+The redundant count callback check was removed after tracing the real path:
+
+1. The native count promise resolves, then `appendBlankGame` checks captured ownership.
+2. `useTabActions.updateTab` immediately calls `updateTabById`.
+3. `updateTabById` calls the provider's `useSetAtom(tabsAtom)` setter. Installed `jotai/react.js` returns `store.set.apply(...)` directly.
+4. The `tabsAtom` write handler synchronously reads the current workspace and invokes `update(workspace.tabs)`. `tabs.map` immediately invokes the matching tab callback.
+5. `commitWorkspaceAtom` and `saveWorkspace` validate and serialize that result, call synchronous storage, then publish the acknowledged workspace.
+
+There is no await or asynchronous gap between the outer post-count owner check and the callback invocation. The outer check is the real asynchronous publication barrier. The inner callback's duplicate logical/physical/file/page check was redundant. Removing it is an implementation simplification, not a proof-specific branch. The durable setter still exposes refusal.
+
+The real replacement helper now asserts replacement origin content before its existing array-identity assertion. The final `count-result-owner` patch removes only the genuine post-count barrier. Its retained diagnosis is:
+
+```text
+FAIL ... composed durable physical-only replacement silences obsolete Add Game count-success
+AssertionError: expected ... to deeply equal ...
+- "numGames": 3
++ "numGames": 99
+```
+
+This is actual obsolete replacement metadata publication through the real provider and durable workspace path. It is not an equal-content array-reference change. Existing workspace-byte, tree-byte, freshness, metadata and notification assertions remain in place. `count-settlement-owner` separately exposes verified replacement freshness being changed to unverified after a rejected obsolete count.
+
+## Reads and historical rejection
+
+Read all six named rule files completely, the full initial REPORT, root count rejection, complete focused minimalism and root-cause J3 reports, entire latest tracked handoff and the real frozen revision3 body. The initial prompt and approved revision3 contract remain binding. Exact named decisions and relevant synchronous workspace/Jotai execution were read. The six sources/tests match their prior EOS before this round, and their previously completed integration reads remain applicable. The configured React compiler in `vite.config.ts` was inspected read-only. Its existence provides no per-function compressed-byte attribution or savings promise.
+
+Root's initial integrated evidence, 638 tests in 12 suites plus 46 parser tests and green static/build checks with red total 1,623,428, remains historical evidence for that candidate. This leaf did not rerun or claim those current integrated gates.
+
+The initial `tab-actions-proof/count-result-owner` patch and identity-only failure are retained exactly and remain **root-rejected**. The original report's claimed acceptance is historical, not a current root acceptance. The earlier rejected broad provider-global attempt also remains intact under the initial proof directory. Neither rejected artifact is counted in this round's final pairs.
+
+During this round's first full fault pass, diagnosis inspection found the newer-Save freshness witness also failed first on object identity. The underlying production fault restores an old revision. An additional revision-value assertion was added before the retained identity/content checks, after every first-pass source had been exactly restored. A fresh final Git-derived candidate was then reconstructed, final tests were frozen, and **all 34 categories were rerun**. No test changed during either candidate's faulting. The first pass and its raw logs/manifests are preserved at the report's parent directory. Its pairs are superseded as final-candidate evidence and are not counted again.
+
+The final newer-Save diagnosis now reports `Expected: "saved"`, `Received: "original-revision"`. It exposes a lost Save revision value. No retained test, assertion, diagnostic or guard was deleted or weakened.
+
+## Final local and fault proof
+
+Exact selected command for final local, disposable baseline and every restoration:
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/boards/BoardAnalysis.test.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts
+```
+
+`final-proof/local-final.log` and `.exit`: **six files, 290 tests passed, exit 0**. Scoped six-file `oxfmt --check` and `oxlint --deny-warnings`, `tsgo --noEmit`, and `git diff --check` all exit 0. Exact commands and separate logs/exits are retained in final-proof scripts and artifacts. The initial relocation also passed the same 290 tests and static checks, retained separately. No heavy canonical gate was queued.
+
+All O1–O4 composed real Board/Gate/provider/cached-store witnesses are retained: withholding and blank completion, absent-gate completion, remount during held parse, synchronous duplicate admission, actual ordinary Save hotkey overlap, Save failure/status diagnostics, generation/release, independent owners, inactive terminal outcomes, actual durable physical replacement and removal at parse/write/count, byte and metadata preservation, active controls, obsolete-view silence, count retry and truthful uncertainty. The inherited global persistence refusal notification remains distinct from the silenced obsolete Add Game view notification.
+
+AST comparison in `final-proof/retained-tests.mjs` and `.json` verifies all **96 original callback bodies byte-identical**. Of the **114 callback definitions at round launch**, **113 are byte-identical and one is strengthened only by the added revision assertion**. There are no deleted definitions or added definitions in this round. The replacement-origin assertion strengthens the existing helper without changing those callback bodies.
+
+`final-proof/head.tar` archives the actual launch HEAD. `candidate.patch` is the exact binary HEAD-to-worktree delta, including preserved peer work. Both the disposable fault candidate and the separate bundle candidate were reconstructed from those artifacts with `git apply --check` and `git apply`. Only the permitted dependency symlink was added. Faults were applied only in the disposable candidate with `apply_patch`, never in main source.
+
+Complete manifests cover **519 production/source/assets/scripts files** and **205 test files**. Every final pair retains its production-only patch, apply input/log, exact command JSON with timing and same-run exit, faulted source/test manifests, full test log and semantic diagnosis, exact inverse restoration/log, restored manifests and full selected-command log/exit.
+
+There are **34 unique final production-only pairs**, counted once. All have a named semantic `FAIL`, `AssertionError` and same-run **exit 1**, with unchanged final tests. Every exact restoration passes the **full 290-test command, exit 0**. No empty selector, unrelated parent failure, or equal-content identity-only diagnosis is accepted as final evidence. Integrity checking is not an independent endorsement of semantic quality. The writer inspected the retained diagnoses, and root owns final semantic acceptance.
+
+| Final fault | Meaningful guarantee or witness |
+| --- | --- |
+| `shared-physical-owner` | Real physical replacement affects shared recovery, Save and Add Game authority |
+| `shared-logical-owner` | Logical identity comparison result |
+| `provider-local-lookup` | Actual provider-local tab data, not default-store data |
+| `shared-durable-refusal` | Refused durable update result remains observable |
+| `synchronous-admission` | Two parses become admitted if acquisition is delayed |
+| `freshness-independent-admission` | Competing Save causes a second parse if freshness governs admission |
+| `remount-pending-presentation` | Verified Save status incorrectly exposes the pending Board |
+| `generation-admission` | A newer generation is incorrectly prevented from parsing |
+| `identity-checked-release` | Obsolete release exposes a still-pending newer Board |
+| `independent-store-admission` | Shared singleton admission breaks independent owner presentation |
+| `inactive-workspace-completion` | A surviving inactive owner fails to receive the appended origin |
+| `cached-store-owner` | Retired store starts an obsolete native append |
+| `obsolete-view-notifications` | An absent Gate emits an obsolete operation notification |
+| `parse-owner-before-write` | Physically replaced owner starts an obsolete native append |
+| `write-result-owner` | Replacement tree content is overwritten by obsolete blank completion |
+| `count-result-owner` | Replacement `numGames` changes from 3 to obsolete 99 |
+| `count-settlement-owner` | Replacement verified freshness becomes unverified |
+| `parse-terminal-state` | Parse failure leaves appending instead of terminal presentation |
+| `newer-save-freshness` | Saved revision becomes the captured original revision |
+| `add-game-origin-durability` | Refused durable origin incorrectly installs verified blank completion |
+| `blank-tree-installation` | Blank tree and returned stamp fail to install |
+| `current-file-metadata` | Live file metadata is replaced by old metadata |
+| `save-shared-source-owner` | Retained stale source continuation changes replacement diagnostics |
+| `save-first-source-outcome` | Retained first-source outcome permits obsolete continuation |
+| `save-post-picker-source-outcome` | Retained second-source outcome permits another source operation |
+| `save-picker-owner` | Retained obsolete picker result continues destination work |
+| `save-destination-owner` | Retained obsolete destination result starts native write |
+| `save-completion-owner` | Retained database owner completion resets newer content dirty state |
+| `save-database-dirty` | Retained database save marks newer edited content clean |
+| `save-autosave-failure` | Retained current-owner typed autosave failure disappears |
+| `save-catch-entry-owner` | Retained obsolete Save rejection changes replacement freshness |
+| `recovery-reload-rejection` | Retained obsolete reload rejection marks replacement unavailable |
+| `recovery-append-rejection` | Retained registered rejection alters persistent uncertainty state |
+| `recovery-append-fulfillment` | Retained obsolete unknown outcome publishes an incorrect recovery panel |
+
+The inactive-completion fault now uses the actual admission's live subscriber count to wrongly tie completion to a mounted view. No view authority was added to production for faulting. Relocated domain faults target `tabs.ts` and select their real Board witnesses. Gate view and recovery faults remain in the Gate. The shared physical guard is counted once even though it covers the prior physical reload category plus Save/Add Game. All nine prior Save categories and the other three recovery categories remain distinct. The final 34 are not added to the first pass's 34 or historical initial pairs.
+
+`final-proof/fault-pairs.json` records exact unique patch hashes, fault-source hashes, selected witnesses, named failure lines and exits. `proof-integrity.json` and `proof.exit` are green. `verify-evidence.py` independently reconstructs each patch, reverses it, verifies full manifests and all full restoration commands, explicitly checks count 3 versus 99 and saved versus original revision diagnoses, and compares main, disposable and bundle copies. It also verifies retained assertions, byte-identical pre-existing tab utility implementations and recovery suffix, HEAD/index, protected peers, prior artifacts and main `dist`. `evidence-integrity.exit` is **0**. This is integrity evidence, with root semantic acceptance still pending.
+
+## One isolated build, measured blocker and EOS
+
+Only after final local and all final fault/restoration proof completed, a separate isolated Git-derived bundle candidate was built once. Main source and final tests remained frozen and source/test manifests match before and after the build.
+
+| Final command or measurement | Actual result |
+| --- | --- |
+| `pnpm build-vite` | Exit 0 |
+| canonical `pnpm bundle:check` | **Exit 1** |
+| imported actual `buildBundleReport` from `scripts/check-bundle-budget.mjs` | Exit 0 |
+| Entry | **541,018 / 550,000** gzip bytes |
+| Largest lazy | **517,330 / 550,000** gzip bytes, `src/routes/index.lazy.tsx` |
+| Total | **1,623,308 / 1,620,000** gzip bytes |
+| Excess | **3,308** gzip bytes |
+
+The exact build, check and measurement commands, timing, complete logs, same-run exits, actual report, receipt and source/test manifests are in `final-proof/`. `bundle.exit` is 0 because the runner successfully retained all measurement and integrity evidence. It does **not** mean the budget passed. The receipt explicitly records build 0, canonical check 1, measurement 0 and unchanged sources/tests.
+
+The missing premise is that the approved component/domain relocation alone provides enough net emitted-byte reduction while preserving the required operation, lease subscription, context and view adapter. The source now has that plain domain boundary, but the actual unchanged total limit still fails. Configured React Compiler evidence justified inspecting the boundary and never established compressed savings or per-function attribution. This artifact measures only the complete candidate. No estimate, spelling/order manipulation, loading trick, compiler directive, minifier/configuration change or baseline adjustment was used.
+
+The first red bundle and every earlier red artifact remain intact. There was exactly one build in this round, after the final proof freeze. No source or design iteration followed it. The verified owned delta remains unstaged with the protected peer work unchanged. Root must arbitrate the red budget premise before current integrated gates and source closure can be claimed. Pixels, native behavior, commit and push remain separate root-owned stages.
+
+### Raw focused minimalism J4 judgment
+
+No new bloat or duplication defect in the proposed consolidation. These are genuine repetitions with concrete existing consumers.
+
+The smallest sufficient boundaries are:
+
+- `BoardAnalysis.tsx:232` — share heading rendering across the five headings. Centralize panel flex/overflow policy through the existing `Tabs.styles.panel` API, which the installed Mantine `TabsPanel` consumes. Keep heading and panel ordering explicit, including conditional practice and `InfoPanel`’s Add Game callback. No panel wrapper or generic tab framework is needed.
+- `BoardAnalysis.tsx:149` — one local annotation dispatch can own the practice-rating guard for all six bindings. Ordinary panel bindings can share tuple-to-handler mapping. Keep the repertoire-only practice handler and report handler explicit because they perform different transitions.
+- `FileFreshnessGate.tsx:373` — choose the appending, unverified or overdue content inside one centered Stack. This removes two duplicate layout shells without introducing a status component or changing recovery actions.
+
+Retain the plain workspace operation, independent lease subscription and distinct Save/recovery policies. Their ownership contracts justify their boundaries. No new production file, configurable factory or operation rewrite is warranted. Preserve all 114 callback definitions and 34 meaningful fault categories.
+
+Limitation (confidence: 100): this approves only the proposed implementation boundary. The recorded bundle remains **1,623,308 / 1,620,000 gzip bytes**. No savings sufficient to eliminate the 3,308-byte excess are established.
+
+Read-only inspection. No files changed or tests run. Detection ran on the code model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw focused root-cause J4 judgment
+
+No root-cause blocker or prior-fix reintroduction found.
+
+The original mechanism was mismatched lifetime and authority: navigation removes the gate while its workspace survives, and competing Save can replace freshness during pending Add Game. `tabs.ts:144` preserves workspace completion through captured ownership and an independent generation-aware lease. Inspected final faults expose lost inactive completion, duplicate parsing, obsolete count publication and overwritten Save revision. Their restorations pass.
+
+The three proposed consolidations are legitimate repetitions. The simplest boundary stays local:
+
+- Board tab/panel presentation helpers, retaining explicit practice eligibility, literal translations, existing ordering and InfoPanel’s Add Game slot.
+- Shared annotation dispatch with the existing practice-rating guard, plus ordinary panel-selection bindings. Keep special hotkey policies explicit.
+- One centered Gate status shell around the existing branch contents.
+
+These changes need no workspace-operation rewrite. Preserve the independent lease subscription, recovery policies and all retained proof obligations.
+
+Limitation (confidence: 100): consolidation does not establish sufficient compressed savings. The measured candidate remains **1,623,308 / 1,620,000 bytes**. Approval covers this prospective implementation boundary only. The final candidate still requires measurement and regression proof.
+
+Read-only review. No files changed or tests run. Detection ran on the code model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
