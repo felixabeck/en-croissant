@@ -14762,3 +14762,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Source-path extension:** The same append operation also publishes AppendMayHaveBeenAdded after obsolete fulfilled writes because its combined ownership/uncertainty condition sets panel error for both outcomes. Separate obsolete completion from current-owner uncertain completion. All late append outcomes must preserve replacement state and suppress stale panel publication, while current-owner unknown-write outcomes retain their persistent retry prohibition and existing message.
 * **Proof required:** Held append write followed by physical-only durable ownership replacement, then successful, uncertain and rejected outcomes. Include unmount/cancellation and current-owner controls. Keep throwOnFailure behavior for genuine current failures. Fault rejection and fulfillment ownership separately and restore with final tests byte-identical.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"ff1e51b585c5b87011b2dae928dcf11d2ae36ec43e37a08774477799e76d8006","input_sha256":"555f3f997a4dec04365707928ad88110e29f553ed73f1eb36bf4e8500097c690","kind":"mutation-receipt","operation":"5900288d67bc5697fb496baa2301f258b20f8a3c9b22f9faafd9fcc748ad6b6f","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-25"],"target":"f-20261010-25","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Add Game completion publishes against a replacement physical generation
+
+* **ID:** f-20261010-26 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/boards/BoardAnalysis.tsx appendGame.
+* **Defect:** Add Game validates only the file handle and page with matchesFileGameTab after parse and native append. A durable replacement can keep that origin and logical ID while changing treeKey. Late stamped success then overwrites its origin and cached tree with the obsolete new game. Unknown outcomes and catch use any surviving getTab to change freshness and publish obsolete errors. Count refresh likewise checks only origin and can mutate replacement metadata.
+* **Proof:** Root read the complete current appendGame, including initial admission, post-parse comparison, count refresh, native write fulfillment, uncertainty and catch. None compares captured physical generation. The separate FileFreshnessGate append repair now does. Retained execution and source-only semantic failure/restoration proof are pending.
+* **Fix and proof:** Apply one shared logical/physical owner predicate at every asynchronous Add Game publication boundary while retaining current-owner count refresh, typed errors, uncertainty, origin commit refusal and dirty confirmation. Exercise held parse, write and count operations followed by actual durable physical-only replacement, plus active-owner controls and unmount. Source faults must expose incorrect replacement tree, origin, freshness or notification and exact restoration pass with final tests unchanged.
+* **Triage:** Fix now in the loaded tab-source lifecycle. Related f-20261010-25 owns the distinct recovery append action, while this toolbar Add Game uses the same captured-owner concept without physical protection. This does not reverse append uncertainty decisions or introduce a new product flow.
+* **Found by:** Root traced the broader shared-domain mechanism after two bounded budget proof-fix rounds disproved their compression premise. Plan authorship and arbitration shared one context. Detection ran on the code model family.
