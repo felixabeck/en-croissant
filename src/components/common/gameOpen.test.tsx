@@ -3,6 +3,28 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { gameRowActivation, OpenGameButton, useGameOpen } from "./gameOpen";
 
+const pendingPublications = vi.hoisted(() => ({ enabled: false, record: vi.fn() }));
+vi.mock("react", async (importOriginal) => {
+  const react = await importOriginal<typeof import("react")>();
+  const setters = new WeakMap<object, unknown>();
+  return {
+    ...react,
+    useState<T>(initialState: T | (() => T)) {
+      const state = react.useState(initialState);
+      if (!pendingPublications.enabled) return state;
+      const [value, setValue] = state;
+      let observedSetter = setters.get(setValue) as typeof setValue | undefined;
+      if (!observedSetter) {
+        observedSetter = (update) => {
+          pendingPublications.record(update);
+          setValue(update);
+        };
+        setters.set(setValue, observedSetter);
+      }
+      return [value, observedSetter];
+    },
+  };
+});
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (_key: string, options: any) => options.defaultValue }),
 }));
@@ -23,6 +45,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount());
+  pendingPublications.enabled = false;
+  pendingPublications.record.mockClear();
   host.remove();
 });
 
@@ -105,7 +129,9 @@ test("Enter ignores descendants and repeat, double-click ignores nested controls
 });
 
 test("an admitted operation settles after unmount without publishing pending UI", async () => {
+  pendingPublications.enabled = true;
   let settle!: () => void;
+  let operation!: Promise<void>;
   const open = vi.fn(
     () =>
       new Promise<void>((resolve) => {
@@ -113,9 +139,28 @@ test("an admitted operation settles after unmount without publishing pending UI"
       }),
   );
   const onError = vi.fn();
-  await act(async () => root.render(<Harness open={open} onError={onError} />));
+  function UnmountHarness() {
+    const { activate, pending } = useGameOpen(open, onError);
+    return (
+      <OpenGameButton
+        pending={pending}
+        onOpen={() => {
+          operation = activate(0);
+          return operation;
+        }}
+      />
+    );
+  }
+  await act(async () => root.render(<UnmountHarness />));
   await act(async () => host.querySelector<HTMLButtonElement>("button")!.click());
+  expect(open).toHaveBeenCalledExactlyOnceWith(0);
+  expect(host.querySelector<HTMLButtonElement>("button")!.disabled).toBe(true);
+  expect(pendingPublications.record.mock.calls).toEqual([[true]]);
   await act(async () => root.unmount());
-  await act(async () => settle());
+  await act(async () => {
+    settle();
+    await expect(operation).resolves.toBeUndefined();
+  });
   expect(onError).not.toHaveBeenCalled();
+  expect(pendingPublications.record.mock.calls).toEqual([[true]]);
 });
