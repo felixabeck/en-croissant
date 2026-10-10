@@ -15052,3 +15052,27 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix shape:** Export whitePawnSquares(board: Locator) from the existing e2e/fixtures.ts and route both scenarios through it. Keep their separate expected positions, real clicks, geometry assertions and snapshot filenames unchanged.
 * **Proof:** Static checks and the pinned files-preview, database-files and font-scaled-breakpoints scenarios. Retain the actual stacked=false production fault and exact-restoration discrimination for the compact preview with the extracted helper.
 * **Found by:** Canonical read-only minimalism closure at /tmp/build-game-opening-3b67c3b9/lens-minimalism-compact-closure.txt, confidence 94. Root read both implementations and adopted Fix. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Native game-opening proof times out waiting for the second selected PGN preview
+
+* **ID:** f-20261010-39 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** scripts/verify-app.mjs GO9, src/components/files/FileCard.tsx and src/components/databases/GamePreview.tsx.
+* **Defect:** On clean source HEAD 6c12ccc4, the actual release build succeeds but the unchanged full native verifier reports FAIL GO9 with timed out waiting for second PGN preview. The selected-row assertion succeeds before the timeout. The later labelled button, double-click and Enter assertions open the second file game successfully. Coordinate stationarity remains unreached. No cause is yet established.
+* **Fix shape:** Diagnose the actual preview and verifier contract, preserve ordinary selection and real rendered-content proof, and repair the evidenced cause without weakening assertions or using a focused verifier mode.
+* **Proof:** Ordinary full pnpm verify:app must pass GO9 and all102checks, then the actual selection-noop production fault must fail its direct assertion and exact restoration must pass the unchanged full verifier.
+* **Found by:** Root real-product baseline log /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-native-baseline.CKrg8A/log, actual exit1. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### Native discard proof cannot enter the intended Event edit through WebKit WebDriver
+
+* **ID:** f-20261010-40 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** scripts/verify-app.mjs GO14 editor clear/value sequence, src/components/panels/info/PGNEditor.tsx and scripts/app-driver.mjs.
+* **Defect:** On clean source HEAD 6c12ccc4, the actual release build succeeds but the unchanged full verifier reports FAIL GO14 with timed out waiting for real PGN editor Event edit. The clean second game's persisted owner and original editor value are read before the failure. The Update gesture, dirty publication, confirmation and discard replacement are not reached. No cause is yet established.
+* **Fix shape:** Diagnose actual native typing and editor behavior, preserve real editor gestures and unsaved owner-bound discard proof, and repair the evidenced cause without changing expected data, adding a shortcut or weakening the verifier.
+* **Proof:** Ordinary full pnpm verify:app must complete the dirty Event edit and confirmed discard with unchanged admission count, then the actual old unconditional dirty-guard application input must fail GO14 and exact restoration must pass the full verifier.
+* **Found by:** Root real-product baseline log /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-native-baseline.CKrg8A/log, actual exit1. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
