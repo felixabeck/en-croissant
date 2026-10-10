@@ -14611,6 +14611,10 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Name the maximum generated analysis variation plies constant and preserve value 10. Existing tree suite and scoped format/lint/type checks suffice.
 * **Triage:** Fix now for explicit domain-bound intent. No new behavior, abstraction or product decision.
 * **Found by:** Fresh round 4 code-quality lens, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+* **Source proof checkpoint:** The named analysis variation bound retains value10 and behavior. All60 tree tests and scoped checks passed. The isolated constant-only change is committed099bfa21.
+* **Proof:** Root independently passed the exact eleven-suite 517-test command, separate 46-test parser suite, scoped checks/types/syntax, full pre-review and contract on the final R4 candidate. Workspace-storage and tree/path remain100%. Actual bundle1619967 is within unchanged1620000. Canonical completion0 is gate-root-r4-repair-proof-r2.1tnLMt, parent77ba474282f79d2bd1b17efcb64e6637cc83f6f1. Current source repairs are committed099bfa21, db6ac190 and4ee4ff12. Full source and fault history: tasks/handoffs/2026-10-10-game-opening-round4.md.
+* **Remaining:** Fresh cumulative source closure and root pixel/native verification remain pending. This finding stays open until those required stages complete. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"1fbfc795dda170489854791b4dee77adf5dc47871a3708740e7ff9df8bd60a57","input_sha256":"49c6d803625f89a2c17cb1c64826e11ee2dbe30a8ac539f34743ad62fbbde6e7","kind":"mutation-receipt","operation":"8b53637b7cf618ba955d0cbe841014b66165b871551370890382891731e8df43","options":{"section":null},"request_id_sha256":"b6d1159ab79f262e9271423223f8cc708645df2c87896cc6a0d3905683cfb3b2","results":["f-20261010-15"],"target":"f-20261010-15","v":1} -->
 
 ---
 
