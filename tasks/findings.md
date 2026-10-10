@@ -14982,3 +14982,28 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Root integration:** Actual875 tests in15 suites, scoped formatting/lint/types/diff, actual pre-review build/bundle/coverage mapping/changed-file mutation and unconditional contract all0 on clean5b8c8da645e2b688471b68a19560846d587d8da1. Receipt /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-r9-source-pre-review.IkreEY/completion.record. Transcript /tmp/build-game-opening-3b67c3b9/root-r9-source-proof.log. Full report tasks/handoffs/2026-10-10-game-opening-parity.md.
 * **Acceptance limit:** Fresh focused source closure, pixels, real native app/14 fault stages, final push gates and delivery remain pending. Original46/full424, R8 three faults/full596 and current counter/full604 remain separately qualified exact-candidate evidence. Existing child ordering and token skip policy unchanged. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"f8ccea3d01211b6bf459f1e1eee98ccf25dfa6d05424b10691d319bd50674818","input_sha256":"3d8eb670f244338aa1fbc74ad5cc0736d86c7749ae343a723546cafac0c91e56","kind":"mutation-receipt","operation":"8c0be2543989a0efa246feae91f84fa565e298a01891ce0b916bd658ead4a3eb","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-33"],"target":"f-20261010-33","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### The database overview card overflows at 320px and 200% before its visible opener is used
+
+* **ID:** f-20261010-34 · **Status:** open · **Area:** frontend-ui · **Root:** database-overview-card-wrapping · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/databases/DatabasesPage.tsx`, `src/components/common/GenericCard.module.css`, `e2e/font-scaled-breakpoints.spec.ts:31`.
+* **Defect:** The pinned-container first pass at HEAD `19da6a938795e4083d0c6557d8234c9e80652f8a` reports a database overview Stack at 237px against 116px and its SimpleGrid and ScrollArea at 257px against 156px. This assertion runs before opening a database, so GameCard and DatabaseView cannot repair it. GenericCard statistics use a non-wrapping flex row and the database description lacks arbitrary word breaking.
+* **Why it matters:** The visible database opener shares a card column with content that escapes its narrow layout, violating the 320px and 200% control contract.
+* **Fix shape:** Wrap shared card statistics and allow their children to shrink and break long text. Give the database description arbitrary word breaking. Preserve the opening gestures, previews and snapshots.
+* **Proof:** `pnpm test:e2e:container --project=font-scaled-breakpoints`, retaining all screenshots and distinguishing missing opening snapshots from clipping failures.
+* **Related:** `f-20261001-08` adds the visible opener. This is a measured wrapping failure in its surrounding existing card, not a new interaction requirement. `f-20260829-02` records the earlier narrow-layout class.
+* **Found by:** Root first-pass log `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-first-pass.PiECIf/log`, traced by the bounded repair leaf on 2026-10-10.
+
+### The file-freshness conflict scenario omits the autosave write command contract
+
+* **ID:** f-20261010-35 · **Status:** open · **Area:** e2e-gate · **Root:** file-freshness-autosave-fixture · **Entry:** inline · **Blocked:** none
+* **Where:** `e2e/file-freshness.spec.ts:52`, `e2e/fixtures.ts:337`, production path `src/components/boards/BoardAnalysis.tsx:105` and `src/utils/tabs.ts:636`.
+* **Defect:** The scenario edits a file-backed game with default autosave enabled, but pgnFileCommands and the mock defaults omit write_game. The app correctly reports Unexpected Tauri IPC command: write_game. That notification changes the existing conflict screenshot by 854 pixels in the root pinned-container first pass.
+* **Why it matters:** The screenshot currently tests an accidental mock failure alongside the intended changed-on-disk conflict. Accepting that notification into a baseline would hide a missing scenario command contract.
+* **Fix shape:** Model the native write outcome required by the concurrent external-change scenario, assert the write targets the opened game with its original expected stamp, and preserve conflict detection, diagnostics, autosave and the existing screenshot.
+* **Proof:** `pnpm test:e2e:container --project=file-freshness`, plus existing autosave and freshness unit tests. Never update snapshots.
+* **Found by:** Root first-pass log `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-first-pass.PiECIf/log`, traced by the bounded repair leaf on 2026-10-10.
