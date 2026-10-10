@@ -922,6 +922,8 @@ function setShapes(state: TreeState, shapes: DrawShape[]) {
     return state;
 }
 
+const MAX_GENERATED_ANALYSIS_VARIATION_PLIES = 10;
+
 function addAnalysis(
     state: TreeState,
     analysis: {
@@ -1003,7 +1005,12 @@ function addAnalysis(
 
                                 const pv = analysis[i - 1].best[0].uciMoves;
                                 if (pv.length > 1) {
-                                    for (let j = 1; j < Math.min(pv.length, 10); j++) {
+                                    for (
+                                        let j = 1;
+                                        j <
+                                        Math.min(pv.length, MAX_GENERATED_ANALYSIS_VARIATION_PLIES);
+                                        j++
+                                    ) {
                                         const nextMoveUci = pv[j];
                                         const nextMove = parseUci(nextMoveUci);
                                         if (nextMove) {
