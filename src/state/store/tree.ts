@@ -760,7 +760,11 @@ function makeMove({
 
     const newFen = makeFen(pos.toSetup());
 
-    if (changeHeaders && (isThreeFoldRepetition(state, newFen, position) || is50MoveRule(newFen))) {
+    if (
+        changeHeaders &&
+        !pos.isCheckmate() &&
+        (isThreeFoldRepetition(state, newFen, position) || is50MoveRule(newFen))
+    ) {
         state.headers.result = "1/2-1/2";
     }
 

@@ -164,6 +164,103 @@ test("makeMove does not apply the 50-move result when header changes are disable
     expect(store.getState().headers.result).toBe("1-0");
 });
 
+test.each([
+    {
+        winner: "white",
+        clock: 99,
+        fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 99 1",
+        move: "f7g7",
+        result: "1-0",
+    },
+    {
+        winner: "black",
+        clock: 99,
+        fen: "8/8/8/8/8/6k1/5q2/7K b - - 99 1",
+        move: "f2g2",
+        result: "0-1",
+    },
+    {
+        winner: "white",
+        clock: 0,
+        fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        move: "f7g7",
+        result: "1-0",
+    },
+    {
+        winner: "black",
+        clock: 0,
+        fen: "8/8/8/8/8/6k1/5q2/7K b - - 0 1",
+        move: "f2g2",
+        result: "0-1",
+    },
+])(
+    "makeMove preserves $winner checkmate at halfmove clock $clock",
+    ({ fen, move, result, clock }) => {
+        const [position, error] = positionFromFen(fen);
+        expect(error).toBeNull();
+        const matingMove = parseUci(move)!;
+        expect(position!.isLegal(matingMove)).toBe(true);
+        expect(makeSan(position!, matingMove)).toMatch(/#$/);
+        position!.play(matingMove);
+        expect(position!.isCheckmate()).toBe(true);
+        expect(position!.halfmoves).toBe(clock + 1);
+
+        const store = createTreeStore(undefined, defaultTree(fen));
+        store.getState().makeMove({ payload: matingMove });
+
+        expect(store.getState().currentNode().fen).toBe(makeFen(position!.toSetup()));
+        expect(store.getState().headers.result).toBe(result);
+    },
+);
+
+test.each([
+    {
+        kind: "fifty-move",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 99 1",
+        move: "g1f3",
+        halfmoves: 100,
+    },
+    { kind: "stalemate", fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1", move: "f7e6", halfmoves: 1 },
+    {
+        kind: "insufficient material",
+        fen: "7k/8/6K1/8/8/2n5/1B6/8 w - - 0 1",
+        move: "b2c3",
+        halfmoves: 0,
+    },
+])("makeMove retains the $kind draw", ({ kind, fen, move, halfmoves }) => {
+    const [position, error] = positionFromFen(fen);
+    expect(error).toBeNull();
+    const drawingMove = parseUci(move)!;
+    expect(position!.isLegal(drawingMove)).toBe(true);
+    position!.play(drawingMove);
+    expect(position!.isCheckmate()).toBe(false);
+    expect(position!.isStalemate()).toBe(kind === "stalemate");
+    expect(position!.isInsufficientMaterial()).toBe(kind === "insufficient material");
+    expect(position!.halfmoves).toBe(halfmoves);
+
+    const store = createTreeStore(undefined, defaultTree(fen));
+    store.getState().makeMove({ payload: drawingMove });
+
+    expect(store.getState().currentNode().fen).toBe(makeFen(position!.toSetup()));
+    expect(store.getState().headers.result).toBe("1/2-1/2");
+});
+
+test("makeMove preserves headers when checkmate and fifty-move adjudication are disabled", () => {
+    const tree = defaultTree("7k/5Q2/6K1/8/8/8/8/8 w - - 99 1");
+    tree.headers.result = "0-1";
+    const store = createTreeStore(undefined, tree);
+    const headers = store.getState().headers;
+
+    store.getState().makeMove({ payload: "Qg7#", changeHeaders: false });
+
+    const [position, error] = positionFromFen(store.getState().currentNode().fen);
+    expect(error).toBeNull();
+    expect(position!.isCheckmate()).toBe(true);
+    expect(position!.halfmoves).toBe(100);
+    expect(store.getState().headers).toBe(headers);
+    expect(store.getState().headers.result).toBe("0-1");
+});
+
 test("unreadable tree bytes survive hydration and incidental store updates", () => {
     const id = "unreadable-tree-hydration";
     const raw = "not a serialized game tree";
