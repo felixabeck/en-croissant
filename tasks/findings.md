@@ -14742,3 +14742,19 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Remove only the redundant conditional and retain both state updates under the catch-entry guard. Reuse actual late rejection and active-owner tests.
 * **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
 * **Found by:** Fresh R5 minimalism review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Save as new game rejection publishes against a superseded owner
+
+* **ID:** f-20261010-25 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/tabs/FileFreshnessGate.tsx appendAsNewGame catch.
+* **Defect:** A native append can remain pending while its tab is replaced or its gate unmounts. The fulfilled path checks actionIsCurrent, but rejection unconditionally clears the current store append marker for stale-game, publishes unavailable freshness for resource errors and sets panel error. Even an aborted signal does not protect this catch. A correctly installed replacement can be hidden or mutated by the obsolete operation.
+* **Origin:** The enclosing append rejection branch from490831c77, retained through the physical-generation ownership changes. This is pre-existing source, not introduced by the R5 reload repair.
+* **Proof:** Root read the complete action identity and cancellation setup, runAction, appendAsNewGame and its unguarded catch. The current reload catch uses actionIsCurrent, while this separate append operation has no cancellation or ownership predicate. Retained semantic regression execution is pending.
+* **Fix and proof:** Apply captured action ownership before rejection state publication while preserving active-owner append uncertainty, durable marker refusal, stale-count retry and throwOnFailure behavior. Exercise a held actual append then physical-only durable replacement or unmount, followed by stale-game, resource and ordinary rejection. Preserve replacement content, marker and freshness. A catch-guard source fault must fail and exact restoration pass.
+* **Triage:** Fix now in the loaded FileFreshnessGate action mechanism. Related f-20261010-20 owns reload rejection, while this distinct append operation additionally mutates the durable append marker and currently ignores even cancellation. The earlier required-presence storage design and user decision d-20261007-03 remain binding.
+* **Found by:** Root source inspection while all R5 write leaves were terminal and the root integration gate waited for the machine heavy-gate lock. Plan authorship and arbitration shared one context. Detection ran on the code model family.
