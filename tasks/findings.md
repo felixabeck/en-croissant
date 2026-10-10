@@ -14934,3 +14934,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **R8 diagnostic finding:** Error-handling identifies actual Jotai AggregateError with empty message losing its contained subscriber error at normalizeError. Root confirmed the installed errors.ts branch. Fix the shared sanitized error boundary, preserving existing error categories, cancellation policy and single-error/typed behavior. Do not add a logging framework or change existing cancellation semantics. Composed subscriber tests must assert the actual contained diagnostic, and direct controlled source faults must fail diagnosis and lease-release assertions.
 * **Pending:** Source repairs, appropriate proof/pre-review, fresh cumulative correction closure, pixels/native14/final push. Plan authorship and arbitration shared one context. Detection ran on the code's model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"1da49cde58476fdc5b402e26c03911766da31096d3416dad3faf8476fbc1e2b2","input_sha256":"4023098fc55d5978dc3861c2b1e9f89e2dc72ce564f02b32817dc5b36f32eac6","kind":"mutation-receipt","operation":"0e8d3fad0b4bc74a5f8948dbd41b46ce96ced5cc5e849af09e4e228e02497aeb","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-31"],"target":"f-20261010-31","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Admitted Jotai subscriber failure drops its contained diagnostic
+
+* **ID:** f-20261010-32 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** src/platform/errors.ts:81 and src/utils/tabs.ts:259, with InfoPanel's shared normalization consumer.
+* **Defect:** Installed Jotai throws AggregateError(errors) without a message. The shared errorSource reads only the empty message and normalizeError returns Unexpected error, losing contained subscriber exceptions after admitted workspace publication. Root read this source and the actual subscriber fixtures. R8 error-handling reports confidence98.
+* **Fix shape:** Preserve sanitized contained causes through the shared error boundary without changing single/typed error semantics or cancellation silence. Preserve aggregate failure visibility even with cancellation-shaped contained text. Actual composed admission and direct normalization tests must discriminate lost diagnosis.
+* **Related:** f-20261010-29 owns admitted installation, while this is its diagnostic boundary. Existing platform-error-redaction decisions remain binding. No unsafe raw object logging or framework.
+* **Proof:** Source trace and complete raw R8 report /tmp/build-game-opening-3b67c3b9/lens-error-handling-r8.txt. Runtime reproduction and repair pending.
+* **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
