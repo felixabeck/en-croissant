@@ -14,8 +14,10 @@ was the native fault matrix, the final gates and the push.
 
 ## Native fault matrix on 8a591760
 
-Every run uses the unchanged `scripts/verify-app.mjs` (sha256 `a879e3b1…`), `scripts/app-driver.mjs`
-(`727687d7…`) and the reviewed release binary (`6c6609ba…`). HEAD, the index and the tracked
+Every run uses the unchanged `scripts/verify-app.mjs` (sha256 `a879e3b1…`) and `scripts/app-driver.mjs`
+(`727687d7…`). Each healthy restoration and the fixture pair run the reviewed release binary
+(`6c6609ba…`). Each source-fault run uses its own disposable fault binary from
+`runtime-staging/binaries/<variant>/`, whose hash `runs.json` records. HEAD, the index and the tracked
 worktree stayed unchanged throughout, and the healthy binary was restored byte-exact after each
 fault. Evidence lives under `/tmp/build-game-opening-3b67c3b9/native-source-matrix-continuation-4/`
 and `/tmp/build-game-opening-3b67c3b9/native-fixture-fault/` (`runs.json`, `integrity.json`,
@@ -26,10 +28,10 @@ logs, screenshots).
 | A shortcuts | GO6, GO7, GO11, GO12 | exactly the four targets | passed |
 | B labelled buttons | GO5, GO10 | targets plus dependent GO11 and the two `f-20261008-01` metadata checks | passed |
 | C selection | GO4, GO9 | targets plus dependent GO5, GO10 | passed |
-| D missing controls | GO2, GO8 | targets plus downstream GO3–GO14 | passed on attempt 2 |
+| D missing controls | GO2, GO8 | targets plus downstream GO3–GO7, GO9–GO12 and GO14 (GO13 passed), and the freshness-budget and selected-root-missing chooser checks | passed on attempt 2 |
 | E route and empty PGN | GO3, GO13 | targets plus dependent GO4–GO7 | passed |
 | F discard | GO14 | exactly GO14 | passed |
-| GO1 fixture (second PGN game removed) | GO1 | GO1 count failure and every dependent check | passed; regenerated fixture matched the original bytes |
+| GO1 fixture (second PGN game removed) | GO1 | GO1 count failure, dependent GO2–GO14, and the two `f-20261008-01` metadata checks | passed; regenerated fixture matched the original bytes |
 
 ## Failed healthy and inconclusive runs, kept as evidence
 
