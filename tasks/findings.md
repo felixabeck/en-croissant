@@ -14963,3 +14963,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Root integration:** Actual867 tests in15 suites pass, formatting/lint/types/diff0, actual pre-review build/bundle/coverage mapping/changed-file mutation0 and unconditional contract0. Receipt /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-r8-source-pre-review.qDwDDp/completion.record records0 on clean2784e94c1552572981bc3dd1f1fe5e79077af5fd. Transcript /tmp/build-game-opening-3b67c3b9/root-r8-source-proof.log. Earlier e2bfac11 frozen46-category/58-pair/full424 evidence is preserved separately, not claimed identical to this later candidate. Main raw index intact, disposable index stat-only refresh disclosed.
 * **Pending acceptance:** Fresh R8 correction cumulative review, pixels, real native app,14 native fault/restoration stages, final clean-HEAD gates, push and pushed-SHA CI remain pending. No handled/native/push claim. Plan authorship and arbitration shared one context. Detection ran on the code's model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"5b027e91fb012fd22b553de08044e59ea3ef46ac897ef91cd79eb9e34deec07a","input_sha256":"eea5e217c64fd2487a46f6660257edbda3885ab681a0e324db1aad5410f5f6cc","kind":"mutation-receipt","operation":"9f0a26f19e5a6328d53c58d39cb433c3a297029ac67c93c03cb130017c33a909","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-32"],"target":"f-20261010-32","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### PGN recovery after a skipped first move gives legal variations the wrong ply parity
+
+* **ID:** f-20261010-33 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** src/utils/chess.ts:437, innerParsePGN variation recursion.
+* **Defect:** After rejecting initial e2e5 in `1. e2e5 (1. d4 d5) e4 *`, node and prevNode both remain root. Recursion takes node.halfMoves minus1, so accepted variation d4/d5 gets counters0/1 instead of1/2, although its FENs are legal. Notation/export and colour parity consequently disagree with the board. Root opened the recursion and cursor initialization. R9 chess-semantics reports blocker99, inherited2dc2d8e4d, newly exposed dependency of the corrected UCI rejection path.
+* **Fix shape:** Use the actual variation parent prevNode.halfMoves when its FEN is the recursive root. Retain valid ordinary/nested variation behavior, skipped-token continuation, custom Black fullmove numbering and source parser legality. Add direct public parsePGN/getPGN controls and one exact source-fault failure/restoration.
+* **Related:** f-20261010-31 owns legal move admission. This distinct counter-source dependency is fixed in its same source package. f-20260922-13 batch rollback/puzzle terminality remains separate.
+* **Evidence:** Complete raw /tmp/build-game-opening-3b67c3b9/lens-chess-semantics-r9.txt and current source. Runtime/test reproduction pending.
+* **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the code's model family.
