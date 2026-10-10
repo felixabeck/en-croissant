@@ -7,9 +7,41 @@ import {
     filesWorkspaceCommands,
     test,
     type MockScenario,
+    gameOpeningFixture,
+    gameOpeningCommands,
+    selectFilesTreeRow,
 } from "./fixtures";
 
 const databaseTitle = "Breakpoint database";
+
+test("font-scaled-breakpoints: visible library open controls wrap at 320px and 200%", async ({
+    page,
+    mockScenario,
+    capture,
+    assertNoHorizontalOverflow,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    await mockScenario({
+        commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
+    });
+    await page.goto("/databases");
+    const databaseOpen = page.getByRole("button", { name: "Open database", exact: true });
+    await expect(databaseOpen).toBeEnabled();
+    await databaseOpen.scrollIntoViewIfNeeded();
+    await assertNothingClipped(databaseOpen);
+    await capture("database-open-320-200");
+    await expect(page).toHaveScreenshot("database-open-320-200.png", { fullPage: true });
+    await page.goto("/files");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, gameOpeningFixture.file.name);
+    const gameOpen = page.getByRole("button", { name: "Open game", exact: true });
+    await expect(gameOpen).toBeEnabled();
+    await gameOpen.scrollIntoViewIfNeeded();
+    await assertNothingClipped(gameOpen);
+    await assertNoHorizontalOverflow();
+    await capture("files-open-320-200");
+    await expect(page).toHaveScreenshot("files-open-320-200.png", { fullPage: true });
+});
 const databaseScenario: MockScenario = {
     commands: databaseCommands("breakpoint-db", "breakpoint.db3", {
         title: databaseTitle,

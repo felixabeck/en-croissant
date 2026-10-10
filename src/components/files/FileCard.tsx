@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
-import { IconEdit, IconZoomCheck } from "@tabler/icons-react";
+import { IconEdit } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
+import { OpenGameButton, useGameOpen } from "@/components/common/gameOpen";
 import { openFile } from "@/utils/files";
 import { runTabCreation } from "@/utils/tabs";
 import { capitalize, formatNumber } from "@/utils/format";
@@ -73,16 +74,20 @@ function FileCard({
     };
   }, [handleKey, page, t]);
 
-  function openGame() {
-    void runTabCreation({
-      create: () =>
-        openFile(selected, setTabs, {
-          gameNumber: page,
-        }),
-      onSuccess: () => navigate({ to: "/" }),
-      onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
-    });
-  }
+  const reportOpenError = (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error);
+  const gameOpen = useGameOpen(
+    ({ file, index }: { file: FileMetadata; index: number }) =>
+      runTabCreation({
+        create: () => openFile(file, setTabs, { gameNumber: index }),
+        onSuccess: () => navigate({ to: "/" }),
+        onError: reportOpenError,
+      }),
+    reportOpenError,
+  );
+  const activateGame = (index: number) => {
+    if (index < 0 || index >= selected.numGames) return;
+    return gameOpen.activate({ file: selected, index });
+  };
 
   return (
     <Stack h="100%" ref={cardRef}>
@@ -94,12 +99,13 @@ function FileCard({
       </Stack>
       <Divider />
 
-      {/* Keep the icons together: three separately spaced items wrap the game count at 200%. */}
       <Group align="center" justify="space-between" wrap="wrap" px={{ base: 0, lg: "xs" }} miw={0}>
-        <Group gap={0} wrap="nowrap">
-          <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
-            <IconZoomCheck />
-          </IconAction>
+        <Group gap="xs" miw={0}>
+          <OpenGameButton
+            onOpen={() => activateGame(page)}
+            pending={gameOpen.pending}
+            disabled={selected.numGames <= 0 || page >= selected.numGames}
+          />
           <IconAction label={t("Files.EditMetadata")} size="sm" onClick={onEditMetadata}>
             <IconEdit />
           </IconAction>
@@ -123,14 +129,18 @@ function FileCard({
             activePage={page}
             path={selected.handle}
             setPage={setPage}
+            onActivate={activateGame}
             total={selected.numGames}
           />
           <Divider />
         </Box>
       )}
-      {selectedGame !== null && (
+      {/* Reserve the preview's share while reading so the list never moves between clicks. */}
+      {selected.numGames > 0 && (
         <Box flex="3 1 0" mih={0} px="xs" pb="xs">
-          <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
+          {selectedGame !== null && (
+            <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
+          )}
         </Box>
       )}
     </Stack>

@@ -555,7 +555,7 @@ test("async-errors: fits a selected PGN file and its card at 320px", async ({
     for (const name of ["Umbenennen", "Verschieben", "Papierkorb"]) {
         await expect(page.locator("button", { hasText: new RegExp(`^${name}$`) })).toBeVisible();
     }
-    await expect(page.getByRole("button", { name: "Öffnen", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Partie öffnen", exact: true })).toBeVisible();
     await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
     // Both columns with everything in them: the controls and tree, the action row and the card.
     await assertFilesColumnsNotClipped(page);

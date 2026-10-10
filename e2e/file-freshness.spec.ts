@@ -25,7 +25,7 @@ async function openFileTab(page: Page, mockScenario: (scenario: MockScenario) =>
     await page.goto("/files");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, pgnFile.name);
-    await page.getByRole("button", { name: /^open$/i }).click();
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.locator("[data-file-freshness]")).toHaveAttribute(
         "data-file-freshness",

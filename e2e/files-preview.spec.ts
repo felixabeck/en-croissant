@@ -8,6 +8,9 @@ import {
     pgnFileCommands,
     selectFilesTreeRow,
     test,
+    gameOpeningCommands,
+    gameOpeningFixture,
+    activeWorkspaceTab,
 } from "./fixtures";
 
 // A wide, short window at 100% font with a file of many games: the shape in which the card's old
@@ -15,6 +18,51 @@ import {
 const repertoireFile = { ...filesWorkspaceFixture.pgnFile, gameCount: 21 };
 const MIN_VISIBLE_GAME_ROWS = 4;
 const GAME_ROW_HEIGHT_PX = 30;
+
+for (const gesture of ["button", "double-click", "Enter"] as const) {
+    test(`files-preview: non-first game ${gesture} opens its content and file index`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        await mockScenario({
+            commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
+        });
+        await page.goto("/files");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        await selectFilesTreeRow(page, gameOpeningFixture.file.name);
+        const second = page.getByRole("option", { name: /Second White - Second Black/ });
+        const first = page.getByRole("option", { name: /First White - First Black/ });
+        await expect(second).toBeVisible();
+        const openGame = page.getByRole("button", { name: "Open game", exact: true });
+        await expect(openGame).toHaveText("Open game");
+        await expect(openGame).toBeEnabled();
+        await capture("files-labelled-game");
+        await expect(page).toHaveScreenshot("files-labelled-game.png", { fullPage: true });
+        if (gesture === "button") {
+            const before = await second.boundingBox();
+            await second.click();
+            await expect(second).toHaveAttribute("aria-selected", "true");
+            await expect(page).toHaveURL("/files");
+            expect(await second.boundingBox()).toEqual(before);
+            await openGame.click();
+        } else if (gesture === "double-click") {
+            await expect(first).toHaveAttribute("aria-selected", "true");
+            await second.dblclick();
+        } else {
+            await second.focus();
+            await second.press("Enter");
+        }
+        await expect(page).toHaveURL(/\/$/);
+        await expect(page.getByRole("tab", { name: /Second White - Second Black/ })).toBeVisible();
+        expect((await activeWorkspaceTab(page))?.gameOrigin).toMatchObject({
+            kind: "file",
+            file: { handle: gameOpeningFixture.file.handle },
+            gameNumber: 1,
+        });
+        await expect(page.getByRole("button", { name: "d4", exact: true })).toBeVisible();
+    });
+}
 
 test("files-preview: the card fills the window and shows the whole board and its controls", async ({
     page,

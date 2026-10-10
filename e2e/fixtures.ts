@@ -1,8 +1,18 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test as base, type Locator, type Page } from "@playwright/test";
-import type { DatabaseInfo, ErrorPayload } from "../src/bindings/generated";
+import type {
+    DatabaseInfo,
+    ErrorPayload,
+    NormalizedGame,
+    StampedGame,
+} from "../src/bindings/generated";
+import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
+import type { Tab } from "../src/state/workspaceTypes";
 
 type MockCommand = {
+    /** Multi-game fixtures retain the requested native index and PGN identity. */
+    pgnGames?: StampedGame[];
+    pgnTokens?: Record<string, unknown[]>;
     delay?: number;
     error?: string | ErrorPayload;
     result?: unknown;
@@ -279,6 +289,13 @@ export async function preserveStorageForReload(page: Page) {
     await page.reload();
 }
 
+export async function activeWorkspaceTab(page: Page) {
+    const stored = await page.evaluate(() => sessionStorage.getItem("workspace"));
+    const workspace = stored && deserializeStorageValue<{ tabs: Tab[]; activeTab: string }>(stored);
+    expect(workspace).toBeTruthy();
+    return workspace ? workspace.tabs.find((tab) => tab.value === workspace.activeTab)! : undefined;
+}
+
 export async function assertChooserInsideBoard(board: Locator, chooser: Locator) {
     const boardBox = (await board.boundingBox())!;
     const card = chooser.locator("..");
@@ -332,6 +349,93 @@ export const pgnFileCommands: NonNullable<MockScenario["commands"]> = {
             { type: "Outcome", value: "*" },
         ],
     },
+};
+
+export const gameOpeningFixture = {
+    databaseId: "game-opening-db",
+    databaseTitle: "Opening fixture database",
+    file: { ...filesWorkspaceFixture.pgnFile, name: "Two distinct games", gameCount: 2 },
+    games: [
+        {
+            id: 101,
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            white: "First White",
+            white_id: 1,
+            black: "First Black",
+            black_id: 2,
+            event: "First event",
+            event_id: 1,
+            site: "?",
+            site_id: 1,
+            date: "2026.10.01",
+            round: "1",
+            result: "*",
+            white_elo: 1500,
+            black_elo: 1400,
+            ply_count: 2,
+            moves: "1. e4 e5 *",
+        },
+        {
+            id: 202,
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            white: "Second White",
+            white_id: 3,
+            black: "Second Black",
+            black_id: 4,
+            event: "Second event",
+            event_id: 2,
+            site: "?",
+            site_id: 1,
+            date: "2026.10.02",
+            round: "2",
+            result: "*",
+            white_elo: 1600,
+            black_elo: 1550,
+            ply_count: 2,
+            moves: "1. d4 d5 *",
+        },
+    ] satisfies NormalizedGame[],
+};
+const openingPgnGames = gameOpeningFixture.games.map((game, index) => ({
+    pgn: `[Event "${game.event}"]\n[White "${game.white}"]\n[Black "${game.black}"]\n[Result "*"]\n\n${game.moves}`,
+    stamp: String(index + 1).repeat(64),
+    revision: "opening-fixture-revision",
+    present: true,
+}));
+const openingTokens = Object.fromEntries(
+    gameOpeningFixture.games.flatMap((game, index) => {
+        const tokens = [
+            ...["Event", "White", "Black"].map((tag) => ({
+                type: "Header",
+                value: { tag, value: game[tag.toLowerCase() as "event" | "white" | "black"] },
+            })),
+            { type: "San", value: index === 0 ? "e4" : "d4" },
+            { type: "San", value: index === 0 ? "e5" : "d5" },
+            { type: "Outcome", value: "*" },
+        ];
+        return [
+            [game.moves, tokens],
+            [openingPgnGames[index].pgn, tokens],
+        ];
+    }),
+);
+export const gameOpeningCommands: NonNullable<MockScenario["commands"]> = {
+    ...databaseCommands(gameOpeningFixture.databaseId, "opening.db3", {
+        title: gameOpeningFixture.databaseTitle,
+        description: "Two distinct games",
+        game_count: 2,
+        player_count: 4,
+        event_count: 2,
+        storage_size: 4096,
+        indexed: false,
+    }),
+    get_games: { result: { data: gameOpeningFixture.games, count: 2 } },
+    get_players: { result: { data: [], count: 0 } },
+    get_tournaments: { result: { data: [], count: 0 } },
+    read_games: { pgnGames: openingPgnGames },
+    read_game: { pgnGames: openingPgnGames },
+    file_revision: { result: "opening-fixture-revision" },
+    lex_pgn: { pgnTokens: openingTokens },
 };
 
 /** Listing and metadata answers for one available database, in their IPC wire shapes. */
@@ -526,6 +630,12 @@ const tauriBootstrap = () => {
             throw failure.error;
         }
         if (outcome) return outcome.result;
+        if (response.pgnGames) {
+            if (command === "read_games")
+                return response.pgnGames.slice(Number(args.start), Number(args.end) + 1);
+            if (command === "read_game") return response.pgnGames[Number(args.n)];
+        }
+        if (response.pgnTokens) return response.pgnTokens[String(args.pgn)];
         let retainedSearch = false;
         if (command === "kill_engines") {
             for (const [key, actor] of actors) {

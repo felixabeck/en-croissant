@@ -1,6 +1,5 @@
 import {
   Box,
-  Center,
   Collapse,
   Flex,
   Group,
@@ -23,6 +22,7 @@ import useSWR from "swr";
 import { useStore } from "zustand";
 import type { GameSort, NormalizedGame, Outcome } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { gameRowActivation, useGameOpen } from "@/components/common/gameOpen";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { tabsAtom } from "@/state/atoms";
@@ -60,6 +60,23 @@ function GameTable() {
 
   const games = data?.data ?? [];
   const count = data?.count;
+  const reportOpenError = (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error);
+  const gameOpen = useGameOpen(
+    (record: NormalizedGame) =>
+      runTabCreation({
+        create: () =>
+          createTab({
+            tab: { name: `${record.white} - ${record.black}`, type: "analysis" },
+            setTabs,
+            pgn: record.moves,
+            headers: record,
+            gameOrigin: { kind: "database", database: file, gameId: record.id },
+          }),
+        onSuccess: () => navigate({ to: "/" }),
+        onError: reportOpenError,
+      }),
+    reportOpenError,
+  );
 
   useHotkeys([
     [
@@ -218,20 +235,10 @@ function GameTable() {
           highlightOnHover
           records={games}
           fetching={isLoading}
-          onRowDoubleClick={({ record }) => {
-            void runTabCreation({
-              create: () =>
-                createTab({
-                  tab: { name: `${record.white} - ${record.black}`, type: "analysis" },
-                  setTabs,
-                  pgn: record.moves,
-                  headers: record,
-                  gameOrigin: { kind: "database", database: file, gameId: record.id },
-                }),
-              onSuccess: () => navigate({ to: "/" }),
-              onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
-            });
-          }}
+          customRowAttributes={(record, index) => ({
+            ...gameRowActivation(record, gameOpen.activate),
+            "aria-selected": index === selectedGame,
+          })}
           columns={[
             {
               accessor: "white",
@@ -313,13 +320,13 @@ function GameTable() {
         />
       }
       preview={
-        selectedGame !== undefined && selectedGame !== null && games[selectedGame] ? (
-          <GameCard game={games[selectedGame]} file={file} mutate={mutate} />
-        ) : (
-          <Center h="100%">
-            <Text>{t("Databases.Game.NoSelection")}</Text>
-          </Center>
-        )
+        <GameCard
+          game={selectedGame == null ? undefined : games[selectedGame]}
+          file={file}
+          mutate={mutate}
+          onOpen={gameOpen.activate}
+          pending={gameOpen.pending}
+        />
       }
     />
   );

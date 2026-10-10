@@ -206,6 +206,54 @@ function pendingRange(start: number, end: number): Promise<void> {
   return request(start, end);
 }
 
+test("single click selects, non-first double-click and row Enter activate explicit indices", async () => {
+  mocks.visibleIndices = [0, 1];
+  const setPage = vi.fn();
+  const activate = vi.fn();
+  await act(async () =>
+    root.render(
+      <GameSelector
+        games={
+          new Map([
+            [0, { name: "First" }],
+            [1, { name: "Second" }],
+          ])
+        }
+        setGames={vi.fn()}
+        setPage={setPage}
+        onActivate={activate}
+        total={2}
+        path={path}
+        activePage={0}
+        deleteGame={vi.fn()}
+      />,
+    ),
+  );
+  const rows = host.querySelectorAll<HTMLElement>('[role="option"]');
+  expect(rows).toHaveLength(2);
+  expect(rows[1].tabIndex).toBe(0);
+  expect(rows[0].getAttribute("aria-selected")).toBe("true");
+  await act(async () => rows[1].click());
+  expect(setPage).toHaveBeenCalledExactlyOnceWith(1);
+  expect(activate).not.toHaveBeenCalled();
+  await act(async () => {
+    rows[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    rows[1].dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true }),
+    );
+    rows[1]
+      .querySelector("button")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    rows[1].querySelector("button")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  expect(activate.mock.calls).toEqual([[1]]);
+  await act(async () => {
+    rows[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(activate.mock.calls).toEqual([[1], [1]]);
+  expect(setPage).toHaveBeenCalledOnce();
+});
+
 test("continues a short page at the next index and merges the whole inclusive range", async () => {
   mocks.visibleIndices = [5, 6, 7];
   mocks.readGames.mockResolvedValueOnce([firstGame, secondGame]).mockResolvedValueOnce([firstGame]);

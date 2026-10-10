@@ -505,7 +505,10 @@ import { Chess, makeSquare } from "chessops";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { createEmptyCard } from "ts-fsrs";
-import { serializeStorageValue } from "../src/state/store/debouncedStorage.ts";
+import {
+  deserializeStorageValue,
+  serializeStorageValue,
+} from "../src/state/store/debouncedStorage.ts";
 import {
   APP_BINARY,
   Session,
@@ -554,6 +557,19 @@ const PROGRESS_STALE_EVENT_OBSERVATION_DELAY_MS = 100;
 const filesWorkspaceId = "verify-files-workspace";
 const filesRowName = "verify-sample";
 const filesMetadataRowName = "verify-metadata-only";
+const openingRowName = "verify-game-opening";
+const emptyOpeningRowName = "verify-empty-opening";
+const openingDatabaseTitle = "verify opening database";
+const openingGames = [
+  { white: "Opening First", black: "First Opponent", moves: "1. e4 e5 *", notation: "1.e4e5" },
+  { white: "Opening Second", black: "Second Opponent", moves: "1. d4 d5 *", notation: "1.d4d5" },
+];
+const openingPgn = openingGames
+  .map(
+    (game, index) =>
+      `[Event "verify:opening-${index}"]\n[Date "2026.10.10"]\n[White "${game.white}"]\n[Black "${game.black}"]\n[Result "*"]\n\n${game.moves}\n`,
+  )
+  .join("\n");
 // Pawn moves only, so the notation reads the same with and without figurines.
 const filesGamePgn = `[Event "verify:app"]
 [Site "?"]
@@ -1402,7 +1418,7 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
       () =>
         session
           .execute(
-            "return document.body.innerText.includes('verify:practice') && Boolean(document.querySelector('button[aria-label=\"Open\"]'))",
+            "return document.body.innerText.includes('verify:practice') && [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Open game')",
           )
           .catch(() => false),
       { timeoutMs },
@@ -1420,7 +1436,7 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
     () =>
       session
         .execute(
-          `const button = document.querySelector('button[aria-label="Open"]');
+          `const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Open game');
            if (!button) return false;
            const box = button.getBoundingClientRect();
            return {
@@ -1450,6 +1466,357 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
       .catch(() => ({ path: "unavailable", text: "unavailable" }));
     throw new Error(`${error.message}; renderer state: ${JSON.stringify(state)}`);
   }
+}
+
+// Game-opening staged-failure inventory (push-review-policy §2).
+// All rows below are PENDING runtime staging by the adopting root. The unchanged verifier must
+// print each exact message with FAIL and exit 1, then pass after the disposable input is restored.
+// GO1: replace verify-game-opening.pgn in the disposable profile with a one-game PGN before import.
+// GO2: remove DatabasesPage's sibling Open database control in a disposable build.
+// GO3: keep that control visible but remove its navigate call in a disposable build.
+// GO4: route GameTable single clicks through its opener in a disposable build.
+// GO5: disconnect GameCard's OpenGameButton callback in a disposable build.
+// GO6: remove GameTable customRowAttributes onDoubleClick in a disposable build.
+// GO7: remove GameTable customRowAttributes onKeyDown in a disposable build.
+// GO8: remove FileCard's OpenGameButton in a disposable build.
+// GO9: remove FileCard's reserved preview Box or replace GameSelector's setPage with a no-op.
+// GO10: disconnect FileCard's OpenGameButton callback in a disposable build.
+// GO11: remove GameSelector's onDoubleClick handler in a disposable build.
+// GO12: remove GameSelector's onKeyDown handler in a disposable build.
+// GO13: remove FileCard's empty-file disabled predicate in a disposable build.
+// Wiring breaks are confined to production source/binary inputs, never this verifier or its
+// assertion definitions. GO1's fixture path is logged and only the harness's profile is edited.
+async function verifyGameOpening(session) {
+  const assertion = async (message, action) => {
+    try {
+      await action();
+      check(true, message);
+      return true;
+    } catch (error) {
+      check(false, message, error.message);
+      return false;
+    }
+  };
+  const wait = (label, script, args = []) =>
+    waitFor(label, () => session.execute(script, args), { timeoutMs: FILES_PROBE_TIMEOUT_MS });
+  const invoke = async (command, args) => {
+    const result = await invokeJsonAndWait(
+      session,
+      command,
+      "__verifyOpeningIPC",
+      `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`,
+    );
+    if (result.value === undefined)
+      throw new Error(
+        result.result.rejected ??
+          result.result.error ??
+          result.error ??
+          `${command} returned no value`,
+      );
+    return result.value;
+  };
+  const coordinates = async (script, args = []) =>
+    wait(
+      "game-opening pointer target",
+      `
+    const element = (${script});
+    if (!element) return false;
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2), disabled: element.disabled, selected: element.getAttribute('aria-selected') };
+  `,
+      args,
+    );
+  const button = (text) =>
+    coordinates(
+      `[...document.querySelectorAll('button')].find(node => node.textContent.trim() === arguments[0])`,
+      [text],
+    );
+  const snapshot = async () => {
+    const raw = await session.execute("return sessionStorage.getItem('workspace')");
+    const workspace = raw && deserializeStorageValue(raw);
+    if (!workspace) throw new Error("game-opening workspace snapshot is unreadable");
+    return workspace;
+  };
+  const assertOpened = async (game, origin) => {
+    await wait(
+      "game-opening content and destination",
+      `return location.pathname === '/' && document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])`,
+      [game.notation],
+    );
+    const workspace = await snapshot();
+    const tab = workspace.tabs.find((entry) => entry.value === workspace.activeTab);
+    if (
+      !tab ||
+      tab.name !== `${game.white} - ${game.black}` ||
+      JSON.stringify(tab.gameOrigin) !== JSON.stringify(origin)
+    ) {
+      // File metadata contains extra fields. Identity is the handle and explicit index below.
+      const actual = tab?.gameOrigin;
+      const matches =
+        origin.kind === "file" &&
+        actual?.kind === "file" &&
+        actual.gameNumber === origin.gameNumber &&
+        actual.file.handle.id.id === origin.file.handle.id.id;
+      if (!matches || tab.name !== `${game.white} - ${game.black}`)
+        throw new Error(`wrong opened target: ${JSON.stringify(tab)}`);
+    }
+  };
+  const saveSource = async (name) => {
+    const path = `${screenshotPath ?? join(tmpdir(), `chessfable-game-opening-${process.pid}.png`)}.${name}.png`;
+    await writeFile(path, Buffer.from(await session.screenshot(), "base64"));
+    console.log(`  .. game-opening source screenshot: ${path}`);
+  };
+  let database;
+  let file;
+  let records;
+  const seeded = await assertion(
+    "GO1 game-opening fixtures contain two distinct native database and PGN games",
+    async () => {
+      const entries = await invoke("list_file_workspace", {
+        workspace: { id: { id: filesWorkspaceId }, kind: "fileWorkspace" },
+        ticket: null,
+      });
+      file = entries.find((entry) => entry.name === openingRowName)?.handle;
+      if (!file) throw new Error("dedicated PGN fixture was not listed");
+      const count = await invoke("count_pgn_games", { file, ticket: null });
+      if (count !== 2) throw new Error(`dedicated PGN fixture has ${count} games`);
+      const root = await invoke("get_database_workspace", {});
+      database = await invoke("create_workspace_database", {
+        root,
+        filename: "verify-game-opening.db3",
+      });
+      await invoke("convert_pgn", {
+        progressId: `verify-opening:${randomUUID()}`,
+        files: [file],
+        database,
+        timestamp: null,
+        title: openingDatabaseTitle,
+        description: "Dedicated game-opening proof",
+      });
+      const response = await invoke("get_games", {
+        file: database,
+        query: {
+          sides: "WhiteBlack",
+          options: { page: 1, pageSize: 25, sort: "id", direction: "asc", skipCount: false },
+        },
+        ticket: null,
+      });
+      records = openingGames.map((game) =>
+        response.data.find((record) => record.white === game.white && record.black === game.black),
+      );
+      if (response.count !== 2 || records.some((record) => !record))
+        throw new Error(`database fixture mismatch: ${JSON.stringify(response)}`);
+    },
+  );
+  const requireSeed = () => {
+    if (!seeded) throw new Error("not attempted: GO1 fixture setup failed");
+  };
+  const overview = async () => {
+    requireSeed();
+    await session.execute(
+      `const link = [...document.querySelectorAll('nav a')].find(node => node.getAttribute('href')?.startsWith('/databases')); if (!link) throw new Error('database navigation absent'); link.click(); return true;`,
+    );
+    await wait("database source route", "return location.pathname.startsWith('/databases')");
+    if (await session.execute("return location.pathname !== '/databases'")) {
+      const back = await button("Back");
+      await clickAt(session, back.x, back.y);
+    }
+    await wait("database overview", "return location.pathname === '/databases'");
+  };
+  const databaseSurface = async () => {
+    await overview();
+    const open = await button("Open database");
+    await clickAt(session, open.x, open.y);
+    await wait("opened database route", "return location.pathname === arguments[0]", [
+      `/databases/${database.id.id}`,
+    ]);
+  };
+  const databaseRow = (game) =>
+    coordinates(
+      `[...document.querySelectorAll('tbody tr')].find(node => node.textContent.includes(arguments[0]))`,
+      [game.white],
+    );
+  const filesSurface = async (name = openingRowName) => {
+    requireSeed();
+    const row = await filesRowCoordinates(session, name);
+    await clickAt(session, row.x, row.y);
+    await button("Open game");
+  };
+  const fileRow = (game) =>
+    coordinates(
+      `[...document.querySelectorAll('[role="option"]')].find(node => node.textContent.includes(arguments[0]))`,
+      [game.white],
+    );
+  const enter = async (script, args) => {
+    await wait(
+      "game-opening row focus",
+      `const row = (${script}); if (!row) return false; row.focus(); return document.activeElement === row;`,
+      args,
+    );
+    await session.call("POST", "/actions", {
+      actions: [
+        {
+          type: "key",
+          id: "opening-keyboard",
+          actions: [
+            { type: "keyDown", value: "\uE007" },
+            { type: "keyUp", value: "\uE007" },
+          ],
+        },
+      ],
+    });
+  };
+  await assertion(
+    "GO2 the database card has a visible sibling Open database control before selection",
+    async () => {
+      await overview();
+      await wait(
+        "associated database opener",
+        `const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Open database'); return button && !button.disabled && button.parentElement.textContent.includes(arguments[0]) && !button.parentElement.closest('button') && button.getBoundingClientRect().height > 0;`,
+        [openingDatabaseTitle],
+      );
+      await saveSource("database-card");
+    },
+  );
+  await assertion(
+    "GO3 the labelled database control opens its handle route and synchronizes the database",
+    async () => {
+      await databaseSurface();
+      await wait(
+        "synchronized database heading",
+        "return [...document.querySelectorAll('h1,h2,h3')].some(node => node.textContent === arguments[0])",
+        [openingDatabaseTitle],
+      );
+    },
+  );
+  await assertion(
+    "GO4 database single-click selects a preview without admitting a tab",
+    async () => {
+      await databaseSurface();
+      const before = await snapshot();
+      const row = await databaseRow(openingGames[1]);
+      await clickAt(session, row.x, row.y);
+      await wait(
+        "database preview selection",
+        "return [...document.querySelectorAll('tbody tr[aria-selected=\"true\"]')].some(node => node.textContent.includes(arguments[0]))",
+        [openingGames[1].white],
+      );
+      if (
+        JSON.stringify(await snapshot()) !== JSON.stringify(before) ||
+        !(await session.execute("return location.pathname.startsWith('/databases/')"))
+      )
+        throw new Error("single click opened a tab");
+    },
+  );
+  await assertion(
+    "GO5 the labelled database game button opens the selected content and origin",
+    async () => {
+      await databaseSurface();
+      const row = await databaseRow(openingGames[1]);
+      await clickAt(session, row.x, row.y);
+      const open = await button("Open game");
+      if (open.disabled) throw new Error("database game button is disabled");
+      await saveSource("database-game");
+      await clickAt(session, open.x, open.y);
+      await assertOpened(openingGames[1], { kind: "database", database, gameId: records[1].id });
+    },
+  );
+  await assertion(
+    "GO6 a fixed-coordinate double-click opens an initially unselected database game",
+    async () => {
+      await databaseSurface();
+      const row = await databaseRow(openingGames[1]);
+      if (row.selected !== "false")
+        throw new Error("database double-click target was already selected");
+      await doubleClickAt(session, row.x, row.y);
+      await assertOpened(openingGames[1], { kind: "database", database, gameId: records[1].id });
+    },
+  );
+  await assertion(
+    "GO7 row-focused Enter opens the requested database game content and origin",
+    async () => {
+      await databaseSurface();
+      await enter(
+        `[...document.querySelectorAll('tbody tr')].find(node => node.textContent.includes(arguments[0]))`,
+        [openingGames[0].white],
+      );
+      await assertOpened(openingGames[0], { kind: "database", database, gameId: records[0].id });
+    },
+  );
+  await assertion("GO8 the Files preview has a visible enabled Open game control", async () => {
+    await filesSurface();
+    const open = await button("Open game");
+    if (open.disabled) throw new Error("Files game button is disabled");
+    await fileRow(openingGames[1]);
+    await saveSource("file-game");
+  });
+  await assertion(
+    "GO9 PGN single-click selects without opening and keeps row coordinates stationary",
+    async () => {
+      await filesSurface();
+      const before = await snapshot();
+      const row = await fileRow(openingGames[1]);
+      await clickAt(session, row.x, row.y);
+      await wait(
+        "PGN preview selection",
+        'return [...document.querySelectorAll(\'[role="option"][aria-selected="true"]\')].some(node => node.textContent.includes(arguments[0]))',
+        [openingGames[1].white],
+      );
+      // Wait for the new preview's actual notation, so this covers completion as well as selection.
+      await wait(
+        "second PGN preview",
+        "return document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
+        [openingGames[1].notation],
+      );
+      const after = await fileRow(openingGames[1]);
+      if (
+        JSON.stringify(await snapshot()) !== JSON.stringify(before) ||
+        !(await session.execute("return location.pathname === '/files'")) ||
+        row.x !== after.x ||
+        row.y !== after.y
+      )
+        throw new Error(`selection moved or opened the list: ${JSON.stringify({ row, after })}`);
+    },
+  );
+  await assertion(
+    "GO10 the labelled Files game button opens the selected fresh game and explicit index",
+    async () => {
+      await filesSurface();
+      const row = await fileRow(openingGames[1]);
+      await clickAt(session, row.x, row.y);
+      const open = await button("Open game");
+      await clickAt(session, open.x, open.y);
+      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+    },
+  );
+  await assertion(
+    "GO11 a fixed-coordinate double-click opens an initially unselected non-first PGN game",
+    async () => {
+      await filesSurface();
+      const row = await fileRow(openingGames[1]);
+      if (row.selected !== "false") throw new Error("PGN double-click target was already selected");
+      await doubleClickAt(session, row.x, row.y);
+      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+    },
+  );
+  await assertion(
+    "GO12 row-focused Enter opens the requested PGN game content and explicit index",
+    async () => {
+      await filesSurface();
+      await enter(
+        `[...document.querySelectorAll('[role="option"]')].find(node => node.textContent.includes(arguments[0]))`,
+        [openingGames[1].white],
+      );
+      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+    },
+  );
+  await assertion("GO13 an empty PGN exposes no working Open game action", async () => {
+    await filesSurface(emptyOpeningRowName);
+    const open = await button("Open game");
+    if (!open.disabled) throw new Error("empty-file game opener is enabled");
+  });
 }
 
 let cleanupSettled = false;
@@ -1578,6 +1945,11 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
+  await writeFile(join(filesWorkspace, `${openingRowName}.pgn`), openingPgn);
+  console.log(
+    `  .. game-opening disposable PGN input: ${join(filesWorkspace, `${openingRowName}.pgn`)}`,
+  );
+  await writeFile(join(filesWorkspace, `${emptyOpeningRowName}.pgn`), "");
   // Dedicated sidecar-less file: changing its type cannot alter another check's fixture.
   const filesMetadataPgnPath = join(filesWorkspace, `${filesMetadataRowName}.pgn`);
   const filesMetadataInfoPath = join(filesWorkspace, `${filesMetadataRowName}.info`);
@@ -2804,6 +3176,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
         ).catch((error) => ({ error: `${error.message}; expected ${filesGameNotation}` }));
     check(notation === true, filesNotationCheck, notation.error);
   }
+
+  await verifyGameOpening(session);
 
   // Lossless NAGs: setup failures are carried to every dependent assertion.
   const nagSetup = async (step, prerequisite, action) => {

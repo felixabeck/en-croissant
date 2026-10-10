@@ -306,55 +306,73 @@ export default function DatabasesPage() {
                 )}
                 {databases &&
                   filteredDatabases?.map((item) => (
-                    <GenericCard
-                      id={databaseHandleKey(item.file)}
-                      key={databaseHandleKey(item.file)}
-                      isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
-                      setSelected={setSelected}
-                      error={item.type === "error" ? item.error : ""}
-                      onDoubleClick={() => {
-                        if (item.type === "error") return;
-                        navigate(databaseRouteTarget(item));
-                        setActiveDatabase(item);
-                      }}
-                      Header={
-                        // Both rows wrap: a narrow card (a large font scale) puts the star and then
-                        // the title under the icon rather than squeezing the title to nothing.
-                        <Group justify="space-between">
-                          <Group miw={0}>
-                            <IconDatabase size="1.5rem" />
-                            <Box miw={0}>
-                              <Text fw={500} fz="sm" className="wrap-anywhere">
-                                {item.type === "success" ? item.title : item.error}
-                              </Text>
-                              <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }}>
-                                {item.type === "error" ? item.filename : item.description}
-                              </Text>
-                            </Box>
+                    <Stack key={databaseHandleKey(item.file)} gap="xs" miw={0}>
+                      <GenericCard
+                        id={databaseHandleKey(item.file)}
+                        key={databaseHandleKey(item.file)}
+                        isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
+                        setSelected={setSelected}
+                        error={item.type === "error" ? item.error : ""}
+                        onDoubleClick={() => {
+                          if (item.type === "error") return;
+                          navigate(databaseRouteTarget(item));
+                          setActiveDatabase(item);
+                        }}
+                        Header={
+                          // Both rows wrap: a narrow card (a large font scale) puts the star and then
+                          // the title under the icon rather than squeezing the title to nothing.
+                          <Group justify="space-between">
+                            <Group miw={0}>
+                              <IconDatabase size="1.5rem" />
+                              <Box miw={0}>
+                                <Text fw={500} fz="sm" className="wrap-anywhere">
+                                  {item.type === "success" ? item.title : item.error}
+                                </Text>
+                                <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }}>
+                                  {item.type === "error" ? item.filename : item.description}
+                                </Text>
+                              </Box>
+                            </Group>
+                            {item.type === "success" && (
+                              <Rating
+                                value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
+                                count={1}
+                                onChange={() => {
+                                  changeReferenceDatabase(item.file);
+                                }}
+                              />
+                            )}
                           </Group>
-                          {item.type === "success" && (
-                            <Rating
-                              value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
-                              count={1}
-                              onChange={() => {
-                                changeReferenceDatabase(item.file);
-                              }}
-                            />
-                          )}
-                        </Group>
-                      }
-                      stats={[
-                        {
-                          label: t("Databases.Card.Games"),
-                          value: item.type === "success" ? formatNumber(item.game_count) : "???",
-                        },
-                        {
-                          label: t("Databases.Card.Storage"),
-                          value:
-                            item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
-                        },
-                      ]}
-                    />
+                        }
+                        stats={[
+                          {
+                            label: t("Databases.Card.Games"),
+                            value: item.type === "success" ? formatNumber(item.game_count) : "???",
+                          },
+                          {
+                            label: t("Databases.Card.Storage"),
+                            value:
+                              item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
+                          },
+                        ]}
+                      />
+                      {item.type === "success" && (
+                        <Button
+                          variant="light"
+                          miw={0}
+                          styles={{
+                            root: { height: "auto", minHeight: "var(--button-height)" },
+                            label: { whiteSpace: "normal", overflowWrap: "anywhere" },
+                          }}
+                          onClick={() => {
+                            setActiveDatabase(item);
+                            void navigate(databaseRouteTarget(item));
+                          }}
+                        >
+                          {t("Databases.OpenDatabase", { defaultValue: "Open database" })}
+                        </Button>
+                      )}
+                    </Stack>
                   ))}
               </SimpleGrid>
             </ScrollArea>

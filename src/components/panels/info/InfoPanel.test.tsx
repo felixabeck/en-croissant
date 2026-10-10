@@ -91,6 +91,7 @@ vi.mock("./GameSelector", async (importOriginal) => {
       setGames,
       setPage,
       deleteGame,
+      onActivate,
       ...actualProps
     }: {
       games: Map<number, { name: string; identity?: { stamp: string; revision: string } }>;
@@ -100,6 +101,7 @@ vi.mock("./GameSelector", async (importOriginal) => {
         >
       >;
       setPage: (page: number) => Promise<void>;
+      onActivate?: (page: number) => Promise<void>;
       deleteGame: (snapshot: { index: number; stamp: string; revision: string }) => Promise<void>;
       path: { id: { id: string }; kind: "fileWorkspace" };
       activePage: number;
@@ -111,6 +113,7 @@ vi.mock("./GameSelector", async (importOriginal) => {
             games={games}
             setGames={setGames}
             setPage={setPage}
+            onActivate={onActivate}
             deleteGame={deleteGame}
             {...actualProps}
           />
@@ -119,6 +122,9 @@ vi.mock("./GameSelector", async (importOriginal) => {
       return (
         <>
           <span data-testid="game-cache-size">{games.size}</span>
+          <button type="button" data-testid="activate-page" onClick={() => void onActivate?.(1)}>
+            Activate page
+          </button>
           <button type="button" data-testid="set-page" onClick={() => void setPage(1)}>
             Set Page
           </button>
@@ -443,6 +449,50 @@ describe("InfoPanel game loading and cancellation", () => {
       verifiedRevision: "r2",
     });
   });
+
+  test("explicit row activation uses guarded current-tab replacement, never tab creation", async () => {
+    await act(async () => root.render(renderPanel()));
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="activate-page"]')!.click(),
+    );
+    expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 1,
+    });
+    expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  test.each(["double-click", "Enter"])(
+    "real selector %s retains unsaved-change protection",
+    async (gesture) => {
+      mocks.useActualGameSelector = true;
+      mocks.readGames.mockResolvedValue([
+        { pgn: "selected", stamp: "s", revision: "r", present: true },
+      ]);
+      mocks.parsePGN.mockResolvedValue({ headers: { event: "Selected" } });
+      treeStore.getState().setComment("Unsaved edit");
+      await act(async () => root.render(renderPanel()));
+      const row = container.querySelector<HTMLElement>('[role="option"]')!;
+      expect(row).not.toBeNull();
+      await act(async () => {
+        row.dispatchEvent(
+          gesture === "Enter"
+            ? new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+            : new MouseEvent("dblclick", { bubbles: true }),
+        );
+      });
+      await vi.waitFor(() =>
+        expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
+          "Tab.UnsavedChanges",
+        ),
+      );
+      expect(mocks.loadFileGame).not.toHaveBeenCalled();
+      expect(treeStore.getState().root.comment).toBe("Unsaved edit");
+      expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+    },
+  );
 
   test("setPage leaves metadata and tree unchanged when the workspace write is refused", async () => {
     const setState = vi.spyOn(treeStore.getState(), "setState");

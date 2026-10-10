@@ -67,6 +67,7 @@
         "id": "databases-files",
         "source": "frontend",
         "paths": [
+          "src/components/common/gameOpen.tsx",
           "src/components/databases/**",
           "src/components/files/**",
           "src/components/panels/database/**",

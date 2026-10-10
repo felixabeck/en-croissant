@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   getDbInfo: vi.fn(),
   issueDatabaseWorkspace: vi.fn(),
   notify: vi.fn(),
+  navigate: vi.fn(),
+  setDatabase: vi.fn(),
 }));
 vi.mock("@/platform/tauri", async () => ({
   ...(await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri")),
@@ -34,14 +36,18 @@ vi.mock("react-i18next", async () => {
     }),
   };
 });
-vi.mock("@tanstack/react-router", () => ({ Link: () => null, useNavigate: () => vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({ Link: () => null, useNavigate: () => mocks.navigate }));
 vi.mock("@/state/store/database", () => ({
   activeDatabaseViewStore: { getState: () => ({ database: null }) },
-  useActiveDatabaseViewStore: () => vi.fn(),
+  useActiveDatabaseViewStore: () => mocks.setDatabase,
 }));
 vi.mock("@/components/common/ConfirmModal", () => ({ default: () => null }));
 vi.mock("@/components/common/GenericCard", () => ({
-  default: ({ Header }: { Header: ReactNode }) => <article>{Header}</article>,
+  default: ({ Header, id, setSelected, onDoubleClick }: any) => (
+    <button type="button" data-card onClick={() => setSelected(id)} onDoubleClick={onDoubleClick}>
+      {Header}
+    </button>
+  ),
 }));
 vi.mock("./AddDatabase", () => ({ default: () => null }));
 vi.mock("./PlayerSearchInput", () => ({ PlayerSearchInput: () => null }));
@@ -162,6 +168,36 @@ async function clickChoose() {
 function alert() {
   return host.querySelector('[role="alert"]');
 }
+
+test("a visible sibling opens a successful database before selection and error cards have no opener", async () => {
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    entry,
+    { ...entry, handle: { id: { id: "broken-db" }, kind: "database" }, filename: "broken.db3" },
+  ]);
+  mocks.getDbInfo
+    .mockResolvedValueOnce({
+      title: "Available",
+      description: "",
+      game_count: 2,
+      player_count: 2,
+      event_count: 1,
+      indexed: false,
+    })
+    .mockRejectedValueOnce(new Error("Unavailable"));
+  await render();
+  const buttons = [...host.querySelectorAll("button")].filter(
+    (button) => button.textContent === "Open database",
+  );
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0].closest("[data-card]")).toBeNull();
+  expect(buttons[0].parentElement?.textContent).toContain("Available");
+  await act(async () => buttons[0].click());
+  expect(mocks.setDatabase).toHaveBeenCalledWith(expect.objectContaining({ file: entry.handle }));
+  expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+    to: "/databases/$databaseId",
+    params: { databaseId: "new-db" },
+  });
+});
 
 test.each([true, false])(
   "workspace acquisition refusal renders recovery with rootFailure=%s",

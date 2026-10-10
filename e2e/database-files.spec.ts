@@ -9,9 +9,58 @@ import {
     selectFilesTreeRow,
     test,
     type MockScenario,
+    gameOpeningFixture,
+    gameOpeningCommands,
+    activeWorkspaceTab,
 } from "./fixtures";
 
 const { openingDirectory, pgnFile } = filesWorkspaceFixture;
+
+for (const gesture of ["button", "double-click", "Enter"] as const) {
+    test(`database-files: visible database opener and explicit game ${gesture}`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await mockScenario({ commands: gameOpeningCommands });
+        await page.goto("/databases");
+        const opener = page.getByRole("button", { name: "Open database", exact: true });
+        await expect(opener).toHaveText("Open database");
+        await expect(opener.locator("..")).toContainText(gameOpeningFixture.databaseTitle);
+        await expect(opener.locator("button")).toHaveCount(0);
+        await capture("database-labelled-opener");
+        await expect(page).toHaveScreenshot("database-labelled-opener.png", { fullPage: true });
+        await opener.click();
+        await expect(page).toHaveURL(`/databases/${gameOpeningFixture.databaseId}`);
+        const rows = page.locator("tbody tr");
+        const second = rows.filter({ hasText: "Second White" });
+        const openGame = page.getByRole("button", { name: "Open game", exact: true });
+        await expect(openGame).toBeDisabled();
+        if (gesture === "button") {
+            await second.click();
+            await expect(page).toHaveURL(`/databases/${gameOpeningFixture.databaseId}`);
+            await expect(second).toHaveAttribute("aria-selected", "true");
+            await expect(openGame).toBeEnabled();
+            await expect(openGame).toHaveText("Open game");
+            await capture("database-labelled-game");
+            await expect(page).toHaveScreenshot("database-labelled-game.png", { fullPage: true });
+            await openGame.click();
+        } else if (gesture === "double-click") await second.dblclick();
+        else {
+            await second.focus();
+            await second.press("Enter");
+        }
+        await expect(page).toHaveURL(/\/$/);
+        await expect(page.getByRole("tab", { name: /Second White - Second Black/ })).toBeVisible();
+        expect((await activeWorkspaceTab(page))?.gameOrigin).toEqual({
+            kind: "database",
+            database: { id: { id: gameOpeningFixture.databaseId }, kind: "database" },
+            gameId: 202,
+        });
+        await expect(page.getByRole("button", { name: "d4", exact: true })).toBeVisible();
+    });
+}
 
 test("database-files: metadata-only editing fits 320px and relists the chosen type", async ({
     page,
@@ -91,7 +140,7 @@ test("database-files: grants a workspace and creates a folder through typed IPC"
 
     await expect(page.getByText("Openings")).toBeVisible();
     await selectFilesTreeRow(page, pgnFile.name);
-    await expect(page.getByRole("button", { name: /^open$/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open game", exact: true })).toBeVisible();
     await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
     await assertNoHorizontalOverflow();
     await assertFilesColumnsNotClipped(page);
@@ -217,6 +266,7 @@ test("database-files: an unfinished import stays visible with Delete and no refe
     await expect(card).toBeVisible();
     await expect(card).toContainText("navigation.db3");
     await expect(card.locator(".mantine-Rating-root")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open database", exact: true })).toHaveCount(0);
     await card.dblclick();
     await expect(page).toHaveURL("/databases");
     await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeVisible();

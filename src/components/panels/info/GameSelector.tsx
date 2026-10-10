@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import type { FileWorkspaceHandle, StampedGame } from "@/bindings";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { IconAction } from "@/components/common/IconAction";
+import { gameRowActivation } from "@/components/common/gameOpen";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useVirtualPageLoader } from "@/hooks/useVirtualPageLoader";
 import { fontSizeAtom } from "@/state/atoms";
@@ -40,6 +41,7 @@ export default function GameSelector({
   path,
   activePage,
   deleteGame,
+  onActivate,
 }: {
   games: Map<number, GameSelectorRow>;
   setGames: React.Dispatch<React.SetStateAction<Map<number, GameSelectorRow>>>;
@@ -48,6 +50,7 @@ export default function GameSelector({
   path: FileWorkspaceHandle;
   activePage: number;
   deleteGame?: DeleteGame;
+  onActivate?: (index: number) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const loadPage = useCallback(
@@ -125,6 +128,8 @@ export default function GameSelector({
   return (
     <ScrollArea viewportRef={parentRef} h="100%">
       <Box
+        role="listbox"
+        aria-label={t("Common.Games")}
         style={{
           height: rowVirtualizer.getTotalSize(),
           width: "100%",
@@ -139,6 +144,7 @@ export default function GameSelector({
             setPage={setPage}
             deleteGame={deleteGame}
             activePage={activePage}
+            onActivate={onActivate}
             style={{
               position: "absolute",
               top: 0,
@@ -161,6 +167,7 @@ function GameRow({
   setPage,
   activePage,
   deleteGame,
+  onActivate,
 }: {
   style?: React.CSSProperties;
   index: number;
@@ -168,6 +175,7 @@ function GameRow({
   setPage: (v: number) => void;
   activePage: number;
   deleteGame?: DeleteGame;
+  onActivate?: (index: number) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const [deleteModal, toggleDelete] = useToggle();
@@ -192,6 +200,9 @@ function GameRow({
         />
       )}
       <Group
+        role="option"
+        aria-selected={index === activePage}
+        {...gameRowActivation(index, onActivate ?? setPage)}
         style={style}
         justify="space-between"
         wrap="nowrap"

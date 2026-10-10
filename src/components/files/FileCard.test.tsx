@@ -5,6 +5,8 @@ import { cancellationError } from "@/platform/tauri";
 import { tabStorage } from "@/state/store/tabStorage";
 import type { StampedGame } from "@/bindings";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { getDefaultStore } from "jotai";
+import { tabsAtom } from "@/state/atoms";
 
 const mocks = vi.hoisted(() => ({
   readGames: vi.fn(),
@@ -12,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
   showNotification: vi.fn(),
+  actualSelector: false,
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -33,7 +36,11 @@ vi.mock("@/utils/chess", async (importOriginal) => {
     parsePGN: async (pgn: string) => {
       const { defaultTree } = await import("@/utils/treeReducer");
       const tree = defaultTree();
-      tree.headers.event = pgn.includes("Fresh from disk") ? "Fresh from disk" : "Preview";
+      tree.headers.event = pgn.includes("Fresh second")
+        ? "Fresh second"
+        : pgn.includes("Fresh from disk")
+          ? "Fresh from disk"
+          : "Preview";
       return tree;
     },
   };
@@ -68,13 +75,29 @@ vi.mock("../databases/GamePreview", () => ({
   default: ({ pgn }: { pgn: string }) => <div data-testid="game-preview">{pgn}</div>,
 }));
 
-vi.mock("../panels/info/GameSelector", () => ({
-  default: ({ activePage, setPage }: { activePage: number; setPage: (page: number) => void }) => (
-    <button type="button" data-testid="game-selector" onClick={() => setPage(activePage + 1)}>
-      Select next game
-    </button>
-  ),
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: () => ({
+    getTotalSize: () => 60,
+    getVirtualItems: () => [0, 1].map((index) => ({ index, size: 30, start: index * 30 })),
+  }),
 }));
+vi.mock("../panels/info/GameSelector", async (original) => {
+  const actual = await original<typeof import("../panels/info/GameSelector")>();
+  return {
+    default: (props: React.ComponentProps<typeof actual.default>) =>
+      mocks.actualSelector ? (
+        <actual.default {...props} />
+      ) : (
+        <button
+          type="button"
+          data-testid="game-selector"
+          onClick={() => props.setPage(props.activePage + 1)}
+        >
+          Select next game
+        </button>
+      ),
+  };
+});
 
 import { MantineProvider } from "@mantine/core";
 import FileCard from "./FileCard";
@@ -126,6 +149,10 @@ describe("FileCard", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
+    localStorage.clear();
+    getDefaultStore().set(tabsAtom, []);
+    mocks.actualSelector = false;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -134,6 +161,7 @@ describe("FileCard", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   test("rapid file replacement aborts previous signal and prevents stale publication", async () => {
@@ -383,7 +411,7 @@ describe("FileCard", () => {
     expect(edit).not.toBeNull();
     act(() => edit.click());
     expect(onEditMetadata).toHaveBeenCalledOnce();
-    expect(container.querySelector('[aria-label="Common.Open"]')).not.toBeNull();
+    expect(openButton().textContent).toBe("Common.OpenGame");
   });
 
   test("Open reads and seeds fresh game text instead of the preview", async () => {
@@ -400,7 +428,7 @@ describe("FileCard", () => {
     await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
     await vi.waitFor(() => expect(container.textContent).toContain("Old preview"));
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Common.Open"]')!.click();
+      openButton().click();
     });
     await vi.waitFor(() => expect(seed).toHaveBeenCalledOnce());
 
@@ -412,5 +440,114 @@ describe("FileCard", () => {
         headers: expect.objectContaining({ event: "Fresh from disk" }),
       }),
     );
+  });
+
+  function openButton() {
+    return [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Common.OpenGame",
+    )!;
+  }
+
+  async function renderActualList() {
+    mocks.actualSelector = true;
+    mocks.readGames.mockImplementation(async (_handle: unknown, start: number, end: number) =>
+      Array.from({ length: Math.min(end, 1) - start + 1 }, (_, index) =>
+        stampedGame(`preview-${start + index}`),
+      ),
+    );
+    await renderWithMantine(
+      <FileCard onEditMetadata={vi.fn()} selected={{ ...sampleFileA, numGames: 2 }} />,
+      root,
+    );
+  }
+
+  test("labelled action is visible and enabled while preview loads, empty files cannot open", async () => {
+    mocks.readGames.mockReturnValue(new Promise(() => {}));
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
+    expect(openButton().textContent).toBe("Common.OpenGame");
+    expect(openButton().disabled).toBe(false);
+    await renderWithMantine(
+      <FileCard onEditMetadata={vi.fn()} selected={{ ...sampleFileB, numGames: 0 }} />,
+      root,
+    );
+    expect(openButton().disabled).toBe(true);
+    await act(async () => openButton().click());
+    expect(mocks.readGame).not.toHaveBeenCalled();
+  });
+
+  test("non-first row double-click reads its explicit index fresh, shares one lock with the button", async () => {
+    let settle!: (game: StampedGame) => void;
+    mocks.readGame.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const seed = vi.spyOn(tabStorage, "seed");
+    await renderActualList();
+    const second = container.querySelectorAll<HTMLElement>('[role="option"]')[1];
+    await act(async () => {
+      second.click();
+      second.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      second.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      openButton().click();
+    });
+    expect(mocks.readGame).toHaveBeenCalledExactlyOnceWith(sampleFileA.handle, 1, undefined);
+    expect(openButton().disabled).toBe(true);
+    // Selection changes while the fresh read still belongs to the second game.
+    await act(async () => container.querySelectorAll<HTMLElement>('[role="option"]')[0].click());
+    await act(async () => settle(stampedGame('[Event "Fresh second"]\n\n1. d4 *', "second")));
+    expect(seed).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: expect.objectContaining({ event: "Fresh second" }) }),
+    );
+    expect(getDefaultStore().get(tabsAtom)).toEqual([
+      expect.objectContaining({
+        gameOrigin: expect.objectContaining({
+          kind: "file",
+          gameNumber: 1,
+          file: expect.objectContaining({ handle: sampleFileA.handle }),
+        }),
+      }),
+    ]);
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({ to: "/" });
+  });
+
+  test("row-focused Enter opens the non-first file game without changing selection first", async () => {
+    mocks.readGame.mockResolvedValue(stampedGame('[Event "Fresh second"]\n\n1. d4 *'));
+    await renderActualList();
+    const second = container.querySelectorAll<HTMLElement>('[role="option"]')[1];
+    expect(second.tabIndex).toBe(0);
+    await act(async () => {
+      second.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(mocks.readGame).toHaveBeenCalledExactlyOnceWith(sampleFileA.handle, 1, undefined);
+    expect(getDefaultStore().get(tabsAtom)[0].gameOrigin).toEqual(
+      expect.objectContaining({ kind: "file", gameNumber: 1 }),
+    );
+  });
+
+  test("open rejection, cancellation and null admission release the lock without navigation", async () => {
+    mocks.readGames.mockResolvedValue([]);
+    mocks.readGame
+      .mockRejectedValueOnce(new Error("fresh read failed"))
+      .mockRejectedValueOnce(cancellationError());
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
+    await act(async () => openButton().click());
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "fresh read failed" }),
+    );
+    await act(async () => openButton().click());
+    expect(mocks.showNotification).toHaveBeenCalledOnce();
+    mocks.readGame.mockResolvedValue(stampedGame("Fresh from disk"));
+    const seed = vi.spyOn(tabStorage, "seed").mockImplementationOnce(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+    await act(async () => openButton().click());
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(openButton().disabled).toBe(false);
+    seed.mockRestore();
+    await act(async () => openButton().click());
+    expect(mocks.navigate).toHaveBeenCalledOnce();
   });
 });

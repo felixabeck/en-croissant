@@ -1,15 +1,11 @@
 import { tauri } from "@/platform/tauri";
-import { Divider, Group, Paper, ScrollArea, Stack } from "@mantine/core";
-import { IconTrash, IconZoomCheck } from "@tabler/icons-react";
-import { useNavigate } from "@tanstack/react-router";
-import { useAtom } from "jotai";
+import { Divider, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
+import { IconTrash } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { type DatabaseHandle, type NormalizedGame } from "@/bindings";
-import { tabsAtom } from "@/state/atoms";
+import { OpenGameButton } from "@/components/common/gameOpen";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { createTab, runTabCreation } from "@/utils/tabs";
 import GameInfo from "../common/GameInfo";
 import GamePreview from "./GamePreview";
 
@@ -17,50 +13,36 @@ function GameCard({
   game,
   file,
   mutate,
+  onOpen,
+  pending,
 }: {
-  game: NormalizedGame;
+  game?: NormalizedGame;
   file: DatabaseHandle;
   mutate: () => void;
+  onOpen: (game: NormalizedGame) => void | Promise<void>;
+  pending: boolean;
 }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { mutate: globalMutate } = useSWRConfig();
-
-  const [, setTabs] = useAtom(tabsAtom);
 
   return (
     <Paper shadow="sm" p="sm" withBorder h="100%">
       <ScrollArea h="100%">
         <Stack h="100%" gap="xs">
-          <GameInfo headers={game} />
-          <Divider />
           <Group justify="left">
-            <IconAction
-              label={t("Board.Action.AnalyzeGame")}
-              variant="subtle"
-              onClick={() => {
-                void runTabCreation({
-                  create: () =>
-                    createTab({
-                      tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
-                      setTabs,
-                      pgn: game.moves,
-                      headers: game,
-                      gameOrigin: { kind: "database", database: file, gameId: game.id },
-                    }),
-                  onSuccess: () => navigate({ to: "/" }),
-                  onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
-                });
-              }}
-            >
-              <IconZoomCheck size="1.2rem" stroke={1.5} />
-            </IconAction>
+            <OpenGameButton
+              disabled={!game}
+              pending={pending}
+              onOpen={() => game && onOpen(game)}
+            />
 
             <IconAction
               label={t("Databases.Game.Delete")}
               variant="subtle"
               color="red"
+              disabled={!game}
               onClick={() => {
+                if (!game) return;
                 void tauri.deleteDbGame(file, game.id).then(() => {
                   mutate();
                   globalMutate(
@@ -76,7 +58,15 @@ function GameCard({
             </IconAction>
           </Group>
           <Divider />
-          <GamePreview pgn={game.moves} headers={game} showOpening />
+          {game ? (
+            <>
+              <GameInfo headers={game} />
+              <Divider />
+              <GamePreview pgn={game.moves} headers={game} showOpening />
+            </>
+          ) : (
+            <Text>{t("Databases.Game.NoSelection")}</Text>
+          )}
         </Stack>
       </ScrollArea>
     </Paper>

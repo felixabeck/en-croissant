@@ -654,6 +654,7 @@ function GameSelectorAccordion({
                 games={games}
                 setGames={setGames}
                 setPage={setPage}
+                onActivate={setPage}
                 deleteGame={deleteGame}
                 path={filePath}
                 activePage={gameNumber || 0}
