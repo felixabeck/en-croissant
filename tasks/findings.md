@@ -15007,3 +15007,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix shape:** Model the native write outcome required by the concurrent external-change scenario, assert the write targets the opened game with its original expected stamp, and preserve conflict detection, diagnostics, autosave and the existing screenshot.
 * **Proof:** `pnpm test:e2e:container --project=file-freshness`, plus existing autosave and freshness unit tests. Never update snapshots.
 * **Found by:** Root first-pass log `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-first-pass.PiECIf/log`, traced by the bounded repair leaf on 2026-10-10.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Database game rows cannot receive pointer input at 320px and 200% font scale
+
+* **ID:** f-20261010-36 · **Status:** open · **Area:** frontend-ui · **Root:** database-view-responsive-reachability · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** `src/components/databases/DatabaseView.tsx`, `src/components/databases/GridLayout.tsx`, `e2e/font-scaled-breakpoints.spec.ts:37`.
+* **Defect:** After the overview wrapping repair, the unchanged pinned responsive test reaches the game list. Its Second White row resolves visible and enabled, but every ordinary click is intercepted by the tab panel, navbar or another covering element, and the test times out at 45 seconds. DatabaseView uses fixed full-height hidden-overflow Stack/Tabs/panels while its heading and three tabs wrap at 320px and 200%. GridLayout keeps both panes full-height inside a grow Group. The resulting narrow layout collapses or covers the table instead of providing reachable content.
+* **Fix shape:** Preserve existing routes, selection, opening gestures and desktop pane proportions. Make the narrow shared table layout and database view use content height, wrapping and reachable scrolling, with the existing font-scaled responsive mechanism. Do not force pointer input or weaken assertions.
+* **Proof:** The ordinary row click and selected-state assertion in `pnpm test:e2e:container --project=font-scaled-breakpoints` must pass, followed by the labelled game opener clipping assertion and Files controls. Preserve every snapshot diff, and accept only predicted responsive changes through the pinned updater.
+* **Related:** `f-20261001-08` requires reachable opening controls. `f-20261001-09` is the separate product question about resizing and preview proportions, which this repair does not resolve or change.
+* **Found by:** Root pinned updater receipt `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-record-predicted.kok7E4/completion.record`, exit 1, root-read call log and screenshot, 2026-10-10.
