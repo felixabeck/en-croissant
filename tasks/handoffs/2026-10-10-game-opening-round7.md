@@ -780,3 +780,96 @@ Root reviewed all five exact diagnoses and their call boundaries. cached-store-o
 The two parser-count-only admission categories remain unaccepted. Root requests two NEW composed witnesses for unchanged C3/C4 guarantees, preserving every existing body and freezing all production. One must demonstrate no premature appended live/cold owner while the original parse survives competing Save freshness and duplicate admission. The other must demonstrate operable replacement-generation admission and preservation of its actual pending presentation when the old generation settles. No production change, new mechanism, acceptance relaxation or third source correction is authorized. All final relevant faults must rerun against the new frozen final tests in fresh r7-proof-completion artifacts.
 
 Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+## Two direct admission witnesses and bounded replay scope correction
+
+Root inspected both new tests and the full proof-completion report below. They add only two separate cases, preserve all old bodies and all production, pass424 selected tests, and directly falsify the two internal-counter admission faults through cold ownership and rendered presentation. The bounded replay has51 successful pairs and34 historical plus six new categories. No complete semantic closure is inferred.
+
+# R7 proof completion leaf evidence
+
+Exactly two new outward witnesses are added to `src/components/boards/BoardAnalysis.test.tsx`. All424 selected tests pass. Production and every existing test body and mock boundary are unchanged from this leaf's launch.
+
+The complete requested historical replay remains blocked by a scope conflict. The assignment restricts disposable production faults to the existing nine candidate paths, whose production members are tabs.ts, atoms.ts and tree.ts. Six historical categories require FileFreshnessGate.tsx or BoardAnalysis.tsx production patches outside those paths. Clarification was requested while all independent in-scope work continued. No expanded fault authority was received. Those seven executions, including one supplemental notification execution, were not applied. Prior results remain preserved, with no fresh acceptance inferred from them.
+
+The completed bounded replay supplies34 historical categories plus all six new categories, giving40 unique final semantic patches. There are51 successful fault/restoration pairs, comprising two first direct-witness pairs and49 matrix executions. Every executed fault has a direct AssertionError and exit1. Every exact restoration passes the full eight-suite424-test command with exit0. No source closure, complete semantic closure, runtime acceptance or push is claimed. Root retains arbitration and release authority.
+
+## Exact leaf change and body preservation
+
+The only path changed since leaf launch is `src/components/boards/BoardAnalysis.test.tsx`. `leaf-only.patch` records this leaf's additions against its actual launch snapshot. `final-candidate.patch` contains the complete inherited nine-path candidate plus these two additions for the disposable checkout. The inherited dirty production and peer tests were not rewritten.
+
+1. `composed competing Save preserves the live and cold saved game while the original Add Game parse is pending` holds the original parse, completes a concurrent real Save, observes verified freshness, navigates away and back, then activates competing Add Game. Before the original parse settles it asserts unchanged physical owner, page1, count3, original saved content and stamp through live state and independent cold reads. It then settles the original parse and proves its sole append reaches a new physical key, page3, count4, blank tree, matching cold owner and terminal presentation. The outgoing native command payloads are also checked after those direct observations. The completed original Save is flushed before checking its durability. No appended candidate is flushed to establish admission durability.
+2. `composed replacement admits its own Add Game and retains pending presentation after the old parse settles` holds the old parse, uses actual shared physical replacement, observes the new owner exposing Add Game, activates it and observes actual pending rendering. Settling the old parse first preserves new pending presentation and replacement live/cold content. Settling the new parse proves matching live/cold physical ownership, page3, count4, blank tree and terminal presentation. Its one intended outgoing append payload is checked after those direct observations.
+
+Both witnesses use the existing composed Board/Gate/Jotai/cache/storage harness. Their finally blocks settle every locally held Save/parse promise. Existing abort-aware native-read cleanup remains unchanged.
+
+`original-body-checks.json` proves all37 pre-existing callback definitions byte-identical, including parameterized bodies. More strongly, removing exactly the two added test statements restores the entire launch Board test file byte for byte. This covers imports, helpers, mock boundaries and every historical test assertion. Board's existing67 test executions remain, with two additions giving69 Board tests. No existing body adaptation was made in this leaf.
+
+## Ordinary proof and freeze
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/boards/BoardAnalysis.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts src/state/store/tree.hydration.test.ts src/state/store/tree.test.ts
+pnpm exec oxfmt --check src/components/boards/BoardAnalysis.test.tsx
+pnpm exec oxlint --deny-warnings src/components/boards/BoardAnalysis.test.tsx
+pnpm exec tsgo --noEmit
+git diff --check
+```
+
+All five commands exit0. The first passes424 tests in eight suites. `ordinary-2`, `format`, `lint`, `types` and `diff-check` contain complete logs and exit files, with exact command JSON. `body-check` also exits0. No build or shared heavy gate ran.
+
+The first ordinary run had422 passing existing tests and two failing new fixtures. One extra compressed-byte equality was invalidated by normal remount presentation serialization despite unchanged saved game content. It was removed from the new test, retaining every mandated live/cold owner and content assertion. The other fixture supplied defaultTree's empty event rather than the parsed blank PGN event. Both new held parsed trees now provide that normal event value. These exploratory changes occurred before freeze and affected only the new bodies. The red ordinary log is preserved, with no fault acceptance claimed.
+
+Final tests were frozen only after ordinary proof passed. Every subsequent pre/fault/restored test manifest equals the frozen205-test-file manifest. The519 source/assets/scripts manifests retain exact fault and restoration hashes. Final snapshots, source hashes and Git launch snapshots are retained alongside complete production fault source snapshots.
+
+## Direct new fault pairs
+
+The original freshness-independent-admission patch is unchanged, SHA256 `0b318ed3d5a422a9b93ce6a53fe84816ac3652fe8d40971ea0d114cdc962d892`. It couples domain admission to presentation freshness. The new test directly fails on the live owner comparison, receiving page3/count4 and a new treeKey where the still-pending original parse requires the saved page1/count3 owner. `new-freshness-independent-admission.semantic.txt` contains the actual diff and AssertionError. Fault exit1, exact full restoration424 exit0.
+
+The original generation-admission patch is unchanged, SHA256 `50a78db755070718198c4775821190b403c4f064dfdf76a874d90c805dfd487f`. It treats any cached-store lease as admission authority across physical generations. The new test directly fails because the actual Add Game button remains rendered instead of the replacement operation's pending presentation. `new-generation-admission.semantic.txt` contains that rendered button and AssertionError. Fault exit1, exact full restoration424 exit0.
+
+Both patches were subsequently replayed again in the final matrix against the same frozen tests. Neither category is counted from an internal parse invocation assertion. Historical generation and competing Save tests remain unchanged.
+
+## Final matrix and boundary adaptations
+
+`final-fault-matrix.md` lists all46 intended categories, their exact direct assertions and restoration outcomes or scope blocker. `semantic-category-verdicts.json` selects the final discriminating execution for each category. `fault-pairs.json` records49 matrix executions. `new-witness-pairs.json` records the two initial pairs. Every execution retains forward/inverse patches, check/apply logs, exact command JSON, full test logs, exits, semantic diagnosis, complete fault source snapshots and pre/fault/restored source/test SHA256 manifests.
+
+All executed patches are byte-identical to the corresponding previous Git-derived final fault patches. Necessary boundary adaptations from that prior final matrix are preserved in the inventory, rather than replacing final production with stale source. Outer-only post-parse and synchronous admission executions remain historical controls. Their count-only failures are not selected as semantic category evidence. Post-parse authority instead uses the final four-barrier production fault with actual foreign-content corruption. Synchronous admission uses the unchanged rendered hotkey/remount witness. Active Save source-outcome supplements provide direct superseded/conflict result observations. Supplemental tree/workspace refusal, subscriber and removal executions remain distinct executions of existing patches, not extra unique categories.
+
+Prior rejected cached-owner and Save-destination boundary attempts and the redundant freshness/Gate presentation supplement are preserved untouched and excluded from final semantic selection. The new replay applies none of those rejected adaptations. No compile failure, array-identity-only failure, redundant guard reversal or no-op is counted.
+
+Root's specific arbitration accepts actual forbidden write dispatches and an omitted user notification as outward effects. The fresh cached-store fault logs the received `writeGame` payload with fileWorkspace workspace-token, page3, the default blank PGN and append origin. The fresh Save-destination fault logs fileWorkspace save-destination, page2, the Unsaved version PGN and game origin stamped with64 c characters. These are the exact received payloads, preserved in `root-arbitrated-outward-evidence.json` and the corresponding complete semantic logs. They are not generic internal invocation-count evidence. No actual Rust execution is claimed.
+
+The arbitrated autosave diagnostic is exactly `{ color: "red", title: "Common.Error", message: "Autosave failed" }`. The previous fault omitted it and received zero notifications. That original evidence and the unchanged existing fixture are retained. Its fresh replay is blocked because its patch edits read-only BoardAnalysis.tsx outside the nine-path disposable fault scope. Root's arbitration remains qualified pending fresh canonical cumulative review and is not represented here as a completed fresh execution.
+
+## Remaining scope blocker
+
+These six historical categories require forbidden disposable source paths under the literal assignment scope:
+
+| Category | Required production path |
+| --- | --- |
+| remount-pending-presentation | src/components/tabs/FileFreshnessGate.tsx |
+| obsolete-view-notifications | src/components/tabs/FileFreshnessGate.tsx |
+| save-autosave-failure | src/components/boards/BoardAnalysis.tsx |
+| recovery-reload-rejection | src/components/tabs/FileFreshnessGate.tsx |
+| recovery-append-rejection | src/components/tabs/FileFreshnessGate.tsx |
+| recovery-append-fulfillment | src/components/tabs/FileFreshnessGate.tsx |
+
+The obsolete notification outward supplement also requires Gate production. Exact original patch paths and hashes remain in `fault-inventory.json`. All seven patches were inspected but not applied in this leaf. Completing all40 historical categories requires root to resolve this conflict explicitly. Main production remains frozen in either case.
+
+## Integrity, provenance and limitations
+
+Actual launch and final HEAD is `d38bc0da530ca35887223d0bfa0b81f0708efb9d`. Real index bytes, index content and copied index match launch. Both raw indexes have SHA256 `75d91b734fd115f68a03dca1e0c0b7c10af1df5387e242e264ae4e620136342b`. All1,081 non-owned tracked paths match launch, including dirty production, returned peer tests, legality source/test bodies and shared parser. All work remains unstaged. Final Board test SHA256 is `6fe9fe0ac95e87e81d111487933c4561d5b7adaf3a89a827b954cdd9cbc99059`.
+
+The disposable candidate was freshly reconstructed from Git archive of actual launch HEAD plus the exact full current candidate patch, excluding environment files on extraction. Every Git fault application uses GIT_OPTIONAL_LOCKS=0 and a copied index. All main files are byte-identical to the frozen final manifest throughout final verification. `git-launch/` contains actual launch production source, not stale inferred copies.
+
+`final-integrity` exits0 and independently verifies every pair, all full424 restoration logs, source/test manifests, main and disposable final tracked content, real/copied indexes, HEAD and protected paths. It also verifies26,063 saved prior artifact files byte-identical. Dependency links, prior candidate copies and environment files are excluded from that artifact inventory. Those prior candidate copies were not edited. No complete ignored-tree inventory is claimed.
+
+One scratch setup attempt initially enumerated Git files before creating the copied index, producing empty manifests. Its fault was reversed immediately, its entire scratch checkout and logs were preserved under `rejected-setup-r1`, and no test from that attempt is counted. The corrected runner creates the copied index first and requires over1,000 tracked paths, yielding1,082 total tracked paths,519 source files and205 test files. All accepted pairs ran only after this complete manifest check.
+
+All named rule files, binding references, revision3 plan, full previous report, proof summary, category verdicts and five named semantic diagnoses were read. No full CLAUDE.md, environment file, skill or agent was loaded. No staging, commit, push, deployment or external message occurred. The sole unresolved task deviation is the bounded historical replay caused by the contradictory disposable fault scope. Plan authorship and arbitration shared one context. Detection ran on the code's model family. Root owns fresh canonical review, integrated gates, runtime and push closure.
+
+
+### Root disposable-input clarification
+
+The root brief incorrectly limited disposable fault inputs to the nine application candidate paths. Root inspected the actual original/final matrix union, which is exactly tabs.ts, atoms.ts, tree.ts, BoardAnalysis.tsx and FileFreshnessGate.tsx. The original requirement was to replay all historical categories, whose six remaining classes require the latter two files. Root corrects ONLY disposable input authority to those two named production files for the seven remaining historical/supplemental patches. Every main production path and final test remains frozen. No application scope, product mandate, mechanism, source correction or proof criterion changes. The already51 successful executions remain valid on byte-identical final424 tests. A fresh tail worker must prove all remaining category assertions and full restorations and validate combined exact source/test provenance. Every prior report/attempt stays immutable.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
