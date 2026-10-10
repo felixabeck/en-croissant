@@ -14782,3 +14782,52 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Apply one shared logical/physical owner predicate at every asynchronous Add Game publication boundary while retaining current-owner count refresh, typed errors, uncertainty, origin commit refusal and dirty confirmation. Exercise held parse, write and count operations followed by actual durable physical-only replacement, plus active-owner controls and unmount. Source faults must expose incorrect replacement tree, origin, freshness or notification and exact restoration pass with final tests unchanged.
 * **Triage:** Fix now in the loaded tab-source lifecycle. Related f-20261010-25 owns the distinct recovery append action, while this toolbar Add Game uses the same captured-owner concept without physical protection. This does not reverse append uncertainty decisions or introduce a new product flow.
 * **Found by:** Root traced the broader shared-domain mechanism after two bounded budget proof-fix rounds disproved their compression premise. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Stale-game count recovery reports success after workspace persistence refuses the refreshed count
+
+* **ID:** f-20261010-27 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** `src/utils/tabs.ts` (`refreshFileCount`, around197), Add Game and recovery append callers.
+* **Defect:** R6 error-handling review found that a successful `countPgnGames` followed by `updateTab` returningfalse still produces `{ ok: true }`. Stale-game recovery then tells the user that the count was refreshed and to retry, even though workspace refusal retains the old live count. A retry submits the same stale append index. The generic workspace notification does not make the operation's claimed success true.
+* **Fix shape:** Honor the durable update refusal at the shared count-refresh boundary, preserve obsolete-owner silence, and retain a distinct current-owner failure outcome for both append flows. Test the actual refused workspace transaction and unchanged count/origin/bytes plus surviving-owner terminality. Keep ordinary count refresh and typed/cancelled failures intact.
+* **Proof:** Regression tests must fail with the success-on-refusal source fault and pass with exact restoration, through actual production Add Game and recovery append paths. Run the full affected integrated proof, canonical pre-review and contract before closure. No cap change or third compression repair is authorized.
+* **Related:** f-20261010-25 and f-20261010-26 own append lifetime/supersession guarantees. This is the separate inherited durable count-publication refusal, reported from source0712448a0 and relocated in7b363143, not a new budget failure.
+* **Found by:** Canonical read-only R6 review-error-handling, /tmp/build-game-opening-3b67c3b9/lens-error-handling-r6.txt, 2026-10-10. Root review and arbitration pending. Plan authorship and arbitration shared one context. Detection used the same model family as the code.
+
+### The includeLastMove branch is unreachable for every production position caller
+
+* **ID:** f-20261010-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** `src/utils/chess.ts` (`positionFromTree`, around178), `getMainLine` caller.
+* **Defect:** R6 code-quality review reports that all board callers omit `includeLastMove`. Its sole true caller, `getMainLine`, supplies a leaf path whose node has no children. The branch can never include another move. It retains a misleading parameter and unreachable domain behavior.
+* **Fix shape:** After tracing every caller, remove the unused parameter, unreachable branch and sole true argument while preserving position reconstruction and every main-line/start-FEN behavior. Keep the512 Start limit and parser semantics unchanged.
+* **Proof:** Current full parser and chess-tree tests, scoped static checks, TypeScript, canonical pre-review and contract must pass. Verify all callers and source diff. No new production module, numeric change or compression experiment.
+* **Related:** f-20261010-21 is the separately completed shared512 Start bound. Existing chess-tree findings cover different mechanisms. This inherited dead branch originates in93b366695 according to the lens, with root trace pending.
+* **Found by:** Canonical read-only R6 review-code-quality, /tmp/build-game-opening-3b67c3b9/lens-code-quality-r6.txt, 2026-10-10. Plan authorship and arbitration shared one context. Detection used the same model family as the code.
+
+### Add Game publishes the appended page before its blank tree is durable
+
+* **ID:** f-20261010-29 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** `src/utils/tabs.ts` (Add Game completion, around234), `src/state/store/tabStorage.ts` (queued tree persistence), and composed BoardAnalysis tests.
+* **Defect:** R6 persistence review found that Add Game commits the new gameNumber durably before installing its blank tree through a queued write. If the subsequent tree flush refuses or the application stops first, cold reload can pair the previous dirty tree with the new appended page. The existing success witness flushes before reading and hides this gap. Source origin99ebb3759, retained in7b363143.
+* **Fix shape:** Route accepted blank-game installation through the existing fresh-physical-tree replacement transaction so candidate tree persistence precedes one durable workspace publication of physical reference, page and count. Retain current unrelated metadata, logical/cached/native/report identity, every owner guard and inactive completion. Refusal retains the prior matched pair and truthful uncertainty/terminal state. Do not create a second transaction framework or journal.
+* **Open question:** How does accepted Add Game use the existing durable physical replacement boundary while publishing its page/count and preserving its generation-aware lease and source-only failure/refusal contracts?
+* **Proof:** Without a preparatory flush, immediate cold reload must resolve the accepted blank tree and appended page. Denied tree persistence and workspace persistence must retain the previous matched pair and data. Exercise actual composed production provider, withheld/inactive completion and pending tree state. A Git-derived production-only split-publication fault must expose the exact mismatch and exit1, with final tests unchanged and exact restoration green. Run integrated proof, pre-review and contract before closure.
+* **Related:** f-20261010-07 is the original physical replacement transaction. f-20261010-26 covers Add Game lifetime/admission. This is a newly detected inherited consumer of the same durability contract, separate from its two exhausted budget repair rounds.
+* **Found by:** Canonical R6 review-persisted-state, /tmp/build-game-opening-3b67c3b9/lens-persisted-state-r6.txt, 2026-10-10. Plan authorship and arbitration shared one context. Detection used the same model family as code.
+
+### Replaying an existing terminal move changes the Result header without marking the game dirty
+
+* **ID:** f-20261010-30 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** `src/state/store/tree.ts` (`makeMove`, around754..771), Board autosave and unsaved-close consumers.
+* **Defect:** R6 correctness review found that replaying an existing terminal child can update the Result header while leaving dirtyfalse. Play Qg7# from7k/5Q2/6K1/8/8/8/8/8 w - - 99 1, set Result to*, save, return to the start and replay Qg7#. The header becomes1-0 but autosave and close confirmation miss the changed content. Source orig ine401958e according to the witness, separate from repaired mate/draw priority.
+* **Fix shape:** Mark a real automatic Result mutation dirty even on the existing-child path. Preserve unchanged-header navigation, both colors, automatic draw outcomes and changeHeadersfalse. Keep mutation in the existing reducer boundary and avoid nested persistence operations.
+* **Proof:** Actual store replay regression must observe changed Result and dirtytrue after a saved edited header. Ordinary existing-child replay with unchanged Result and disabled adjudication retain clean state. Removing the production dirty-on-header-change behavior must fail its semantic assertion with exit1 and restore full proof green. Run tree/parser proof, pre-review and contract.
+* **Related:** f-20261010-23 repairs checkmate priority. This is the distinct inherited dirty-state consequence, not a reopened compression failure.
+* **Found by:** Canonical R6 review-correctness, /tmp/build-game-opening-3b67c3b9/lens-correctness-r6.txt, 2026-10-10. Root source trace pending. Plan authorship and arbitration shared one context. Detection used the same model family as code.
