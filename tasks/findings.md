@@ -14500,3 +14500,87 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Preserve current committed file metadata when changing only gameNumber and the physical tree reference. Retain all owner, snapshot and generation guards. Prove a metadata/count update while the real page read is pending survives the successful replacement, with a retained-test source reversal that fails specifically on the lost metadata.
 * **Open question:** No product decision is needed. Repair within the current D9 source phase before source closure. Related f-20261010-07 owns the durability mechanism, but this finding has the distinct captured-metadata cause.
 * **Found by:** Root source trace of the complete replacement, origin comparison and FileInfo reload paths. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### A rejected save publishes freshness against a replacement physical generation
+
+* **ID:** f-20261010-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts saveToFile rejection branches.
+* **Defect:** The new owns predicate protects successful completion and selected errors, but stale-game, conflict, missing-resource and invalid-input rejections still change freshness by logical tab ID. A pending save for the prior game can therefore conflict or hide a correctly loaded replacement under that same logical owner.
+* **Origin:** stale-game publication originates in 490831c7. cb09c965 adds physical-generation protection only to selected outcomes. This is a sibling of D8, not a reopening of its page-read rejection guard.
+* **Fix and proof:** Check captured origin and physical-generation ownership before stale rejection publication. Prove a pending save, actual durable page replacement, then each relevant rejection leaves the current tree and freshness untouched. Retain active-owner rejection controls and a specific guard-removal failure/restoration.
+* **Triage:** Fix now in the loaded save and replacement facade. Related f-20261010-07 owns replacement durability, with a distinct rejection-publication cause here. No product decision.
+* **Found by:** Fresh round 4 root-cause lens, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### BoardsPage physical-key provider and recovery wiring has no integration witness
+
+* **ID:** f-20261010-10 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/tabs/BoardsPage.test.tsx recovery integration.
+* **Defect:** Recovery fixtures have no distinct physical key and mocked status ignores its argument. Removing BoardsPage's physical-key provider and recovery wiring still passes, while direct TreeRecoveryGate tests supply their own correct wiring.
+* **Origin:** cb09c965 introduces the new integration without a distinguishing fixture.
+* **Fix and proof:** Use an independently distinct logical owner and physical key in the actual BoardsPage boundary. Prove the provider, recovery status and close routing consume the physical generation. Fault the production wiring while retaining tests, require a specific assertion failure, then restore green.
+* **Triage:** Fix now in the loaded durability consumer tests. Related f-20261010-07 owns durability. This is its production integration proof obligation, not a product decision.
+* **Found by:** Fresh round 4 tests lens, confirmed by root inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### FileFreshnessGate pending action tests do not distinguish physical replacement
+
+* **ID:** f-20261010-11 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/tabs/FileFreshnessGate.test.tsx pending action ownership.
+* **Defect:** No pending-action test changes only the physical generation while retaining logical owner, file/page and cached store. The tree-key action ownership guard can be removed without failing these tests, allowing an obsolete reload to overwrite the new generation. The existing physical-key append marker test covers a different branch.
+* **Origin:** cb09c965 introduces the generation predicate without this distinguishing race.
+* **Fix and proof:** Hold the actual action pending, change only physical ownership, resolve its older result and require unchanged candidate tree and freshness. Remove only the physical-key guard to prove a specific failure, then restore green.
+* **Triage:** Fix now in the loaded gate tests. Related f-20261010-07 owns durability, with this distinct pending-action proof obligation. No product decision.
+* **Found by:** Fresh round 4 tests lens, confirmed by root inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Consecutive PGN comments overwrite earlier prose and lose annotations on save
+
+* **ID:** f-20261010-12 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/chess.ts consecutive comment tokens in parsePGN.
+* **Defect:** Each comment token assigns node.comment from that token's text. For 1. e4 {Keep this explanation} {[%clk 0:05:00]} e5 *, the clock-only second token erases the first token's prose. Saving serializes only the final comment and permanently loses that explanation.
+* **Origin:** Pre-existing code preserved by 2dc2d8e4. The file has no effective diff against current upstream, but it is the direct parse dependency of the loaded game opening and save paths.
+* **Fix and proof:** Preserve consecutive prose without losing clock, evaluation, shapes or unknown command annotations. Prove parse, serialize and reparse retain the explanation and annotation. Reverse only the preservation behavior with unchanged tests for a specific failure and restored pass.
+* **Triage:** Fix now under push-review-policy section 4's loaded files and direct dependencies rule. No new product question or parser replacement is required. Related f-20261001-12 concerns glyph preservation, and f-20260922-12 concerns empty FEN headers. Neither has this comment overwrite cause.
+* **Found by:** Fresh round 4 chess-semantics lens, confirmed by root inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Duplication reads release recovery without hydrating the original cached tree
+
+* **ID:** f-20261010-13 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/state/store/tabStorage.ts cloneDurable and src/components/tabs/BoardsPage.tsx duplicateTab.
+* **Defect:** cloneDurable calls readTree, which publishes its read status without hydrating the source cached store. A transiently unavailable original can become available around its unhydrated default tree. A missing explicit physical reference becomes absent, silently admitting a blank duplicate and releasing the original gate.
+* **Origin:** Read-status publication originates in 4e4ce39a. Explicit missing physical references become reachable in cb09c965. The missing-reference and transient-read cases share the source-read status publication cause.
+* **Proof:** Root inspected cloneDurable's source read, absent-success return and the physical-key caller. Fresh correctness, error-handling and persisted-state lenses independently report the failure. Regression execution remains pending.
+* **Fix and proof:** Preserve original hydration protection until explicit recovery succeeds. Refuse duplication of gated referenced sources while preserving legitimate blank legacy duplication. Prove transient refusal followed by readable storage and missing references never unlock or overwrite the original, including refused duplicate admission and a specific source fault/restoration.
+* **Triage:** Fix now in the loaded durability mechanism. Related f-20261010-07 owns durable replacement. This is its newly uncovered consumer failure path. No new product decision.
+* **Found by:** Fresh round 4 correctness, error-handling and persisted-state lenses, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### File replacement result names conflate physical and logical identities
+
+* **ID:** f-20261010-14 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts replaceFileGame return type.
+* **Defect:** replaceFileGame returns ReplaceNewTabResult and an id holding a physical tree key, while the other consumer returns a new logical tab ID. The shared API hides the newly important identity distinction.
+* **Origin:** cb09c965.
+* **Proof:** Root inspected the facade signature and stageAndCommitTab's committed id. The physical owner remains unchanged in the retained lifecycle assertions.
+* **Fix and proof:** Give the file replacement facade a result name and committed field that distinguish the physical key. Retain the existing staging implementation and new-tab ID contract, update only affected callers and tests, and prove their ownership behavior remains unchanged.
+* **Triage:** Fix now for clearer ownership semantics in the loaded facade. Related f-20261010-07 owns the distinction. No new transaction abstraction or product decision.
+* **Found by:** Fresh round 4 code-quality lens, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Generated analysis variation bound has no named policy constant
+
+* **ID:** f-20261010-15 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/state/store/tree.ts generated variation loop.
+* **Defect:** The loop truncates generated analysis variations at a bare 10 rather than naming the existing maximum plies policy.
+* **Origin:** 93b366695, pre-existing in the loaded tree store.
+* **Proof:** The loop uses Math.min(pv.length, 10). No behavior change is required.
+* **Fix and proof:** Name the maximum generated analysis variation plies constant and preserve value 10. Existing tree suite and scoped format/lint/type checks suffice.
+* **Triage:** Fix now for explicit domain-bound intent. No new behavior, abstraction or product decision.
+* **Found by:** Fresh round 4 code-quality lens, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
