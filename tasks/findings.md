@@ -14452,3 +14452,18 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261009-06 records a different stale instruction in the IPC lens. No shared causal root is established.
 * **Proof required:** Every named local source file exists, each cited definition supports its statement, and the project instruction/contract checks pass. This proves instruction accuracy, not model obedience.
 * **Found by:** Codex orchestrator while loading the mandatory security lens for the snapshot-locator repair in f-20260914-04, 2026-10-10. Deferred to the separate reviewer-instruction area. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### InfoPanel's discard-before-page-change path refuses the dirty tree again after reading
+
+* **ID:** f-20261010-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+
+* **Observed:** During f-20261001-08 implementation, the executor traced the existing InfoPanel page replacement. The initial dirty check at `src/components/panels/info/InfoPanel.tsx` accepts `forced=true`. Its ConfirmChangesModal compatibility callback invokes `setPage(tempPage, true)`. The later guard still refuses `activeStore.getState().dirty`, and `src/components/tabs/ConfirmChangesModal.tsx`'s discard callback does not clear dirty state or pass a captured discard authorization.
+* **Consequence:** Choosing Close without saving for a game-page change can read the requested game and return to confirmation without replacing the dirty current game. This predates the opening-affordance change and is outside its frozen scope.
+* **Fix and proof:** Preserve dirty data until an authorized replacement commits. Carry a captured, owner-bound discard authorization through the asynchronous read and reject edits made after that capture. Prove actual-selector discard switches the current tab, cancel retains its tree, and edits or tab changes during the read are preserved.
+* **Related:** f-20260924-05 shares InfoPanel but owns stale deletion identity. f-20261004-09 owns listing freshness. Neither establishes this dirty-authorization cause.
+* **Found by:** Phase 1 executor source trace, confirmed by orchestrator source inspection. Plan authorship and arbitration shared one context, and detection ran on the same model family as the code.
