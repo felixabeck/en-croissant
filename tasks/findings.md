@@ -15103,3 +15103,17 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** Record repeated ordinary full native runs and independently measured timing boundaries. Any correction must fail a real slow-application input and pass after exact restoration. No timeout or expected-data weakening.
 * **Related:** f-20261009-02 records a different intermittent first-practice-rating abort. No shared cause is established.
 * **Found by:** Actual native-diagnostics gate log /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-native-diagnostics.uiWUcb/log. Final exit pending when filed. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Native discard verifier aborts on a retired tree key between its two storage reads
+
+* **ID:** f-20261010-42 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** scripts/verify-app.mjs verifyGameOpening GO14 readTree and confirmed replacement polling.
+* **Defect:** The full native typed baseline completes the exact PGN edit, real Update, dirty publication, unsaved confirmation and discard click, then GO14 fails with discard owner's persisted tree is unreadable. Its immediately repeated diagnostic read shows the correct clean first game at a new physical treeKey under the same logical owner and unchanged admitted IDs. readTree awaits workspace then a separate WebDriver tree read. The app can publish the successor physical key and retire the previous logical tree between these calls. Absence aborts waitFor instead of retrying the changed snapshot.
+* **Fix shape:** Read a captured workspace, then obtain that same raw workspace and the selected physical tree bytes together in one browser script. Retry when the workspace changed, preserving strict unreadable-tree failure for a stable owner and every identity/content/dirty/admission assertion. Do not treat stable corruption as success or inject renderer state.
+* **Proof:** Ordinary full unchanged current-verifier native run must observe the coherent clean replacement and exit0. The actual old InfoPanel dirty-guard application fault must still fail GO14 and exact restoration must pass. Preserve the failing native log as the original observer-race witness.
+* **Found by:** Actual gate-native-typed-baseline.JjVJ7B, exit1, only GO14 fails. Root source tracing confirms separate awaited storage calls and physical-generation publication/retirement. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
