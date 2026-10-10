@@ -14874,3 +14874,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** Actual store replay regression must observe changed Result and dirtytrue after a saved edited header. Ordinary existing-child replay with unchanged Result and disabled adjudication retain clean state. Removing the production dirty-on-header-change behavior must fail its semantic assertion with exit1 and restore full proof green. Run tree/parser proof, pre-review and contract.
 * **Related:** f-20261010-23 repairs checkmate priority. This is the distinct inherited dirty-state consequence, not a reopened compression failure.
 * **Found by:** Canonical R6 review-correctness, /tmp/build-game-opening-3b67c3b9/lens-correctness-r6.txt, 2026-10-10. Root source trace pending. Plan authorship and arbitration shared one context. Detection used the same model family as code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Syntactically valid illegal UCI moves can enter the game tree
+
+* **ID:** f-20261010-31 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** src/state/store/tree.ts makeMove before SAN generation and pos.play, src/utils/chessops.ts parseSanOrUci, src/utils/chess.ts parseKeyboardMove and src/components/boards/MoveInput.tsx Enter handler.
+* **Defect:** parseSanOrUci falls back to parseUci without position legality validation. MoveInput accepts the result. The shared tree reducer assumes makeSan validates legality, rejecting only the null-move spelling. From the standard starting position e2e5 parses as UCI, receives SAN e5 and is played despite being an illegal three-square pawn move. R7 source review attributes the inherited reducer to93b366695. Root opened the complete input/parser/reducer call chain before filing. No runtime reproducer is yet claimed.
+* **Change:** Validate legality in the actual position before admitting a raw Move to the tree. Ensure text parsing rejects illegal UCI so the existing InvalidMove branch remains usable. Preserve legal SAN/UCI, castling, promotion, custom positions and existing mate/draw/Result dirty behavior. Trace every affected shared parser consumer before choosing the smallest boundary.
+* **Related:** f-20260922-13 is a separately open batch atomicity and puzzle-loop terminality defect. Root read its full entry. This new finding concerns legal admission of a syntactically valid single move, not batch rollback or puzzle error propagation. R6 f-20261010-30 concerns Result dirty publication after legal existing-child replay.
+* **Proof required:** Real store and parser tests reject illegal UCI/raw Move without tree, cursor, Result or dirty mutation, with legal controls. Remove only the production legality behavior under unchanged final tests, require a direct semantic assertion failure and exit1, restore exact final bytes and require the complete selected command exit0. Retain existing tests and all R6 chess proofs.
+* **Found by:** Codex chess-semantics R7, blocker confidence99, during cumulative review of the loaded reducer. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
