@@ -10,12 +10,18 @@ import { Chessground } from "@/chessground/Chessground";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import { parsePGN } from "@/utils/chess";
 import { type GameHeaders, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
 import OpeningName from "../common/OpeningName";
 import { TreeStateContext, TreeStateProvider } from "../common/TreeStateContext";
+import classes from "./GridLayout.module.css";
+import { COMPACT_DATABASE_WIDTH_EM } from "./GridLayout";
+
+// Give notation its own scroll viewport, independent of the board and wrapped controls' height.
+const COMPACT_PREVIEW_NOTATION_HEIGHT_REM = 12;
 
 type PreviewLayout = {
   hideControls?: boolean;
@@ -57,6 +63,8 @@ function GamePreview({
   showOpening,
   fitHeight,
 }: { game: TreeState } & PreviewLayout) {
+  const compact = useScaledMaxWidth(COMPACT_DATABASE_WIDTH_EM);
+  const stacked = compact && !fitHeight;
   const { ref: boardRef, height } = useElementSize();
   const { ref: frameRef, width: frameWidth, height: frameHeight } = useElementSize();
   // The board is square, so sized by its width alone it overflows a short frame, and the frame's
@@ -71,12 +79,17 @@ function GamePreview({
         // Top-aligned when fitting: a board limited by a narrow width then sits under the list
         // instead of below an empty band.
         align={fitHeight ? "start" : "end"}
-        grow={!fitHeight}
+        grow={!fitHeight && !stacked}
         wrap={fitHeight ? "nowrap" : undefined}
-        style={{ overflow: "hidden", height: "100%" }}
+        style={{
+          overflow: stacked ? "visible" : "hidden",
+          height: stacked ? "auto" : "100%",
+          flexDirection: stacked ? "column" : undefined,
+        }}
       >
         <Box
           ref={boardRef}
+          w={stacked ? "100%" : undefined}
           // A measured px width, not Mantine's `w`, which reads a number as rem and so doubles it
           // at a 200% font scale.
           style={fitHeight ? { width: boardSide, flex: "none" } : undefined}
@@ -85,12 +98,19 @@ function GamePreview({
         </Box>
         {!hideControls && (
           <Stack
-            style={{ height }}
+            style={{ height: stacked ? "auto" : height }}
+            w={stacked ? "100%" : undefined}
+            className={stacked ? classes.stackedPreviewControls : undefined}
             gap="xs"
             flex={fitHeight ? 1 : undefined}
-            miw={fitHeight ? 0 : undefined}
+            miw={fitHeight || stacked ? 0 : undefined}
           >
-            <GameNotation />
+            <Box
+              className={classes.previewNotation}
+              style={stacked ? { height: `${COMPACT_PREVIEW_NOTATION_HEIGHT_REM}rem` } : undefined}
+            >
+              <GameNotation />
+            </Box>
             <MoveControls readOnly />
           </Stack>
         )}

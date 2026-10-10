@@ -2,6 +2,9 @@ import { Box, Group } from "@mantine/core";
 import type { ReactNode } from "react";
 import classes from "./GridLayout.module.css";
 
+// At this font-scaled width, the database panes and preview controls need to stack together.
+export const COMPACT_DATABASE_WIDTH_EM = 36;
+
 function GridLayout({
   search,
   table,
@@ -12,29 +15,13 @@ function GridLayout({
   preview: ReactNode;
 }) {
   return (
-    <Group grow h="100%">
-      <Box
-        style={{
-          display: "flex",
-          gap: "1rem",
-          flexDirection: "column",
-          height: "100%",
-        }}
-      >
+    <Group grow className={classes.layout}>
+      <Box className={classes.pane}>
         <Box className={classes.search}>{search}</Box>
-        {table}
+        <Box className={classes.table}>{table}</Box>
       </Box>
 
-      <Box
-        style={{
-          display: "flex",
-          gap: "1rem",
-          flexDirection: "column",
-          height: "100%",
-        }}
-      >
-        {preview}
-      </Box>
+      <Box className={classes.pane}>{preview}</Box>
     </Group>
   );
 }

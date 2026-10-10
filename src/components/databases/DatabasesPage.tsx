@@ -332,7 +332,7 @@ export default function DatabasesPage() {
                                 <Text fw={500} fz="sm" className="wrap-anywhere">
                                   {item.type === "success" ? item.title : item.error}
                                 </Text>
-                                <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }}>
+                                <Text size="xs" c="dimmed" className="wrap-anywhere">
                                   {item.type === "error" ? item.filename : item.description}
                                 </Text>
                               </Box>

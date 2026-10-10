@@ -20,7 +20,19 @@ const openedGame = {
 
 async function openFileTab(page: Page, mockScenario: (scenario: MockScenario) => Promise<void>) {
     await mockScenario({
-        commands: filesWorkspaceCommands([[pgnFile]], pgnFileCommands),
+        commands: filesWorkspaceCommands([[pgnFile]], {
+            ...pgnFileCommands,
+            // The external writer wins before autosave commits this edited game. Let the board
+            // render the move before the native refusal installs the conflict panel.
+            write_game: {
+                delay: 500,
+                error: {
+                    tag: "backend-error",
+                    category: "stale-game",
+                    message: "The game changed on disk",
+                },
+            },
+        }),
     });
     await page.goto("/files");
     await page.getByRole("button", { name: /choose collection/i }).click();
@@ -57,6 +69,16 @@ test("file-freshness: shows the conflict panel for an edited game changed on dis
 }) => {
     await openFileTab(page, mockScenario);
     await makeEditedMove(page);
+    const writes = await page.evaluate(() =>
+        window.__E2E_TAURI__.invocations().filter(({ command }) => command === "write_game"),
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes[0].args).toMatchObject({
+        file: pgnFile.handle,
+        n: 0,
+        pgn: expect.stringContaining("Nf3"),
+        expected: { kind: "game", stamp: openedGame.stamp },
+    });
 
     const changedGame = {
         ...openedGame,
@@ -81,6 +103,9 @@ test("file-freshness: shows the conflict panel for an edited game changed on dis
         gate.getByRole("button", { name: "Save my version as a new game…" }),
     ).toBeVisible();
     await expect(page.getByRole("grid")).toHaveCount(0);
+    await expect(
+        page.getByText("Unexpected Tauri IPC command: write_game", { exact: true }),
+    ).toHaveCount(0);
     await assertNoHorizontalOverflow();
     await capture("file-freshness-conflict");
     await expect(page).toHaveScreenshot("file-freshness-conflict.png", { fullPage: true });

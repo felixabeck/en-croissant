@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import type { KeyedNode } from "@lichess-org/chessground/types";
 import { expect, test as base, type Locator, type Page } from "@playwright/test";
 import type {
     DatabaseInfo,
@@ -294,6 +295,12 @@ export async function activeWorkspaceTab(page: Page) {
     const workspace = stored && deserializeStorageValue<{ tabs: Tab[]; activeTab: string }>(stored);
     expect(workspace).toBeTruthy();
     return workspace ? workspace.tabs.find((tab) => tab.value === workspace.activeTab)! : undefined;
+}
+
+export function whitePawnSquares(board: Locator) {
+    return board
+        .locator("piece.white.pawn")
+        .evaluateAll((pawns) => pawns.map((pawn) => (pawn as KeyedNode).cgKey).sort());
 }
 
 export async function assertChooserInsideBoard(board: Locator, chooser: Locator) {

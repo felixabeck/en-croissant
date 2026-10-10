@@ -17,9 +17,13 @@ import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
 import { resolveDatabaseRoute } from "./databaseRoute";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
+import classes from "./GridLayout.module.css";
+import { COMPACT_DATABASE_WIDTH_EM } from "./GridLayout";
 
 function DatabaseView() {
   const { t } = useTranslation();
+  const compact = useScaledMaxWidth(COMPACT_DATABASE_WIDTH_EM);
   const database = useActiveDatabaseViewStore((s) => s.database);
   const mode = useActiveDatabaseViewStore((s) => s.activeTab);
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
@@ -68,28 +72,25 @@ function DatabaseView() {
   const databaseForRoute = resolution.database;
 
   return (
-    <Box p="sm" h="100%">
+    <Box p="sm" h="100%" className={classes.view} data-compact={compact || undefined}>
       <DatabaseViewStateContext.Provider value={activeDatabaseViewStore}>
-        <Stack h="100%" style={{ overflow: "hidden" }}>
-          <Group align="center">
+        <Stack className={classes.viewStack}>
+          <Group align="center" style={{ flexShrink: 0 }}>
             <Link to="/databases">
               <IconAction label={t("Common.Back")} variant="default">
                 <IconArrowBackUp size="1rem" />
               </IconAction>
             </Link>
-            <Title>{databaseForRoute.title}</Title>
+            <Title miw={0} className="wrap-anywhere">
+              {databaseForRoute.title}
+            </Title>
           </Group>
           <Tabs
             value={mode}
             onChange={(value) => setActiveTab((value ?? "games") as DatabaseViewStore["activeTab"])}
-            flex={1}
-            style={{
-              display: "flex",
-              overflow: "hidden",
-              flexDirection: "column",
-            }}
+            className={classes.tabs}
           >
-            <Tabs.List>
+            <Tabs.List style={{ flexShrink: 0 }}>
               <Tabs.Tab leftSection={<IconChess size="1rem" />} value="games">
                 {t("Common.Games")}
               </Tabs.Tab>
@@ -100,13 +101,13 @@ function DatabaseView() {
                 {t("Databases.Settings.Events")}
               </Tabs.Tab>
             </Tabs.List>
-            <Tabs.Panel value="games" flex={1} style={{ overflow: "hidden" }} pt="md">
+            <Tabs.Panel value="games" className={classes.panel} pt="md">
               <GameTable />
             </Tabs.Panel>
-            <Tabs.Panel value="players" flex={1} style={{ overflow: "hidden" }} pt="md">
+            <Tabs.Panel value="players" className={classes.panel} pt="md">
               <PlayerTable />
             </Tabs.Panel>
-            <Tabs.Panel value="tournaments" flex={1} style={{ overflow: "hidden" }} pt="md">
+            <Tabs.Panel value="tournaments" className={classes.panel} pt="md">
               <TournamentTable />
             </Tabs.Panel>
           </Tabs>

@@ -10,6 +10,7 @@ import {
     gameOpeningFixture,
     gameOpeningCommands,
     selectFilesTreeRow,
+    whitePawnSquares,
 } from "./fixtures";
 
 const databaseTitle = "Breakpoint database";
@@ -39,6 +40,48 @@ test("font-scaled-breakpoints: visible library open controls wrap at 320px and 2
     const databaseGameOpen = page.getByRole("button", { name: "Open game", exact: true });
     await expect(databaseGameOpen).toBeVisible();
     await expect(databaseGameOpen).toBeEnabled();
+    await databaseGameOpen.scrollIntoViewIfNeeded();
+    await assertNothingClipped(databaseGameOpen, { mode: "reachable" });
+
+    // This database preview does not use Files' fitHeight layout. Its complete board, notation
+    // and controls must remain reachable after scrolling below the selected game's opener.
+    const previewBoard = page.locator(".cg-wrap");
+    await previewBoard.scrollIntoViewIfNeeded();
+    await expect(previewBoard, "complete compact database preview board").toBeInViewport({
+        ratio: 1,
+    });
+    const boardBox = (await previewBoard.boundingBox())!;
+    expect(
+        Math.abs(boardBox.width - boardBox.height),
+        "compact preview board remains square",
+    ).toBeLessThanOrEqual(1);
+    await expect(previewBoard.locator("piece")).toHaveCount(32);
+    await assertNothingClipped(previewBoard, { mode: "reachable" });
+    for (const name of ["d4", "d5"]) {
+        const move = page.getByRole("button", { name, exact: true });
+        await move.scrollIntoViewIfNeeded();
+        await expect(move, `compact preview notation ${name}`).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(move, { mode: "reachable" });
+    }
+    for (const name of ["Go to start", "Previous move", "Next move", "Go to end"]) {
+        const control = page.getByRole("button", { name, exact: true });
+        await control.scrollIntoViewIfNeeded();
+        await expect(control, `compact preview control ${name}`).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(control, { mode: "reachable" });
+    }
+    await expect
+        .poll(() => whitePawnSquares(previewBoard))
+        .toEqual(["a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2"]);
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    await expect
+        .poll(() => whitePawnSquares(previewBoard))
+        .toEqual(["a2", "b2", "c2", "d4", "e2", "f2", "g2", "h2"]);
+    await previewBoard.scrollIntoViewIfNeeded();
+    await capture("database-preview-320-200");
+    await page.getByRole("button", { name: "Go to start", exact: true }).click();
+    await expect
+        .poll(() => whitePawnSquares(previewBoard))
+        .toEqual(["a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2"]);
     await databaseGameOpen.scrollIntoViewIfNeeded();
     await assertNothingClipped(databaseGameOpen, { mode: "reachable" });
     await capture("database-game-open-320-200");

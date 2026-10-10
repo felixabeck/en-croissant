@@ -31,6 +31,7 @@ import { createTab, runTabCreation } from "@/utils/tabs";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameCard from "./GameCard";
 import GridLayout from "./GridLayout";
+import layoutClasses from "./GridLayout.module.css";
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { SideInput } from "./SideInput";
 import classes from "./styles.module.css";
@@ -108,8 +109,8 @@ function GameTable() {
   return (
     <GridLayout
       search={
-        <Flex style={{ gap: 20 }}>
-          <Box style={{ flexGrow: 1 }}>
+        <Flex style={{ gap: 20 }} className={layoutClasses.searchRow}>
+          <Box style={{ flexGrow: 1 }} className={layoutClasses.searchFields}>
             <Group grow>
               <PlayerSearchInput
                 value={query?.player1 ?? undefined}

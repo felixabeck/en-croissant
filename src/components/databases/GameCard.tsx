@@ -8,6 +8,7 @@ import { OpenGameButton } from "@/components/common/gameOpen";
 import { IconAction } from "@/components/common/IconAction";
 import GameInfo from "../common/GameInfo";
 import GamePreview from "./GamePreview";
+import classes from "./GridLayout.module.css";
 
 function GameCard({
   game,
@@ -29,7 +30,7 @@ function GameCard({
     <Paper shadow="sm" p="sm" withBorder h="100%">
       <ScrollArea h="100%">
         <Stack h="100%" gap="xs">
-          <Group justify="left">
+          <Group justify="left" className={classes.gameActions}>
             <OpenGameButton
               disabled={!game}
               pending={pending}
