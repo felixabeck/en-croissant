@@ -14651,3 +14651,91 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** Root independently passed the exact eleven-suite 517-test command, separate 46-test parser suite, scoped checks/types/syntax, full pre-review and contract on the final R4 candidate. Workspace-storage and tree/path remain100%. Actual bundle1619967 is within unchanged1620000. Canonical completion0 is gate-root-r4-repair-proof-r2.1tnLMt, parent77ba474282f79d2bd1b17efcb64e6637cc83f6f1. Current source repairs are committed099bfa21, db6ac190 and4ee4ff12. Full source and fault history: tasks/handoffs/2026-10-10-game-opening-round4.md.
 * **Remaining:** Fresh cumulative source closure and root pixel/native verification remain pending. This finding stays open until those required stages complete. Plan authorship and arbitration shared one context. Detection ran on the code model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"7dd29c36be6b7c1ec631adfada142274433048e28bc3357dec486f14acde80ed","input_sha256":"72316fa19d323eb4c0db0fd8155f20a19dcd36d049a1c6dc9932bb8351ba0625","kind":"mutation-receipt","operation":"44b1d24a1594c62c3ef62909d46893763361c6d3027ccc87bab7c469b1d648aa","options":{"section":null},"request_id_sha256":"7010384b9fdd75b7699da64428649e299ecfbbb003ebde70470ab230e7754ab8","results":["f-20261010-17"],"target":"f-20261010-17","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Temp-file Save As publishes conflict after its owner is replaced
+
+* **ID:** f-20261010-18 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts:479 and489.
+* **Defect:** Both fulfilled temp-file source reads compare the captured stamp and publish sourceChanged without rechecking owns. Physical-only replacement while the read is pending can mark the new game conflicted.
+* **Origin:** 490831c77, reported by the fresh R5 correctness and root-cause lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Recheck captured ownership after both source reads and picker settlement before publishing or continuing obsolete Save As. Retain first-read and post-picker deferred fulfillment tests using actual durable replacement, mismatched and matching stamps, and active-owner controls. A guard-removal source fault must fail these tests.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 correctness and root-cause review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Database save completion clears newer unsaved edits
+
+* **ID:** f-20261010-19 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts:458.
+* **Defect:** After awaiting writeDbGame the database branch calls store.save unconditionally. Edits made during the write were not in captured serialized PGN but become clean.
+* **Origin:** 3afed0317, reported by the fresh R5 correctness lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Apply captured ownership and serialized-content completion checks to database saves. Preserve newer dirty edits and superseded owners, with deferred write controls and source-fault failure/restoration.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 correctness review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Obsolete physical-generation reload rejection hides its replacement
+
+* **ID:** f-20261010-20 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/tabs/FileFreshnessGate.tsx:230.
+* **Defect:** reloadFromDisk fulfillment checks actionIsCurrent but rejection checks only signal.aborted. Physical-only replacement leaves the signal un-aborted, so missing-resource, invalid-input or conflict can mark the new logical owner unavailable.
+* **Origin:** 490831c77, reported by the fresh R5 root-cause lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Use the same captured generation predicate before rejection publication. Add deferred rejection counterparts using actual physical-only replacement and active-owner error controls. Prove a rejection-guard removal fails and exact restoration passes.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 root-cause review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### PGN Start path acceptance uses an unnamed repeated bound
+
+* **ID:** f-20261010-21 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/chess.ts:520 and590.
+* **Defect:** Both parsed and raw Start acceptance use the same bare512 policy value.
+* **Origin:** 3afed0317, reported by the fresh R5 code-quality lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Name the shared parser path-length bound, retain512 and existing acceptance and rejection behavior. Run existing Start and parser tests. No implementation-mirroring test is needed.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 code-quality review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Autosave silently discards typed write failures
+
+* **ID:** f-20261010-22 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/boards/BoardAnalysis.tsx:90.
+* **Defect:** saveFile awaits saveToFile but discards its typed failed result. Current-owner ordinary I/O and resource-limit errors resolve with no user error reporting.
+* **Origin:** 3afed0317 and490831c77, reported by the fresh R5 error-handling lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Present actual failed save results through existing cancellation-aware notification conventions. Preserve cancellation and supersession silence. Exercise real autosave callback behavior, current-owner failures and stale-owner controls, with a failure-result handling removal fault.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 error-handling review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Fifty-move draw overwrites checkmate result
+
+* **ID:** f-20261010-23 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/state/store/tree.ts:763.
+* **Defect:** Checkmate sets a win, then the following automatic draw branch overwrites it when the resulting halfmove clock is100. Reported legal witness is7k/5Q2/6K1/8/8/8/8/8 w - - 99 1 followed by Qg7#.
+* **Origin:** 242d01df, reported by the fresh R5 chess-semantics lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Preserve checkmate precedence over draw adjudication. Retain winning-side, stalemate, ordinary fifty-move and changeHeaders=false controls. A precedence-removal source fault must fail the mating witness and restore green.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 chess-semantics review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Save rejection branch repeats a synchronous ownership check
+
+* **ID:** f-20261010-24 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts:526.
+* **Defect:** The new catch-entry owns guard makes its applied-despite-error inner owns check redundant with no intervening await.
+* **Origin:** 4ee4ff12, reported by the fresh R5 minimalism lens and confirmed by root source tracing.
+* **Proof:** The unchanged source at cec23bdf contains the reported branch. Root read the full fresh report and execution path. New regression execution remains pending.
+* **Fix and proof:** Remove only the redundant conditional and retain both state updates under the catch-entry guard. Reuse actual late rejection and active-owner tests.
+* **Triage:** Fix now in the loaded source review scope. Earlier adopted R4 defects were closed, this is a distinct additional obligation. Related f-20261010-09 covers stale rejected saves and f-20261010-11 covers obsolete fulfilled reloads. No prior decision is reversed.
+* **Found by:** Fresh R5 minimalism review. Plan authorship and arbitration shared one context. Detection ran on the code model family.
