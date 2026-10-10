@@ -20,6 +20,8 @@ import {
     type TreeState,
 } from "./treeReducer";
 
+const MAX_START_PATH_LENGTH = 512;
+
 export interface BestMoves {
     depth: number;
     score: Score;
@@ -517,7 +519,7 @@ export async function parsePGN(
  * names an existing branch before it becomes renderer state.
  */
 export function parseStartHeader(start: unknown, root: TreeNode): number[] {
-    if (!Array.isArray(start) || start.length > 512) return [];
+    if (!Array.isArray(start) || start.length > MAX_START_PATH_LENGTH) return [];
     if (getResolvedPathLength(root, start) !== start.length) return [];
     return start.filter((value): value is number => typeof value === "number");
 }
@@ -587,7 +589,7 @@ function parseRawStartHeader(value: string | undefined): number[] | undefined {
         const parsed: unknown = JSON.parse(value);
         if (
             !Array.isArray(parsed) ||
-            parsed.length > 512 ||
+            parsed.length > MAX_START_PATH_LENGTH ||
             !parsed.every((item) => Number.isSafeInteger(item) && item >= 0)
         ) {
             return [];
