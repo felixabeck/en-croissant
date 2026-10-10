@@ -101,11 +101,28 @@ export interface TreeStoreState extends TreeState {
 }
 
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
-type PersistedTreeStore = TreeStore & { persist: { rehydrate: () => Promise<void> | void } };
+type PersistedTreeStore = TreeStore & {
+    persist: {
+        rehydrate: () => Promise<void> | void;
+        getOptions: () => { name?: string };
+        setOptions: (options: { name: string }) => void;
+    };
+};
 
 const reportOwners = new Map<string, object>();
 const treeStores = new Map<string, PersistedTreeStore>();
 const closingReportOwners = new Map<string, ReportOwnerInvalidation>();
+
+export function getCachedTreeStore(tab: string): TreeStore | undefined {
+    return treeStores.get(tab);
+}
+
+/** Switch the cached logical owner's persistence generation after durable admission. */
+export function retargetTreeStore(tab: string, treeKey: string, tree: TreeState): void {
+    const store = treeStores.get(tab)!;
+    store.persist.setOptions({ name: treeKey });
+    store.getState().setState(tree);
+}
 
 export type ReportOwnerInvalidation = {
     previous: object | undefined;
@@ -176,12 +193,12 @@ export async function retryTreeStoreStorage(tab: string): Promise<TabTreeStorage
     if (!store) throw new Error("The tab has no cached tree store to retry.");
     await store.persist.rehydrate();
     if (treeStores.get(tab) !== store) return null;
-    return tabStorage.getStatus(tab);
+    return tabStorage.getStatus(store.persist.getOptions().name!);
 }
 
 /** Discards an undecodable value and resets its cached store only after storage confirms removal. */
-export function discardTreeStoreStorage(tab: string): boolean {
-    if (!tabStorage.discardUnreadable(tab)) return false;
+export function discardTreeStoreStorage(tab: string, treeKey = tab): boolean {
+    if (!tabStorage.discardUnreadable(treeKey)) return false;
     treeStores.get(tab)?.getState().reset();
     return true;
 }
@@ -224,7 +241,7 @@ function stepIntoChild(
     return { position: [...path, index] };
 }
 
-export const createTreeStore = (id?: string, initTree?: TreeState) => {
+export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id) => {
     if (id) {
         const existing = treeStores.get(id);
         if (existing) return existing;
@@ -669,9 +686,9 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
     if (id) {
         const store = createStore<TreeStoreState>()(
             persist(stateCreator, {
-                name: id,
+                name: treeKey!,
                 version: TREE_STORAGE_VERSION,
-                storage: tabStorage.storageFor<TreeStoreState>(),
+                storage: tabStorage.storageFor<TreeStoreState>(treeKey !== id),
                 onRehydrateStorage: () => (state, error) => {
                     if (!error && state) {
                         // A renderer reload cannot resume the JavaScript completion owner that

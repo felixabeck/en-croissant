@@ -7,7 +7,6 @@ import { getDefaultStore, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Mosaic } from "react-mosaic-component";
-import { match } from "ts-pattern";
 import {
   activeTabAtom,
   closeWorkspaceTabAtom,
@@ -30,6 +29,7 @@ import { tabStorage } from "@/state/store/tabStorage";
 import {
   createTab,
   commitNewTab,
+  getTabTreeKey,
   isPersistentGameOrigin,
   runTabCreation,
   type Tab,
@@ -103,12 +103,14 @@ export default function BoardsPage() {
         if (!closedTab) return;
         const jotaiStore = getDefaultStore();
         if (jotaiStore.get(closingTabsAtom).has(value)) return;
-        const store = createTreeStore(value);
+        const store = createTreeStore(value, undefined, getTabTreeKey(closedTab));
         if (
           (closedTab.type === "play" ||
             closedTab.type === "analysis" ||
             closedTab.type === "puzzles") &&
-          ["not-read", "unreadable", "unavailable"].includes(tabStorage.getStatus(value).kind)
+          ["not-read", "unreadable", "unavailable"].includes(
+            tabStorage.getStatus(getTabTreeKey(closedTab)).kind,
+          )
         )
           return;
         if (isPersistentGameOrigin(closedTab) && store.getState().dirty && !discard) {
@@ -196,8 +198,11 @@ export default function BoardsPage() {
           commitNewTab({
             tab: { ...tab },
             setTabs,
-            seed: (id) => tabStorage.cloneDurable(value, id),
-            existingTabIds: tabs.map((candidate) => candidate.value),
+            seed: (id) => tabStorage.cloneDurable(getTabTreeKey(tab), id),
+            existingTabIds: tabs.flatMap((candidate) => [
+              candidate.value,
+              getTabTreeKey(candidate),
+            ]),
           }),
         onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
       });
@@ -446,48 +451,30 @@ const windowsStateAtom = atomWithStorage(
 function TabSwitch({ tab, closeTab }: { tab: Tab; closeTab: (tabId: string) => void }) {
   const [windowsState, setWindowsState] = useAtom(windowsStateAtom);
 
-  return match(tab.type)
-    .with("new", () => <NewTabHome id={tab.value} />)
-    .with("play", () => (
-      <TreeStateProvider id={tab.value}>
-        <TreeRecoveryGate tabId={tab.value}>
-          <Mosaic<ViewId>
-            renderTile={(id) => fullLayout[id]}
-            value={windowsState.currentNode}
-            onChange={(currentNode) => setWindowsState({ currentNode })}
-            resize={{ minimumPaneSizePercentage: 0 }}
-          />
-          <BoardGame tabId={tab.value} />
-        </TreeRecoveryGate>
-      </TreeStateProvider>
-    ))
-    .with("analysis", () => (
-      <TreeStateProvider id={tab.value}>
-        <TreeRecoveryGate tabId={tab.value}>
+  if (tab.type === "new") return <NewTabHome id={tab.value} />;
+  const layout = (
+    <Mosaic<ViewId>
+      renderTile={(id) => fullLayout[id]}
+      value={windowsState.currentNode}
+      onChange={(currentNode) => setWindowsState({ currentNode })}
+      resize={{ minimumPaneSizePercentage: 0 }}
+    />
+  );
+  return (
+    <TreeStateProvider id={tab.value} treeKey={getTabTreeKey(tab)}>
+      <TreeRecoveryGate tabId={tab.value} treeKey={getTabTreeKey(tab)}>
+        {tab.type === "analysis" ? (
           <FileFreshnessGate tab={tab} closeTab={closeTab}>
-            <Mosaic<ViewId>
-              renderTile={(id) => fullLayout[id]}
-              value={windowsState.currentNode}
-              onChange={(currentNode) => setWindowsState({ currentNode })}
-              resize={{ minimumPaneSizePercentage: 0 }}
-            />
+            {layout}
             <BoardAnalysis />
           </FileFreshnessGate>
-        </TreeRecoveryGate>
-      </TreeStateProvider>
-    ))
-    .with("puzzles", () => (
-      <TreeStateProvider id={tab.value}>
-        <TreeRecoveryGate tabId={tab.value}>
-          <Mosaic<ViewId>
-            renderTile={(id) => fullLayout[id]}
-            value={windowsState.currentNode}
-            onChange={(currentNode) => setWindowsState({ currentNode })}
-            resize={{ minimumPaneSizePercentage: 0 }}
-          />
-          <Puzzles id={tab.value} />
-        </TreeRecoveryGate>
-      </TreeStateProvider>
-    ))
-    .exhaustive();
+        ) : (
+          <>
+            {layout}
+            {tab.type === "play" ? <BoardGame tabId={tab.value} /> : <Puzzles id={tab.value} />}
+          </>
+        )}
+      </TreeRecoveryGate>
+    </TreeStateProvider>
+  );
 }

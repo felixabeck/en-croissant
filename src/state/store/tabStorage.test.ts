@@ -95,6 +95,28 @@ function expectSeedRejected(value: ReturnType<typeof defaultTree>) {
     expect(sessionStorage.getItem("invalid")).toBeNull();
 }
 
+test("middleware distinguishes an empty legacy owner from a missing durable reference", () => {
+    const legacy = crypto.randomUUID();
+    const reference = crypto.randomUUID();
+    expect(storage.read(legacy)).toBeNull();
+    expect(storage.getStatus(legacy)).toEqual({ kind: "absent" });
+    const legacyStorage = storage.storageFor<ReturnType<typeof defaultTree>>();
+    expect(legacyStorage.getItem(legacy)).toBeNull();
+    expect(storage.getStatus(legacy)).toEqual({ kind: "absent" });
+    legacyStorage.setItem(legacy, { version: TREE_STORAGE_VERSION, state: defaultTree() });
+    expect(storage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(legacy)).not.toBeNull();
+    const referencedStorage = storage.storageFor<ReturnType<typeof defaultTree>>(true);
+    expect(referencedStorage.getItem(reference)).toBeNull();
+    expect(storage.getStatus(reference)).toEqual({
+        kind: "unavailable",
+        error: new Error("The referenced game tree is missing."),
+    });
+    referencedStorage.setItem(reference, { version: TREE_STORAGE_VERSION, state: defaultTree() });
+    expect(storage.pendingCount()).toBe(0);
+    expect(sessionStorage.getItem(reference)).toBeNull();
+});
+
 test.each([
     { scenario: "decodable non-UUID", uuid: false, raw: "tree", expected: true },
     { scenario: "undecodable UUID", uuid: true, raw: "not a tree", expected: true },

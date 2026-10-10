@@ -18,16 +18,18 @@ export function useVariationChooser() {
 
 export function TreeStateProvider({
   id,
+  treeKey,
   initial,
   children,
 }: {
   id?: string;
+  treeKey?: string;
   initial?: TreeState;
   children: React.ReactNode;
 }) {
   const storeRef = useRef<TreeStore | null>(null);
   if (storeRef.current === null) {
-    storeRef.current = createTreeStore(id, initial);
+    storeRef.current = createTreeStore(id, initial, treeKey);
   }
   const store = storeRef.current;
   const chooserRef = useRef<VariationChooserStore | null>(null);

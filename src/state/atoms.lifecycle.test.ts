@@ -17,8 +17,20 @@ import {
     tabFamily,
 } from "./atoms";
 import { tabStorage } from "./store/tabStorage";
-import { closeTreeStore, createTreeStore, type TreeStoreState } from "./store/tree";
-import { commitNewTab, createTab, replaceNewTab, type Tab } from "@/utils/tabs";
+import {
+    captureReportOwner,
+    closeTreeStore,
+    createTreeStore,
+    type TreeStoreState,
+} from "./store/tree";
+import {
+    commitNewTab,
+    createTab,
+    getTabTreeKey,
+    replaceFileGame,
+    replaceNewTab,
+    type Tab,
+} from "@/utils/tabs";
 import {
     loadWorkspace,
     MAX_PENDING_TREE_REMOVALS,
@@ -26,7 +38,7 @@ import {
     readStoredWorkspaceValue,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
-import { serializeStorageValue } from "./store/debouncedStorage";
+import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
@@ -199,6 +211,271 @@ function makeThrowingCommitStore(
         },
     } as unknown as ReturnType<typeof createStore>;
 }
+
+function fileReplacementFixture(ownerActive = true) {
+    const fixture = makeReplacementFixture({ ownerType: "analysis", ownerActive });
+    const owner = {
+        ...fixture.owner,
+        gameOrigin: {
+            kind: "file" as const,
+            gameNumber: 1,
+            file: {
+                type: "file" as const,
+                handle: { kind: "fileWorkspace" as const, id: { id: "file-owner" } },
+                name: "games.pgn",
+                numGames: 2,
+                metadata: { type: "game" as const, tags: [] },
+                lastModified: 1,
+            },
+        },
+    };
+    fixture.owner = owner;
+    expect(fixture.store.set(tabsAtom, [fixture.second, owner])).toBe(true);
+    fixture.workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    const candidate = createTreeStore(undefined);
+    candidate.getState().makeMoves({ payload: ["e4", "e5", "Nf3"] });
+    candidate.getState().save("b".repeat(64));
+    candidate.getState().setHeaders({ ...candidate.getState().headers, event: "Replacement game" });
+    candidate.getState().save();
+    const tree = deserializeStorageValue<ReturnType<typeof defaultTree>>(
+        serializeStorageValue(candidate.getState()),
+    )!;
+    const replace = (store = fixture.store, isCurrent = () => true) =>
+        replaceFileGame({
+            store,
+            owner,
+            treeStore: fixture.ownerTreeStore,
+            snapshot: { root: fixture.ownerRoot, headers: fixture.ownerHeaders },
+            tree,
+            page: 0,
+            isCurrent,
+        });
+    return { fixture, owner, tree, replace };
+}
+
+test.each(["tree", "workspace"] as const)(
+    "durable page replacement refuses %s without altering either old generation and retries",
+    (stage) => {
+        const { fixture, tree, replace } = fileReplacementFixture();
+        const setItem = Storage.prototype.setItem;
+        let candidate = "";
+        const refusal = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key !== WORKSPACE_STORAGE_KEY) candidate = key;
+                if ((key === WORKSPACE_STORAGE_KEY) === (stage === "workspace"))
+                    throw new DOMException("full", "QuotaExceededError");
+                return setItem.call(this, key, value);
+            });
+        expect(replace()).toEqual({
+            kind: "refused",
+            stage,
+        });
+        expectReplacementOwnerUnchanged(fixture);
+        expect(fixture.store.get(activeTabAtom)).toBe(fixture.owner.value);
+        expect(sessionStorage.getItem(candidate)).toBeNull();
+        refusal.mockRestore();
+        const result = replace();
+        expect(result.kind).toBe("committed");
+        if (result.kind !== "committed") throw new Error("Expected durable retry.");
+        replacementTabIds.add(result.id);
+        expect(tabStorage.read(result.id)?.state).toMatchObject({ headers: tree.headers });
+    },
+);
+
+test.each([true, false])(
+    "durable page replacement preserves logical ownership and cold reload (active: %s)",
+    (ownerActive) => {
+        const { fixture, owner, tree, replace } = fileReplacementFixture(ownerActive);
+        const reportOwner = captureReportOwner(owner.value);
+        fixture.store.set(gameIdFamily(owner.value), "native-game");
+        const settingsAtom = tabEngineSettingsFamily({
+            tab: owner.value,
+            engineId: "engine",
+            defaultSettings: [],
+            defaultGo: { t: "Infinite" },
+        });
+        const settings = {
+            enabled: true,
+            settings: [],
+            go: { t: "Infinite" as const },
+            synced: true,
+        };
+        fixture.store.set(settingsAtom, settings);
+        const result = replace();
+        expect(result.kind).toBe("committed");
+        if (result.kind !== "committed") throw new Error("Expected durable replacement.");
+        replacementTabIds.add(result.id);
+        const published = fixture.store.get(tabsAtom)[1]!;
+        expect(published).toEqual({
+            ...owner,
+            treeKey: result.id,
+            gameOrigin: { ...owner.gameOrigin, gameNumber: 0 },
+        });
+        expect(fixture.store.get(tabsAtom).map((tab) => tab.value)).toEqual([
+            fixture.second.value,
+            owner.value,
+        ]);
+        expect(fixture.store.get(activeTabAtom)).toBe(
+            ownerActive ? owner.value : fixture.second.value,
+        );
+        expect(createTreeStore(owner.value)).toBe(fixture.ownerTreeStore);
+        expect(tabFamily(owner.value)).toBe(fixture.ownerAtom);
+        expect(fixture.store.get(fixture.ownerAtom)).toBe("practice");
+        expect(fixture.store.get(settingsAtom)).toBe(settings);
+        expect(fixture.store.get(gameIdFamily(owner.value))).toBe("native-game");
+        expect(captureReportOwner(owner.value)).toBe(reportOwner);
+        expect(sessionStorage.getItem(owner.value)).toBeNull();
+        expect(
+            deserializeStorageValue<{ state: TreeStoreState }>(sessionStorage.getItem(result.id)!)
+                ?.state.headers.event,
+        ).toBe("Replacement game");
+        fixture.ownerTreeStore.getState().setComment("subsequent edit");
+        expect(tabStorage.flush()).toEqual([]);
+        expect(sessionStorage.getItem(owner.value)).toBeNull();
+        closeTreeStore(owner.value);
+        const workspace = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+        const reloaded = createTreeStore(owner.value, undefined, getTabTreeKey(workspace.tabs[1]!));
+        expect(reloaded.getState().headers).toEqual(tree.headers);
+        expect(reloaded.getState().root.children[0]?.san).toBe("e4");
+        expect(reloaded.getState().currentNode().comment).toBe("subsequent edit");
+        expect(reloaded.getState().sourceStamp).toBe("b".repeat(64));
+    },
+);
+
+test("page replacement preserves file metadata refreshed while its read was pending", () => {
+    const { fixture, owner, replace } = fileReplacementFixture();
+    const current = {
+        ...owner,
+        name: "Renamed owner",
+        gameOrigin: {
+            ...owner.gameOrigin,
+            file: { ...owner.gameOrigin.file, numGames: 5, lastModified: 2 },
+        },
+    };
+    expect(fixture.store.set(tabsAtom, [fixture.second, current])).toBe(true);
+    const result = replace();
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") throw new Error("Expected metadata-preserving replacement.");
+    replacementTabIds.add(result.id);
+    expect(fixture.store.get(tabsAtom)[1]).toEqual({
+        ...current,
+        treeKey: result.id,
+        gameOrigin: { ...current.gameOrigin, gameNumber: 0 },
+    });
+});
+
+test("post-write application failure retains both physical generations and cold reload follows the candidate", () => {
+    const { fixture, owner, replace } = fileReplacementFixture();
+    const failure = new Error("application dispatch failed after workspace save");
+    const throwing = {
+        get: fixture.store.get,
+        sub: fixture.store.sub,
+        set: (...args: Parameters<typeof fixture.store.set>) => {
+            fixture.store.set(...args);
+            throw failure;
+        },
+    } as typeof fixture.store;
+    expect(() => replace(throwing)).toThrow(failure);
+    const durable = readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY) as ReturnType<
+        typeof loadWorkspace
+    >;
+    const candidate = getTabTreeKey(durable.tabs[1]!);
+    replacementTabIds.add(candidate);
+    expect(candidate).not.toBe(owner.value);
+    expect(sessionStorage.getItem(candidate)).not.toBeNull();
+    expect(sessionStorage.getItem(owner.value)).toBe(fixture.ownerDurableBytes);
+    tabStorage.flush();
+    closeTreeStore(owner.value);
+    const loaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(loaded.tabs[1]).toMatchObject({
+        value: owner.value,
+        treeKey: candidate,
+        gameOrigin: { gameNumber: 0 },
+    });
+    const recovered = createTreeStore(owner.value, undefined, getTabTreeKey(loaded.tabs[1]!));
+    expect(recovered.getState().headers.event).toBe("Replacement game");
+    expect(recovered.getState().dirty).toBe(false);
+});
+
+test("committed replacement retains refused old-key cleanup intent through a later commit and reload", () => {
+    const { fixture, owner, replace } = fileReplacementFixture();
+    const deny = denyStorageRemoval(owner.value);
+    const result = replace();
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") throw new Error("Cleanup refusal must be applied success.");
+    replacementTabIds.add(result.id);
+    expect(sessionStorage.getItem(owner.value)).toBe(fixture.ownerDurableBytes);
+    expect(
+        fixture.store.set(tabsAtom, (tabs) => tabs.map((tab) => ({ ...tab, name: "Renamed" }))),
+    ).toBe(true);
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+        treeOwnershipPendingRemovalIds: [owner.value],
+    });
+    deny.mockRestore();
+    const loaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(sessionStorage.getItem(owner.value)).toBeNull();
+    expect(sessionStorage.getItem(result.id)).not.toBeNull();
+    expect(getTabTreeKey(loaded.tabs[1]!)).toBe(result.id);
+    expect(fixture.store.set(closeWorkspaceTabAtom, owner.value)).toBe(true);
+    expect(sessionStorage.getItem(result.id)).toBeNull();
+    expect([...tabFamily.getParams()]).not.toContain(owner.value);
+});
+
+test("duplication durably clones the physical owner into an independent fresh key", () => {
+    const { fixture, owner, replace } = fileReplacementFixture();
+    const result = replace();
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") throw new Error("Expected replacement.");
+    replacementTabIds.add(result.id);
+    fixture.ownerTreeStore.getState().setComment("latest queued clone source");
+    const published = fixture.store.get(tabsAtom)[1]!;
+    const duplicate = commitNewTab({
+        tab: published,
+        setTabs: (tabs, active) => fixture.store.set(tabsAtom, tabs, active),
+        seed: (id) => tabStorage.cloneDurable(getTabTreeKey(published), id),
+    });
+    expect(duplicate).not.toBeNull();
+    replacementTabIds.add(duplicate!);
+    const cloned = fixture.store.get(tabsAtom)[2]!;
+    expect(cloned.treeKey).toBeUndefined();
+    expect(getTabTreeKey(cloned)).toBe(duplicate);
+    expect(cloned.gameOrigin).toEqual(published.gameOrigin);
+    expect(tabStorage.read<TreeStoreState>(duplicate!)?.state.root.children[0]?.san).toBe("e4");
+    expect(
+        tabStorage.read<TreeStoreState>(duplicate!)?.state.root.children[0]?.children[0]
+            ?.children[0]?.comment,
+    ).toBe("latest queued clone source");
+    expect(fixture.store.set(closeWorkspaceTabAtom, owner.value)).toBe(true);
+    expect(sessionStorage.getItem(result.id)).toBeNull();
+    expect(sessionStorage.getItem(duplicate!)).not.toBeNull();
+});
+
+test.each(["closing", "origin", "key", "store", "edit", "generation", "removed"] as const)(
+    "page replacement supersedes changed %s ownership before staging",
+    (change) => {
+        const { fixture, owner, replace } = fileReplacementFixture();
+        if (change === "closing") fixture.store.set(closingTabsAtom, new Set([owner.value]));
+        if (change === "origin")
+            fixture.store.set(tabsAtom, [
+                fixture.second,
+                { ...owner, gameOrigin: { ...owner.gameOrigin, gameNumber: 0 } },
+            ]);
+        if (change === "key")
+            fixture.store.set(tabsAtom, [
+                fixture.second,
+                { ...owner, treeKey: crypto.randomUUID() },
+            ]);
+        if (change === "store") closeTreeStore(owner.value);
+        if (change === "edit") fixture.ownerTreeStore.getState().setComment("new edit");
+        if (change === "removed") fixture.store.set(tabsAtom, [fixture.second]);
+        const write = vi.spyOn(Storage.prototype, "setItem");
+        expect(replace(fixture.store, () => change !== "generation")).toEqual({
+            kind: "superseded",
+        });
+        expect(write).not.toHaveBeenCalled();
+    },
+);
 
 test.each([true, false])(
     "replaces the owner in place and preserves selection (owner active: %s)",

@@ -1,5 +1,5 @@
 import { parseUci } from "chessops";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
     createNode,
     defaultTree,
@@ -8,16 +8,84 @@ import {
 } from "@/utils/treeReducer";
 import { serializeStorageValue } from "./debouncedStorage";
 import { tabStorage, TREE_STORAGE_VERSION } from "./tabStorage";
-import { closeTreeStore, createTreeStore } from "./tree";
+import {
+    closeTreeStore,
+    createTreeStore,
+    discardTreeStoreStorage,
+    retryTreeStoreStorage,
+} from "./tree";
 
 const ids: string[] = [];
 
 afterEach(() => {
+    vi.restoreAllMocks();
     for (const id of ids.splice(0)) {
         closeTreeStore(id);
         tabStorage.remove(id);
     }
 });
+
+test("hydrates the referenced physical tree without reading the logical tab key", () => {
+    const logical = crypto.randomUUID();
+    const physical = crypto.randomUUID();
+    ids.push(logical, physical);
+    const legacy = defaultTree();
+    legacy.headers.event = "Discarded game";
+    const candidate = defaultTree();
+    candidate.headers.event = "Referenced game";
+    candidate.sourceStamp = "a".repeat(64);
+    tabStorage.seed(logical, legacy);
+    tabStorage.seed(physical, candidate);
+    const store = createTreeStore(logical, undefined, physical);
+    expect(store.getState().headers.event).toBe("Referenced game");
+    expect(createTreeStore(logical, undefined, physical)).toBe(store);
+    store.getState().setComment("edit on referenced tree");
+    expect(tabStorage.flush()).toEqual([]);
+    expect(tabStorage.read<TreeStoreSnapshot>(logical)?.state.headers.event).toBe("Discarded game");
+    expect(tabStorage.read<TreeStoreSnapshot>(physical)?.state.root.comment).toBe(
+        "edit on referenced tree",
+    );
+});
+
+type TreeStoreSnapshot = ReturnType<typeof defaultTree>;
+
+test.each(["missing", "unreadable", "unavailable"] as const)(
+    "referenced %s tree remains write gated until explicit recovery",
+    async (kind) => {
+        const logical = crypto.randomUUID();
+        const physical = crypto.randomUUID();
+        ids.push(logical, physical);
+        if (kind === "unreadable") sessionStorage.setItem(physical, "corrupt referenced bytes");
+        if (kind === "unavailable") {
+            const get = Storage.prototype.getItem;
+            vi.spyOn(Storage.prototype, "getItem").mockImplementation(
+                function (this: Storage, key) {
+                    if (key === physical) throw new DOMException("refused", "SecurityError");
+                    return get.call(this, key);
+                },
+            );
+        }
+        const store = createTreeStore(logical, undefined, physical);
+        expect(tabStorage.getStatus(physical).kind).toBe(kind === "missing" ? "unavailable" : kind);
+        store.getState().setComment("must not overwrite reference");
+        expect(tabStorage.pendingCount()).toBe(0);
+        vi.restoreAllMocks();
+        expect(sessionStorage.getItem(physical)).toBe(
+            kind === "unreadable" ? "corrupt referenced bytes" : null,
+        );
+        if (kind === "unreadable") discardTreeStoreStorage(logical, physical);
+        tabStorage.flush();
+        const recovered = defaultTree();
+        recovered.headers.event = "Recovered physical generation";
+        sessionStorage.setItem(
+            physical,
+            serializeStorageValue({ version: TREE_STORAGE_VERSION, state: recovered }),
+        );
+        expect(await retryTreeStoreStorage(logical)).toEqual({ kind: "available" });
+        expect(store.getState().headers.event).toBe("Recovered physical generation");
+        expect(createTreeStore(logical)).toBe(store);
+    },
+);
 
 test.each([0, TREE_STORAGE_VERSION])(
     "restores saved moves and metadata from a version %i tree envelope",

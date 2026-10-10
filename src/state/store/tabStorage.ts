@@ -375,9 +375,9 @@ export class TabStorageRepository {
     private flushTimeout: ReturnType<typeof setTimeout> | null = null;
     private handlersBound = false;
 
-    storageFor<S>(): PersistStorage<S> {
+    storageFor<S>(requireExisting = false): PersistStorage<S> {
         return {
-            getItem: (name) => this.read<S>(name),
+            getItem: (name) => this.read<S>(name, requireExisting),
             setItem: (name, value) => {
                 this.write(name, value);
             },
@@ -385,8 +385,14 @@ export class TabStorageRepository {
         };
     }
 
-    read<S>(tabId: string): StorageValue<S> | null {
+    read<S>(tabId: string, requireExisting = false): StorageValue<S> | null {
         const result = this.readTree(tabId);
+        if (requireExisting && result.kind === "absent") {
+            this.setReadStatus(tabId, {
+                kind: "unavailable",
+                error: new Error("The referenced game tree is missing."),
+            });
+        }
         return result.kind === "available" ? (result.value as StorageValue<S>) : null;
     }
 
@@ -579,19 +585,7 @@ export class TabStorageRepository {
         }
         const copy = this.validatedClone(source.value);
         if (!copy) throw new Error("Could not validate the source tree for duplication.");
-        const blocker = this.writeBlocker(targetTabId);
-        if (blocker) {
-            throw new Error(
-                "Cannot replace a tab tree while its storage is unreadable or unavailable.",
-                { cause: blocker.kind === "unavailable" ? blocker.error : blocker },
-            );
-        }
-        try {
-            sessionStorage.setItem(targetTabId, serializeStorageValue(copy));
-            this.setReadStatus(targetTabId, { kind: "available" });
-        } catch (error) {
-            throw persistStorageWriteError(error);
-        }
+        this.seed(targetTabId, copy.state);
     }
 
     remove(tabId: string) {

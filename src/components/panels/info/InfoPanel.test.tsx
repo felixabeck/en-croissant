@@ -7,6 +7,10 @@ import { MantineProvider } from "@mantine/core";
 import { SWRConfig } from "swr";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
+import { tabStorage } from "@/state/store/tabStorage";
+import { deserializeStorageValue } from "@/state/store/debouncedStorage";
+import { getTabTreeKey } from "@/state/workspaceTypes";
+import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import { cancellationError, TauriCommandError } from "@/platform/tauri";
 import type { Tab } from "@/state/workspaceTypes";
@@ -260,7 +264,9 @@ describe("InfoPanel game loading and cancellation", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    treeStore = createTreeStore(undefined, defaultTree());
+    closeTreeStore(tabAId);
+    tabStorage.seed(tabAId, defaultTree());
+    treeStore = createTreeStore(tabAId, defaultTree());
     jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [tabA, tabB]);
     jotaiStore.set(activeTabAtom, tabAId);
@@ -285,7 +291,7 @@ describe("InfoPanel game loading and cancellation", () => {
     mocks.useActualGameSelector = false;
     mocks.writeGame
       .mockReset()
-      .mockResolvedValue({ stamp: "saved-stamp", revision: "saved-revision" });
+      .mockResolvedValue({ stamp: "c".repeat(64), revision: "saved-revision" });
     removeFileFreshness(tabAId);
     removeFileFreshness(tabBId);
   });
@@ -300,6 +306,7 @@ describe("InfoPanel game loading and cancellation", () => {
     activeDatabaseViewStore.getState().clearDatabase();
     mocks.useActualGameSelector = false;
     vi.restoreAllMocks();
+    tabStorage.flush();
   });
 
   function refuseWorkspaceWrites() {
@@ -388,7 +395,7 @@ describe("InfoPanel game loading and cancellation", () => {
   function diskGame(): Awaited<ReturnType<typeof loadFileGame>> {
     const tree = defaultTree();
     tree.headers.event = "Replacement game";
-    tree.sourceStamp = "disk-stamp";
+    tree.sourceStamp = "d".repeat(64);
     return {
       pgn: "replacement",
       stamp: tree.sourceStamp,
@@ -408,7 +415,7 @@ describe("InfoPanel game loading and cancellation", () => {
       { ...tabA, gameOrigin: { ...tabA.gameOrigin, gameNumber: 2 } } as Tab,
       tabB,
     ]);
-    treeStore.getState().setSourceStamp("original-stamp");
+    treeStore.getState().setSourceStamp("a".repeat(64));
     treeStore.getState().setComment("Unsaved original comment");
     await act(async () => root.render(renderPanel()));
     await activateActualRow();
@@ -449,7 +456,7 @@ describe("InfoPanel game loading and cancellation", () => {
       ...tabA.gameOrigin,
       gameNumber: 2,
     });
-    expect(treeStore.getState().sourceStamp).toBe("original-stamp");
+    expect(treeStore.getState().sourceStamp).toBe("a".repeat(64));
     expect(treeStore.getState().dirty).toBe(true);
     expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
   }
@@ -477,7 +484,7 @@ describe("InfoPanel game loading and cancellation", () => {
 
     expect(treeStore.getState().root).toBe(replacement.tree.root);
     expect(treeStore.getState().headers).toBe(replacement.tree.headers);
-    expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "disk-stamp" });
+    expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "d".repeat(64) });
     expect(dirtyStates).toEqual([false]);
     expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(tabA.gameOrigin);
     expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
@@ -485,6 +492,75 @@ describe("InfoPanel game loading and cancellation", () => {
       state: "verified",
       verifiedRevision: "disk-revision",
     });
+    expect(mocks.notify).not.toHaveBeenCalled();
+    const published = jotaiStore.get(currentTabAtom)!;
+    const durable = deserializeStorageValue<{ state: ReturnType<typeof defaultTree> }>(
+      sessionStorage.getItem(getTabTreeKey(published))!,
+    );
+    expect(durable?.state).toMatchObject({
+      dirty: false,
+      sourceStamp: "d".repeat(64),
+      headers: { event: "Replacement game" },
+    });
+    expect(createTreeStore(tabAId)).toBe(treeStore);
+    expect(tabStorage.flush()).toEqual([]);
+    closeTreeStore(tabAId);
+    const reloaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(reloaded.tabs.map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+    const recovered = createTreeStore(tabAId, undefined, getTabTreeKey(reloaded.tabs[0]!));
+    expect(recovered.getState()).toMatchObject({
+      dirty: false,
+      sourceStamp: "d".repeat(64),
+      headers: { event: "Replacement game" },
+    });
+  });
+
+  test("actual selector discard preserves metadata committed during the pending page read", async () => {
+    const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+    mocks.loadFileGame.mockReturnValueOnce(read.promise);
+    await openActualPageConfirmation();
+    const original = treeStore.getState();
+    await discardActualPage();
+    expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    const owner = jotaiStore.get(currentTabAtom)!;
+    if (owner.gameOrigin.kind !== "file") throw new Error("expected file-backed owner");
+    const refreshedFile = {
+      ...owner.gameOrigin.file,
+      numGames: 8,
+      name: "Refreshed games.pgn",
+      lastModified: 2,
+      metadata: { type: "game" as const, tags: ["refreshed"] },
+    };
+    await act(async () => {
+      expect(
+        jotaiStore.set(currentTabAtom, {
+          ...owner,
+          gameOrigin: { ...owner.gameOrigin, file: refreshedFile },
+        }),
+      ).toBe(true);
+    });
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]?.gameOrigin).toEqual({
+      ...owner.gameOrigin,
+      file: refreshedFile,
+    });
+    expect(treeStore.getState()).toBe(original);
+    await act(async () => read.resolve(diskGame()));
+
+    const published = jotaiStore.get(currentTabAtom)!;
+    expect(published.gameOrigin).toEqual({
+      ...owner.gameOrigin,
+      gameNumber: 0,
+      file: refreshedFile,
+    });
+    expect(getTabTreeKey(published)).not.toBe(getTabTreeKey(owner));
+    expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+    expect(createTreeStore(tabAId)).toBe(treeStore);
+    expect(treeStore.getState()).toMatchObject({
+      dirty: false,
+      sourceStamp: "d".repeat(64),
+      headers: { event: "Replacement game" },
+    });
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]).toEqual(published);
     expect(mocks.notify).not.toHaveBeenCalled();
   });
 
@@ -545,6 +621,34 @@ describe("InfoPanel game loading and cancellation", () => {
     expectOriginalOrigin();
   });
 
+  test("actual discard refuses the candidate tree before changing the current page and succeeds on retry", async () => {
+    await openActualPageConfirmation();
+    const oldBytes = sessionStorage.getItem(tabAId);
+    const oldTree = treeStore.getState();
+    const oldPending = tabStorage.readTree(tabAId);
+    const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    const set = Storage.prototype.setItem;
+    const refused = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (key !== WORKSPACE_STORAGE_KEY && key !== tabAId && key !== tabBId)
+          throw new DOMException("full", "QuotaExceededError");
+        return set.call(this, key, value);
+      });
+    await discardActualPage();
+    expectOriginalOrigin();
+    expect(treeStore.getState()).toBe(oldTree);
+    expect(tabStorage.readTree(tabAId)).toEqual(oldPending);
+    expect(sessionStorage.getItem(tabAId)).toBe(oldBytes);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
+    refused.mockRestore();
+    await activateActualRow();
+    await expectPageConfirmation();
+    await discardActualPage();
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(tabA.gameOrigin);
+    expect(treeStore.getState().dirty).toBe(false);
+  });
+
   test.each(["tab", "store", "Jotai before render"])(
     "a %s switch during discard load retains both owners",
     async (switchKind) => {
@@ -584,7 +688,7 @@ describe("InfoPanel game loading and cancellation", () => {
       await openActualPageConfirmation();
       const original = treeStore.getState();
       const otherStore = createTreeStore(undefined, defaultTree());
-      otherStore.getState().setSourceStamp("other-owner-stamp");
+      otherStore.getState().setSourceStamp("e".repeat(64));
       otherStore.getState().setComment("Other owner's unsaved comment");
       const otherOriginal = otherStore.getState();
       await discardActualPage();
@@ -641,7 +745,7 @@ describe("InfoPanel game loading and cancellation", () => {
     await act(async () => modalButton("Tab.SaveAndClose").click());
     expect(mocks.writeGame).toHaveBeenCalledOnce();
     await act(async () => root.unmount());
-    await act(async () => write.resolve({ stamp: "saved-stamp", revision: "saved-revision" }));
+    await act(async () => write.resolve({ stamp: "c".repeat(64), revision: "saved-revision" }));
     expect(mocks.loadFileGame).not.toHaveBeenCalled();
     expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toEqual({ ...tabA.gameOrigin, gameNumber: 2 });
   });
@@ -658,7 +762,7 @@ describe("InfoPanel game loading and cancellation", () => {
     const newer = treeStore.getState();
     await act(async () => read.resolve(diskGame()));
     expect(treeStore.getState()).toBe(newer);
-    expect(treeStore.getState()).toMatchObject({ dirty: true, sourceStamp: "saved-stamp" });
+    expect(treeStore.getState()).toMatchObject({ dirty: true, sourceStamp: "c".repeat(64) });
     expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual({
       ...tabA.gameOrigin,
       gameNumber: 2,
@@ -1112,7 +1216,7 @@ describe("InfoPanel game loading and cancellation", () => {
     await act(async () => root.render(renderPanel()));
     await primeAndDelete();
 
-    const treeStoreB = createTreeStore(undefined, defaultTree());
+    const treeStoreB = createTreeStore(tabBId, defaultTree());
     await act(async () => {
       jotaiStore.set(activeTabAtom, tabBId);
       root.render(renderPanel(treeStoreB));
@@ -1347,7 +1451,7 @@ describe("InfoPanel game loading and cancellation", () => {
     await act(async () => root.render(renderPanel()));
     await primeAndDelete();
 
-    const treeStoreB = createTreeStore(undefined, defaultTree());
+    const treeStoreB = createTreeStore(tabBId, defaultTree());
     await act(async () => {
       jotaiStore.set(activeTabAtom, tabBId);
       root.render(renderPanel(treeStoreB));
@@ -1389,7 +1493,7 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(capturedSignal.aborted).toBe(false);
 
     // Switch active tab to tab B
-    const treeStoreB = createTreeStore(undefined, defaultTree());
+    const treeStoreB = createTreeStore(tabBId, defaultTree());
     await act(async () => {
       sessionStorage.setItem(
         "workspace",
@@ -1443,7 +1547,7 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(signalA.aborted).toBe(false);
 
     // Switch to tab B
-    const treeStoreB = createTreeStore(undefined, defaultTree());
+    const treeStoreB = createTreeStore(tabBId, defaultTree());
     await act(async () => {
       sessionStorage.setItem(
         "workspace",

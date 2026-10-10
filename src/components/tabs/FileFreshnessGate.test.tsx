@@ -14,7 +14,7 @@ import {
   startFileRevisionPoll,
 } from "@/state/fileFreshness";
 import { defaultTree } from "@/utils/treeReducer";
-import { saveToFile, serializeStoreTree } from "@/utils/tabs";
+import { getTabTreeKey, saveToFile, serializeStoreTree } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import FileFreshnessGate from "./FileFreshnessGate";
 import TreeRecoveryGate from "./TreeRecoveryGate";
@@ -117,7 +117,7 @@ function Harness({ closeTab }: { closeTab: (id: string) => void }) {
 function GateForTab({ tab, closeTab }: { tab: Tab; closeTab: (id: string) => void }) {
   return (
     <TreeStateContext.Provider value={treeStore}>
-      <TreeRecoveryGate tabId={tab.value}>
+      <TreeRecoveryGate tabId={tab.value} treeKey={getTabTreeKey(tab)}>
         <FileFreshnessGate tab={tab} closeTab={closeTab}>
           <div data-testid="board-and-panels">board and panels</div>
         </FileFreshnessGate>
@@ -167,8 +167,9 @@ async function setup({
   tree.dirty = dirty;
   tree.appendAttempted = appendAttempted;
   if (dirty) tree.headers.event = "Unsaved edit";
-  treeStore = createTreeStore(persisted ? tabId : undefined, tree);
-  tabStorage.readTree(tabId);
+  if (persisted && tab.treeKey) tabStorage.seed(getTabTreeKey(tab), tree);
+  treeStore = createTreeStore(persisted ? tabId : undefined, tree, getTabTreeKey(tab));
+  tabStorage.readTree(getTabTreeKey(tab));
   jotaiStore = createJotaiStore();
   jotaiStore.set(tabsAtom, [tab], tabId);
   jotaiStore.set(activeTabAtom, tabId);
@@ -530,6 +531,26 @@ test("a failed storage flush aborts append, clears its marker, and reports persi
   expect(host.textContent).toContain("FileFreshness.CouldNotPrepareAppend");
   flush.mockRestore();
   tabStorage.flush();
+});
+
+test("physical-key marker refusal prevents native append for a distinct logical owner", async () => {
+  const treeKey = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true, tab: { ...fileTab, treeKey } });
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+  const set = Storage.prototype.setItem;
+  const refuse = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(function (this: Storage, key, value) {
+      if (key === treeKey) throw new DOMException("full", "QuotaExceededError");
+      return set.call(this, key, value);
+    });
+  await act(async () => button("FileFreshness.SaveAsNewGame").click());
+  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(treeStore.getState().appendAttempted).toBe(false);
+  expect(host.textContent).toContain("FileFreshness.CouldNotPrepareAppend");
+  refuse.mockRestore();
+  expect(tabStorage.flush()).toEqual([]);
 });
 
 test("an uncertain append stays disabled across a persisted restart marker", async () => {

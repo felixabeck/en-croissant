@@ -60,6 +60,7 @@ type TabFixture = {
   name: string;
   type: "new" | "play" | "analysis" | "puzzles";
   value: string;
+  treeKey?: string;
 };
 
 function setTreeStatus(status: TabTreeStorageStatus) {
@@ -451,6 +452,24 @@ test("duplicate clones the requested tab and preserves metadata and selection on
   expect(fixtures.cloneDurable.mock.calls[0]![1]).not.toBe("current");
   expect(store.get(tabsAtom)).toEqual(before);
   expect(store.get(activeTabAtom)).toBe("current");
+});
+
+test("duplicate uses the physical generation and clears its inherited reference", async () => {
+  const physical = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const original = { ...fixtures.tabs[0]!, treeKey: physical };
+  store.set(tabsAtom, [original]);
+  await renderPage();
+  const duplicate = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Tab.Duplicate",
+  )!;
+  await act(async () => duplicate.click());
+  expect(fixtures.cloneDurable.mock.calls[0]?.[0]).toBe(physical);
+  const tabs = store.get(tabsAtom);
+  expect(tabs).toHaveLength(2);
+  expect(tabs[0]).toEqual(original);
+  expect(tabs[1]?.treeKey).toBeUndefined();
+  expect(tabs[1]?.value).not.toBe(original.value);
+  expect(store.get(activeTabAtom)).toBe(tabs[1]?.value);
 });
 
 test("reports a tree-copy failure without admitting a duplicate tab", async () => {

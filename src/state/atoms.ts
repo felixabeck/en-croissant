@@ -26,7 +26,7 @@ import {
     masterOptionsSchema,
 } from "@/utils/lichess/explorer";
 import { getWinChance, normalizeScore } from "@/utils/score";
-import { type Tab } from "./workspaceTypes";
+import { getTabTreeKey, type Tab } from "./workspaceTypes";
 import {
     fileWorkspaceHandleSchema,
     databaseHandleSchema,
@@ -78,11 +78,11 @@ export function initializeWorkspace(): Workspace {
 
 const committedWorkspaceAtom = atom<Workspace | null>(null);
 const workspaceAtom = atom((get) => get(committedWorkspaceAtom) ?? initializeWorkspace());
-const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
+const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace, onSaved?: () => void) => {
     const previous = get(workspaceAtom);
-    const retainedIds = new Set(workspace.tabs.map((tab) => tab.value));
+    const retainedIds = new Set(workspace.tabs.map(getTabTreeKey));
     const closedIds = new Set(
-        previous.tabs.filter((tab) => !retainedIds.has(tab.value)).map((tab) => tab.value),
+        previous.tabs.map(getTabTreeKey).filter((id) => !retainedIds.has(id)),
     );
     const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
     const pendingRemovalResult = reconcilePendingTreeRemovals(
@@ -103,20 +103,27 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
     };
     const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
     if (!saved) return false;
+    onSaved?.();
     set(committedWorkspaceAtom, saved);
     return true;
 });
 
 export const tabsAtom = atom(
     (get) => get(workspaceAtom).tabs,
-    (get, set, update: Tab[] | ((tabs: Tab[]) => Tab[]), requestedActiveTab?: string) => {
+    (
+        get,
+        set,
+        update: Tab[] | ((tabs: Tab[]) => Tab[]),
+        requestedActiveTab?: string,
+        onSaved?: () => void,
+    ) => {
         const workspace = get(workspaceAtom);
         const tabs = typeof update === "function" ? update(workspace.tabs) : update;
         const desiredActiveTab = requestedActiveTab ?? workspace.activeTab;
         const activeTab = tabs.some((tab) => tab.value === desiredActiveTab)
             ? desiredActiveTab
             : (tabs[0]?.value ?? null);
-        return set(commitWorkspaceAtom, { ...workspace, tabs, activeTab });
+        return set(commitWorkspaceAtom, { ...workspace, tabs, activeTab }, onSaved);
     },
 );
 
@@ -136,11 +143,11 @@ export const activeTabAtom = atom(
 export const closingTabsAtom = atom<Set<string>>(new Set<string>());
 
 /** Reclaims per-tab state after workspace metadata stops owning it. */
-export function reclaimTabLocalState(tabId: string) {
+export function reclaimTabLocalState(tabId: string, treeKey = tabId) {
     removeFileFreshness(tabId);
     let cleanupError: unknown;
     try {
-        tabStorage.remove(tabId);
+        tabStorage.remove(treeKey);
     } catch (error) {
         cleanupError = error;
     }
@@ -165,7 +172,7 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
             ? workspace.activeTab
             : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
     if (!set(commitWorkspaceAtom, { ...workspace, tabs, activeTab })) return false;
-    reclaimTabLocalState(tabId);
+    reclaimTabLocalState(tabId, getTabTreeKey(workspace.tabs[index]));
     return true;
 });
 

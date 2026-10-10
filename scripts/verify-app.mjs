@@ -1876,8 +1876,10 @@ async function verifyGameOpening(session) {
         throw new Error(`GO12 did not leave the second file game active: ${JSON.stringify(owner)}`);
       const admittedIds = before.tabs.map((tab) => tab.value);
       const readTree = async () => {
+        const workspace = await snapshot();
+        const currentOwner = workspace.tabs.find((tab) => tab.value === owner.value);
         const raw = await session.execute("return sessionStorage.getItem(arguments[0])", [
-          owner.value,
+          currentOwner?.treeKey ?? owner.value,
         ]);
         const tree = raw && deserializeStorageValue(raw)?.state;
         if (!tree) throw new Error("discard owner's persisted tree is unreadable");

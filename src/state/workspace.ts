@@ -5,7 +5,7 @@ import enUSCatalogue from "@/translation/en-US.json";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 import { createTabIdSchema, persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
-import { newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
+import { getTabTreeKey, newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
 const WORKSPACE_VERSION = 1;
@@ -27,7 +27,14 @@ const MAX_ACTIVE_TAB_ID_LENGTH = 128;
 function createLiveWorkspaceSchema() {
     return z.object({
         version: z.literal(WORKSPACE_VERSION),
-        tabs: z.array(tabSchema).max(MAX_WORKSPACE_TABS),
+        tabs: z
+            .array(tabSchema)
+            .max(MAX_WORKSPACE_TABS)
+            .refine(
+                (tabs) =>
+                    new Set(tabs.map(getTabTreeKey)).size === tabs.length &&
+                    new Set(tabs.map((tab) => tab.value)).size === tabs.length,
+            ),
         activeTab: z.string().max(MAX_ACTIVE_TAB_ID_LENGTH).nullable(),
         treeOwnershipUncertain: z.literal(true).optional(),
         treeOwnershipProtectedIds: z
@@ -48,14 +55,14 @@ function createWorkspaceLoadSchemas() {
         // Scrub individual legacy/corrupt tabs while keeping every independently
         // valid tab recoverable. A corrupt entry must not erase its neighbours.
         tabs: z
-            .array(workspaceLiveSchema.shape.tabs.element.nullable().catch(null))
+            .array(tabSchema.nullable().catch(null))
             .max(MAX_WORKSPACE_TABS)
             .transform((tabs) => tabs.filter((tab): tab is Tab => tab !== null)),
         activeTab: workspaceLiveSchema.shape.activeTab.catch(null),
     });
     const legacyWorkspaceSchema = workspaceInputSchema.extend({
         version: z.literal(LEGACY_WORKSPACE_VERSION).optional(),
-        tabs: workspaceLiveSchema.shape.tabs,
+        tabs: z.array(tabSchema).max(MAX_WORKSPACE_TABS),
     });
     const uncertainOwnershipSchema = workspaceLiveSchema
         .pick({ treeOwnershipUncertain: true })
@@ -111,17 +118,29 @@ function planWorkspaceRepair(
     const parsed = inputResult.data;
     const candidates = parsed.tabs;
     const ids = new Set<string>();
+    const treeKeys = new Set<string>();
+    const reserved = candidates.flatMap((tab) => [tab.value, getTabTreeKey(tab)]);
     const cloneTargets: WorkspaceRepairPlan["cloneTargets"] = [];
     const tabs = candidates.map((tab) => {
-        if (uuidSchema.safeParse(tab.value).success && !ids.has(tab.value)) {
+        const sourceId = getTabTreeKey(tab);
+        const validId = uuidSchema.safeParse(tab.value).success && !ids.has(tab.value);
+        if (validId && !treeKeys.has(sourceId)) {
             ids.add(tab.value);
+            treeKeys.add(sourceId);
             return tab;
         }
 
-        const migratedId = newWorkspaceId(ids);
-        cloneTargets.push({ sourceId: tab.value, targetId: migratedId });
-        ids.add(migratedId);
-        return { ...tab, value: migratedId };
+        const migratedId = newWorkspaceId([...reserved, ...ids, ...treeKeys]);
+        cloneTargets.push({ sourceId, targetId: migratedId });
+        const repaired: Tab = {
+            ...tab,
+            value: validId ? tab.value : migratedId,
+            treeKey: migratedId,
+        };
+        if (!validId) delete repaired.treeKey;
+        ids.add(repaired.value);
+        treeKeys.add(migratedId);
+        return repaired;
     });
 
     if (tabs.length === 0) tabs.push(newTab(ids));
@@ -148,7 +167,7 @@ export function sweepOrphanedTreeKeys(
     failedKnownRemovals: ReadonlySet<string> = new Set(),
 ) {
     const retainedIds = new Set([
-        ...retainedTabs.map((tab) => tab.value),
+        ...retainedTabs.map(getTabTreeKey),
         ...protectedTreeIds,
         ...failedKnownRemovals,
     ]);
@@ -266,7 +285,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const legacyStoragePresent =
         storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
     const plan = planWorkspaceRepair(legacy, schemas);
-    const repairedRetainedIds = new Set(plan.workspace.tabs.map((tab) => tab.value));
+    const repairedRetainedIds = new Set(plan.workspace.tabs.map(getTabTreeKey));
     const failedAdmissions = tabStorage.replayFailedAdmissions(repairedRetainedIds);
     const missingWorkspaceTreeSnapshot =
         storedWorkspace === null && !validMigrationSource
@@ -312,65 +331,57 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             ];
         }
     }
-    const stagedCloneIds: string[] = [];
-    const cloneKinds = new Map<string, "copied" | "copied-unreadable">();
+    // One ownership record drives refusal cleanup, durable verification and source retirement.
+    const stagedClones = new Map<string, boolean>();
+    const refuseRepair = (...errors: unknown[]): Workspace => {
+        if (errors.length > 0) reportPersistError(persistStorageWriteError(errors[0]));
+        tabStorage.removeKnownTreesSafely(stagedClones.keys());
+        return plan.unrepairedWorkspace;
+    };
     for (const { sourceId, targetId } of plan.cloneTargets) {
         const result = tabStorage.clone(sourceId, targetId);
         if (result.kind === "unavailable" || result.kind === "copy-failed") {
-            reportPersistError(persistStorageWriteError(result.error));
-            tabStorage.removeKnownTreesSafely(stagedCloneIds);
-            return plan.unrepairedWorkspace;
+            return refuseRepair(result.error);
         }
         if (result.kind === "unreadable") {
             try {
                 tabStorage.copyUnreadableForWorkspaceRepair(targetId, result.rawValue);
             } catch (error) {
-                reportPersistError(persistStorageWriteError(error));
-                tabStorage.removeKnownTreesSafely(stagedCloneIds);
-                return plan.unrepairedWorkspace;
+                return refuseRepair(error);
             }
-            stagedCloneIds.push(targetId);
-            cloneKinds.set(targetId, "copied-unreadable");
+            stagedClones.set(targetId, false);
             continue;
         }
         if (result.kind === "copied") {
-            stagedCloneIds.push(targetId);
-            cloneKinds.set(targetId, "copied");
+            stagedClones.set(targetId, true);
         }
     }
-    if (stagedCloneIds.length > 0) {
+    if (stagedClones.size > 0) {
         const failedIds = new Set(tabStorage.flush({ notify: true }));
-        if (stagedCloneIds.some((id) => failedIds.has(id))) {
-            tabStorage.removeKnownTreesSafely(stagedCloneIds);
-            return plan.unrepairedWorkspace;
+        if ([...stagedClones.keys()].some((id) => failedIds.has(id))) {
+            return refuseRepair();
         }
     }
 
-    const durableMigratedSources = new Set<string>();
-    for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
-        const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
-        const copiedReadableTargets = sourceTargets.filter(
-            ({ targetId }) => cloneKinds.get(targetId) === "copied",
+    for (const [targetId, readable] of stagedClones) {
+        if (!readable) continue;
+        const result = tabStorage.readTree(targetId);
+        if (result.kind === "available") continue;
+        return refuseRepair(
+            result.kind === "unavailable"
+                ? result.error
+                : new Error(`Could not verify the migrated tree at ${targetId}.`),
         );
-        for (const { targetId } of copiedReadableTargets) {
-            const result = tabStorage.readTree(targetId);
-            if (result.kind === "available") continue;
-            const error =
-                result.kind === "unavailable"
-                    ? result.error
-                    : new Error(`Could not verify the migrated tree at ${targetId}.`);
-            reportPersistError(persistStorageWriteError(error));
-            tabStorage.removeKnownTreesSafely(stagedCloneIds);
-            return plan.unrepairedWorkspace;
-        }
-        const allTargetsCopied = sourceTargets.every(({ targetId }) => {
-            const kind = cloneKinds.get(targetId);
-            return kind === "copied" || kind === "copied-unreadable";
-        });
-        if (allTargetsCopied) {
-            durableMigratedSources.add(sourceId);
-        }
     }
+    const durableMigratedSources = new Set(
+        plan.cloneTargets
+            .filter(({ sourceId }) =>
+                plan.cloneTargets.every(
+                    (target) => target.sourceId !== sourceId || stagedClones.has(target.targetId),
+                ),
+            )
+            .map(({ sourceId }) => sourceId),
+    );
     const pendingRemovalResult = reconcilePendingTreeRemovals(
         persistedPendingRemovals,
         durableMigratedSources,
@@ -378,8 +389,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     );
     if (pendingRemovalResult.ids === null) {
         reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
-        tabStorage.removeKnownTreesSafely(stagedCloneIds);
-        return plan.unrepairedWorkspace;
+        return refuseRepair();
     }
     const pendingRemovalIds = pendingRemovalResult.ids;
     if (pendingRemovalIds.length > 0) {
@@ -396,9 +406,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         try {
             storage.setItem(key, payload);
         } catch (error) {
-            reportPersistError(persistStorageWriteError(error));
-            tabStorage.removeKnownTreesSafely(stagedCloneIds);
-            return plan.unrepairedWorkspace;
+            return refuseRepair(error);
         }
     }
 

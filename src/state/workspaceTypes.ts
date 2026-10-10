@@ -12,6 +12,7 @@ const gameOriginSchema = z.discriminatedUnion("kind", [
 export const tabSchema = z.object({
     name: z.string(),
     value: z.string(),
+    treeKey: z.string().uuid().optional(),
     type: z.enum(["new", "play", "analysis", "puzzles"]),
     gameOrigin: gameOriginSchema,
 });
@@ -20,13 +21,17 @@ export type GameOrigin = z.infer<typeof gameOriginSchema>;
 export type Tab = z.infer<typeof tabSchema>;
 export type TabFile = FileMetadata;
 
+export function getTabTreeKey(tab: Tab): string {
+    return tab.treeKey ?? tab.value;
+}
+
 export function newWorkspaceId(reservedIds: Iterable<string> = []) {
     const reserved = new Set(reservedIds);
     for (let attempt = 0; attempt < 32; attempt++) {
         const id = crypto.randomUUID();
         if (
             !reserved.has(id) &&
-            (typeof sessionStorage === "undefined" || !sessionStorage.getItem(id))
+            (typeof sessionStorage === "undefined" || sessionStorage.getItem(id) === null)
         ) {
             return id;
         }

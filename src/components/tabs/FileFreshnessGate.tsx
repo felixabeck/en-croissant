@@ -9,7 +9,14 @@ import { tabsAtom } from "@/state/atoms";
 import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
 import { loadFileGame, pickPgnFile, readFileGame, writeFileGame } from "@/utils/files";
-import { sameFileGameOrigin, serializeStoreTree, updateTabById } from "@/utils/tabs";
+import {
+  getTabTreeKey,
+  isFileBackedTab,
+  matchesFileGameTab,
+  serializeStoreTree,
+  updateTabById,
+  type FileBackedTab,
+} from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import {
@@ -27,65 +34,8 @@ type Props = {
   children: React.ReactNode;
 };
 
-function isFileOrigin(
-  tab: Tab,
-): tab is Tab & { gameOrigin: Extract<Tab["gameOrigin"], { kind: "file" | "temp_file" }> } {
-  return tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file";
-}
-
-function FileResolutionPanel({
-  title,
-  uncertainMessage,
-  errorMessage,
-  disabled,
-  appendDisabled,
-  showReload,
-  onReload,
-  onAppend,
-  onClose,
-  labels,
-}: {
-  title: string;
-  uncertainMessage: string | null;
-  errorMessage: string | null;
-  disabled: boolean;
-  appendDisabled: boolean;
-  showReload: boolean;
-  onReload: () => void;
-  onAppend: () => void;
-  onClose?: () => void;
-  labels: {
-    reload: string;
-    append: string;
-    close: string;
-  };
-}) {
-  return (
-    <Stack className={classes.panel} align="center" justify="center" h="100%" gap="sm">
-      <Text>{title}</Text>
-      {uncertainMessage && <Text c="dimmed">{uncertainMessage}</Text>}
-      {errorMessage && <Text c="red">{errorMessage}</Text>}
-      <Group>
-        {showReload && (
-          <Button onClick={onReload} disabled={disabled}>
-            {labels.reload}
-          </Button>
-        )}
-        <Button onClick={onAppend} disabled={disabled || appendDisabled}>
-          {labels.append}
-        </Button>
-        {onClose && (
-          <Button variant="default" onClick={onClose} disabled={disabled}>
-            {labels.close}
-          </Button>
-        )}
-      </Group>
-    </Stack>
-  );
-}
-
 export default function FileFreshnessGate({ tab, closeTab, children }: Props) {
-  if (!isFileOrigin(tab)) return <>{children}</>;
+  if (!isFileBackedTab(tab)) return <>{children}</>;
   return (
     <FileBackedGate tab={tab} closeTab={closeTab}>
       {children}
@@ -98,7 +48,7 @@ function FileBackedGate({
   closeTab,
   children,
 }: Props & {
-  tab: Tab & { gameOrigin: Extract<Tab["gameOrigin"], { kind: "file" | "temp_file" }> };
+  tab: FileBackedTab;
 }) {
   const { t } = useTranslation();
   const tabId = tab.value;
@@ -133,6 +83,31 @@ function FileBackedGate({
     [setTabs],
   );
 
+  const installDiskTree = useCallback(
+    (tree: Parameters<ReturnType<typeof store.getState>["setState"]>[0], revision: string) => {
+      store.getState().setState(tree);
+      setReloadCount((count) => count + 1);
+      setFileFreshness(tabId, "verified", { verifiedRevision: revision });
+    },
+    [store, tabId],
+  );
+
+  const actionIsCurrent = useCallback(
+    (signal: AbortSignal) => {
+      if (signal.aborted) return false;
+      const currentTab = getTab(tabId);
+      return (
+        actionIdentityRef.current.tabId === tabId &&
+        actionIdentityRef.current.fileKey === fileKey &&
+        actionIdentityRef.current.gameNumber === gameNumber &&
+        actionIdentityRef.current.store === store &&
+        matchesFileGameTab(currentTab, tab.gameOrigin) &&
+        getTabTreeKey(currentTab) === getTabTreeKey(tab)
+      );
+    },
+    [getTab, tabId, fileKey, gameNumber, store, tab],
+  );
+
   useEffect(() => {
     return () => {
       actionControllerRef.current?.abort();
@@ -148,13 +123,7 @@ function FileBackedGate({
     setPanelError(freshnessErrorMessageRef.current);
     return requestFileReconcile(tabId, async (signal) => {
       const isObsolete = () =>
-        signal.aborted ||
-        getFileFreshness(tabId).epoch !== capturedEpoch ||
-        actionIdentityRef.current.tabId !== tabId ||
-        actionIdentityRef.current.fileKey !== fileKey ||
-        actionIdentityRef.current.gameNumber !== gameNumber ||
-        actionIdentityRef.current.store !== store ||
-        !sameFileGameOrigin((getTab(tabId) ?? tab).gameOrigin, tab.gameOrigin);
+        !actionIsCurrent(signal) || getFileFreshness(tabId).epoch !== capturedEpoch;
       try {
         const current = await readFileGame(handle, gameNumber, signal);
         if (isObsolete()) return;
@@ -193,9 +162,7 @@ function FileBackedGate({
           return;
         }
         tree.sourceStamp = current.stamp;
-        store.getState().setState(tree);
-        setReloadCount((count) => count + 1);
-        setFileFreshness(tabId, "verified", { verifiedRevision: current.revision });
+        installDiskTree(tree, current.revision);
       } catch (error) {
         if (isObsolete()) return;
         const normalized = normalizeError(error);
@@ -218,147 +185,50 @@ function FileBackedGate({
     freshness.epoch,
     retryCount,
     tabId,
-    fileKey,
     gameNumber,
     store,
     handle,
-    tab,
     sourceStamp,
-    getTab,
+    actionIsCurrent,
+    installDiskTree,
     t,
   ]);
 
-  const beginAction = useCallback((action: "reload" | "append") => {
-    if (pendingActionRef.current) return null;
-    pendingActionRef.current = true;
-    const controller = new AbortController();
-    actionControllerRef.current = controller;
-    setPendingAction(action);
-    setPanelError(null);
-    return controller;
-  }, []);
-
-  const endAction = useCallback((controller: AbortController) => {
-    pendingActionRef.current = false;
-    if (actionControllerRef.current === controller) actionControllerRef.current = null;
-    if (!controller.signal.aborted) setPendingAction(null);
-  }, []);
-
-  const actionIsCurrent = useCallback(
-    (controller: AbortController) => {
-      if (controller.signal.aborted) return false;
-      const currentTab = getTab(tabId);
-      return (
-        actionIdentityRef.current.tabId === tabId &&
-        actionIdentityRef.current.fileKey === fileKey &&
-        actionIdentityRef.current.gameNumber === gameNumber &&
-        actionIdentityRef.current.store === store &&
-        !!currentTab &&
-        sameFileGameOrigin(currentTab.gameOrigin, tab.gameOrigin)
-      );
+  const runAction = useCallback(
+    async (action: "reload" | "append", run: (signal: AbortSignal) => Promise<boolean>) => {
+      if (pendingActionRef.current) return false;
+      pendingActionRef.current = true;
+      const controller = new AbortController();
+      actionControllerRef.current = controller;
+      setPendingAction(action);
+      setPanelError(null);
+      try {
+        return await run(controller.signal);
+      } finally {
+        pendingActionRef.current = false;
+        if (actionControllerRef.current === controller) actionControllerRef.current = null;
+        if (!controller.signal.aborted) setPendingAction(null);
+      }
     },
-    [getTab, tabId, fileKey, gameNumber, store, tab],
+    [],
   );
 
   const reloadFromDisk = useCallback(async (): Promise<boolean> => {
-    const controller = beginAction("reload");
-    if (!controller) return false;
-    try {
-      const loaded = await loadFileGame(handle, gameNumber, controller.signal);
-      if (!actionIsCurrent(controller)) return false;
-      if (!loaded.present && gameNumber < origin.file.numGames) {
-        setFileFreshness(tabId, "unavailable");
-        setPanelError(t("FileFreshness.GameNoLongerInFile"));
-        return false;
-      }
-      store.getState().setState(loaded.tree);
-      setReloadCount((count) => count + 1);
-      setPanelError(null);
-      setFileFreshness(tabId, "verified", { verifiedRevision: loaded.revision });
-      return true;
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        const normalized = normalizeError(error);
-        if (
-          normalized.backendCategory === "invalid-input" ||
-          normalized.backendCategory === "missing-resource" ||
-          normalized.backendCategory === "conflict"
-        ) {
-          setFileFreshness(tabId, "unavailable");
-        }
-        setPanelError(normalized.message);
-      }
-      return false;
-    } finally {
-      endAction(controller);
-    }
-  }, [
-    beginAction,
-    endAction,
-    actionIsCurrent,
-    handle,
-    gameNumber,
-    origin.file.numGames,
-    tabId,
-    store,
-    t,
-  ]);
-
-  const appendAsNewGame = useCallback(
-    async (throwOnFailure = false): Promise<boolean> => {
-      if (appendAttempted) return false;
-      const controller = beginAction("append");
-      if (!controller) return false;
+    return runAction("reload", async (signal) => {
       try {
-        const selected = await pickPgnFile();
-        if (!selected || !actionIsCurrent(controller)) return false;
-
-        store.getState().setAppendAttempted(true);
-        const failedTabs = tabStorage.flush();
-        if (failedTabs.includes(tabId)) {
-          store.getState().setAppendAttempted(false);
-          tabStorage.flush({ notify: true });
-          setPanelError(t("FileFreshness.CouldNotPrepareAppend"));
-          if (throwOnFailure) {
-            throw {
-              category: "unexpected",
-              message: t("FileFreshness.CouldNotPrepareAppend"),
-            };
-          }
+        const loaded = await loadFileGame(handle, gameNumber, signal);
+        if (!actionIsCurrent(signal)) return false;
+        if (!loaded.present && gameNumber < origin.file.numGames) {
+          setFileFreshness(tabId, "unavailable");
+          setPanelError(t("FileFreshness.GameNoLongerInFile"));
           return false;
         }
-
-        const pgn = serializeStoreTree(store);
-        const written = await writeFileGame(selected.handle, selected.numGames, pgn, {
-          kind: "append",
-        });
-        if (!actionIsCurrent(controller) || written.stamp === null || written.revision === null) {
-          setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
-          return false;
-        }
-        const originSaved = updateTab(tabId, (previous) => ({
-          ...previous,
-          gameOrigin: {
-            kind: "file",
-            gameNumber: selected.numGames,
-            file: {
-              ...selected,
-              numGames: selected.numGames + 1,
-              metadata: { tags: [], type: "game" },
-            },
-          },
-        }));
-        if (!originSaved) return false;
-        store.getState().save(written.stamp);
-        setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+        installDiskTree(loaded.tree, loaded.revision);
+        setPanelError(null);
         return true;
       } catch (error) {
-        const normalized = normalizeError(error);
-        if (normalized.backendCategory === "stale-game") {
-          store.getState().setAppendAttempted(false);
-          tabStorage.flush();
-          setPanelError(t("FileFreshness.AppendChanged"));
-        } else {
+        if (!signal.aborted) {
+          const normalized = normalizeError(error);
           if (
             normalized.backendCategory === "invalid-input" ||
             normalized.backendCategory === "missing-resource" ||
@@ -368,13 +238,89 @@ function FileBackedGate({
           }
           setPanelError(normalized.message);
         }
-        if (throwOnFailure) throw normalized;
         return false;
-      } finally {
-        endAction(controller);
       }
+    });
+  }, [
+    runAction,
+    actionIsCurrent,
+    handle,
+    gameNumber,
+    origin.file.numGames,
+    tabId,
+    installDiskTree,
+    t,
+  ]);
+
+  const appendAsNewGame = useCallback(
+    async (throwOnFailure = false): Promise<boolean> => {
+      if (appendAttempted) return false;
+      return runAction("append", async (signal) => {
+        try {
+          const selected = await pickPgnFile();
+          if (!selected || !actionIsCurrent(signal)) return false;
+
+          store.getState().setAppendAttempted(true);
+          const failedTabs = tabStorage.flush();
+          if (failedTabs.includes(getTabTreeKey(tab))) {
+            store.getState().setAppendAttempted(false);
+            tabStorage.flush({ notify: true });
+            setPanelError(t("FileFreshness.CouldNotPrepareAppend"));
+            if (throwOnFailure) {
+              throw {
+                category: "unexpected",
+                message: t("FileFreshness.CouldNotPrepareAppend"),
+              };
+            }
+            return false;
+          }
+
+          const pgn = serializeStoreTree(store);
+          const written = await writeFileGame(selected.handle, selected.numGames, pgn, {
+            kind: "append",
+          });
+          if (!actionIsCurrent(signal) || written.stamp === null || written.revision === null) {
+            setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
+            return false;
+          }
+          const originSaved = updateTab(tabId, (previous) => ({
+            ...previous,
+            gameOrigin: {
+              kind: "file",
+              gameNumber: selected.numGames,
+              file: {
+                ...selected,
+                numGames: selected.numGames + 1,
+                metadata: { tags: [], type: "game" },
+              },
+            },
+          }));
+          if (!originSaved) return false;
+          store.getState().save(written.stamp);
+          setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+          return true;
+        } catch (error) {
+          const normalized = normalizeError(error);
+          if (normalized.backendCategory === "stale-game") {
+            store.getState().setAppendAttempted(false);
+            tabStorage.flush();
+            setPanelError(t("FileFreshness.AppendChanged"));
+          } else {
+            if (
+              normalized.backendCategory === "invalid-input" ||
+              normalized.backendCategory === "missing-resource" ||
+              normalized.backendCategory === "conflict"
+            ) {
+              setFileFreshness(tabId, "unavailable");
+            }
+            setPanelError(normalized.message);
+          }
+          if (throwOnFailure) throw normalized;
+          return false;
+        }
+      });
     },
-    [appendAttempted, beginAction, endAction, actionIsCurrent, store, tabId, t, updateTab],
+    [appendAttempted, runAction, actionIsCurrent, store, tabId, tab, t, updateTab],
   );
 
   useEffect(
@@ -431,44 +377,28 @@ function FileBackedGate({
     );
   }
 
-  if (state === "conflict") {
-    const uncertainMessage = appendAttempted ? t("FileFreshness.AppendMayHaveBeenAdded") : null;
-    return wrapper(
-      <FileResolutionPanel
-        title={t("FileFreshness.Changed")}
-        uncertainMessage={uncertainMessage}
-        errorMessage={errorMessage}
-        disabled={disabled}
-        appendDisabled={appendAttempted}
-        showReload
-        onReload={() => void reloadFromDisk()}
-        onAppend={() => void appendAsNewGame()}
-        labels={{
-          reload: t("FileFreshness.ReloadFromDisk"),
-          append: t("FileFreshness.SaveAsNewGame"),
-          close: t("Tab.Close"),
-        }}
-      />,
-    );
-  }
-
+  const conflict = state === "conflict";
   const uncertainMessage = appendAttempted ? t("FileFreshness.AppendMayHaveBeenAdded") : null;
   return wrapper(
-    <FileResolutionPanel
-      title={t("FileFreshness.Unavailable")}
-      uncertainMessage={uncertainMessage}
-      errorMessage={errorMessage}
-      disabled={disabled}
-      appendDisabled={appendAttempted}
-      showReload={appendAttempted}
-      onReload={() => void reloadFromDisk()}
-      onAppend={() => void appendAsNewGame()}
-      onClose={() => closeTab(tabId)}
-      labels={{
-        reload: t("FileFreshness.ReloadFromDisk"),
-        append: t("FileFreshness.SaveAsNewGame"),
-        close: t("Tab.Close"),
-      }}
-    />,
+    <Stack className={classes.panel} align="center" justify="center" h="100%" gap="sm">
+      <Text>{t(conflict ? "FileFreshness.Changed" : "FileFreshness.Unavailable")}</Text>
+      {uncertainMessage && <Text c="dimmed">{uncertainMessage}</Text>}
+      {errorMessage && <Text c="red">{errorMessage}</Text>}
+      <Group>
+        {(conflict || appendAttempted) && (
+          <Button onClick={() => void reloadFromDisk()} disabled={disabled}>
+            {t("FileFreshness.ReloadFromDisk")}
+          </Button>
+        )}
+        <Button onClick={() => void appendAsNewGame()} disabled={disabled || appendAttempted}>
+          {t("FileFreshness.SaveAsNewGame")}
+        </Button>
+        {!conflict && (
+          <Button variant="default" onClick={() => closeTab(tabId)} disabled={disabled}>
+            {t("Tab.Close")}
+          </Button>
+        )}
+      </Group>
+    </Stack>,
   );
 }

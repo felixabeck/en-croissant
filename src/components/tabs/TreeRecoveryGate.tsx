@@ -7,60 +7,44 @@ import classes from "./TreeRecoveryGate.module.css";
 
 type Props = {
   tabId: string;
+  treeKey?: string;
   children: React.ReactNode;
 };
 
-export default function TreeRecoveryGate({ tabId, children }: Props) {
+export default function TreeRecoveryGate({ tabId, treeKey = tabId, children }: Props) {
   const { t } = useTranslation();
   const subscribe = useCallback(
-    (listener: () => void) => tabStorage.subscribeStatus(tabId, listener),
-    [tabId],
+    (listener: () => void) => tabStorage.subscribeStatus(treeKey, listener),
+    [treeKey],
   );
-  const getSnapshot = useCallback(() => tabStorage.getStatus(tabId), [tabId]);
+  const getSnapshot = useCallback(() => tabStorage.getStatus(treeKey), [treeKey]);
   const status = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [pending, setPending] = useState<"copy" | "discard" | "retry" | null>(null);
   const [actionError, setActionError] = useState<"copy" | "discard" | "retry" | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const copySavedValue = async () => {
-    setPending("copy");
-    setActionError(null);
-    setCopied(false);
-    try {
-      const rawValue = tabStorage.readRawValueForRecovery(tabId);
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
-      await navigator.clipboard.writeText(rawValue);
-      setCopied(true);
-    } catch {
-      setActionError("copy");
-    } finally {
-      setPending(null);
-    }
-  };
-
-  const discardSavedValue = () => {
-    setPending("discard");
+  const runAction = async (action: NonNullable<typeof pending>) => {
+    setPending(action);
     setActionError(null);
     try {
-      if (!discardTreeStoreStorage(tabId)) throw new Error("The saved value was not discarded.");
-      setCopied(false);
-    } catch {
-      setActionError("discard");
-    } finally {
-      setPending(null);
-    }
-  };
-
-  const retryRead = async () => {
-    setPending("retry");
-    setActionError(null);
-    try {
-      const recovered = await retryTreeStoreStorage(tabId);
-      if (!recovered || recovered.kind === "not-read" || recovered.kind === "unavailable") {
-        setActionError("retry");
+      if (action === "copy") {
+        setCopied(false);
+        const rawValue = tabStorage.readRawValueForRecovery(treeKey);
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+        await navigator.clipboard.writeText(rawValue);
+        setCopied(true);
+      } else if (action === "discard") {
+        if (!discardTreeStoreStorage(tabId, treeKey))
+          throw new Error("The saved value was not discarded.");
+        setCopied(false);
+      } else {
+        const recovered = await retryTreeStoreStorage(tabId);
+        if (!recovered || recovered.kind === "not-read" || recovered.kind === "unavailable") {
+          setActionError("retry");
+        }
       }
     } catch {
-      setActionError("retry");
+      setActionError(action);
     } finally {
       setPending(null);
     }
@@ -100,7 +84,7 @@ export default function TreeRecoveryGate({ tabId, children }: Props) {
           <>
             <Button
               variant="default"
-              onClick={() => void copySavedValue()}
+              onClick={() => void runAction("copy")}
               disabled={pending !== null}
             >
               {t("TreeRecovery.CopyValue")}
@@ -108,14 +92,14 @@ export default function TreeRecoveryGate({ tabId, children }: Props) {
             <Button
               className={classes.discardButton}
               variant="default"
-              onClick={discardSavedValue}
+              onClick={() => void runAction("discard")}
               disabled={pending !== null}
             >
               {t("TreeRecovery.DiscardValue")}
             </Button>
           </>
         ) : (
-          <Button onClick={() => void retryRead()} disabled={pending !== null}>
+          <Button onClick={() => void runAction("retry")} disabled={pending !== null}>
             {pending === "retry" ? t("TreeRecovery.Retrying") : t("TreeRecovery.Retry")}
           </Button>
         )}

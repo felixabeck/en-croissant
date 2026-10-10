@@ -332,6 +332,66 @@ describe("BoardAnalysis add game durability", () => {
     });
   });
 
+  test.each(["removed", "non-file", "page"] as const)(
+    "Add Game refuses a %s owner after parsing before the native append",
+    async (change) => {
+      if (tab.gameOrigin.kind !== "file") throw new Error("expected file-backed test tab");
+      let resolveParse!: (tree: ReturnType<typeof defaultTree>) => void;
+      mocks.parsePGN.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveParse = resolve;
+        }),
+      );
+      await act(async () => treeStore.setState({ dirty: false }));
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+      });
+      expect(mocks.parsePGN).toHaveBeenCalledOnce();
+      const next: Tab = {
+        ...tab,
+        value: change === "removed" ? "22222222-2222-4222-8222-222222222222" : tabId,
+        gameOrigin: change === "non-file" ? { kind: "none" } : { ...tab.gameOrigin, gameNumber: 2 },
+      };
+      await act(async () => {
+        jotaiStore.set(tabsAtom, [next], next.value);
+        resolveParse(defaultTree());
+      });
+      expect(mocks.writeGame).not.toHaveBeenCalled();
+      expect(mocks.countPgnGames).not.toHaveBeenCalled();
+      expect(treeStore.getState().headers.event).toBe("Keep this tree");
+    },
+  );
+
+  test.each(["removed", "non-file", "page"] as const)(
+    "Add Game preserves the live tree when its %s owner supersedes the pending append",
+    async (change) => {
+      if (tab.gameOrigin.kind !== "file") throw new Error("expected file-backed test tab");
+      let resolveWrite!: (written: { stamp: string; revision: string }) => void;
+      mocks.writeGame.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveWrite = resolve;
+        }),
+      );
+      await act(async () => treeStore.setState({ dirty: false }));
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+      });
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+      const next: Tab = {
+        ...tab,
+        value: change === "removed" ? "22222222-2222-4222-8222-222222222222" : tabId,
+        gameOrigin: change === "non-file" ? { kind: "none" } : { ...tab.gameOrigin, gameNumber: 2 },
+      };
+      await act(async () => {
+        jotaiStore.set(tabsAtom, [next], next.value);
+        resolveWrite({ stamp: "b".repeat(64), revision: "appended" });
+      });
+      expect(jotaiStore.get(tabsAtom)).toEqual([next]);
+      expect(treeStore.getState().headers.event).toBe("Keep this tree");
+      expect(treeStore.getState().sourceStamp).toBe("a".repeat(64));
+    },
+  );
+
   test("Add Game refreshes a stale count and retries at the new end", async () => {
     mocks.writeGame.mockRejectedValueOnce({
       tag: "backend-error",

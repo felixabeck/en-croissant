@@ -7,7 +7,13 @@ import type { FileMetadata } from "@/components/files/file";
 import type { WriteExpectation } from "@/bindings";
 import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
-import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
+import {
+    getTabTreeKey,
+    newWorkspaceId,
+    tabSchema,
+    type GameOrigin,
+    type Tab,
+} from "@/state/workspaceTypes";
 import {
     activeTabAtom,
     closingTabsAtom,
@@ -15,28 +21,41 @@ import {
     reclaimTabLocalState,
     tabsAtom,
 } from "@/state/atoms";
-import { closeTreeStore, type TreeStoreState } from "@/state/store/tree";
+import {
+    closeTreeStore,
+    getCachedTreeStore,
+    retargetTreeStore,
+    type TreeStore,
+    type TreeStoreState,
+} from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
 import { setFileFreshness } from "@/state/fileFreshness";
-export { tabSchema, type GameOrigin, type Tab };
+export { getTabTreeKey, tabSchema, type GameOrigin, type Tab };
+
+export type FileBackedTab = Tab & {
+    gameOrigin: Extract<GameOrigin, { kind: "file" | "temp_file" }>;
+};
+
+export function isFileBackedTab(tab?: Tab | null): tab is FileBackedTab {
+    return !!tab && (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file");
+}
+
+export function matchesFileGameTab(
+    tab: Tab | undefined,
+    origin: FileBackedTab["gameOrigin"],
+): tab is FileBackedTab {
+    return isFileBackedTab(tab) && sameFileGameOrigin(tab.gameOrigin, origin);
+}
 
 export function getTabFile(tab?: Tab | null): FileMetadata | undefined {
-    if (!tab) return undefined;
-    if (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file") {
-        return tab.gameOrigin.file;
-    }
-    return undefined;
+    return isFileBackedTab(tab) ? tab.gameOrigin.file : undefined;
 }
 
 export function getTabGameNumber(tab?: Tab | null): number {
-    if (!tab) return 0;
-    if (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file") {
-        return tab.gameOrigin.gameNumber;
-    }
-    return 0;
+    return isFileBackedTab(tab) ? tab.gameOrigin.gameNumber : 0;
 }
 
 export function isPersistentGameOrigin(tab?: Tab | null): boolean {
@@ -87,25 +106,23 @@ function stageAndCommitTab({
         }
     }
 
-    let admitted = false;
-    let admissionThrew = false;
+    let result: StagedAdmissionResult | undefined;
     let admissionError: unknown;
     startTransition(() => {
         try {
-            admitted = commit(id);
+            result = commit(id)
+                ? { kind: "committed", id }
+                : { kind: "refused", stage: "workspace" };
         } catch (error) {
-            admissionThrew = true;
             admissionError = error;
         }
     });
-    if (admissionThrew) {
-        throw admissionError;
-    }
-    if (!admitted) {
+    // A missing result is an application exception, never definite admission refusal.
+    if (!result) throw admissionError;
+    if (result.kind === "refused") {
         if (seed) rollbackCreatedTree(id);
-        return { kind: "refused", stage: "workspace" };
     }
-    return { kind: "committed", id };
+    return result;
 }
 
 export function commitNewTab({
@@ -124,7 +141,7 @@ export function commitNewTab({
         existingTabIds,
         commit: (id) =>
             setTabs((prev) => {
-                const nextTab = { ...tab, value: id };
+                const nextTab = { ...tab, value: id, treeKey: undefined };
                 return prev.length === 0 ||
                     (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
                     ? [nextTab]
@@ -169,24 +186,91 @@ export function replaceNewTab({
 
     const result = stageAndCommitTab({
         seed: (freshId) => tabStorage.seed(freshId, tree),
-        existingTabIds: tabs.map((current) => current.value),
+        existingTabIds: tabs.flatMap((current) => [current.value, getTabTreeKey(current)]),
         commit: (freshId) => {
             const activeTab = store.get(activeTabAtom);
             const committed = store.set(
                 tabsAtom,
                 (currentTabs) =>
                     currentTabs.map((current, index) =>
-                        index === ownerIndex ? { ...tab, value: freshId } : current,
+                        index === ownerIndex
+                            ? { ...tab, value: freshId, treeKey: undefined }
+                            : current,
                     ),
                 activeTab === ownerId ? freshId : undefined,
             );
             if (committed) {
-                reclaimTabLocalState(ownerId);
+                reclaimTabLocalState(ownerId, getTabTreeKey(tabs[ownerIndex]));
                 closeTreeStore(ownerId);
             }
             return committed;
         },
     });
+    return result;
+}
+
+/** Stage a fresh durable generation without changing the logical tab or its runtime owners. */
+export function replaceFileGame({
+    store,
+    owner,
+    treeStore,
+    snapshot,
+    tree,
+    page,
+    isCurrent,
+}: {
+    store: ReturnType<typeof getDefaultStore>;
+    owner: FileBackedTab;
+    treeStore: TreeStore;
+    snapshot: Pick<TreeState, "root" | "headers">;
+    tree: TreeState;
+    page: number;
+    isCurrent: () => boolean;
+}): ReplaceNewTabResult {
+    const oldKey = getTabTreeKey(owner);
+    const owns = () => {
+        const current = store.get(tabsAtom).find((tab) => tab.value === owner.value);
+        const live = treeStore.getState();
+        return (
+            isCurrent() &&
+            !!current &&
+            !store.get(closingTabsAtom).has(owner.value) &&
+            sameFileGameOrigin(current.gameOrigin, owner.gameOrigin) &&
+            getTabTreeKey(current) === oldKey &&
+            getCachedTreeStore(owner.value) === treeStore &&
+            live.root === snapshot.root &&
+            live.headers === snapshot.headers
+        );
+    };
+    if (!owns()) return { kind: "superseded" };
+    let superseded = false;
+    const result = stageAndCommitTab({
+        seed: (id) => tabStorage.seed(id, tree),
+        existingTabIds: store.get(tabsAtom).flatMap((tab) => [tab.value, getTabTreeKey(tab)]),
+        commit: (id) => {
+            if (!owns()) {
+                superseded = true;
+                return false;
+            }
+            return store.set(
+                tabsAtom,
+                (tabs) =>
+                    tabs.map((tab) =>
+                        tab.value === owner.value
+                            ? {
+                                  ...tab,
+                                  treeKey: id,
+                                  gameOrigin: { ...tab.gameOrigin, gameNumber: page },
+                              }
+                            : tab,
+                    ),
+                undefined,
+                () => retargetTreeStore(owner.value, id, tree),
+            );
+        },
+    });
+    if (superseded) return { kind: "superseded" };
+    if (result.kind === "committed") tabStorage.removeTreeSafely(oldKey);
     return result;
 }
 
@@ -320,16 +404,21 @@ export async function saveToFile({
     isUserSave?: boolean;
 }): Promise<SaveResult> {
     if (!tab) return failed(new Error("There is no active tab to save."));
+    const tabId = tab.value;
+    const currentOrigin = tab.gameOrigin;
+    const owns = () => {
+        const current = getTab(tabId);
+        return (
+            !!current &&
+            getTabTreeKey(current) === getTabTreeKey(tab) &&
+            sameOrigin(current.gameOrigin, currentOrigin)
+        );
+    };
     let currentFileOperation = false;
     let writingCurrentOrigin = false;
     let writingSaveAsDestination = false;
     try {
-        const tabId = tab.value;
-        const currentOrigin = tab.gameOrigin;
-        const currentTabAtStart = getTab(tabId);
-        if (!currentTabAtStart || !sameOrigin(currentTabAtStart.gameOrigin, currentOrigin)) {
-            return "superseded";
-        }
+        if (!owns()) return "superseded";
         const fileOrigin =
             currentOrigin?.kind === "file" || currentOrigin?.kind === "temp_file"
                 ? currentOrigin
@@ -338,6 +427,23 @@ export async function saveToFile({
         const isTempFile = currentOrigin?.kind === "temp_file";
         const sourceStamp = store.getState().sourceStamp;
         const pgn = serializeStoreTree(store);
+        const finishWrite = (
+            written: Awaited<ReturnType<typeof writeFileGame>>,
+            commitOrigin?: () => boolean,
+        ): SaveResult => {
+            if (!owns()) return "superseded";
+            if (written.stamp === null || written.revision === null) {
+                if (written.stamp === null) store.getState().setSourceStamp(null);
+                setFileFreshness(tabId, "unverified");
+                return "conflict";
+            }
+            if (commitOrigin && !commitOrigin()) return "superseded";
+            const unchanged = serializeStoreTree(store) === pgn;
+            if (unchanged) store.getState().save(written.stamp);
+            else store.getState().setSourceStamp(written.stamp);
+            setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+            return unchanged ? "saved" : "superseded";
+        };
 
         if (databaseOrigin) {
             await tauri.writeDbGame(databaseOrigin.database, databaseOrigin.gameId, pgn);
@@ -355,22 +461,7 @@ export async function saveToFile({
                 pgn,
                 writeExpectation(sourceStamp),
             );
-            const currentTab = getTab(tabId);
-            if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin))
-                return "superseded";
-            if (written.stamp === null || written.revision === null) {
-                if (written.stamp === null) store.getState().setSourceStamp(null);
-                setFileFreshness(tabId, "unverified");
-                return "conflict";
-            }
-            const unchanged = serializeStoreTree(store) === pgn;
-            if (unchanged) {
-                store.getState().save(written.stamp);
-            } else {
-                store.getState().setSourceStamp(written.stamp);
-            }
-            setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
-            return unchanged ? "saved" : "superseded";
+            return finishWrite(written);
         }
 
         if (isTempFile && fileOrigin) {
@@ -401,35 +492,20 @@ export async function saveToFile({
             pgn,
             writeExpectation(destination.stamp),
         );
-        const currentTab = getTab(tabId);
-        if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin)) return "superseded";
-        if (written.stamp === null || written.revision === null) {
-            if (written.stamp === null) store.getState().setSourceStamp(null);
-            setFileFreshness(tabId, "unverified");
-            return "conflict";
-        }
-
-        const savedOrigin = updateTab(tabId, (previous) => ({
-            ...previous,
-            gameOrigin: {
-                kind: "file",
-                gameNumber,
-                file: {
-                    ...selected,
-                    numGames: Math.max(selected.numGames, gameNumber + 1),
-                    metadata: { tags: [], type: "game" as const },
+        return finishWrite(written, () =>
+            updateTab(tabId, (previous) => ({
+                ...previous,
+                gameOrigin: {
+                    kind: "file",
+                    gameNumber,
+                    file: {
+                        ...selected,
+                        numGames: Math.max(selected.numGames, gameNumber + 1),
+                        metadata: { tags: [], type: "game" as const },
+                    },
                 },
-            },
-        }));
-        if (!savedOrigin) return "superseded";
-        const unchanged = serializeStoreTree(store) === pgn;
-        if (unchanged) {
-            store.getState().save(written.stamp);
-        } else {
-            store.getState().setSourceStamp(written.stamp);
-        }
-        setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
-        return unchanged ? "saved" : "superseded";
+            })),
+        );
     } catch (error) {
         const normalized = normalizeError(error);
         if (tab && normalized.backendCategory === "stale-game") {
@@ -438,8 +514,7 @@ export async function saveToFile({
         if (tab && writingCurrentOrigin && normalized.category === "applied-despite-error") {
             // The game reached the file but its stamp is unknown: verify it by text, as after a
             // write whose read-back failed.
-            const currentTab = getTab(tab.value);
-            if (currentTab && sameOrigin(currentTab.gameOrigin, tab.gameOrigin)) {
+            if (owns()) {
                 store.getState().setSourceStamp(null);
                 setFileFreshness(tab.value, "unverified");
             }

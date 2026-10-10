@@ -21,6 +21,7 @@ vi.mock("@mantine/core", () => ({
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const tabId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const physicalKey = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const rawValue = '  {"tree":"broken 🧩"}\n\u0000';
 
 let host: HTMLDivElement;
@@ -34,11 +35,11 @@ function CaptureStore() {
   return null;
 }
 
-function renderGate() {
+function renderGate(treeKey = tabId) {
   return act(async () =>
     root.render(
-      <TreeStateProvider id={tabId}>
-        <TreeRecoveryGate tabId={tabId}>
+      <TreeStateProvider id={tabId} treeKey={treeKey}>
+        <TreeRecoveryGate tabId={tabId} treeKey={treeKey}>
           <div data-testid="board-child">The editable board</div>
         </TreeRecoveryGate>
         <CaptureStore />
@@ -73,6 +74,7 @@ async function retry() {
 
 beforeEach(() => {
   tabStorage.remove(tabId);
+  tabStorage.remove(physicalKey);
   closeTreeStore(tabId);
   sessionStorage.clear();
   capturedStore = null;
@@ -92,6 +94,7 @@ afterEach(async () => {
   host.remove();
   vi.restoreAllMocks();
   tabStorage.remove(tabId);
+  tabStorage.remove(physicalKey);
   closeTreeStore(tabId);
   if (previousClipboard) Object.defineProperty(navigator, "clipboard", previousClipboard);
   else Reflect.deleteProperty(navigator, "clipboard");
@@ -232,4 +235,46 @@ test("explicit discard starts a fresh editable tree", async () => {
   expect(host.querySelector('[data-testid="board-child"]')).not.toBeNull();
   expect(tabStorage.getStatus(tabId).kind).toBe("available");
   expect(capturedStore!.getState().dirty).toBe(false);
+});
+
+test("referenced corrupt generation copies and discards only its physical bytes", async () => {
+  const legacy = defaultTree();
+  legacy.headers.event = "Unrelated logical bytes";
+  tabStorage.seed(tabId, legacy);
+  const legacyBytes = sessionStorage.getItem(tabId);
+  sessionStorage.setItem(physicalKey, rawValue);
+  await renderGate(physicalKey);
+  expect(host.querySelector('[data-tree-recovery="unreadable"]')).not.toBeNull();
+  const copy = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "TreeRecovery.CopyValue",
+  )!;
+  await act(async () => copy.click());
+  expect(clipboardWrite).toHaveBeenCalledWith(rawValue);
+  const discard = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "TreeRecovery.DiscardValue",
+  )!;
+  await act(async () => discard.click());
+  expect(host.querySelector('[data-testid="board-child"]')).not.toBeNull();
+  expect(sessionStorage.getItem(tabId)).toBe(legacyBytes);
+  expect(tabStorage.flush()).toEqual([]);
+  expect(tabStorage.read<ReturnType<typeof defaultTree>>(physicalKey)?.state.dirty).toBe(false);
+});
+
+test("a missing referenced generation stays gated across retry until the physical value returns", async () => {
+  await renderGate(physicalKey);
+  expect(host.querySelector('[data-testid="board-child"]')).toBeNull();
+  await retry();
+  expect(host.querySelector('[data-testid="board-child"]')).toBeNull();
+  const recovered = defaultTree();
+  recovered.headers.event = "Recovered candidate";
+  sessionStorage.setItem(
+    physicalKey,
+    (await import("@/state/store/debouncedStorage")).serializeStorageValue({
+      version: 1,
+      state: recovered,
+    }),
+  );
+  await retry();
+  expect(host.querySelector('[data-testid="board-child"]')).not.toBeNull();
+  expect(capturedStore?.getState().headers.event).toBe("Recovered candidate");
 });

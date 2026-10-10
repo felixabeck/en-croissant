@@ -4,6 +4,7 @@ import enUSCatalogue from "@/translation/en-US.json";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { defaultTree } from "@/utils/treeReducer";
+import { getTabTreeKey, type Tab } from "./workspaceTypes";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
 import {
@@ -74,6 +75,135 @@ test("default workspace is a complete, current envelope with one active new tab"
     expect(workspace.tabs).toHaveLength(1);
     expect(workspace.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
     expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
+});
+
+test("workspace physical ownership protects referenced trees and repairs colliding keys", () => {
+    sessionStorage.clear();
+    const treeKey = crypto.randomUUID();
+    const first: Tab = { ...legacyTab, value: crypto.randomUUID(), treeKey };
+    const second: Tab = { ...first, name: "Second", value: crypto.randomUUID() };
+    const tree = defaultTree();
+    tree.headers.event = "Shared source generation";
+    tabStorage.seed(treeKey, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [first, second], activeTab: second.value }),
+    );
+    const loaded = loadStoredWorkspace();
+    expect(loaded.tabs.map((tab) => tab.value)).toEqual([first.value, second.value]);
+    expect(getTabTreeKey(loaded.tabs[0]!)).toBe(treeKey);
+    expect(getTabTreeKey(loaded.tabs[1]!)).not.toBe(treeKey);
+    expect(loaded.activeTab).toBe(second.value);
+    for (const tab of loaded.tabs)
+        expect(
+            tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(tab))?.state.headers
+                .event,
+        ).toBe("Shared source generation");
+    expect(sessionStorage.getItem(treeKey)).not.toBeNull();
+    expect(
+        saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+            version: 1,
+            tabs: [first, second],
+            activeTab: first.value,
+        }),
+    ).toBeNull();
+    expect(
+        saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+            ...loaded,
+            tabs: [{ ...first, treeKey: "invalid" }],
+        }),
+    ).toBeNull();
+});
+
+test("ID repair clones the effective physical source and grants independent ownership", () => {
+    sessionStorage.clear();
+    const treeKey = crypto.randomUUID();
+    const first: Tab = { ...legacyTab, value: crypto.randomUUID(), treeKey };
+    const broken: Tab = { ...first, value: "legacy-logical-owner" };
+    const tree = defaultTree();
+    tree.headers.event = "Referenced repair source";
+    tabStorage.seed(treeKey, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [first, broken], activeTab: broken.value }),
+    );
+    const loaded = loadStoredWorkspace();
+    const repaired = loaded.tabs[1]!;
+    expect(repaired.value).not.toBe(broken.value);
+    expect(repaired.treeKey).toBeUndefined();
+    expect(getTabTreeKey(repaired)).not.toBe(treeKey);
+    expect(
+        tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(repaired))?.state.headers
+            .event,
+    ).toBe("Referenced repair source");
+    expect(sessionStorage.getItem(treeKey)).not.toBeNull();
+    expect(loaded.activeTab).toBe(repaired.value);
+});
+
+test("legacy fallback and referenced failed-admission markers retain the current physical owners", () => {
+    sessionStorage.clear();
+    const legacy: Tab = { ...legacyTab, value: crypto.randomUUID() };
+    const physical: Tab = { ...legacy, value: crypto.randomUUID(), treeKey: crypto.randomUUID() };
+    tabStorage.seed(legacy.value, defaultTree());
+    tabStorage.seed(getTabTreeKey(physical), defaultTree());
+    tabStorage.recordFailedAdmission(getTabTreeKey(physical));
+    const bytes = sessionStorage.getItem(legacy.value);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [legacy, physical], activeTab: legacy.value }),
+    );
+    const loaded = loadStoredWorkspace();
+    expect(loaded.tabs).toEqual([legacy, physical]);
+    expect(sessionStorage.getItem(legacy.value)).toBe(bytes);
+    expect(sessionStorage.getItem(getTabTreeKey(physical))).not.toBeNull();
+});
+
+test("live validation refuses duplicate logical IDs even when physical keys differ", () => {
+    sessionStorage.clear();
+    const first: Tab = { ...legacyTab, value: crypto.randomUUID(), treeKey: crypto.randomUUID() };
+    const second: Tab = { ...first, treeKey: crypto.randomUUID() };
+    const original = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+        version: 1,
+        tabs: [first],
+        activeTab: first.value,
+    });
+    const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    expect(original).not.toBeNull();
+    expect(
+        saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+            version: 1,
+            tabs: [first, second],
+            activeTab: first.value,
+        }),
+    ).toBeNull();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+});
+
+test("repair allocation reserves later logical and physical owners plus earlier fresh repairs", () => {
+    sessionStorage.clear();
+    const futureLogical = crypto.randomUUID();
+    const futurePhysical = crypto.randomUUID();
+    const firstFresh = crypto.randomUUID();
+    const secondFresh = crypto.randomUUID();
+    const third: Tab = { ...legacyTab, value: futureLogical, treeKey: futurePhysical };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [legacyTab, { ...legacyTab, value: "another-legacy" }, third],
+            activeTab: third.value,
+        }),
+    );
+    vi.spyOn(crypto, "randomUUID")
+        .mockReturnValueOnce(futureLogical)
+        .mockReturnValueOnce(futurePhysical)
+        .mockReturnValueOnce(firstFresh)
+        .mockReturnValueOnce(firstFresh)
+        .mockReturnValueOnce(secondFresh);
+    const loaded = loadStoredWorkspace();
+    expect(loaded.tabs.map((tab) => tab.value)).toEqual([firstFresh, secondFresh, third.value]);
+    expect(loaded.tabs[2]).toEqual(third);
+    expect(loaded.activeTab).toBe(third.value);
 });
 
 test("workspace load operations validate schema boundaries and preserve uncertain trees", async () => {
@@ -2052,6 +2182,7 @@ test("rolls back staged clones when clone flush fails and leaves legacy trees", 
         expect(sessionStorage.getItem("tabs")).not.toBeNull();
         expect(sessionStorage.getItem("activeTab")).not.toBeNull();
         expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
         expect(persistError.reportPersistError).toHaveBeenCalledWith(
             expect.objectContaining({
                 message:

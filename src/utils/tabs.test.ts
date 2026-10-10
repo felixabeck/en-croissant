@@ -839,6 +839,23 @@ test("a save completing after a game switch applies nothing and returns supersed
     expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
 });
 
+test("a save completing after physical generation replacement leaves the live candidate unchanged", async () => {
+    const fixture = saveFixture();
+    const write = deferred<{ stamp: string | null; revision: string | null }>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    const pending = saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+    await Promise.resolve();
+    fixture.updateTab("save-test", (tab) => ({ ...tab, treeKey: crypto.randomUUID() }));
+    write.resolve({ stamp: stampB, revision: "r-new" });
+    await expect(pending).resolves.toBe("superseded");
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+});
+
 test("temp-file Save-As rechecks the source and CAS-writes the same target slot", async () => {
     const fixture = saveFixture({ kind: "temp_file" });
     mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
