@@ -619,3 +619,164 @@ Limitation: source implementation, final fault proof, runtime verification and p
 VERDICT: APPROVED
 
 Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+## Second correction source and incomplete historical proof checkpoint
+
+The nine-path candidate passes422 selected tests and static checks. Root inspected all source/test deltas. The full worker report follows without changing its five exclusions or59 executed pairs. No complete source/runtime/push closure is claimed.
+
+# R7 shared admission correction, revision3 leaf evidence
+
+The approved source mechanism is implemented and left unstaged in the nine owned paths. The exact selected command passes **422 tests in eight suites**. Scoped formatting, lint, type checking and diff checks pass. All six new semantic guarantees have Git-derived production-only fault evidence with unchanged final tests and full selected restoration.
+
+**The requested complete historical semantic matrix is unfinished.** All40 historical categories were executed, but five stop at invocation-count assertions and are explicitly uncounted under this assignment's stricter criterion. There are35 qualified historical categories plus six new categories, giving41 unique qualified final production patches. Do not infer40-category semantic acceptance from the low-level runner's accepted flags or proof.exit0. `semantic-category-verdicts.json` and `proof-summary.json` are the stricter final assessment.
+
+Root owns review, records, integrated gates, contract, runtime and release. No source closure, runtime acceptance or push is claimed. This resumes the same second correction, with no third compression phase. The original compression rounds, failed cap and550000/550000/1630000 caps remain intact. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+## Launch and exact changed paths
+
+Actual launch and final HEAD is `6471e58e42093be25286efaf70a484db72820527`. Launch was clean. The real index and copied index remain byte-identical to launch, SHA256 `42f8ae65c0ef801f984f6f7866526bca66644c1c1836146b4651837c5d48a08e`.
+
+- `src/utils/tabs.ts`
+- `src/state/atoms.ts`
+- `src/state/store/tree.ts`
+- `src/components/boards/BoardAnalysis.test.tsx`
+- `src/state/store/tree.hydration.test.ts`
+- `src/state/atoms.lifecycle.test.ts`
+- `src/utils/tabs.test.ts`
+- `src/components/panels/info/InfoPanel.test.tsx`
+- `src/components/tabs/FileFreshnessGate.test.tsx`
+
+`final-workspace.patch` is the exact returned delta. `pre/`, `pre-sha256.json`, `final/` and `final-sha256.json` retain complete owned snapshots. The blocked report and patch under `../r7-admission-proof` remain untouched. The mechanism was reapplied through apply_patch from its preserved reviewed patch.
+
+## Implemented boundary
+
+The existing cached tree API retains its original non-persisting Zustand setter on a module-private symbol. The existing lifecycle prepares the adapter and installation state before staging. Installation changes the adapter and live state without using the mutable public action or queuing a rewrite of the already validated seed. Ordinary subsequent edits still use normal persistence.
+
+After durable admission, atoms publish the canonical live workspace before the installation callback. The callback gives Add Game that exact canonical successor before installed observers can throw, and finalizes the prepared installation in finally. There is no unconditional workspace publication after callbacks. Actual Jotai callback-flush errors and Zustand subscriber errors remain errors. A surviving exact successor settles unverified, receives its truthful uncertainty/error notification and releases its lease. Reentrant foreign or removed owners receive no later operation writes or notifications.
+
+The diagnostic witness initially observed native page1 followed by page3 even though the atom already held page3. The old startTransition wrapper allowed urgent freshness settlement to render Gate with previous-page React props. The existing stageAndCommitTab now admits retained logical owners synchronously through its narrow keepLogicalTab branch. Creation and new-logical replacement retain their existing transition path. This additional necessary boundary adaptation is explicit in the returned diff and has a production fault that restores the transition and exposes native `[1,3]` instead of `[3]`. Gate production is unchanged.
+
+No count repair runs after acknowledged admission. The count-refusal comment explains the existing storage diagnostic and absence of refreshed-count success. Existing C1–C4, provider-local actions, independent WeakMap lease, exact owner checks, identity-only release, stricter Save/recovery/InfoPanel policies and native/report/cache identity remain covered by the retained suites. There is no new transaction framework, journal, registry, schema or Gate repair.
+
+## Historical bodies and new observations
+
+AST checks compare195 historical owned test callback bodies. Exactly two callback definitions differ, both authorized. `original-body-checks.json`, log and exit0 retain exact original/final hashes. The shared helper change outside a test callback is recorded by the exact Gate diff.
+
+1. Board's old parameterized before/after mutable-public-action injection callback, representing two executions, is replaced by actual workspace/tree subscriber failures. Its original dirty durable bytes, queued clean Save, candidate page/count/tree, pending bytes, error and no count repair guarantees remain. Both actual exceptions now establish the exact live/cold successor, terminality, page3 native reading, distinct admitted PGN, completed reconciliation, flush/cold content, remount and subsequent admission. Abort-aware held reads are resolved in finally so a failed witness cannot contaminate another test.
+2. Gate's two durableTree fixture constants now equal the original seeded candidate instead of requiring a queued practicePath rewrite. Each site captures the exact seed bytes immediately after seed and asserts those bytes after retarget/flush. All callbacks, ownership, outcome, notification and preserved-byte assertions remain. These sites retain all15 obsolete-owner executions.
+
+Added tests use the real composed Board/Gate/Jotai/cache/storage boundary. Completed reconciliation resolves distinct previous/admitted PGNs and proves the admitted content after flush and independent cold read. Four reentrant workspace/tree replacement/removal executions preserve foreign ownership and silence. Shared atoms tests prove acknowledgement and live ownership before observer failure escapes. Lifecycle proves private installation and original seed bytes. The utility callback-error witness proves mandatory finalization. InfoPanel's three actual observer cases prove its separate active-current-owner notification policy and inactive silence. InfoPanel production remains unchanged.
+
+No historical body was modified during fault execution. Final tests remained frozen across every fault and restoration. No preparatory flush claims candidate durability. The immediate acceptance/refusal pairing fixtures retain the original dirty durable tree and pending clean Save.
+
+## Exact ordinary proof
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/boards/BoardAnalysis.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts src/state/store/tree.hydration.test.ts src/state/store/tree.test.ts
+pnpm exec oxfmt --check src/utils/tabs.ts src/state/atoms.ts src/state/store/tree.ts src/components/boards/BoardAnalysis.test.tsx src/state/store/tree.hydration.test.ts src/state/atoms.lifecycle.test.ts src/utils/tabs.test.ts src/components/panels/info/InfoPanel.test.tsx src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/state/atoms.ts src/state/store/tree.ts src/components/boards/BoardAnalysis.test.tsx src/state/store/tree.hydration.test.ts src/state/atoms.lifecycle.test.ts src/utils/tabs.test.ts src/components/panels/info/InfoPanel.test.tsx src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec tsgo --noEmit
+git diff --check
+```
+
+All five commands exited0. The first command passed422 tests. `final-selected`, `final-format`, `final-lint`, `final-types` and `final-diff` retain full logs, exact command JSON and exits. No build, dist compilation or heavy shared gate ran.
+
+Ordinary exploratory runs are retained separately. The diagnostic subscriber run failed on native `[1,3]`. Candidate-first passed420. Candidate-second passed420 and failed one newly added utility fixture because it supplied incomplete file metadata. The fixture was corrected to the existing canonical Save fixture. Candidate-third and final-selected passed422. Initial scoped lint warnings and the new cold-tree TypeScript annotation failure were corrected before freeze. `lint.log`, `types.log` and the final static logs retain this distinction. These are ordinary setup/implementation observations, not counted fault evidence.
+
+## Fault and restoration matrix
+
+The disposable candidate comes from git archive of launch HEAD plus the exact final worktree patch. `git-launch/` retains actual launch source. Every Git application used GIT_OPTIONAL_LOCKS=0 and the copied index. Tests and main source were never faulted. Full manifests cover519 source/assets/scripts files and205 test files.
+
+There are59 fault/restoration executions. Every fault exited1. Every exact restoration passed the FULL eight-suite422-test command with exit0. Each execution retains forward/inverse patches, apply/check logs, command JSON, full test logs, exit files, semantic diagnosis, complete fault source snapshots and pre/fault/restored source/test SHA256 manifests. Final snapshots and source hashes provide the restoration reference. `evidence-integrity` exits0 and verifies every pair, unchanged tests, exact restored sources and protected paths.
+
+The table selects the final discriminating execution for each unique category. Invocation-count-only rows are not counted. Two refusal supplements, both successor subscriber supplements and the removal supplement are executions of existing category patches, not additional unique faults.
+
+| Category | Final execution | Fault / full restore | Assessment |
+| --- | --- | --- | --- |
+| shared-physical-owner | shared-physical-owner | 1 / 0 | Qualified |
+| shared-logical-owner | shared-logical-owner | 1 / 0 | Qualified |
+| provider-local-lookup | provider-local-lookup | 1 / 0 | Qualified |
+| shared-durable-refusal | shared-durable-refusal | 1 / 0 | Qualified |
+| synchronous-admission | synchronous-admission-outward | 1 / 0 | Qualified |
+| freshness-independent-admission | freshness-independent-admission | 1 / 0 | **Uncounted** |
+| remount-pending-presentation | remount-pending-presentation | 1 / 0 | Qualified |
+| generation-admission | generation-admission | 1 / 0 | **Uncounted** |
+| identity-checked-release | identity-checked-release | 1 / 0 | Qualified |
+| independent-store-admission | independent-store-admission | 1 / 0 | Qualified |
+| inactive-workspace-completion | inactive-workspace-completion | 1 / 0 | Qualified |
+| cached-store-owner | cached-store-owner | 1 / 0 | **Uncounted** |
+| obsolete-view-notifications | obsolete-view-notifications-outward | 1 / 0 | Qualified |
+| parse-owner-before-write | parse-owner-before-write-boundary | 1 / 0 | Qualified |
+| write-result-owner | write-result-owner | 1 / 0 | Qualified |
+| count-result-owner | count-result-owner | 1 / 0 | Qualified |
+| count-settlement-owner | count-settlement-owner | 1 / 0 | Qualified |
+| parse-terminal-state | parse-terminal-state | 1 / 0 | Qualified |
+| newer-save-freshness | newer-save-freshness | 1 / 0 | Qualified |
+| add-game-origin-durability | add-game-origin-durability | 1 / 0 | Qualified |
+| blank-tree-installation | blank-tree-installation | 1 / 0 | Qualified |
+| current-file-metadata | current-file-metadata | 1 / 0 | Qualified |
+| save-shared-source-owner | save-shared-source-owner | 1 / 0 | Qualified |
+| save-first-source-outcome | save-first-source-outcome-outward | 1 / 0 | Qualified |
+| save-post-picker-source-outcome | save-post-picker-source-outcome-outward | 1 / 0 | Qualified |
+| save-picker-owner | save-picker-owner | 1 / 0 | Qualified |
+| save-destination-owner | save-destination-owner | 1 / 0 | **Uncounted** |
+| save-completion-owner | save-completion-owner | 1 / 0 | Qualified |
+| save-database-dirty | save-database-dirty | 1 / 0 | Qualified |
+| save-autosave-failure | save-autosave-failure | 1 / 0 | **Uncounted** |
+| save-catch-entry-owner | save-catch-entry-owner | 1 / 0 | Qualified |
+| recovery-reload-rejection | recovery-reload-rejection | 1 / 0 | Qualified |
+| recovery-append-rejection | recovery-append-rejection | 1 / 0 | Qualified |
+| recovery-append-fulfillment | recovery-append-fulfillment | 1 / 0 | Qualified |
+| r6-immediate-cold-pair | r6-immediate-cold-pair | 1 / 0 | Qualified |
+| r6-count-refusal | r6-count-refusal | 1 / 0 | Qualified |
+| r6-unknown-count-diagnostic | r6-unknown-count-diagnostic | 1 / 0 | Qualified |
+| r6-post-admission-count-repair | r6-post-admission-count-repair | 1 / 0 | Qualified |
+| r6-accepted-successor | r6-accepted-successor | 1 / 0 | Qualified |
+| r6-joint-count-origin | r6-joint-count-origin | 1 / 0 | Qualified |
+| r7-subscriber-terminality | r7-subscriber-terminality | 1 / 0 | Qualified |
+| r7-continued-reconciliation | r7-continued-reconciliation | 1 / 0 | Qualified |
+| r7-reentrant-foreign | r7-reentrant-foreign | 1 / 0 | Qualified |
+| r7-acknowledgement-exception-installation | r7-acknowledgement-exception-installation | 1 / 0 | Qualified |
+| r7-original-durable-seed | r7-original-durable-seed | 1 / 0 | Qualified |
+| r7-admitted-native-page | r7-admitted-native-page | 1 / 0 | Qualified |
+
+New fault observations are direct: appending instead of unverified, previous-page cold comment instead of blank admitted content after completed reading, admitted owner overwriting a real foreign replacement or removal, old cached content despite acknowledged admission, original seed gaining queued practicePath content, and native page1 before page3. The workspace and tree subscriber supplements both fail terminal freshness when exact acknowledgement is removed. No compile failure is counted.
+
+## Necessary adaptations and remaining proof blocker
+
+`fault-inventory.json`, `semantic-supplement-pairs.json` and `semantic-category-verdicts.json` retain exact production boundary adaptations and unique patch hashes. The old452b3ff completion source was never replayed.
+
+- Shared physical replacement independently guards ownership twice. An outer post-write removal alone is vacuous for storage. The final post-write fault reverses all three authority barriers and directly corrupts the foreign tree. The post-parse category additionally reverses its earlier authority check and exposes the same retained foreign content guarantee at that earlier continuation.
+- Durable-origin refusal now occurs through stageAndCommitTab. The final fault treats its returned workspace refusal as committed and fails retained terminal freshness. Its separate workspace-refusal execution also exposes loss of the old pending/durable pair.
+- Immediate cold pairing now reverses only the shared candidate seed. Its separate tree-refusal execution fails the old pair. No stale nontransactional completion copy discards retained fixes.
+- Accepted-successor acknowledgement moved inside admission. Its reversal removes that exact callback. Actual workspace/tree supplemental subscriber witnesses discriminate terminality. Post-admission count repair now runs against an actual subscriber exception and native count99, directly corrupting admitted count4.
+- Synchronous admission's original parse-count-only failure is supplemented by unchanged real-hotkey/remount presentation. First/second source outcome faults use unchanged active Save result assertions. Obsolete notification uses the actual typed notification payload array. Save picker has a direct cancelled-versus-superseded assertion in addition to its count failure.
+
+Five categories do not satisfy the requested final semantic criterion: freshness-independent-admission and generation-admission stop at parser invocation counts, cached-store-owner stops at forbidden native-write invocation count, save-destination-owner stops at forbidden native-write invocation count, and save-autosave-failure stops at notification invocation count. All five original patches and exit1/full422 restoration0 runs remain preserved. They are not silently dropped or counted.
+
+Exact frozen assertion sites are BoardAnalysis.test.tsx1794 for freshness admission,1976 for generation admission,1721 for cached-store ownership and877 for autosave notification. The destination assertion is tabs.test.ts1250. Each corresponding semantic.txt contains the direct diagnosis and source excerpt. These retained bodies are unchanged. Their existing observations remain useful controls, but invocation counts alone do not meet this assignment's semantic evidence rule.
+
+Three supplementary attempts clarify the limit. Coupling admission and Gate presentation to freshness fails a direct rendered assertion, but that assertion exercises the presentation layer and does not independently discriminate the domain admission category. It is excluded from the unique total. Removing the cached-store guard at shared admission causes an uncaught TypeError on a removed cached API in the lifecycle witness, so that attempt is not semantic assertion proof. Removing both destination and finishWrite guards still stops at native dispatch because refused commitOrigin separately protects successor state. That attempt is also not counted. Both failed discrimination attempts exited1 and restored all422 tests with exit0. Their logs, patches and source snapshots remain available.
+
+The ordinary candidate remains green and unchanged. Final assertions were not rewritten to make these faults fail. The five-category proof gap remains a root acceptance blocker. No complete historical semantic closure is asserted.
+
+## Integrity, reads and deviations
+
+All1,073 non-owned tracked paths match launch. This includes every record, budget, configuration, Gate/Board/InfoPanel production, tabStorage/codec, native/verifier, legality tests and shared parser. The complete function makeMove and the remaining tree source suffix are byte-identical to launch, independently hashed in legality-integrity.json. Tree changes are lifecycle installation only. The real index, index content, copied index and HEAD match launch exactly. All changes are unstaged.
+
+The1,744 saved historical proof artifacts checked by historical-artifacts.sha256.json remain byte-identical. Old candidate directories were read-only and were not imported or edited. Main and disposable final source/test manifests match exactly. Integrity covers tracked paths and named saved artifacts. No complete ignored-tree inventory is claimed.
+
+All named domain rules, binding references, mandate, decisions d06/d07/d08/d09/d10, revision2 reports, revision3 reports, post-admission probe, R7 reports, blocked report/patch and exact round2 report/proof scripts/manifests were read in this same resumed writer context. No full CLAUDE.md, environment file, skill or agent was loaded. No staging, commit, push, deployment or external message occurred.
+
+The necessary synchronous retained-owner branch is an explicit implementation adaptation discovered by the completed-native witness. The historical semantic gap is an explicit proof limitation. The initial long runner used a managed exec session rather than setsid/nohup. Later supplementary runners used detached execution and artifact polling. No other source scope expansion occurred.
+
+Root independently runs integrated suites, parser, build/bundle, canonical pre-review, contract, R7 and runtime evidence. This report supplies a reviewable green source candidate and honest incomplete historical semantic proof.
+
+
+### Root semantic arbitration and remaining proof
+
+Root reviewed all five exact diagnoses and their call boundaries. cached-store-owner dispatches writeGame(workspace-token,page3,blank PGN,append) after cached-owner replacement. save-destination-owner dispatches writeGame(save-destination,page2,Unsaved version PGN,game,destination stamp) after durable supersession. These are forbidden native mutations, evidenced by received payloads. save-autosave-failure suppresses the required current-owner IO notification. Those three outward effects qualify as semantic API-boundary failures even though their first assertions use count syntax. This does not accept harmless internal invocation counters or claim actual Rust fault execution. The raw writer assessment stays intact and fresh cumulative lenses will judge root arbitration.
+
+The two parser-count-only admission categories remain unaccepted. Root requests two NEW composed witnesses for unchanged C3/C4 guarantees, preserving every existing body and freezing all production. One must demonstrate no premature appended live/cold owner while the original parse survives competing Save freshness and duplicate admission. The other must demonstrate operable replacement-generation admission and preservation of its actual pending presentation when the old generation settles. No production change, new mechanism, acceptance relaxation or third source correction is authorized. All final relevant faults must rerun against the new frozen final tests in fresh r7-proof-completion artifacts.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
