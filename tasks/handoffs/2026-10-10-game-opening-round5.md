@@ -1076,3 +1076,251 @@ pre-review check failed: frontend-mutation-changed-files — log: /home/felixb/P
 
 ```
 ````
+
+## First root proof-fix round result
+
+Both resumed writers reached canonical end of stream. Save's final168-test suite passes independently at root. Its eight source-only fault1/restoration0 pairs,508 restored production hashes,177 frozen test hashes and four main-owned hashes were independently checked. Append's132 tests and four source-only fault1/restoration0 pairs are retained. Root inspected the complete30-test addition, all four exact source patches and their unique semantic assertion diagnoses, and independently checked331 restored production/assets hashes,177 frozen test hashes and both main-owned hashes. Original gate test bodies and runAction are preserved.
+
+The append report contains one launch-provenance typo: its narrative repeats f93ea300, the earlier reload checkpoint. Actual launch-head.txt, eos-head.txt and integrity.py confirm this resume launched and ended at b2c24301eb1bb19e879357e141a778d1527b2bb5 with unchanged index entries. The raw report is retained below, and this qualification is the effective launch account. Its source/fault proof is derived from the actual recorded launch, not that narrative typo.
+
+Root's integrated preflight receipt /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-r5-round1-preflight.D3IOEv/completion.record is1 at b2c24301. It independently passed603 tests across12 suites plus46 parser tests, nine-file format/lint, TypeScript, verifier syntax and diff checks. Build passed. Canonical bundle check alone failed, entry540205, largestLazy514894, total1620066,66 over unchanged1620000. Full pre-review and contract were not rerun in this preflight. Earlier actual mutation100 is historical, not current proof. Source is still uncommitted and closure, pixels, native and all14 standalone runtime stages remain pending.
+
+Root adopts the save writer's concrete proposal to extract the repeated temp-file source-validation operation inside existing tabs.ts. This is R5 root proof-fix round2, the last bounded round. The same sensitive high writer resumes its same four paths. The append, tree and parser peers are terminal and byte-protected. Both first and post-picker ownership witnesses stay real. Shared-guard and caller-outcome faults must honestly describe their distinct mechanisms rather than manufacture boundary-specific production branches. One final isolated bundle candidate is measured. Root retains all failed checkpoints and owns integrated full gates after EOS. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+## Raw save proof-fix round1 report
+
+````text
+# R5 save proof-fix round1
+
+The one permitted consolidation is implemented and left unstaged. Local correctness proof passes. The fixed bundle limit remains blocked by 66 gzip bytes. No second design or second measured build was attempted.
+
+Plan authorship and arbitration shared one context. Detection runs on the code model family. Root owns arbitration, integration and the next full gate.
+
+## Scope and traced mechanism
+
+Owned paths are `src/utils/tabs.ts`, `src/utils/tabs.test.ts`, `src/components/boards/BoardAnalysis.tsx` and `src/components/boards/BoardAnalysis.test.tsx`. This resume changes the two production files and BoardAnalysis tests. The tabs tests remain byte-identical to the frozen starting candidate.
+
+Before editing, read the complete root `root.log` and `completion.record` in `../r5-root-proof-initial-red`. Checked its `source.sha256` against all nine named source/test paths. Every entry matched. The original prompt, six complete project rules, full owned sources/tests and actual save callers were retained from the same writer context. Reopened the changed save and notification paths, the complete BoardAnalysis source/tests, and the real `src/components/files/notifyError.ts` and `src/platform/errors.ts` implementations. No full project CLAUDE.md, skill or environment file was loaded.
+
+The catch follows the existing missing-tab refusal before `try`, so its four later tab-presence conditions cannot reject anything. Removed those conditions and reused the captured `tabId` for conflict and freshness publication. The essential catch-entry `owns()` guard remains first. Applied-despite-error still clears the source stamp and marks freshness unverified. Stale-game, conflict, missing-resource and invalid-input handling retain their state changes and outcomes.
+
+The catch previously normalized the error for classification, then called `failed(error)` again on its failure exits. It now builds one typed failed result, classifies its normalized error and returns that same result. The narrower `Extract<SaveResult, { status: "failed" }>` helper return type makes this reuse type-safe. Normalization, category mapping, redaction and diagnostics remain in the existing normalizer.
+
+BoardAnalysis now passes the unknown error directly to its existing cancellation-aware presenter. That presenter invokes `errorUnlessCancelled`, which already normalizes the input. The redundant normalization in the controller wrapper was removed. Existing append classification still normalizes where it needs the category. Shared `finishWrite`, captured serialized-PGN completion, null stamp/revision uncertainty, both Save As source guards, picker/destination guards and user-save behavior are unchanged.
+
+All BoardAnalysis cases now delegate to the actual notification presenter. Seven existing positive notification assertions additionally require the actual Mantine notification boundary to receive the visible message. Their category, backend category and message expectations remain asserted on the actual passed failure. Negative notification assertions inspect the displayed boundary too. Toolbar Save As waits on the actual notification. Existing production autosave cancellation and stale-owner silence tests remain intact. No prior test case was removed or weakened.
+
+The complete old-to-new owned diff is `round1-owned.diff`. The Git-derived snapshot delta is `candidate.patch`. `starting/` retains all four launch files.
+
+## Exact local commands and results
+
+Executed in the shared checkout, with full output retained in the named logs.
+
+| Command | Exit | Evidence |
+| --- | ---: | --- |
+| `pnpm exec oxfmt src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | Formatted four owned files before freeze |
+| `pnpm test src/utils/tabs.test.ts src/components/boards/BoardAnalysis.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts` | 0 | `local-test.log`, 4 suites and 168 tests |
+| `pnpm exec oxfmt --check src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | `format.log` |
+| `pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | `lint.log` |
+| `pnpm exec tsgo --noEmit` | 0 | `types.log` |
+| `git diff --check` | 0 | `diff-check.log` |
+
+Each command has its own `.exit` file. `local-child.sh` preserves the exact execution sequence. Long children were launched with `setsid nohup bash <named-child.sh> > <named-launch.log> 2>&1 < /dev/null & disown`. Completion was checked through named receipt and exit artifacts. No process-name polling was used.
+
+## Git-derived frozen proof
+
+Launch HEAD is `b2c24301eb1bb19e879357e141a778d1527b2bb5`. Launch index SHA-256 is `b3899241b0c783ad0850bad79d2b474f6ddd43447d4cdcd4d87feadb842b25e8`. Both are unchanged at completion.
+
+Created `head.tar` using `git archive HEAD`, captured `git diff --binary` into `candidate.patch`, extracted into `candidate/` and `bundle-candidate/`, and applied the exact delta with `git apply`. Both disposable copies link the existing dependencies without changing them. Final owned files were checked byte-for-byte against the shared checkout before proof. The two copies and shared owned paths also match at completion.
+
+`source.sha256` covers 508 production files. `tests.sha256` covers 177 test files, including the retained peer tests. Each fault and each restoration has complete independent source and test SHA manifests. All test manifests match the frozen candidate. Every restoration matches all 508 production files exactly. Assertions, mocks and expected results were never edited during a fault run.
+
+`run-proof.py` executes the exact four-suite command above for its baseline, each of eight faults and each exact restoration. `proof-child.exit` is 0 and `proof.receipt` confirms completion. This resume ran the exact test command 18 times total, one shared-checkout run and 17 isolated proof runs. Baseline and all eight restorations passed 4 suites and 168 tests each.
+
+## Eight semantic faults and restorations
+
+Every fault changes only production source from the frozen candidate. Each has its exact `<name>.fault.patch` and `<name>.restore.patch`, application logs, complete fault/restored test logs, same-run exit files and full source/test manifests. `results.json` records exits. `semantic-diagnoses.json` retains every named semantic FAIL and assertion diagnosis.
+
+| Fault | Precise source change | Retained semantic assertion exposed | Failed tests | Fault exit | Exact restoration exit |
+| --- | --- | --- | ---: | ---: | ---: |
+| first-source | Remove only the first fulfilled source-read ownership guard | Actual durable replacement retains verified freshness with a differing stamp and invokes no obsolete picker with a matching stamp | 2 | 1 | 0 |
+| post-picker-source | Remove only the second fulfilled source-read ownership guard | Actual durable replacement retains verified freshness with a differing stamp and invokes no obsolete destination read with a matching stamp | 2 | 1 | 0 |
+| picker | Remove only the ownership guard following picker settlement | Replacement forbids another source read after selection and returns superseded after cancellation | 2 | 1 | 0 |
+| destination | Remove only the ownership guard following destination read | Replacement invokes no obsolete destination write | 1 | 1 | 0 |
+| database-owner | Remove only shared completion ownership protection | Database owner replacement keeps the newer tree dirty. Existing file owner and autosave stamp controls also fail | 4 | 1 | 0 |
+| database-dirty | Treat database completion as unchanged regardless of serialized content | Actual newer comments and headers remain dirty after captured native PGN succeeds | 2 | 1 | 0 |
+| autosave-failure | Restrict typed failure presentation to user saves | Actual current-owner I/O and resource-limit autosaves display a notification | 2 | 1 | 0 |
+| catch-entry | Remove only the catch-entry ownership guard | Five late stale rejection categories preserve replacement freshness/tree, and obsolete autosave remains silent | 6 | 1 | 0 |
+
+The database faults are distinct ownership and content faults. Each restoration passes all 168 tests with exit 0. All 21 failed test observations across the eight faults are preserved. The fault harness was adapted only for this new directory and the new catch failure variable. No historical evidence was overwritten.
+
+## One isolated bundle measurement
+
+The build runs only inside `bundle-candidate/`. Shared checkout `dist` is untouched. Source and tests were frozen before the build and remain hash-identical afterward. `bundle-child.sh` contains the exact commands and measurement implementation.
+
+| Command | Exit | Evidence |
+| --- | ---: | --- |
+| `pnpm build-vite` | 0 | `build-vite.log`, `build-vite.exit` |
+| `pnpm bundle:check` | 1 | `bundle-check.log`, `bundle-check.exit` |
+| `node --input-type=module` importing the actual `buildBundleReport` from `./scripts/check-bundle-budget.mjs` and reading `dist/.vite/manifest.json` | 0 | `bundle-measurement.json`, `bundle-measurement.log`, `bundle-measurement.exit` |
+
+| Metric | Root starting measurement | This frozen measurement |
+| --- | ---: | ---: |
+| entry | 540200 | 540205 |
+| largestLazy | 514899 | 514894 |
+| total | 1620065 | 1620066 |
+
+The largest lazy route is `src/routes/index.lazy.tsx`. The fixed total limit remains 1620000. Full canonical bundle output reports `total bundle budget exceeded: 1582.1 KiB, limit 1582.0 KiB` and exits 1. Compressed output did not improve despite removing demonstrated duplicate work. This is the only measured consolidation candidate in this resume.
+
+## Canonical full-gate truth
+
+No new whole-worktree heavy gate was run in this narrowed resume. Root owns the actual integrated rerun after both writers terminate.
+
+The original writer's sole `pnpm checks:pre-review` attempt ended at 143 because its queued child was intentionally interrupted. It was neither startup refusal nor green. The unchanged full output and interruption diagnosis remain in `../r5-save-proof/canonical.log` and its canonical interruption artifacts.
+
+Root subsequently ran the actual integrated canonical pre-review. The complete `../r5-root-proof-initial-red/root.log` and `completion.record` were read before this edit. Root recorded 573 tests across 12 suites and 46 parser tests passing, scoped checks/types passing, selected mutation lanes at 100, and the canonical bundle failure at 1620065. Contract did not run after that failure. Those results are historical once this candidate changes and are not claimed as a current integrated green result. No gate launcher or threshold was bypassed.
+
+## Integrity and blockers
+
+`final-integrity.json` confirms unchanged launch HEAD, full index listing and index bytes, unchanged protected `tree.ts`, `tree.test.ts` and `chess.ts`, exact shared/fault-copy/bundle-copy owned files, exact source restoration and frozen tests. `prior-proof-integrity.json` covers all 9993 regular historical proof files outside linked dependencies. Every byte remains unchanged, including all four prior proof series and all five historical build measurements. Protected peer hashes remain the root starting hashes. The paired reload worker's paths were not edited or overwritten. Its later work belongs to root integration.
+
+The unresolved blocker is the 66-byte bundle excess. Correctness checks pass, but this package does not satisfy the fixed budget. No new module, configuration, schema, persistence behavior, diagnostics removal, guard deletion, minifier workaround, shortened data or threshold change was introduced.
+
+The concrete additional shared-domain scope available for root arbitration is the repeated temp-file source validation in `saveToFile`: both phases set the current-file-operation flag, await the same source read, validate captured ownership before publishing a stamp conflict, compare the captured stamp, and clear the operation flag. Extracting that entire semantic operation within `tabs.ts` could consolidate real duplication while preserving both fulfillment witnesses and rejection context. Its compressed savings are unproven and it was not attempted in this round. Adequate savings cannot honestly be promised from the measured result.
+
+No source-scope deviation occurred. Three owned paths changed in this resume, the fourth remained intact. Changes are unstaged. EOS for this bounded round is correctness verified and bundle blocked, awaiting root arbitration.
+````
+
+## Raw append proof-fix round1 report
+
+````text
+# R5 append outcome repair, f-20261010-25
+
+The append rejection and fulfilled-outcome ownership gaps are repaired. The final candidate passes 132 tests across the exact three requested suites. All four independent production-source faults fail semantic assertions with same-run exit 1, followed by exact source restoration and 132 passing tests with exit 0. Changes remain unstaged.
+
+## Owned paths and mechanism
+
+- `src/components/tabs/FileFreshnessGate.tsx`
+- `src/components/tabs/FileFreshnessGate.test.tsx`
+
+Append rejection now checks the captured action with `actionIsCurrent(signal)` before normalization, marker changes, storage flushes, freshness publication, panel publication or failure propagation. Aborted and replaced actions return false. Genuine current-owner failures retain the existing normalized `throwOnFailure` behavior.
+
+Append fulfillment now returns false for obsolete ownership before examining stamp/revision uncertainty. Current-owner unknown stamp or revision retains the existing durable append marker, uncertainty diagnostic and persistent retry prohibition. Successful current-owner append still updates the file origin, saves the stamp and verifies freshness.
+
+`isUnavailableFileError` consolidates the identical invalid-input, missing-resource and conflict classification used by reconcile, reload and append. All three sites call the same named predicate. Reconcile retains its invalid-input-specific removed-game message. This removes actual semantic duplication within the existing file. No bundle savings are claimed without a new integrated measurement.
+
+The original reload rejection guard and physical-generation comparison remain present. `runAction` remains byte-identical to the retained checkpoint. No additional action lifecycle mechanism was necessary.
+
+## Read scope and binding policy
+
+Read the original `fix-r5-reload.prompt`, all six named project rules, the complete retained `r5-reload-proof/REPORT.md`, the sibling append finding and its correction, the complete official f-20261010-25 entry including its provenance correction, and exact decisions d-20260924-01, d-20260924-02 and d-20260924-03. Read the owned full source and tests and traced actual callers, the registered-save callback and the native write boundary before editing. The root initial log, completion record and frozen source manifest were inspected.
+
+The corrected provenance is binding. The initially cited d-20261007-03 is an agent decision about Files metadata, not a Felix product decision about append. Existing d-20260924-03 governs persistent append uncertainty. No recorded decision or finding was rewritten.
+
+The starting owned source/test match the root frozen manifest and the retained reload checkpoint. Launch HEAD is `f93ea300823137b4365cb8f2f9de4d39e2f95074`. Launch and EOS HEAD and complete index entry dumps match byte-for-byte.
+
+## Retained and added regressions
+
+All 48 prior gate tests remain byte-identical. No existing test body, assertion, mock or expected result was changed or strengthened. Only two imports and 30 new tests were added, producing 78 gate tests and 132 tests across the three requested suites.
+
+Nine physical-generation witnesses drive the actual append callback and defer `tauri.writeGame` through the real `writeFileGame` wrapper. They cover stamped success, unknown stamp, unknown revision, both unknown, stale-game, missing-resource, invalid-input, conflict and ordinary I/O rejection.
+
+Each witness performs real durable tree seeding, a real workspace atom commit and real cached-store retargeting. Logical ID, file, game number, active page and cached store stay fixed. Only the physical tree key changes. A pass-through observation of the real AbortSignal getter proves that the action signal remains un-aborted before and after settlement. The constructor and signal behavior are not replaced.
+
+Assertions preserve replacement event and comment, source stamp, append marker, store identity, verified freshness identity, tab metadata, durable replacement tree bytes and durable workspace bytes. The stale-game witness gives the replacement a true append marker to catch incorrect clearing. The later conflict panel reveals hidden stale error or uncertainty messages. Other obsolete fulfilled outcomes must produce zero uncertainty messages. A replacement with its own uncertainty marker retains exactly its own message and disabled append action.
+
+Additional controls cover:
+
+- Two obsolete registered-save rejections returning false without propagation or replacement damage.
+- All nine late outcomes after unmount, with a genuinely aborted action signal, false registered-save result, unchanged durable bytes, unchanged store/freshness and an empty host.
+- Five active-owner registered failures preserving proper stale-count, resource and ordinary-error behavior and propagating normalized failure.
+- All three uncertain stamp/revision combinations surviving a cold store restart with persistent retry prohibition. Both the button and registered callback start no second native write.
+- A real second append after active-owner stale-count rejection, ending in saved stamp, correct file count and verified freshness.
+- Physical marker flush refusal reaching the registered caller, retaining its persistence diagnostic and preventing native append.
+
+## Exact commands and results
+
+`T` is the unchanged requested command:
+
+```bash
+pnpm test src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/state/atoms.lifecycle.test.ts
+```
+
+`F` retains the original fulfillment witness selection against the unchanged final test file:
+
+```bash
+pnpm test src/components/tabs/FileFreshnessGate.test.tsx -t 'a pending reload cannot overwrite a replacement with only its physical generation changed'
+```
+
+| Receipt label | Command | Location | Exit | Result |
+| --- | --- | --- | --- | --- |
+| local-first | T | Main | 1 | Setup diagnosis, 29 failed, 103 passed, 9 unhandled errors |
+| local-second | T | Main | 0 | 132 passed, 3 suites |
+| local-final | T | Main final owned files | 0 | 132 passed, 3 suites |
+| local-static | Scoped checks below | Main | 0 | Format, lint, types and diff check passed |
+| candidate-green | T | Disposable frozen candidate | 0 | 132 passed, 3 suites |
+| reload-rejection-fault | T | Disposable | 1 | 4 semantic failures, 128 passed |
+| reload-rejection-restored | T | Exact restored candidate | 0 | 132 passed, 3 suites |
+| reload-fulfillment-fault | F | Disposable | 1 | 1 semantic failure, 77 skipped |
+| reload-fulfillment-restored | T | Exact restored candidate | 0 | 132 passed, 3 suites |
+| append-rejection-fault | T | Disposable | 1 | 12 semantic failures, 120 passed |
+| append-rejection-restored | T | Exact restored candidate | 0 | 132 passed, 3 suites |
+| append-fulfillment-fault | T | Disposable | 1 | 4 semantic failures, 128 passed |
+| append-fulfillment-restored | T | Exact restored candidate | 0 | 132 passed, 3 suites |
+| frozen-static | Scoped checks below | Disposable restored candidate | 0 | Format, lint, types and exact-file diff checks passed |
+| final-diff-check | `git diff --check` | Main | 0 | Passed |
+| independent-integrity | `python3 /tmp/build-game-opening-3b67c3b9/r5-append-round1/integrity.py` | Proof and main | 0 | All four fault pairs and integrity assertions passed |
+
+Scoped main checks, all exit 0:
+
+```bash
+pnpm exec oxfmt --check src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec oxlint --deny-warnings src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec tsgo --noEmit
+git diff --check
+```
+
+Formatting was applied only to the two owned paths. Lint reported zero warnings and zero errors. `frozen-static.sh` repeats format, lint and types in the disposable final candidate and checks both owned files against their frozen copies with `git diff --no-index --check`.
+
+Long children used `setsid nohup bash .../run-proof.sh LABEL COMMAND ... & disown`, with stdin from `/dev/null` and named launch logs. Completion was read from named `.exit` and `.log` artifacts. No process-name polling was used. Each receipt retains exact escaped command, start/end timestamps, full stdout/stderr and same-run exit status.
+
+## Four semantic fault/restoration pairs
+
+1. `reload-rejection-fault.patch` changes only the reload rejection predicate to cancellation-only. Three resource-category witnesses fail freshness identity because verified replacement freshness becomes unavailable. The ordinary I/O witness fails the later-panel assertion on `obsolete reload io failure`. Each category has its own unique named FAIL. Restored full source/test manifests match the frozen candidate, then T passes 132 tests.
+2. `reload-fulfillment-fault.patch` removes only the physical tree-key comparison from `actionIsCurrent`. The retained original fulfillment witness fails store identity. Its diagnostic shows `Replacement generation` becoming `Obsolete reload` and the replacement c stamp becoming the obsolete b stamp. Restored full manifests match, then T passes 132 tests.
+3. `append-rejection-fault.patch` removes only the new append catch ownership check. The five physical-generation rejection witnesses fail on a cleared replacement marker, changed verified freshness or retained ordinary I/O message. Two obsolete registered-save witnesses and five unmount witnesses fail because stale failures propagate instead of returning false. All active-owner controls remain green. Restored full manifests match, then T passes 132 tests.
+4. `append-fulfillment-fault.patch` restores only the obsolete-owner/unknown-result combined branch. All four physical-generation fulfilled outcomes fail the later-panel assertion, which detects one obsolete uncertainty diagnostic where zero is required. Rejection and active-owner controls remain green. Restored full manifests match, then T passes 132 tests.
+
+Faults were independent, starting from the same final candidate. Every manual source fault and restoration used `apply_patch`. No test, mock, expected result, assertion or test configuration was changed during fault execution. All fault logs contain semantic `AssertionError` failures and no unhandled-error infrastructure failure.
+
+## Integrity and reproducibility
+
+The disposable candidate was derived from launch HEAD using `git archive`, excluding environment-file paths from extraction, then overlaid with the frozen worktree `candidate.patch`. Git apply validation passed. Its installed dependencies are a symlink to the existing checkout dependencies. No staging or disposable commit was used.
+
+`final-source.sha256` covers 331 production/assets files. `final-tests.sha256` covers 177 test files. Every fault and restoration has separate full source and test SHA manifests. `integrity.py` independently reconstructs each exact expected faulty source from the frozen source, checks its SHA against the fault manifest and checks its unified patch against the retained exact patch. Only the owned production gate may differ. All eight test manifests equal the final manifest. All four restored source manifests equal the final source manifest.
+
+The checker also verifies unique named semantic FAIL lines, same-run fault exit 1, restoration exit 0, final candidate bytes, main-owned byte identity, prior test-body identity, unchanged `runAction`, protected records/rules, retained old proof artifacts, immutable sibling source paths and launch HEAD/index integrity. Its complete successful output is in `integrity.txt`.
+
+Final owned hashes:
+
+```text
+9b551935d590afbbaa83787cb7e2f6a9b1cebb68f242d9f3e77996a62937023e  src/components/tabs/FileFreshnessGate.tsx
+2a2337473d06a2aacf14afd05d4ecb5b7dd630131df3f6a5a9551bb4696e2025  src/components/tabs/FileFreshnessGate.test.tsx
+```
+
+`owned-resume-source.patch` and `owned-resume-tests.patch` isolate this resume against the retained reload checkpoint. `candidate.patch` includes the peer snapshot as frozen for disposable proof. Peer changes in the shared main worktree were preserved. Main HEAD and index were left unchanged. Old `r5-reload-proof` artifacts were not overwritten.
+
+## Diagnoses, deviations and integrated gate status
+
+The preserved `local-first` failure came from a constructor capture spy that produced controllers with no readable signal under the test runner. It was a setup failure, not semantic fault evidence. Replacing it with a pass-through spy of the real native signal getter resolved the diagnosis. `local-second` and the final frozen proof are green. No production lifecycle change was made in response.
+
+An initial candidate-creation shell call was rejected before execution because its requested working directory did not exist yet. No command or filesystem mutation ran. Creation was then performed from the existing repository, followed by sequential apply validation and overlay in the created candidate directory.
+
+There is no deviation from the requested source scope or append policy and no blocker to this leaf repair. No new module, journal, persistence mechanism, schema/backend/version change, UI, configuration or numeric budget/floor change was introduced.
+
+No new full heavy gate was launched during this resume, as explicitly instructed while the paired writer works. Root owns the next canonical integrated pre-review, selected mutation lanes, bundle measurement and contract run after both writers reach EOS.
+
+The retained historical leaf `pnpm checks:pre-review` attempt exited 1 and measured total 1620073 against fixed limit 1620000. Its complete original output remains in `../r5-reload-proof/canonical-pre-review.log`. Root subsequently ran the initial integrated candidate. Its complete output is in `../r5-root-proof-initial-red/root.log`, with exit 1 in `completion.record`. That run passed 573 tests across 12 suites, 46 parser tests, scoped checks/types and selected mutation lanes at 100%. Bundle alone failed at the root-reported measurement 1620065 against 1620000. Contract did not run after that failure.
+
+Those are historical candidates. This resumed candidate has no new integrated bundle measurement or canonical gate result. No launcher was bypassed. Root must establish the current integrated gate and contract result after EOS.
+````
