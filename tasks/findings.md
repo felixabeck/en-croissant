@@ -14587,3 +14587,31 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Name the maximum generated analysis variation plies constant and preserve value 10. Existing tree suite and scoped format/lint/type checks suffice.
 * **Triage:** Fix now for explicit domain-bound intent. No new behavior, abstraction or product decision.
 * **Found by:** Fresh round 4 code-quality lens, confirmed by root source inspection. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Retargeted cached stores retain the legacy missing-tree read policy
+
+* **ID:** f-20261010-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/state/store/tree.ts retargetTreeStore and retryTreeStoreStorage.
+* **Defect:** A cached logical store originally uses storageFor(false). Retargeting changes only the persistence name, so later rehydration still treats a missing explicit physical generation as ordinary absence. Its status becomes absent instead of unavailable, releasing the required-reference recovery gate.
+* **Origin:** cb09c965 introduces the physical retargeting facade. This is a correction-introduced missing read-policy update, not inherited index/tree ordering.
+* **Proof:** Root traced createTreeStore's storageFor(treeKey !== id), retargetTreeStore's name-only setOptions, the retained storageFor closure and retryTreeStoreStorage's rehydrate/status return. A retained missing-after-retarget regression and policy-removal fault remain required.
+* **Fix and proof:** Retarget the existing persistence adapter's required-reference read policy along with its name. Share required-presence reading with cold hydration and physical-source duplication. Prove missing and refused reads stay gated after retarget, recover only when the physical value returns, and retain logical/store/native owners. Preserve the constant-only peer change in this file.
+* **Triage:** Fix now in the loaded physical-generation mechanism. Related f-20261010-07 owns the original durability split, and f-20261010-13 owns clone-status recovery publication. This has the distinct captured persistence-adapter policy cause. No product decision or new persistence mechanism.
+* **Found by:** Root inspection of the first round-4 repair candidate and unchanged retargeting path. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+### Workspace ID repair drops required physical-reference intent
+
+* **ID:** f-20261010-17 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/state/workspace.ts:134 and :342, workspace.test.ts:118.
+* **Defect:** An invalid logical ID with an explicit missing physical treeKey enters workspace ID repair. cloneTargets retains the source key but loses the required-reference intent. Ordinary clone accepts absence. The repaired tab drops treeKey and becomes an editable blank legacy owner, losing the original recovery obligation.
+* **Origin:** cb09c965 introduced explicit physical ownership into workspace ID repair. This is a distinct migration-clone intent loss, related to f-20261010-07's durable ownership contract and f-20261010-13's duplication read gating.
+* **Proof:** Fresh read-only mechanism judgment J1 traced cloneTargets at workspace.ts:134, removal of repaired.treeKey at :140 and ordinary clone at :342. Root confirmed those production statements. The existing readable-reference test does not distinguish a missing reference. Raw witness: /tmp/build-game-opening-3b67c3b9/lens-reference-mechanism-j1.txt.
+* **Fix and proof:** Carry required-reference intent through workspace repair cloning into the shared required-presence read. Missing-reference refusal must preserve the original workspace ownership and recovery obligation. Retain ordinary absent legacy repair. Add retained tests and an independent intent-removal source fault with exact restoration.
+* **Triage:** Fix now with the loaded physical-generation repair. No product or persistence-system redesign.
+* **Found by:** Fresh Codex review-plan mechanism judgment. Plan authorship and arbitration shared one context. Detection ran on the code model family.
