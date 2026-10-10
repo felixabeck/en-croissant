@@ -298,36 +298,36 @@ VERDICT: APPROVED
 --- /tmp/build-game-opening-3b67c3b9/d9-plan-r2.md
 +++ /home/felixb/Projekte/chessfable/tasks/plans/2026-10-10-durable-page-replacement.md
 @@ -38,6 +38,8 @@
- 
+
  Seed only the fresh candidate using the existing bounded validator and serializer. Definite tree or workspace refusal preserves all old live, pending and durable data, origins, settings and focus. Clean up only the unowned candidate through the existing failed-admission protocol. A thrown application commit does not license candidate deletion. Preserve both generations and surface the existing error, with reload following the acknowledged durable reference.
- 
+
 +At final commit, retain the current committed file metadata while changing only the requested game index and physical reference. A count refresh during the page read does not invalidate ownership and must not be overwritten from the captured origin.
 +
  On acknowledged commitment, synchronously retarget the existing persisted store to the candidate key and install the candidate tree, publishing consistent workspace ownership without an asynchronous gap. Use the existing Zustand persistence-name mechanism. Record removal intent for the old physical key in the same workspace commit. Reclaim the old generation only after commitment. Cleanup refusal is an applied success with retained removal intent, never an admission refusal. Pending old edits cannot shadow or later overwrite the candidate. Future edits use the candidate key.
- 
+
  ### O3: Real durability proof and verifier compatibility
 @@ -45,6 +47,8 @@
  The mandate's "never exercises tree persistence" requires real-ID persisted-store tests. Cover independent tree and workspace refusal with retry, successful discard and cold reload, queued old edits, subsequent edits, owner/configuration/store identity, candidate-only rollback and cleanup refusal/replay. Cover duplication, close, unavailable/corrupt referenced tree recovery, legacy fallback, ownership collision and ID repair. Preserve D7 races and D8 ordinary stale rejection coverage. Add distinct logical/physical-key append refusal proof that the native append is never invoked when its marker flush refuses the physical key. Add an application commit that throws after the workspace write, proving both tree generations remain and cold reload follows the durable candidate. Deleting the candidate on that exception must fail the retained test.
- 
+
  Use disposable Git-sourced reversal tests with identical new tests to expose the original index/tree ordering, missing physical-key hydration and premature cleanup. Record specific failure assertions and restored green, with main source/index/HEAD integrity evidence. Browser and native verification remain root-owned after cumulative source closure.
 +
 +Prove that a committed metadata/count refresh during the actual pending page-read and discard flow survives replacement. A captured-origin overlay fault must fail the retained test specifically on lost metadata. Shared file-backed owner predicates preserve cancellation, membership and file/page matching, and keep physical generation checks explicit. Retain BoardAnalysis Add Game refusal, cancellation, stale-count, null-stamp and uncertain-write behavior when routing its repeated guards through the shared predicates.
- 
+
  The unchanged native GO14 tree reader currently assumes the logical ID is the tree key. Resolve its observed workspace treeKey with legacy fallback. This is adapting a reader to the new persisted schema, not altering its expected success. Its same-ID, same-count, exact-content and origin assertions stay binding. Add no extra standalone assertion. Retain all thirteen original assertions byte-identical.
- 
+
 @@ -64,11 +68,11 @@
- 
+
  ## Phases
- 
+
 -One coherent persistence phase, normal write rung through the shared launcher. Persistence, asynchronous ownership and renderer-local contracts change. No Rust, IPC schema or capability changes.
 +One coherent persistence phase, sensitive write role through the shared launcher as required by the source-state path mapping. The normal and sensitive Codex write roles currently resolve to the same model and effort. Persistence, asynchronous ownership and renderer-local contracts change. No Rust, IPC schema or capability changes.
- 
+
 -Source files: `src/state/workspaceTypes.ts`, `src/state/workspace.ts`, `src/state/atoms.ts`, `src/state/store/tabStorage.ts`, `src/state/store/tree.ts`, `src/utils/tabs.ts`, `src/components/common/TreeStateContext.tsx`, `src/components/tabs/BoardsPage.tsx`, `src/components/tabs/TreeRecoveryGate.tsx`, `src/components/tabs/FileFreshnessGate.tsx`, `src/components/panels/info/InfoPanel.tsx`, `scripts/verify-app.mjs`. Existing paired tests and lifecycle fixtures for these modules belong to the same phase. Coverage mapping may register new source only, preserving all numeric ratchets. No other source ownership is granted.
 +Source files: `src/state/workspaceTypes.ts`, `src/state/workspace.ts`, `src/state/atoms.ts`, `src/state/store/tabStorage.ts`, `src/state/store/tree.ts`, `src/utils/tabs.ts`, `src/components/common/TreeStateContext.tsx`, `src/components/tabs/BoardsPage.tsx`, `src/components/tabs/TreeRecoveryGate.tsx`, `src/components/tabs/FileFreshnessGate.tsx`, `src/components/panels/info/InfoPanel.tsx`, `src/components/boards/BoardAnalysis.tsx`, `scripts/verify-app.mjs`. Existing paired tests and lifecycle fixtures for these modules belong to the same phase. The BoardAnalysis extension is limited to routing its repeated file-owner predicates through the shared typed helper, retaining its existing guards and behavior. Consolidate FileFreshnessGate and InfoPanel's matching type guards through the same helper. Physical generation, closing, cached-store, snapshot and request checks remain binding at their respective callers. Coverage mapping may register new source only, preserving all numeric ratchets. No other source ownership is granted.
- 
+
 -Exact phase proof: `pnpm test src/state/workspace.test.ts src/state/atoms.lifecycle.test.ts src/state/store/tabStorage.test.ts src/state/store/tree.test.ts src/state/store/tree.hydration.test.ts src/utils/tabs.test.ts src/components/tabs/BoardsPage.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/panels/info/InfoPanel.test.tsx` followed by `node --check scripts/verify-app.mjs`, scoped oxfmt/oxlint, `pnpm checks:pre-review` and `pnpm gates:contract:check`. Root runs container projects database-files, files-preview, tree-recovery and the remaining original affected projects after source closure, then ordinary `pnpm build` and `pnpm verify:app`. Root completes all fourteen standalone failure stages, full affected push gates, push/required CI/install and HEAD equality.
 +Exact phase proof: `pnpm test src/state/workspace.test.ts src/state/atoms.lifecycle.test.ts src/state/store/tabStorage.test.ts src/state/store/tree.test.ts src/state/store/tree.hydration.test.ts src/utils/tabs.test.ts src/components/tabs/BoardsPage.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/components/boards/BoardAnalysis.test.tsx` followed by `node --check scripts/verify-app.mjs`, scoped oxfmt/oxlint, `pnpm checks:pre-review` and `pnpm gates:contract:check`. Root runs container projects database-files, files-preview, tree-recovery and the remaining original affected projects after source closure, then ordinary `pnpm build` and `pnpm verify:app`. Root completes all fourteen standalone failure stages, full affected push gates, push/required CI/install and HEAD equality.
- 
+
  ## Carried to diff review
 ````
 

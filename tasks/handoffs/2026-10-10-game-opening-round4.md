@@ -812,4 +812,3 @@ It exited 0 and proves:
 
 No source-scope or mechanism deviation was needed. A missing in-memory runner value required recreating the proof runner before its first source fault. That tool-state failure changed no source or proof result. No unrelated defect was found. Full canonical gate execution remains blocked in this leaf by the actual launcher refusal. Root owns the final full pre-review and contract. No skills, agents, staging, commits, push, records edits or UI/native verification occurred. Plan authorship and arbitration shared one context. Detection used the code model family.
 ````
-
