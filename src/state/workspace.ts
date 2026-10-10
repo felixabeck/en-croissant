@@ -95,7 +95,7 @@ export function defaultWorkspace(): Workspace {
 type WorkspaceRepairPlan = {
     workspace: Workspace;
     unrepairedWorkspace: Workspace;
-    cloneTargets: Array<{ sourceId: string; targetId: string }>;
+    cloneTargets: Array<{ sourceId: string; targetId: string; requireExisting: boolean }>;
 };
 
 function resolveActiveTab(tabs: readonly Tab[], legacyActive: string | null): string {
@@ -131,7 +131,11 @@ function planWorkspaceRepair(
         }
 
         const migratedId = newWorkspaceId([...reserved, ...ids, ...treeKeys]);
-        cloneTargets.push({ sourceId, targetId: migratedId });
+        cloneTargets.push({
+            sourceId,
+            targetId: migratedId,
+            requireExisting: tab.treeKey !== undefined,
+        });
         const repaired: Tab = {
             ...tab,
             value: validId ? tab.value : migratedId,
@@ -338,8 +342,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         tabStorage.removeKnownTreesSafely(stagedClones.keys());
         return plan.unrepairedWorkspace;
     };
-    for (const { sourceId, targetId } of plan.cloneTargets) {
-        const result = tabStorage.clone(sourceId, targetId);
+    for (const { sourceId, targetId, requireExisting } of plan.cloneTargets) {
+        const result = tabStorage.clone(sourceId, targetId, requireExisting);
         if (result.kind === "unavailable" || result.kind === "copy-failed") {
             return refuseRepair(result.error);
         }

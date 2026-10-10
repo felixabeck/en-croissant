@@ -198,7 +198,8 @@ export default function BoardsPage() {
           commitNewTab({
             tab: { ...tab },
             setTabs,
-            seed: (id) => tabStorage.cloneDurable(getTabTreeKey(tab), id),
+            seed: (id) =>
+              tabStorage.cloneDurable(getTabTreeKey(tab), id, tab.treeKey !== undefined),
             existingTabIds: tabs.flatMap((candidate) => [
               candidate.value,
               getTabTreeKey(candidate),

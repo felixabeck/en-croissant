@@ -16,11 +16,12 @@ import {
     tabEngineSettingsFamily,
     tabFamily,
 } from "./atoms";
-import { tabStorage } from "./store/tabStorage";
+import { tabStorage, TabStorageRepository } from "./store/tabStorage";
 import {
     captureReportOwner,
     closeTreeStore,
     createTreeStore,
+    retryTreeStoreStorage,
     type TreeStoreState,
 } from "./store/tree";
 import {
@@ -278,8 +279,8 @@ test.each(["tree", "workspace"] as const)(
         const result = replace();
         expect(result.kind).toBe("committed");
         if (result.kind !== "committed") throw new Error("Expected durable retry.");
-        replacementTabIds.add(result.id);
-        expect(tabStorage.read(result.id)?.state).toMatchObject({ headers: tree.headers });
+        replacementTabIds.add(result.treeKey);
+        expect(tabStorage.read(result.treeKey)?.state).toMatchObject({ headers: tree.headers });
     },
 );
 
@@ -305,11 +306,11 @@ test.each([true, false])(
         const result = replace();
         expect(result.kind).toBe("committed");
         if (result.kind !== "committed") throw new Error("Expected durable replacement.");
-        replacementTabIds.add(result.id);
+        replacementTabIds.add(result.treeKey);
         const published = fixture.store.get(tabsAtom)[1]!;
         expect(published).toEqual({
             ...owner,
-            treeKey: result.id,
+            treeKey: result.treeKey,
             gameOrigin: { ...owner.gameOrigin, gameNumber: 0 },
         });
         expect(fixture.store.get(tabsAtom).map((tab) => tab.value)).toEqual([
@@ -327,8 +328,9 @@ test.each([true, false])(
         expect(captureReportOwner(owner.value)).toBe(reportOwner);
         expect(sessionStorage.getItem(owner.value)).toBeNull();
         expect(
-            deserializeStorageValue<{ state: TreeStoreState }>(sessionStorage.getItem(result.id)!)
-                ?.state.headers.event,
+            deserializeStorageValue<{ state: TreeStoreState }>(
+                sessionStorage.getItem(result.treeKey)!,
+            )?.state.headers.event,
         ).toBe("Replacement game");
         fixture.ownerTreeStore.getState().setComment("subsequent edit");
         expect(tabStorage.flush()).toEqual([]);
@@ -357,10 +359,10 @@ test("page replacement preserves file metadata refreshed while its read was pend
     const result = replace();
     expect(result.kind).toBe("committed");
     if (result.kind !== "committed") throw new Error("Expected metadata-preserving replacement.");
-    replacementTabIds.add(result.id);
+    replacementTabIds.add(result.treeKey);
     expect(fixture.store.get(tabsAtom)[1]).toEqual({
         ...current,
-        treeKey: result.id,
+        treeKey: result.treeKey,
         gameOrigin: { ...current.gameOrigin, gameNumber: 0 },
     });
 });
@@ -404,7 +406,7 @@ test("committed replacement retains refused old-key cleanup intent through a lat
     const result = replace();
     expect(result.kind).toBe("committed");
     if (result.kind !== "committed") throw new Error("Cleanup refusal must be applied success.");
-    replacementTabIds.add(result.id);
+    replacementTabIds.add(result.treeKey);
     expect(sessionStorage.getItem(owner.value)).toBe(fixture.ownerDurableBytes);
     expect(
         fixture.store.set(tabsAtom, (tabs) => tabs.map((tab) => ({ ...tab, name: "Renamed" }))),
@@ -415,10 +417,10 @@ test("committed replacement retains refused old-key cleanup intent through a lat
     deny.mockRestore();
     const loaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
     expect(sessionStorage.getItem(owner.value)).toBeNull();
-    expect(sessionStorage.getItem(result.id)).not.toBeNull();
-    expect(getTabTreeKey(loaded.tabs[1]!)).toBe(result.id);
+    expect(sessionStorage.getItem(result.treeKey)).not.toBeNull();
+    expect(getTabTreeKey(loaded.tabs[1]!)).toBe(result.treeKey);
     expect(fixture.store.set(closeWorkspaceTabAtom, owner.value)).toBe(true);
-    expect(sessionStorage.getItem(result.id)).toBeNull();
+    expect(sessionStorage.getItem(result.treeKey)).toBeNull();
     expect([...tabFamily.getParams()]).not.toContain(owner.value);
 });
 
@@ -427,13 +429,14 @@ test("duplication durably clones the physical owner into an independent fresh ke
     const result = replace();
     expect(result.kind).toBe("committed");
     if (result.kind !== "committed") throw new Error("Expected replacement.");
-    replacementTabIds.add(result.id);
+    replacementTabIds.add(result.treeKey);
     fixture.ownerTreeStore.getState().setComment("latest queued clone source");
     const published = fixture.store.get(tabsAtom)[1]!;
     const duplicate = commitNewTab({
         tab: published,
         setTabs: (tabs, active) => fixture.store.set(tabsAtom, tabs, active),
-        seed: (id) => tabStorage.cloneDurable(getTabTreeKey(published), id),
+        seed: (id) =>
+            tabStorage.cloneDurable(getTabTreeKey(published), id, published.treeKey !== undefined),
     });
     expect(duplicate).not.toBeNull();
     replacementTabIds.add(duplicate!);
@@ -447,9 +450,93 @@ test("duplication durably clones the physical owner into an independent fresh ke
             ?.children[0]?.comment,
     ).toBe("latest queued clone source");
     expect(fixture.store.set(closeWorkspaceTabAtom, owner.value)).toBe(true);
-    expect(sessionStorage.getItem(result.id)).toBeNull();
+    expect(sessionStorage.getItem(result.treeKey)).toBeNull();
     expect(sessionStorage.getItem(duplicate!)).not.toBeNull();
 });
+
+test.each(["transient-read", "missing-reference"] as const)(
+    "duplication retains the %s hydration gate until explicit recovery",
+    async (scenario) => {
+        sessionStorage.clear();
+        const store = createStore();
+        const id = crypto.randomUUID();
+        const treeKey = crypto.randomUUID();
+        replacementTabIds.add(id);
+        replacementTabIds.add(treeKey);
+        const owner: Tab = {
+            value: id,
+            treeKey,
+            name: "Recoverable original",
+            type: "analysis",
+            gameOrigin: { kind: "none" },
+        };
+        const tree = defaultTree();
+        tree.headers.event = "Saved original game";
+        if (scenario === "transient-read") tabStorage.seed(treeKey, tree);
+        expect(store.set(tabsAtom, [owner], id)).toBe(true);
+        const get = Storage.prototype.getItem;
+        const refusal = vi
+            .spyOn(Storage.prototype, "getItem")
+            .mockImplementation(function (this: Storage, key) {
+                if (scenario === "transient-read" && key === treeKey)
+                    throw new DOMException("read refused", "SecurityError");
+                return get.call(this, key);
+            });
+        const cached = createTreeStore(id, undefined, treeKey);
+        refusal.mockRestore();
+        const status = tabStorage.getStatus(treeKey);
+        expect(status.kind).toBe("unavailable");
+        expect(cached.getState().headers.event).not.toBe(tree.headers.event);
+        const bytes = sessionStorage.getItem(treeKey);
+        const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        expect(new TabStorageRepository().read<TreeStoreState>(treeKey)?.state.headers.event).toBe(
+            scenario === "transient-read" ? tree.headers.event : undefined,
+        );
+        const admission = vi.fn(() => false);
+        expect(
+            commitNewTab({
+                tab: owner,
+                setTabs: admission,
+                seed: (target) => tabStorage.cloneDurable(treeKey, target, true),
+            }),
+        ).toBeNull();
+        expect(tabStorage.getStatus(treeKey)).toBe(status);
+        expect(admission).not.toHaveBeenCalled();
+        expect(store.get(tabsAtom)).toEqual([owner]);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
+        // The cached blank tree cannot become editable through a duplication status publication.
+        cached.getState().setPracticePath([]);
+        expect(tabStorage.pendingCount()).toBe(0);
+        expect(sessionStorage.getItem(treeKey)).toBe(bytes);
+        expect(createTreeStore(id, undefined, treeKey)).toBe(cached);
+        const recoveredStatus = await retryTreeStoreStorage(id);
+        expect(recoveredStatus?.kind).toBe(
+            scenario === "missing-reference" ? "unavailable" : "available",
+        );
+        expect(sessionStorage.getItem(treeKey)).toBe(bytes);
+        if (scenario === "missing-reference") {
+            sessionStorage.setItem(treeKey, serializeStorageValue({ version: 1, state: tree }));
+        }
+        expect((await retryTreeStoreStorage(id))?.kind).toBe("available");
+        expect(cached.getState().headers.event).toBe(tree.headers.event);
+        const recoveredBytes = sessionStorage.getItem(treeKey);
+        let target = "";
+        expect(
+            commitNewTab({
+                tab: owner,
+                setTabs: admission,
+                seed: (key) => {
+                    target = key;
+                    tabStorage.cloneDurable(treeKey, key, true);
+                },
+            }),
+        ).toBeNull();
+        expect(admission).toHaveBeenCalledOnce();
+        expect(sessionStorage.getItem(target)).toBeNull();
+        expect(sessionStorage.getItem(treeKey)).toBe(recoveredBytes);
+        expect(store.get(tabsAtom)).toEqual([owner]);
+    },
+);
 
 test.each(["closing", "origin", "key", "store", "edit", "generation", "removed"] as const)(
     "page replacement supersedes changed %s ownership before staging",

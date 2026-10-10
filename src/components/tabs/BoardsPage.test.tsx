@@ -13,7 +13,7 @@ const fixtures = vi.hoisted(() => ({
     onCancel: () => void;
     onDiscard: () => void;
   },
-  createTreeStore: vi.fn(() => ({
+  createTreeStore: vi.fn<(...args: any[]) => any>(() => ({
     dispose: fixtures.dispose,
     subscribe: fixtures.subscribe,
     getState: () => ({
@@ -23,13 +23,23 @@ const fixtures = vi.hoisted(() => ({
     }),
   })),
   createTab: vi.fn(),
+  duplicateHandler: null as (() => void) | null,
+  mountPanels: true,
   cloneDurable: vi.fn(),
-  removeTreeSafely: vi.fn(() => true),
+  removeTreeSafely: vi.fn((_key: string) => true),
   recordFailedAdmission: vi.fn(),
   reportPersistError: vi.fn(),
   retryTreeStoreStorage: vi.fn(),
   discardTreeStoreStorage: vi.fn(),
   treeStatus: { kind: "available" } as TabTreeStorageStatus,
+  treeStatuses: new Map<string, TabTreeStorageStatus>(),
+  getStatus: vi.fn((key: string) => fixtures.treeStatuses.get(key) ?? fixtures.treeStatus),
+  subscribeStatus: vi.fn((_key: string, listener: () => void) => {
+    fixtures.treeStatusListeners.add(listener);
+    return () => {
+      fixtures.treeStatusListeners.delete(listener);
+    };
+  }),
   treeStatusListeners: new Set<() => void>(),
   dispose: vi.fn(),
   subscribe: vi.fn(() => vi.fn()),
@@ -126,23 +136,25 @@ vi.mock("@/state/store/tree", () => ({
   invalidateReportOwner: fixtures.invalidateReportOwner,
   restoreReportOwner: fixtures.restoreReportOwner,
 }));
-vi.mock("@/state/store/tabStorage", () => ({
-  persistStorageWriteError: (cause: unknown) => cause,
-  tabStorage: {
-    cloneDurable: fixtures.cloneDurable,
-    removeTreeSafely: fixtures.removeTreeSafely,
-    recordFailedAdmission: fixtures.recordFailedAdmission,
-    getStatus: () => fixtures.treeStatus,
-    readRawValueForRecovery: () => {
-      if (fixtures.treeStatus.kind !== "unreadable") throw new Error("No unreadable value");
-      return fixtures.treeStatus.rawValue;
+vi.mock("@/state/store/tabStorage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/state/store/tabStorage")>();
+  return {
+    ...actual,
+    persistStorageWriteError: (cause: unknown) => cause,
+    tabStorage: {
+      storageFor: actual.tabStorage.storageFor.bind(actual.tabStorage),
+      cloneDurable: fixtures.cloneDurable,
+      removeTreeSafely: fixtures.removeTreeSafely,
+      recordFailedAdmission: fixtures.recordFailedAdmission,
+      getStatus: fixtures.getStatus,
+      readRawValueForRecovery: () => {
+        if (fixtures.treeStatus.kind !== "unreadable") throw new Error("No unreadable value");
+        return fixtures.treeStatus.rawValue;
+      },
+      subscribeStatus: fixtures.subscribeStatus,
     },
-    subscribeStatus: (_tabId: string, listener: () => void) => {
-      fixtures.treeStatusListeners.add(listener);
-      return () => fixtures.treeStatusListeners.delete(listener);
-    },
-  },
-}));
+  };
+});
 vi.mock("@/state/persistError", () => ({ reportPersistError: fixtures.reportPersistError }));
 vi.mock("@/utils/tabs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/tabs")>()),
@@ -189,7 +201,7 @@ vi.mock("@mantine/core", () => {
     {
       List: ({ children }: { children: ReactNode }) => <div>{children}</div>,
       Panel: ({ children, value }: { children: ReactNode; value: string }) =>
-        useContext(TabsContext) === value ? (
+        useContext(TabsContext) === value && fixtures.mountPanels ? (
           <div data-testid={`panel-${value}`}>{children}</div>
         ) : null,
       Tab: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
@@ -210,11 +222,14 @@ vi.mock("@mantine/core", () => {
     Group: passthrough,
     Menu: Object.assign(passthrough, {
       Dropdown: passthrough,
-      Item: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
-        <button type="button" onClick={onClick}>
-          {children}
-        </button>
-      ),
+      Item: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => {
+        if (children === "Tab.Duplicate") fixtures.duplicateHandler = onClick ?? null;
+        return (
+          <button type="button" onClick={onClick}>
+            {children}
+          </button>
+        );
+      },
       Target: passthrough,
     }),
     ScrollArea: passthrough,
@@ -309,6 +324,18 @@ function invokeHotkey(keys: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fixtures.treeStatuses.clear();
+  fixtures.mountPanels = true;
+  fixtures.duplicateHandler = null;
+  fixtures.getStatus.mockImplementation(
+    (key) => fixtures.treeStatuses.get(key) ?? fixtures.treeStatus,
+  );
+  fixtures.subscribeStatus.mockImplementation((_key, listener) => {
+    fixtures.treeStatusListeners.add(listener);
+    return () => {
+      fixtures.treeStatusListeners.delete(listener);
+    };
+  });
   fixtures.tabs = [
     { value: "current", name: "Current", type: "new", gameOrigin: { kind: "none" } },
     { value: "next", name: "Next", type: "new", gameOrigin: { kind: "none" } },
@@ -471,6 +498,85 @@ test("duplicate uses the physical generation and clears its inherited reference"
   expect(tabs[1]?.value).not.toBe(original.value);
   expect(store.get(activeTabAtom)).toBe(tabs[1]?.value);
 });
+
+test.each(["cold", "vanished"] as const)(
+  "inactive explicit-reference duplication refuses a %s missing source before any original hydration",
+  async (sourceState) => {
+    const { tabStorage: repository } = await vi.importActual<
+      typeof import("@/state/store/tabStorage")
+    >("@/state/store/tabStorage");
+    const realTree =
+      await vi.importActual<typeof import("@/state/store/tree")>("@/state/store/tree");
+    const { defaultTree } = await import("@/utils/treeReducer");
+    const { serializeStorageValue } = await import("@/state/store/debouncedStorage");
+    const owner = {
+      ...fixtures.tabs[1]!,
+      value: crypto.randomUUID(),
+      type: "play" as const,
+      treeKey: crypto.randomUUID(),
+    };
+    const originalTabs = [fixtures.tabs[0]!, owner];
+    const workspaceBytes = serializeStorageValue({
+      version: 1,
+      tabs: originalTabs,
+      activeTab: "current",
+    });
+    sessionStorage.setItem("workspace", workspaceBytes);
+    fixtures.cloneDurable.mockImplementation(repository.cloneDurable.bind(repository));
+    fixtures.getStatus.mockImplementation(repository.getStatus.bind(repository));
+    fixtures.subscribeStatus.mockImplementation(repository.subscribeStatus.bind(repository));
+    fixtures.createTreeStore.mockImplementation(realTree.createTreeStore);
+    fixtures.removeTreeSafely.mockImplementation(repository.removeTreeSafely.bind(repository));
+    fixtures.recordFailedAdmission.mockImplementation(
+      repository.recordFailedAdmission.bind(repository),
+    );
+    store.set(tabsAtom, originalTabs);
+    // Retain the real menu action before the source becomes inactive. Delay panel mounting
+    // so this original owner has never acquired a cached store or hydration status.
+    fixtures.mountPanels = false;
+    store.set(activeTabAtom, owner.value);
+    await renderPage();
+    const duplicateOriginal = fixtures.duplicateHandler!;
+    fixtures.mountPanels = true;
+    await act(async () => store.set(activeTabAtom, "current"));
+    expect(realTree.getCachedTreeStore(owner.value)).toBeUndefined();
+    expect(repository.getStatus(owner.treeKey).kind).toBe("not-read");
+    let priorSourceStatus = repository.getStatus(owner.treeKey).kind;
+    if (sourceState === "vanished") {
+      const tree = defaultTree();
+      tree.headers.event = "Previously available physical source";
+      repository.seed(owner.treeKey, tree);
+      priorSourceStatus = repository.readTree(owner.treeKey).kind;
+      sessionStorage.removeItem(owner.treeKey);
+    }
+    expect(priorSourceStatus).toBe(sourceState === "vanished" ? "available" : "not-read");
+    const publishedSourceStatuses: string[] = [];
+    const unsubscribe = repository.subscribeStatus(owner.treeKey, () => {
+      publishedSourceStatuses.push(repository.getStatus(owner.treeKey).kind);
+    });
+    await act(async () => duplicateOriginal());
+    unsubscribe();
+    expect(store.get(tabsAtom)).toEqual(originalTabs);
+    expect(store.get(activeTabAtom)).toBe("current");
+    expect(repository.getStatus(owner.treeKey)).toMatchObject({ kind: "unavailable" });
+    expect(publishedSourceStatuses).toEqual(["unavailable"]);
+    expect(realTree.getCachedTreeStore(owner.value)).toBeUndefined();
+    expect(sessionStorage.getItem("workspace")).toBe(workspaceBytes);
+    expect(sessionStorage.getItem(owner.treeKey)).toBeNull();
+    expect(repository.pendingCount()).toBe(0);
+    await act(async () => store.set(activeTabAtom, owner.value));
+    expect(container.querySelector('[data-tree-recovery="unavailable"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="board-game-child"]')).toBeNull();
+    const originalStore = realTree.getCachedTreeStore(owner.value)!;
+    originalStore.getState().setComment("cannot persist an editable blank original");
+    expect(repository.pendingCount()).toBe(0);
+    expect(sessionStorage.getItem(owner.treeKey)).toBeNull();
+    await act(async () => root.render(null));
+    realTree.closeTreeStore(owner.value);
+    repository.remove(owner.treeKey);
+    sessionStorage.removeItem("workspace");
+  },
+);
 
 test("reports a tree-copy failure without admitting a duplicate tab", async () => {
   const failure = new Error("source storage is unavailable");
@@ -741,6 +847,46 @@ const recoveryRoutes = [
   { type: "analysis", child: "board-analysis-child" },
   { type: "puzzles", child: "puzzles-child" },
 ] as const;
+
+test("BoardsPage routes provider, recovery and close through the physical generation", async () => {
+  const treeKey = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const owner = { ...fixtures.tabs[0]!, type: "play" as const, treeKey };
+  store.set(tabsAtom, [owner]);
+  fixtures.treeStatuses.set(treeKey, {
+    kind: "unavailable",
+    error: new Error("physical read refused"),
+  });
+  fixtures.retryTreeStoreStorage.mockImplementationOnce(async (id) => {
+    expect(id).toBe(owner.value);
+    fixtures.treeStatuses.set(treeKey, { kind: "available" });
+    for (const listener of fixtures.treeStatusListeners) listener();
+    return fixtures.getStatus(treeKey);
+  });
+  await renderPage();
+  expect(fixtures.createTreeStore).toHaveBeenCalledWith(owner.value, undefined, treeKey);
+  expect(fixtures.subscribeStatus).toHaveBeenCalledWith(treeKey, expect.any(Function));
+  expect(fixtures.getStatus).toHaveBeenCalledWith(treeKey);
+  expect(container.querySelector('[data-tree-recovery="unavailable"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="board-game-child"]')).toBeNull();
+  fixtures.createTreeStore.mockClear();
+  fixtures.getStatus.mockClear();
+  await act(async () => fixtures.closeHandler!());
+  expect(fixtures.createTreeStore).toHaveBeenCalledWith(owner.value, undefined, treeKey);
+  expect(fixtures.getStatus).toHaveBeenCalledWith(treeKey);
+  expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+  expect(fixtures.killEngines).not.toHaveBeenCalled();
+  const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (candidate) => candidate.textContent === "TreeRecovery.Retry",
+  )!;
+  await act(async () => retry.click());
+  expect(fixtures.retryTreeStoreStorage).toHaveBeenCalledWith(owner.value);
+  expect(container.querySelector("[data-tree-recovery]")).toBeNull();
+  expect(container.querySelector('[data-testid="board-game-child"]')).not.toBeNull();
+  await act(async () => fixtures.closeHandler!());
+  expect(fixtures.killEngines).toHaveBeenCalledWith(owner.value);
+  expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith(owner.value);
+  expect(fixtures.closeTreeStore).toHaveBeenCalledWith(owner.value);
+});
 
 test.each(recoveryRoutes)(
   "withholds the $type route behind the unreadable-tree gate and keeps its workspace owner",

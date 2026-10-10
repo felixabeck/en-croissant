@@ -9,10 +9,12 @@ import {
 import { serializeStorageValue } from "./debouncedStorage";
 import { tabStorage, TREE_STORAGE_VERSION } from "./tabStorage";
 import {
+    captureReportOwner,
     closeTreeStore,
     createTreeStore,
     discardTreeStoreStorage,
     retryTreeStoreStorage,
+    retargetTreeStore,
 } from "./tree";
 
 const ids: string[] = [];
@@ -48,6 +50,54 @@ test("hydrates the referenced physical tree without reading the logical tab key"
 });
 
 type TreeStoreSnapshot = ReturnType<typeof defaultTree>;
+
+test.each(["missing", "refused"] as const)(
+    "retargeted legacy cached store requires its physical generation after a %s read",
+    async (failure) => {
+        const logical = crypto.randomUUID();
+        const physical = crypto.randomUUID();
+        ids.push(logical, physical);
+        const store = createTreeStore(logical);
+        const reportOwner = captureReportOwner(logical);
+        expect(tabStorage.getStatus(logical).kind).toBe("absent");
+        const replacement = defaultTree();
+        replacement.headers.event = "Durable replacement";
+        tabStorage.seed(physical, replacement);
+        retargetTreeStore(logical, physical, replacement);
+        expect(tabStorage.flush()).toEqual([]);
+        const bytes = sessionStorage.getItem(physical)!;
+        const installed = store.getState();
+        sessionStorage.removeItem(physical);
+        if (failure === "refused") {
+            const get = Storage.prototype.getItem;
+            vi.spyOn(Storage.prototype, "getItem").mockImplementation(
+                function (this: Storage, key) {
+                    if (key === physical) throw new DOMException("refused", "SecurityError");
+                    return get.call(this, key);
+                },
+            );
+        }
+        expect(await retryTreeStoreStorage(logical)).toMatchObject({ kind: "unavailable" });
+        expect(store.getState()).toEqual(installed);
+        store.getState().setComment("blocked edit after retarget");
+        expect(tabStorage.pendingCount()).toBe(0);
+        vi.restoreAllMocks();
+        expect(sessionStorage.getItem(physical)).toBeNull();
+        expect(sessionStorage.getItem(logical)).toBeNull();
+        sessionStorage.setItem(physical, bytes);
+        expect(await retryTreeStoreStorage(logical)).toEqual({ kind: "available" });
+        expect(createTreeStore(logical)).toBe(store);
+        expect(captureReportOwner(logical)).toBe(reportOwner);
+        expect(store.getState().headers.event).toBe("Durable replacement");
+        expect(store.getState().root.comment).toBe("");
+        store.getState().setComment("recovered physical edit");
+        expect(tabStorage.flush()).toEqual([]);
+        expect(tabStorage.read<TreeStoreSnapshot>(physical, true)?.state.root.comment).toBe(
+            "recovered physical edit",
+        );
+        expect(sessionStorage.getItem(logical)).toBeNull();
+    },
+);
 
 test.each(["missing", "unreadable", "unavailable"] as const)(
     "referenced %s tree remains write gated until explicit recovery",

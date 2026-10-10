@@ -928,6 +928,87 @@ test("cloneDurable treats a legitimate tab without tree storage as an empty clon
     setItem.mockRestore();
 });
 
+test.each(["cold", "vanished"] as const)(
+    "required clone reads refuse a %s missing physical source and block blank writes",
+    (sourceState) => {
+        const source = crypto.randomUUID();
+        const target = crypto.randomUUID();
+        let priorSourceStatus = storage.getStatus(source).kind;
+        if (sourceState === "vanished") {
+            storage.seed(source, defaultTree());
+            priorSourceStatus = storage.readTree(source).kind;
+            sessionStorage.removeItem(source);
+        }
+        expect(priorSourceStatus).toBe(sourceState === "vanished" ? "available" : "not-read");
+        expect(storage.clone(source, target, true)).toMatchObject({ kind: "unavailable" });
+        expect(storage.getStatus(source)).toMatchObject({ kind: "unavailable" });
+        storage.write(source, { version: TREE_STORAGE_VERSION, state: defaultTree() });
+        expect(() => storage.cloneDurable(source, target, true)).toThrow(/read the source tree/);
+        expect(storage.pendingCount()).toBe(0);
+        expect(sessionStorage.getItem(source)).toBeNull();
+        expect(sessionStorage.getItem(target)).toBeNull();
+    },
+);
+
+test.each(["readable", "pending"] as const)(
+    "required cloning preserves an authoritative %s physical source",
+    (sourceState) => {
+        const source = crypto.randomUUID();
+        const queuedTarget = crypto.randomUUID();
+        const durableTarget = crypto.randomUUID();
+        const tree = treeWith((state) => {
+            state.headers.event = "Original physical tree";
+        });
+        storage.seed(source, tree);
+        const bytes = sessionStorage.getItem(source);
+        if (sourceState === "pending") {
+            tree.headers.event = "Authoritative pending tree";
+            storage.write(source, { version: TREE_STORAGE_VERSION, state: tree });
+        }
+        expect(storage.clone(source, queuedTarget, true)).toEqual({ kind: "copied" });
+        storage.cloneDurable(source, durableTarget, true);
+        for (const key of [source, queuedTarget, durableTarget]) {
+            expect(
+                storage.read<ReturnType<typeof defaultTree>>(key, true)?.state.headers.event,
+            ).toBe(tree.headers.event);
+        }
+        expect(sessionStorage.getItem(source)).toBe(bytes);
+        expect(sessionStorage.getItem(durableTarget)).not.toBeNull();
+    },
+);
+
+test("cloneDurable preserves a required missing-reference gate without publishing absence", () => {
+    const source = crypto.randomUUID();
+    storage.storageFor(true).getItem(source);
+    const status = storage.getStatus(source);
+    const changed = vi.fn();
+    const stop = storage.subscribeStatus(source, changed);
+    expect(() => storage.cloneDurable(source, "copy")).toThrow(/read the source tree/);
+    expect(storage.getStatus(source)).toBe(status);
+    expect(changed).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(source)).toBeNull();
+    expect(sessionStorage.getItem("copy")).toBeNull();
+    stop();
+});
+
+test("cloneDurable does not retry failed source hydration when the underlying read recovers", () => {
+    storage.seed("source", defaultTree());
+    const bytes = sessionStorage.getItem("source");
+    const refusal = vi.spyOn(Storage.prototype, "getItem").mockImplementationOnce(() => {
+        throw new DOMException("read refused", "SecurityError");
+    });
+    expect(storage.read("source")).toBeNull();
+    refusal.mockRestore();
+    const status = storage.getStatus("source");
+    const reads = vi.spyOn(Storage.prototype, "getItem");
+    expect(() => storage.cloneDurable("source", "copy")).toThrow(/read the source tree/);
+    expect(reads).not.toHaveBeenCalled();
+    expect(storage.getStatus("source")).toBe(status);
+    expect(sessionStorage.getItem("source")).toBe(bytes);
+    expect(sessionStorage.getItem("copy")).toBeNull();
+    expect(storage.pendingCount()).toBe(0);
+});
+
 test("cloneDurable refuses to duplicate an unreadable source as a clean tab", () => {
     const raw = "unreadable source tree";
     sessionStorage.setItem("source", raw);
@@ -1651,7 +1732,11 @@ test("flush continues after one failed key and persists the remaining key", () =
 });
 
 test("scheduled lifecycle events flush once and a missing clone source stays absent", () => {
-    storage.clone("missing", "target");
+    expect(storage.clone("missing", "target")).toEqual({ kind: "absent" });
+    expect(storage.getStatus("missing")).toEqual({ kind: "absent" });
+    expect(storage.getStatus("target")).toEqual({ kind: "not-read" });
+    expect(storage.pendingCount()).toBe(0);
+    expect(sessionStorage.getItem("target")).toBeNull();
     expect(storage.read("target")).toBeNull();
     storage.write("event-flush", { version: 0, state: defaultTree() });
     window.dispatchEvent(new Event("pagehide"));

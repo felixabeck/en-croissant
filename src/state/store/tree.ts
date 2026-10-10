@@ -4,7 +4,7 @@ import { makeFen } from "chessops/fen";
 import { makeSan, parseSan } from "chessops/san";
 import { type Draft, produce } from "immer";
 import { createStore, type StateCreator, type StoreApi } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type PersistStorage } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
 import { tabStorage, TREE_STORAGE_VERSION, type TabTreeStorageStatus } from "./tabStorage";
 import { ANNOTATION_INFO, type Annotation, nagGlyph } from "@/utils/annotation";
@@ -105,7 +105,7 @@ type PersistedTreeStore = TreeStore & {
     persist: {
         rehydrate: () => Promise<void> | void;
         getOptions: () => { name?: string };
-        setOptions: (options: { name: string }) => void;
+        setOptions: (options: { name: string; storage: PersistStorage<TreeStoreState> }) => void;
     };
 };
 
@@ -120,7 +120,10 @@ export function getCachedTreeStore(tab: string): TreeStore | undefined {
 /** Switch the cached logical owner's persistence generation after durable admission. */
 export function retargetTreeStore(tab: string, treeKey: string, tree: TreeState): void {
     const store = treeStores.get(tab)!;
-    store.persist.setOptions({ name: treeKey });
+    store.persist.setOptions({
+        name: treeKey,
+        storage: tabStorage.storageFor<TreeStoreState>(treeKey !== tab),
+    });
     store.getState().setState(tree);
 }
 

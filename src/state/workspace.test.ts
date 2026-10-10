@@ -140,6 +140,53 @@ test("ID repair clones the effective physical source and grants independent owne
     expect(loaded.activeTab).toBe(repaired.value);
 });
 
+test("missing explicit-reference ID repair refuses blank admission and retains original ownership", () => {
+    sessionStorage.clear();
+    const physical = crypto.randomUUID();
+    const original: Tab = { ...legacyTab, value: "legacy-logical-owner", treeKey: physical };
+    const envelope = {
+        version: LEGACY_WORKSPACE_VERSION,
+        tabs: [original],
+        activeTab: original.value,
+    };
+    const bytes = serializeStorageValue(envelope);
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, bytes);
+    expect(tabStorage.getStatus(physical).kind).toBe("not-read");
+    const refused = loadStoredWorkspace();
+    expect(refused.tabs).toEqual([original]);
+    expect(refused.activeTab).toBe(original.value);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+    expect(sessionStorage.getItem(physical)).toBeNull();
+    expect(tabStorage.getStatus(physical)).toMatchObject({ kind: "unavailable" });
+    expect(tabStorage.pendingCount()).toBe(0);
+    expect(sessionStorage.length).toBe(1);
+    const tree = defaultTree();
+    tree.headers.event = "Recovered repair source";
+    sessionStorage.setItem(physical, serializeStorageValue({ version: 1, state: tree }));
+    const repaired = loadStoredWorkspace();
+    expect(repaired.tabs[0]!.value).not.toBe(original.value);
+    expect(repaired.tabs[0]!.treeKey).toBeUndefined();
+    expect(repaired.activeTab).toBe(repaired.tabs[0]!.value);
+    expect(
+        tabStorage.read<ReturnType<typeof defaultTree>>(repaired.tabs[0]!.value)?.state.headers
+            .event,
+    ).toBe("Recovered repair source");
+});
+
+test("ordinary absent legacy ID repair keeps its legitimate blank semantics", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    const repaired = loadStoredWorkspace();
+    expect(repaired.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(repaired.tabs[0]!.treeKey).toBeUndefined();
+    expect(repaired.activeTab).toBe(repaired.tabs[0]!.value);
+    expect(readStoredWorkspace()).toEqual(repaired);
+    expect(tabStorage.read(repaired.tabs[0]!.value)).toBeNull();
+    expect(tabStorage.getStatus(repaired.tabs[0]!.value).kind).toBe("absent");
+    expect(sessionStorage.getItem("tabs")).toBeNull();
+});
+
 test("legacy fallback and referenced failed-admission markers retain the current physical owners", () => {
     sessionStorage.clear();
     const legacy: Tab = { ...legacyTab, value: crypto.randomUUID() };

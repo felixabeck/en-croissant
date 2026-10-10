@@ -722,6 +722,95 @@ test("a stale-game rejection becomes a conflict without clearing edits", async (
     expect(getFileFreshness("save-test").state).toBe("conflict");
 });
 
+test.each(["missing-resource", "invalid-input"] as const)(
+    "a current-owner %s save rejection marks its source unavailable",
+    async (category) => {
+        const fixture = saveFixture();
+        mocks.writeGame.mockRejectedValueOnce({ tag: "backend-error", category, message: "gone" });
+        await expect(
+            saveToFile({
+                tab: fixture.tabs[0],
+                updateTab: fixture.updateTab,
+                getTab: fixture.getTab,
+                store: fixture.store,
+            }),
+        ).resolves.toBe("conflict");
+        expect(getFileFreshness("save-test").state).toBe("unavailable");
+        expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+    },
+);
+
+test.each(["stale-game", "conflict", "missing-resource", "invalid-input", "durability"] as const)(
+    "a pending save then actual durable replacement ignores its late %s rejection",
+    async (category) => {
+        const { createStore } = await import("jotai");
+        const { atoms, repository, tabs } = await importFreshAdmission();
+        const trees = await import("@/state/store/tree");
+        const freshness = await import("@/state/fileFreshness");
+        const jotai = createStore();
+        const fixture = saveFixture();
+        const owner = { ...fixture.tabs[0]!, value: crypto.randomUUID() };
+        if (!tabs.isFileBackedTab(owner)) throw new Error("Expected a file owner.");
+        repository.seed(owner.value, fixture.tree);
+        expect(jotai.set(atoms.tabsAtom, [owner], owner.value)).toBe(true);
+        const treeStore = trees.createTreeStore(owner.value);
+        const write = deferred<{ stamp: string | null; revision: string | null }>();
+        mocks.writeGame.mockReturnValueOnce(write.promise);
+        try {
+            const pending = tabs.saveToFile({
+                tab: owner,
+                updateTab: () => false,
+                getTab: (id) => jotai.get(atoms.tabsAtom).find((tab) => tab.value === id),
+                store: treeStore,
+            });
+            expect(mocks.writeGame).toHaveBeenCalledOnce();
+            const candidate = defaultTree();
+            candidate.headers.event = "Durable replacement";
+            candidate.sourceStamp = stampC;
+            const result = tabs.replaceFileGame({
+                store: jotai,
+                owner,
+                treeStore,
+                snapshot: treeStore.getState(),
+                tree: candidate,
+                page: 2,
+                isCurrent: () => true,
+            });
+            expect(result.kind).toBe("committed");
+            if (result.kind !== "committed") throw new Error("Expected durable replacement.");
+            expect(result.treeKey).not.toBe(owner.value);
+            expect(trees.createTreeStore(owner.value)).toBe(treeStore);
+            freshness.setFileFreshness(owner.value, "verified", {
+                verifiedRevision: "replacement",
+            });
+            const current = treeStore.getState();
+            const currentFreshness = freshness.getFileFreshness(owner.value);
+            const bytes = sessionStorage.getItem(result.treeKey);
+            expect(bytes).not.toBeNull();
+            write.reject({
+                tag: "backend-error",
+                category,
+                message:
+                    category === "durability"
+                        ? "Committed but durability uncertain: follow-up failed"
+                        : "Old save rejected",
+            });
+            const saveResult = await pending;
+            expect(treeStore.getState()).toBe(current);
+            expect(freshness.getFileFreshness(owner.value)).toBe(currentFreshness);
+            expect(saveResult).toBe("superseded");
+            expect(sessionStorage.getItem(result.treeKey)).toBe(bytes);
+            expect(jotai.get(atoms.tabsAtom)[0]).toMatchObject({
+                value: owner.value,
+                treeKey: result.treeKey,
+            });
+        } finally {
+            trees.closeTreeStore(owner.value);
+            freshness.removeFileFreshness(owner.value);
+        }
+    },
+);
+
 test("a committed save whose follow-up failed is verified by text instead of by its old stamp", async () => {
     const fixture = saveFixture();
     setFileFreshness("save-test", "verified", { verifiedRevision: "r1" });

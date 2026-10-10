@@ -386,18 +386,12 @@ export class TabStorageRepository {
     }
 
     read<S>(tabId: string, requireExisting = false): StorageValue<S> | null {
-        const result = this.readTree(tabId);
-        if (requireExisting && result.kind === "absent") {
-            this.setReadStatus(tabId, {
-                kind: "unavailable",
-                error: new Error("The referenced game tree is missing."),
-            });
-        }
+        const result = this.readTree(tabId, requireExisting);
         return result.kind === "available" ? (result.value as StorageValue<S>) : null;
     }
 
     /** Read the exact tab key while keeping unreadable and refused reads distinct from absence. */
-    readTree(tabId: string): TabTreeReadResult {
+    readTree(tabId: string, requireExisting = false): TabTreeReadResult {
         const pending = this.pending.get(tabId);
         if (pending) {
             this.setReadStatus(tabId, { kind: "available" });
@@ -417,7 +411,12 @@ export class TabStorageRepository {
             return result;
         }
         if (raw === null) {
-            const result: TabTreeReadResult = { kind: "absent" };
+            const result: TabTreeReadResult = requireExisting
+                ? {
+                      kind: "unavailable",
+                      error: new Error("The referenced game tree is missing."),
+                  }
+                : { kind: "absent" };
             this.setReadStatus(tabId, result);
             return result;
         }
@@ -511,8 +510,8 @@ export class TabStorageRepository {
         }
     }
 
-    clone(sourceTabId: string, targetTabId: string): TabTreeCloneResult {
-        const source = this.readTree(sourceTabId);
+    clone(sourceTabId: string, targetTabId: string, requireExisting = false): TabTreeCloneResult {
+        const source = this.readTree(sourceTabId, requireExisting);
         if (source.kind !== "available") return source;
         const copy = this.validatedClone(source.value);
         if (!copy) {
@@ -572,8 +571,14 @@ export class TabStorageRepository {
     }
 
     /** Creates an immediately durable clone without flushing any unrelated pending tree. */
-    cloneDurable(sourceTabId: string, targetTabId: string) {
-        const source = this.readTree(sourceTabId);
+    cloneDurable(sourceTabId: string, targetTabId: string, requireExisting = false) {
+        // A duplication read cannot recover the original cached store. Only explicit hydration
+        // may release its existing gate, even when the underlying storage has become readable.
+        const source =
+            (NON_TREE_SESSION_KEYS.has(sourceTabId)
+                ? null
+                : this.writeBlocker(sourceTabId, requireExisting)) ??
+            this.readTree(sourceTabId, requireExisting);
         if (source.kind === "absent") return;
         if (source.kind === "unavailable") {
             throw new Error("Could not read the source tree for duplication.", {
@@ -810,7 +815,10 @@ export class TabStorageRepository {
         }, DEBOUNCE_MS);
     }
 
-    private writeBlocker(tabId: string): TabTreeStorageStatus | null {
+    private writeBlocker(
+        tabId: string,
+        requireExisting = false,
+    ): Extract<TabTreeStorageStatus, { kind: "unreadable" | "unavailable" }> | null {
         if (NON_TREE_SESSION_KEYS.has(tabId)) {
             return {
                 kind: "unavailable",
@@ -819,7 +827,7 @@ export class TabStorageRepository {
         }
         let status = this.getStatus(tabId);
         if (status.kind === "not-read") {
-            this.readTree(tabId);
+            this.readTree(tabId, requireExisting);
             status = this.getStatus(tabId);
         }
         return status.kind === "unreadable" || status.kind === "unavailable" ? status : null;

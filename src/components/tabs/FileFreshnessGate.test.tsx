@@ -5,7 +5,12 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FileMetadata } from "@/components/files/file";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
-import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
+import {
+  closeTreeStore,
+  createTreeStore,
+  retargetTreeStore,
+  type TreeStore,
+} from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
 import {
   getFileFreshness,
@@ -908,6 +913,45 @@ test("a pending reload disables append until the reload settles", async () => {
     }),
   );
   expect(getFileFreshness(tabId).state).toBe("verified");
+});
+
+test("a pending reload cannot overwrite a replacement with only its physical generation changed", async () => {
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true });
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+  const pendingLoad =
+    deferred<Awaited<ReturnType<(typeof import("@/utils/files"))["loadFileGame"]>>>();
+  mocks.loadFileGame.mockReturnValueOnce(pendingLoad.promise);
+  await act(async () => button("FileFreshness.ReloadFromDisk").click());
+  expect(mocks.loadFileGame).toHaveBeenCalledWith(file.handle, 0, expect.any(AbortSignal));
+  const signal = mocks.loadFileGame.mock.calls[0]![2] as AbortSignal;
+  const originalTab = jotaiStore.get(tabsAtom)[0]!;
+  const candidate = defaultTree();
+  candidate.headers.event = "Replacement generation";
+  candidate.sourceStamp = "c".repeat(64);
+  const treeKey = crypto.randomUUID();
+  tabStorage.seed(treeKey, candidate);
+  await act(async () => {
+    expect(
+      jotaiStore.set(tabsAtom, [{ ...originalTab, treeKey }], undefined, () =>
+        retargetTreeStore(tabId, treeKey, candidate),
+      ),
+    ).toBe(true);
+    setFileFreshness(tabId, "verified", { verifiedRevision: "replacement-generation" });
+  });
+  expect(signal.aborted).toBe(false);
+  expect(createTreeStore(tabId)).toBe(treeStore);
+  expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual(originalTab.gameOrigin);
+  const current = treeStore.getState();
+  const freshness = getFileFreshness(tabId);
+  const old = defaultTree();
+  old.headers.event = "Obsolete reload";
+  old.sourceStamp = changedStamp;
+  await act(async () => pendingLoad.resolve({ ...stampedGame(changedStamp), tree: old }));
+  expect(treeStore.getState()).toBe(current);
+  expect(getFileFreshness(tabId)).toBe(freshness);
+  expect(treeStore.getState().headers.event).toBe("Replacement generation");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
 });
 
 test("a reconcile invalidated by a newer epoch cannot release stale children", async () => {

@@ -163,6 +163,11 @@ export type ReplaceNewTabResult =
     | { kind: "superseded" }
     | { kind: "refused"; stage: "tree" | "workspace" };
 
+export type ReplaceFileGameResult =
+    | { kind: "committed"; treeKey: string }
+    | { kind: "superseded" }
+    | { kind: "refused"; stage: "tree" | "workspace" };
+
 export function replaceNewTab({
     store,
     ownerId,
@@ -226,7 +231,7 @@ export function replaceFileGame({
     tree: TreeState;
     page: number;
     isCurrent: () => boolean;
-}): ReplaceNewTabResult {
+}): ReplaceFileGameResult {
     const oldKey = getTabTreeKey(owner);
     const owns = () => {
         const current = store.get(tabsAtom).find((tab) => tab.value === owner.value);
@@ -270,7 +275,10 @@ export function replaceFileGame({
         },
     });
     if (superseded) return { kind: "superseded" };
-    if (result.kind === "committed") tabStorage.removeTreeSafely(oldKey);
+    if (result.kind === "committed") {
+        tabStorage.removeTreeSafely(oldKey);
+        return { kind: "committed", treeKey: result.id };
+    }
     return result;
 }
 
@@ -507,6 +515,7 @@ export async function saveToFile({
             })),
         );
     } catch (error) {
+        if (!owns()) return "superseded";
         const normalized = normalizeError(error);
         if (tab && normalized.backendCategory === "stale-game") {
             return writingCurrentOrigin ? sourceChanged(tab.value) : failed(error);
