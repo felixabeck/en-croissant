@@ -1775,4 +1775,4 @@ Adopted by drain session `d7fc28c0-e3c5-4fb5-b34f-fee1b64dec2f` (Claude Code, Op
 
 The plan's `## Decided autonomously` entries were recorded as `d-20261011-01` (the admission policy; supersedes `d-20260929-05` as to its same-directory allowance only, trailer set on `d-20260929-05`) and `d-20261011-02` (verification route and exclusions) before implementation.
 
-Successor `f-20261009-03` owns I1 and is annotated to load this file before review. Plan-review metrics carried into the build ledger as `planned ahead`: rounds r1–r3, per-round wall elapsed 435.136 s, 212.059 s, 173.0 s, `plan_adopted_per_round` `r1=0 r2=0 r3=0`, one unique issue (I1, Defer).
+Successor `f-20261009-03` owns I1 and is annotated to load this file before review. The plan-review metrics for this run's `tasks/build-ledger.md` row, written at the end of the run and marked `planned ahead`, are: rounds r1–r3, per-round wall elapsed 435.136 s, 212.059 s, 173.0 s, `plan_adopted_per_round` `r1=0 r2=0 r3=0`, one unique issue (I1, Defer).
