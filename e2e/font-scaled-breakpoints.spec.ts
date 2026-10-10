@@ -31,6 +31,18 @@ test("font-scaled-breakpoints: visible library open controls wrap at 320px and 2
     await assertNothingClipped(databaseOpen);
     await capture("database-open-320-200");
     await expect(page).toHaveScreenshot("database-open-320-200.png", { fullPage: true });
+    await databaseOpen.click();
+    const secondGame = page.getByRole("row").filter({ hasText: "Second White" });
+    await expect(secondGame).toBeVisible();
+    await secondGame.click();
+    await expect(secondGame).toHaveAttribute("aria-selected", "true");
+    const databaseGameOpen = page.getByRole("button", { name: "Open game", exact: true });
+    await expect(databaseGameOpen).toBeVisible();
+    await expect(databaseGameOpen).toBeEnabled();
+    await databaseGameOpen.scrollIntoViewIfNeeded();
+    await assertNothingClipped(databaseGameOpen, { mode: "reachable" });
+    await capture("database-game-open-320-200");
+    await expect(page).toHaveScreenshot("database-game-open-320-200.png", { fullPage: true });
     await page.goto("/files");
     await page.getByRole("button", { name: "Choose collection", exact: true }).click();
     await selectFilesTreeRow(page, gameOpeningFixture.file.name);

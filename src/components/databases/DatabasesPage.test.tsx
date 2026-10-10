@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RootFailure } from "@/bindings";
+import type { SuccessDatabaseInfo } from "@/utils/db";
 import DatabasesPage from "./DatabasesPage";
 
 const mocks = vi.hoisted(() => ({
@@ -169,35 +170,65 @@ function alert() {
   return host.querySelector('[role="alert"]');
 }
 
-test("a visible sibling opens a successful database before selection and error cards have no opener", async () => {
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    entry,
-    { ...entry, handle: { id: { id: "broken-db" }, kind: "database" }, filename: "broken.db3" },
-  ]);
-  mocks.getDbInfo
-    .mockResolvedValueOnce({
-      title: "Available",
-      description: "",
-      game_count: 2,
-      player_count: 2,
-      event_count: 1,
-      indexed: false,
-    })
-    .mockRejectedValueOnce(new Error("Unavailable"));
-  await render();
-  const buttons = [...host.querySelectorAll("button")].filter(
-    (button) => button.textContent === "Open database",
-  );
-  expect(buttons).toHaveLength(1);
-  expect(buttons[0].closest("[data-card]")).toBeNull();
-  expect(buttons[0].parentElement?.textContent).toContain("Available");
-  await act(async () => buttons[0].click());
-  expect(mocks.setDatabase).toHaveBeenCalledWith(expect.objectContaining({ file: entry.handle }));
-  expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
-    to: "/databases/$databaseId",
-    params: { databaseId: "new-db" },
-  });
-});
+test.each(["sibling opener", "card double-click"])(
+  "%s synchronizes the same active database before navigation and error-card double-click is a no-op",
+  async (gesture) => {
+    mocks.listWorkspaceDatabases.mockResolvedValue([
+      entry,
+      { ...entry, handle: { id: { id: "broken-db" }, kind: "database" }, filename: "broken.db3" },
+    ]);
+    mocks.getDbInfo
+      .mockResolvedValueOnce({
+        title: "Available",
+        description: "",
+        game_count: 2,
+        player_count: 2,
+        event_count: 1,
+        indexed: false,
+      })
+      .mockRejectedValueOnce(new Error("Unavailable"));
+    await render();
+    const buttons = [...host.querySelectorAll("button")].filter(
+      (button) => button.textContent === "Open database",
+    );
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].closest("[data-card]")).toBeNull();
+    expect(buttons[0].parentElement?.textContent).toContain("Available");
+    const cards = [...host.querySelectorAll<HTMLButtonElement>("[data-card]")];
+    const successCard = cards.find((card) => card.textContent?.includes("Available"))!;
+    const errorCard = cards.find((card) => card.textContent?.includes("broken.db3"))!;
+    const database = cache
+      .get("databases")
+      ?.data.find((item: SuccessDatabaseInfo) => item.type === "success");
+    expect(database.file).toEqual(entry.handle);
+    let activeDatabase: SuccessDatabaseInfo | undefined;
+    const activeAtNavigation: (SuccessDatabaseInfo | undefined)[] = [];
+    mocks.setDatabase.mockImplementation((database: SuccessDatabaseInfo) => {
+      activeDatabase = database;
+    });
+    mocks.navigate.mockImplementation(() => {
+      activeAtNavigation.push(activeDatabase);
+      return Promise.resolve();
+    });
+    await act(async () => {
+      if (gesture === "sibling opener") buttons[0].click();
+      else successCard.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(mocks.setDatabase).toHaveBeenCalledExactlyOnceWith(database);
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/databases/$databaseId",
+      params: { databaseId: "new-db" },
+    });
+    expect(activeAtNavigation).toEqual([database]);
+    expect(mocks.setDatabase.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.navigate.mock.invocationCallOrder[0],
+    );
+    await act(async () => errorCard.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(mocks.setDatabase).toHaveBeenCalledOnce();
+    expect(mocks.navigate).toHaveBeenCalledOnce();
+    expect(activeDatabase).toBe(database);
+  },
+);
 
 test.each([true, false])(
   "workspace acquisition refusal renders recovery with rootFailure=%s",

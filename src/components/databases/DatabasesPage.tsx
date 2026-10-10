@@ -181,6 +181,11 @@ export default function DatabasesPage() {
   }
   const navigate = useNavigate();
 
+  function openDatabase(database: SuccessDatabaseInfo) {
+    setActiveDatabase(database);
+    void navigate(databaseRouteTarget(database));
+  }
+
   return (
     <Stack h="100%" style={{ overflow: "auto" }}>
       <ConfirmModal
@@ -315,8 +320,7 @@ export default function DatabasesPage() {
                         error={item.type === "error" ? item.error : ""}
                         onDoubleClick={() => {
                           if (item.type === "error") return;
-                          navigate(databaseRouteTarget(item));
-                          setActiveDatabase(item);
+                          openDatabase(item);
                         }}
                         Header={
                           // Both rows wrap: a narrow card (a large font scale) puts the star and then
@@ -364,10 +368,7 @@ export default function DatabasesPage() {
                             root: { height: "auto", minHeight: "var(--button-height)" },
                             label: { whiteSpace: "normal", overflowWrap: "anywhere" },
                           }}
-                          onClick={() => {
-                            setActiveDatabase(item);
-                            void navigate(databaseRouteTarget(item));
-                          }}
+                          onClick={() => openDatabase(item)}
                         >
                           {t("Databases.OpenDatabase", { defaultValue: "Open database" })}
                         </Button>

@@ -67,7 +67,7 @@
 // app-driver 727687d7b7a93b1544ecee582f73c8e903b4a8ae50b68f6f78b6bfb42a0cbd69.
 // This is a later comments-only update. Staging used the unchanged verifier and driver above.
 //
-// It asserts eighty-eight independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts one hundred and one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -87,6 +87,10 @@
 //              metadata-dialog-no-error, metadata-repertoire-filter, metadata-sidecar-type,
 //              metadata-filename-preserved
 //   Databases | 2: default-root-unusable, selected-root-missing
+//   game opening | 13: native fixtures, labelled database opener, handle route/synchronization,
+//                      database selection without admission, database button/double-click/Enter,
+//                      labelled Files opener, stationary PGN selection without admission,
+//                      Files button/double-click/Enter, empty-PGN refusal
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
 //                      main-thread apply budget, one-poll-interval freshness budget;
@@ -1469,8 +1473,8 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
 }
 
 // Game-opening staged-failure inventory (push-review-policy §2).
-// All rows below are PENDING runtime staging by the adopting root. The unchanged verifier must
-// print each exact message with FAIL and exit 1, then pass after the disposable input is restored.
+// Root records runtime staging and restoration in
+// tasks/handoffs/2026-10-10-game-opening-execution.md.
 // GO1: replace verify-game-opening.pgn in the disposable profile with a one-game PGN before import.
 // GO2: remove DatabasesPage's sibling Open database control in a disposable build.
 // GO3: keep that control visible but remove its navigate call in a disposable build.
@@ -1539,13 +1543,20 @@ async function verifyGameOpening(session) {
     if (!workspace) throw new Error("game-opening workspace snapshot is unreadable");
     return workspace;
   };
-  const assertOpened = async (game, origin) => {
+  const assertOpened = async (game, origin, before) => {
     await wait(
       "game-opening content and destination",
       `return location.pathname === '/' && document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])`,
       [game.notation],
     );
     const workspace = await snapshot();
+    const previousIds = new Set(before.tabs.map((entry) => entry.value));
+    const admitted = workspace.tabs.filter((entry) => !previousIds.has(entry.value));
+    // Admission can replace a lone new placeholder without increasing the total tab count.
+    if (admitted.length !== 1 || admitted[0].value !== workspace.activeTab)
+      throw new Error(
+        `expected one newly admitted active tab: ${JSON.stringify({ admitted, activeTab: workspace.activeTab })}`,
+      );
     const tab = workspace.tabs.find((entry) => entry.value === workspace.activeTab);
     if (
       !tab ||
@@ -1620,7 +1631,7 @@ async function verifyGameOpening(session) {
     );
     await wait("database source route", "return location.pathname.startsWith('/databases')");
     if (await session.execute("return location.pathname !== '/databases'")) {
-      const back = await button("Back");
+      const back = await coordinates(`document.querySelector('button[aria-label="Back"]')`);
       await clickAt(session, back.x, back.y);
     }
     await wait("database overview", "return location.pathname === '/databases'");
@@ -1655,6 +1666,7 @@ async function verifyGameOpening(session) {
       `const row = (${script}); if (!row) return false; row.focus(); return document.activeElement === row;`,
       args,
     );
+    const before = await snapshot();
     await session.call("POST", "/actions", {
       actions: [
         {
@@ -1667,6 +1679,7 @@ async function verifyGameOpening(session) {
         },
       ],
     });
+    return before;
   };
   await assertion(
     "GO2 the database card has a visible sibling Open database control before selection",
@@ -1719,8 +1732,13 @@ async function verifyGameOpening(session) {
       const open = await button("Open game");
       if (open.disabled) throw new Error("database game button is disabled");
       await saveSource("database-game");
+      const before = await snapshot();
       await clickAt(session, open.x, open.y);
-      await assertOpened(openingGames[1], { kind: "database", database, gameId: records[1].id });
+      await assertOpened(
+        openingGames[1],
+        { kind: "database", database, gameId: records[1].id },
+        before,
+      );
     },
   );
   await assertion(
@@ -1730,19 +1748,28 @@ async function verifyGameOpening(session) {
       const row = await databaseRow(openingGames[1]);
       if (row.selected !== "false")
         throw new Error("database double-click target was already selected");
+      const before = await snapshot();
       await doubleClickAt(session, row.x, row.y);
-      await assertOpened(openingGames[1], { kind: "database", database, gameId: records[1].id });
+      await assertOpened(
+        openingGames[1],
+        { kind: "database", database, gameId: records[1].id },
+        before,
+      );
     },
   );
   await assertion(
     "GO7 row-focused Enter opens the requested database game content and origin",
     async () => {
       await databaseSurface();
-      await enter(
+      const before = await enter(
         `[...document.querySelectorAll('tbody tr')].find(node => node.textContent.includes(arguments[0]))`,
         [openingGames[0].white],
       );
-      await assertOpened(openingGames[0], { kind: "database", database, gameId: records[0].id });
+      await assertOpened(
+        openingGames[0],
+        { kind: "database", database, gameId: records[0].id },
+        before,
+      );
     },
   );
   await assertion("GO8 the Files preview has a visible enabled Open game control", async () => {
@@ -1787,8 +1814,13 @@ async function verifyGameOpening(session) {
       const row = await fileRow(openingGames[1]);
       await clickAt(session, row.x, row.y);
       const open = await button("Open game");
+      const before = await snapshot();
       await clickAt(session, open.x, open.y);
-      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+      await assertOpened(
+        openingGames[1],
+        { kind: "file", file: { handle: file }, gameNumber: 1 },
+        before,
+      );
     },
   );
   await assertion(
@@ -1797,19 +1829,28 @@ async function verifyGameOpening(session) {
       await filesSurface();
       const row = await fileRow(openingGames[1]);
       if (row.selected !== "false") throw new Error("PGN double-click target was already selected");
+      const before = await snapshot();
       await doubleClickAt(session, row.x, row.y);
-      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+      await assertOpened(
+        openingGames[1],
+        { kind: "file", file: { handle: file }, gameNumber: 1 },
+        before,
+      );
     },
   );
   await assertion(
     "GO12 row-focused Enter opens the requested PGN game content and explicit index",
     async () => {
       await filesSurface();
-      await enter(
+      const before = await enter(
         `[...document.querySelectorAll('[role="option"]')].find(node => node.textContent.includes(arguments[0]))`,
         [openingGames[1].white],
       );
-      await assertOpened(openingGames[1], { kind: "file", file: { handle: file }, gameNumber: 1 });
+      await assertOpened(
+        openingGames[1],
+        { kind: "file", file: { handle: file }, gameNumber: 1 },
+        before,
+      );
     },
   );
   await assertion("GO13 an empty PGN exposes no working Open game action", async () => {
