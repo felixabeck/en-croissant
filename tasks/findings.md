@@ -15038,3 +15038,17 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** The unchanged ordinary visible-library test at 320px/200% must reach the full board, complete d4/d5 notation and all four labelled move controls, then an ordinary Next move click must render the second game's d4 pawn position. The stacked=false production fault must fail a specific added compact-preview assertion in a disposable copy, and restoration must pass those assertions before the known missing baseline.
 * **Related:** `f-20261010-36` owns the responsive database reachability package and explicitly requests compact-preview regression proof. This newly exposed viewport starvation shares that responsive sizing cause. `f-20261001-09` remains the separate OPEN resizing/proportion question and is not addressed here.
 * **Found by:** Bounded writer pinned ordinary container run, `/tmp/chessfable-compact-preview.Jb2iyI/initial-preview.log`, exit 1 at the new notation assertion. Screenshot `artifacts/frontend-audit/compact-preview-proof-20261010-initial/font-scaled-breakpoints-fo-2df4e-rols-wrap-at-320px-and-200--font-scaled-breakpoints/test-failed-1.png`, directly viewed on 2026-10-10.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Preview browser tests duplicate the same rendered white-pawn square reader
+
+* **ID:** f-20261010-38 · **Status:** open · **Area:** e2e-gate · **Root:** game-preview-pawn-reader · **Entry:** inline · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** e2e/font-scaled-breakpoints.spec.ts:72 and e2e/files-preview.spec.ts:167.
+* **Defect:** The new compact database preview regression repeats the existing Files variation chooser's piece.white.pawn selector, KeyedNode.cgKey extraction and sorting. Both implement the same Chessground inspection contract and must remain in sync.
+* **Fix shape:** Export whitePawnSquares(board: Locator) from the existing e2e/fixtures.ts and route both scenarios through it. Keep their separate expected positions, real clicks, geometry assertions and snapshot filenames unchanged.
+* **Proof:** Static checks and the pinned files-preview, database-files and font-scaled-breakpoints scenarios. Retain the actual stacked=false production fault and exact-restoration discrimination for the compact preview with the extracted helper.
+* **Found by:** Canonical read-only minimalism closure at /tmp/build-game-opening-3b67c3b9/lens-minimalism-compact-closure.txt, confidence 94. Root read both implementations and adopted Fix. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
