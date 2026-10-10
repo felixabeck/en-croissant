@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { parseUci } from "chessops";
-import { INITIAL_FEN } from "chessops/fen";
+import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Token } from "@/bindings";
 import { ANNOTATION_INFO, type Annotation, NAG_INFO, nagGlyphs } from "../annotation";
 import {
@@ -464,6 +464,192 @@ function comment(value: string): Token {
 function san(value: string): Token {
     return { type: "San", value };
 }
+
+const SKIPPED_OPENING_VARIATIONS = [
+    {
+        name: "standard White start",
+        fen: INITIAL_FEN,
+        first: "d4",
+        reply: "d5",
+        later: "e4",
+        pgn: "1. e2e5 ({Variation lead} 1. d4 $1 {[%clk 0:00:05] Variation body} d5 $2) e4 *",
+        plies: [1, 2, 1],
+        fens: [
+            "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1",
+            "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        ],
+        notation: "1. d4! (1. e4) d5?",
+        line: "1. d4! d5?",
+        laterLine: "1. e4",
+        firstColour: "white" as const,
+        replyColour: "black" as const,
+    },
+    {
+        name: "custom Black fullmove 23 start",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23",
+        first: "d5",
+        reply: "d4",
+        later: "e5",
+        pgn: "23... e2e5 ({Variation lead} 23... d5 $1 {[%clk 0:00:05] Variation body} 24. d4 $2) e5 *",
+        plies: [46, 47, 46],
+        fens: [
+            "rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 24",
+            "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 24",
+            "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 24",
+        ],
+        notation: "23... d5! (23... e5) 24. d4?",
+        line: "23... d5! 24. d4?",
+        laterLine: "23... e5",
+        firstColour: "black" as const,
+        replyColour: "white" as const,
+    },
+];
+
+async function parseSkippedOpeningVariation(entry: (typeof SKIPPED_OPENING_VARIATIONS)[number]) {
+    mocks.lexPgn.mockResolvedValueOnce([
+        ...tokens(entry.fen, "e2e5"),
+        { type: "ParenOpen" },
+        comment("Variation lead"),
+        san(entry.first),
+        { type: "Nag", value: "$1" },
+        comment("[%clk 0:00:05] Variation body"),
+        san(entry.reply),
+        { type: "Nag", value: "$2" },
+        { type: "ParenClose" },
+        san(entry.later),
+        { type: "Outcome", value: "*" },
+    ] satisfies Token[]);
+    return await parsePGN(`[FEN "${entry.fen}"]\n\n${entry.pgn}`);
+}
+
+function expectPlyAndFenTurn(node: TreeNode, ply: number) {
+    expect(parseFen(node.fen).unwrap()).toMatchObject({
+        turn: ply % 2 === 0 ? "white" : "black",
+        fullmoves: Math.floor(ply / 2) + 1,
+    });
+    expect(node.halfMoves).toBe(ply);
+}
+
+function normalizePgnSpacing(pgn: string) {
+    return pgn.replace(/\s+/g, " ").replace(/\s+\)/g, ")").trim();
+}
+
+function setupPgnPrefix(fen: string) {
+    return fen === INITIAL_FEN ? "" : `[SetUp "1"] [FEN "${fen}"] `;
+}
+
+const PARITY_EXPORT = {
+    headers: null,
+    glyphs: true,
+    comments: false,
+    variations: true,
+    extraMarkups: false,
+};
+
+test.each(SKIPPED_OPENING_VARIATIONS)(
+    "skipped illegal opening keeps variation counters consistent with legal FENs at $name",
+    async (entry) => {
+        const { root } = await parseSkippedOpeningVariation(entry);
+        expect(root.fen).toBe(entry.fen);
+        expect(root.children.map((node) => node.san)).toEqual([entry.first, entry.later]);
+        const first = root.children[0];
+        expect(first.children.map((node) => node.san)).toEqual([entry.reply]);
+        const nodes = [first, first.children[0], root.children[1]];
+        expect(nodes.map((node) => node.fen)).toEqual(entry.fens);
+        nodes.forEach((node, index) => expectPlyAndFenTurn(node, entry.plies[index]));
+        expect(first).toMatchObject({
+            startingComment: "Variation lead",
+            comment: "Variation body",
+            clock: 5,
+            nags: [1],
+        });
+        expect(first.children[0].nags).toEqual([2]);
+    },
+);
+
+test.each(SKIPPED_OPENING_VARIATIONS)(
+    "skipped illegal opening exports correct variation move numbers and parity at $name",
+    async (entry) => {
+        const { root } = await parseSkippedOpeningVariation(entry);
+        const prefix = setupPgnPrefix(entry.fen);
+        expect(normalizePgnSpacing(getPGN(root, PARITY_EXPORT))).toBe(prefix + entry.notation);
+        expect(normalizePgnSpacing(getPGN(root, { ...PARITY_EXPORT, path: [0, 0] }))).toBe(
+            prefix + entry.line,
+        );
+        expect(normalizePgnSpacing(getPGN(root, { ...PARITY_EXPORT, path: [1] }))).toBe(
+            prefix + entry.laterLine,
+        );
+    },
+);
+
+test.each(SKIPPED_OPENING_VARIATIONS)(
+    "skipped illegal opening retains annotation colours at $name",
+    async (entry) => {
+        const { root } = await parseSkippedOpeningVariation(entry);
+        const stats = getGameStats(root);
+        expect(stats[`${entry.firstColour}Annotations`]["!"]).toBe(1);
+        expect(stats[`${entry.replyColour}Annotations`]["?"]).toBe(1);
+        expect(stats[`${entry.replyColour}Annotations`]["!"]).toBe(0);
+        expect(stats[`${entry.firstColour}Annotations`]["?"]).toBe(0);
+    },
+);
+
+test.each([
+    {
+        name: "standard White start",
+        fen: INITIAL_FEN,
+        opening: ["e4", "e5"],
+        variation: ["d4", "d5"],
+        nested: ["c4", "c5"],
+        plies: [1, 2, 1, 2, 1, 2],
+        pgn: "1. e4 (1. d4 (1. c4 c5) d5) e5 *",
+        notation: "1. e4 (1. d4 d5) (1. c4 c5) e5",
+    },
+    {
+        name: "custom Black fullmove 23 start",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23",
+        opening: ["e5", "e4"],
+        variation: ["d5", "d4"],
+        nested: ["c5", "c4"],
+        plies: [46, 47, 46, 47, 46, 47],
+        pgn: "23... e5 (23... d5 (23... c5 24. c4) 24. d4) 24. e4 *",
+        notation: "23... e5 (23... d5 24. d4) (23... c5 24. c4) 24. e4",
+    },
+])(
+    "accepted ordinary and nested variations preserve counters and export at $name",
+    async (entry) => {
+        mocks.lexPgn.mockResolvedValueOnce([
+            ...tokens(entry.fen, entry.opening[0]),
+            { type: "ParenOpen" },
+            san(entry.variation[0]),
+            { type: "ParenOpen" },
+            san(entry.nested[0]),
+            san(entry.nested[1]),
+            { type: "ParenClose" },
+            san(entry.variation[1]),
+            { type: "ParenClose" },
+            san(entry.opening[1]),
+            { type: "Outcome", value: "*" },
+        ] satisfies Token[]);
+        const { root } = await parsePGN(`[FEN "${entry.fen}"]\n\n${entry.pgn}`);
+        expect(root.children.map((node) => node.san)).toEqual([
+            entry.opening[0],
+            entry.variation[0],
+            entry.nested[0],
+        ]);
+        expect(root.children.map((node) => node.children.map((child) => child.san))).toEqual([
+            [entry.opening[1]],
+            [entry.variation[1]],
+            [entry.nested[1]],
+        ]);
+        const nodes = root.children.flatMap((node) => [node, ...node.children]);
+        nodes.forEach((node, index) => expectPlyAndFenTurn(node, entry.plies[index]));
+        expect(normalizePgnSpacing(getPGN(root, PARITY_EXPORT))).toBe(
+            setupPgnPrefix(entry.fen) + entry.notation,
+        );
+    },
+);
 
 function mockCommentLexer() {
     // Match the native Visitor's tokens for these fixtures, including separate brace comments.
