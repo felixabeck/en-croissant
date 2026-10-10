@@ -145,7 +145,7 @@ The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` 
 
 As a contract-gate member, `ui:boundary:check` scans the whole tree, reading files from disk, so it sees committed and uncommitted content alike. It was diff-scoped for two of its rules until 2026-08-29, which made those two vacuous on any clean checkout — including every CI run.
 
-The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
+The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or change a coverage baseline or floor to make a gate pass. Do not repair a red bundle check with a blind numeric ceiling change. The only permitted ceiling increase is the existing conscious feature-growth route in `docs/bundle-budgets.md`: before the ceiling is updated, a recorded technical decision must provide comparable published-base and candidate production measurements and a rationale showing that required behavior is preserved, and independent review must approve the change. Red checks remain defects, normal proofs remain mandatory, and final gates must pass on the clean reviewed HEAD.
 
 For visible UI changes, run the repo-local `$verify-ui` workflow during the browser-verification
 stage, after review repairs and before known coordination-record commits and final gates (it owns
