@@ -21,6 +21,9 @@ use std::{
 
 use rusqlite::ffi;
 
+#[cfg(test)]
+use std::collections::HashSet;
+
 #[cfg(unix)]
 use crate::infra::fs::raw_libc_stat_identity;
 use crate::{
@@ -74,6 +77,16 @@ struct BindingKey {
     identity: (u64, u64),
     parent_identity: (u64, u64),
     leaf: OsString,
+}
+
+impl BindingKey {
+    fn for_target(target: &DatabaseFileTarget) -> Result<Self, Error> {
+        Ok(Self {
+            identity: target.identity(),
+            parent_identity: opened_file_identity(target.parent())?,
+            leaf: binding_key_leaf(target.leaf()),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +156,8 @@ struct Registry {
     #[cfg(test)]
     creation_hooks: HashMap<BindingKey, RegistryTestHook>,
     #[cfg(test)]
+    creation_failures: HashSet<BindingKey>,
+    #[cfg(test)]
     waiting_hooks: HashMap<BindingKey, RegistryTestHook>,
 }
 
@@ -166,16 +181,12 @@ impl BoundDatabase {
     /// Reuses identical keys and admits only one distinct key per inode, including reservations.
     pub(crate) fn acquire(target: &DatabaseFileTarget) -> Result<Self, Error> {
         ensure_hooks_installed()?;
-        let identity = target.identity();
-        let parent_identity = opened_file_identity(target.parent())?;
+        let key = BindingKey::for_target(target)?;
+        let identity = key.identity;
+        let parent_identity = key.parent_identity;
         let leaf = target.leaf().to_os_string();
         leaf.to_str()
             .ok_or_else(|| Error::InvalidInput("Path is not valid UTF-8".into()))?;
-        let key = BindingKey {
-            identity,
-            parent_identity,
-            leaf: binding_key_leaf(&leaf),
-        };
         let registry_mutex = REGISTRY.get_or_init(|| Mutex::new(Registry::default()));
         let changed = REGISTRY_CHANGED.get_or_init(Condvar::new);
         let token = loop {
@@ -232,6 +243,17 @@ impl BoundDatabase {
         #[cfg(test)]
         invoke_registry_creation_hook(&key);
         let registration = (|| {
+            #[cfg(test)]
+            {
+                let inject_failure = registry_mutex
+                    .lock()
+                    .map_err(|_| Error::Conflict("bound SQLite registry was poisoned".into()))?
+                    .creation_failures
+                    .remove(&key);
+                if inject_failure {
+                    return Err(Error::Conflict("bound SQLite test creation failure".into()));
+                }
+            }
             let parent = target.parent().try_clone()?;
             let binding = Binding {
                 parent,
@@ -468,11 +490,7 @@ fn set_binding_test_hook(
 
 #[cfg(test)]
 pub(super) fn has_binding_for_test(target: &DatabaseFileTarget) -> bool {
-    let key = BindingKey {
-        identity: target.identity(),
-        parent_identity: opened_file_identity(target.parent()).unwrap(),
-        leaf: binding_key_leaf(target.leaf()),
-    };
+    let key = BindingKey::for_target(target).unwrap();
     REGISTRY.get().is_some_and(|registry| {
         let registry = registry.lock().unwrap();
         registry.by_key.contains_key(&key) || registry.creating.contains_key(&key)
@@ -2936,11 +2954,7 @@ mod tests {
         let path = root.path().join("concurrent-first-binding.db3");
         std::fs::File::create(&path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
-        let key = BindingKey {
-            identity: target.identity(),
-            parent_identity: opened_file_identity(target.parent()).unwrap(),
-            leaf: binding_key_leaf(target.leaf()),
-        };
+        let key = BindingKey::for_target(&target).unwrap();
         let start = Arc::new(Barrier::new(THREADS));
         let acquired = Arc::new(Barrier::new(THREADS));
 
@@ -2982,11 +2996,7 @@ mod tests {
         std::fs::hard_link(&path, &alias_path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let alias_target = DatabaseFileTarget::for_test_path(&alias_path).unwrap();
-        let key = BindingKey {
-            identity: target.identity(),
-            parent_identity: opened_file_identity(target.parent()).unwrap(),
-            leaf: binding_key_leaf(target.leaf()),
-        };
+        let key = BindingKey::for_target(&target).unwrap();
         let timeout = Duration::from_secs(5);
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -3038,7 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_acquisition_releases_admission_for_a_same_parent_alias() {
+    fn failed_creation_releases_admission_for_a_same_parent_alias() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("failed-owner.db3");
         let alias_path = root.path().join("alias.db3");
@@ -3046,36 +3056,37 @@ mod tests {
         std::fs::hard_link(&path, &alias_path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let alias_target = DatabaseFileTarget::for_test_path(&alias_path).unwrap();
-        let key = BindingKey {
-            identity: target.identity(),
-            parent_identity: opened_file_identity(target.parent()).unwrap(),
-            leaf: binding_key_leaf(target.leaf()),
-        };
-        let hook_key = key.clone();
+        let key = BindingKey::for_target(&target).unwrap();
         let registry = REGISTRY.get_or_init(|| Mutex::new(Registry::default()));
-        registry.lock().unwrap().creation_hooks.insert(
-            key.clone(),
-            Box::new(move || {
-                let token = REGISTRY.get().unwrap().lock().unwrap().creating[&hook_key];
-                // There is no creation-error injection seam. Lose this reservation through its
-                // normal cleanup path to trigger a real post-reservation acquisition failure.
-                remove_reservation(&hook_key, token);
-            }),
-        );
+        registry
+            .lock()
+            .unwrap()
+            .creation_failures
+            .insert(key.clone());
         assert!(matches!(BoundDatabase::acquire(&target),
-            Err(Error::Conflict(message)) if message == "bound SQLite registry reservation was lost"
+            Err(Error::Conflict(message)) if message == "bound SQLite test creation failure"
         ));
-        {
+        let (reservation_remains, registration_remains) = {
             let registry = registry.lock().unwrap();
-            assert!(
-                !registry
+            (
+                registry
                     .creating
                     .keys()
                     .any(|existing| existing.identity == key.identity),
-                "failed acquisition must leave no admission reservation for this inode"
-            );
-            assert!(!registry.by_key.contains_key(&key));
-        }
+                registry
+                    .by_key
+                    .keys()
+                    .any(|existing| existing.identity == key.identity),
+            )
+        };
+        assert!(
+            !reservation_remains,
+            "failed creation must leave no admission reservation for this inode"
+        );
+        assert!(
+            !registration_remains,
+            "failed creation must leave no binding registration for this inode"
+        );
         let alias = BoundDatabase::acquire(&alias_target).unwrap();
         assert!(alias
             .uri(SqliteMode::ReadWrite)
@@ -3091,11 +3102,7 @@ mod tests {
         let path = root.path().join("reserved-creation.db3");
         std::fs::File::create(&path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
-        let key = BindingKey {
-            identity: target.identity(),
-            parent_identity: opened_file_identity(target.parent()).unwrap(),
-            leaf: binding_key_leaf(target.leaf()),
-        };
+        let key = BindingKey::for_target(&target).unwrap();
         let (creation_started_tx, creation_started_rx) = mpsc::channel();
         let (release_creation_tx, release_creation_rx) = mpsc::channel();
         let (waiter_reached_tx, waiter_reached_rx) = mpsc::channel();
