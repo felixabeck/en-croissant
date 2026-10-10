@@ -1324,3 +1324,117 @@ The retained historical leaf `pnpm checks:pre-review` attempt exited 1 and measu
 
 Those are historical candidates. This resumed candidate has no new integrated bundle measurement or canonical gate result. No launcher was bypassed. Root must establish the current integrated gate and contract result after EOS.
 ````
+
+
+## Root proof-fix round2, final stopped red budget premise
+
+The last bounded R5 save resume completed correctness and nine unique source-only fault/restoration pairs. Root independently inspected all patches and semantic diagnoses, checked508 exact restored production hashes,177 frozen test hashes, four owned source/test hashes and nine distinct fault1/restoration0 pairs. Earlier artifacts were preserved. The integrated root preflight completed exit1 at39b5b189, receipt gate-root-r5-round2-preflight.sRL2ys. It passed603 tests12 suites plus46 parser tests, scoped static/types/syntax/diff and build, then failed bundle at entry540221/lazy514891/total1620076 against unchanged1620000. Full canonical pre-review and contract were not repeated after that known red prerequisite. Root resolution is red, source remains uncommitted.
+
+Two bounded correctness-preserving save consolidations did not establish compressed savings. R5 stops on that failed premise, not on a third iteration. The separately reviewed shared-domain source contract and f26 correction follow in 2026-10-10-game-opening-tab-actions.md. The new phase has not yet implemented or established budget acceptance.
+
+Root found the BoardAnalysis physical-owner gap, filed f26 immediately and officially merged it at39b5b189. The first explicit inbox option expanded an unset variable and published an owned duplicate in the repository root. Root republished through the default spool, verified identical bytes, officially merged, then moved the owned misplaced duplicate reversibly into scratch. No foreign file or ledger was overwritten. Original filing and correction are preserved.
+
+Plan authorship and arbitration shared one context. Detection ran on the code model family.
+
+Raw final R5 save resume report, unchanged apart from trailing whitespace in this quoted copy:
+
+````text
+# R5 save proof-fix round2
+
+The frozen shared source-validation extraction is implemented and left unstaged. Correctness proof passes. The single measured candidate remains over the fixed bundle budget by 76 gzip bytes. This is the last bounded round and ends at EOS without another design attempt.
+
+Plan authorship and arbitration shared one context. Detection runs on the code model family. Root owns the integrated preflight, canonical pre-review, selected mutations, contract, source closure and commit.
+
+## Read evidence and launch integrity
+
+Read the complete `../r5-save-round1/REPORT.md`, the actual root round1 preflight log and completion record, and `../root-r5-round1-bundle.json` before editing. The preflight artifacts are in `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-r5-round1-preflight.D3IOEv/`. Its `completion.record` reports exit 1 at `b2c24301eb1bb19e879357e141a778d1527b2bb5`. Its full log passed 603 tests across 12 suites, 46 parser tests, scoped format/lint, types, syntax and diff checks, then built successfully and failed the bundle check at total 1620066. Full pre-review and contract were not rerun in that preflight.
+
+The original prompt, six fully read project rules, full owned sources/tests and actual save callers remain in this same writer context. Reopened the current complete save operation and actual source-read boundary test bodies before this extraction. No skills, agents, full project CLAUDE.md, browser/native verification or environment files were loaded.
+
+Actual launch HEAD is `8eb7a6252a6e051f54d283c810e32920dd56d827`. Actual launch index SHA-256 is `eb7c3e4aba07087272685b54918696f0d6cd956e63f5600705d8f30d89d1681d`. Recorded `launch-head.txt`, the complete `launch-index.txt`, `launch-status.txt` and `launch-protected.sha256` before editing. HEAD and index remain unchanged. Root's official intervening record commits are preserved.
+
+## Owned delta and helper mechanism
+
+Owned paths remain `src/utils/tabs.ts`, `src/utils/tabs.test.ts`, `src/components/boards/BoardAnalysis.tsx` and `src/components/boards/BoardAnalysis.test.tsx`. Only `tabs.ts` changed in this round. Both test files and BoardAnalysis production source are byte-identical to launch. All existing test bodies and the actual visible-notification boundary proof remain unchanged.
+
+Added one local `validateSource` helper inside the existing `saveToFile` implementation. It accepts the captured file-backed origin, sets `currentFileOperation`, awaits the actual source read at that origin's handle and game index, checks captured logical/physical ownership before any stamp comparison or freshness publication, returns superseded if obsolete, returns the existing `sourceChanged(tabId)` conflict result for a differing stamp, and clears `currentFileOperation` only on valid completion. Valid completion returns undefined. Rejection propagates into the existing outer catch with its operation context intact.
+
+Both existing temp-file phases await this whole operation and immediately return its nonempty outcome. The first caller keeps its source-null refusal before the helper and returns before launching the picker. The second remains after picker ownership/cancellation checks and returns before destination read/write. No boundary-specific proof condition was added. The two fulfilled-read ownership checks are now one real shared guard.
+
+The ordinary file and database branches still return through their existing paths before either helper call. New tabs skip both temp-file branches. Those paths acquire no extra awaited validation gap. Existing picker and destination ownership checks, current-origin versus destination write flags, typed rejection handling, freshness, null stamp/revision uncertainty, serialized-content completion, unknown-write behavior and save metadata remain intact.
+
+`round2-owned.diff` records the complete old-to-new delta. `starting/` retains all four launch files. `candidate.patch` records the exact Git-derived snapshot delta.
+
+## Exact local checks
+
+Executed in the shared checkout. Full output and same-run exit files are retained.
+
+| Command | Exit | Evidence |
+| --- | ---: | --- |
+| `pnpm exec oxfmt src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | Four owned paths formatted before freeze |
+| `pnpm test src/utils/tabs.test.ts src/components/boards/BoardAnalysis.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts` | 0 | `local-test.log`, 4 suites and 168 tests |
+| `pnpm exec oxfmt --check src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | `format.log` |
+| `pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/utils/tabs.test.ts src/components/boards/BoardAnalysis.tsx src/components/boards/BoardAnalysis.test.tsx` | 0 | `lint.log` |
+| `pnpm exec tsgo --noEmit` | 0 | `types.log` |
+| `git diff --check` | 0 | `diff-check.log` |
+
+`local-child.sh` preserves the exact sequence. Each log has a matching `.exit` file and `local.receipt` records completion.
+
+## Frozen Git-derived proof and nine unique pairs
+
+Created `head.tar` with `git archive HEAD` and `candidate.patch` with `git diff --binary`. Extracted into `candidate/` and `bundle-candidate/`, then applied the exact delta with `git apply`. Both copies link existing dependencies. Frozen owned bytes match the main checkout and both copies exactly at completion.
+
+`source.sha256` covers all 508 retained production files. `tests.sha256` covers all 177 retained test files, including the terminal append peer's final tests. Every fault and restoration retains independent complete source and test manifests. Tests, assertions, mocks and expectations remain byte-identical throughout all fault runs. All 508 source files match the candidate after every exact restoration.
+
+The honest final count is nine unique source-only fault/restoration pairs. The former two physical source guards became one shared ownership fault. Each caller's actual early return is then faulted separately. No identical patch is counted twice. All nine forward patch hashes are distinct, each original patch context occurs exactly once, and each applied source matches precisely its expected replacement.
+
+`run-proof.py` executes the exact four-suite command above for one baseline, nine faults and nine exact restorations. `proof-child.exit` is 0 and `proof.receipt` confirms completion. The command ran 20 times in this round, one local run and 19 isolated proof runs. Baseline and every restoration passed all 168 tests across 4 suites with exit 0.
+
+Every accepted fault produced its own named semantic FAIL and assertion diagnosis in the same run that exited 1. Full diagnoses are in `semantic-diagnoses.json`. Exact `<name>.fault.patch`, `<name>.restore.patch`, apply/restore logs, complete test logs, same-run exits and source/test manifests are retained.
+
+| Fault | Actual production fault | Retained semantic assertion exposed | Failed tests | Fault exit | Exact restoration exit |
+| --- | --- | --- | ---: | ---: | ---: |
+| shared-source-owner | Remove the helper's actual post-read ownership guard | All four actual durable replacement witnesses fail. Differing stamps corrupt verified freshness at both boundaries. Matching stamps launch an obsolete picker or destination read | 4 | 1 | 0 |
+| first-source-outcome | Remove only the first caller's handling of the awaited helper result | Both replacement witnesses launch an obsolete picker. The active first-source mismatch also loses its conflict outcome | 3 | 1 | 0 |
+| post-picker-source-outcome | Remove only the second caller's handling of the awaited helper result | Both replacement witnesses launch an obsolete destination read. The active post-picker mismatch also loses its conflict outcome | 3 | 1 | 0 |
+| picker | Remove only ownership validation after picker settlement | Selection launches another obsolete source read. Cancellation returns cancelled instead of superseded | 2 | 1 | 0 |
+| destination | Remove only ownership validation after destination read | The obsolete destination write is invoked | 1 | 1 | 0 |
+| database-owner | Remove only the shared completion ownership guard | Database replacement incorrectly clears dirty. Existing file-owner and autosave stamp controls also fail | 4 | 1 | 0 |
+| database-dirty | Treat database completion as unchanged despite serialized-content edits | Actual newer database comments and headers incorrectly lose dirty after captured native PGN succeeds | 2 | 1 | 0 |
+| autosave-failure | Restrict typed failure presentation to user saves | Actual I/O and resource-limit autosaves lose their visible notification | 2 | 1 | 0 |
+| catch-entry | Remove only the essential catch-entry ownership guard | Five late stale rejection categories corrupt replacement freshness/tree, and stale autosave loses silence | 6 | 1 | 0 |
+
+All 27 failed test observations are preserved, followed by nine exact restoration runs with exit 0. Both source boundaries still start the actual mocked native read, commit an actual durable replacement retaining logical identity and origin while changing physical tree ownership, and then settle that held read. No replacement helper or assertion was mocked or changed for these faults.
+
+## One isolated bundle candidate
+
+The one build ran only inside `bundle-candidate/`. Shared checkout `dist` was not written. Source and test manifests remained identical before and after the build. `bundle-child.sh` contains the exact build/check/measurement commands and `bundle.receipt` records completion.
+
+| Command | Exit | Full evidence |
+| --- | ---: | --- |
+| `pnpm build-vite` | 0 | `build-vite.log`, `build-vite.exit` |
+| `pnpm bundle:check` | 1 | `bundle-check.log`, `bundle-check.exit` |
+| `node --input-type=module` importing the actual `buildBundleReport` from `./scripts/check-bundle-budget.mjs` and reading `dist/.vite/manifest.json` | 0 | `bundle-measurement.json`, `bundle-measurement.log`, `bundle-measurement.exit` |
+
+| Metric | Root round1 integrated measurement | This frozen candidate |
+| --- | ---: | ---: |
+| entry | 540205 | 540221 |
+| largestLazy | 514894 | 514891 |
+| total | 1620066 | 1620076 |
+
+The largest lazy route remains `src/routes/index.lazy.tsx`. The total limit remains 1620000. Actual canonical bundle output reports `total bundle budget exceeded: 1582.1 KiB, limit 1582.0 KiB`, with same-run exit 1. This candidate exceeds the limit by 76 bytes, 10 more than the integrated starting measurement. No second measured candidate or compression experiment was attempted.
+
+## Preserved evidence and current gate limits
+
+`final-integrity.json` verifies unchanged HEAD, complete index listing and index bytes, exact protected append/tree/chess files, main/fault-copy/bundle-copy owned equality, frozen test hashes, all source restorations, nine distinct fault patches and all four shared-guard boundary failures.
+
+Both terminal append peer paths, both completed tree paths and `chess.ts` retain their exact launch hashes in `launch-protected.sha256`. The 9993 regular files in `../r5-save-proof` and all 2472 regular files in `../r5-save-round1` retain every byte, excluding linked dependencies. Their complete launch integrity manifests are retained in this directory and checked at completion. Earlier fault series, rejected-write witnesses, durable replacements, metadata, Add Game behavior and historical build measurements were not overwritten.
+
+No whole-worktree heavy gate was launched in this narrowed resume. No current integrated full-gate claim follows from the isolated bundle run. The root preflight's 603 plus 46 passing tests and its bundle failure are historical starting evidence. Earlier canonical mutation 100 is historical. Full canonical pre-review and contract still belong to root after EOS. The original queued writer pre-review attempt remains an intentional interruption at exit 143, not startup refusal or green.
+
+## Blocker and EOS
+
+The correctness-preserving extraction is complete. The bundle requirement is unresolved. The missing premise is that this adopted consolidation provides enough compressed savings to recover the starting 66-byte excess. The actual one-candidate result disproves that premise and leaves a 76-byte excess. No further savings mechanism is authorized in this last bounded round. Root needs a separately arbitrated, evidence-backed mechanism before that budget can be claimed green.
+
+No scope deviation occurred. Only the existing `tabs.ts` implementation changed, with no new module, schema, configuration, persistence design, diagnostics change, loading trick, minifier workaround, data shortening, baseline reduction or removed safety guard. All requested local correctness proof completed. Changes remain unstaged. EOS with bundle blocked.
+````
