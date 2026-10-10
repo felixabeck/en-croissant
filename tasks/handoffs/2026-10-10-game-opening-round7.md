@@ -418,3 +418,204 @@ VERDICT: REVISE
 Unverifiable: historical conversation and model provenance. No live services queried.
 
 VERDICT: REVISE
+
+## Second correction scope stop and exact restoration
+
+The second correction stopped before final candidate/fault proof at an immutable fixture boundary. All source was restored to b290644c. Root read the full blocked report and both Gate fixture sites. This is a technical scope conflict, not an external precondition or an intrinsic admission impossibility. No source/fault/runtime completion is inferred from the red exploratory runs. The blocked report follows verbatim.
+
+# R7 admission correction stopped at an immutable-test boundary
+
+The second C1 correction is **blocked, not implemented**. The attempted prepared installer exposes a conflict between the approved no-rewrite installation contract and read-only Gate cold-storage assertions. All seven attempted workspace edits were restored byte-for-byte to launch. The workspace is clean. No source, runtime or push closure is claimed.
+
+Actual launch and final HEAD is `b290644c3251036b523425c8b7167af5d9ec950b`. Root owns arbitration, records, the integrated gates and closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+## Exact scope blocker
+
+The revision2 plan C1 requires preserving the durably validated candidate without rewriting it through the ordinary persistence queue. The assignment permits changing only eight named paths and permits historical-body adaptations only for the two obsolete Board public-action exception executions. `src/components/tabs/FileFreshnessGate.test.tsx` is expressly read-only.
+
+Two existing Gate sites require the previous queue rewrite's serialization side effect:
+
+1. `src/components/tabs/FileFreshnessGate.test.tsx:985` seeds `candidate` and independently reads exactly that candidate before retargeting. At lines 991–993 it calls the existing `retargetTreeStore` inside the actual workspace admission callback. At lines 1000–1002 it flushes and requires the stored value to equal `{ ...candidate, practicePath: null }`. This runs for four reload-rejection categories.
+2. Its shared `installAppendReplacement` helper at lines 1122–1150 follows the same sequence. The independent pre-install read equals `candidate`. The post-flush read must gain `practicePath: null`. Nine append-outcome executions and two registered append-rejection executions use this helper.
+
+The prepared raw setter correctly adds `practicePath: null` to live state while preserving the already durable seed. It neither queues nor rewrites that seed. All 15 executions therefore fail only on the absent optional persisted `practicePath` field. The complete diagnoses are in `third.log`. Their retained ownership and uncertainty assertions were not edited.
+
+Changing these Gate assertions is outside this leaf's scope. Restoring the persistence-wrapped setter or adding a durable/queued rewrite solely to satisfy them defeats the approved no-rewrite installation contract. This leaf stopped without choosing a different caller policy, changing the plan or expanding ownership. The blocker is the frozen proof boundary, not evidence that the shared mechanism is intrinsically impossible.
+
+## Attempt retained for root inspection
+
+`blocked-candidate.patch`, `blocked-candidate/`, and `blocked-candidate-sha256.json` preserve the complete attempted delta and eight owned snapshots. The attempt changed exactly:
+
+- `src/utils/tabs.ts`
+- `src/state/atoms.ts`
+- `src/state/store/tree.ts`
+- `src/components/boards/BoardAnalysis.test.tsx`
+- `src/state/store/tree.hydration.test.ts`
+- `src/state/atoms.lifecycle.test.ts`
+- `src/components/panels/info/InfoPanel.test.tsx`
+
+`src/utils/tabs.test.ts` remained unchanged. No changes remain in any of these paths.
+
+The attempt captured the original non-persisting setter on a private symbol of the existing cached API, prepared the adapter/state before admission, published live workspace before tree notifications, acknowledged the exact canonical successor before callbacks escaped, and retained count-repair exclusion and exact-owner checks. There was no new registry, journal or result abstraction. No move-admission or parser code was changed.
+
+The two obsolete Board runtime executions were adapted in the candidate from mutable `getState().setState` injection before/after installation to actual Jotai workspace and Zustand subscribers. They retained the original durable dirty bytes, pending clean Save, cold admitted pair, no count repair and truthful error observations. They added exact live pairing, reconciliation using distinct previous/admitted PGNs, flush/cold read, remount and subsequent admission. This adaptation was not accepted as completed proof. Both new witnesses still failed before their reconciliation completion, one because an obsolete page-1 read preceded page 3 and the other because the first failed witness left its held read outstanding. Those failures remain in `third.log`. They do not establish continued reconciliation safety. All candidate changes, including these adaptations, were restored.
+
+New actual shared-boundary, private-installer, reentrant replacement/removal and InfoPanel current-owner tests were added only to owned test files. InfoPanel's actual policy reports subscriber errors while the same logical/file/current store remains active, and suppresses notifications after navigation. Its production source was not changed. These additions are exploratory candidate evidence, not final guarantees.
+
+## Commands and exits
+
+| Execution | Exit | Actual result |
+| --- | --- | --- |
+| `first.log`, Board + atoms lifecycle + tree hydration | 1 | 118 passed, 2 failed |
+| `second.log`, exact eight-suite selection | 1 | 398 passed, 22 failed |
+| `third.log`, exact eight-suite selection | 1 | 403 passed, 17 failed |
+| Restored exact eight-suite selection | 0 | 410 passed in eight suites |
+| Restored eight-path `oxfmt --check` | 0 | Formatting passed |
+| Restored eight-path `oxlint --deny-warnings` | 0 | Lint passed |
+| Restored `tsgo --noEmit` | 0 | Types passed |
+| Restored `git diff --check` | 0 | No diff errors |
+
+The exact selected command used for the last two candidate runs and restoration was:
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/boards/BoardAnalysis.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts src/state/store/tree.hydration.test.ts src/state/store/tree.test.ts
+```
+
+The scoped formatter and linter used all eight owned paths, including unchanged `src/utils/tabs.test.ts`. `restored-*.command.json`, `.log` and `.exit` retain exact arguments, working directory, timestamps and same-run exits. The earlier exploratory typecheck exited 2 because the initial wrapper erased the persist mutator type. That wrapper was corrected before the last candidate run. No final candidate type/format/lint acceptance is claimed. The restored checks prove launch-state restoration only.
+
+## Fault and restoration matrix status
+
+| Required category group | This candidate |
+| --- | --- |
+| 34 historical semantic categories | Not rerun |
+| Six R6 semantic categories | Not rerun |
+| Two supplementary refusal executions | Not rerun |
+| New subscriber terminality reversals | Not run |
+| New completed-reconciliation reversals | Not run |
+| New reentrant foreign-owner reversals | Not run |
+
+There is no frozen passing final candidate, so no fault is counted and no fault/restoration success is claimed. The candidate failures are ordinary implementation/test runs, not Git-derived semantic fault proof. No Git fault application was performed. The captured copied index remains untouched. The prior `tab-actions-round2` and `r6-tab-proof` artifacts were read only and were not rewritten.
+
+## Restoration and integrity
+
+`pre/`, `pre-sha256.json`, `restore-launch.apply-patch`, `restored-sha256.json` and `integrity.json` prove exact restoration of all eight owned paths. Every launch test body is consequently byte-identical in the returned workspace. Both obsolete Board fixtures are also restored, with candidate adaptations available transparently in the preserved patch. There are no final body adaptations.
+
+All 1,074 non-owned tracked paths match the launch hashes in `protected-pre.json` and `protected-final.json`. This includes the legality test bodies, shared parser, Gate source/tests, Board/InfoPanel production, configuration, budgets, records and native/verifier paths. Full `tree.ts` matches its launch snapshot, preserving the disjoint legality correction byte-for-byte.
+
+HEAD is unchanged. `launch-index.txt` and `final-index.txt` are byte-identical stage/path/blob/mode content. The raw index bytes changed only in stat-cache fields for the seven edited-and-restored paths. No blob IDs, flags, entries or extensions changed. `index-byte-delta.json` records this deviation precisely, and both raw binary snapshots are retained. The copied index is byte-identical to launch. The real index was not restored or otherwise rewritten to hide this observed metadata refresh.
+
+`final-status.txt` is empty. No staging, commit, push, skill, agent, deployment, `.env` read, full CLAUDE.md discovery, build or heavy shared gate occurred. Git inspection used `GIT_OPTIONAL_LOCKS=0`. The raw stat-cache refresh is an observed integrity limitation, with no attributed cause.
+
+The assignment remains unfinished. Root has exact evidence of the read-only assertion conflict and the incomplete continuation witnesses. No narrower or expanded implementation was substituted without authority.
+
+
+## Focused revision3 fixture authority
+
+Root permits only the two obsolete Gate durableTree representations and stronger pre-retarget seed byte checks, preserving all fifteen cases and outward assertions. The full plan and four raw canonical judgments follow. All reached EOS and APPROVED, with settled C1/C3 unchanged. This resumes the same second correction rather than starting a third source correction. d-20261010-10 remains the implementation authority, no decision reversal or product expansion. Final proof will use fresh r7-admission-final-proof artifacts while the blocked evidence remains immutable.
+
+# R6 Add Game durability and count-publication correction, revision3
+
+## Goal
+
+Correct newly detected inherited R6 defects f-20261010-27 and f-20261010-29 in the existing Add Game operation. Preserve the original opening mandate, all prior closure obligations and d06/d07/d08 contracts. This is a cumulative-review repair package with concrete new source defects. It is not a third compression repair, a restarted primary finding or a new product decision.
+
+## Required obligations
+
+### C1 Durable blank-game admission
+
+An accepted native append installs its blank tree through the existing fresh physical-generation replacement transaction. The blank tree must be durable before one durable workspace publication admits its effective physical reference, page, count and existing success origin kind. Keep current unrelated tab/file metadata. Live and immediate cold reads resolve the accepted blank tree and appended page without a preparatory flush. Retain logical tab identity, cached store identity, native-game/report/settings ownership and previous staged/refused/post-commit exception contracts. A tree or workspace refusal preserves the previous matched pair, readable content and pending bytes. Prepare every fallible tree-installation input before durable admission. Once admission is acknowledged, the shared workspace and cached-tree boundary must finalize matching live ownership before observer errors can escape. Installation must preserve the validated candidate without rewriting it through the ordinary persistence queue or depending on a fallible mutable public tree action. An exception after admission preserves the matching durable candidate and is never a definite refusal. Subsequent Gate reconciliation and edits must target that same admitted page and key, never the previous page through a new adapter. Count repair cannot overwrite acknowledged ownership. No second transaction framework, journal or schema is introduced.
+
+### C2 Truthful count publication
+
+The private count-refresh helper belongs only to Add Game. A successful native count plus refused durable tab update is a failure, never the refreshed-success branch. Retain the existing global persistence diagnostic and avoid telling the user that the count was refreshed or inventing an unknown-error notification. Ordinary count refresh, typed native count failure and obsolete-owner silence remain correct in both uncertain-fulfillment and rejected-write callers. Remove only the redundant synchronous pre-count ownership check identified by R6 minimalism. Keep post-count authority checks.
+
+### C3 Completion authority and caller policies
+
+Keep workspace-owned completion, gate-owned presentation and the independent cached-store/captured-generation lease. Use the actual provider-local workspace for the shared durable transaction. Surviving inactive completion remains allowed. The operation receives acknowledgement of the exact canonical admitted successor before any installed-tree or workspace subscriber error can escape. It can complete or settle that surviving successor without mistaking it for a foreign replacement. Observer failure remains an error with terminal freshness and lease release, not ordinary success. Live workspace ownership must be established before immediate installed-tree notifications. There is no late unconditional workspace publication that can overwrite a reentrant foreign successor. Normal completion retains correct source stamp/revision. Removed or foreign replacement owners receive no writes or notifications. An old operation cannot release a newer lease. Remount and competing Save admission, later Save diagnostics, physical replacement/removal, uncertainty and current-owner refusal remain terminal. Recovery append retains its distinct captured payload, cancellation, persistent unknown-write marker and error propagation. Ordinary Save, InfoPanel discard and physical replacement/reload callers retain their current stricter or distinct policies.
+
+### C4 Discriminating evidence and release
+
+Use actual composed BoardAnalysis/FileFreshnessGate, Jotai workspace, cached tree and storage. Immediate independent cold reads after success must resolve the new blank tree/page/count without flushing. Seed the original durable dirty content and a pending clean Save to expose the old publication split. Denying subsequent tree writes must not make an accepted pair refer to old content. Deny candidate tree persistence and workspace admission separately and retain the original pair, bytes, lease release and truthful terminal outcome. Observe stale-game count publication refusal and unknown-append count refusal through the actual notification boundary, with success and typed failure controls. Use actual installed Jotai and Zustand subscriber exceptions. Resolve the subsequent reconciliation reads with distinct old-page and admitted-page content, then flush and independently cold-read the admitted generation. Do not leave reads pending and infer later preservation from an immediate snapshot. Prove exact-successor terminality and silence after a reentrant foreign replacement/removal. Strengthen the earlier mutable-public-action exception fixtures only where the corrected prepared installation boundary makes that injection obsolete, retaining their outward guarantees and every other test body except two Gate durableTree fixture constants. Those constants currently expect a queued rewrite to add practicePath:null after retarget. Correct them to the original seeded candidate, and explicitly retain its pre-retarget bytes after flush. These two shared fixture sites cover fifteen obsolete-owner tests. All obsolete callback, ownership, live state, native outcome, notification, cold-read and byte-preservation assertions remain unchanged. This is a representation correction for seed preservation, not a weakened durability criterion.
+
+Every essential new guarantee needs a Git-derived production-only semantic fault, unchanged final tests, direct failing assertion and exit1, followed by exact source restoration and full selected exit0. Retain all old tests and all34 historical fault categories, adapting only where the changed production boundary requires it. Re-run the final relevant fault matrix against the final candidate and report unique final patches/categories honestly. Do not count redundant guard removals or array-identity failures as semantic proof. Root independently runs integrated tests, actual build/bundle, canonical pre-review and contract. Fresh cumulative R7 closes R6 issues and retained obligations. Pixels, real app, all14 standalone native fault/restoration stages and clean reviewed-HEAD final gates precede ordinary push. No acceptance is inferred from this plan review.
+
+## FILES
+
+One cohesive shared admission correction owns exactly nine paths, src/utils/tabs.ts, src/state/atoms.ts, src/state/store/tree.ts, src/components/boards/BoardAnalysis.test.tsx, src/state/store/tree.hydration.test.ts, src/state/atoms.lifecycle.test.ts, src/utils/tabs.test.ts and src/components/panels/info/InfoPanel.test.tsx and src/components/tabs/FileFreshnessGate.test.tsx. Gate test scope is limited to its two durableTree fixture constants and adding exact pre-retarget seed-byte preservation checks, not callback behavior, outcomes or expectations. Existing Gate, BoardAnalysis and InfoPanel production, BoardsPage, workspace codec, tabStorage, native/verifier/configuration remain read-only. The actual domain installation belongs in the existing tree lifecycle, avoiding duplicated retarget logic in Gate or utility. The independent new R7 legality package touches only move admission and the shared input parser, with lifecycle interfaces unchanged. It must reach EOS before this plan judgment freezes actual source.
+
+## Decisions and trade-offs
+
+d-20261010-06 already settles fresh physical-tree staging before workspace reference/page admission. Reuse that boundary for Add Game's native result instead of retaining its old queued tree install. d-20261010-07's workspace lease and presentation guarantees remain binding under d-20261010-08's partial budget correction. Extend the existing domain transaction only as needed to publish native page/count and preserve original kind/current metadata. The installed Jotai/Zustand trace requires one prepared admission-to-live finalization boundary, owned by existing atoms and tree lifecycle, plus exact operation-local successor acknowledgement. This strengthens the implementation of the original matched-pair contract. It does not reverse d06/d07/d08/d09 or introduce a storage design. Private setter capture and callback signatures belong to the phase brief. The precise helper signature and branch structure belong in the phase brief, not this contract. Avoid a new configurable operation factory or registry. Coverage and caps remain unchanged at550000/550000/1630000. This correction does not reverse the d08 cap decision or a Felix product decision.
+
+## Source evidence and correction check
+
+R6 reviewed cec23bdf..03a79889, enclosing5a5dc7e6..03a79889. All nine R6 lenses reached EOS. Error-handling reported updateTab refusal discarded at tabs.ts197. Persistence reported page admission before queued blank-tree persistence at234, masked by Board test's preparatory flush. Root traced both reports in actual source. Root corrected its initial f27 filing's mistaken recovery-append scope through official annotation. f29 is a newly found inherited consumer of the earlier D9 pairing contract, originating99ebb3759, not a newly introduced source regression or a reopened cap failure. R6 lifetime/admission witnesses remain source-closed within their class, while complete refusal/durability remains blocked by these new defects. Root adopts the minimalism redundant pre-count check as part of f27. No native/pixel proof has run.
+
+## Reviews
+
+Authority: the existing adopted R7-POST correction at tasks/findings.md:14877 requires closure of both post-admission manifestations. Prepared installation and exact-successor acknowledgement implement that unchanged matched-pair and terminal-error mandate. They add no product scope. Six canonical revision3 judgments approved this mechanism, with source/runtime/push closure pending.
+
+Focused correction revision3, same existing mechanism and bound. Revision1 and three canonical plan judgments are preserved in the round6 handoff. All approved plan-level C1-C4 while explicitly naming unprobed post-admission exception behavior. First source correction a51b08a3 passed40 unique faults and root667+46/pre-review/contract, but R7 correctness and error-handling identified concrete continuations not covered by held-read fixtures. Complete source R6-DURABLE/f26 remains NOT CLOSED. Revision2 corrects C1/C3/C4 and expands the shared lifecycle boundary, leaving C2, cap policy, product mandate and all independent caller policies settled. No second full primary plan cohort or third compression repair occurs. This is the second bounded correction of this source package. Current open issue R7-POST, with both subscriber-terminality and later-reconciliation manifestations. R7-CQ is an explanatory-comment Fix in the phase brief. R7-REC's old count proof claim is officially superseded. New inherited R7-LEGAL is a disjoint exact legality correction.
+
+CORRECTION CHECK: Last actually reviewed source b3babee7. Final revision3 candidate is frozen after the disjoint legality writer EOS, and the packet names its actual HEAD and source delta. Root opened actual atoms publication order, retargeting and Gate reconciliation. Complete R7 reports and dispositions are in tasks/handoffs/2026-10-10-game-opening-round7.md. Fresh source probe /tmp/build-game-opening-3b67c3b9/probe-post-admission-r1.txt traced installed Jotai2.18.1 callback-flush AggregateError after publication and Zustand5.0.11 state assignment before listeners/persistence after setter return. The current exception tests hold readGame, so later reconciliation was not covered. The complete raw probe is preserved in the round7 handoff. This source trace is evidence, not an executed runtime probe. The packet includes the generated round2 DELTA/REVISED/SETTLED block and prior revision1 snapshot. Fresh canonical judgments must close the revised shared mechanism against these actual source dependencies before implementation.
+
+Plan authorship and arbitration shared one context. Detection runs on the same model family as the code.
+
+## Scope conflict correction
+
+The second correction writer stopped before final fault proof and restored all attempted source exactly to launch HEAD b290644c. Its first integrated runs exposed fifteen Gate tests at two fixture sites expecting the former queued rewrite to add practicePath:null. The chosen non-persisting installer correctly preserves the original validated seed. Source mechanism C1/C3 remains the approved revision2 mechanism. Revision3 only permits the two representation fixture corrections, strengthens exact original-seed byte checks and retains every outward obsolete-owner guarantee. This resumes the same blocked second correction, not a third source correction or new primary cohort. Root independently traced both fixtures and tabStorage.seed before judging. No implementation/fault/runtime closure is claimed.
+
+
+### Raw revision3 plan judgment
+
+R7-POST CLOSED at plan level for revision3 — unchanged C1/C3 at `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v3.md:11` and `:19` require coherent live ownership and exact-successor acknowledgement before observer errors escape. These address both traced failures at `src/state/atoms.ts:106`, `src/state/store/tree.ts:127` and `src/utils/tabs.ts:250`. (confidence: 95)
+
+Revision3 C4/FILES correction CLOSED at plan level — plan:23 and :29 permit only the two obsolete fixture representations plus stronger original-byte checks. `defaultTree` omits `practicePath` at `src/utils/treeReducer.ts:88`, storage permits its absence at `src/state/store/tabStorage.ts:188`, and seeding persists the validated candidate at `:495`. The expectations at `src/components/tabs/FileFreshnessGate.test.tsx:1001` and `:1149` currently reflect the queued rewrite. Preserving pre-retarget bytes after flush strengthens durability evidence while retaining all fifteen cases’ outward assertions. (confidence: 98)
+
+R7-CQ CLOSED at plan level — plan:43 retains the explanatory-comment correction for `src/utils/tabs.ts:270`.
+
+R7-REC CLOSED as a record correction — `tasks/findings.md:14842` explicitly supersedes the historical unrepaired-count claim.
+
+No new plan defects found.
+
+Named limitation (confidence: 100): inspected clean HEAD `b290644c`. Implementation, completed reconciliation tests, semantic fault proof, runtime verification and push remain pending. No files changed or tests ran. Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision3 minimalism judgment
+
+R7-POST CLOSED at plan level for revision3 — plan:11/19 retains the approved shared finalizer and exact-successor acknowledgement. Plan:23/29/51 narrowly permits the two Gate fixture corrections and strengthens pre-retarget byte preservation without dropping outward assertions (confidence: 95).
+
+No bloat or duplication findings. The smallest sufficient revision3 delta changes the constants at `FileFreshnessGate.test.tsx:1001/1149` and adds seed-byte checks at those existing sites. No new helper, production file or duplicated Gate repair is required.
+
+Limitation (confidence: 100): implementation, fault proof, runtime verification and push remain pending. No writes or tests performed. Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision3 tests judgment
+
+R7-POST CLOSED at plan level for revision3 — C1/C3 remain unchanged. C4 at `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v3.md:23` requires actual subscriber exceptions, terminal freshness, lease release, completed reconciliation and independent cold reads. Reverting acknowledgement would fail terminality. Reverting coherent finalization would expose old-page content after reconciliation and flush. (confidence: 95)
+
+C4/FILES correction CLOSED at plan level — plan:23,29 limits the Gate changes to two fixture constants and stronger original-seed byte assertions. At `src/components/tabs/FileFreshnessGate.test.tsx:1001,1149`, expecting the seeded candidate preserves the existing obsolete-owner assertions across fifteen cases. Capturing bytes before retarget and comparing after flush would fail if the former queued rewrite returned. The expectation is anchored to the seed, not derived from post-retarget output. (confidence: 98)
+
+No verification-plan defect found above the confidence threshold.
+
+Limitation (confidence: 100): implementation, final semantic-fault evidence, runtime verification and release remain pending. Existing held-read witnesses do not prove continued reconciliation. No tests ran or files changed.
+
+Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision3 persisted-state judgment
+
+R7-POST CLOSED at plan level for revision3 — `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v3.md:11,19` retains prepared installation, coherent durable/live ownership and exact-successor acknowledgement before observer errors escape. C4 at `:23` still requires completed reconciliation, flush, independent cold reads and actual subscriber exceptions. Both manifestations remain covered. (confidence: 95)
+
+C4/FILES correction CLOSED at plan level — plan `:23,29,51` permits only the two obsolete fixture representations and stronger pre-retarget byte checks. `src/state/store/tabStorage.ts:495` seeds the validated candidate without adding `practicePath:null`. The expectations at `src/components/tabs/FileFreshnessGate.test.tsx:1001,1149` currently depend on the queued retarget rewrite being removed. Requiring original seed bytes after flush strengthens persistence proof while preserving every obsolete-owner assertion. Settled C1/C3 remain unchanged. (confidence: 97)
+
+No additional persistence defects found in the narrow delta.
+
+Limitation: source implementation, final fault proof, runtime verification and push remain pending. This review made no writes and ran no tests. Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
