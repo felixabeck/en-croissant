@@ -163,6 +163,7 @@ impl std::fmt::Debug for BoundDatabase {
 }
 
 impl BoundDatabase {
+    /// Reuses identical keys and admits only one distinct key per inode, including reservations.
     pub(crate) fn acquire(target: &DatabaseFileTarget) -> Result<Self, Error> {
         ensure_hooks_installed()?;
         let identity = target.identity();
@@ -190,17 +191,6 @@ impl BoundDatabase {
                     return Ok(Self(registration));
                 }
             }
-            if registry.by_key.iter().any(|(existing, (_, weak))| {
-                existing.identity == identity
-                    && existing.parent_identity != parent_identity
-                    && weak.strong_count() != 0
-            }) || registry.creating.keys().any(|existing| {
-                existing.identity == identity && existing.parent_identity != parent_identity
-            }) {
-                return Err(Error::Conflict(
-                    "database is open through another directory".into(),
-                ));
-            }
             if registry.creating.contains_key(&key) {
                 #[cfg(test)]
                 if let Some(hook) = registry.waiting_hooks.remove(&key) {
@@ -212,6 +202,23 @@ impl BoundDatabase {
                     })?,
                 );
                 continue;
+            }
+            let conflicts =
+                |existing: &&BindingKey| existing.identity == identity && **existing != key;
+            if let Some(existing) = registry
+                .by_key
+                .iter()
+                .filter(|(_, (_, weak))| weak.strong_count() != 0)
+                .map(|(existing, _)| existing)
+                .chain(registry.creating.keys())
+                .find(conflicts)
+            {
+                let message = if existing.parent_identity != parent_identity {
+                    "database is open through another directory"
+                } else {
+                    "database is open through another name"
+                };
+                return Err(Error::Conflict(message.into()));
             }
             let token = NEXT_TOKEN
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
@@ -460,6 +467,19 @@ fn set_binding_test_hook(
 }
 
 #[cfg(test)]
+pub(super) fn has_binding_for_test(target: &DatabaseFileTarget) -> bool {
+    let key = BindingKey {
+        identity: target.identity(),
+        parent_identity: opened_file_identity(target.parent()).unwrap(),
+        leaf: binding_key_leaf(target.leaf()),
+    };
+    REGISTRY.get().is_some_and(|registry| {
+        let registry = registry.lock().unwrap();
+        registry.by_key.contains_key(&key) || registry.creating.contains_key(&key)
+    })
+}
+
+#[cfg(test)]
 fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
     let callback = hook.lock().ok().and_then(|mut hook| hook.take());
     if let Some(callback) = callback {
@@ -471,10 +491,8 @@ fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
 /// table (`RtlUpcaseUnicodeChar`, one UTF-16 unit at a time, no length-changing mappings), so
 /// case variants of one path share one binding. The locale-based `LCMapStringEx` left `ς`
 /// unmapped while NTFS folds it onto `Σ` (CI run 36590198609). A volume whose own up-case table
-/// disagrees only splits one database across two registrations: each carries its own token in
-/// every SQLite filename, and Windows byte-range locks are per handle, so the two coordinate
-/// exactly like two processes. Distinct files never share a key, because it includes the leaf
-/// identity.
+/// disagrees conservatively refuses a competing spelling of a live binding. Distinct files
+/// never share a key, because it includes the leaf identity.
 fn binding_key_leaf(leaf: &OsStr) -> OsString {
     #[cfg(windows)]
     {
@@ -2678,13 +2696,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("quarantined-inode.db3");
         std::fs::File::create(&path).unwrap();
-        let alias = dir.path().join("quarantined-inode-alias.db3");
-        std::fs::hard_link(&path, &alias).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let bound = BoundDatabase::acquire(&target).unwrap();
         let identity = bound.0.binding.identity;
-        let alias_target = DatabaseFileTarget::for_test_path(&alias).unwrap();
-        let alias_bound = BoundDatabase::acquire(&alias_target).unwrap();
+        let second_holder = BoundDatabase::acquire(&target).unwrap();
+        assert_eq!(bound.token(), second_holder.token());
         let fd = std::fs::File::open(&path).unwrap().into_raw_fd();
 
         retain_mismatched_descriptor(fd, identity);
@@ -2696,7 +2712,7 @@ mod tests {
 
         drop(bound);
         assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
-        drop(alias_bound);
+        drop(second_holder);
         // A closed descriptor number can be reused at once by a parallel test, so closure is
         // observed through the registry, which owns the quarantined `File`s.
         assert!(REGISTRY
@@ -2706,7 +2722,7 @@ mod tests {
     }
 
     #[test]
-    fn bindings_share_one_name_per_directory_entry_and_refuse_cross_parent_aliases() {
+    fn bindings_reuse_one_key_and_refuse_aliases_until_every_holder_drops() {
         let root = tempfile::tempdir().unwrap();
         let first_parent = root.path().join("first");
         let second_parent = root.path().join("second");
@@ -2720,21 +2736,52 @@ mod tests {
         std::fs::hard_link(&path, &cross_directory_alias).unwrap();
 
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let alias_target = DatabaseFileTarget::for_test_path(&same_directory_alias).unwrap();
+        let cross_target = DatabaseFileTarget::for_test_path(&cross_directory_alias).unwrap();
         let first = BoundDatabase::acquire(&target).unwrap();
         let second = BoundDatabase::acquire(&target).unwrap();
         assert_eq!(first.token(), second.token());
+        let original_token = first.token();
 
-        let alias_target = DatabaseFileTarget::for_test_path(&same_directory_alias).unwrap();
-        let alias = BoundDatabase::acquire(&alias_target).unwrap();
-        assert_ne!(first.token(), alias.token());
+        assert!(
+            matches!(
+                BoundDatabase::acquire(&alias_target),
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "same-parent alias must be refused while the original binding lives"
+        );
 
-        let cross_target = DatabaseFileTarget::for_test_path(&cross_directory_alias).unwrap();
         assert!(matches!(
             BoundDatabase::acquire(&cross_target),
             Err(Error::Conflict(message)) if message == "database is open through another directory"
         ));
         drop(first);
+        assert!(
+            matches!(
+                BoundDatabase::acquire(&alias_target),
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "the remaining same-key holder must keep alias admission closed"
+        );
         drop(second);
+        let alias = BoundDatabase::acquire(&alias_target).unwrap();
+        assert_ne!(original_token, alias.token());
+        assert!(alias
+            .uri(SqliteMode::ReadWrite)
+            .unwrap()
+            .contains("/alias.db3?"));
+        drop(alias);
+        std::fs::remove_file(&path).unwrap();
+        let alias = BoundDatabase::acquire(&alias_target).unwrap();
+        let connection = rusqlite::Connection::open_with_flags(
+            alias.uri(SqliteMode::ReadWrite).unwrap(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        connection
+            .execute_batch("CREATE TABLE SurvivingAlias (value INTEGER);")
+            .unwrap();
+        drop(connection);
         drop(alias);
         let cross = BoundDatabase::acquire(&cross_target).unwrap();
         assert!(cross.token() != 0);
@@ -2922,6 +2969,118 @@ mod tests {
         let registry = REGISTRY.get().unwrap().lock().unwrap();
         assert!(!registry.by_key.contains_key(&key));
         assert!(!registry.creating.contains_key(&key));
+    }
+
+    #[test]
+    fn reserved_binding_refuses_same_parent_alias_without_waiting() {
+        use std::{sync::mpsc, time::Duration};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner.db3");
+        let alias_path = root.path().join("alias.db3");
+        std::fs::File::create(&path).unwrap();
+        std::fs::hard_link(&path, &alias_path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let alias_target = DatabaseFileTarget::for_test_path(&alias_path).unwrap();
+        let key = BindingKey {
+            identity: target.identity(),
+            parent_identity: opened_file_identity(target.parent()).unwrap(),
+            leaf: binding_key_leaf(target.leaf()),
+        };
+        let timeout = Duration::from_secs(5);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (owner_tx, owner_rx) = mpsc::channel();
+        REGISTRY
+            .get_or_init(|| Mutex::new(Registry::default()))
+            .lock()
+            .unwrap()
+            .creation_hooks
+            .insert(
+                key.clone(),
+                Box::new(move || {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv_timeout(timeout).unwrap();
+                }),
+            );
+        let creator = std::thread::spawn(move || {
+            let binding = BoundDatabase::acquire(&target);
+            owner_tx.send((target, binding)).unwrap();
+        });
+        started_rx.recv_timeout(timeout).unwrap();
+        let (alias_tx, alias_rx) = mpsc::channel();
+        let competitor = std::thread::spawn(move || {
+            let result = BoundDatabase::acquire(&alias_target);
+            alias_tx.send((alias_target, result)).unwrap();
+        });
+        let alias_result = alias_rx.recv_timeout(timeout);
+        // Always release the creator before assertions, including a waiter regression.
+        release_tx.send(()).unwrap();
+        let (_owner_target, owner_result) = owner_rx.recv_timeout(timeout).unwrap();
+        let owner = owner_result.unwrap();
+        creator.join().unwrap();
+        let (alias_target, result) =
+            alias_result.expect("alias acquisition must not wait for the creation reservation");
+        competitor.join().unwrap();
+        assert!(
+            matches!(result,
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "same-parent alias must be refused while the owner has a creation reservation"
+        );
+        assert!(!has_binding_for_test(&alias_target));
+        drop(owner);
+        let alias = BoundDatabase::acquire(&alias_target).unwrap();
+        assert!(alias
+            .uri(SqliteMode::ReadWrite)
+            .unwrap()
+            .contains("/alias.db3?"));
+    }
+
+    #[test]
+    fn failed_acquisition_releases_admission_for_a_same_parent_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("failed-owner.db3");
+        let alias_path = root.path().join("alias.db3");
+        std::fs::File::create(&path).unwrap();
+        std::fs::hard_link(&path, &alias_path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let alias_target = DatabaseFileTarget::for_test_path(&alias_path).unwrap();
+        let key = BindingKey {
+            identity: target.identity(),
+            parent_identity: opened_file_identity(target.parent()).unwrap(),
+            leaf: binding_key_leaf(target.leaf()),
+        };
+        let hook_key = key.clone();
+        let registry = REGISTRY.get_or_init(|| Mutex::new(Registry::default()));
+        registry.lock().unwrap().creation_hooks.insert(
+            key.clone(),
+            Box::new(move || {
+                let token = REGISTRY.get().unwrap().lock().unwrap().creating[&hook_key];
+                // There is no creation-error injection seam. Lose this reservation through its
+                // normal cleanup path to trigger a real post-reservation acquisition failure.
+                remove_reservation(&hook_key, token);
+            }),
+        );
+        assert!(matches!(BoundDatabase::acquire(&target),
+            Err(Error::Conflict(message)) if message == "bound SQLite registry reservation was lost"
+        ));
+        {
+            let registry = registry.lock().unwrap();
+            assert!(
+                !registry
+                    .creating
+                    .keys()
+                    .any(|existing| existing.identity == key.identity),
+                "failed acquisition must leave no admission reservation for this inode"
+            );
+            assert!(!registry.by_key.contains_key(&key));
+        }
+        let alias = BoundDatabase::acquire(&alias_target).unwrap();
+        assert!(alias
+            .uri(SqliteMode::ReadWrite)
+            .unwrap()
+            .contains("/alias.db3?"));
     }
 
     #[test]

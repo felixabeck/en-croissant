@@ -378,9 +378,10 @@ struct EntryKey {
 
 /// The sole owner of SQLite pools and per-database lifecycle state.
 ///
-/// Paths are canonical before insertion, so aliases cannot produce separate
-/// pools, locks, revisions, or cache invalidations. The bounded LRU eviction
-/// only releases idle entries; live callers keep their entry alive via Arc.
+/// Canonical parent spellings share pools, locks, revisions and cache invalidations.
+/// Distinct hard-link names keep separate keys, but bound SQLite admits only one
+/// name per inode at a time. The bounded LRU eviction only releases idle entries,
+/// and live callers keep their entry alive via Arc.
 pub struct DatabaseRepository {
     pub(super) content_validation: super::content_validation::ContentValidationState,
     state: Mutex<RepositoryState>,
@@ -1799,7 +1800,7 @@ pub(crate) fn test_target(path: &Path) -> crate::infra::path_authority::Database
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use diesel::RunQueryDsl;
+    use diesel::{connection::SimpleConnection, RunQueryDsl};
     use std::{sync::mpsc, time::Duration};
 
     #[derive(diesel::QueryableByName)]
@@ -1936,27 +1937,151 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn hard_link_bindings_have_separate_repository_entries() {
+    fn hard_link_alias_is_refused_until_cached_entry_and_owners_are_released() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
         let alias = directory.path().join("alias.db3");
         std::fs::File::create(&path).unwrap();
         std::fs::hard_link(&path, &alias).unwrap();
-        let repository = DatabaseRepository::default();
         let path_target = test_target(&path);
         let alias_target = test_target(&alias);
+        let repository = DatabaseRepository::default();
 
-        repository
+        let connection = repository
             .initialization_connection(&path_target, None)
             .unwrap();
-        repository
+        let path_entry = repository.entry(&path_target, None).unwrap().1;
+        let alias_key = entry_key(&alias_target).unwrap();
+        let assert_refused = || {
+            assert!(
+                matches!(repository.initialization_connection(&alias_target, None),
+                    Err(Error::Conflict(message)) if message == "database is open through another name"
+                ),
+                "repository must refuse a same-parent alias before constructing its pool"
+            );
+            let state = repository.state.lock().unwrap();
+            assert!(
+                !state.entries.contains_key(&alias_key),
+                "refused alias must not publish an entry"
+            );
+            assert!(
+                !state.building.contains(&alias_key),
+                "refused alias must release its build marker"
+            );
+            assert_eq!(state.entries.len(), 1);
+        };
+        assert_refused();
+        drop(connection);
+        assert!(
+            path_entry
+                .pool
+                .read()
+                .as_ref()
+                .unwrap()
+                .state()
+                .idle_connections
+                > 0
+        );
+        assert_refused();
+        repository.close_and_invalidate(&path_target).unwrap();
+        assert!(
+            matches!(repository.initialization_connection(&alias_target, None),
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "an external entry holder must keep alias admission closed after eviction"
+        );
+        drop(path_entry);
+        let mut alias_connection = repository
             .initialization_connection(&alias_target, None)
             .unwrap();
-        let path_entry = repository.entry(&path_target, None).unwrap().1;
-        let alias_entry = repository.entry(&alias_target, None).unwrap().1;
+        alias_connection
+            .batch_execute("CREATE TABLE AliasAdmitted (value INTEGER);")
+            .unwrap();
+        assert_eq!(repository.state.lock().unwrap().entries.len(), 1);
+    }
 
-        assert!(!Arc::ptr_eq(&path_entry, &alias_entry));
-        assert_eq!(repository.state.lock().unwrap().entries.len(), 2);
+    #[test]
+    fn wal_writer_survives_alias_refusal_without_alias_sidecars() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let alias = directory.path().join("alias.db3");
+        std::fs::File::create(&path).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        let path_target = test_target(&path);
+        let alias_target = test_target(&alias);
+        let repository = DatabaseRepository::default();
+        let mut connection = repository
+            .initialization_connection(&path_target, None)
+            .unwrap();
+        connection
+            .batch_execute(
+                "PRAGMA journal_mode=WAL;
+            CREATE TABLE Writer (value INTEGER);
+            BEGIN IMMEDIATE; INSERT INTO Writer VALUES (1);",
+            )
+            .unwrap();
+        assert!(path.with_file_name("database.db3-wal").exists());
+        assert!(path.with_file_name("database.db3-shm").exists());
+        assert!(
+            matches!(repository.initialization_connection(&alias_target, None),
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "WAL alias must be refused before opening SQLite"
+        );
+        connection
+            .batch_execute("INSERT INTO Writer VALUES (2);")
+            .unwrap();
+        let count: TestText = sql_query("SELECT CAST(COUNT(*) AS TEXT) AS value FROM Writer")
+            .get_result(&mut *connection)
+            .unwrap();
+        assert_eq!(
+            count.value, "2",
+            "the original WAL writer must remain usable after refusal"
+        );
+        connection.batch_execute("COMMIT;").unwrap();
+        assert!(
+            !alias.with_file_name("alias.db3-wal").exists(),
+            "refusal must not create alias WAL"
+        );
+        assert!(
+            !alias.with_file_name("alias.db3-shm").exists(),
+            "refusal must not create alias SHM"
+        );
+        assert!(!super::super::bound_sqlite::has_binding_for_test(
+            &alias_target
+        ));
+    }
+
+    #[test]
+    fn revision_read_refuses_same_parent_alias_before_pool_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let alias = directory.path().join("alias.db3");
+        std::fs::File::create(&path).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        let path_target = test_target(&path);
+        let alias_target = test_target(&alias);
+        let repository = Arc::new(DatabaseRepository::default());
+        let _connection = repository
+            .initialization_connection(&path_target, None)
+            .unwrap();
+        let worker_repository = Arc::clone(&repository);
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            result_tx
+                .send(worker_repository.read_revision(&alias_target, &CancellationToken::new()))
+                .unwrap();
+        });
+        let result = result_rx
+            .recv_timeout(POOL_CONNECTION_TIMEOUT / 2)
+            .expect("revision alias refusal must complete before the r2d2 connection timeout");
+        worker.join().unwrap();
+        assert!(
+            matches!(result,
+                Err(Error::Conflict(message)) if message == "database is open through another name"
+            ),
+            "revision reads must fail closed at binding admission"
+        );
     }
 
     #[test]
@@ -2489,8 +2614,9 @@ mod tests {
         let old_entry = repository.entry(&old_target, None).unwrap().1;
         let old_object = old_target.identity();
 
+        let replacement_target = test_target(&replacement);
         let mut replacement_connection = repository
-            .initialization_connection(&test_target(&replacement), None)
+            .initialization_connection(&replacement_target, None)
             .unwrap();
         migrations::prepare_database(&mut replacement_connection, "new", "description").unwrap();
         diesel::connection::SimpleConnection::batch_execute(
@@ -2499,6 +2625,10 @@ mod tests {
         )
         .unwrap();
         drop(replacement_connection);
+        // Release the setup name before admitting this inode under its renamed leaf.
+        repository
+            .close_and_invalidate(&replacement_target)
+            .unwrap();
         for suffix in ["-wal", "-shm"] {
             let stale = PathBuf::from(format!("{}{}", path.display(), suffix));
             let _ = std::fs::remove_file(stale);

@@ -224,6 +224,57 @@ fn pause_scans(paths: Vec<PathBuf>) -> PauseGuard {
 }
 
 #[tokio::test]
+async fn content_validation_scan_refuses_same_parent_hard_link_alias_without_registration() {
+    let _serial = SERIAL.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("original.db3");
+    let alias = directory.path().join("alias.db3");
+    File::create(&path).unwrap();
+    std::fs::hard_link(&path, &alias).unwrap();
+    let original_target = DatabaseFileTarget::for_test_path(&path).unwrap();
+    let alias_target = DatabaseFileTarget::for_test_path(&alias).unwrap();
+    let repository = DatabaseRepository::default();
+    {
+        let bound = bound_sqlite::BoundDatabase::acquire(&original_target).unwrap();
+        let mut connection =
+            SqliteConnection::establish(&bound.uri(bound_sqlite::SqliteMode::ReadWrite).unwrap())
+                .unwrap();
+        connection
+            .batch_execute(
+                "CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);
+            INSERT INTO Info VALUES ('DataRevision', '0');",
+            )
+            .unwrap();
+    }
+    let identity = repository.database_identity(&alias_target).unwrap();
+    let owner = bound_sqlite::BoundDatabase::acquire(&original_target).unwrap();
+    let outcome = content_validation::scan_worker(
+        &repository,
+        &alias_target,
+        &identity,
+        &CancellationToken::new(),
+    );
+    assert!(
+        matches!(outcome.result,
+            Err(Error::Conflict(message)) if message == "database is open through another name"
+        ),
+        "content-validation scans must fail closed for a competing same-parent alias"
+    );
+    assert!(outcome.event.is_none());
+    assert!(!stamp_path(&alias).exists());
+    assert!(
+        !bound_sqlite::has_binding_for_test(&alias_target),
+        "a refused content scan must leave no alias registration or reservation"
+    );
+    drop(owner);
+    let alias_bound = bound_sqlite::BoundDatabase::acquire(&alias_target).unwrap();
+    assert!(alias_bound
+        .uri(bound_sqlite::SqliteMode::ReadWrite)
+        .unwrap()
+        .contains("/alias.db3?"));
+}
+
+#[tokio::test]
 async fn content_validation_current_version_returns_stored_metadata_without_pragmas_and_empty_open_fails(
 ) {
     let _serial = SERIAL.lock().await;
