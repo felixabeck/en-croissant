@@ -749,6 +749,7 @@ function makeMove({
     if (sound) {
         playSound(san.includes("x"), san.includes("+"));
     }
+    const previousResult = state.headers.result;
     if (changeHeaders && pos.isEnd()) {
         if (pos.isCheckmate()) {
             state.headers.result = pos.turn === "white" ? "0-1" : "1-0";
@@ -766,6 +767,10 @@ function makeMove({
         (isThreeFoldRepetition(state, newFen, position) || is50MoveRule(newFen))
     ) {
         state.headers.result = "1/2-1/2";
+    }
+
+    if (state.headers.result !== previousResult) {
+        state.dirty = true;
     }
 
     const i = moveNode.children.findIndex((n) => n.san === san);

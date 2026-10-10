@@ -2,6 +2,7 @@ import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { afterEach, expect, test, vi } from "vitest";
+import type { Outcome } from "@/bindings";
 import { fixtureNode } from "@/tests/treeFixtures";
 import {
     createNode,
@@ -259,6 +260,148 @@ test("makeMove preserves headers when checkmate and fifty-move adjudication are 
     expect(position!.halfmoves).toBe(100);
     expect(store.getState().headers).toBe(headers);
     expect(store.getState().headers.result).toBe("0-1");
+});
+
+const adjudicationReplayCases = [
+    {
+        kind: "white checkmate at clock 100",
+        fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 99 1",
+        moves: ["f7g7"],
+        result: "1-0",
+    },
+    {
+        kind: "black checkmate at clock 100",
+        fen: "8/8/8/8/8/6k1/5q2/7K b - - 99 1",
+        moves: ["f2g2"],
+        result: "0-1",
+    },
+    {
+        kind: "fifty-move draw",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 99 1",
+        moves: ["g1f3"],
+        result: "1/2-1/2",
+    },
+    {
+        kind: "stalemate",
+        fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        moves: ["f7e6"],
+        result: "1/2-1/2",
+    },
+    {
+        kind: "insufficient material",
+        fen: "7k/8/6K1/8/8/2n5/1B6/8 w - - 0 1",
+        moves: ["b2c3"],
+        result: "1/2-1/2",
+    },
+    {
+        kind: "threefold repetition",
+        fen: INITIAL_FEN,
+        moves: ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"],
+        result: "1/2-1/2",
+    },
+] as const;
+
+function prepareAdjudicationReplay(
+    testCase: (typeof adjudicationReplayCases)[number],
+    editedResult: Outcome,
+) {
+    const store = createTreeStore(undefined, defaultTree(testCase.fen));
+    for (const uci of testCase.moves) {
+        const move = parseUci(uci)!;
+        const [position, error] = positionFromFen(store.getState().currentNode().fen);
+        expect(error).toBeNull();
+        expect(position!.isLegal(move)).toBe(true);
+        store.getState().makeMove({ payload: move });
+    }
+    expect(store.getState().headers.result).toBe(testCase.result);
+    expect(store.getState().dirty).toBe(true);
+    const terminalChild = store.getState().currentNode();
+
+    store.getState().setResult(editedResult);
+    store.getState().save();
+    store.getState().goToStart();
+    expect(store.getState().position).toEqual([]);
+    expect(store.getState().headers.result).toBe(editedResult);
+    expect(store.getState().dirty).toBe(false);
+    const root = store.getState().root;
+    const headers = store.getState().headers;
+
+    return {
+        store,
+        headers,
+        replay: (changeHeaders = true) => {
+            for (const [index, uci] of testCase.moves.entries()) {
+                store.getState().makeMove({ payload: parseUci(uci)!, changeHeaders });
+                expect(store.getState().position).toEqual(Array(index + 1).fill(0));
+            }
+            const state = store.getState();
+            expect(state.position).toHaveLength(testCase.moves.length);
+            expect(state.root).toBe(root);
+            expect(state.currentNode()).toBe(terminalChild);
+            let node = state.root;
+            for (let depth = 0; depth < testCase.moves.length; depth++) {
+                expect(node.children).toHaveLength(1);
+                node = node.children[0];
+            }
+            expect(node.children).toHaveLength(0);
+        },
+    };
+}
+
+test.each(adjudicationReplayCases)(
+    "replaying an existing $kind changes the saved Result and marks the tree dirty",
+    (testCase) => {
+        const { store, replay } = prepareAdjudicationReplay(testCase, "*");
+
+        replay();
+
+        expect(store.getState().headers.result).toBe(testCase.result);
+        expect(store.getState().dirty).toBe(true);
+    },
+);
+
+test.each(adjudicationReplayCases)(
+    "replaying an existing $kind with unchanged Result stays clean",
+    (testCase) => {
+        const { store, headers, replay } = prepareAdjudicationReplay(testCase, testCase.result);
+
+        replay();
+
+        expect(store.getState().headers.result).toBe(testCase.result);
+        expect(store.getState().headers).toBe(headers);
+        expect(store.getState().dirty).toBe(false);
+    },
+);
+
+test.each(adjudicationReplayCases)(
+    "replaying an existing $kind with adjudication disabled preserves the saved header",
+    (testCase) => {
+        const { store, headers, replay } = prepareAdjudicationReplay(testCase, "*");
+
+        replay(false);
+
+        expect(store.getState().headers.result).toBe("*");
+        expect(store.getState().headers).toBe(headers);
+        expect(store.getState().dirty).toBe(false);
+    },
+);
+
+test("replaying an ordinary existing child preserves Result and stays clean", () => {
+    const store = createTreeStore();
+    store.getState().makeMove({ payload: "e4" });
+    const child = store.getState().currentNode();
+    store.getState().save();
+    store.getState().goToStart();
+    const headers = store.getState().headers;
+
+    store.getState().makeMove({ payload: "e4" });
+
+    expect(store.getState().position).toEqual([0]);
+    expect(store.getState().root.children).toHaveLength(1);
+    expect(store.getState().currentNode()).toBe(child);
+    expect(store.getState().headers.result).toBe("*");
+    expect(store.getState().headers).toBe(headers);
+    expect(store.getState().dirty).toBe(false);
 });
 
 test("unreadable tree bytes survive hydration and incidental store updates", () => {

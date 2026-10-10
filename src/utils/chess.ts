@@ -149,7 +149,7 @@ export function getLastMainlinePosition(root: TreeNode): number[] {
 }
 
 export function getMainLine(root: TreeNode): string[] {
-    return getVariationLine(root, getLastMainlinePosition(root), true);
+    return getVariationLine(root, getLastMainlinePosition(root));
 }
 
 export function uciNormalize(chess: Chess, move: Move) {
@@ -157,11 +157,7 @@ export function uciNormalize(chess: Chess, move: Move) {
     return makeUci(frcMove);
 }
 
-export function getVariationLine(
-    root: TreeNode,
-    position: number[],
-    includeLastMove = false,
-): string[] {
+export function getVariationLine(root: TreeNode, position: number[]): string[] {
     const moves = [];
     let node = root;
     const [chess] = positionFromFen(root.fen);
@@ -174,9 +170,6 @@ export function getVariationLine(
             moves.push(uciNormalize(chess, node.move));
             chess.play(node.move);
         }
-    }
-    if (includeLastMove && node.children.length > 0) {
-        moves.push(uciNormalize(chess, node.children[0].move!));
     }
     return moves;
 }
