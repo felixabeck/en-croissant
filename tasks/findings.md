@@ -14485,3 +14485,18 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix and proof:** Coordinate replacement-tree durability and workspace ownership before publishing success. Prove real persisted-store tree and workspace refusal, retained pending edits, reload and retry. The handled f-20260910-09 establishes fresh-ID staging for New Tab replacement, not current file-game page replacement. Root will settle the extension contract in this drain run.
 * **Open question:** Can the proven fresh-ID slot replacement preserve the current file tab's visible configuration and resource lifecycle, or does a stable logical tab need a separate durable tree-key reference? Settle atomic refusal and post-commit cleanup together rather than independently writing the two existing keys.
 * **Found by:** fresh persisted-state closure lens, confidence 97, confirmed by root source trace. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Durable page replacement restores captured file metadata over a newer committed update
+
+* **ID:** f-20261010-08 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/utils/tabs.ts replaceFileGame, src/components/panels/info/FileInfo.tsx reload.
+* **Defect:** The new replacement facade validates the current file handle, game index and physical tree key, but constructs the replacement gameOrigin from captured owner.gameOrigin. FileInfo.reload can commit a newer numGames while the page read is pending without changing any of those ownership guards or the tree. The page replacement then writes the captured older file metadata back into the workspace. The prior InfoPanel updater preserved the current prev.gameOrigin.
+* **Origin:** Root observed the in-progress D9 phase on parent HEAD 3e8f8ba0. The captured-origin overlay is introduced by that phase, rather than inherited code.
+* **Fix and proof:** Preserve current committed file metadata when changing only gameNumber and the physical tree reference. Retain all owner, snapshot and generation guards. Prove a metadata/count update while the real page read is pending survives the successful replacement, with a retained-test source reversal that fails specifically on the lost metadata.
+* **Open question:** No product decision is needed. Repair within the current D9 source phase before source closure. Related f-20261010-07 owns the durability mechanism, but this finding has the distinct captured-metadata cause.
+* **Found by:** Root source trace of the complete replacement, origin comparison and FileInfo reload paths. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
