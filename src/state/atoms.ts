@@ -78,35 +78,40 @@ export function initializeWorkspace(): Workspace {
 
 const committedWorkspaceAtom = atom<Workspace | null>(null);
 const workspaceAtom = atom((get) => get(committedWorkspaceAtom) ?? initializeWorkspace());
-const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace, onSaved?: () => void) => {
-    const previous = get(workspaceAtom);
-    const retainedIds = new Set(workspace.tabs.map(getTabTreeKey));
-    const closedIds = new Set(
-        previous.tabs.map(getTabTreeKey).filter((id) => !retainedIds.has(id)),
-    );
-    const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
-    const pendingRemovalResult = reconcilePendingTreeRemovals(
-        workspace.treeOwnershipPendingRemovalIds ?? [],
-        closedIds,
-        retainedIds,
-    );
-    if (pendingRemovalResult.ids === null) {
-        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
-        return false;
-    }
-    const pendingRemovalIds = pendingRemovalResult.ids;
-    const canonical = {
-        ...workspace,
-        ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),
-        treeOwnershipPendingRemovalIds:
-            pendingRemovalIds.length === 0 ? undefined : pendingRemovalIds,
-    };
-    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
-    if (!saved) return false;
-    onSaved?.();
-    set(committedWorkspaceAtom, saved);
-    return true;
-});
+const commitWorkspaceAtom = atom(
+    null,
+    (get, set, workspace: Workspace, onSaved?: (saved: Workspace) => void) => {
+        const previous = get(workspaceAtom);
+        const retainedIds = new Set(workspace.tabs.map(getTabTreeKey));
+        const closedIds = new Set(
+            previous.tabs.map(getTabTreeKey).filter((id) => !retainedIds.has(id)),
+        );
+        const protectedIds = workspace.treeOwnershipProtectedIds?.filter(
+            (id) => !closedIds.has(id),
+        );
+        const pendingRemovalResult = reconcilePendingTreeRemovals(
+            workspace.treeOwnershipPendingRemovalIds ?? [],
+            closedIds,
+            retainedIds,
+        );
+        if (pendingRemovalResult.ids === null) {
+            reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
+            return false;
+        }
+        const pendingRemovalIds = pendingRemovalResult.ids;
+        const canonical = {
+            ...workspace,
+            ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),
+            treeOwnershipPendingRemovalIds:
+                pendingRemovalIds.length === 0 ? undefined : pendingRemovalIds,
+        };
+        const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
+        if (!saved) return false;
+        set(committedWorkspaceAtom, saved);
+        onSaved?.(saved);
+        return true;
+    },
+);
 
 export const tabsAtom = atom(
     (get) => get(workspaceAtom).tabs,
@@ -115,7 +120,7 @@ export const tabsAtom = atom(
         set,
         update: Tab[] | ((tabs: Tab[]) => Tab[]),
         requestedActiveTab?: string,
-        onSaved?: () => void,
+        onSaved?: (saved: Workspace) => void,
     ) => {
         const workspace = get(workspaceAtom);
         const tabs = typeof update === "function" ? update(workspace.tabs) : update;

@@ -1,4 +1,4 @@
-import { getFileFreshness, removeFileFreshness } from "@/state/fileFreshness";
+import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -369,6 +369,57 @@ describe("InfoPanel game loading and cancellation", () => {
       (button) => button.textContent?.trim() === "Common.Delete",
     ) as HTMLButtonElement;
   }
+
+  test.each(["tree", "workspace", "inactive"] as const)(
+    "InfoPanel retains its strict current-owner error policy after admitted %s observer failure",
+    async (subscriber) => {
+      setFileFreshness(tabAId, "verified", { verifiedRevision: "original" });
+      await act(async () => root.render(renderPanel()));
+      const tree = defaultTree();
+      tree.headers.event = "Admitted InfoPanel page";
+      tree.sourceStamp = "b".repeat(64);
+      mocks.loadFileGame.mockResolvedValueOnce({
+        pgn: "admitted",
+        stamp: tree.sourceStamp,
+        revision: "admitted",
+        present: true,
+        tree,
+      });
+      let threw = false;
+      const listener = () => {
+        if (threw || treeStore.getState().sourceStamp !== tree.sourceStamp) return;
+        threw = true;
+        expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 1 });
+        if (subscriber === "inactive") jotaiStore.set(activeTabAtom, tabBId);
+        throw new Error("InfoPanel admitted observer failed");
+      };
+      const unsubscribe =
+        subscriber === "workspace"
+          ? jotaiStore.sub(tabsAtom, listener)
+          : treeStore.subscribe(listener);
+      try {
+        await act(async () =>
+          container.querySelector<HTMLButtonElement>('[data-testid="set-page"]')!.click(),
+        );
+        expect(threw).toBe(true);
+        const current = jotaiStore.get(tabsAtom)[0]!;
+        expect(current.gameOrigin).toMatchObject({ gameNumber: 1 });
+        expect(treeStore.getState()).toMatchObject(tree);
+        expect(getTabTreeKey(current)).not.toBe(tabAId);
+        expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]).toEqual(current);
+        expect(tabStorage.flush()).toEqual([]);
+        expect(tabStorage.read(getTabTreeKey(current), true)?.state).toMatchObject(tree);
+        expect(getFileFreshness(tabAId)).toMatchObject({
+          state: "verified",
+          verifiedRevision: "original",
+        });
+        expect(mocks.notify.mock.calls).toHaveLength(subscriber === "inactive" ? 0 : 1);
+        expect(jotaiStore.get(activeTabAtom)).toBe(subscriber === "inactive" ? tabBId : tabAId);
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
 
   function renderPanel(store: TreeStore = treeStore) {
     return (

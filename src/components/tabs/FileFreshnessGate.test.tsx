@@ -983,6 +983,7 @@ test.each(reloadFailures)(
     candidate.sourceStamp = "c".repeat(64);
     const treeKey = crypto.randomUUID();
     tabStorage.seed(treeKey, candidate);
+    const seedBytes = sessionStorage.getItem(treeKey);
     expect(new TabStorageRepository().read(treeKey)?.state).toEqual(candidate);
     await act(async () => {
       expect(
@@ -998,8 +999,9 @@ test.each(reloadFailures)(
     expect(createTreeStore(tabId)).toBe(treeStore);
     expect(signal.aborted).toBe(false);
     expect(tabStorage.flush()).toEqual([]);
-    const durableTree = { ...candidate, practicePath: null };
+    const durableTree = candidate;
     expect(new TabStorageRepository().read(treeKey)?.state).toEqual(durableTree);
+    expect(sessionStorage.getItem(treeKey)).toBe(seedBytes);
     const durableBytes = sessionStorage.getItem(treeKey);
     expect(durableBytes).not.toBeNull();
     const current = treeStore.getState();
@@ -1132,6 +1134,7 @@ async function installAppendReplacement(appendAttempted: boolean) {
   candidate.appendAttempted = appendAttempted;
   const treeKey = crypto.randomUUID();
   tabStorage.seed(treeKey, candidate);
+  const seedBytes = sessionStorage.getItem(treeKey);
   expect(new TabStorageRepository().read(treeKey)?.state).toEqual(candidate);
   await act(async () => {
     expect(
@@ -1146,8 +1149,9 @@ async function installAppendReplacement(appendAttempted: boolean) {
   expect(jotaiStore.get(activeTabAtom)).toBe(tabId);
   expect(createTreeStore(tabId)).toBe(treeStore);
   expect(tabStorage.flush()).toEqual([]);
-  const durableTree = { ...candidate, practicePath: null };
+  const durableTree = candidate;
   expect(new TabStorageRepository().read(treeKey)?.state).toEqual(durableTree);
+  expect(sessionStorage.getItem(treeKey)).toBe(seedBytes);
   const durableBytes = sessionStorage.getItem(treeKey);
   expect(durableBytes).not.toBeNull();
   return {

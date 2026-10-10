@@ -1273,17 +1273,51 @@ describe("BoardAnalysis add game durability", () => {
     },
   );
 
-  test.each(["before", "after"] as const)(
-    "composed Add Game preserves possible durable admission when retarget throws %s tree installation",
-    async (timing) => {
+  test.each(["workspace", "tree"] as const)(
+    "composed Add Game settles admitted successor after actual %s subscriber failure and completed reconciliation",
+    async (subscriber) => {
       const old = await queuedCleanSave();
+      mocks.countPgnGames.mockResolvedValueOnce(99);
       const write = held<Written>();
       mocks.writeGame.mockReturnValueOnce(write.promise);
       await activate();
-      const install = treeStore.getState().setState;
-      const throwing = vi.spyOn(treeStore.getState(), "setState").mockImplementation((tree) => {
-        if (timing === "after") install(tree);
+      let threw = false;
+      const listener = () => {
+        if (threw || treeStore.getState().sourceStamp !== "b".repeat(64)) return;
+        threw = true;
+        expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 3 });
         throw new Error("Retarget follow-up failed");
+      };
+      const unsubscribe =
+        subscriber === "workspace"
+          ? jotaiStore.sub(tabsAtom, listener)
+          : treeStore.subscribe(listener);
+      const read = held<{ pgn: string; stamp: string; revision: string; present: boolean }>();
+      const oldPgn = '[Event "Previous page"]\n\n1. e4 *';
+      const admittedPgn = '[Event "Admitted page"]\n\n*';
+      mocks.readGame.mockImplementation((_handle, page, options) => {
+        if (page === 3) {
+          options?.signal.addEventListener(
+            "abort",
+            () => read.reject({ category: "cancellation", message: "Cancellation" }),
+            { once: true },
+          );
+          return read.promise;
+        }
+        return Promise.resolve({
+          pgn: oldPgn,
+          stamp: "c".repeat(64),
+          revision: "wrong-page",
+          present: true,
+        });
+      });
+      mocks.parsePGN.mockImplementation(async (pgn) => {
+        const tree = defaultTree();
+        tree.headers.event =
+          pgn === oldPgn ? "Previous page" : pgn === admittedPgn ? "Admitted page" : "?";
+        tree.root.comment =
+          pgn === oldPgn ? "Previous-page content must not reach admitted key" : "";
+        return tree;
       });
       try {
         await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
@@ -1296,16 +1330,178 @@ describe("BoardAnalysis add game durability", () => {
         });
         expect(sessionStorage.getItem(tabId)).toBe(old.bytes);
         expect(tabStorage.read(tabId)?.state).toEqual(old.pending);
-        expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual(tab.gameOrigin);
+        expect(threw).toBe(true);
+        expect(jotaiStore.get(tabsAtom)[0]).toEqual(cold.owner);
+        expect(treeStore.getState()).toMatchObject(cold.tree!);
         expect(mocks.countPgnGames).not.toHaveBeenCalled();
         expect(getFileFreshness(tabId).state).toBe("unverified");
         expect(container.textContent).not.toContain("FileFreshness.AddingGame");
         expect(mocks.showNotification).toHaveBeenCalledOnce();
-        expect(mocks.showNotification.mock.calls[0]?.[0].message).toBe(
-          "FileFreshness.AddGameMayHaveBeenAdded Retarget follow-up failed",
+        expect(mocks.showNotification.mock.calls[0]?.[0].message).toContain(
+          "FileFreshness.AddGameMayHaveBeenAdded",
         );
+        const cause = mocks.notifyUnlessCancelled.mock.calls[0]?.[1];
+        expect(cause).toMatchObject({ category: "unexpected" });
+        expect(mocks.readGame.mock.calls.map(([, page]) => page)).toEqual([3]);
+        await act(async () =>
+          read.resolve({
+            pgn: admittedPgn,
+            stamp: "c".repeat(64),
+            revision: "reconciled",
+            present: true,
+          }),
+        );
+        expect(getFileFreshness(tabId)).toMatchObject({
+          state: "verified",
+          verifiedRevision: "reconciled",
+        });
+        expect(tabStorage.flush()).toEqual([]);
+        expect(coldPair()).toMatchObject({
+          owner: cold.owner,
+          tree: {
+            headers: { event: "Admitted page" },
+            root: { comment: "", children: [] },
+            sourceStamp: "c".repeat(64),
+          },
+        });
+        await navigate(awayTab.value);
+        await navigate(tabId);
+        expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+        await activate();
+        expect(getFileFreshness(tabId).state).toBe("verified");
       } finally {
-        throwing.mockRestore();
+        unsubscribe();
+        await act(async () =>
+          read.resolve({
+            pgn: admittedPgn,
+            stamp: "c".repeat(64),
+            revision: "reconciled",
+            present: true,
+          }),
+        );
+      }
+    },
+  );
+
+  test("composed reconciliation after an installed observer failure preserves the admitted cold page content", async () => {
+    await queuedCleanSave();
+    const oldPgn = '[Event "Previous page"]\n\n1. e4 *';
+    const admittedPgn = '[Event "Admitted page"]\n\n*';
+    mocks.readGame.mockImplementation(async (_handle, page) => ({
+      pgn: page === 3 ? admittedPgn : oldPgn,
+      stamp: "c".repeat(64),
+      revision: "reconciled",
+      present: true,
+    }));
+    mocks.parsePGN.mockImplementation(async (pgn) => {
+      const tree = defaultTree();
+      tree.headers.event =
+        pgn === oldPgn ? "Previous page" : pgn === admittedPgn ? "Admitted page" : "?";
+      tree.root.comment = pgn === oldPgn ? "Previous-page content" : "";
+      return tree;
+    });
+    const write = held<Written>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await activate();
+    let threw = false;
+    const unsubscribe = treeStore.subscribe(() => {
+      if (threw || treeStore.getState().sourceStamp !== "b".repeat(64)) return;
+      threw = true;
+      throw new Error("Installed observer failed");
+    });
+    try {
+      await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+      expect(threw).toBe(true);
+      expect(tabStorage.flush()).toEqual([]);
+      const cold = coldPair();
+      expect((cold.tree as ReturnType<typeof defaultTree> | undefined)?.root.comment).toBe("");
+      expect(cold.tree).toMatchObject({
+        headers: { event: "Admitted page" },
+        sourceStamp: "c".repeat(64),
+        dirty: false,
+      });
+      expect(cold.owner.gameOrigin).toMatchObject({ gameNumber: 3, file: { numGames: 4 } });
+      expect(treeStore.getState()).toMatchObject(cold.tree!);
+      expect(jotaiStore.get(tabsAtom)[0]).toEqual(cold.owner);
+      expect(getFileFreshness(tabId)).toMatchObject({
+        state: "verified",
+        verifiedRevision: "reconciled",
+      });
+      expect(mocks.showNotification).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test.each([
+    "workspace-replacement",
+    "tree-replacement",
+    "workspace-removal",
+    "tree-removal",
+  ] as const)(
+    "composed Add Game remains silent after reentrant %s subscriber failure",
+    async (scenario) => {
+      await queuedCleanSave();
+      const write = held<Written>();
+      mocks.writeGame.mockReturnValueOnce(write.promise);
+      await activate();
+      let reentered = false;
+      let foreign: Tab | undefined;
+      let replacementKind: string | undefined;
+      const listener = () => {
+        if (reentered || treeStore.getState().sourceStamp !== "b".repeat(64)) return;
+        reentered = true;
+        const admitted = jotaiStore.get(tabsAtom).find((current) => current.value === tabId)!;
+        if (!isFileBackedTab(admitted)) throw new Error("Expected canonical admitted owner");
+        if (scenario.endsWith("removal")) {
+          jotaiStore.set(closeWorkspaceTabAtom, tabId);
+        } else {
+          const tree = defaultTree();
+          tree.headers.event = "Foreign replacement";
+          tree.sourceStamp = "f".repeat(64);
+          replacementKind = replaceFileGame({
+            store: jotaiStore,
+            owner: admitted,
+            treeStore,
+            snapshot: treeStore.getState(),
+            tree,
+            page: 0,
+            isCurrent: () => true,
+          }).kind;
+          foreign = jotaiStore.get(tabsAtom).find((current) => current.value === tabId);
+        }
+        setFileFreshness(tabId, "verified", { verifiedRevision: "foreign" });
+        throw new Error("Foreign observer failed");
+      };
+      const unsubscribe = scenario.startsWith("workspace")
+        ? jotaiStore.sub(tabsAtom, listener)
+        : treeStore.subscribe(listener);
+      try {
+        await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+        expect(reentered).toBe(true);
+        expect(replacementKind).toBe(scenario.endsWith("removal") ? undefined : "committed");
+        expect(jotaiStore.get(tabsAtom).find((current) => current.value === tabId)).toEqual(
+          foreign,
+        );
+        expect(getFileFreshness(tabId)).toMatchObject({
+          state: "verified",
+          verifiedRevision: "foreign",
+        });
+        expect(mocks.showNotification).not.toHaveBeenCalled();
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+        expect(mocks.readGame).not.toHaveBeenCalled();
+        expect(tabStorage.flush()).toEqual([]);
+        const durable = deserializeStorageValue<{ tabs: Tab[] }>(
+          sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!,
+        )!;
+        expect(durable.tabs.find((current) => current.value === tabId)).toEqual(foreign);
+        const foreignCold = foreign
+          ? (coldPair().tree as ReturnType<typeof defaultTree>)
+          : undefined;
+        expect(foreignCold?.headers.event).toBe(foreign ? "Foreign replacement" : undefined);
+        expect(foreignCold?.sourceStamp).toBe(foreign ? "f".repeat(64) : undefined);
+      } finally {
+        unsubscribe();
       }
     },
   );
@@ -1768,6 +1964,139 @@ describe("BoardAnalysis add game durability", () => {
       expect(mocks.countPgnGames).toHaveBeenCalledTimes(boundary === "count" ? 1 : 0);
     },
   );
+
+  test("composed competing Save preserves the live and cold saved game while the original Add Game parse is pending", async () => {
+    const save = held<Written>();
+    const parse = held<ReturnType<typeof defaultTree>>();
+    const blank = defaultTree();
+    blank.headers.event = "?";
+    mocks.writeGame
+      .mockReturnValueOnce(save.promise)
+      .mockResolvedValue({ stamp: "b".repeat(64), revision: "added" });
+    mocks.parsePGN.mockReturnValueOnce(parse.promise);
+    await composed();
+    const saving = startOrdinarySave();
+    try {
+      await activate();
+      expectPending();
+      await act(async () => {
+        save.resolve({ stamp: "d".repeat(64), revision: "saved" });
+        expect(await saving).toBe("saved");
+      });
+      expect(getFileFreshness(tabId)).toMatchObject({
+        state: "verified",
+        verifiedRevision: "saved",
+      });
+      // Flush the completed original Save, before either Add Game can admit a candidate.
+      expect(tabStorage.flush()).toEqual([]);
+      const savedOwner = jotaiStore.get(tabsAtom)[0]!;
+      const savedKey = getTabTreeKey(savedOwner);
+      const savedTree = {
+        dirty: false,
+        sourceStamp: "d".repeat(64),
+        headers: { event: "Keep this tree" },
+        root: { children: [], comment: "" },
+      };
+      expect(savedOwner.gameOrigin).toMatchObject({
+        kind: "file",
+        gameNumber: 1,
+        file: { numGames: 3 },
+      });
+      expect(coldPair()).toMatchObject({ owner: savedOwner, tree: savedTree });
+      await navigate(awayTab.value);
+      await navigate(tabId);
+      await activate();
+      expect(jotaiStore.get(tabsAtom)[0]).toEqual(savedOwner);
+      expect(getTabTreeKey(jotaiStore.get(tabsAtom)[0]!)).toBe(savedKey);
+      expect(treeStore.getState()).toMatchObject(savedTree);
+      expect(coldPair()).toMatchObject({ owner: savedOwner, tree: savedTree });
+      expectPending();
+      await act(async () => parse.resolve(blank));
+      expectCompleted();
+      const completed = coldPair();
+      expect(getTabTreeKey(completed.owner)).not.toBe(savedKey);
+      expect(completed.owner).toEqual(jotaiStore.get(tabsAtom)[0]);
+      expect(completed.tree).toMatchObject({
+        dirty: false,
+        sourceStamp: "b".repeat(64),
+        headers: { event: "?" },
+        root: { children: [], comment: "" },
+      });
+      expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+      expect(mocks.writeGame.mock.calls.map(([, page, , origin]) => ({ page, origin }))).toEqual([
+        { page: 1, origin: { kind: "game", stamp: "a".repeat(64) } },
+        { page: 3, origin: { kind: "append" } },
+      ]);
+      expect(mocks.showNotification.mock.calls).toEqual([]);
+    } finally {
+      await act(async () => {
+        save.resolve({ stamp: "d".repeat(64), revision: "saved" });
+        parse.resolve(blank);
+        await saving;
+      });
+    }
+  });
+
+  test("composed replacement admits its own Add Game and retains pending presentation after the old parse settles", async () => {
+    const oldParse = held<ReturnType<typeof defaultTree>>();
+    const newParse = held<ReturnType<typeof defaultTree>>();
+    const blank = defaultTree();
+    blank.headers.event = "?";
+    mocks.parsePGN.mockReturnValueOnce(oldParse.promise).mockReturnValueOnce(newParse.promise);
+    mocks.writeGame.mockResolvedValue({ stamp: "b".repeat(64), revision: "added" });
+    await composed();
+    try {
+      await activate();
+      expectPending();
+      const originalKey = getTabTreeKey(jotaiStore.get(tabsAtom)[0]!);
+      await replaceOwner();
+      const replacementOwner = jotaiStore.get(tabsAtom)[0]!;
+      const replacementKey = getTabTreeKey(replacementOwner);
+      expect(replacementKey).not.toBe(originalKey);
+      expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+      await activate();
+      expectPending();
+      await act(async () => oldParse.resolve(defaultTree()));
+      expectPending();
+      expect(jotaiStore.get(tabsAtom)[0]).toEqual(replacementOwner);
+      expect(treeStore.getState()).toMatchObject({
+        headers: { event: "Replacement event" },
+        root: { comment: "Replacement comment" },
+        sourceStamp: "c".repeat(64),
+      });
+      expect(coldPair()).toMatchObject({
+        owner: replacementOwner,
+        tree: {
+          headers: { event: "Replacement event" },
+          root: { comment: "Replacement comment" },
+          sourceStamp: "c".repeat(64),
+        },
+      });
+      await act(async () => newParse.resolve(blank));
+      expectCompleted();
+      const completed = coldPair();
+      expect(completed.owner).toEqual(jotaiStore.get(tabsAtom)[0]);
+      expect(getTabTreeKey(completed.owner)).not.toBe(replacementKey);
+      expect(completed.tree).toMatchObject({
+        dirty: false,
+        sourceStamp: "b".repeat(64),
+        headers: { event: "?" },
+        root: { children: [], comment: "" },
+      });
+      expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+      expect(mocks.writeGame.mock.calls.map(([, page, , origin]) => ({ page, origin }))).toEqual([
+        { page: 3, origin: { kind: "append" } },
+      ]);
+      expect(mocks.showNotification.mock.calls).toEqual([]);
+    } finally {
+      await act(async () => {
+        oldParse.resolve(defaultTree());
+        newParse.resolve(blank);
+      });
+    }
+  });
 
   test("composed obsolete release cannot release a newer physical generation's admission", async () => {
     const oldParse = held<ReturnType<typeof defaultTree>>();

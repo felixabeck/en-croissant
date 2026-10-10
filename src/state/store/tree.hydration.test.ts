@@ -15,9 +15,51 @@ import {
     discardTreeStoreStorage,
     retryTreeStoreStorage,
     retargetTreeStore,
+    prepareTreeStoreRetarget,
 } from "./tree";
 
 const ids: string[] = [];
+
+test("prepared retarget bypasses mutable actions and preserves the durable seed through subscriber failure", () => {
+    const logical = crypto.randomUUID();
+    const physical = crypto.randomUUID();
+    ids.push(logical, physical);
+    const store = createTreeStore(logical);
+    store.getState().setComment("Pending old tree");
+    const pending = tabStorage.read(logical)?.state;
+    const tree = defaultTree();
+    tree.headers.event = "Prepared candidate";
+    tree.sourceStamp = "b".repeat(64);
+    tabStorage.seed(physical, tree);
+    const bytes = sessionStorage.getItem(physical);
+    const install = prepareTreeStoreRetarget(logical, physical, tree);
+    vi.spyOn(store.getState(), "setState").mockImplementation(() => {
+        throw new Error("Mutable action must be bypassed");
+    });
+    const failure = new Error("Installed observer failure");
+    const unsubscribe = store.subscribe(() => {
+        throw failure;
+    });
+    expect(() => install()).toThrow(failure);
+    unsubscribe();
+    expect(store.getState()).toMatchObject(tree);
+    expect(store.getState().practicePath).toBeNull();
+    expect(tabStorage.pendingCount()).toBe(1);
+    expect(tabStorage.read(logical)?.state).toEqual(pending);
+    expect(sessionStorage.getItem(physical)).toBe(bytes);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(physical)).toBe(bytes);
+    store.getState().setComment("Later candidate edit");
+    expect(tabStorage.flush()).toEqual([]);
+    expect(tabStorage.read(physical, true)?.state).toMatchObject({
+        headers: tree.headers,
+        root: { comment: "Later candidate edit" },
+    });
+    expect(tabStorage.read(logical)?.state).toMatchObject({
+        root: { comment: "Pending old tree" },
+        dirty: true,
+    });
+});
 
 afterEach(() => {
     vi.restoreAllMocks();

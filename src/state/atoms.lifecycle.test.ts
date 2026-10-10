@@ -345,6 +345,68 @@ test.each([true, false])(
     },
 );
 
+test.each(["tree", "workspace"] as const)(
+    "admitted %s subscriber errors escape only after exact acknowledgement and matching live ownership",
+    (subscriber) => {
+        const { fixture, owner, tree } = fileReplacementFixture();
+        let acknowledged: Tab | undefined;
+        const failure = new Error("Admitted subscriber failed");
+        const observe = () => {
+            const current = fixture.store.get(tabsAtom).find((tab) => tab.value === owner.value)!;
+            expect(current).toEqual(acknowledged);
+            expect(current.gameOrigin).toMatchObject({ gameNumber: 0 });
+            expect(fixture.ownerTreeStore.getState()).toMatchObject(tree);
+            throw failure;
+        };
+        const unsubscribe =
+            subscriber === "tree"
+                ? fixture.ownerTreeStore.subscribe(observe)
+                : fixture.store.sub(tabsAtom, observe);
+        let escaped: unknown;
+        try {
+            replaceFileGame({
+                store: fixture.store,
+                owner,
+                treeStore: fixture.ownerTreeStore,
+                snapshot: fixture.ownerTreeStore.getState(),
+                tree,
+                page: 0,
+                isCurrent: () => true,
+                onAdmitted: (successor) => {
+                    acknowledged = successor;
+                    expect(
+                        fixture.store.get(tabsAtom).find((tab) => tab.value === owner.value),
+                    ).toBe(successor);
+                },
+            });
+        } catch (error) {
+            escaped = error;
+        }
+        unsubscribe();
+        expect(escaped).toBeInstanceOf(subscriber === "tree" ? Error : AggregateError);
+        expect(
+            subscriber === "workspace" ? (escaped as AggregateError).errors : [escaped],
+        ).toContain(failure);
+        expect(acknowledged).toBeDefined();
+        const candidate = getTabTreeKey(acknowledged!);
+        replacementTabIds.add(candidate);
+        expect(
+            (
+                readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY) as ReturnType<
+                    typeof loadWorkspace
+                >
+            ).tabs[1],
+        ).toEqual(acknowledged);
+        expect(new TabStorageRepository().read(candidate, true)?.state).toMatchObject(tree);
+        expect(sessionStorage.getItem(owner.value)).toBe(fixture.ownerDurableBytes);
+        expect(availableTree(tabStorage.readTree(owner.value))).toBe(
+            availableTree(fixture.ownerPendingEntry),
+        );
+        expect(tabStorage.flush()).toEqual([]);
+        expect(new TabStorageRepository().read(candidate, true)?.state).toMatchObject(tree);
+    },
+);
+
 test("page replacement preserves file metadata refreshed while its read was pending", () => {
     const { fixture, owner, replace } = fileReplacementFixture();
     const current = {

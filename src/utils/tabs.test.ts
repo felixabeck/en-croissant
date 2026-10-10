@@ -6,7 +6,7 @@ import { tabsAtom } from "@/state/atoms";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import type { FileWorkspaceHandle } from "@/bindings";
-import { tabStorage } from "@/state/store/tabStorage";
+import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
 import { loadWorkspace, MAX_PROTECTED_TREE_KEYS, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
@@ -72,8 +72,62 @@ import {
     sameTabOwner,
     matchesFileGameTab,
     useTabActions,
+    replaceFileGame,
+    isFileBackedTab,
     type Tab,
 } from "./tabs";
+
+test("canonical successor acknowledgement cannot interrupt admitted tree finalization", () => {
+    const workspace = createStore();
+    const owner = { ...saveFixture().tabs[0]!, value: crypto.randomUUID() };
+    if (!isFileBackedTab(owner)) throw new Error("Expected a file owner");
+    const oldTree = defaultTree();
+    oldTree.root.comment = "Previous page";
+    tabStorage.seed(owner.value, oldTree);
+    const treeStore = createTreeStore(owner.value);
+    expect(workspace.set(tabsAtom, [{ ...owner, name: "Current metadata" }], owner.value)).toBe(
+        true,
+    );
+    const candidate = defaultTree();
+    candidate.headers.event = "Acknowledged page";
+    candidate.sourceStamp = "b".repeat(64);
+    let acknowledged: Tab | undefined;
+    const failure = new Error("Acknowledgement follow-up failed");
+    try {
+        expect(() =>
+            replaceFileGame({
+                store: workspace,
+                owner,
+                treeStore,
+                snapshot: treeStore.getState(),
+                tree: candidate,
+                page: 2,
+                appendCount: 3,
+                isCurrent: () => true,
+                onAdmitted: (successor) => {
+                    acknowledged = successor;
+                    expect(workspace.get(tabsAtom)[0]).toBe(successor);
+                    throw failure;
+                },
+            }),
+        ).toThrow(failure);
+        expect(acknowledged).toMatchObject({
+            name: "Current metadata",
+            gameOrigin: { gameNumber: 2, file: { numGames: 3 } },
+        });
+        expect(treeStore.getState()).toMatchObject(candidate);
+        const physical = acknowledged!.treeKey!;
+        expect(new TabStorageRepository().read(physical, true)?.state).toEqual(candidate);
+        const bytes = sessionStorage.getItem(physical);
+        expect(tabStorage.flush()).toEqual([]);
+        expect(sessionStorage.getItem(physical)).toBe(bytes);
+        expect(sessionStorage.getItem(owner.value)).not.toBeNull();
+    } finally {
+        closeTreeStore(owner.value);
+        tabStorage.remove(owner.value);
+        if (acknowledged?.treeKey) tabStorage.remove(acknowledged.treeKey);
+    }
+});
 
 test("shared tab owner compares logical identity and effective legacy physical generation", () => {
     expect(sameTabOwner(undefined, fileTab)).toBe(false);

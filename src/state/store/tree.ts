@@ -101,7 +101,9 @@ export interface TreeStoreState extends TreeState {
 }
 
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
+const installAdmittedTree = Symbol("installAdmittedTree");
 type PersistedTreeStore = TreeStore & {
+    [installAdmittedTree]: StoreApi<TreeStoreState>["setState"];
     persist: {
         rehydrate: () => Promise<void> | void;
         getOptions: () => { name?: string };
@@ -117,14 +119,27 @@ export function getCachedTreeStore(tab: string): TreeStore | undefined {
     return treeStores.get(tab);
 }
 
-/** Switch the cached logical owner's persistence generation after durable admission. */
-export function retargetTreeStore(tab: string, treeKey: string, tree: TreeState): void {
+/** Prepare the adapter and state before admission, then install without queuing a seeded tree. */
+export function prepareTreeStoreRetarget(
+    tab: string,
+    treeKey: string,
+    tree: TreeState,
+): () => void {
     const store = treeStores.get(tab)!;
-    store.persist.setOptions({
+    const options = {
         name: treeKey,
         storage: tabStorage.storageFor<TreeStoreState>(treeKey !== tab),
-    });
-    store.getState().setState(tree);
+    };
+    const state = { ...tree, practicePath: null };
+    return () => {
+        store.persist.setOptions(options);
+        store[installAdmittedTree](state);
+    };
+}
+
+/** Switch the cached logical owner's persistence generation after durable admission. */
+export function retargetTreeStore(tab: string, treeKey: string, tree: TreeState): void {
+    prepareTreeStoreRetarget(tab, treeKey, tree)();
 }
 
 export type ReportOwnerInvalidation = {
@@ -687,24 +702,29 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
     });
 
     if (id) {
-        const store = createStore<TreeStoreState>()(
-            persist(stateCreator, {
-                name: treeKey!,
-                version: TREE_STORAGE_VERSION,
-                storage: tabStorage.storageFor<TreeStoreState>(treeKey !== id),
-                onRehydrateStorage: () => (state, error) => {
-                    if (!error && state) {
-                        // A renderer reload cannot resume the JavaScript completion owner that
-                        // registered this operation. Treat persisted report identity as stale;
-                        // ordinary provider remounts reuse the live store and never rehydrate.
-                        state.report.inProgress = false;
-                        state.report.operationId = null;
-                        normalizeTreeHalfMoves(state.root);
-                    }
-                },
-            }),
-        );
+        let install!: StoreApi<TreeStoreState>["setState"];
+        const persistedCreator = persist(stateCreator, {
+            name: treeKey!,
+            version: TREE_STORAGE_VERSION,
+            storage: tabStorage.storageFor<TreeStoreState>(treeKey !== id),
+            onRehydrateStorage: () => (state, error) => {
+                if (!error && state) {
+                    // A renderer reload cannot resume the JavaScript completion owner that
+                    // registered this operation. Treat persisted report identity as stale;
+                    // ordinary provider remounts reuse the live store and never rehydrate.
+                    state.report.inProgress = false;
+                    state.report.operationId = null;
+                    normalizeTreeHalfMoves(state.root);
+                }
+            },
+        });
+        const capturedCreator: typeof persistedCreator = (set, get, api) => {
+            install = set;
+            return persistedCreator(set, get, api);
+        };
+        const store = createStore<TreeStoreState>()(capturedCreator);
         const ownedStore = Object.assign(store, {
+            [installAdmittedTree]: install,
             // Provider unmount also calls dispose during ordinary tab switching.
             dispose: () => undefined,
         });

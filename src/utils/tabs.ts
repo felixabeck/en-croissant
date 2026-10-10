@@ -23,7 +23,7 @@ import {
 import {
     closeTreeStore,
     getCachedTreeStore,
-    retargetTreeStore,
+    prepareTreeStoreRetarget,
     type TreeStore,
     type TreeStoreState,
 } from "@/state/store/tree";
@@ -246,13 +246,11 @@ export async function appendBlankGame({
             page: gameNumber,
             appendCount: gameNumber + 1,
             isCurrent: owns,
+            onAdmitted: (successor) => {
+                completionOwner = successor;
+            },
         });
         if (replacement.kind === "committed") {
-            completionOwner = {
-                ...captured,
-                treeKey: replacement.treeKey,
-                gameOrigin: { ...origin, kind: "file", gameNumber },
-            };
             if (owns())
                 setFileFreshness(ownerId, "verified", { verifiedRevision: written.revision });
         } else if (owns()) unverified();
@@ -267,6 +265,7 @@ export async function appendBlankGame({
         if (writeAttempted) unverified();
         let visibleError: unknown = normalized;
         if (writeAttempted && normalized.backendCategory === "stale-game") {
+            // Durable refusal already reports storage failure. It cannot claim a refreshed count.
             if (!countRefresh.ok && !("error" in countRefresh)) return;
             visibleError = countRefresh.ok
                 ? { category: "validation", message: changedMessage }
@@ -298,10 +297,12 @@ function stageAndCommitTab({
     seed,
     existingTabIds,
     commit,
+    keepLogicalTab = false,
 }: {
     seed?: (id: string) => void;
     existingTabIds?: Iterable<string>;
     commit: (freshId: string) => boolean;
+    keepLogicalTab?: boolean;
 }): StagedAdmissionResult {
     initializeWorkspace();
     const id = genID(existingTabIds);
@@ -317,7 +318,7 @@ function stageAndCommitTab({
 
     let result: StagedAdmissionResult | undefined;
     let admissionError: unknown;
-    startTransition(() => {
+    const admit = () => {
         try {
             result = commit(id)
                 ? { kind: "committed", id }
@@ -325,7 +326,10 @@ function stageAndCommitTab({
         } catch (error) {
             admissionError = error;
         }
-    });
+    };
+    // A retained logical owner must publish its new page before urgent error settlement.
+    if (keepLogicalTab) admit();
+    else startTransition(admit);
     // A missing result is an application exception, never definite admission refusal.
     if (!result) throw admissionError;
     if (result.kind === "refused") {
@@ -433,6 +437,7 @@ export function replaceFileGame({
     page,
     appendCount,
     isCurrent,
+    onAdmitted,
 }: {
     store: ReturnType<typeof getDefaultStore>;
     owner: FileBackedTab;
@@ -442,6 +447,7 @@ export function replaceFileGame({
     page: number;
     appendCount?: number;
     isCurrent: () => boolean;
+    onAdmitted?: (successor: FileBackedTab) => void;
 }): ReplaceFileGameResult {
     const oldKey = getTabTreeKey(owner);
     const owns = () => {
@@ -459,8 +465,13 @@ export function replaceFileGame({
     };
     if (!owns()) return { kind: "superseded" };
     let superseded = false;
+    let install!: () => void;
     const result = stageAndCommitTab({
-        seed: (id) => tabStorage.seed(id, tree),
+        seed: (id) => {
+            install = prepareTreeStoreRetarget(owner.value, id, tree);
+            tabStorage.seed(id, tree);
+        },
+        keepLogicalTab: true,
         existingTabIds: store.get(tabsAtom).flatMap((tab) => [tab.value, getTabTreeKey(tab)]),
         commit: (id) => {
             if (!owns()) {
@@ -490,7 +501,15 @@ export function replaceFileGame({
                             : tab,
                     ),
                 undefined,
-                () => retargetTreeStore(owner.value, id, tree),
+                (saved) => {
+                    try {
+                        onAdmitted?.(
+                            saved.tabs.find((tab) => tab.value === owner.value)! as FileBackedTab,
+                        );
+                    } finally {
+                        install();
+                    }
+                },
             );
         },
     });
