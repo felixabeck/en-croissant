@@ -1,6 +1,6 @@
 # Shared tab actions source contract and review history
 
-The six-path phase below is separately arbitrated after the failed R5 budget premise and loaded f-20261010-26 defect. All six P3 witnesses approve with all four plan issues CLOSED. Implementation, current integrated gates and runtime proof remain pending. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+The six-path phase below is separately arbitrated after the failed R5 budget premise and loaded f-20261010-26 defect. All six P3 witnesses approve with all four plan issues CLOSED. This opening checkpoint predates implementation. The phase subsequently exhausted two source repair rounds and failed its original fixed cap. The separately reviewed d-20261010-08 policy correction and green source proof are in 2026-10-10-game-opening-delivery-continuation.md. The preserved source is committed. R6 source corrections are committed with fresh green integrated proof. Final R7 cumulative closure and runtime/push proof remain pending, as recorded in 2026-10-10-game-opening-round6.md. Plan authorship and arbitration shared one context. Detection ran on the code model family.
 
 Complete canonical plan and raw review history follow. P1 artifact qualification remains explicit. No Felix decision is fabricated or reversed.
 
