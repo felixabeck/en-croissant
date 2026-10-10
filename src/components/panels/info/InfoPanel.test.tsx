@@ -377,10 +377,12 @@ describe("InfoPanel game loading and cancellation", () => {
 
   function deferred<T>() {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>((accept) => {
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((accept, refuse) => {
       resolve = accept;
+      reject = refuse;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
   }
 
   function diskGame(): Awaited<ReturnType<typeof loadFileGame>> {
@@ -571,6 +573,50 @@ describe("InfoPanel game loading and cancellation", () => {
         tabB.gameOrigin,
       ]);
       expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    },
+  );
+
+  test.each(["active owner", "Jotai owner switch before React renders"])(
+    "%s ordinary discard read rejection retains both exact trees and origins",
+    async (owner) => {
+      const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+      mocks.loadFileGame.mockReturnValueOnce(read.promise);
+      await openActualPageConfirmation();
+      const original = treeStore.getState();
+      const otherStore = createTreeStore(undefined, defaultTree());
+      otherStore.getState().setSourceStamp("other-owner-stamp");
+      otherStore.getState().setComment("Other owner's unsaved comment");
+      const otherOriginal = otherStore.getState();
+      await discardActualPage();
+      expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+      const signal = mocks.loadFileGame.mock.calls[0][2] as AbortSignal;
+
+      await act(async () => {
+        if (owner !== "active owner") jotaiStore.set(activeTabAtom, tabBId);
+        read.reject(new Error("Ordinary page read failed"));
+        await read.promise.catch(() => {});
+        // The rejection has been consumed before React's owner cleanup can abort the read.
+        expect(signal.aborted).toBe(false);
+      });
+      if (owner !== "active owner") {
+        await act(async () => root.render(renderPanel(otherStore)));
+      }
+
+      expect(treeStore.getState()).toBe(original);
+      expect(otherStore.getState()).toBe(otherOriginal);
+      expect(jotaiStore.get(tabsAtom).map((tab) => tab.gameOrigin)).toEqual([
+        { ...tabA.gameOrigin, gameNumber: 2 },
+        tabB.gameOrigin,
+      ]);
+      expect(jotaiStore.get(currentTabAtom)?.value).toBe(
+        owner === "active owner" ? tabAId : tabBId,
+      );
+      const expectedNotifications =
+        owner === "active owner"
+          ? [[{ color: "red", title: "Common.Error", message: "Ordinary page read failed" }]]
+          : [];
+      expect(mocks.notify.mock.calls).toEqual(expectedNotifications);
+      expect(mocks.logError).not.toHaveBeenCalled();
     },
   );
 
