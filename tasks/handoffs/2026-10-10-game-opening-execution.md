@@ -150,3 +150,147 @@ Three file-disjoint write leaves repaired D1 through D5. Verifier and database-h
 Root inspected all four source/test paths. Syntax, scoped formatting, scoped lint and the 36-test DatabasesPage suite passed. The database worker reversed only the production patch through Git while retaining the new tests. The double-click synchronization-order assertion failed with `expected [ undefined ] to deeply equal [ { type: 'success', …(7) } ]`, exit 1. Byte-exact restoration passed all 36 tests, exit 0. The responsive project listed 12 tests without running a browser.
 
 Root's repaired-tree `pnpm checks:pre-review` and `pnpm gates:contract:check` passed, exit 0. Pre-review mutation elapsed was 291.7 seconds. Completion record: `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-repair-proof.hbmedl/completion.record`. This proves repaired candidate bytes before committing, not runtime pixels or native gestures. D1 through D5 remain pending fresh closure review at this checkpoint.
+
+## Cumulative review round 2
+
+Committed delta: `6d0c000745db3b8d4668cc16dd81aa58fa236f5f..de099357adfa9515308b4ac75dd3f87e7a3ff0fe`, with the full upstream range as context. Five code lenses ran normal and records ran mechanical. All six completed. Elapsed wall time was 162 seconds, from epochs 1791593088 to 1791593250. Known non-overlapping external waits: none. Active review wall time: unknown.
+
+D1 through D5 CLOSED with independent source witnesses. Back now uses its existing aria label. All six opening gestures snapshot workspace immediately before activation and require exactly one new active tab. The responsive journey includes the selected database-game preview. The current inventory includes GO1–GO13 without changing historical counts. Both database gestures use one helper synchronizing before navigation.
+
+D6 is a new should-fix coverage gap, tests witness confidence 99, originating `e72f8008`. The unmount test's error assertion did not prove its claimed absence of pending-state publication. Root adopted Fix after opening the test and production hook. This is newly observed original-code coverage, not a defect introduced by the D1–D5 correction. One unique issue was opened and adopted in round 2. No Defer, Skip, withdrawal or reopened mechanism. D6 remains pending repair and closure. `REVIEWED_THROUGH=de099357adfa9515308b4ac75dd3f87e7a3ff0fe`.
+
+Plan authorship and arbitration shared one context. Detection ran in fresh contexts on the same model family as the code. Runtime proof remains pending.
+
+### Round 2 raw witness reports
+
+#### correctness
+
+```text
+D1 CLOSED — `scripts/verify-app.mjs:1634` locates the icon-only Back button by `aria-label`, matching DatabaseView.
+
+D2 CLOSED — `assertOpened` requires exactly one new active tab ID. All six gestures pass a pre-activation snapshot, including placeholder replacement.
+
+D3 CLOSED — the responsive journey now selects a database game and checks its enabled, reachable Open game control at 320px/200%.
+
+D4 CLOSED — the inventory lists 101 checks and preserves historical staging counts.
+
+D5 CLOSED — both database-opening gestures call `openDatabase`, which synchronizes the database before navigation. Tests assert that order.
+
+No new correctness defects found.
+
+Limitation: pixel verification, native runtime behavior and standalone failure staging remain pending root-owned proof (confidence: 100). Detection used the code author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### tests
+
+```text
+D1 CLOSED — `scripts/verify-app.mjs:1634` locates the icon-only Back button by its aria-label.
+
+D2 CLOSED — `assertOpened` requires exactly one new tab whose ID equals the active tab. Navigation-only shortcuts now fail.
+
+D3 CLOSED — the responsive journey selects a database game and asserts its preview opener is visible, enabled and unclipped at 320px/200%.
+
+D4 CLOSED — the inventory lists 101 checks, including GO1–GO13, while retaining historical counts.
+
+D5 CLOSED — both database gestures use `openDatabase`. `DatabasesPage.test.tsx:222` fails if navigation precedes synchronization.
+
+[should-fix] src/components/common/gameOpen.test.tsx:120 — Newly observed coverage gap, originating in e72f8008: the unmount test only asserts that `onError` remains uncalled. Removing the `mounted.current` guard and calling `setPending(false)` after unmount still passes. It does not prove its claimed suppression of pending-state publication. (confidence: 99)
+
+Limitation: container pixels, real WebKitGTK execution and standalone failure staging remain root-owned and pending. Source closure does not establish runtime completion. (confidence: 100)
+
+Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### code-quality
+
+```text
+D1 CLOSED — `scripts/verify-app.mjs:1634` finds Back by its aria-label.
+D2 CLOSED — `scripts/verify-app.mjs:1553` compares prior tab IDs and requires exactly one newly admitted active tab.
+D3 CLOSED — `e2e/font-scaled-breakpoints.spec.ts:34` adds the selected database-game preview and clipping assertion.
+D4 CLOSED — `scripts/verify-app.mjs:70` lists 101 checks and includes GO1–GO13, preserving historical counts.
+D5 CLOSED — `DatabasesPage.tsx:184` synchronizes before navigation. Both gestures call this handler.
+
+No new readability or local-consistency findings.
+
+Limitation: closure above establishes source corrections only. Pixel verification, native runtime verification and failure staging remain pending (confidence: 100).
+
+Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### minimalism
+
+```text
+D1 CLOSED — `scripts/verify-app.mjs:1634` locates Back by its existing `aria-label`.
+D2 CLOSED — `assertOpened` requires exactly one new active tab, using snapshots captured before all six gestures.
+D3 CLOSED — the responsive journey now selects a database game and checks its opener at 320px/200%.
+D4 CLOSED — the inventory lists 101 checks and preserves historical staging counts.
+D5 CLOSED — `DatabasesPage.tsx:184` centralizes synchronization before navigation for both opening gestures. Originating duplication: e72f8008, repaired by 367f8cdb.
+
+No new bloat or duplication findings. The repair adds no files. Its shared handler, admission check and responsive case directly address the adopted obligations.
+
+Limitation: pixel verification, native runtime proof and failure staging remain pending (confidence: 100). Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### persisted-state
+
+```text
+No new persisted-state or tab-lifecycle defects found. Tab creation retains the shared compressed writer/reader, durable admission, UUID keys and unload flushing. Deferred database-view write refusal remains unchanged.
+
+D1 CLOSED — Back lookup uses `aria-label`.
+D2 CLOSED — Each gesture checks exactly one newly admitted active tab.
+D3 CLOSED — Responsive journey includes the selected database-game opener.
+D4 CLOSED — Inventory states 101 checks and preserves history.
+D5 CLOSED — Both database gestures use `openDatabase`, synchronizing before navigation.
+
+Closures establish source changes only. Pixel verification, native runtime proof and failure staging remain pending. Review used the author’s model family.
+
+VERDICT: APPROVED
+```
+
+#### records
+
+```text
+No findings. Retained reports, repair diffs, proof logs, and checkpoint statuses agree with the handoff and named contracts.
+
+Unverifiable: historical fetch/rebase, review-launch cleanliness, and exact review timing. Model-family and shared-context limitations are disclosed.
+
+VERDICT: APPROVED
+```
+
+## D6 proof checkpoint
+
+The normal write leaf changed only `src/components/common/gameOpen.test.tsx`. Its scoped React wrapper forwards to the actual state setter and preserves setter identity through a WeakMap. The original two gesture tests remain byte-identical and observation is disabled for them. The unmount test now observes initial publication, disabled-button behavior, admitted-promise settlement and absence of further publication or error after unmount.
+
+Root inspected the complete test diff and red/restored logs. The disposable source came from HEAD `de099357adfa9515308b4ac75dd3f87e7a3ff0fe`, production blob `109411cb4dd55504ca5770805e1df06715ebae0b`. Only `if (mounted.current) setPending(false)` was faulted into `setPending(false)`. The identical retained test exited 1 with `expected [ [ true ], [ false ] ] to deeply equal [ [ true ] ]`. Byte-exact restoration passed the same test, exit 0. Both runs used real React lifecycle and successful imports. All 621 protected source, index and HEAD hashes were unchanged. The root-owned concurrent handoff edit was preserved.
+
+Root's three-test command, formatting and lint passed. Pre-review and contract checks remain pending at this checkpoint. Fault and restored logs are `/tmp/build-game-opening-3b67c3b9/unmount-proof/faulted.log` and `restored.log`. Production SHA-256, unchanged between main and restoration: `7993c6b8e63758c1324f49c21cd752bac7f343a3e96b86a8cebdecdc707da703`. Retained test SHA-256: `1f746c7285392b9d6d8dfdd356c7640f509a899f3e3b42f5aca934e69a4c3fa4`.
+
+The D6 repaired-tree pre-review and contract checks subsequently passed, exit 0. Mutation elapsed was 329.1 seconds. The pre-review launch also waited for another project's shared heavy-gate lock, an external dependency wait whose exact duration is unknown. Completion: `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-unmount-proof.SSuYfF/completion.record`. The test repair is committed as `2de09d25`, with source closure still pending at this checkpoint.
+
+## Same-area companion D7
+
+Root corrected the earlier disposition of the InfoPanel discard loop. Its being outside the frozen affordance phase did not establish a valid Defer under push-review-policy section 4. The files were already loaded and its repair did not require a separate open design question. D7 therefore receives a separate atomic Fix in this run. The original intake remains preserved at `tasks/findings-inbox/20261010-020003-3905709-1791590403268066877-6.md`, with no invented allocated ID. This correction concerns root arbitration, not a decision attributed to Felix. The original P2 and P3 separate design problems remain deferred to their named findings.
+
+Decision `d-20261010-05`, committed as `7935bbae`, chooses ephemeral owner-bound confirmation and the existing immutable root/header snapshot mechanism. It rejects clearing dirty before reading or introducing another persisted counter. Its reversal path is the private page-request and confirmation callbacks with race tests retained.
+
+Two normal write leaves worked on disjoint paths. The InfoPanel leaf captures tab, store, file key, page, generation and controller. It uses the modal's existing explicit-owner interface. Discard captures root and headers while leaving dirty data untouched until replacement commits. Latest Jotai ownership, generation and immutable references prevent stale callbacks and newer edits from being overwritten. Every new page request supersedes earlier work before entering confirmation. Save remains unforced and cancel retains the data.
+
+Root inspected the complete source and test diffs. The 64-test InfoPanel, modal and selector suite passed. Tests include actual-selector discard, cancel, header/move/comment edits during a held read, workspace refusal, owner switches before and during the read, unmounted save continuation, and request supersession. Restoring only original InfoPanel source in a disposable Git-sourced copy while retaining the new tests failed the actual-selector discard-switch case after loading, because the old unsaved root remained. Restoring the repair byte-exact returned all 64 tests to green. Logs: `/tmp/chessfable-d7-proof-nnegctv7/d7-deliberate-red.log` and `d7-restored-green.log`. The worker's integrity evidence covers unchanged main HEAD, index and 1,074 captured paths during that isolated proof.
+
+The script leaf adds GO14: `GO14 confirmed discard replaces the owning current game without admitting a tab`. It edits the actual PGN textarea through WebDriver, updates through the visible control, reads actual dirty publication, sends native Enter to the first InfoPanel row and accepts the real modal through pointer input. Its intended observation is exact first-game content and file index, a clean tree, unchanged active/admitted IDs and no remaining dialog. Runtime proof and failure staging are pending. Root independently proved all thirteen original assertion bodies, all six fresh-tab checks and all subsequent verifier code remain byte-identical. Current inventory is 102 checks plus the existing conditional check, with 14 game-opening assertions. Historical staging counts stay unchanged.
+
+Root's four-file focused suite passed 67 tests. Syntax, scoped format and lint passed. Companion pre-review found a total bundle budget overrun, reporting 1582.1 KiB against 1582.0 KiB. Numeric budgets and baselines are unchanged. Root will repair duplicated confirmation continuation before committing the companion. Full companion pre-review, contract, source closure and runtime proof remain pending at this checkpoint.
+
+The normal InfoPanel writer subsequently consolidated the shared discard/save continuation and removed redundant synchronous checks. Root traced the actual Jotai writer and `currentTabAtom` membership selection before accepting those removals. Owner, generation, controller and immutable root/header guards remain. The 64 tests passed unchanged. A fresh measured bundle reports 539,654 entry bytes, 515,382 largest-lazy bytes and 1,619,996 total bytes against the unchanged 1,620,000-byte limit. Evidence: `/tmp/chessfable-d7-consolidation-6jvs6q7a/bundle-report-complete.json`.
+
+The complete repaired-tree command then passed the 67 focused tests, syntax, scoped format/lint, pre-review and contract gates, exit 0. Completion: `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-discard-proof-2.cZR7mf/completion.record`. This is dirty-source phase proof, not a clean final-HEAD gate. The official inbox merge allocated D7 as `f-20261010-06` and committed its entry as `d8e5c62c`. Its original intake disposition is historical. Root's current disposition is Fix in this run. Source closure, pixels, native proof and failure staging remain pending.
+
+Plan authorship and arbitration shared one context. Source implementation used separate write leaves. Detection used fresh Codex readers on the same model family as the code.
