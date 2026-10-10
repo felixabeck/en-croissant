@@ -92,7 +92,7 @@ export function useTabActions() {
         (id: string, update: React.SetStateAction<Tab>) => updateTabById(setTabs, id, update),
         [setTabs],
     );
-    return { getTab, updateTab };
+    return { workspace, getTab, updateTab };
 }
 
 export function sameTabOwner(current: Tab | undefined, captured: Tab): current is Tab {
@@ -144,6 +144,7 @@ export function subscribeAddGame(store: TreeStore, listener: () => void) {
 export async function appendBlankGame({
     captured,
     store,
+    workspace,
     getTab,
     updateTab,
     onError,
@@ -152,6 +153,7 @@ export async function appendBlankGame({
 }: {
     captured: Tab | undefined;
     store: TreeStore;
+    workspace: ReturnType<typeof getDefaultStore>;
     getTab: (id: string) => Tab | undefined;
     updateTab: UpdateTab;
     onError: (error: unknown) => void;
@@ -160,11 +162,12 @@ export async function appendBlankGame({
 }): Promise<void> {
     if (!isFileBackedTab(captured)) return;
     const ownerId = captured.value;
+    let completionOwner = captured;
     const owns = () => {
         const current = getTab(ownerId);
         return (
-            sameTabOwner(current, captured) &&
-            matchesFileGameTab(current, captured.gameOrigin) &&
+            sameTabOwner(current, completionOwner) &&
+            matchesFileGameTab(current, completionOwner.gameOrigin) &&
             getCachedTreeStore(ownerId) === store
         );
     };
@@ -189,12 +192,12 @@ export async function appendBlankGame({
             errorMessage: getFileFreshness(ownerId).errorMessage,
         });
     let writeAttempted = false;
+    let replacementAttempted = false;
     const refreshFileCount = async () => {
-        if (!owns()) return { ok: true as const };
         try {
             const count = await tauri.countPgnGames(captured.gameOrigin.file.handle);
             if (!owns()) return { ok: true as const };
-            updateTab(ownerId, (previous) => {
+            const committed = updateTab(ownerId, (previous) => {
                 return {
                     ...previous,
                     gameOrigin: {
@@ -203,7 +206,7 @@ export async function appendBlankGame({
                     },
                 };
             });
-            return { ok: true as const };
+            return { ok: committed };
         } catch (error) {
             return { ok: false as const, error };
         }
@@ -228,29 +231,43 @@ export async function appendBlankGame({
                 category: "applied-despite-error",
                 message: uncertainMessage,
             });
-            if (!countRefresh.ok) notifyError(countRefresh.error);
+            if (!countRefresh.ok && "error" in countRefresh) notifyError(countRefresh.error);
             return;
         }
-        const originSaved = updateTab(ownerId, (previous) => ({
-            ...previous,
-            gameOrigin: {
-                kind: "file",
-                gameNumber,
-                file: { ...(previous as FileBackedTab).gameOrigin.file, numGames: gameNumber + 1 },
-            },
-        }));
-        if (originSaved) {
-            store.setState({ ...newGame, sourceStamp: written.stamp, practicePath: null });
-            setFileFreshness(ownerId, "verified", { verifiedRevision: written.revision });
+        // Once replacement starts, an exception can follow durable workspace admission.
+        // Count repair would publish the old owner over that admitted candidate.
+        replacementAttempted = true;
+        const replacement = replaceFileGame({
+            store: workspace,
+            owner: captured,
+            treeStore: store,
+            snapshot: store.getState(),
+            tree: { ...newGame, sourceStamp: written.stamp },
+            page: gameNumber,
+            appendCount: gameNumber + 1,
+            isCurrent: owns,
+        });
+        if (replacement.kind === "committed") {
+            completionOwner = {
+                ...captured,
+                treeKey: replacement.treeKey,
+                gameOrigin: { ...origin, kind: "file", gameNumber },
+            };
+            if (owns())
+                setFileFreshness(ownerId, "verified", { verifiedRevision: written.revision });
         } else if (owns()) unverified();
     } catch (error) {
         if (!owns()) return;
         const normalized = normalizeError(error);
-        const countRefresh = writeAttempted ? await refreshFileCount() : { ok: true as const };
+        const countRefresh =
+            writeAttempted && !replacementAttempted
+                ? await refreshFileCount()
+                : { ok: true as const };
         if (!owns()) return;
         if (writeAttempted) unverified();
         let visibleError: unknown = normalized;
         if (writeAttempted && normalized.backendCategory === "stale-game") {
+            if (!countRefresh.ok && !("error" in countRefresh)) return;
             visibleError = countRefresh.ok
                 ? { category: "validation", message: changedMessage }
                 : countRefresh.error;
@@ -414,6 +431,7 @@ export function replaceFileGame({
     snapshot,
     tree,
     page,
+    appendCount,
     isCurrent,
 }: {
     store: ReturnType<typeof getDefaultStore>;
@@ -422,6 +440,7 @@ export function replaceFileGame({
     snapshot: Pick<TreeState, "root" | "headers">;
     tree: TreeState;
     page: number;
+    appendCount?: number;
     isCurrent: () => boolean;
 }): ReplaceFileGameResult {
     const oldKey = getTabTreeKey(owner);
@@ -456,7 +475,17 @@ export function replaceFileGame({
                             ? {
                                   ...tab,
                                   treeKey: id,
-                                  gameOrigin: { ...tab.gameOrigin, gameNumber: page },
+                                  gameOrigin:
+                                      appendCount === undefined
+                                          ? { ...tab.gameOrigin, gameNumber: page }
+                                          : {
+                                                kind: "file" as const,
+                                                gameNumber: page,
+                                                file: {
+                                                    ...(tab as FileBackedTab).gameOrigin.file,
+                                                    numGames: appendCount,
+                                                },
+                                            },
                               }
                             : tab,
                     ),

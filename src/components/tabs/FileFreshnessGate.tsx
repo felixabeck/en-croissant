@@ -77,7 +77,7 @@ function FileBackedGate({
   const fileKey = fileWorkspaceKey(handle);
   const gameNumber = origin.gameNumber;
   const store = useContext(TreeStateContext)!;
-  const { getTab, updateTab } = useTabActions();
+  const { workspace, getTab, updateTab } = useTabActions();
   const freshness = useFileFreshness(tabId);
   const addGameLease = useAddGameLease(store);
   const addingGame =
@@ -214,6 +214,7 @@ function FileBackedGate({
       appendBlankGame({
         captured,
         store,
+        workspace,
         getTab,
         updateTab,
         uncertainMessage: t("FileFreshness.AddGameMayHaveBeenAdded"),
@@ -222,7 +223,7 @@ function FileBackedGate({
           if (viewMountedRef.current) notifyUnlessCancelled(t("Common.Error"), error);
         },
       }),
-    [getTab, updateTab, store, t],
+    [workspace, getTab, updateTab, store, t],
   );
 
   const runAction = useCallback(

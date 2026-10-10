@@ -19,6 +19,7 @@ import { keyMapAtom } from "@/state/keybinds";
 import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
+import { deserializeStorageValue } from "@/state/store/debouncedStorage";
 import { WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultPGN } from "@/utils/chess";
@@ -1038,7 +1039,6 @@ describe("BoardAnalysis add game durability", () => {
       root: { children: [], comment: "" },
     });
     expect(getFileFreshness(tabId)).toMatchObject({ state: "verified", verifiedRevision: "added" });
-    expect(tabStorage.flush()).toEqual([]);
     expect(
       new TabStorageRepository().read(getTabTreeKey(jotaiStore.get(tabsAtom)[0]!))?.state,
     ).toMatchObject({ sourceStamp: "b".repeat(64), headers: { event: "?" } });
@@ -1128,6 +1128,234 @@ describe("BoardAnalysis add game durability", () => {
     expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
     expect(mocks.showNotification).not.toHaveBeenCalled();
   });
+
+  function coldPair() {
+    const workspace = deserializeStorageValue<{ tabs: Tab[] }>(
+      sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!,
+    )!;
+    const owner = workspace.tabs.find((current) => current.value === tabId)!;
+    return { owner, tree: new TabStorageRepository().read(getTabTreeKey(owner), true)?.state };
+  }
+
+  async function queuedCleanSave() {
+    await composed();
+    await act(async () => {
+      treeStore.getState().setComment("Original durable dirty game");
+      tabStorage.seed(tabId, treeStore.getState());
+    });
+    const bytes = sessionStorage.getItem(tabId);
+    mocks.writeGame.mockResolvedValueOnce({ stamp: "d".repeat(64), revision: "saved" });
+    await act(async () => expect(await startOrdinarySave()).toBe("saved"));
+    expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "d".repeat(64) });
+    expect(sessionStorage.getItem(tabId)).toBe(bytes);
+    expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({
+      dirty: true,
+      root: { comment: "Original durable dirty game" },
+      sourceStamp: "a".repeat(64),
+    });
+    expect(tabStorage.read(tabId)?.state).toMatchObject({
+      dirty: false,
+      sourceStamp: "d".repeat(64),
+    });
+    return { bytes, pending: tabStorage.read(tabId)?.state };
+  }
+
+  test("composed accepted Add Game has an immediate cold blank pair despite refused old pending writes", async () => {
+    await queuedCleanSave();
+    const write = held<Written>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await activate();
+    expectPending();
+    await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+    const cold = coldPair();
+    expect(cold.owner.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 3,
+      file: { numGames: 4 },
+    });
+    expect(cold.tree).toMatchObject({
+      dirty: false,
+      root: { children: [], comment: "" },
+      headers: { event: "?" },
+      sourceStamp: "b".repeat(64),
+    });
+    expectCompleted();
+    expect(getTabTreeKey(cold.owner)).not.toBe(tabId);
+    const originalSet = Storage.prototype.setItem;
+    const refuseOld = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (key === tabId) throw new DOMException("Old writes refused", "QuotaExceededError");
+        return originalSet.call(this, key, value);
+      });
+    try {
+      expect(tabStorage.flush()).toEqual([]);
+      expect(coldPair()).toMatchObject(cold);
+      expect(mocks.showNotification).not.toHaveBeenCalled();
+    } finally {
+      refuseOld.mockRestore();
+    }
+  });
+
+  test("composed accepted Add Game admits the file origin and count from a temporary source", async () => {
+    await composed();
+    if (!isFileBackedTab(tab)) throw new Error("Expected file owner");
+    await act(async () => {
+      jotaiStore.set(
+        tabsAtom,
+        [{ ...tab, gameOrigin: { ...tab.gameOrigin, kind: "temp_file" } }],
+        tabId,
+      );
+    });
+    await activate();
+    expect(coldPair().owner.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 3,
+      file: { numGames: 4 },
+    });
+    expect(coldPair().tree).toMatchObject({
+      dirty: false,
+      root: { children: [], comment: "" },
+      sourceStamp: "b".repeat(64),
+    });
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "new-revision",
+    });
+  });
+
+  test.each(["tree", "workspace"] as const)(
+    "composed accepted Add Game refuses %s admission and retains the old pair and pending Save bytes",
+    async (stage) => {
+      const old = await queuedCleanSave();
+      const owners = jotaiStore.get(tabsAtom);
+      const workspace = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+      const state = treeStore.getState();
+      const write = held<Written>();
+      mocks.writeGame.mockReturnValueOnce(write.promise);
+      await activate();
+      const originalSet = Storage.prototype.setItem;
+      const refused = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+          if (
+            stage === "workspace"
+              ? key === WORKSPACE_STORAGE_KEY
+              : /^[0-9a-f-]{36}$/.test(key) && key !== tabId
+          )
+            throw new DOMException("Admission refused", "QuotaExceededError");
+          return originalSet.call(this, key, value);
+        });
+      try {
+        await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+        expect(coldPair().owner.gameOrigin).toEqual(tab.gameOrigin);
+        expect(coldPair().tree).toMatchObject({
+          dirty: true,
+          root: { comment: "Original durable dirty game" },
+          sourceStamp: "a".repeat(64),
+        });
+        expect(jotaiStore.get(tabsAtom)).toBe(owners);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspace);
+        expect(sessionStorage.getItem(tabId)).toBe(old.bytes);
+        expect(tabStorage.read(tabId)?.state).toEqual(old.pending);
+        expect(treeStore.getState()).toBe(state);
+        expect(getFileFreshness(tabId).state).toBe("unverified");
+        expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+        expect(mocks.showNotification).toHaveBeenCalledOnce();
+      } finally {
+        refused.mockRestore();
+      }
+      await act(async () => setFileFreshness(tabId, "verified", { verifiedRevision: "saved" }));
+      await activate();
+      expect(mocks.writeGame).toHaveBeenCalledTimes(3);
+      expect(getFileFreshness(tabId).state).toBe("verified");
+    },
+  );
+
+  test.each(["before", "after"] as const)(
+    "composed Add Game preserves possible durable admission when retarget throws %s tree installation",
+    async (timing) => {
+      const old = await queuedCleanSave();
+      const write = held<Written>();
+      mocks.writeGame.mockReturnValueOnce(write.promise);
+      await activate();
+      const install = treeStore.getState().setState;
+      const throwing = vi.spyOn(treeStore.getState(), "setState").mockImplementation((tree) => {
+        if (timing === "after") install(tree);
+        throw new Error("Retarget follow-up failed");
+      });
+      try {
+        await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+        const cold = coldPair();
+        expect(cold.owner.gameOrigin).toMatchObject({ gameNumber: 3, file: { numGames: 4 } });
+        expect(cold.tree).toMatchObject({
+          root: { children: [], comment: "" },
+          headers: { event: "?" },
+          sourceStamp: "b".repeat(64),
+        });
+        expect(sessionStorage.getItem(tabId)).toBe(old.bytes);
+        expect(tabStorage.read(tabId)?.state).toEqual(old.pending);
+        expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual(tab.gameOrigin);
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+        expect(getFileFreshness(tabId).state).toBe("unverified");
+        expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+        expect(mocks.showNotification).toHaveBeenCalledOnce();
+        expect(mocks.showNotification.mock.calls[0]?.[0].message).toBe(
+          "FileFreshness.AddGameMayHaveBeenAdded Retarget follow-up failed",
+        );
+      } finally {
+        throwing.mockRestore();
+      }
+    },
+  );
+
+  test.each(["stale-game", "unknown-fulfillment"] as const)(
+    "composed %s count publication refusal preserves the old count and truthful notifications",
+    async (outcome) => {
+      await composed();
+      const old = coldPair();
+      const workspace = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+      const count = held<number>();
+      mocks.countPgnGames.mockReturnValueOnce(count.promise);
+      if (outcome === "stale-game")
+        mocks.writeGame.mockRejectedValueOnce({
+          tag: "backend-error",
+          category: "stale-game",
+          message: "Stale append index",
+        });
+      else mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+      await activate();
+      const originalSet = Storage.prototype.setItem;
+      const refused = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+          if (key === WORKSPACE_STORAGE_KEY)
+            throw new DOMException("Count refused", "QuotaExceededError");
+          return originalSet.call(this, key, value);
+        });
+      try {
+        await act(async () => count.resolve(99));
+        expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual(tab.gameOrigin);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspace);
+        expect(coldPair()).toEqual(old);
+        expect(getFileFreshness(tabId).state).toBe("unverified");
+        expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+        const storageMessage = expect.stringContaining("session storage is full");
+        expect(mocks.showNotification.mock.calls.map(([notice]) => notice.message)).toEqual(
+          outcome === "stale-game"
+            ? [storageMessage]
+            : [storageMessage, "FileFreshness.AddGameMayHaveBeenAdded"],
+        );
+        expect(
+          mocks.notifyUnlessCancelled.mock.calls.some(([, error]) => error === undefined),
+        ).toBe(false);
+        expect(mocks.countPgnGames).toHaveBeenCalledOnce();
+      } finally {
+        refused.mockRestore();
+      }
+    },
+  );
 
   test("composed Add Game settles while its gate is absent and returns to the completed board", async () => {
     const write = held<Written>();
