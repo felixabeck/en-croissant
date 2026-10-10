@@ -277,7 +277,7 @@ The D6 repaired-tree pre-review and contract checks subsequently passed, exit 0.
 
 ## Same-area companion D7
 
-Root corrected the earlier disposition of the InfoPanel discard loop. Its being outside the frozen affordance phase did not establish a valid Defer under push-review-policy section 4. The files were already loaded and its repair did not require a separate open design question. D7 therefore receives a separate atomic Fix in this run. The original intake remains preserved at `tasks/findings-inbox/20261010-020003-3905709-1791590403268066877-6.md`, with no invented allocated ID. This correction concerns root arbitration, not a decision attributed to Felix. The original P2 and P3 separate design problems remain deferred to their named findings.
+Root corrected the earlier disposition of the InfoPanel discard loop. Its being outside the frozen affordance phase did not establish a valid Defer under push-review-policy section 4. The files were already loaded and its repair did not require a separate open design question. D7 therefore receives a separate atomic Fix in this run. The original intake was merged into durable ledger entry `f-20261010-06` by `d8e5c62c`. The consumed inbox file no longer exists. This correction concerns root arbitration, not a decision attributed to Felix. The original P2 and P3 separate design problems remain deferred to their named findings.
 
 Decision `d-20261010-05`, committed as `7935bbae`, chooses ephemeral owner-bound confirmation and the existing immutable root/header snapshot mechanism. It rejects clearing dirty before reading or introducing another persisted counter. Its reversal path is the private page-request and confirmation callbacks with race tests retained.
 
@@ -294,3 +294,131 @@ The normal InfoPanel writer subsequently consolidated the shared discard/save co
 The complete repaired-tree command then passed the 67 focused tests, syntax, scoped format/lint, pre-review and contract gates, exit 0. Completion: `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-discard-proof-2.cZR7mf/completion.record`. This is dirty-source phase proof, not a clean final-HEAD gate. The official inbox merge allocated D7 as `f-20261010-06` and committed its entry as `d8e5c62c`. Its original intake disposition is historical. Root's current disposition is Fix in this run. Source closure, pixels, native proof and failure staging remain pending.
 
 Plan authorship and arbitration shared one context. Source implementation used separate write leaves. Detection used fresh Codex readers on the same model family as the code.
+## Cumulative review round 3
+
+Committed delta: `de099357adfa9515308b4ac75dd3f87e7a3ff0fe..69677131258a39c4ab9ff07f0c4aece8b39256df`. Seven code lenses and one records lens completed. All confirmed D6 and D7 source closure, with native and pixel proof still pending. Tests opened D8, an ordinary stale rejection coverage gap originating in `db8a07c5`, retained through `8ed6e3ad`. Persisted-state opened D9, replacement index durability preceding tree durability, originating `2a6f66df` and newly reachable through accepted discard. Root adopts D8 Fix and traces D9 before disposition. Records opened R1, a consumed inbox-path preservation claim. Root corrected it to the allocated ledger entry and merge commit.
+
+Plan authorship and arbitration shared one context. Detection used fresh Codex readers on the same model family as the code.
+
+Round 3 elapsed wall time was 324 seconds, epochs 1791596400 to 1791596724. Known non-overlapping external waits: none. Active review wall time: unknown. Three unique issues were adopted, D8, D9 and the records reference correction. D9 is a newly observed ordering hazard made reachable by the D7 correction, not a reopened dirty-authorization mechanism. Root adopts Fix, allocated as `f-20261010-07` by the official inbox merge. Its source design is undergoing separate plan review before implementation.
+
+The D8 normal writer added an ordinary-rejection case with an active-owner control through actual discard confirmation. Root inspected the complete diff and red/restored logs. The stale case rejects before React's owner cleanup aborts its signal and preserves both exact trees and origins. Removing only the loadPage catch ownership guard in a disposable Git-sourced copy makes the retained test fail on the unwanted `Ordinary page read failed` notification, exit 1. Byte-exact restoration returns the identical test to green, exit 0. Source is HEAD `69677131258a39c4ab9ff07f0c4aece8b39256df`, blob `7a585a1936c544d98b0494c0a6aa03effeb31ba5`. Production SHA-256: `593cfc74a00152fef29bc3b3a868ee039cb74297bc5a9a519eb72457aec768f7`. Retained test SHA-256: `477e71ef9f343817084de5f0bba17ec2fa3df75e20021f626278817cb3af6d0e`. Main source/index/HEAD and foreign record work remained unchanged during isolated proof.
+
+Root's full 43-test InfoPanel suite, scoped format/lint, pre-review and contract gates passed, exit 0. Completion: `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-root-stale-proof.G9pMKy/completion.record`. Evidence: `/tmp/build-game-opening-3b67c3b9/stale-rejection-proof/evidence.md`. D8 source closure remains pending. D9's design probe recommends a stable logical tab ID plus a physical tree reference, preserving tab settings and resource identity. The probe is not an approval or implementation proof.
+
+### correctness
+
+```text
+D6 CLOSED — the strengthened test observes the actual React setter. Removing the unmount guard produces the specific unexpected `[false]` publication failure. Restored source passes.
+
+D7 CLOSED — owner/generation checks and immutable root/header snapshots authorize only the accepted discard. New edits, owner switches, supersession, unmount and workspace refusal preserve the tree. The retained actual-selector test fails against original InfoPanel source and passes after restoration.
+
+No correctness defects found in the reviewed delta or inherited findings.py sync.
+
+Limitation: pixels, real WebKitGTK behavior and GO14 runtime failure staging remain pending (confidence: 100). Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### root-cause
+
+```text
+D6 CLOSED — `gameOpen.test.tsx:132–165` observes calls to the real React state setter across unmount. Removing the mounted guard produces the specific unexpected `[false]` publication failure. Restoring it passes with identical tests.
+
+D7 CLOSED — `InfoPanel.tsx:391–435` removes the discard loop’s cause: acceptance previously bypassed only the initial dirty check, while the post-read check rejected that same dirty tree. Replacement now requires owner-bound authorization and unchanged root/header snapshots. Tests cover newer edits, ownership changes, supersession, unmount, save/cancel and workspace refusal. Restoring pre-repair source reproduces the failed replacement. Restored source passes all 64 tests. The original conflicting guard originated in `490831c77`.
+
+D1–D5 remain CLOSED. No symptom patch or reintroduced prior defect found.
+
+Limitation: container pixels, real WebKitGTK execution and standalone assertion failure staging remain pending, including GO14. Source/test closure does not establish runtime completion. (confidence: 100)
+
+Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### tests
+
+```text
+D1–D5 remain CLOSED.
+
+D6 CLOSED — `gameOpen.test.tsx:165` observes the real React dispatcher. Removing the mounted guard produces `[[true], [false]]`, failing the assertion. Restored source passes.
+
+D7 CLOSED — `InfoPanel.test.tsx:476` asserts replacement after actual selector activation and modal discard. Restoring original production source fails there, retaining the unsaved tree. Tests also assert edit retention, owner changes, cancel, save continuation, supersession and workspace refusal.
+
+[should-fix] src/components/panels/info/InfoPanel.test.tsx:546 — Owner-switch tests only resolve stale reads. The unmount test rejects with cancellation, which remains silent independently of ownership. Removing the catch-path ownership guard at `InfoPanel.tsx:443` would therefore pass while an ordinary stale rejection incorrectly reports an error after switching owners. Add a deferred non-cancellation rejection and assert unchanged trees/origins and no notification. The gap predates this repair in db8a07c5, and the guard was rewritten in 8ed6e3ad. (confidence: 99)
+
+Limitation: container pixels, native GO14 execution and standalone failure staging remain pending. The inherited 981db8fc warning change has no local behavioral regression anchor identified. (confidence: 100)
+
+Detection used the author’s model family. Plan authorship and arbitration shared context.
+
+VERDICT: APPROVED
+```
+
+### code-quality
+
+```text
+D6 CLOSED — `gameOpen.test.tsx:165` observes the actual React setter. Removing the unmount guard produces the extra `[false]` publication and fails. Restoring it passes.
+
+D7 CLOSED at source level — InfoPanel captures the confirmation owner and discard snapshot. Tests cover newer edits, cancellation, save continuation, owner changes, unmount and workspace refusal. Original-source restoration fails the discard replacement assertion. Repaired source passes.
+
+No readability or local-consistency defects found. The current verifier inventory correctly lists 102 checks and preserves historical receipts.
+
+Limitation: pixels, native runtime proof and GO14 failure staging remain pending (confidence: 100).
+
+Detection used the code author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### minimalism
+
+```text
+D6 CLOSED — `gameOpen.test.tsx:165` observes the real state setter. Removing the unmount guard produces the extra `[false]` publication and fails the unchanged test. Restoration passes.
+
+D7 CLOSED — `InfoPanel.tsx:367–450` binds confirmation to the owner and immutable root/header snapshots, reusing the existing modal. Tests cover discard, cancel, save, edits, ownership changes, supersession, unmount and workspace refusal. Restoring original production source fails the discard-replacement test. Restoration passes 64 tests.
+
+No new bloat or duplication findings. No files added. The local helpers share required continuations and test setup. GO14 reuses existing verifier helpers. The inherited `981db8fc` findings-script change and SHA stamp introduce no unnecessary abstraction.
+
+Limitation: pixel verification, native execution and GO14 failure staging remain pending (confidence: 100). Detection used the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### error-handling
+
+```text
+D6 CLOSED — `gameOpen.test.tsx:131-165` observes actual React setter calls. Removing the mounted guard produces `[true], [false]` and exit 1. Restored source passes.
+
+D7 CLOSED — `InfoPanel.tsx:365-453` binds discard to its owner and root/header snapshot, retains edits on refusal, and surfaces read failures through notifications. Restoring original source fails the discard replacement test. Repaired source passes all 64 focused tests.
+
+No error-handling findings. Inherited `981db8fc` now reports unreadable claim intent explicitly.
+
+Limitation: pixels, native runtime and GO14 failure staging remain pending (confidence: 100). Review used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### persisted-state
+
+```text
+D6 CLOSED — The strengthened test observes the real React state dispatcher. Removing the unmount guard produces the extra `[false]` publication and fails. Byte-exact restoration passes.
+
+D7 CLOSED — `InfoPanel.tsx:393-435` binds discard to the captured owner and immutable root/header snapshot, preserves newer edits, and stops replacement when workspace persistence refuses. Retained actual-selector tests fail against the original source and pass after restoration. Native GO14 proof remains pending.
+
+[blocker] src/components/panels/info/InfoPanel.tsx:423 — Replacement durably saves the new `gameNumber` before persisting its tree. `setState` only queues the tree through `tabStorage.write`, whose later flush can refuse independently. With several tabs near the shared quota, replacing a small dirty game with a substantially larger game can save the new index while retaining the old tree bytes. Reload then hydrates the old dirty game under the new origin and presents a freshness conflict, resurrecting the discarded game. The refusal test uses `createTreeStore(undefined, ...)`, so it never exercises tree persistence. Pre-existing ordering from `2a6f66df`, retained and newly reachable through successful dirty discard in `8ed6e3ad`. Replacement needs a coordinated durability/refusal contract. (confidence: 97)
+
+Detection ran on the same model family as the code. This was read-only source review.
+
+VERDICT: REVISE
+```
+
+### records
+
+```text
+[should-fix] tasks/handoffs/2026-10-10-game-opening-execution.md:280 — Claims the original intake “remains preserved at” the named inbox path, but that file no longer exists after the recorded merge. Replace this stale preservation claim with the durable ledger entry `f-20261010-06` and commit `d8e5c62c`. (confidence: 100)
+
+Unverifiable: exact historical review timing, launch cleanliness, and context/model provenance. Retained source, test logs, hashes, bundle measurements and completion records support the other checked claims.
+
+VERDICT: REVISE
+```
+
