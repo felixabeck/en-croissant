@@ -1785,29 +1785,72 @@ async function verifyGameOpening(session) {
   await assertion(
     "GO9 PGN single-click selects without opening and keeps row coordinates stationary",
     async () => {
-      await filesSurface();
-      const before = await snapshot();
-      const row = await fileRow(openingGames[1]);
-      await clickAt(session, row.x, row.y);
-      await wait(
-        "PGN preview selection",
-        'return [...document.querySelectorAll(\'[role="option"][aria-selected="true"]\')].some(node => node.textContent.includes(arguments[0]))',
-        [openingGames[1].white],
-      );
-      // Wait for the new preview's actual notation, so this covers completion as well as selection.
-      await wait(
-        "second PGN preview",
-        "return document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
-        [openingGames[1].notation],
-      );
-      const after = await fileRow(openingGames[1]);
-      if (
-        JSON.stringify(await snapshot()) !== JSON.stringify(before) ||
-        !(await session.execute("return location.pathname === '/files'")) ||
-        row.x !== after.x ||
-        row.y !== after.y
-      )
-        throw new Error(`selection moved or opened the list: ${JSON.stringify({ row, after })}`);
+      // FileCard needs enough width to render the preview notation.
+      const previewWindowWidth = 1300;
+      const previewWindowHeight = 850;
+      const originalRect = await session.call("GET", "/window/rect");
+      let failure;
+      try {
+        await session.call("POST", "/window/rect", {
+          width: previewWindowWidth,
+          height: previewWindowHeight,
+        });
+        const resizedRect = await session.call("GET", "/window/rect");
+        console.log(`  .. GO9 native geometry: ${JSON.stringify({ originalRect, resizedRect })}`);
+        if (resizedRect.width !== previewWindowWidth || resizedRect.height !== previewWindowHeight)
+          throw new Error(
+            `native resize did not reach ${previewWindowWidth}x${previewWindowHeight}: ${JSON.stringify(resizedRect)}`,
+          );
+        await filesSurface();
+        await wait(
+          "first PGN preview at the resized native geometry",
+          "return document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
+          [openingGames[0].notation],
+        );
+        const before = await snapshot();
+        const row = await fileRow(openingGames[1]);
+        await clickAt(session, row.x, row.y);
+        await wait(
+          "PGN preview selection",
+          'return [...document.querySelectorAll(\'[role="option"][aria-selected="true"]\')].some(node => node.textContent.includes(arguments[0]))',
+          [openingGames[1].white],
+        );
+        // Wait for the new preview's actual notation, so this covers completion as well as selection.
+        await wait(
+          "second PGN preview",
+          "return document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
+          [openingGames[1].notation],
+        );
+        const after = await fileRow(openingGames[1]);
+        if (
+          JSON.stringify(await snapshot()) !== JSON.stringify(before) ||
+          !(await session.execute("return location.pathname === '/files'")) ||
+          row.x !== after.x ||
+          row.y !== after.y
+        )
+          throw new Error(`selection moved or opened the list: ${JSON.stringify({ row, after })}`);
+      } catch (error) {
+        failure = error;
+      } finally {
+        let restorationError;
+        try {
+          await session.call("POST", "/window/rect", originalRect);
+          const restoredRect = await session.call("GET", "/window/rect");
+          console.log(`  .. GO9 restored native geometry: ${JSON.stringify(restoredRect)}`);
+          if (["x", "y", "width", "height"].some((key) => restoredRect[key] !== originalRect[key]))
+            restorationError = new Error(
+              `restored geometry differs from ${JSON.stringify(originalRect)}`,
+            );
+        } catch (error) {
+          restorationError = error;
+        }
+        if (restorationError)
+          failure = new Error(
+            `GO9 native geometry restoration failed: ${restorationError.message}${failure ? `, original failure: ${failure.message}` : ""}`,
+            { cause: restorationError },
+          );
+      }
+      if (failure) throw failure;
     },
   );
   await assertion(
@@ -1875,16 +1918,40 @@ async function verifyGameOpening(session) {
       )
         throw new Error(`GO12 did not leave the second file game active: ${JSON.stringify(owner)}`);
       const admittedIds = before.tabs.map((tab) => tab.value);
-      const readTree = async () => {
-        const workspace = await snapshot();
-        const currentOwner = workspace.tabs.find((tab) => tab.value === owner.value);
-        const raw = await session.execute("return sessionStorage.getItem(arguments[0])", [
-          currentOwner?.treeKey ?? owner.value,
-        ]);
-        const tree = raw && deserializeStorageValue(raw)?.state;
-        if (!tree) throw new Error("discard owner's persisted tree is unreadable");
-        return tree;
-      };
+      const readTree = () =>
+        waitFor(
+          "discard owner's coherent persisted tree",
+          async () => {
+            const rawWorkspace = await session.execute(
+              "return sessionStorage.getItem('workspace')",
+            );
+            const workspace = rawWorkspace && deserializeStorageValue(rawWorkspace);
+            const currentOwner = Array.isArray(workspace?.tabs)
+              ? workspace.tabs.find((tab) => tab?.value === owner.value)
+              : undefined;
+            const treeKey = currentOwner?.treeKey ?? currentOwner?.value ?? null;
+            // Publication can retire the captured key between requests. Read the workspace
+            // and that exact key together, then retry only when the workspace changed.
+            const observed = await session.execute(
+              `return {
+                rawWorkspace: sessionStorage.getItem('workspace'),
+                rawTree: arguments[0] === null ? null : sessionStorage.getItem(arguments[0]),
+              };`,
+              [typeof treeKey === "string" ? treeKey : null],
+            );
+            if (observed.rawWorkspace !== rawWorkspace) return false;
+            if (!workspace || !Array.isArray(workspace.tabs))
+              throw new Error("discard owner's persisted workspace is unreadable");
+            if (!currentOwner)
+              throw new Error("discard owner's logical tab is absent from the workspace");
+            if (typeof treeKey !== "string" || !treeKey)
+              throw new Error("discard owner's physical tree key is invalid");
+            const tree = observed.rawTree && deserializeStorageValue(observed.rawTree)?.state;
+            if (!tree) throw new Error("discard owner's persisted tree is unreadable");
+            return tree;
+          },
+          { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+        );
       const navigation = await coordinates(`document.querySelector('nav a[href="/"]')`);
       await clickAt(session, navigation.x, navigation.y);
       await wait(
@@ -1923,13 +1990,59 @@ async function verifyGameOpening(session) {
         value: "#pgn-editor",
       });
       const editorId = encodeURIComponent(editor["element-6066-11e4-a52e-4f735466cecf"]);
-      await session.call("POST", `/element/${editorId}/clear`, {});
-      await session.call("POST", `/element/${editorId}/value`, { text: editedPgn });
+      const editorPosition = await coordinates(`document.querySelector('#pgn-editor')`);
+      await clickAt(session, editorPosition.x, editorPosition.y);
+      await wait("real PGN editor focus", "return document.activeElement?.id === 'pgn-editor'");
+      await session.call("POST", "/actions", {
+        actions: [
+          {
+            type: "key",
+            id: "opening-keyboard",
+            actions: [
+              { type: "keyDown", value: "\uE009" },
+              { type: "keyDown", value: "a" },
+              { type: "keyUp", value: "a" },
+              { type: "keyUp", value: "\uE009" },
+              { type: "keyDown", value: "\uE003" },
+              { type: "keyUp", value: "\uE003" },
+            ],
+          },
+        ],
+      });
+      await wait(
+        "real PGN editor keyboard replacement clears the text",
+        "return document.querySelector('#pgn-editor')?.value === ''",
+      );
+      // WebKitGTK's element/value drops LF characters, so enter every line break as a key.
+      for (const [index, line] of editedPgn.split("\n").entries()) {
+        if (index > 0)
+          await session.call("POST", "/actions", {
+            actions: [
+              {
+                type: "key",
+                id: "opening-keyboard",
+                actions: [
+                  { type: "keyDown", value: "\uE007" },
+                  { type: "keyUp", value: "\uE007" },
+                ],
+              },
+            ],
+          });
+        if (line) await session.call("POST", `/element/${editorId}/value`, { text: line });
+      }
       await wait(
         "real PGN editor Event edit",
         "return document.querySelector('#pgn-editor')?.value === arguments[0]",
         [editedPgn],
-      );
+      ).catch(async (error) => {
+        const actual = await session
+          .execute("return document.querySelector('#pgn-editor')?.value ?? null")
+          .catch((diagnosticError) => `unavailable: ${diagnosticError.message}`);
+        throw new Error(
+          `${error.message}, actual value: ${JSON.stringify(actual)}, expected length: ${editedPgn.length}`,
+          { cause: error },
+        );
+      });
       const update = await coordinates(
         `[...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Update' && node.parentElement.querySelector('#pgn-editor'))`,
       );
