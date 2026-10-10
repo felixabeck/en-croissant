@@ -67,7 +67,7 @@
 // app-driver 727687d7b7a93b1544ecee582f73c8e903b4a8ae50b68f6f78b6bfb42a0cbd69.
 // This is a later comments-only update. Staging used the unchanged verifier and driver above.
 //
-// It asserts one hundred and one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts one hundred and two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -87,10 +87,10 @@
 //              metadata-dialog-no-error, metadata-repertoire-filter, metadata-sidecar-type,
 //              metadata-filename-preserved
 //   Databases | 2: default-root-unusable, selected-root-missing
-//   game opening | 13: native fixtures, labelled database opener, handle route/synchronization,
+//   game opening | 14: native fixtures, labelled database opener, handle route/synchronization,
 //                      database selection without admission, database button/double-click/Enter,
 //                      labelled Files opener, stationary PGN selection without admission,
-//                      Files button/double-click/Enter, empty-PGN refusal
+//                      Files button/double-click/Enter, empty-PGN refusal, dirty owner-bound discard
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
 //                      main-thread apply budget, one-poll-interval freshness budget;
@@ -1488,6 +1488,9 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
 // GO11: remove GameSelector's onDoubleClick handler in a disposable build.
 // GO12: remove GameSelector's onKeyDown handler in a disposable build.
 // GO13: remove FileCard's empty-file disabled predicate in a disposable build.
+// GO14: restore only src/components/panels/info/InfoPanel.tsx from pre-companion commit 2de09d25
+// in a disposable application build, keeping this verifier unchanged. Runtime staging and
+// restoration belong in the execution handoff above. This recipe is not a runtime receipt.
 // Wiring breaks are confined to production source/binary inputs, never this verifier or its
 // assertion definitions. GO1's fixture path is logged and only the harness's profile is edited.
 async function verifyGameOpening(session) {
@@ -1858,6 +1861,156 @@ async function verifyGameOpening(session) {
     const open = await button("Open game");
     if (!open.disabled) throw new Error("empty-file game opener is enabled");
   });
+  await assertion(
+    "GO14 confirmed discard replaces the owning current game without admitting a tab",
+    async () => {
+      requireSeed();
+      const before = await snapshot();
+      const owner = before.tabs.find((tab) => tab.value === before.activeTab);
+      if (
+        owner?.gameOrigin.kind !== "file" ||
+        owner.gameOrigin.gameNumber !== 1 ||
+        owner.gameOrigin.file.numGames !== 2 ||
+        owner.gameOrigin.file.handle.id.id !== file.id.id
+      )
+        throw new Error(`GO12 did not leave the second file game active: ${JSON.stringify(owner)}`);
+      const admittedIds = before.tabs.map((tab) => tab.value);
+      const readTree = async () => {
+        const raw = await session.execute("return sessionStorage.getItem(arguments[0])", [
+          owner.value,
+        ]);
+        const tree = raw && deserializeStorageValue(raw)?.state;
+        if (!tree) throw new Error("discard owner's persisted tree is unreadable");
+        return tree;
+      };
+      const navigation = await coordinates(`document.querySelector('nav a[href="/"]')`);
+      await clickAt(session, navigation.x, navigation.y);
+      await wait(
+        "discard owner's second game on the analysis surface",
+        "return location.pathname === '/' && document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
+        [openingGames[1].notation],
+      );
+      const info = await coordinates(
+        `[...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === 'Info')`,
+      );
+      await clickAt(session, info.x, info.y);
+      await coordinates(`document.querySelector('#pgn-editor')`);
+      const initialTree = await waitFor(
+        "discard owner's clean second game publication",
+        async () => {
+          const tree = await readTree();
+          return (
+            tree.dirty === false &&
+            tree.headers.event === "verify:opening-1" &&
+            tree.headers.white === openingGames[1].white &&
+            tree.headers.black === openingGames[1].black &&
+            tree
+          );
+        },
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      );
+      const originalPgn = await session.execute(
+        "return document.querySelector('#pgn-editor').value",
+      );
+      const dirtyEvent = "verify:GO14-unsaved-owner-discard";
+      const eventHeader = /^\[Event "[^"\r\n]*"\]/m;
+      if (!eventHeader.test(originalPgn)) throw new Error("second game has no Event header");
+      const editedPgn = originalPgn.replace(eventHeader, `[Event "${dirtyEvent}"]`);
+      const editor = await session.call("POST", "/element", {
+        using: "css selector",
+        value: "#pgn-editor",
+      });
+      const editorId = encodeURIComponent(editor["element-6066-11e4-a52e-4f735466cecf"]);
+      await session.call("POST", `/element/${editorId}/clear`, {});
+      await session.call("POST", `/element/${editorId}/value`, { text: editedPgn });
+      await wait(
+        "real PGN editor Event edit",
+        "return document.querySelector('#pgn-editor')?.value === arguments[0]",
+        [editedPgn],
+      );
+      const update = await coordinates(
+        `[...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Update' && node.parentElement.querySelector('#pgn-editor'))`,
+      );
+      await clickAt(session, update.x, update.y);
+      const dirtyTree = await waitFor(
+        "real PGN Update publishes the owner's unsaved Event edit",
+        async () => {
+          const tree = await readTree();
+          return tree.dirty === true && tree.headers.event === dirtyEvent && tree;
+        },
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      );
+      const accordionControl = `(() => {
+        const info = [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === 'Info' && node.getAttribute('aria-selected') === 'true');
+        const panel = info && document.getElementById(info.getAttribute('aria-controls'));
+        return panel && [...panel.querySelectorAll('button.mantine-Accordion-control[aria-controls][aria-expanded]')].find(node => /^2\\./.test(node.textContent.trim()));
+      })()`;
+      const accordion = await coordinates(accordionControl);
+      if (
+        !(await session.execute(
+          `return (${accordionControl}).getAttribute('aria-expanded') === 'true'`,
+        ))
+      )
+        await clickAt(session, accordion.x, accordion.y);
+      const activation = await enter(
+        `(() => {
+          const control = (${accordionControl});
+          const list = control && document.getElementById(control.getAttribute('aria-controls'));
+          return list && [...list.querySelectorAll('[role="option"]')].find(node => node.textContent.includes(arguments[0]));
+        })()`,
+        [openingGames[0].white],
+      );
+      if (JSON.stringify(activation) !== JSON.stringify(before))
+        throw new Error("editing or selecting the discard target changed the owning workspace");
+      await wait(
+        "actual unsaved-changes confirmation for the dirty owner",
+        `return [...document.querySelectorAll('[role="dialog"]')].some(dialog => dialog.innerText.includes('Unsaved changes') && [...dialog.querySelectorAll('button')].some(node => node.textContent.trim() === 'Close without saving'));`,
+      );
+      await saveSource("info-panel-discard");
+      const discard = await coordinates(
+        `(() => {
+          const dialog = [...document.querySelectorAll('[role="dialog"]')].find(node => node.innerText.includes('Unsaved changes'));
+          return dialog && [...dialog.querySelectorAll('button')].find(node => node.textContent.trim() === 'Close without saving');
+        })()`,
+      );
+      await clickAt(session, discard.x, discard.y);
+      const replacement = await waitFor(
+        "confirmed discard replaces the dirty owner with the clean first file game",
+        async () => {
+          const workspace = await snapshot();
+          const tab = workspace.tabs.find((entry) => entry.value === owner.value);
+          const tree = await readTree();
+          const visible = await session.execute(
+            `return location.pathname === '/' && document.body.innerText.replace(/\\s+/g, '').includes(arguments[0]) && !document.querySelector('[role="dialog"]');`,
+            [openingGames[0].notation],
+          );
+          return (
+            visible &&
+            workspace.activeTab === owner.value &&
+            JSON.stringify(workspace.tabs.map((entry) => entry.value)) ===
+              JSON.stringify(admittedIds) &&
+            tab?.gameOrigin.kind === "file" &&
+            tab.gameOrigin.gameNumber === 0 &&
+            tab.gameOrigin.file.handle.id.id === file.id.id &&
+            tree.dirty === false &&
+            tree.headers.event === "verify:opening-0" &&
+            tree.headers.white === openingGames[0].white &&
+            tree.headers.black === openingGames[0].black &&
+            tree.root.children[0]?.san === "e4" &&
+            tree.root.children[0]?.children[0]?.san === "e5" && { workspace, tree }
+          );
+        },
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      ).catch(async (error) => {
+        throw new Error(
+          `${error.message}, workspace: ${JSON.stringify(await snapshot())}, tree: ${JSON.stringify(await readTree())}`,
+        );
+      });
+      console.log(
+        `  .. GO14 owner ${owner.value}, admitted IDs ${JSON.stringify(admittedIds)}, Event ${initialTree.headers.event} -> ${dirtyTree.headers.event} -> ${replacement.tree.headers.event}, dirty ${initialTree.dirty} -> ${dirtyTree.dirty} -> ${replacement.tree.dirty}, file gameNumber 1 -> 0, confirmation gone`,
+      );
+    },
+  );
 }
 
 let cleanupSettled = false;

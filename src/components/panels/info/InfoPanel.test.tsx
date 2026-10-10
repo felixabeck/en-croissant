@@ -1,4 +1,4 @@
-import { getFileFreshness } from "@/state/fileFreshness";
+import { getFileFreshness, removeFileFreshness } from "@/state/fileFreshness";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -14,6 +14,7 @@ import { defaultTree } from "@/utils/treeReducer";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import type { SuccessDatabaseInfo } from "@/utils/db";
+import type { loadFileGame } from "@/utils/files";
 import InfoPanel from "./InfoPanel";
 import classes from "./InfoPanel.module.css";
 
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   deleteGame: vi.fn(),
   deleteRejected: vi.fn(),
   loadFileGame: vi.fn(),
+  writeGame: vi.fn(),
   readGames: vi.fn(),
   countPgnGames: vi.fn(),
   parsePGN: vi.fn(),
@@ -62,6 +64,7 @@ vi.mock("@/platform/tauri", async () => {
       deleteGame: mocks.deleteGame,
       readGames: mocks.readGames,
       countPgnGames: mocks.countPgnGames,
+      writeGame: mocks.writeGame,
     },
   };
 });
@@ -280,6 +283,11 @@ describe("InfoPanel game loading and cancellation", () => {
     mocks.getDatabases.mockReset().mockResolvedValue([]);
     mocks.navigate.mockReset().mockResolvedValue(undefined);
     mocks.useActualGameSelector = false;
+    mocks.writeGame
+      .mockReset()
+      .mockResolvedValue({ stamp: "saved-stamp", revision: "saved-revision" });
+    removeFileFreshness(tabAId);
+    removeFileFreshness(tabBId);
   });
 
   afterEach(async () => {
@@ -357,7 +365,7 @@ describe("InfoPanel game loading and cancellation", () => {
 
   function renderPanel(store: TreeStore = treeStore) {
     return (
-      <MantineProvider>
+      <MantineProvider env="test">
         <JotaiProvider store={jotaiStore}>
           <TreeStateContext.Provider value={store}>
             <InfoPanel />
@@ -366,6 +374,272 @@ describe("InfoPanel game loading and cancellation", () => {
       </MantineProvider>
     );
   }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((accept) => {
+      resolve = accept;
+    });
+    return { promise, resolve };
+  }
+
+  function diskGame(): Awaited<ReturnType<typeof loadFileGame>> {
+    const tree = defaultTree();
+    tree.headers.event = "Replacement game";
+    tree.sourceStamp = "disk-stamp";
+    return {
+      pgn: "replacement",
+      stamp: tree.sourceStamp,
+      revision: "disk-revision",
+      present: true,
+      tree,
+    };
+  }
+
+  async function openActualPageConfirmation() {
+    mocks.useActualGameSelector = true;
+    mocks.readGames.mockResolvedValue([
+      { pgn: "selected", stamp: "selected-stamp", revision: "selected-revision", present: true },
+    ]);
+    mocks.parsePGN.mockResolvedValue({ headers: { event: "Selected" } });
+    jotaiStore.set(tabsAtom, [
+      { ...tabA, gameOrigin: { ...tabA.gameOrigin, gameNumber: 2 } } as Tab,
+      tabB,
+    ]);
+    treeStore.getState().setSourceStamp("original-stamp");
+    treeStore.getState().setComment("Unsaved original comment");
+    await act(async () => root.render(renderPanel()));
+    await activateActualRow();
+    await expectPageConfirmation();
+    expect(mocks.loadFileGame).not.toHaveBeenCalled();
+  }
+
+  async function activateActualRow() {
+    const row = container.querySelector<HTMLElement>('[role="option"]')!;
+    expect(row).not.toBeNull();
+    await act(async () => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+  }
+
+  function modalButton(label: string) {
+    const button = [
+      ...document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    ].find((candidate) => candidate.textContent?.trim() === label);
+    expect(button).toBeDefined();
+    return button!;
+  }
+
+  async function discardActualPage() {
+    await act(async () => modalButton("Tab.CloseWithoutSaving").click());
+  }
+
+  async function expectPageConfirmation() {
+    await vi.waitFor(() =>
+      expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
+        "Tab.UnsavedChanges",
+      ),
+    );
+  }
+
+  function expectOriginalOrigin() {
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual({
+      ...tabA.gameOrigin,
+      gameNumber: 2,
+    });
+    expect(treeStore.getState().sourceStamp).toBe("original-stamp");
+    expect(treeStore.getState().dirty).toBe(true);
+    expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+  }
+
+  test("actual selector discard switches the current game after reading without clearing dirty early", async () => {
+    const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+    const replacement = diskGame();
+    mocks.loadFileGame.mockReturnValueOnce(read.promise);
+    await openActualPageConfirmation();
+    const original = treeStore.getState();
+    const dirtyStates: boolean[] = [];
+    const unsubscribe = treeStore.subscribe((state) => dirtyStates.push(state.dirty));
+    await discardActualPage();
+
+    expect(mocks.loadFileGame).toHaveBeenCalledExactlyOnceWith(
+      tabA.gameOrigin.kind === "file" ? tabA.gameOrigin.file.handle : null,
+      0,
+      expect.any(AbortSignal),
+    );
+    expect(treeStore.getState()).toBe(original);
+    expectOriginalOrigin();
+    expect(dirtyStates).toEqual([]);
+    await act(async () => read.resolve(replacement));
+    unsubscribe();
+
+    expect(treeStore.getState().root).toBe(replacement.tree.root);
+    expect(treeStore.getState().headers).toBe(replacement.tree.headers);
+    expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "disk-stamp" });
+    expect(dirtyStates).toEqual([false]);
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(tabA.gameOrigin);
+    expect(jotaiStore.get(tabsAtom).map((tab) => tab.value)).toEqual([tabAId, tabBId]);
+    expect(getFileFreshness(tabAId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "disk-revision",
+    });
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  test("actual page confirmation cancel retains the exact tree and file origin", async () => {
+    await openActualPageConfirmation();
+    const original = treeStore.getState();
+    await act(async () => {
+      modalButton("Tab.CloseWithoutSaving").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(treeStore.getState()).toBe(original);
+    expectOriginalOrigin();
+    expect(mocks.loadFileGame).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeNull());
+  });
+
+  test.each(["header", "move", "comment"])(
+    "a new %s edit during the authorized discard read requires fresh confirmation",
+    async (edit) => {
+      const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+      mocks.loadFileGame.mockReturnValueOnce(read.promise);
+      await openActualPageConfirmation();
+      await discardActualPage();
+      const accepted = treeStore.getState();
+      await act(async () => {
+        if (edit === "header")
+          treeStore.getState().setHeaders({ ...accepted.headers, event: "New header" });
+        else if (edit === "move")
+          treeStore.getState().makeMove({ payload: "e4", changeHeaders: false });
+        else treeStore.getState().setComment("New comment");
+      });
+      const newer = treeStore.getState();
+      expect(newer.root === accepted.root).toBe(edit === "header");
+      expect(
+        edit === "header"
+          ? newer.headers.event
+          : edit === "move"
+            ? newer.root.children[0].san
+            : newer.root.comment,
+      ).toBe(edit === "header" ? "New header" : edit === "move" ? "e4" : "New comment");
+      await act(async () => read.resolve(diskGame()));
+
+      expect(treeStore.getState()).toBe(newer);
+      expectOriginalOrigin();
+      await expectPageConfirmation();
+      expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    },
+  );
+
+  test("discard retains the dirty tree and origin when the workspace write refuses replacement", async () => {
+    await openActualPageConfirmation();
+    const original = treeStore.getState();
+    refuseWorkspaceWrites();
+    await discardActualPage();
+    expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    expect(treeStore.getState()).toBe(original);
+    expectOriginalOrigin();
+  });
+
+  test.each(["tab", "store", "Jotai before render"])(
+    "a %s switch during discard load retains both owners",
+    async (switchKind) => {
+      const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+      mocks.loadFileGame.mockReturnValueOnce(read.promise);
+      await openActualPageConfirmation();
+      const original = treeStore.getState();
+      await discardActualPage();
+      const signal = mocks.loadFileGame.mock.calls[0][2] as AbortSignal;
+      const otherStore = createTreeStore(undefined, defaultTree());
+      const otherOriginal = otherStore.getState();
+      await act(async () => {
+        if (switchKind !== "store") jotaiStore.set(activeTabAtom, tabBId);
+        if (switchKind !== "Jotai before render") root.render(renderPanel(otherStore));
+        if (switchKind === "Jotai before render") {
+          read.resolve(diskGame());
+          await read.promise;
+        }
+      });
+      expect(signal.aborted).toBe(switchKind !== "Jotai before render");
+      await act(async () => read.resolve(diskGame()));
+      expect(treeStore.getState()).toBe(original);
+      expect(otherStore.getState()).toBe(otherOriginal);
+      expect(jotaiStore.get(tabsAtom).map((tab) => tab.gameOrigin)).toEqual([
+        { ...tabA.gameOrigin, gameNumber: 2 },
+        tabB.gameOrigin,
+      ]);
+      expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    },
+  );
+
+  test("switching Jotai owner before discard acceptance starts no read for either owner", async () => {
+    await openActualPageConfirmation();
+    const original = treeStore.getState();
+    const discard = modalButton("Tab.CloseWithoutSaving");
+    await act(async () => {
+      jotaiStore.set(activeTabAtom, tabBId);
+      discard.click();
+    });
+    expect(mocks.loadFileGame).not.toHaveBeenCalled();
+    expect(treeStore.getState()).toBe(original);
+    expect(jotaiStore.get(currentTabAtom)).toEqual(tabB);
+    expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toEqual({ ...tabA.gameOrigin, gameNumber: 2 });
+  });
+
+  test("a captured save continuation after unmount starts no page read", async () => {
+    const write = deferred<{ stamp: string; revision: string }>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await openActualPageConfirmation();
+    await act(async () => modalButton("Tab.SaveAndClose").click());
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    await act(async () => root.unmount());
+    await act(async () => write.resolve({ stamp: "saved-stamp", revision: "saved-revision" }));
+    expect(mocks.loadFileGame).not.toHaveBeenCalled();
+    expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toEqual({ ...tabA.gameOrigin, gameNumber: 2 });
+  });
+
+  test("save continuation remains unforced and retains fresh edits during its page read", async () => {
+    const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+    mocks.loadFileGame.mockReturnValueOnce(read.promise);
+    await openActualPageConfirmation();
+    await act(async () => modalButton("Tab.SaveAndClose").click());
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+    expect(treeStore.getState().dirty).toBe(false);
+    await act(async () => treeStore.getState().setComment("Edited after saving"));
+    const newer = treeStore.getState();
+    await act(async () => read.resolve(diskGame()));
+    expect(treeStore.getState()).toBe(newer);
+    expect(treeStore.getState()).toMatchObject({ dirty: true, sourceStamp: "saved-stamp" });
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual({
+      ...tabA.gameOrigin,
+      gameNumber: 2,
+    });
+    await expectPageConfirmation();
+  });
+
+  test("a new dirty page request aborts the prior read before opening confirmation", async () => {
+    const read = deferred<Awaited<ReturnType<typeof loadFileGame>>>();
+    mocks.loadFileGame.mockReturnValueOnce(read.promise);
+    await act(async () => root.render(renderPanel()));
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="set-page"]')!.click(),
+    );
+    const signal = mocks.loadFileGame.mock.calls[0][2] as AbortSignal;
+    await act(async () => {
+      treeStore.getState().setComment("New edit");
+      container.querySelector<HTMLButtonElement>('[data-testid="activate-page"]')!.click();
+    });
+    expect(signal.aborted).toBe(true);
+    const newer = treeStore.getState();
+    await act(async () => read.resolve(diskGame()));
+    expect(treeStore.getState()).toBe(newer);
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(tabA.gameOrigin);
+    await expectPageConfirmation();
+    expect(mocks.loadFileGame).toHaveBeenCalledOnce();
+  });
 
   test("the database card navigates by handle key before setting the active database", async () => {
     const database: SuccessDatabaseInfo = {

@@ -34,6 +34,7 @@ import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { loadFileGame, withFileWrite } from "@/utils/files";
 import { setFileFreshness } from "@/state/fileFreshness";
 import type { Tab } from "@/state/workspaceTypes";
+import type { TreeStore } from "@/state/store/tree";
 
 type FileBackedTab = Tab & {
   gameOrigin: Extract<Tab["gameOrigin"], { kind: "file" | "temp_file" }>;
@@ -43,6 +44,17 @@ type FileTabUpdateResult = {
   saved: boolean;
   matched: boolean;
 };
+
+type PageRequest = {
+  tab: FileBackedTab;
+  store: TreeStore;
+  fileKey: string;
+  page: number;
+  generation: number;
+  controller: AbortController;
+};
+
+type PageTreeSnapshot = Pick<ReturnType<TreeStore["getState"]>, "root" | "headers" | "dirty">;
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -142,14 +154,11 @@ function GameSelectorAccordion({
   addGame?: () => void;
 }) {
   const store = use(TreeStateContext)!;
-  const setState = useStore(store, (s) => s.setState);
   const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
   const setTabs = useSetAtom(tabsAtom);
   const jotaiStore = useJotaiStore();
 
-  const [confirmChanges, setConfirmChanges] = useState(false);
-  const toggleConfirmChanges = () => setConfirmChanges((opened) => !opened);
-  const [tempPage, setTempPage] = useState(0);
+  const [pageConfirmation, setPageConfirmation] = useState<PageRequest | null>(null);
 
   const tabFile = getTabFile(currentTab);
   const gameNumber = getTabGameNumber(currentTab);
@@ -183,6 +192,7 @@ function GameSelectorAccordion({
   currentIdentityRef.current = { tabId, fileKey, store };
 
   useEffect(() => {
+    setPageConfirmation(null);
     return () => {
       pageGenerationRef.current += 1;
       pageAbortRef.current?.abort();
@@ -202,20 +212,13 @@ function GameSelectorAccordion({
     ) {
       return false;
     }
+    // currentTabAtom selects from tabsAtom, so the active tab also proves workspace membership.
     const active = jotaiStore.get(currentTabAtom);
-    const activeFile = active && getTabFile(active);
-    if (
-      active?.value !== ownerId ||
-      !activeFile ||
-      fileWorkspaceKey(activeFile.handle) !== ownerFileKey
-    ) {
-      return false;
-    }
-    const owner = jotaiStore.get(tabsAtom).find((tab) => tab.value === ownerId);
+    const activeFile = getTabFile(active);
     return (
-      !!owner &&
-      (owner.gameOrigin.kind === "file" || owner.gameOrigin.kind === "temp_file") &&
-      fileWorkspaceKey(owner.gameOrigin.file.handle) === ownerFileKey
+      active?.value === ownerId &&
+      !!activeFile &&
+      fileWorkspaceKey(activeFile.handle) === ownerFileKey
     );
   }
 
@@ -362,49 +365,64 @@ function GameSelectorAccordion({
     }
   }
 
-  async function setPage(page: number, forced?: boolean) {
-    if (!tabFile || !currentTab || tabId === undefined || fileKey === null) return;
-    if (!forced && store.getState().dirty) {
-      setTempPage(page);
-      setConfirmChanges(true);
+  function setPage(page: number) {
+    if (!isFileBackedTab(currentTab) || fileKey === null) return;
+    pageAbortRef.current?.abort();
+    const request: PageRequest = {
+      tab: currentTab,
+      store,
+      fileKey,
+      page,
+      generation: ++pageGenerationRef.current,
+      controller: new AbortController(),
+    };
+    setPageConfirmation(null);
+    return loadPage(request);
+  }
+
+  function isCurrentPageRequest(request: PageRequest) {
+    return (
+      request.generation === pageGenerationRef.current &&
+      !request.controller.signal.aborted &&
+      isCurrentOwner(request.tab.value, request.fileKey, request.store)
+    );
+  }
+
+  function continuePageConfirmation(discard: boolean) {
+    if (!pageConfirmation || !isCurrentPageRequest(pageConfirmation)) return;
+    const snapshot = discard ? pageConfirmation.store.getState() : undefined;
+    // The generation check also prevents a captured callback from dismissing a newer request.
+    setPageConfirmation(null);
+    void loadPage(pageConfirmation, snapshot);
+  }
+
+  async function loadPage(request: PageRequest, discardSnapshot?: PageTreeSnapshot) {
+    if (!isCurrentPageRequest(request)) return;
+    const { tab, store: ownerStore, page, controller } = request;
+    pageAbortRef.current = controller;
+    const initialTree = discardSnapshot ?? ownerStore.getState();
+    if (!discardSnapshot && initialTree.dirty) {
+      setPageConfirmation(request);
       return;
     }
 
-    pageAbortRef.current?.abort();
-    const controller = new AbortController();
-    pageAbortRef.current = controller;
-    const generation = ++pageGenerationRef.current;
-    const activeTabId = tabId;
-    const activeFileKey = fileKey;
-    const activeStore = store;
-    const filePath = tabFile.handle;
-    const initialRoot = activeStore.getState().root;
-
-    const isObsolete = () =>
-      generation !== pageGenerationRef.current ||
-      controller.signal.aborted ||
-      currentIdentityRef.current.tabId !== activeTabId ||
-      currentIdentityRef.current.fileKey !== activeFileKey ||
-      currentIdentityRef.current.store !== activeStore;
-
     try {
-      const loaded = await loadFileGame(filePath, page, controller.signal);
-      if (isObsolete()) {
+      const loaded = await loadFileGame(tab.gameOrigin.file.handle, page, controller.signal);
+      if (!isCurrentPageRequest(request)) {
         return;
       }
-      if (activeStore.getState().dirty || activeStore.getState().root !== initialRoot) {
-        setTempPage(page);
-        setConfirmChanges(true);
+      const currentTree = ownerStore.getState();
+      if (
+        (!discardSnapshot && currentTree.dirty) ||
+        currentTree.root !== initialTree.root ||
+        currentTree.headers !== initialTree.headers
+      ) {
+        setPageConfirmation(request);
         return;
       }
       const saved = setCurrentTab((prev) => {
-        if (prev.value !== activeTabId) return prev;
-        if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-          return prev;
-        }
-        if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) {
-          return prev;
-        }
+        // The request's owner was validated above without yielding.
+        if (!isFileBackedTab(prev)) return prev;
         return {
           ...prev,
           gameOrigin: {
@@ -414,19 +432,21 @@ function GameSelectorAccordion({
         };
       });
       if (!saved) return;
-      setState(loaded.tree);
+      ownerStore.getState().setState(loaded.tree);
       // The tree was just read from disk, so the gate need not read it a second time.
-      if (!loaded.present && page < tabFile.numGames) {
-        setFileFreshness(activeTabId, "unavailable");
+      if (!loaded.present && page < tab.gameOrigin.file.numGames) {
+        setFileFreshness(tab.value, "unavailable");
       } else {
-        setFileFreshness(activeTabId, "verified", { verifiedRevision: loaded.revision });
+        setFileFreshness(tab.value, "verified", { verifiedRevision: loaded.revision });
       }
     } catch (error) {
-      if (isObsolete()) {
+      if (!isCurrentPageRequest(request)) {
         return;
       }
       if (errorUnlessCancelled(error) === null) return;
       notifyUnlessCancelled(t("Common.Error"), error);
+    } finally {
+      if (pageAbortRef.current === controller) pageAbortRef.current = null;
     }
   }
 
@@ -612,11 +632,19 @@ function GameSelectorAccordion({
   return (
     <>
       <ConfirmChangesModal
-        opened={confirmChanges}
-        toggle={toggleConfirmChanges}
-        closeTab={() => {
-          void setPage(tempPage, true);
+        pendingClose={
+          pageConfirmation
+            ? { tabId: pageConfirmation.tab.value, store: pageConfirmation.store }
+            : null
+        }
+        tab={pageConfirmation?.tab}
+        onCancel={() => {
+          if (!pageConfirmation || !isCurrentPageRequest(pageConfirmation)) return;
+          setPageConfirmation(null);
+          pageConfirmation.controller.abort();
         }}
+        onDiscard={() => continuePageConfirmation(true)}
+        onSaved={() => continuePageConfirmation(false)}
       />
       <Accordion
         styles={{
