@@ -6887,3 +6887,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Full auto and the named finding use existing automated harnesses. Reversal path: acceptance assignment and separate findings, with no production data change.
 * **Decided by:** Codex, autonomously under full auto, adopted reviewed plan, 2026-10-10 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"5a6c483a4f182a67da657287bfa63944fd8bb6e928bf422b81874bbc16d2498a","input_sha256":"aed626612ebdbc14638022a55e02b3ca4d82a2880f1862fbb814904beaaa6f7b","kind":"mutation-receipt","operation":"77ec07830f37bfadc9f6f9b837725d0a14bf5a2567d93384b3c85d213d7f88e5","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-02","d-20261010-03","d-20261010-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261010-05 — Which snapshot authorizes discard before asynchronous page replacement?
+
+* **Question:** Which state and owner authorize InfoPanel's existing Close without saving action while a replacement game loads?
+* **Governs:** f-20261001-08
+* **Chosen:** An ephemeral request bound to the original tab, tree store, file key and existing page generation. Use the modal's existing explicit owner callbacks. At accepted discard, capture the immutable root and headers references and permit replacement only while those references and the owner still match.
+* **Rejected:** Clearing dirty before loading, an unbound forced boolean, or a new persisted version counter.
+* **Reason:** The loaded same-area defect must be repaired under push-review-policy section 4. The current tree uses Immer, and the modal already accepts an explicit tab and store. Existing owner and generation checks plus immutable snapshots preserve newer edits without introducing another storage contract. This companion repair is separate from the frozen affordance phase. Its original intake is tasks/findings-inbox/20261010-020003-3905709-1791590403268066877-6.md. Reversal path: InfoPanel's page request and confirmation callbacks, with the race tests retained.
+* **Decided by:** Codex, autonomously under full auto, 2026-10-10 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ac2d8926f18968e9075eeb3d1569373c30ffdb59b5403036c847ab541f06c189","input_sha256":"e2887e407262c00552d3917ee095d6acac918d47b9feda420b0a885202dad9ce","kind":"mutation-receipt","operation":"70ec0670b0fd33deb5045b88a05db864e87543fcd1beec43f73cba2e97a876bb","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-05"],"target":"decisions-ledger","v":1} -->
