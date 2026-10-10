@@ -476,3 +476,222 @@ Read-only plan approval only. No files changed or tests run. Implementation, bun
 
 VERDICT: APPROVED
 ````
+
+## Initial source candidate and first bounded repair judgment
+
+Initial candidate remains source-open. Root independently ran 638 tests across 12 suites and 46 parser tests, scoped formatting, linting and types, then actual build and bundle measurement. All passed except the unchanged total bundle budget, actual total 1,623,428 bytes. Receipt: gate-root-tab-actions-initial-preflight.Zffdql, HEAD d067a499cadc2942625196703e0dd26fe4d9a3fd, completion 1, resolution red. Root did not rerun heavy pre-review after this known failed prerequisite. Main dist was intentionally rebuilt by root after the leaf EOS integrity proof, so its initial unchanged-dist claim refers only to the leaf interval.
+
+### Initial leaf report, verbatim
+
+```text
+# Shared tab-action ownership source phase
+
+The frozen O1–O4 source implementation and local fault proof are complete. The single final isolated build succeeds, but the canonical bundle gate is red. Total transfer is **1,623,428 gzip bytes**, exceeding the unchanged **1,620,000** limit by **3,428 bytes**. Source closure is blocked. No further source design or build attempt was started after that result.
+
+This is the new revision3 source contract, not a third R5 budget iteration. The approved P3 witnesses and plan-level closures supplied by the root are inputs to this phase. They are not evidence that the current source, integrated gates, bundle or native runtime have closed. Plan authorship and arbitration shared one context. Detection here ran in the Codex code model family. This leaf did not perform independent root review or claim earlier mutation100 as current proof.
+
+## Ownership and actual launch
+
+- Actual launch and EOS HEAD: `d067a499cadc2942625196703e0dd26fe4d9a3fd`.
+- Actual index byte SHA-256 at launch and EOS: `ab4d83afb32a571d7a3e8ab1c92f85701b1dbed2894706eb7112370ea12c4531`.
+- `launch-index.txt` and `eos-index.txt` are identical. The index was never written by this leaf.
+- All six owned paths were already modified at launch. `starting/` retains their exact launch bytes. `phase-owned.patch` is the leaf's launch-to-EOS delta, **1,131 insertions and 185 deletions across those six paths only**. This differs from the cumulative HEAD-to-worktree diff.
+- The existing foreign changes in `src/state/store/tree.ts`, `src/state/store/tree.test.ts` and `src/utils/chess.ts` remain byte-identical to launch. Every other tracked path outside the six-path assignment also matches launch.
+- The main `dist` manifest, containing 166 files, is unchanged. All 17 earlier scratch directories recorded at launch remain identical, excluding dependency symlinks, `node_modules`, `.git` and prohibited `.env` entries. The manifests are in `launch.json`. Earlier proof reports, logs and patches were not rewritten.
+- No skill, agent, tracked record edit, stage, commit, push, deployment, pixel/native verification or external message was performed. Full project `CLAUDE.md` and `.env` files were not read. Manual source edits used `apply_patch`.
+
+Protected launch SHA-256 values:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/state/store/tree.ts` | `b36532534443a1d44fb4fb49c5638cd782fb801b113c5072c6f86f022d549300` |
+| `src/state/store/tree.test.ts` | `7031b80f89e000ab83e2775f95c1326cf4fd438c530edd7cc1e4a0b6c3e1203e` |
+| `src/utils/chess.ts` | `07ea714be999ba44c80b8b451f4df8fef96eb6c4a9a6431a68dfc585bf468906` |
+
+Final owned SHA-256 values, also retained in `frozen-owned.sha256.json`:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/utils/tabs.ts` | `042f479cb49ff89606cdc144fc5c848857a6706515ff8f6e71c266c453c13ec8` |
+| `src/utils/tabs.test.ts` | `52c3c6ba9bbae33843d91174dd6ad29cfe3551c80e7ddb2eb384900b8e0a787e` |
+| `src/components/boards/BoardAnalysis.tsx` | `4c514fcaacc894541c3aabd596f31f53f2cce535f22115e16679d089a7d85d5d` |
+| `src/components/boards/BoardAnalysis.test.tsx` | `dba21c1be234084e280df69a02b7e7a34f981b696e4d137db98b50560e5c9a45` |
+| `src/components/tabs/FileFreshnessGate.tsx` | `22253cd01c702f6e42e724de7f3ee3be9f015530cfb4e97e1f4e2213607f0b57` |
+| `src/components/tabs/FileFreshnessGate.test.tsx` | `5550a5f0fd53480f4ded1ee943aa6cff651f989b40e3eb0698cf37e33c72f45c` |
+
+## Mechanism and six-path delta
+
+**O1:** `useTabActions()` in the existing `tabs.ts` obtains the caller's Jotai provider store and durable tab setter. Its stable callbacks read live tabs and call `updateTabById`. Both genuine consumers, `BoardAnalysis` and `FileBackedGate`, use those callbacks. There is no new production module or global workspace lookup.
+
+**O2:** `sameTabOwner()` in `tabs.ts` compares logical tab identity and effective physical `getTabTreeKey()` identity, including the legacy fallback. Existing file/page matching composes with it in the gate. Save composes its stricter origin policy with it. The existing replacement path also uses the genuine shared comparison while retaining its closing, cache and snapshot checks. File/temp compatibility in the file gate does not weaken Save's stricter origin policy.
+
+**O3:** `AddGameContext` in the existing `FileFreshnessGate.tsx` carries the narrow callback to `BoardAnalysis`. The board keeps its existing button, dirty confirmation, ordinary Save and save continuation. The gate owns Add Game's workspace continuation. There is no circular import or `BoardsPage` edit.
+
+The admitted operation captures the tab and cached tree store. Its owner predicate checks the live provider-local tab, logical and physical generation, file/page, and exact cached-store identity. Admission is a narrow transient `WeakMap<TreeStore, AddGameAdmission>` lease. It is acquired synchronously before parsing and survives child withholding and gate remounts. It does not depend on mutable freshness. An independent store is an independent owner. A newer physical generation may admit its own operation. Release compares the exact lease object, so an obsolete completion cannot clear a newer generation's lease.
+
+`useSyncExternalStore` presents pending Add Game from that lease even if a competing ordinary Save publishes verified freshness. Unsubscription removes view listeners. Empty admissions are removed after the last subscriber leaves, and weak keys retain no retired store. This is the adopted narrow admission exception, not a persisted state or generic action registry.
+
+Workspace authority is independent of the gate view. A surviving inactive owner can settle its native result, origin, blank tree and freshness while its gate is absent. Guards after parse, native write and count suppress removed, physically replaced and cached-store-replaced owners before obsolete publication or continuation writes. Add Game never borrows recovery append's abort controller or `runAction` authority.
+
+View authority independently gates Add Game's own notifications. Add Game's async continuation does not set React state after teardown. Parse failure restores only its exact freshness claim while still owned. A newer Save result, source stamp or diagnostic is preserved. Unknown native outcomes, write/count failures and refused durable origin writes settle to truthful terminal freshness without installing an unowned or undurable blank tree. Successful origin publication preserves the current unrelated tab and file metadata before installing the blank tree and verified result.
+
+Existing recovery Save As New Game payload, persistent `appendAttempted`, uncertainty retry prohibition, actual registered-handler errors and `runAction` cancellation remain intact. `runAction` is independently verified byte-identical to launch. No wording, schema, journal, state module, configuration, budget or verifier was changed.
+
+**O4:** `tabs.test.ts` adds shared ownership, stable provider-local access and durable-refusal witnesses. `FileFreshnessGate.test.tsx` adds effective legacy-key and file/temp gate behavior with an actual unaborted native signal. `BoardAnalysis.test.tsx` adds the real composed harness and asynchronous ownership witnesses described below. Existing standalone Board witnesses obtain the production callback from a real gate through the retained harness. The new composed witnesses render the real Board inside the real gate and real `TreeStateProvider`.
+
+## Reads and integration
+
+Read the entire canonical approved plan and cumulative raw reviews, real revision3 body, full tracked tab-actions handoff history, all six scratch P3 lens reports, all six named project rule files, exact named decisions, and both complete prior R5 round reports. Read all six assigned sources and tests before editing.
+
+Traced the real integration through `BoardsPage`, `TreeStateContext`, `state/fileFreshness.ts`, `state/store/tree.ts`, `tabStorage.ts`, `InfoPanel.tsx`, `files.ts`, `ConfirmChangesModal` and current Save callers. The named `fileWorkspace.ts` does not exist in this checkout. Its relevant integration is implemented by `fileWorkspaceAtom` in `atoms.ts`, `ensureFileWorkspace` in `files.ts`, and `fileWorkspaceKey` in `utils/pathCapabilities.ts`. Those actual paths were read without changing them. No unrelated decision or ledger was rewritten.
+
+## Local proof
+
+The exact selected command used locally, for candidate baseline and for every fault restoration was:
+
+```sh
+pnpm test src/utils/tabs.test.ts src/components/boards/BoardAnalysis.test.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/TreeRecoveryGate.test.tsx src/components/panels/info/InfoPanel.test.tsx src/state/atoms.lifecycle.test.ts
+```
+
+Final local result: **six test files, 290 tests passed, exit 0** in `local-final-green.log` and `.exit`. Candidate baseline is also 290 passed, exit 0. The final sources and final tests were frozen before the accepted fault loop.
+
+Scoped `pnpm exec oxfmt --check` and `pnpm exec oxlint --deny-warnings` over exactly the six owned paths both exit 0. `pnpm exec tsgo --noEmit` and `git diff --check` exit 0. Exact commands and logs are in `run-static.sh`, `format.log`, `lint.log`, `types.log`, `diff-check.log` and their `.exit` files. No heavy canonical pre-review, integrated mutation or contract gate was queued by the leaf.
+
+Retained diagnosis history is honest. `local-first` failed because the test mock lacked `notifyListenerError`. `local-final` first failed because an `act` callback returned and awaited a held Save promise, producing a timeout and cascading failures. `local-complete` then exposed an unflushed retired-store fixture. These harness defects were corrected. `local-second`, `local-frozen` and final `local-final-green` are retained separately. Earlier failed logs were not replaced with green logs.
+
+The new outward witnesses cover:
+
+- Actual withheld Board followed by blank tree, correct origin and verified freshness.
+- Held native write, gate absent after switching away, completion while inactive, correct board after returning.
+- Held parse, navigate away and return before settlement, second activation refused before any second parse or write.
+- Real Board Save hotkey with held native Save, accepted held Add Game parse, navigation away, successful Save completion, return and second activation. The lease continues to withhold the Board and preserves the Save stamp. Companion actual Save controls cover success, conflict, unavailable, unknown-write and typed I/O diagnostics.
+- Synchronous duplicate activation, obsolete identity release, newer physical generation admission, and independent actual provider/store owners with two held parses and independent freshness producers.
+- Surviving inactive parse failure, unknown stamp/revision, write failure, count failure and durable refusal reach terminal freshness with no permanent loader.
+- Actual durable same-ID/file/page physical replacement during successful and rejected parse, write and count preserves replacement storage bytes, tree, origin, metadata and freshness. Actual tab removal and cached-store retirement also suppress obsolete effects and further continuation writes.
+- Active controls, active parse-error presentation and retry, current unrelated metadata, stale count retry, and truthful unknown-write behavior.
+
+The existing global persistence reporter still reports a durable workspace refusal. That retained behavior is distinct from Add Game's view notifications. The inactive refusal witness asserts zero obsolete Add Game notifications and exactly the one existing global persistence notification. This report does not claim that global persistence diagnostics are silenced.
+
+`retained-tests.mjs` parsed the launch and frozen test files and compared every previously existing test callback body byte-for-byte. All **96 retained test definitions** are identical: tabs 38, Board 14, gate 44. Added definitions are 3, 14 and 1 respectively, with parameterized definitions expanding to the final test count. `retained-tests.json`, log and exit 0 are retained. The independent evidence check also verifies that existing assertion lines were not removed. No test or assertion was deleted to reduce size.
+
+## Disposable fault proof and integrity
+
+`head.tar` is `git archive` of the actual launch HEAD. `candidate.patch` is the exact binary HEAD-to-worktree delta, including preserved existing work. The disposable candidate was reconstructed from those two artifacts, checked with `git apply --check`, applied, and given only the permitted dependency symlink. Faults were applied only inside that candidate. Main source was never faulted.
+
+Complete frozen manifests cover **519 source/assets/scripts files** and **205 tests**, retained in `source.sha256.json` and `tests.sha256.json`. Each accepted pair retains its unified production-only patch, apply-patch input and log, command JSON, fault source/test manifests, complete test log, same-run exit, semantic diagnosis, exact inverse restoration patch/log, restored manifests and full selected-command log/exit.
+
+There are **34 unique accepted production-only fault/restoration pairs**. Every accepted fault produced a named semantic `FAIL` and `AssertionError`, same-run **exit 1**, with unchanged final tests. Every exact restoration produced the full selected **290-test exit 0**. New focused fault selectors selected real named witnesses. Shared physical authority and retained Save/recovery faults exercised the full command where appropriate. No zero-selected run or unrelated parent failure is accepted as proof.
+
+| Accepted fault | Distinct authority or completion guarantee exposed |
+| --- | --- |
+| `shared-physical-owner` | Effective physical generation shared by recovery, Save and Add Game |
+| `shared-logical-owner` | Logical tab identity |
+| `provider-local-lookup` | Live provider-local lookup |
+| `shared-durable-refusal` | Durable setter refusal reaches the consumer |
+| `synchronous-admission` | Admission precedes parse and blocks duplicate activation |
+| `freshness-independent-admission` | Competing Save cannot release pending admission |
+| `remount-pending-presentation` | Remounted gate presents the independent pending lease |
+| `generation-admission` | New physical generation can admit its own operation |
+| `identity-checked-release` | Obsolete completion cannot release that newer lease |
+| `independent-store-admission` | Independent provider/store owners do not block one another |
+| `inactive-workspace-completion` | Surviving owner completes while its gate is absent |
+| `cached-store-owner` | Retired cached store has no completion authority |
+| `obsolete-view-notifications` | Old view suppresses its own notification |
+| `parse-owner-before-write` | Replacement after parse prevents obsolete native write |
+| `write-result-owner` | Replacement during write prevents result publication |
+| `count-result-owner` | Replacement during count prevents metadata publication |
+| `count-settlement-owner` | Replacement during rejected count prevents freshness/error publication |
+| `parse-terminal-state` | Parse failure releases admission and restores terminal presentation |
+| `newer-save-freshness` | Parse failure cannot restore stale freshness over newer Save |
+| `add-game-origin-durability` | Refused origin commit cannot install blank tree |
+| `blank-tree-installation` | Accepted completion installs the actual parsed blank tree |
+| `current-file-metadata` | Completion preserves live unrelated file metadata |
+| `save-shared-source-owner` | Retained Save source continuation authority |
+| `save-first-source-outcome` | Retained fulfilled first-source owner check |
+| `save-post-picker-source-outcome` | Retained fulfilled post-picker-source owner check |
+| `save-picker-owner` | Retained picker outcome authority |
+| `save-destination-owner` | Retained destination outcome authority |
+| `save-completion-owner` | Retained database completion owner guard |
+| `save-database-dirty` | Retained database content dirty ownership |
+| `save-autosave-failure` | Retained current-owner typed autosave failure presentation |
+| `save-catch-entry-owner` | Retained late Save catch-entry authority |
+| `recovery-reload-rejection` | Retained obsolete reload rejection behavior |
+| `recovery-append-rejection` | Retained actual registered append rejection behavior |
+| `recovery-append-fulfillment` | Retained obsolete unknown append outcome behavior |
+
+The retained four recovery source-fault categories are adapted truthfully. Their physical fulfilled-reload category is now exercised by the genuinely shared `shared-physical-owner` patch, whose retained log also exposes Save and Add Game physical replacement witnesses. It is counted once. The other three remain distinct. All nine retained Save categories have distinct accepted patches. `generation-admission` and `identity-checked-release` use the same outward scenario but different real mutations and different assertions, admission count versus surviving pending presentation.
+
+One first broad provider-global fault attempt is explicitly **rejected** as accepted proof. It produced the provider semantic failure but also unrelated unhandled held-promise rejections when operations were never admitted. Its artifacts remain intact under `rejected-attempts/provider-global/`, with `run-proof-first.py`, `proof-first.exit`, `fault-pairs-first.json` and the original `proof.log`. The same fault was then run with the real focused provider witness, producing one semantic failed test without unhandled errors, followed by the full 290-test restoration. That accepted rerun is counted once. The rejected attempt is not an extra pair.
+
+`fault-pairs.json` records each accepted patch SHA, faulted source SHA, selected witness, semantic `FAIL` lines and exact exits. Every pair has its own `<name>.semantic.txt`. `proof-resume1.log` records the completed accepted loop. `proof-integrity.json` and `proof.exit` record the final exact restoration.
+
+`verify-evidence.py` independently reconstructed each fault from its retained unified patch, verified unique patch and fault-source hashes, reversed the patch back to the frozen source, checked every test manifest and exact restoration command, and compared final main/candidate/bundle manifests. It also checked retained test assertions, launch-byte `runAction`, HEAD/index, every protected tracked path, prior scratch directory manifests and main `dist`. `evidence-integrity.log` and `.exit` show **exit 0**. All faulted production sources were exactly restored to the intended frozen post-phase source, and every final test stayed unchanged throughout accepted faulting and restoration.
+
+## Single final isolated bundle and blocker
+
+Only after final local and accepted fault proof, `run-bundle.py` reconstructed a separate Git-derived candidate from the same actual HEAD archive and exact binary delta. Source and test manifests matched the frozen candidate before and after building. The main checkout's `dist` was untouched.
+
+| Command or measurement | Result |
+| --- | --- |
+| `pnpm build-vite` | Exit 0 |
+| canonical `pnpm bundle:check` | **Exit 1** |
+| actual imported `buildBundleReport` from `scripts/check-bundle-budget.mjs` | Exit 0, measurement retained |
+| Entry | 540,396 / 550,000 gzip bytes |
+| Largest lazy chunk | 518,065 / 550,000 gzip bytes, `src/routes/index.lazy.tsx` |
+| Total | **1,623,428 / 1,620,000 gzip bytes** |
+| Total excess | **3,428 gzip bytes** |
+
+Artifacts: `build-vite.log` and `.exit`, `bundle-check.log` and `.exit`, `bundle-measurement.json`, measurement log/exit, `bundle.receipt.json`, and before/after full manifests. `bundle.exit` is 0 because the runner successfully retained the measurement and integrity evidence. It does **not** mean the budget passed. The receipt explicitly records build 0, canonical check 1, measurement 0 and unchanged sources/tests.
+
+The missing premise is the frozen plan's assumed net bundle savings: real shared extraction must offset the emitted cost of the required stable admission subscription and workspace-owned continuation enough to meet the existing total limit. This measured candidate does not satisfy that premise. The artifact proves the net result. It does not establish per-function byte attribution or a savings estimate. There was no threshold change, compression spelling/order manipulation, loading trick, minifier/configuration change or baseline adjustment.
+
+The historical isolated bundles and mutation100 remain historical evidence only. Root-owned current integrated canonical pre-review, mutation, contract, independent review, pixel/native verification and push are pending. Root cannot treat this phase as source-closed or budget-green. The leaf stops at the specified frozen boundary and leaves its six-path delta unstaged for root arbitration. No further design is proposed or implemented here.
+```
+
+### Root rejected proof category
+
+```text
+# Root proof correction on first tab-action candidate
+
+Root fully read the source phase report after EOS and inspected the actual count operation and its production-only patch. The count-result-owner fault removes the post-count outer ownership guard. The synchronous updateTab callback still checks logical, physical and file/page ownership and returns the previous tab on mismatch. Its recorded failure is only expect(tabs).toBe(replacement.tabs), with equal serialized content. It does not expose publication of the obsolete count or mutation of replacement bytes or content. That observation is an internal array identity change, not accepted outward semantic proof of the count-result guarantee.
+
+Disposition: Fix in this owned source/proof phase. Preserve the initial raw report, patch and diagnosis as rejected evidence for this category. The repaired proof must expose actual obsolete count, workspace bytes, diagnostics or another outward guarantee with final tests unchanged during faulting. An honest composite fault of the real redundant protection is possible. Prefer a source-backed removal of the redundant synchronous inner check if the execution trace proves it unnecessary, then the remaining real post-count guard has an independently meaningful fault. No boundary-specific proof condition, weakened expectation or repeated patch count is allowed.
+
+The other accepted phase witnesses remain subject to root inspection and integrated proof. There is no current34-pair root acceptance claim until this correction closes. Plan authorship and arbitration shared one context. Detection ran on the code model family.
+```
+
+### Focused minimalism J3, verbatim
+
+```text
+No bloat or duplication findings above the confidence threshold.
+
+The proposed boundary is justified. `FileFreshnessGate.tsx:251` contains domain execution whose completion already depends on captured workspace ownership, independently of React teardown. Moving that operation, its lease and the narrow context into existing `tabs.ts` removes Board’s renderer-module dependency at `BoardAnalysis.tsx:30`. Its single Gate caller has a concrete lifetime and cohesion reason for this boundary.
+
+The smallest sufficient refactor relocates that implementation and leaves a small Gate adapter for translation and view-authorized notifications. Retain the live lease subscription and all ownership checks. No new production file, factory, configurable policy or generic transaction layer is needed. Recovery append should remain separate because its payload, cancellation and persistent uncertainty contracts differ.
+
+`vite.config.ts:37` enables the React compiler preset. A plain domain operation is a legitimate source boundary change, but this inspection establishes neither compressed savings nor per-function byte attribution.
+
+Limitation (confidence: 100): this approves the proposed boundary only. The measured total remains **1,623,428 / 1,620,000**, and the refactored candidate still requires the retained tests, fault evidence and actual bundle check.
+
+Read-only inspection. No files changed or tests run. Detection ran on the author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+### Focused root-cause J3, verbatim
+
+```text
+No root-cause blocker or prior-fix reintroduction found.
+
+The failure chain was mismatched ownership: navigation destroys the gate while the workspace tab survives, and competing Save completion can overwrite freshness before Add Game settles. The independent store/generation lease and workspace continuation address both mechanisms. Inspected faults reproduce lost inactive completion and duplicate admission, with restoration passing 290 tests.
+
+The proposed boundary is appropriate: move Add Game’s domain execution, captured ownership and lease operations into existing `tabs.ts`. Keep subscription, rendering and notification authority in the Gate adapter. Moving the narrow context also removes BoardAnalysis’s renderer-module dependency. Preserve recovery append’s distinct cancellation and uncertainty policy.
+
+Limitation (confidence: 100): `vite.config.ts` enables React Compiler, which supports investigating this component/domain boundary but establishes no compressed savings. The measured candidate remains 3,428 gzip bytes over budget. Approval covers the proposed boundary, not source closure or bundle acceptance.
+
+Read-only review. No files changed or tests run. Detection ran on the code model family, without family separation.
+
+VERDICT: APPROVED
+```
+
+Root disposition: Fix the rejected count-result witness and relocate the existing workspace operation and narrow context to tabs.ts, keeping the gate view adapter and lease subscription. Both focused judgments APPROVED this implementation boundary, without approving bundle acceptance. O1-O4 and the final revision3 plan are unchanged. This is proof-fix round1 of the new tab-action phase, with at most one measured final candidate. Initial raw evidence remains intact. No source closure, current mutation acceptance, pixels, native or push claim follows from this record. Plan authorship and arbitration shared one context. Detection ran on the code model family.
