@@ -15078,3 +15078,19 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Found by:** Root real-product baseline log /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-native-baseline.CKrg8A/log, actual exit1. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Clarification:** The actual editor component is `src/components/panels/info/PgnInput.tsx`, not the initially named nonexistent PGNEditor.tsx. The baseline did not observe input events or the post-typing value, so the precise cause remains unmeasured. The Update and discard assertions were not reached.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a6ea4834a6bedb56ccf9af8f890289c5dfdc3d8449fd97b1acf1b541696c0b06","input_sha256":"fe8dd056eab2730157e98c1a343dea0f9784613530ccf9f17c01893dd2e57880","kind":"mutation-receipt","operation":"335f2d935e00b28b5578d03ce66eecec05af6ab385b5fcee7a8c14e6651425a6","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-40"],"target":"f-20261010-40","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### Native large-file freshness apply check exceeded its budget once during opening proof
+
+* **ID:** f-20261010-41 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
+* **Where:** scripts/verify-app.mjs large-practice external-rewrite timing measurement, FILE_FRESHNESS_APPLY_BUDGET_MS, and the real file freshness renderer path.
+* **Defect:** The unchanged full native diagnostic run for f-20261001-08 reported FAIL for the freshness transition applies within 1000 ms of the measured read. Observed apply1186.0ms, native read47.0ms, total freshness2807.0ms, stateverified. The independent one-poll-interval-plus-measured-read-and-apply assertion passed. The immediately preceding baseline passed this1000ms check. No cause or repeatability is established. The only current verifier edits concern later GO9 geometry and GO14 diagnostics, which were not reached when this failure occurred.
+* **Open question:** Determine whether the measured interval is expensive production tree/render publication or delayed observer delivery in off-screen verification, and establish the correct measurement and bounded application mechanism for the large-file freshness path without increasing the existing budget.
+* **Fix shape:** Investigate in a separate performance and measurement design run, preserve the1000ms bound and distinguish native read completion, actual state application and rendered observation. This question is independent of labelled game opening. A passing later run does not erase this observation.
+* **Proof:** Record repeated ordinary full native runs and independently measured timing boundaries. Any correction must fail a real slow-application input and pass after exact restoration. No timeout or expected-data weakening.
+* **Related:** f-20261009-02 records a different intermittent first-practice-rating abort. No shared cause is established.
+* **Found by:** Actual native-diagnostics gate log /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-native-diagnostics.uiWUcb/log. Final exit pending when filed. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
