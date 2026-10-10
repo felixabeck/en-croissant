@@ -12,6 +12,7 @@ import {
     type TreeNode,
 } from "@/utils/treeReducer";
 import { positionFromFen } from "@/utils/chessops";
+import * as sound from "@/utils/sound";
 import {
     closeTreeStore,
     createTreeStore,
@@ -1200,4 +1201,150 @@ test("nextContinuation never transposes during an active practice drill", () => 
     store.getState().setPracticePath([1, 0]);
 
     expect(nextContinuation(store.getState())).toBeNull();
+});
+
+test.each([
+    { name: "three-square pawn advance", fen: INITIAL_FEN, uci: "e2e5" },
+    { name: "wrong side to move", fen: INITIAL_FEN, uci: "e7e5" },
+    {
+        name: "exposing the king to check",
+        fen: "k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+        uci: "e2f2",
+    },
+])("makeMove rejects raw $name without changes or sound", ({ fen, uci }) => {
+    const tree = defaultTree(fen);
+    tree.headers.result = "0-1";
+    const store = createTreeStore(undefined, tree);
+    const before = store.getState();
+    const move = parseUci(uci);
+    if (!move) throw new Error("Invalid UCI fixture");
+    const playSound = vi.spyOn(sound, "playSound").mockImplementation(() => undefined);
+    try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            store.getState().makeMove({ payload: move, mainline: true, clock: 42 });
+
+            const after = store.getState();
+            expect(after.root).toBe(before.root);
+            expect(after.root.children).toEqual([]);
+            expect(after.position).toBe(before.position);
+            expect(after.position).toEqual([]);
+            expect(after.headers).toBe(before.headers);
+            expect(after.headers.result).toBe("0-1");
+            expect(after.dirty).toBe(false);
+            expect(playSound).not.toHaveBeenCalled();
+            expect(after).toBe(before);
+        }
+    } finally {
+        playSound.mockRestore();
+    }
+});
+
+test.each(["makeMove", "appendMove"] as const)(
+    "%s rejects a raw move illegal at its target while preserving existing children",
+    (action) => {
+        const store = createTreeStore();
+        store.getState().makeMove({ payload: parseUci("e2e4")! });
+        if (action === "appendMove") store.getState().goToStart();
+        store.getState().save();
+        const before = store.getState();
+        const playSound = vi.spyOn(sound, "playSound").mockImplementation(() => undefined);
+        try {
+            // This knight move is legal at the root, but the target after e4 has Black to move.
+            store.getState()[action]({ payload: parseUci("g1f3")! });
+
+            const after = store.getState();
+            expect(after.root).toBe(before.root);
+            expect(after.position).toBe(before.position);
+            expect(after.headers).toBe(before.headers);
+            expect(after.headers.result).toBe("*");
+            expect(after.dirty).toBe(false);
+            expect(after.root.children).toHaveLength(1);
+            expect(after.root.children[0].children).toEqual([]);
+            expect(playSound).not.toHaveBeenCalled();
+            expect(after).toBe(before);
+        } finally {
+            playSound.mockRestore();
+        }
+    },
+);
+
+test.each([
+    { name: "starting UCI", fen: INITIAL_FEN, uci: "e2e4", san: "e4" },
+    {
+        name: "Black-to-move custom position",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23",
+        uci: "e7e5",
+        san: "e5",
+    },
+    {
+        name: "standard king-destination castling",
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        uci: "e1g1",
+        san: "O-O",
+    },
+    {
+        name: "standard king-to-rook castling",
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        uci: "e1a1",
+        san: "O-O-O",
+    },
+    {
+        name: "Chess960 kingside castling",
+        fen: "4k3/8/8/8/8/8/8/1R1K1R2 w KQ - 0 1",
+        uci: "d1f1",
+        san: "O-O",
+    },
+    {
+        name: "Chess960 queenside castling",
+        fen: "4k3/8/8/8/8/8/8/1R1K1R2 w KQ - 0 1",
+        uci: "d1b1",
+        san: "O-O-O",
+    },
+    {
+        name: "promotion",
+        fen: "7k/P7/8/8/8/8/8/4K3 w - - 0 1",
+        uci: "a7a8q",
+        san: "a8=Q+",
+    },
+    {
+        name: "underpromotion",
+        fen: "7k/P7/8/8/8/8/8/4K3 w - - 0 1",
+        uci: "a7a8n",
+        san: "a8=N",
+    },
+])("makeMove preserves legal raw $name and existing-child replay", ({ fen, uci, san }) => {
+    const store = createTreeStore(undefined, defaultTree(fen));
+    const move = parseUci(uci)!;
+
+    store.getState().makeMove({ payload: move });
+
+    const child = store.getState().currentNode();
+    expect(child.san).toBe(san);
+    expect(child.move).toEqual(move);
+    expect(store.getState().position).toEqual([0]);
+    expect(store.getState().dirty).toBe(true);
+    const result = store.getState().headers.result;
+    store.getState().goToStart();
+    store.getState().save();
+    const root = store.getState().root;
+
+    store.getState().makeMove({ payload: move });
+
+    expect(store.getState().root).toBe(root);
+    expect(store.getState().root.children).toEqual([child]);
+    expect(store.getState().currentNode()).toBe(child);
+    expect(store.getState().position).toEqual([0]);
+    expect(store.getState().headers.result).toBe(result);
+    expect(store.getState().dirty).toBe(false);
+});
+
+test("appendMove admits a legal mainline reply while the cursor stays at the root", () => {
+    const store = createTreeStore();
+    store.getState().makeMove({ payload: parseUci("e2e4")! });
+    store.getState().goToStart();
+
+    store.getState().appendMove({ payload: parseUci("e7e5")! });
+
+    expect(store.getState().root.children[0].children[0].san).toBe("e5");
+    expect(store.getState().position).toEqual([0, 0]);
 });

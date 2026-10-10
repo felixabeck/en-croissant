@@ -743,6 +743,7 @@ function makeMove({
     if (!moveNode) return;
     const [pos] = positionFromFen(moveNode.fen);
     if (!pos) return;
+    if (!pos.isLegal(move)) return;
     const san = makeSan(pos, move);
     if (san === "--") return; // invalid move
     pos.play(move);

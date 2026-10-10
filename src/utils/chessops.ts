@@ -175,7 +175,7 @@ export function parseSanOrUci(pos: Chess, sanOrUci: string): Move | null {
     }
 
     const uciParsed = parseUci(sanOrUci);
-    if (uciParsed) {
+    if (uciParsed && pos.isLegal(uciParsed)) {
         return uciParsed;
     }
 
