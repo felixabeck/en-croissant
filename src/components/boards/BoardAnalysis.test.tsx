@@ -1,18 +1,42 @@
-import { act, useRef, type ReactNode } from "react";
+import { act, useContext, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
+import { Provider as JotaiProvider, createStore as createJotaiStore, useAtomValue } from "jotai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createStore as createZustandStore } from "zustand/vanilla";
-import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { activeTabAtom, autoSaveAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
+import { TreeStateContext, TreeStateProvider } from "@/components/common/TreeStateContext";
+import {
+  activeTabAtom,
+  autoSaveAtom,
+  closeWorkspaceTabAtom,
+  currentTabAtom,
+  currentTabSelectedAtom,
+  currentAnalysisTabAtom,
+  currentPracticeTabAtom,
+  currentReportModalOpenAtom,
+  practiceStateAtom,
+  tabsAtom,
+} from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
-import type { TreeStore } from "@/state/store/tree";
+import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
+import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
+import { WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultPGN } from "@/utils/chess";
 import { defaultTree } from "@/utils/treeReducer";
+import {
+  AddGameContext,
+  getTabTreeKey,
+  isFileBackedTab,
+  replaceFileGame,
+  serializeStoreTree,
+  saveToFile,
+  updateTabById,
+} from "@/utils/tabs";
 import { useHotkeys } from "@mantine/hooks";
+import { MantineProvider } from "@mantine/core";
 import BoardAnalysis from "./BoardAnalysis";
+import { normalizeError, type AppError } from "@/platform/errors";
+import FileFreshnessGate from "@/components/tabs/FileFreshnessGate";
 
 const mocks = vi.hoisted(() => ({
   notifyUnlessCancelled: vi.fn(),
@@ -21,25 +45,51 @@ const mocks = vi.hoisted(() => ({
   parsePGN: vi.fn(),
   issuePgnWorkspace: vi.fn(),
   readGame: vi.fn(),
+  showNotification: vi.fn(),
+  translate: (key: string) => key,
+  addGameActivation: undefined as (() => void) | undefined,
+  realTabs: false,
 }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: mocks.translate }),
 }));
+
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.showNotification } }));
 
 vi.mock("@mantine/hooks", () => ({
   useHotkeys: vi.fn(),
   useToggle: () => [false, vi.fn()],
 }));
 
-vi.mock("@mantine/core", () => {
-  const passthrough = ({ children }: { children: ReactNode }) => <div>{children}</div>;
-  const Tabs = Object.assign(passthrough, {
-    List: passthrough,
-    Panel: passthrough,
-    Tab: passthrough,
-  });
-  return { Paper: passthrough, Portal: passthrough, Stack: passthrough, Tabs };
+vi.mock("@mantine/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mantine/core")>();
+  const passthrough = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  const Tabs = Object.assign(
+    (props: React.ComponentProps<typeof actual.Tabs>) =>
+      mocks.realTabs ? <actual.Tabs {...props} /> : passthrough(props),
+    {
+      List: (props: React.ComponentProps<typeof actual.Tabs.List>) =>
+        mocks.realTabs ? <actual.Tabs.List {...props} /> : passthrough(props),
+      Panel: (props: React.ComponentProps<typeof actual.Tabs.Panel>) =>
+        mocks.realTabs ? <actual.Tabs.Panel {...props} /> : passthrough(props),
+      Tab: (props: React.ComponentProps<typeof actual.Tabs.Tab>) =>
+        mocks.realTabs ? <actual.Tabs.Tab {...props} /> : passthrough(props),
+    },
+  );
+  return {
+    MantineProvider: actual.MantineProvider,
+    Paper: passthrough,
+    Portal: passthrough,
+    Stack: passthrough,
+    Tabs,
+    Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+      <button {...props}>{children}</button>
+    ),
+    Group: passthrough,
+    Loader: () => <span>loader</span>,
+    Text: passthrough,
+  };
 });
 
 vi.mock("@tabler/icons-react", () => ({
@@ -50,7 +100,8 @@ vi.mock("@tabler/icons-react", () => ({
   IconZoomCheck: () => null,
 }));
 
-vi.mock("@/components/files/notifyError", () => ({
+vi.mock("@/components/files/notifyError", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/files/notifyError")>()),
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
 
@@ -108,11 +159,14 @@ vi.mock("@/components/tabs/ConfirmChangesModal", () => ({
 }));
 
 vi.mock("../panels/info/InfoPanel", () => ({
-  default: ({ addGame }: { addGame?: () => void }) => (
-    <button type="button" data-testid="add-game" onClick={addGame}>
-      Add game
-    </button>
-  ),
+  default: ({ addGame }: { addGame?: () => void }) => {
+    mocks.addGameActivation = addGame;
+    return (
+      <button type="button" data-testid="add-game" onClick={addGame}>
+        Add game
+      </button>
+    );
+  },
 }));
 
 vi.mock("../common/DetachedEval", () => ({ default: () => null }));
@@ -128,6 +182,58 @@ vi.mock("./EditingCard", () => ({ default: () => null }));
 vi.mock("./EvalListener", () => ({ default: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const hotkeys = vi.mocked(useHotkeys);
+
+function expectNotification(error: AppError) {
+  expect(mocks.showNotification).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: error.message,
+  });
+  expect(
+    mocks.notifyUnlessCancelled.mock.calls.map(([, cause]) => normalizeError(cause)),
+  ).toContainEqual(error);
+}
+
+// Keep the earlier standalone board witnesses, sourcing their callback from the real gate.
+// The composed witnesses below additionally exercise the production withholding boundary.
+function CaptureAction({
+  action,
+}: {
+  action: React.RefObject<React.ContextType<typeof AddGameContext>>;
+}) {
+  action.current = useContext(AddGameContext);
+  return null;
+}
+
+function RetainedBoardHarness() {
+  const tab = useAtomValue(currentTabAtom);
+  const action = useRef<React.ContextType<typeof AddGameContext>>(null);
+  return (
+    <>
+      {tab && (
+        <FileFreshnessGate tab={tab} closeTab={() => undefined}>
+          <CaptureAction action={action} />
+        </FileFreshnessGate>
+      )}
+      <AddGameContext.Provider value={(owner) => action.current?.(owner) ?? Promise.resolve()}>
+        <BoardAnalysis />
+      </AddGameContext.Provider>
+    </>
+  );
+}
+
+function ComposedBoardHarness() {
+  const tab = useAtomValue(currentTabAtom);
+  if (!tab || tab.type !== "analysis") return <div data-testid="away">away</div>;
+  return (
+    <TreeStateProvider key={tab.value} id={tab.value} treeKey={getTabTreeKey(tab)}>
+      <FileFreshnessGate tab={tab} closeTab={() => undefined}>
+        <BoardAnalysis />
+      </FileFreshnessGate>
+    </TreeStateProvider>
+  );
+}
 
 describe("BoardAnalysis add game durability", () => {
   const tabId = "11111111-1111-4111-8111-111111111111";
@@ -157,10 +263,26 @@ describe("BoardAnalysis add game durability", () => {
   let reset: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
+    mocks.realTabs = false;
     sessionStorage.clear();
     localStorage.clear();
     mocks.notifyUnlessCancelled.mockReset();
+    const actualNotify = await vi.importActual<typeof import("@/components/files/notifyError")>(
+      "@/components/files/notifyError",
+    );
+    mocks.notifyUnlessCancelled.mockImplementation(actualNotify.notifyUnlessCancelled);
+    mocks.showNotification.mockReset();
     mocks.countPgnGames.mockReset().mockResolvedValue(4);
+    mocks.readGame.mockReset().mockImplementation(
+      (_handle, _page, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal.addEventListener(
+            "abort",
+            () => reject({ category: "cancellation", message: "Cancellation" }),
+            { once: true },
+          );
+        }),
+    );
     mocks.writeGame
       .mockReset()
       .mockResolvedValue({ stamp: "b".repeat(64), revision: "new-revision" });
@@ -189,14 +311,9 @@ describe("BoardAnalysis add game durability", () => {
     initialTree.sourceStamp = "a".repeat(64);
     initialTree.dirty = true;
     reset = vi.fn();
-    treeStore = createZustandStore(() => ({
-      ...initialTree,
-      clearShapes: vi.fn(),
-      reset,
-      setAnnotation: vi.fn(),
-      setPracticePath: vi.fn(),
-      setSourceStamp: vi.fn(),
-    })) as unknown as TreeStore;
+    tabStorage.seed(tabId, initialTree);
+    treeStore = createTreeStore(tabId);
+    reset = vi.spyOn(treeStore.getState(), "reset");
 
     container = document.createElement("div");
     document.body.append(container);
@@ -205,7 +322,7 @@ describe("BoardAnalysis add game durability", () => {
       root.render(
         <JotaiProvider store={jotaiStore}>
           <TreeStateContext.Provider value={treeStore}>
-            <BoardAnalysis />
+            <RetainedBoardHarness />
           </TreeStateContext.Provider>
         </JotaiProvider>,
       );
@@ -216,7 +333,138 @@ describe("BoardAnalysis add game durability", () => {
     await act(async () => root.unmount());
     container.remove();
     removeFileFreshness(tabId);
+    tabStorage.flush();
+    closeTreeStore(tabId);
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  test("annotation shortcuts preserve all six glyphs and the practice rating boundary", async () => {
+    const keyMap = jotaiStore.get(keyMapAtom);
+    const annotations = [
+      [keyMap.ANNOTATION_BRILLIANT.keys, 3],
+      [keyMap.ANNOTATION_GOOD.keys, 1],
+      [keyMap.ANNOTATION_INTERESTING.keys, 5],
+      [keyMap.ANNOTATION_DUBIOUS.keys, 6],
+      [keyMap.ANNOTATION_MISTAKE.keys, 2],
+      [keyMap.ANNOTATION_BLUNDER.keys, 4],
+    ] as const;
+    for (const [panel, phase, blocked] of [
+      ["info", "idle", false],
+      ["practice", "correct", true],
+      ["practice", "waiting", false],
+      ["info", "correct", false],
+    ] as const) {
+      await act(async () => {
+        jotaiStore.set(currentTabSelectedAtom, panel);
+        jotaiStore.set(currentPracticeTabAtom, "train");
+        jotaiStore.set(practiceStateAtom, { phase });
+      });
+      for (const [keys, nag] of annotations) {
+        await act(async () => treeStore.setState({ root: defaultTree().root, dirty: false }));
+        const binding = hotkeys.mock.calls
+          .flatMap(([bindings]) => bindings)
+          .findLast(([bound]) => bound === keys);
+        expect(binding).toBeDefined();
+        await act(async () => binding![1](new KeyboardEvent("keydown")));
+        expect(treeStore.getState().root.nags).toEqual(blocked ? [] : [nag]);
+        expect(treeStore.getState().dirty).toBe(!blocked);
+      }
+    }
+  });
+
+  test("real board tabs preserve heading order, panel layout, unmounting and special shortcuts", async () => {
+    mocks.realTabs = true;
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    await act(async () => {
+      jotaiStore.set(currentTabSelectedAtom, "info");
+      root.render(
+        <MantineProvider>
+          <JotaiProvider store={jotaiStore}>
+            <TreeStateContext.Provider value={treeStore}>
+              <RetainedBoardHarness />
+            </TreeStateContext.Provider>
+          </JotaiProvider>
+        </MantineProvider>,
+      );
+    });
+    const headings = () =>
+      Array.from(container.querySelectorAll('[role="tab"]')).map((heading) => heading.textContent);
+    expect(headings()).toEqual([
+      "Board.Tabs.Analysis",
+      "Board.Tabs.Database",
+      "Board.Tabs.Annotate",
+      "Board.Tabs.Info",
+    ]);
+    const shortcut = async (keys: string) => {
+      const binding = hotkeys.mock.calls
+        .flatMap(([bindings]) => bindings)
+        .findLast(([bound]) => bound === keys);
+      expect(binding).toBeDefined();
+      const event = new KeyboardEvent("keydown", { cancelable: true });
+      await act(async () => binding![1](event));
+      return event;
+    };
+    const keys = jotaiStore.get(keyMapAtom);
+    await shortcut(keys.PRACTICE_TAB.keys);
+    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("info");
+    for (const [binding, panel] of [
+      [keys.ANALYSIS_TAB.keys, "analysis"],
+      [keys.DATABASE_TAB.keys, "database"],
+      [keys.ANNOTATE_TAB.keys, "annotate"],
+      [keys.INFO_TAB.keys, "info"],
+    ] as const) {
+      await shortcut(binding);
+      expect(jotaiStore.get(currentTabSelectedAtom)).toBe(panel);
+      expect(container.querySelector('[data-testid="add-game"]') !== null).toBe(panel === "info");
+      for (const element of container.querySelectorAll<HTMLElement>('[role="tabpanel"]')) {
+        expect(element.style.flex).toBe("1 1 0%");
+        expect(element.style.overflowY).toBe("hidden");
+      }
+    }
+    const reportEvent = await shortcut(keys.GENERATE_REPORT.keys);
+    expect(reportEvent.defaultPrevented).toBe(true);
+    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("analysis");
+    expect(jotaiStore.get(currentAnalysisTabAtom)).toBe("report");
+    expect(jotaiStore.get(currentReportModalOpenAtom)).toBe(true);
+    if (!isFileBackedTab(tab)) throw new Error("Expected file owner");
+    await act(async () =>
+      jotaiStore.set(
+        tabsAtom,
+        [
+          {
+            ...tab,
+            gameOrigin: {
+              ...tab.gameOrigin,
+              file: {
+                ...tab.gameOrigin.file,
+                metadata: { type: "repertoire", tags: [] },
+              },
+            },
+          },
+        ],
+        tabId,
+      ),
+    );
+    expect(headings()).toEqual([
+      "Board.Tabs.Practice",
+      "Board.Tabs.Analysis",
+      "Board.Tabs.Database",
+      "Board.Tabs.Annotate",
+      "Board.Tabs.Info",
+    ]);
+    await shortcut(keys.PRACTICE_TAB.keys);
+    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("practice");
+    expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(5);
+    expect(jotaiStore.get(currentAnalysisTabAtom)).toBe("report");
+    expect(jotaiStore.get(currentReportModalOpenAtom)).toBe(true);
   });
 
   test("dirty Add Game asks first and Cancel keeps the edited tree without writing", async () => {
@@ -413,7 +661,7 @@ describe("BoardAnalysis add game durability", () => {
       gameNumber: 1,
       file: { numGames: 4 },
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "validation",
       message: "FileFreshness.AddGameChanged",
     });
@@ -464,7 +712,7 @@ describe("BoardAnalysis add game durability", () => {
       gameNumber: 1,
       file: { numGames: 4 },
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "applied-despite-error",
       message: "FileFreshness.AddGameMayHaveBeenAdded",
     });
@@ -493,12 +741,12 @@ describe("BoardAnalysis add game durability", () => {
       gameNumber: 1,
       file: { numGames: 3 },
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "unexpected",
       backendCategory: "io",
       message: "Could not refresh the PGN game count",
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "applied-despite-error",
       message: "FileFreshness.AddGameMayHaveBeenAdded",
     });
@@ -530,13 +778,14 @@ describe("BoardAnalysis add game durability", () => {
       gameNumber: 1,
       file: { numGames: 3 },
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "unexpected",
       backendCategory: "io",
       message: "Could not refresh the PGN game count",
     });
-    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
-      category: "validation",
+    expect(mocks.showNotification).not.toHaveBeenCalledWith({
+      color: "red",
+      title: "Common.Error",
       message: "FileFreshness.AddGameChanged",
     });
   });
@@ -557,7 +806,7 @@ describe("BoardAnalysis add game durability", () => {
       gameNumber: tab.gameOrigin.kind === "file" ? tab.gameOrigin.gameNumber : -1,
       file: { numGames: 4 },
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "unexpected",
       message: "FileFreshness.AddGameMayHaveBeenAdded durability uncertain",
     });
@@ -573,6 +822,113 @@ describe("BoardAnalysis add game durability", () => {
     return binding[1] as () => void;
   }
 
+  async function startAutosave() {
+    const tree = defaultTree();
+    tree.headers.event = "Captured autosave header";
+    tree.root.comment = "Captured autosave comment";
+    tree.sourceStamp = "a".repeat(64);
+    tree.dirty = true;
+    treeStore = createTreeStore(undefined, tree);
+    await act(async () => {
+      root.render(
+        <JotaiProvider store={jotaiStore}>
+          <TreeStateContext.Provider value={treeStore}>
+            <BoardAnalysis />
+          </TreeStateContext.Provider>
+        </JotaiProvider>,
+      );
+      jotaiStore.set(autoSaveAtom, true);
+    });
+  }
+
+  test.each(["io", "resource-limit", "cancellation"] as const)(
+    "production autosave presents current-owner %s failures and preserves newer dirty edits",
+    async (category) => {
+      let rejectWrite!: (reason: unknown) => void;
+      mocks.writeGame.mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectWrite = reject;
+        }),
+      );
+      await startAutosave();
+      const captured = serializeStoreTree(treeStore);
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+      expect(mocks.writeGame).toHaveBeenCalledWith(fileHandle, 1, captured, {
+        kind: "game",
+        stamp: "a".repeat(64),
+      });
+      expect(captured).toContain("Captured autosave comment");
+      expect(captured).toContain("Captured autosave header");
+      await act(async () => {
+        treeStore.getState().setComment("Newer autosave comment");
+        treeStore
+          .getState()
+          .setHeaders({ ...treeStore.getState().headers, event: "Newer autosave header" });
+        rejectWrite({
+          tag: "backend-error",
+          category,
+          message: category === "cancellation" ? "Cancellation" : "Autosave failed",
+        });
+      });
+      expect(treeStore.getState().dirty).toBe(true);
+      expect(serializeStoreTree(treeStore)).toContain("Newer autosave comment");
+      expect(serializeStoreTree(treeStore)).toContain("Newer autosave header");
+      expect(mocks.showNotification).toHaveBeenCalledTimes(category === "cancellation" ? 0 : 1);
+      expect(mocks.showNotification.mock.calls).toEqual(
+        category === "cancellation"
+          ? []
+          : [
+              [
+                {
+                  color: "red",
+                  title: "Common.Error",
+                  message: "Autosave failed",
+                },
+              ],
+            ],
+      );
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+    },
+  );
+
+  test.each(["failure", "success"] as const)(
+    "production autosave remains silent after its physical owner is superseded before %s",
+    async (outcome) => {
+      let resolveWrite!: (written: { stamp: string; revision: string }) => void;
+      let rejectWrite!: (reason: unknown) => void;
+      mocks.writeGame.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolveWrite = resolve;
+          rejectWrite = reject;
+        }),
+      );
+      await startAutosave();
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+      await act(async () => {
+        jotaiStore.set(autoSaveAtom, false);
+        jotaiStore.set(tabsAtom, [{ ...tab, treeKey: crypto.randomUUID() }], tabId);
+        treeStore.getState().setComment("Newer owner comment");
+        treeStore
+          .getState()
+          .setHeaders({ ...treeStore.getState().headers, event: "Newer owner header" });
+        if (outcome === "failure")
+          rejectWrite({
+            tag: "backend-error",
+            category: "io",
+            message: "Obsolete autosave failed",
+          });
+        else resolveWrite({ stamp: "b".repeat(64), revision: "obsolete" });
+      });
+      expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+      expect(mocks.showNotification).not.toHaveBeenCalled();
+      expect(treeStore.getState().dirty).toBe(true);
+      expect(treeStore.getState().sourceStamp).toBe("a".repeat(64));
+      expect(serializeStoreTree(treeStore)).toContain("Newer owner comment");
+      expect(serializeStoreTree(treeStore)).toContain("Newer owner header");
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+    },
+  );
+
   test("a Save conflict on a file-backed tab leaves the notice to the freshness panel", async () => {
     mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
 
@@ -582,8 +938,9 @@ describe("BoardAnalysis add game durability", () => {
     });
 
     expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin.kind).toBe("file");
-    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
-      category: "applied-despite-error",
+    expect(mocks.showNotification).not.toHaveBeenCalledWith({
+      color: "red",
+      title: "Common.Error",
       message: "Tab.SaveMayHaveBeenWritten",
     });
   });
@@ -606,17 +963,667 @@ describe("BoardAnalysis add game durability", () => {
     });
     await act(async () => {
       latestSaveHotkey()();
-      await vi.waitFor(() => expect(mocks.notifyUnlessCancelled).toHaveBeenCalled());
+      await vi.waitFor(() => expect(mocks.showNotification).toHaveBeenCalled());
     });
 
     expect(mocks.writeGame).toHaveBeenCalledWith(destination, 0, expect.any(String), {
       kind: "game",
       stamp: "c".repeat(64),
     });
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+    expectNotification({
       category: "applied-despite-error",
       message: "Tab.SaveMayHaveBeenWritten",
     });
     expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual({ kind: "none" });
+  });
+
+  const awayTab: Tab = {
+    name: "Away",
+    value: "22222222-2222-4222-8222-222222222222",
+    type: "new",
+    gameOrigin: { kind: "none" },
+  };
+  type Written = { stamp: string | null; revision: string | null };
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+  async function composed() {
+    await act(async () => {
+      treeStore.setState({ dirty: false });
+      jotaiStore.set(tabsAtom, [tab, awayTab], tabId);
+      root.render(
+        <JotaiProvider store={jotaiStore}>
+          <ComposedBoardHarness />
+        </JotaiProvider>,
+      );
+    });
+    expect(createTreeStore(tabId)).toBe(treeStore);
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+  }
+  async function activate() {
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>('[data-testid="add-game"]');
+      if (button) button.click();
+      else mocks.addGameActivation?.();
+    });
+  }
+  async function navigate(id: string) {
+    await act(async () => {
+      expect(jotaiStore.set(activeTabAtom, id)).toBe(true);
+    });
+    expect(container.querySelector("[data-file-freshness]") !== null).toBe(id !== awayTab.value);
+    expect(container.querySelector('[data-testid="away"]') !== null).toBe(id === awayTab.value);
+  }
+  function expectPending() {
+    expect(container.querySelector('[data-testid="add-game"]')).toBeNull();
+    expect(container.textContent).toContain("FileFreshness.AddingGame");
+    expect(container.querySelector('[data-file-freshness^="appending:"]')).not.toBeNull();
+  }
+  function expectCompleted() {
+    expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 3,
+      file: { numGames: 4 },
+    });
+    expect(treeStore.getState()).toMatchObject({
+      dirty: false,
+      sourceStamp: "b".repeat(64),
+      headers: { event: "?" },
+      root: { children: [], comment: "" },
+    });
+    expect(getFileFreshness(tabId)).toMatchObject({ state: "verified", verifiedRevision: "added" });
+    expect(tabStorage.flush()).toEqual([]);
+    expect(
+      new TabStorageRepository().read(getTabTreeKey(jotaiStore.get(tabsAtom)[0]!))?.state,
+    ).toMatchObject({ sourceStamp: "b".repeat(64), headers: { event: "?" } });
+  }
+  function startOrdinarySave() {
+    return saveToFile({
+      tab: jotaiStore.get(currentTabAtom),
+      store: treeStore,
+      getTab: (id) => jotaiStore.get(tabsAtom).find((owner) => owner.value === id),
+      updateTab: (id, update) =>
+        updateTabById((next) => jotaiStore.set(tabsAtom, next), id, update),
+      isUserSave: true,
+    });
+  }
+  async function replaceOwner() {
+    const owner = jotaiStore.get(tabsAtom)[0]!;
+    if (!isFileBackedTab(owner)) throw new Error("Expected file owner");
+    const candidate = defaultTree();
+    candidate.headers.event = "Replacement event";
+    candidate.root.comment = "Replacement comment";
+    candidate.sourceStamp = "c".repeat(64);
+    await act(async () => {
+      const replacement = replaceFileGame({
+        store: jotaiStore,
+        owner,
+        treeStore,
+        snapshot: treeStore.getState(),
+        tree: candidate,
+        page: 1,
+        isCurrent: () => true,
+      });
+      expect(replacement.kind).toBe("committed");
+      setFileFreshness(tabId, "verified", {
+        verifiedRevision: "replacement",
+        errorMessage: "replacement diagnostic",
+      });
+      expect(
+        jotaiStore.set(tabsAtom, (owners) =>
+          owners.map((live) =>
+            live.value === tabId ? { ...live, name: "Replacement metadata" } : live,
+          ),
+        ),
+      ).toBe(true);
+    });
+    const live = jotaiStore.get(tabsAtom)[0]!;
+    expect(live.value).toBe(owner.value);
+    expect(live.gameOrigin).toEqual(owner.gameOrigin);
+    expect(getTabTreeKey(live)).not.toBe(getTabTreeKey(owner));
+    expect(createTreeStore(tabId)).toBe(treeStore);
+    expect(tabStorage.flush()).toEqual([]);
+    return {
+      state: treeStore.getState(),
+      freshness: getFileFreshness(tabId),
+      tabs: jotaiStore.get(tabsAtom),
+      bytes: sessionStorage.getItem(getTabTreeKey(live)),
+      workspace: sessionStorage.getItem(WORKSPACE_STORAGE_KEY),
+      key: getTabTreeKey(live),
+    };
+  }
+  function expectReplacement(replacement: Awaited<ReturnType<typeof replaceOwner>>) {
+    expect(treeStore.getState()).toBe(replacement.state);
+    expect(getFileFreshness(tabId)).toBe(replacement.freshness);
+    expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual(replacement.tabs[0]?.gameOrigin);
+    expect(jotaiStore.get(tabsAtom)).toBe(replacement.tabs);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(replacement.workspace);
+    expect(replacement.bytes).not.toBeNull();
+    expect(tabStorage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(replacement.key)).toBe(replacement.bytes);
+    expect(new TabStorageRepository().read(replacement.key)?.state).toMatchObject({
+      headers: { event: "Replacement event" },
+      root: { comment: "Replacement comment" },
+      sourceStamp: "c".repeat(64),
+    });
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+  }
+
+  test("composed Add Game withholds its real board and completes its own blank tree", async () => {
+    const write = held<Written>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await composed();
+    await activate();
+    expectPending();
+    expect(mocks.writeGame).toHaveBeenCalledWith(fileHandle, 3, defaultPGN(), { kind: "append" });
+    await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+    expectCompleted();
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+  });
+
+  test("composed Add Game settles while its gate is absent and returns to the completed board", async () => {
+    const write = held<Written>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await composed();
+    await activate();
+    expectPending();
+    await navigate(awayTab.value);
+    await act(async () => write.resolve({ stamp: "b".repeat(64), revision: "added" }));
+    expectCompleted();
+    expect(container.textContent).toBe("away");
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    await navigate(tabId);
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+    expectCompleted();
+  });
+
+  test("composed held parsing remains single-flight after navigation and remount", async () => {
+    const parse = held<ReturnType<typeof defaultTree>>();
+    mocks.parsePGN.mockReturnValueOnce(parse.promise);
+    await composed();
+    await activate();
+    expectPending();
+    await navigate(awayTab.value);
+    await navigate(tabId);
+    expectPending();
+    await activate();
+    expect(mocks.parsePGN).toHaveBeenCalledOnce();
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    await act(async () => parse.resolve(defaultTree()));
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(getFileFreshness(tabId).state).toBe("verified");
+  });
+
+  test("composed synchronous Add Game admission precedes parsing and rejects a second activation", async () => {
+    const parse = held<ReturnType<typeof defaultTree>>();
+    mocks.parsePGN.mockReturnValueOnce(parse.promise);
+    await composed();
+    await act(async () => {
+      mocks.addGameActivation?.();
+      mocks.addGameActivation?.();
+    });
+    expect(mocks.parsePGN).toHaveBeenCalledOnce();
+    expectPending();
+    await act(async () => parse.resolve(defaultTree()));
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+  });
+
+  test("composed real Board Save hotkey preserves its stamp while pending Add Game survives remount", async () => {
+    const save = held<Written>();
+    const parse = held<ReturnType<typeof defaultTree>>();
+    mocks.writeGame.mockReturnValueOnce(save.promise);
+    mocks.parsePGN.mockReturnValueOnce(parse.promise);
+    await composed();
+    await act(async () => {
+      latestSaveHotkey()();
+    });
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    await activate();
+    await navigate(awayTab.value);
+    await act(async () => save.resolve({ stamp: "d".repeat(64), revision: "hotkey-saved" }));
+    expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "d".repeat(64) });
+    const saved = getFileFreshness(tabId);
+    expect(saved).toMatchObject({ state: "verified", verifiedRevision: "hotkey-saved" });
+    await navigate(tabId);
+    expectPending();
+    await activate();
+    expect(mocks.parsePGN).toHaveBeenCalledOnce();
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(getFileFreshness(tabId)).toBe(saved);
+    expect(treeStore.getState().sourceStamp).toBe("d".repeat(64));
+    await act(async () => parse.resolve(defaultTree()));
+    expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+    expect(treeStore.getState().sourceStamp).toBe("b".repeat(64));
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+  });
+
+  test("composed active parse failure restores the board, reports its typed error and releases admission", async () => {
+    mocks.parsePGN.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "invalid-input",
+      message: "Blank parse failed",
+    });
+    await composed();
+    await activate();
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "original-revision",
+    });
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+    expectNotification(
+      normalizeError({
+        tag: "backend-error",
+        category: "invalid-input",
+        message: "Blank parse failed",
+      }),
+    );
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    await activate();
+    expect(mocks.parsePGN).toHaveBeenCalledTimes(2);
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+  });
+
+  test("composed successful Add Game preserves current unrelated tab and file metadata", async () => {
+    const write = held<Written>();
+    mocks.writeGame.mockReturnValueOnce(write.promise);
+    await composed();
+    await activate();
+    await act(async () => {
+      expect(
+        jotaiStore.set(tabsAtom, (owners) =>
+          owners.map((owner) =>
+            isFileBackedTab(owner)
+              ? {
+                  ...owner,
+                  name: "Renamed while adding",
+                  gameOrigin: {
+                    ...owner.gameOrigin,
+                    file: {
+                      ...owner.gameOrigin.file,
+                      name: "Current file name",
+                      lastModified: 99,
+                      metadata: { type: "repertoire", tags: ["current tag"] },
+                    },
+                  },
+                }
+              : owner,
+          ),
+        ),
+      ).toBe(true);
+      write.resolve({ stamp: "b".repeat(64), revision: "added" });
+    });
+    expectCompleted();
+    expect(jotaiStore.get(tabsAtom)[0]).toMatchObject({
+      name: "Renamed while adding",
+      gameOrigin: {
+        file: {
+          name: "Current file name",
+          lastModified: 99,
+          metadata: { type: "repertoire", tags: ["current tag"] },
+        },
+      },
+    });
+  });
+
+  test("composed cached-store replacement defeats Add Game even when logical and physical references match", async () => {
+    const parse = held<ReturnType<typeof defaultTree>>();
+    mocks.parsePGN.mockReturnValueOnce(parse.promise);
+    await composed();
+    await activate();
+    await navigate(awayTab.value);
+    const retired = treeStore;
+    expect(tabStorage.flush()).toEqual([]);
+    closeTreeStore(tabId);
+    const candidate = defaultTree();
+    candidate.headers.event = "New cached owner";
+    candidate.sourceStamp = "c".repeat(64);
+    tabStorage.seed(tabId, candidate);
+    treeStore = createTreeStore(tabId);
+    setFileFreshness(tabId, "verified", { verifiedRevision: "new-cache" });
+    expect(treeStore).not.toBe(retired);
+    const state = treeStore.getState();
+    const freshness = getFileFreshness(tabId);
+    const owners = jotaiStore.get(tabsAtom);
+    const bytes = sessionStorage.getItem(tabId);
+    await act(async () => parse.resolve(defaultTree()));
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    expect(treeStore.getState()).toBe(state);
+    expect(getFileFreshness(tabId)).toBe(freshness);
+    expect(jotaiStore.get(tabsAtom)).toBe(owners);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(tabId)).toBe(bytes);
+    await navigate(tabId);
+    expect(treeStore.getState().headers.event).toBe("New cached owner");
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+  });
+
+  test.each(["success", "conflict", "unavailable", "unknown-write", "io"] as const)(
+    "composed competing Save %s cannot release admission and its result survives inactive parse failure",
+    async (outcome) => {
+      const save = held<Written>();
+      const parse = held<ReturnType<typeof defaultTree>>();
+      mocks.writeGame.mockReturnValueOnce(save.promise);
+      mocks.parsePGN.mockReturnValueOnce(parse.promise);
+      await composed();
+      const saving = startOrdinarySave();
+      expect(mocks.writeGame).toHaveBeenCalledWith(fileHandle, 1, expect.any(String), {
+        kind: "game",
+        stamp: "a".repeat(64),
+      });
+      await activate();
+      await navigate(awayTab.value);
+      let result: Awaited<ReturnType<typeof saveToFile>>;
+      await act(async () => {
+        if (outcome === "success") save.resolve({ stamp: "d".repeat(64), revision: "saved" });
+        else if (outcome === "unknown-write") save.resolve({ stamp: null, revision: null });
+        else
+          save.reject({
+            tag: "backend-error",
+            category: outcome === "unavailable" ? "missing-resource" : outcome,
+            message: "Competing Save diagnostic",
+          });
+        result = await saving;
+      });
+      const expectedFailure = expect.objectContaining({
+        status: "failed",
+        error: expect.objectContaining({ message: "Competing Save diagnostic" }),
+      });
+      expect(result!).toEqual(
+        outcome === "success"
+          ? "saved"
+          : outcome === "unavailable" || outcome === "unknown-write"
+            ? "conflict"
+            : expectedFailure,
+      );
+      const savedTree = treeStore.getState();
+      const savedFreshness = getFileFreshness(tabId);
+      expect(savedTree.sourceStamp).toBe(
+        outcome === "success"
+          ? "d".repeat(64)
+          : outcome === "unknown-write"
+            ? null
+            : "a".repeat(64),
+      );
+      expect(savedFreshness).toMatchObject({
+        state:
+          outcome === "success"
+            ? "verified"
+            : outcome === "unavailable"
+              ? "unavailable"
+              : outcome === "io"
+                ? "appending"
+                : "unverified",
+        verifiedRevision: outcome === "success" ? "saved" : null,
+        errorMessage: outcome === "conflict" ? "Competing Save diagnostic" : null,
+      });
+      await navigate(tabId);
+      expectPending();
+      await activate();
+      expect(mocks.parsePGN).toHaveBeenCalledOnce();
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+      expect(mocks.readGame).not.toHaveBeenCalled();
+      expect(treeStore.getState().sourceStamp).toBe(savedTree.sourceStamp);
+      await navigate(awayTab.value);
+      await act(async () => parse.reject(new Error("Inactive parse failure")));
+      expect(treeStore.getState()).toBe(savedTree);
+      expect(getFileFreshness(tabId).verifiedRevision).toBe(
+        outcome === "io" ? "original-revision" : savedFreshness.verifiedRevision,
+      );
+      expect(getFileFreshness(tabId) === savedFreshness).toBe(outcome !== "io");
+      expect(getFileFreshness(tabId)).toMatchObject(
+        outcome === "io"
+          ? { state: "verified", verifiedRevision: "original-revision" }
+          : savedFreshness,
+      );
+      expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+      expect(mocks.showNotification).not.toHaveBeenCalled();
+      await navigate(tabId);
+      expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+      expect(container.textContent?.includes("Competing Save diagnostic")).toBe(
+        outcome === "conflict",
+      );
+    },
+  );
+
+  test.each([
+    "parse-failure",
+    "unknown-stamp",
+    "unknown-revision",
+    "write-failure",
+    "count-failure",
+    "durable-refusal",
+  ] as const)(
+    "composed inactive %s reaches terminal freshness without obsolete view notifications",
+    async (outcome) => {
+      const parse = held<ReturnType<typeof defaultTree>>();
+      const write = held<Written>();
+      mocks.parsePGN.mockReturnValueOnce(parse.promise);
+      mocks.writeGame.mockReturnValueOnce(write.promise);
+      if (outcome === "count-failure")
+        mocks.countPgnGames.mockRejectedValueOnce(new Error("Inactive count failure"));
+      await composed();
+      await activate();
+      await navigate(awayTab.value);
+      if (outcome === "parse-failure")
+        await act(async () => parse.reject(new Error("Inactive parse failure")));
+      else {
+        await act(async () => parse.resolve(defaultTree()));
+        const originalSet = Storage.prototype.setItem;
+        const refuse =
+          outcome === "durable-refusal"
+            ? vi
+                .spyOn(Storage.prototype, "setItem")
+                .mockImplementation(function (this: Storage, key, value) {
+                  if (key === WORKSPACE_STORAGE_KEY)
+                    throw new DOMException("Workspace refused", "QuotaExceededError");
+                  return originalSet.call(this, key, value);
+                })
+            : undefined;
+        await act(async () => {
+          if (outcome === "write-failure") write.reject(new Error("Inactive write failure"));
+          else
+            write.resolve({
+              stamp:
+                outcome === "unknown-stamp" || outcome === "count-failure" ? null : "b".repeat(64),
+              revision: outcome === "unknown-revision" ? null : "added",
+            });
+        });
+        refuse?.mockRestore();
+      }
+      expect(container.textContent).toBe("away");
+      expect(getFileFreshness(tabId).state).toBe(
+        outcome === "parse-failure" ? "verified" : "unverified",
+      );
+      expect(treeStore.getState()).toMatchObject({
+        sourceStamp: "a".repeat(64),
+        headers: { event: "Keep this tree" },
+      });
+      expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 1 });
+      // Workspace refusal retains the pre-existing global persistence diagnostic. The obsolete
+      // Add Game view emits no operation notification of its own.
+      expect(
+        mocks.notifyUnlessCancelled.mock.calls.filter(([, error]) =>
+          normalizeError(error).message.startsWith("FileFreshness."),
+        ),
+      ).toEqual([]);
+      expect(mocks.showNotification).toHaveBeenCalledTimes(outcome === "durable-refusal" ? 1 : 0);
+      await navigate(tabId);
+      expect(container.textContent).not.toContain("FileFreshness.AddingGame");
+      expect(container.querySelector('[data-testid="add-game"]') !== null).toBe(
+        outcome === "parse-failure",
+      );
+    },
+  );
+
+  test.each([
+    "parse-success",
+    "parse-failure",
+    "write-success",
+    "write-unknown",
+    "write-failure",
+    "count-success",
+    "count-failure",
+  ] as const)(
+    "composed durable physical-only replacement silences obsolete Add Game %s",
+    async (boundary) => {
+      const parse = held<ReturnType<typeof defaultTree>>();
+      const write = held<Written>();
+      const count = held<number>();
+      if (boundary.startsWith("parse")) mocks.parsePGN.mockReturnValueOnce(parse.promise);
+      else mocks.writeGame.mockReturnValueOnce(write.promise);
+      if (boundary.startsWith("count")) mocks.countPgnGames.mockReturnValueOnce(count.promise);
+      await composed();
+      await activate();
+      if (boundary.startsWith("count"))
+        await act(async () => write.resolve({ stamp: null, revision: null }));
+      const replacement = await replaceOwner();
+      await act(async () => {
+        if (boundary === "parse-success") parse.resolve(defaultTree());
+        if (boundary === "parse-failure") parse.reject(new Error("Obsolete parse"));
+        if (boundary === "write-success")
+          write.resolve({ stamp: "b".repeat(64), revision: "obsolete" });
+        if (boundary === "write-unknown") write.resolve({ stamp: null, revision: null });
+        if (boundary === "write-failure") write.reject(new Error("Obsolete write"));
+        if (boundary === "count-success") count.resolve(99);
+        if (boundary === "count-failure") count.reject(new Error("Obsolete count"));
+      });
+      expectReplacement(replacement);
+      expect(mocks.writeGame).toHaveBeenCalledTimes(boundary.startsWith("parse") ? 0 : 1);
+      expect(mocks.countPgnGames).toHaveBeenCalledTimes(boundary.startsWith("count") ? 1 : 0);
+      expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+    },
+  );
+
+  test.each(["parse", "write", "count"] as const)(
+    "composed actual tab removal suppresses the held %s continuation",
+    async (boundary) => {
+      const parse = held<ReturnType<typeof defaultTree>>();
+      const write = held<Written>();
+      const count = held<number>();
+      if (boundary === "parse") mocks.parsePGN.mockReturnValueOnce(parse.promise);
+      else mocks.writeGame.mockReturnValueOnce(write.promise);
+      if (boundary === "count") mocks.countPgnGames.mockReturnValueOnce(count.promise);
+      await composed();
+      await activate();
+      if (boundary === "count")
+        await act(async () => write.resolve({ stamp: null, revision: null }));
+      await act(async () => {
+        expect(jotaiStore.set(closeWorkspaceTabAtom, tabId)).toBe(true);
+        closeTreeStore(tabId);
+      });
+      const owners = jotaiStore.get(tabsAtom);
+      const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+      const state = treeStore.getState();
+      const freshness = getFileFreshness(tabId);
+      await act(async () => {
+        if (boundary === "parse") parse.resolve(defaultTree());
+        if (boundary === "write") write.reject(new Error("Removed owner write"));
+        if (boundary === "count") count.resolve(99);
+      });
+      expect(jotaiStore.get(tabsAtom)).toBe(owners);
+      expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+      expect(treeStore.getState()).toBe(state);
+      expect(getFileFreshness(tabId)).toBe(freshness);
+      expect(sessionStorage.getItem(tabId)).toBeNull();
+      expect(container.textContent).toBe("away");
+      expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+      expect(mocks.showNotification).not.toHaveBeenCalled();
+      expect(mocks.writeGame).toHaveBeenCalledTimes(boundary === "parse" ? 0 : 1);
+      expect(mocks.countPgnGames).toHaveBeenCalledTimes(boundary === "count" ? 1 : 0);
+    },
+  );
+
+  test("composed obsolete release cannot release a newer physical generation's admission", async () => {
+    const oldParse = held<ReturnType<typeof defaultTree>>();
+    const newParse = held<ReturnType<typeof defaultTree>>();
+    mocks.parsePGN.mockReturnValueOnce(oldParse.promise).mockReturnValueOnce(newParse.promise);
+    await composed();
+    await activate();
+    await replaceOwner();
+    await activate();
+    expect(mocks.parsePGN).toHaveBeenCalledTimes(2);
+    expectPending();
+    await act(async () => oldParse.resolve(defaultTree()));
+    expectPending();
+    await act(async () => setFileFreshness(tabId, "verified", { verifiedRevision: "newer Save" }));
+    await navigate(awayTab.value);
+    await navigate(tabId);
+    expectPending();
+    await activate();
+    expect(mocks.parsePGN).toHaveBeenCalledTimes(2);
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    await act(async () => newParse.resolve(defaultTree()));
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-testid="add-game"]')).not.toBeNull();
+  });
+
+  test("composed independent provider and cached-store owners admit and complete independently", async () => {
+    const otherId = crypto.randomUUID();
+    const other = { ...tab, value: otherId, name: "Independent owner" };
+    const otherWorkspace = createJotaiStore();
+    const otherTree = defaultTree();
+    otherTree.headers.event = "Independent tree";
+    otherTree.sourceStamp = "a".repeat(64);
+    tabStorage.seed(otherId, otherTree);
+    const independentStore = createTreeStore(otherId);
+    expect(otherWorkspace.set(tabsAtom, [other], otherId)).toBe(true);
+    otherWorkspace.set(autoSaveAtom, false);
+    setFileFreshness(otherId, "verified", { verifiedRevision: "independent" });
+    const parse = held<ReturnType<typeof defaultTree>>();
+    const otherParse = held<ReturnType<typeof defaultTree>>();
+    mocks.parsePGN.mockReturnValueOnce(parse.promise).mockReturnValueOnce(otherParse.promise);
+    await composed();
+    await activate();
+    expectPending();
+    const otherHost = document.createElement("div");
+    document.body.append(otherHost);
+    const otherRoot = createRoot(otherHost);
+    try {
+      await act(async () =>
+        otherRoot.render(
+          <JotaiProvider store={otherWorkspace}>
+            <ComposedBoardHarness />
+          </JotaiProvider>,
+        ),
+      );
+      await act(async () =>
+        otherHost.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click(),
+      );
+      expect(mocks.parsePGN).toHaveBeenCalledTimes(2);
+      expect(mocks.writeGame).not.toHaveBeenCalled();
+      await act(async () => {
+        setFileFreshness(tabId, "verified", { verifiedRevision: "first Save" });
+        setFileFreshness(otherId, "verified", { verifiedRevision: "independent Save" });
+      });
+      expectPending();
+      expect(otherHost.querySelector('[data-testid="add-game"]')).toBeNull();
+      expect(otherHost.textContent).toContain("FileFreshness.AddingGame");
+      const secondBlank = defaultTree();
+      secondBlank.headers.event = "?";
+      await act(async () => otherParse.resolve(secondBlank));
+      expect(mocks.writeGame).toHaveBeenCalledOnce();
+      expect(otherWorkspace.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 3 });
+      expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({ gameNumber: 1 });
+      expect(independentStore.getState().headers.event).toBe("?");
+      expect(treeStore.getState().headers.event).toBe("Keep this tree");
+      expectPending();
+      await act(async () => parse.resolve(defaultTree()));
+      expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+      expect(getFileFreshness(tabId).state).toBe("verified");
+      expect(getFileFreshness(otherId).state).toBe("verified");
+    } finally {
+      await act(async () => otherRoot.unmount());
+      otherHost.remove();
+      closeTreeStore(otherId);
+      removeFileFreshness(otherId);
+    }
   });
 });

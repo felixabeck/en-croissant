@@ -11,10 +11,12 @@ import {
   retargetTreeStore,
   type TreeStore,
 } from "@/state/store/tree";
-import { tabStorage } from "@/state/store/tabStorage";
+import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
+import { WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import {
   getFileFreshness,
   removeFileFreshness,
+  saveFileConflictVersion,
   setFileFreshness,
   startFileRevisionPoll,
 } from "@/state/fileFreshness";
@@ -954,6 +956,112 @@ test("a pending reload cannot overwrite a replacement with only its physical gen
   expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
 });
 
+const reloadFailures = ["missing-resource", "invalid-input", "conflict", "io"] as const;
+
+async function startPendingReload() {
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true });
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+  const pendingLoad =
+    deferred<Awaited<ReturnType<(typeof import("@/utils/files"))["loadFileGame"]>>>();
+  mocks.loadFileGame.mockReturnValueOnce(pendingLoad.promise);
+  await act(async () => button("FileFreshness.ReloadFromDisk").click());
+  expect(mocks.loadFileGame).toHaveBeenCalledWith(file.handle, 0, expect.any(AbortSignal));
+  const signal = mocks.loadFileGame.mock.calls[0]![2] as AbortSignal;
+  expect(signal.aborted).toBe(false);
+  return { pendingLoad, signal };
+}
+
+test.each(reloadFailures)(
+  "obsolete physical-generation reload rejection with %s preserves its durable replacement",
+  async (category) => {
+    const { pendingLoad, signal } = await startPendingReload();
+    const originalTab = jotaiStore.get(tabsAtom)[0]!;
+    const candidate = defaultTree();
+    candidate.headers.event = "Durable rejection replacement";
+    candidate.root.comment = "Replacement comment";
+    candidate.sourceStamp = "c".repeat(64);
+    const treeKey = crypto.randomUUID();
+    tabStorage.seed(treeKey, candidate);
+    expect(new TabStorageRepository().read(treeKey)?.state).toEqual(candidate);
+    await act(async () => {
+      expect(
+        jotaiStore.set(tabsAtom, [{ ...originalTab, treeKey }], undefined, () =>
+          retargetTreeStore(tabId, treeKey, candidate),
+        ),
+      ).toBe(true);
+      setFileFreshness(tabId, "verified", { verifiedRevision: "replacement-generation" });
+    });
+    expect(treeKey).not.toBe(getTabTreeKey(originalTab));
+    expect(jotaiStore.get(tabsAtom)).toEqual([{ ...originalTab, treeKey }]);
+    expect(jotaiStore.get(activeTabAtom)).toBe(tabId);
+    expect(createTreeStore(tabId)).toBe(treeStore);
+    expect(signal.aborted).toBe(false);
+    expect(tabStorage.flush()).toEqual([]);
+    const durableTree = { ...candidate, practicePath: null };
+    expect(new TabStorageRepository().read(treeKey)?.state).toEqual(durableTree);
+    const durableBytes = sessionStorage.getItem(treeKey);
+    expect(durableBytes).not.toBeNull();
+    const current = treeStore.getState();
+    const freshness = getFileFreshness(tabId);
+    const message = `obsolete reload ${category} failure`;
+
+    await act(async () => pendingLoad.reject({ tag: "backend-error", category, message }));
+
+    expect(signal.aborted).toBe(false);
+    expect(treeStore.getState()).toBe(current);
+    expect(getFileFreshness(tabId)).toBe(freshness);
+    expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+    expect(host.textContent).not.toContain(message);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(treeKey)).toBe(durableBytes);
+    expect(new TabStorageRepository().read(treeKey)?.state).toEqual(durableTree);
+    // A verified board hides the panel, so reveal it to detect a retained stale error.
+    await act(async () => setFileFreshness(tabId, "conflict", { conflictReason: "changed" }));
+    expect(host.textContent).toContain("FileFreshness.Changed");
+    expect(host.textContent).not.toContain(message);
+    expect(button("FileFreshness.ReloadFromDisk").disabled).toBe(false);
+    expect(treeStore.getState()).toBe(current);
+  },
+);
+
+test.each(reloadFailures)(
+  "current-owner reload rejection with %s surfaces its error",
+  async (category) => {
+    const { pendingLoad, signal } = await startPendingReload();
+    const current = treeStore.getState();
+    const message = `current reload ${category} failure`;
+    await act(async () => pendingLoad.reject({ tag: "backend-error", category, message }));
+
+    expect(signal.aborted).toBe(false);
+    expect(treeStore.getState()).toBe(current);
+    expect(getFileFreshness(tabId).state).toBe(category === "io" ? "conflict" : "unavailable");
+    expect(host.textContent).toContain(message);
+    expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+  },
+);
+
+test("unmount aborts a pending reload and suppresses its late rejection", async () => {
+  const { pendingLoad, signal } = await startPendingReload();
+  const current = treeStore.getState();
+  const freshness = getFileFreshness(tabId);
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+
+  await act(async () =>
+    pendingLoad.reject({
+      tag: "backend-error",
+      category: "missing-resource",
+      message: "late unmounted reload failure",
+    }),
+  );
+
+  expect(treeStore.getState()).toBe(current);
+  expect(getFileFreshness(tabId)).toBe(freshness);
+  expect(host.textContent).toBe("");
+});
+
 test("a reconcile invalidated by a newer epoch cannot release stale children", async () => {
   const read = deferred<ReturnType<typeof stampedGame>>();
   mocks.readFileGame.mockReturnValueOnce(read.promise);
@@ -964,4 +1072,333 @@ test("a reconcile invalidated by a newer epoch cannot release stale children", a
 
   expect(getFileFreshness(tabId).state).toBe("conflict");
   expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+});
+
+const appendFailures = ["stale-game", ...reloadFailures] as const;
+const appendFulfillments = [
+  "stamped",
+  "unknown-stamp",
+  "unknown-revision",
+  "unknown-both",
+] as const;
+const appendOutcomes = [...appendFulfillments, ...appendFailures] as const;
+type AppendOutcome = (typeof appendOutcomes)[number];
+type AppendResult = { stamp: string | null; revision: string | null };
+
+async function startPendingAppend(registered = false) {
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true });
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+  const signalGetter = Object.getOwnPropertyDescriptor(AbortController.prototype, "signal")!.get!;
+  const signals = new Set<AbortSignal>();
+  const capture = vi
+    .spyOn(AbortController.prototype, "signal", "get")
+    .mockImplementation(function (this: AbortController) {
+      const signal = signalGetter.call(this) as AbortSignal;
+      signals.add(signal);
+      return signal;
+    });
+  const pending = deferred<AppendResult>();
+  mocks.writeGame.mockReturnValueOnce(pending.promise);
+  let completion: Promise<{ result: boolean } | { error: unknown }> | undefined;
+  await act(async () => {
+    if (registered) {
+      completion = saveFileConflictVersion(tabId).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+    } else button("FileFreshness.SaveAsNewGame").click();
+  });
+  capture.mockRestore();
+  expect(signals.size).toBe(1);
+  const signal = [...signals][0]!;
+  expect(signal.aborted).toBe(false);
+  expect(mocks.writeGame).toHaveBeenCalledWith(file.handle, 7, serializeStoreTree(treeStore), {
+    kind: "append",
+  });
+  expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({
+    appendAttempted: true,
+    dirty: true,
+  });
+  return { pending, signal, completion };
+}
+
+async function installAppendReplacement(appendAttempted: boolean) {
+  const originalTab = jotaiStore.get(tabsAtom)[0]!;
+  const candidate = defaultTree();
+  candidate.headers.event = "Durable append replacement";
+  candidate.root.comment = "Replacement append comment";
+  candidate.sourceStamp = "c".repeat(64);
+  candidate.appendAttempted = appendAttempted;
+  const treeKey = crypto.randomUUID();
+  tabStorage.seed(treeKey, candidate);
+  expect(new TabStorageRepository().read(treeKey)?.state).toEqual(candidate);
+  await act(async () => {
+    expect(
+      jotaiStore.set(tabsAtom, [{ ...originalTab, treeKey }], undefined, () =>
+        retargetTreeStore(tabId, treeKey, candidate),
+      ),
+    ).toBe(true);
+    setFileFreshness(tabId, "verified", { verifiedRevision: "append-replacement-generation" });
+  });
+  expect(treeKey).not.toBe(getTabTreeKey(originalTab));
+  expect(jotaiStore.get(tabsAtom)).toEqual([{ ...originalTab, treeKey }]);
+  expect(jotaiStore.get(activeTabAtom)).toBe(tabId);
+  expect(createTreeStore(tabId)).toBe(treeStore);
+  expect(tabStorage.flush()).toEqual([]);
+  const durableTree = { ...candidate, practicePath: null };
+  expect(new TabStorageRepository().read(treeKey)?.state).toEqual(durableTree);
+  const durableBytes = sessionStorage.getItem(treeKey);
+  expect(durableBytes).not.toBeNull();
+  return {
+    treeKey,
+    durableTree,
+    durableBytes,
+    current: treeStore.getState(),
+    freshness: getFileFreshness(tabId),
+    tabs: jotaiStore.get(tabsAtom),
+    workspaceBytes: sessionStorage.getItem(WORKSPACE_STORAGE_KEY),
+  };
+}
+
+function settleAppend(pending: ReturnType<typeof deferred<AppendResult>>, outcome: AppendOutcome) {
+  if (outcome === "stamped" || outcome.startsWith("unknown-")) {
+    pending.resolve({
+      stamp: outcome === "unknown-stamp" || outcome === "unknown-both" ? null : changedStamp,
+      revision:
+        outcome === "unknown-revision" || outcome === "unknown-both" ? null : "obsolete-append",
+    });
+  } else {
+    pending.reject({ tag: "backend-error", category: outcome, message: `late append ${outcome}` });
+  }
+}
+
+function expectAppendReplacement(
+  replacement: Awaited<ReturnType<typeof installAppendReplacement>>,
+) {
+  expect(treeStore.getState()).toBe(replacement.current);
+  expect(getFileFreshness(tabId)).toBe(replacement.freshness);
+  expect(jotaiStore.get(tabsAtom)).toBe(replacement.tabs);
+  expect(replacement.workspaceBytes).not.toBeNull();
+  expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(replacement.workspaceBytes);
+  expect(treeStore.getState()).toMatchObject({
+    headers: { event: "Durable append replacement" },
+    root: { comment: "Replacement append comment" },
+    sourceStamp: "c".repeat(64),
+    appendAttempted: replacement.durableTree.appendAttempted,
+  });
+  expect(tabStorage.flush()).toEqual([]);
+  expect(sessionStorage.getItem(replacement.treeKey)).toBe(replacement.durableBytes);
+  expect(new TabStorageRepository().read(replacement.treeKey)?.state).toEqual(
+    replacement.durableTree,
+  );
+}
+
+test.each(appendOutcomes)(
+  "obsolete physical-generation append outcome %s leaves its durable replacement and later panel intact",
+  async (outcome) => {
+    const { pending, signal } = await startPendingAppend();
+    // A nonempty replacement marker catches stale-count rejection clearing a new owner's uncertainty.
+    const replacement = await installAppendReplacement(outcome === "stale-game");
+    expect(signal.aborted).toBe(false);
+
+    await act(async () => settleAppend(pending, outcome));
+
+    expect(signal.aborted).toBe(false);
+    expectAppendReplacement(replacement);
+    expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+    await act(async () => setFileFreshness(tabId, "conflict", { conflictReason: "changed" }));
+    expect(host.textContent).toContain("FileFreshness.Changed");
+    expect(host.textContent).not.toContain(`late append ${outcome}`);
+    expect(host.textContent).not.toContain("FileFreshness.AppendChanged");
+    const uncertaintyMessages = Array.from(host.querySelectorAll("p")).filter(
+      (element) => element.textContent === "FileFreshness.AppendMayHaveBeenAdded",
+    );
+    expect(uncertaintyMessages).toHaveLength(outcome === "stale-game" ? 1 : 0);
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(outcome === "stale-game");
+    expect(button("FileFreshness.ReloadFromDisk").disabled).toBe(false);
+    expect(treeStore.getState()).toBe(replacement.current);
+  },
+);
+
+test.each(["stale-game", "io"] as const)(
+  "registered append returns false for an obsolete %s rejection without damaging its replacement",
+  async (outcome) => {
+    const { pending, signal, completion } = await startPendingAppend(true);
+    const replacement = await installAppendReplacement(true);
+    await act(async () => settleAppend(pending, outcome));
+    expect(await completion).toEqual({ result: false });
+    expect(signal.aborted).toBe(false);
+    expectAppendReplacement(replacement);
+  },
+);
+
+test.each(appendOutcomes)(
+  "unmount cancels a pending registered append and silences its late %s outcome",
+  async (outcome) => {
+    const { pending, signal, completion } = await startPendingAppend(true);
+    expect(tabStorage.flush()).toEqual([]);
+    const current = treeStore.getState();
+    const freshness = getFileFreshness(tabId);
+    new TabStorageRepository().read(tabId);
+    const durableBytes = sessionStorage.getItem(tabId);
+    await act(async () => root.unmount());
+    expect(signal.aborted).toBe(true);
+
+    await act(async () => settleAppend(pending, outcome));
+
+    expect(await completion).toEqual({ result: false });
+    expect(treeStore.getState()).toBe(current);
+    expect(getFileFreshness(tabId)).toBe(freshness);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(sessionStorage.getItem(tabId)).toBe(durableBytes);
+    expect(host.textContent).toBe("");
+  },
+);
+
+test.each(appendFailures)(
+  "current-owner registered append rejection %s publishes its error and propagates failure",
+  async (category) => {
+    const { pending, signal, completion } = await startPendingAppend(true);
+    await act(async () => settleAppend(pending, category));
+
+    expect(await completion).toMatchObject({
+      error: { backendCategory: category, message: `late append ${category}` },
+    });
+    expect(signal.aborted).toBe(false);
+    expect(treeStore.getState().appendAttempted).toBe(category !== "stale-game");
+    expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({
+      appendAttempted: category !== "stale-game",
+      dirty: true,
+      sourceStamp: originalStamp,
+    });
+    expect(getFileFreshness(tabId).state).toBe(
+      category === "stale-game" || category === "io" ? "conflict" : "unavailable",
+    );
+    expect(host.textContent).toContain(
+      category === "stale-game" ? "FileFreshness.AppendChanged" : `late append ${category}`,
+    );
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(category !== "stale-game");
+  },
+);
+
+test.each(appendFulfillments.slice(1))(
+  "current-owner %s append persists retry prohibition through a cold store restart",
+  async (outcome) => {
+    const { pending, completion } = await startPendingAppend(true);
+    await act(async () => settleAppend(pending, outcome));
+    expect(await completion).toEqual({ result: false });
+    expect(host.textContent).toContain("FileFreshness.AppendMayHaveBeenAdded");
+    expect(tabStorage.flush()).toEqual([]);
+    expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({ appendAttempted: true });
+    const previousStore = treeStore;
+    await act(async () => root.unmount());
+    closeTreeStore(tabId);
+    treeStore = createTreeStore(tabId);
+    expect(treeStore).not.toBe(previousStore);
+    expect(treeStore.getState()).toMatchObject({
+      appendAttempted: true,
+      dirty: true,
+      headers: { event: "Unsaved edit" },
+      sourceStamp: originalStamp,
+    });
+    root = createRoot(host);
+    await act(async () => {
+      setFileFreshness(tabId, "unverified");
+      root.render(
+        <Provider store={jotaiStore}>
+          <Harness closeTab={() => undefined} />
+        </Provider>,
+      );
+    });
+    expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(true);
+    await act(async () => button("FileFreshness.SaveAsNewGame").click());
+    expect(await saveFileConflictVersion(tabId)).toBe(false);
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({ appendAttempted: true });
+  },
+);
+
+test("current-owner stale-count rejection allows a real second append and verified save", async () => {
+  const { pending, completion } = await startPendingAppend(true);
+  await act(async () => settleAppend(pending, "stale-game"));
+  expect(await completion).toMatchObject({ error: { backendCategory: "stale-game" } });
+  expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+  await act(async () => button("FileFreshness.SaveAsNewGame").click());
+  expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+  expect(treeStore.getState()).toMatchObject({
+    appendAttempted: false,
+    dirty: false,
+    sourceStamp: changedStamp,
+  });
+  expect(getFileFreshness(tabId)).toMatchObject({
+    state: "verified",
+    verifiedRevision: "new-revision",
+  });
+  expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toMatchObject({
+    gameNumber: 7,
+    file: { numGames: 8 },
+  });
+});
+
+test("registered append propagates a physical marker flush refusal without a native write", async () => {
+  const treeKey = crypto.randomUUID();
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true, tab: { ...fileTab, treeKey } });
+  const set = Storage.prototype.setItem;
+  const refuse = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(function (this: Storage, key, value) {
+      if (key === treeKey) throw new DOMException("append marker refused", "QuotaExceededError");
+      return set.call(this, key, value);
+    });
+  await act(async () => {
+    await expect(saveFileConflictVersion(tabId)).rejects.toMatchObject({
+      message: "FileFreshness.CouldNotPrepareAppend",
+    });
+  });
+  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(mocks.reportPersistError).toHaveBeenCalled();
+  expect(treeStore.getState().appendAttempted).toBe(false);
+  expect(host.textContent).toContain("FileFreshness.CouldNotPrepareAppend");
+  expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+  refuse.mockRestore();
+  expect(tabStorage.flush()).toEqual([]);
+  expect(new TabStorageRepository().read(treeKey)?.state).toMatchObject({ appendAttempted: false });
+});
+
+test("shared gate ownership keeps recovery's effective-key fallback and file-kind flexibility", async () => {
+  const { pendingLoad, signal } = await startPendingReload();
+  const owner = jotaiStore.get(tabsAtom)[0]!;
+  if (owner.gameOrigin.kind !== "file") throw new Error("Expected file owner");
+  const capturedOrigin = owner.gameOrigin;
+  await act(async () => {
+    expect(
+      jotaiStore.set(tabsAtom, [
+        {
+          ...owner,
+          treeKey: owner.value,
+          name: "Current metadata",
+          gameOrigin: { ...capturedOrigin, kind: "temp_file" },
+        },
+      ]),
+    ).toBe(true);
+  });
+  expect(signal.aborted).toBe(false);
+  const tree = defaultTree();
+  tree.headers.event = "Current recovery";
+  tree.sourceStamp = changedStamp;
+  await act(async () => pendingLoad.resolve({ ...stampedGame(changedStamp), tree }));
+  expect(treeStore.getState()).toMatchObject({
+    sourceStamp: changedStamp,
+    headers: { event: "Current recovery" },
+  });
+  expect(jotaiStore.get(tabsAtom)[0]).toMatchObject({
+    name: "Current metadata",
+    treeKey: owner.value,
+    gameOrigin: { kind: "temp_file" },
+  });
+  expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
 });

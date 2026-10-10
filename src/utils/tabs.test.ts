@@ -1,4 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { createStore, Provider } from "jotai";
+import { tabsAtom } from "@/state/atoms";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import type { FileWorkspaceHandle } from "@/bindings";
@@ -20,6 +24,7 @@ const mocks = vi.hoisted(() => ({
     reportPersistError: vi.fn(),
     readFileGame: vi.fn(),
     writeGame: vi.fn(),
+    writeDbGame: vi.fn(),
 }));
 
 const tabStorageCleanup = createTabStorageCleanup(tabStorage);
@@ -42,7 +47,9 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
-vi.mock("@/platform/tauri", () => ({ tauri: { writeGame: mocks.writeGame } }));
+vi.mock("@/platform/tauri", () => ({
+    tauri: { writeGame: mocks.writeGame, writeDbGame: mocks.writeDbGame },
+}));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
 vi.mock("./files", async (importOriginal) => ({
     ...(await importOriginal<typeof import("./files")>()),
@@ -62,8 +69,122 @@ import {
     runTabCreation,
     saveToFile,
     serializeStoreTree,
+    sameTabOwner,
+    matchesFileGameTab,
+    useTabActions,
     type Tab,
 } from "./tabs";
+
+test("shared tab owner compares logical identity and effective legacy physical generation", () => {
+    expect(sameTabOwner(undefined, fileTab)).toBe(false);
+    expect(sameTabOwner({ ...fileTab, treeKey: fileTab.value }, fileTab)).toBe(true);
+    expect(sameTabOwner({ ...fileTab, value: "foreign", treeKey: fileTab.value }, fileTab)).toBe(
+        false,
+    );
+    expect(sameTabOwner({ ...fileTab, treeKey: crypto.randomUUID() }, fileTab)).toBe(false);
+});
+
+test("shared file/page predicate allows file and temp-file while Save retains its stricter origin kind", async () => {
+    const fixture = saveFixture({ kind: "temp_file" });
+    const captured = fixture.tabs[0]!;
+    if (captured.gameOrigin.kind !== "temp_file") throw new Error("Expected temp-file");
+    const origin = captured.gameOrigin;
+    fixture.updateTab(captured.value, (previous) => ({
+        ...previous,
+        gameOrigin: { ...origin, kind: "file" },
+    }));
+    expect(sameTabOwner(fixture.tabs[0], captured)).toBe(true);
+    expect(matchesFileGameTab(fixture.tabs[0], captured.gameOrigin)).toBe(true);
+    await expect(
+        saveToFile({
+            tab: captured,
+            store: fixture.store,
+            getTab: fixture.getTab,
+            updateTab: fixture.updateTab,
+        }),
+    ).resolves.toBe("superseded");
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+});
+
+test("shared live tab actions remain stable and provider-local and expose durable refusal", async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const ownerId = crypto.randomUUID();
+    const first = createStore();
+    const second = createStore();
+    const owner: Tab = {
+        name: "First provider",
+        value: ownerId,
+        type: "analysis",
+        gameOrigin: { kind: "none" },
+    };
+    expect(first.set(tabsAtom, [owner], ownerId)).toBe(true);
+    expect(second.set(tabsAtom, [{ ...owner, name: "Second provider" }], ownerId)).toBe(true);
+    const actions: Array<ReturnType<typeof useTabActions>> = [];
+    function Probe({ slot }: { slot: number }) {
+        actions[slot] = useTabActions();
+        return null;
+    }
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    try {
+        await act(async () =>
+            root.render(
+                createElement(
+                    "div",
+                    null,
+                    createElement(Provider, { store: first }, createElement(Probe, { slot: 0 })),
+                    createElement(Provider, { store: second }, createElement(Probe, { slot: 1 })),
+                ),
+            ),
+        );
+        const initial = actions[0]!;
+        expect(actions[0]!.getTab(ownerId)?.name).toBe("First provider");
+        expect(actions[1]!.getTab(ownerId)?.name).toBe("Second provider");
+        await act(async () => {
+            expect(
+                actions[0]!.updateTab(ownerId, (previous) => ({
+                    ...previous,
+                    name: "Live update",
+                })),
+            ).toBe(true);
+        });
+        expect(initial.getTab(ownerId)?.name).toBe("Live update");
+        expect(actions[1]!.getTab(ownerId)?.name).toBe("Second provider");
+        await act(async () =>
+            root.render(
+                createElement(Provider, { store: first }, createElement(Probe, { slot: 0 })),
+            ),
+        );
+        const stable = actions[0]!;
+        await act(async () =>
+            root.render(
+                createElement(Provider, { store: first }, createElement(Probe, { slot: 0 })),
+            ),
+        );
+        expect(actions[0]!.getTab).toBe(stable.getTab);
+        expect(actions[0]!.updateTab).toBe(stable.updateTab);
+        const before = first.get(tabsAtom);
+        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        const nativeSet = Storage.prototype.setItem;
+        const refuse = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key === WORKSPACE_STORAGE_KEY)
+                    throw new DOMException("refused", "QuotaExceededError");
+                return nativeSet.call(this, key, value);
+            });
+        expect(
+            actions[0]!.updateTab(ownerId, (previous) => ({ ...previous, name: "Refused" })),
+        ).toBe(false);
+        expect(first.get(tabsAtom)).toBe(before);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+        expect(actions[0]!.getTab(ownerId)?.name).toBe("Live update");
+        expect(actions[1]!.getTab(ownerId)?.name).toBe("Second provider");
+        refuse.mockRestore();
+    } finally {
+        await act(async () => root.unmount());
+    }
+});
 
 afterEach(() => {
     vi.restoreAllMocks();
@@ -982,6 +1103,162 @@ test("temp-file Save-As rechecks the source and CAS-writes the same target slot"
         state: "verified",
         verifiedRevision: "r-new",
     });
+});
+
+test.each([
+    ["first-source", stampB],
+    ["first-source", stampA],
+    ["post-picker-source", stampB],
+    ["post-picker-source", stampA],
+    ["picker", "selected"],
+    ["picker", "cancelled"],
+    ["destination", stampC],
+] as const)(
+    "Save As %s fulfilled with %s after durable replacement preserves the new generation",
+    async (boundary, returned) => {
+        const { createStore } = await import("jotai");
+        const { atoms, repository, tabs } = await importFreshAdmission();
+        const trees = await import("@/state/store/tree");
+        const freshness = await import("@/state/fileFreshness");
+        const jotai = createStore();
+        const fixture = saveFixture({ kind: "temp_file" });
+        const owner = { ...fixture.tabs[0]!, value: crypto.randomUUID() };
+        if (!tabs.isFileBackedTab(owner)) throw new Error("Expected a temp-file owner.");
+        repository.seed(owner.value, fixture.tree);
+        expect(jotai.set(atoms.tabsAtom, [owner], owner.value)).toBe(true);
+        const treeStore = trees.createTreeStore(owner.value);
+        const read = deferred<{ stamp: string; pgn: string; revision: string; present: boolean }>();
+        const picker = deferred<ReturnType<typeof targetFile> | null>();
+        const source = { stamp: stampA, pgn: "source", revision: "r1", present: true };
+        mocks.readFileGame.mockReset();
+        mocks.pickPgnFile.mockReset();
+        mocks.writeGame.mockReset();
+        if (boundary === "first-source") mocks.readFileGame.mockReturnValueOnce(read.promise);
+        else {
+            mocks.readFileGame.mockResolvedValueOnce(source);
+            if (boundary === "post-picker-source")
+                mocks.readFileGame.mockReturnValueOnce(read.promise);
+            if (boundary === "destination")
+                mocks.readFileGame.mockResolvedValueOnce(source).mockReturnValueOnce(read.promise);
+        }
+        mocks.pickPgnFile.mockReturnValueOnce(
+            boundary === "picker" ? picker.promise : Promise.resolve(targetFile()),
+        );
+        try {
+            const pending = tabs.saveToFile({
+                tab: owner,
+                updateTab: () => false,
+                getTab: (id) => jotai.get(atoms.tabsAtom).find((tab) => tab.value === id),
+                store: treeStore,
+                isUserSave: true,
+            });
+            for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+            const readsBefore = mocks.readFileGame.mock.calls.length;
+            expect(readsBefore).toBe(
+                boundary === "post-picker-source" ? 2 : boundary === "destination" ? 3 : 1,
+            );
+            const candidate = defaultTree();
+            candidate.headers.event = "Durable replacement during Save As";
+            candidate.sourceStamp = stampC;
+            const replacement = tabs.replaceFileGame({
+                store: jotai,
+                owner,
+                treeStore,
+                snapshot: treeStore.getState(),
+                tree: candidate,
+                page: 2,
+                isCurrent: () => true,
+            });
+            expect(replacement.kind).toBe("committed");
+            if (replacement.kind !== "committed") throw new Error("Expected durable replacement.");
+            expect(replacement.treeKey).not.toBe(owner.value);
+            expect(jotai.get(atoms.tabsAtom)[0]).toMatchObject({
+                value: owner.value,
+                gameOrigin: owner.gameOrigin,
+            });
+            expect(trees.createTreeStore(owner.value)).toBe(treeStore);
+            freshness.setFileFreshness(owner.value, "verified", {
+                verifiedRevision: "replacement",
+            });
+            const current = treeStore.getState();
+            const currentFreshness = freshness.getFileFreshness(owner.value);
+            const bytes = sessionStorage.getItem(replacement.treeKey);
+            expect(bytes).not.toBeNull();
+            if (boundary === "picker")
+                picker.resolve(returned === "cancelled" ? null : targetFile());
+            else read.resolve({ ...source, stamp: returned });
+            const result = await pending;
+            expect(freshness.getFileFreshness(owner.value)).toBe(currentFreshness);
+            expect(treeStore.getState()).toBe(current);
+            expect(result).toBe("superseded");
+            expect(mocks.readFileGame).toHaveBeenCalledTimes(readsBefore);
+            expect(mocks.pickPgnFile).toHaveBeenCalledTimes(boundary === "first-source" ? 0 : 1);
+            expect(mocks.writeGame).not.toHaveBeenCalled();
+            expect(sessionStorage.getItem(replacement.treeKey)).toBe(bytes);
+        } finally {
+            trees.closeTreeStore(owner.value);
+            freshness.removeFileFreshness(owner.value);
+        }
+    },
+);
+
+test.each(["unchanged", "comment", "header", "owner"] as const)(
+    "database completion preserves captured PGN and %s content ownership",
+    async (change) => {
+        const fixture = saveFixture();
+        const database = { id: { id: "save-database" }, kind: "database" } as const;
+        fixture.updateTab("save-test", (tab) => ({
+            ...tab,
+            gameOrigin: { kind: "database", database, gameId: 42 },
+        }));
+        fixture.store.getState().setComment("Captured comment");
+        const captured = serializeStoreTree(fixture.store);
+        expect(captured).toContain("Captured comment");
+        expect(captured).toContain("Unsaved version");
+        const write = deferred<void>();
+        mocks.writeDbGame.mockReturnValueOnce(write.promise);
+        const pending = saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        });
+        expect(mocks.writeDbGame).toHaveBeenCalledWith(database, 42, captured);
+        if (change === "comment") fixture.store.getState().setComment("Newer unsaved comment");
+        if (change === "header")
+            fixture.store
+                .getState()
+                .setHeaders({ ...fixture.store.getState().headers, event: "Newer unsaved header" });
+        if (change === "owner")
+            fixture.updateTab("save-test", (tab) => ({ ...tab, treeKey: crypto.randomUUID() }));
+        const current = serializeStoreTree(fixture.store);
+        const freshness = getFileFreshness("save-test");
+        write.resolve();
+        const result = await pending;
+        expect(fixture.store.getState().dirty).toBe(change !== "unchanged");
+        expect(result).toBe(change === "unchanged" ? "saved" : "superseded");
+        expect(serializeStoreTree(fixture.store)).toBe(current);
+        expect(fixture.store.getState().sourceStamp).toBe(stampA);
+        expect(getFileFreshness("save-test")).toBe(freshness);
+        expect(mocks.writeDbGame).toHaveBeenCalledOnce();
+    },
+);
+
+test("an active first-source mismatch conflicts before the Save As picker", async () => {
+    const fixture = saveFixture({ kind: "temp_file" });
+    mocks.readFileGame.mockResolvedValueOnce({ stamp: stampB });
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+            isUserSave: true,
+        }),
+    ).resolves.toBe("conflict");
+    expect(getFileFreshness("save-test").state).toBe("conflict");
+    expect(mocks.pickPgnFile).not.toHaveBeenCalled();
+    expect(mocks.writeGame).not.toHaveBeenCalled();
 });
 
 test("temp-file user Save refuses a missing source stamp before opening the picker", async () => {

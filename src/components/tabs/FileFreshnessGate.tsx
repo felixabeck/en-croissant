@@ -1,20 +1,25 @@
 import { Button, Group, Loader, Stack, Text } from "@mantine/core";
-import { useStore as useJotaiStore, useSetAtom } from "jotai";
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { normalizeError } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { tabsAtom } from "@/state/atoms";
+import type { TreeStore } from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
 import { loadFileGame, pickPgnFile, readFileGame, writeFileGame } from "@/utils/files";
 import {
+  AddGameContext,
+  appendBlankGame,
+  getAddGameLease,
+  subscribeAddGame,
   getTabTreeKey,
   isFileBackedTab,
   matchesFileGameTab,
   serializeStoreTree,
-  updateTabById,
+  sameTabOwner,
+  useTabActions,
   type FileBackedTab,
 } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
@@ -28,11 +33,26 @@ import {
 } from "@/state/fileFreshness";
 import classes from "./FileFreshnessGate.module.css";
 
+function useAddGameLease(store: TreeStore) {
+  return useSyncExternalStore(
+    useCallback((listener) => subscribeAddGame(store, listener), [store]),
+    useCallback(() => getAddGameLease(store), [store]),
+  );
+}
+
 type Props = {
   tab: Tab;
   closeTab: (tabId: string) => void;
   children: React.ReactNode;
 };
+
+function isUnavailableFileError(error: ReturnType<typeof normalizeError>) {
+  return (
+    error.backendCategory === "invalid-input" ||
+    error.backendCategory === "missing-resource" ||
+    error.backendCategory === "conflict"
+  );
+}
 
 export default function FileFreshnessGate({ tab, closeTab, children }: Props) {
   if (!isFileBackedTab(tab)) return <>{children}</>;
@@ -57,9 +77,14 @@ function FileBackedGate({
   const fileKey = fileWorkspaceKey(handle);
   const gameNumber = origin.gameNumber;
   const store = useContext(TreeStateContext)!;
-  const setTabs = useSetAtom(tabsAtom);
-  const jotaiStore = useJotaiStore();
+  const { getTab, updateTab } = useTabActions();
   const freshness = useFileFreshness(tabId);
+  const addGameLease = useAddGameLease(store);
+  const addingGame =
+    !!addGameLease &&
+    sameTabOwner(tab, addGameLease.owner) &&
+    matchesFileGameTab(tab, addGameLease.owner.gameOrigin);
+  const viewMountedRef = useRef(true);
   const sourceStamp = useStore(store, (state) => state.sourceStamp);
   const appendAttempted = useStore(store, (state) => state.appendAttempted);
   const [retryCount, setRetryCount] = useState(0);
@@ -73,15 +98,6 @@ function FileBackedGate({
   const actionIdentity = { tabId, fileKey, gameNumber, store };
   const actionIdentityRef = useRef(actionIdentity);
   actionIdentityRef.current = actionIdentity;
-
-  const getTab = useCallback(
-    (id: string) => jotaiStore.get(tabsAtom).find((candidate) => candidate.value === id),
-    [jotaiStore],
-  );
-  const updateTab = useCallback(
-    (id: string, update: Parameters<typeof updateTabById>[2]) => updateTabById(setTabs, id, update),
-    [setTabs],
-  );
 
   const installDiskTree = useCallback(
     (tree: Parameters<ReturnType<typeof store.getState>["setState"]>[0], revision: string) => {
@@ -102,21 +118,23 @@ function FileBackedGate({
         actionIdentityRef.current.gameNumber === gameNumber &&
         actionIdentityRef.current.store === store &&
         matchesFileGameTab(currentTab, tab.gameOrigin) &&
-        getTabTreeKey(currentTab) === getTabTreeKey(tab)
+        sameTabOwner(currentTab, tab)
       );
     },
     [getTab, tabId, fileKey, gameNumber, store, tab],
   );
 
   useEffect(() => {
+    viewMountedRef.current = true;
     return () => {
+      viewMountedRef.current = false;
       actionControllerRef.current?.abort();
       actionControllerRef.current = null;
     };
   }, [tabId, fileKey, gameNumber, store]);
 
   useEffect(() => {
-    if (freshness.state !== "unverified") return;
+    if (addingGame || freshness.state !== "unverified") return;
     const capturedEpoch = freshness.epoch;
     const capturedRoot = store.getState().root;
     const capturedStamp = store.getState().sourceStamp;
@@ -166,11 +184,7 @@ function FileBackedGate({
       } catch (error) {
         if (isObsolete()) return;
         const normalized = normalizeError(error);
-        if (
-          normalized.backendCategory === "invalid-input" ||
-          normalized.backendCategory === "missing-resource" ||
-          normalized.backendCategory === "conflict"
-        ) {
+        if (isUnavailableFileError(normalized)) {
           setFileFreshness(tabId, "unavailable");
           if (normalized.backendCategory === "invalid-input") {
             setPanelError(t("FileFreshness.GameNoLongerInFile"));
@@ -183,6 +197,7 @@ function FileBackedGate({
   }, [
     freshness.state,
     freshness.epoch,
+    addingGame,
     retryCount,
     tabId,
     gameNumber,
@@ -193,6 +208,22 @@ function FileBackedGate({
     installDiskTree,
     t,
   ]);
+
+  const appendGame = useCallback(
+    (captured: Tab | undefined) =>
+      appendBlankGame({
+        captured,
+        store,
+        getTab,
+        updateTab,
+        uncertainMessage: t("FileFreshness.AddGameMayHaveBeenAdded"),
+        changedMessage: t("FileFreshness.AddGameChanged"),
+        onError: (error) => {
+          if (viewMountedRef.current) notifyUnlessCancelled(t("Common.Error"), error);
+        },
+      }),
+    [getTab, updateTab, store, t],
+  );
 
   const runAction = useCallback(
     async (action: "reload" | "append", run: (signal: AbortSignal) => Promise<boolean>) => {
@@ -227,13 +258,9 @@ function FileBackedGate({
         setPanelError(null);
         return true;
       } catch (error) {
-        if (!signal.aborted) {
+        if (actionIsCurrent(signal)) {
           const normalized = normalizeError(error);
-          if (
-            normalized.backendCategory === "invalid-input" ||
-            normalized.backendCategory === "missing-resource" ||
-            normalized.backendCategory === "conflict"
-          ) {
+          if (isUnavailableFileError(normalized)) {
             setFileFreshness(tabId, "unavailable");
           }
           setPanelError(normalized.message);
@@ -279,7 +306,8 @@ function FileBackedGate({
           const written = await writeFileGame(selected.handle, selected.numGames, pgn, {
             kind: "append",
           });
-          if (!actionIsCurrent(signal) || written.stamp === null || written.revision === null) {
+          if (!actionIsCurrent(signal)) return false;
+          if (written.stamp === null || written.revision === null) {
             setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
             return false;
           }
@@ -300,17 +328,14 @@ function FileBackedGate({
           setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
           return true;
         } catch (error) {
+          if (!actionIsCurrent(signal)) return false;
           const normalized = normalizeError(error);
           if (normalized.backendCategory === "stale-game") {
             store.getState().setAppendAttempted(false);
             tabStorage.flush();
             setPanelError(t("FileFreshness.AppendChanged"));
           } else {
-            if (
-              normalized.backendCategory === "invalid-input" ||
-              normalized.backendCategory === "missing-resource" ||
-              normalized.backendCategory === "conflict"
-            ) {
+            if (isUnavailableFileError(normalized)) {
               setFileFreshness(tabId, "unavailable");
             }
             setPanelError(normalized.message);
@@ -328,7 +353,7 @@ function FileBackedGate({
     [tabId, appendAsNewGame],
   );
 
-  const state = freshness.state;
+  const state = addingGame ? "appending" : freshness.state;
   const errorMessage = panelError ?? freshness.errorMessage;
   const disabled = pendingAction !== null;
   const wrapper = (content: React.ReactNode) => (
@@ -341,19 +366,21 @@ function FileBackedGate({
     </div>
   );
 
-  if (state === "verified") return wrapper(children);
-  if (state === "appending") {
+  if (state === "verified")
     return wrapper(
-      <Stack align="center" justify="center" h="100%" gap="sm">
-        <Loader />
-        <Text>{t("FileFreshness.AddingGame")}</Text>
-      </Stack>,
+      <AddGameContext.Provider value={appendGame}>{children}</AddGameContext.Provider>,
     );
-  }
-  if (state === "unverified") {
+  if (state === "appending" || state === "unverified" || state === "overdue") {
     return wrapper(
       <Stack align="center" justify="center" h="100%" gap="sm">
-        {errorMessage ? (
+        {state === "appending" ? (
+          <>
+            <Loader />
+            <Text>{t("FileFreshness.AddingGame")}</Text>
+          </>
+        ) : state === "overdue" ? (
+          <Text>{t("FileFreshness.FileNotResponding")}</Text>
+        ) : errorMessage ? (
           <>
             <Text>{errorMessage}</Text>
             <Button onClick={() => setRetryCount((count) => count + 1)}>
@@ -366,13 +393,6 @@ function FileBackedGate({
             <Text>{t("FileFreshness.CheckingFile")}</Text>
           </>
         )}
-      </Stack>,
-    );
-  }
-  if (state === "overdue") {
-    return wrapper(
-      <Stack align="center" justify="center" h="100%" gap="sm">
-        <Text>{t("FileFreshness.FileNotResponding")}</Text>
       </Stack>,
     );
   }

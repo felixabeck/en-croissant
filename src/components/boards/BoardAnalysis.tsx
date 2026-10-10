@@ -1,8 +1,6 @@
-import { tauri } from "@/platform/tauri";
-import { normalizeError } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Paper, Portal, Stack, Tabs } from "@mantine/core";
-import { useHotkeys, useToggle } from "@mantine/hooks";
+import { useHotkeys, useToggle, type HotkeyItem } from "@mantine/hooks";
 import {
   IconDatabase,
   IconInfoCircle,
@@ -11,7 +9,7 @@ import {
   IconZoomCheck,
 } from "@tabler/icons-react";
 import type { Piece } from "chessops";
-import { useAtom, useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -26,19 +24,10 @@ import {
   enableAllAtom,
   practiceMoveControllerAtom,
   practiceStateAtom,
-  tabsAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import { defaultPGN, parsePGN } from "@/utils/chess";
-import { writeFileGame } from "@/utils/files";
-import {
-  getTabFile,
-  isFileBackedTab,
-  matchesFileGameTab,
-  saveToFile,
-  updateTabById,
-} from "@/utils/tabs";
-import { setFileFreshness } from "@/state/fileFreshness";
+import type { Annotation } from "@/utils/annotation";
+import { AddGameContext, getTabFile, saveToFile, useTabActions } from "@/utils/tabs";
 import DetachedEval from "../common/DetachedEval";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
@@ -60,10 +49,8 @@ function BoardAnalysis() {
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
   const currentTab = useAtomValue(currentTabAtom);
-  const setTabs = useSetAtom(tabsAtom);
-  const jotaiStore = useJotaiStore();
+  const { getTab, updateTab } = useTabActions();
   const [addGameConfirm, setAddGameConfirm] = useState(false);
-  const appendGamePendingRef = useRef(false);
   const tabFile = getTabFile(currentTab);
   const hasPersistentOrigin = currentTab?.gameOrigin.kind !== "none";
   const autoSave = useAtomValue(autoSaveAtom);
@@ -76,173 +63,54 @@ function BoardAnalysis() {
   const clearShapes = useStore(store, (s) => s.clearShapes);
   const setAnnotation = useStore(store, (s) => s.setAnnotation);
 
-  const updateTab = useCallback(
-    (tabId: string, update: Parameters<typeof updateTabById>[2]) =>
-      updateTabById(setTabs, tabId, update),
-    [setTabs],
-  );
-  const getTab = useCallback(
-    (tabId: string) => jotaiStore.get(tabsAtom).find((tab) => tab.value === tabId),
-    [jotaiStore],
+  const notifyError = useCallback(
+    (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error),
+    [t],
   );
 
-  const saveFile = useCallback(async () => {
-    await saveToFile({
-      updateTab,
-      getTab,
-      tab: currentTab,
-      store,
-    });
-  }, [updateTab, getTab, currentTab, store]);
-  const userSaveFile = useCallback(async () => {
-    const result = await saveToFile({
-      updateTab,
-      getTab,
-      tab: currentTab,
-      store,
-      isUserSave: true,
-    });
-    if (typeof result === "object" && result.status === "failed") {
-      notifyUnlessCancelled(t("Common.Error"), result.error);
-    } else if (result === "superseded") {
-      notifyUnlessCancelled(t("Common.Error"), {
-        category: "validation",
-        message: t("Tab.SaveSuperseded"),
+  const saveFile = useCallback(
+    async (isUserSave = false) => {
+      const result = await saveToFile({
+        updateTab,
+        getTab,
+        tab: currentTab,
+        store,
+        isUserSave,
       });
-    } else if (result === "conflict" && currentTab && !getTabFile(getTab(currentTab.value))) {
-      // A Save As whose read-back failed leaves the tab without a file, so no freshness panel
-      // can show the state; the destination may already hold the game.
-      notifyUnlessCancelled(t("Common.Error"), {
-        category: "applied-despite-error",
-        message: t("Tab.SaveMayHaveBeenWritten"),
-      });
-    }
-  }, [updateTab, getTab, currentTab, store, t]);
+      if (typeof result === "object" && result.status === "failed") {
+        notifyError(result.error);
+      } else if (isUserSave && result === "superseded") {
+        notifyError({
+          category: "validation",
+          message: t("Tab.SaveSuperseded"),
+        });
+      } else if (
+        isUserSave &&
+        result === "conflict" &&
+        currentTab &&
+        !getTabFile(getTab(currentTab.value))
+      ) {
+        // A Save As whose read-back failed leaves the tab without a file, so no freshness panel
+        // can show the state; the destination may already hold the game.
+        notifyError({
+          category: "applied-despite-error",
+          message: t("Tab.SaveMayHaveBeenWritten"),
+        });
+      }
+    },
+    [updateTab, getTab, currentTab, store, t, notifyError],
+  );
+  const userSaveFile = useCallback(() => saveFile(true), [saveFile]);
   useEffect(() => {
     if (hasPersistentOrigin && autoSave && dirty) {
       saveFile();
     }
   }, [hasPersistentOrigin, saveFile, autoSave, dirty]);
 
+  const addGameAction = useContext(AddGameContext);
   const appendGame = useCallback(async () => {
-    if (!isFileBackedTab(currentTab)) {
-      return;
-    }
-    if (appendGamePendingRef.current) return;
-    const tabId = currentTab.value;
-    const capturedOrigin = currentTab.gameOrigin;
-    const initialTab = getTab(tabId);
-    if (!matchesFileGameTab(initialTab, capturedOrigin)) {
-      return;
-    }
-
-    appendGamePendingRef.current = true;
-    let refreshFileCount: (() => Promise<{ ok: true } | { ok: false; error: unknown }>) | null =
-      null;
-    let writeAttempted = false;
-    try {
-      const pgn = defaultPGN();
-      let newGame: Awaited<ReturnType<typeof parsePGN>>;
-      try {
-        newGame = await parsePGN(pgn);
-      } catch (error) {
-        notifyUnlessCancelled(t("Common.Error"), normalizeError(error));
-        return;
-      }
-
-      const latestBeforeWrite = getTab(tabId);
-      if (!matchesFileGameTab(latestBeforeWrite, capturedOrigin)) {
-        return;
-      }
-      const origin = latestBeforeWrite.gameOrigin;
-      const gameNumber = origin.file.numGames;
-      refreshFileCount = async () => {
-        const latest = getTab(tabId);
-        if (!matchesFileGameTab(latest, origin)) {
-          return { ok: true };
-        }
-        try {
-          const count = await tauri.countPgnGames(latest.gameOrigin.file.handle);
-          updateTab(tabId, (previous) => {
-            if (!matchesFileGameTab(previous, origin)) {
-              return previous;
-            }
-            return {
-              ...previous,
-              gameOrigin: {
-                ...previous.gameOrigin,
-                file: { ...previous.gameOrigin.file, numGames: count },
-              },
-            };
-          });
-          return { ok: true };
-        } catch (error) {
-          return { ok: false, error };
-        }
-      };
-
-      setFileFreshness(tabId, "appending");
-      writeAttempted = true;
-      const written = await writeFileGame(origin.file.handle, gameNumber, pgn, { kind: "append" });
-      if (written.stamp === null || written.revision === null) {
-        const countRefresh = await refreshFileCount();
-        if (getTab(tabId)) setFileFreshness(tabId, "unverified");
-        notifyUnlessCancelled(t("Common.Error"), {
-          category: "applied-despite-error",
-          message: t("FileFreshness.AddGameMayHaveBeenAdded"),
-        });
-        if (!countRefresh.ok) {
-          notifyUnlessCancelled(t("Common.Error"), normalizeError(countRefresh.error));
-        }
-        return;
-      }
-      const latest = getTab(tabId);
-      if (matchesFileGameTab(latest, origin)) {
-        const originSaved = updateTab(tabId, (previous) => ({
-          ...previous,
-          gameOrigin: {
-            kind: "file",
-            gameNumber,
-            file: { ...origin.file, numGames: gameNumber + 1 },
-          },
-        }));
-        if (originSaved) {
-          store.setState({
-            ...newGame,
-            sourceStamp: written.stamp,
-            practicePath: null,
-          });
-          setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
-        } else if (getTab(tabId)) {
-          setFileFreshness(tabId, "unverified");
-        }
-      }
-    } catch (error) {
-      const normalized = normalizeError(error);
-      const countRefresh = refreshFileCount ? await refreshFileCount() : { ok: true as const };
-      if (writeAttempted && getTab(tabId)) setFileFreshness(tabId, "unverified");
-      if (writeAttempted && normalized.backendCategory === "stale-game") {
-        if (countRefresh.ok) {
-          notifyUnlessCancelled(t("Common.Error"), {
-            category: "validation",
-            message: t("FileFreshness.AddGameChanged"),
-          });
-        } else {
-          notifyUnlessCancelled(t("Common.Error"), normalizeError(countRefresh.error));
-        }
-      } else if (writeAttempted) {
-        notifyUnlessCancelled(t("Common.Error"), {
-          ...normalized,
-          message: `${t("FileFreshness.AddGameMayHaveBeenAdded")} ${normalized.message}`,
-        });
-      } else {
-        notifyUnlessCancelled(t("Common.Error"), normalized);
-      }
-    } finally {
-      appendGamePendingRef.current = false;
-    }
-  }, [currentTab, getTab, updateTab, store, t]);
-
+    await addGameAction?.(currentTab);
+  }, [addGameAction, currentTab]);
   const addGame = useCallback(() => {
     if (!tabFile || !currentTab) return;
     if (store.getState().dirty) {
@@ -278,13 +146,20 @@ function BoardAnalysis() {
     [keyMap.SAVE_FILE.keys, () => userSaveFile()],
     [keyMap.CLEAR_SHAPES.keys, () => clearShapes()],
   ]);
+  const annotate = (annotation: Annotation) => {
+    if (!isPracticeRating) setAnnotation(annotation);
+  };
   useHotkeys([
-    [keyMap.ANNOTATION_BRILLIANT.keys, () => !isPracticeRating && setAnnotation("!!")],
-    [keyMap.ANNOTATION_GOOD.keys, () => !isPracticeRating && setAnnotation("!")],
-    [keyMap.ANNOTATION_INTERESTING.keys, () => !isPracticeRating && setAnnotation("!?")],
-    [keyMap.ANNOTATION_DUBIOUS.keys, () => !isPracticeRating && setAnnotation("?!")],
-    [keyMap.ANNOTATION_MISTAKE.keys, () => !isPracticeRating && setAnnotation("?")],
-    [keyMap.ANNOTATION_BLUNDER.keys, () => !isPracticeRating && setAnnotation("??")],
+    ...(
+      [
+        [keyMap.ANNOTATION_BRILLIANT.keys, "!!"],
+        [keyMap.ANNOTATION_GOOD.keys, "!"],
+        [keyMap.ANNOTATION_INTERESTING.keys, "!?"],
+        [keyMap.ANNOTATION_DUBIOUS.keys, "?!"],
+        [keyMap.ANNOTATION_MISTAKE.keys, "?"],
+        [keyMap.ANNOTATION_BLUNDER.keys, "??"],
+      ] as const
+    ).map<HotkeyItem>(([keys, annotation]) => [keys, () => annotate(annotation)]),
     [
       keyMap.PRACTICE_TAB.keys,
       () => {
@@ -301,9 +176,13 @@ function BoardAnalysis() {
         e.preventDefault();
       },
     ],
-    [keyMap.DATABASE_TAB.keys, () => setCurrentTabSelected("database")],
-    [keyMap.ANNOTATE_TAB.keys, () => setCurrentTabSelected("annotate")],
-    [keyMap.INFO_TAB.keys, () => setCurrentTabSelected("info")],
+    ...(
+      [
+        [keyMap.DATABASE_TAB.keys, "database"],
+        [keyMap.ANNOTATE_TAB.keys, "annotate"],
+        [keyMap.INFO_TAB.keys, "info"],
+      ] as const
+    ).map<HotkeyItem>(([keys, panel]) => [keys, () => setCurrentTabSelected(panel)]),
     [
       keyMap.TOGGLE_ALL_ENGINES.keys,
       (e) => {
@@ -363,42 +242,39 @@ function BoardAnalysis() {
                 justifyContent: "center",
                 gap: "0.3rem",
               },
+              panel: { flex: 1, overflowY: "hidden" },
             }}
           >
             <Tabs.List grow>
-              {isRepertoire && (
-                <Tabs.Tab value="practice" leftSection={<IconTargetArrow size="1rem" />}>
-                  {t("Board.Tabs.Practice")}
+              {[
+                ...(isRepertoire
+                  ? [{ value: "practice", title: t("Board.Tabs.Practice"), Icon: IconTargetArrow }]
+                  : []),
+                { value: "analysis", title: t("Board.Tabs.Analysis"), Icon: IconZoomCheck },
+                { value: "database", title: t("Board.Tabs.Database"), Icon: IconDatabase },
+                { value: "annotate", title: t("Board.Tabs.Annotate"), Icon: IconNotes },
+                { value: "info", title: t("Board.Tabs.Info"), Icon: IconInfoCircle },
+              ].map(({ value, title, Icon }) => (
+                <Tabs.Tab key={value} value={value} leftSection={<Icon size="1rem" />}>
+                  {title}
                 </Tabs.Tab>
-              )}
-              <Tabs.Tab value="analysis" leftSection={<IconZoomCheck size="1rem" />}>
-                {t("Board.Tabs.Analysis")}
-              </Tabs.Tab>
-              <Tabs.Tab value="database" leftSection={<IconDatabase size="1rem" />}>
-                {t("Board.Tabs.Database")}
-              </Tabs.Tab>
-              <Tabs.Tab value="annotate" leftSection={<IconNotes size="1rem" />}>
-                {t("Board.Tabs.Annotate")}
-              </Tabs.Tab>
-              <Tabs.Tab value="info" leftSection={<IconInfoCircle size="1rem" />}>
-                {t("Board.Tabs.Info")}
-              </Tabs.Tab>
+              ))}
             </Tabs.List>
             {isRepertoire && (
-              <Tabs.Panel value="practice" flex={1} style={{ overflowY: "hidden" }}>
+              <Tabs.Panel value="practice">
                 <PracticePanel />
               </Tabs.Panel>
             )}
-            <Tabs.Panel value="info" flex={1} style={{ overflowY: "hidden" }}>
+            <Tabs.Panel value="info">
               <InfoPanel addGame={addGame} />
             </Tabs.Panel>
-            <Tabs.Panel value="database" flex={1} style={{ overflowY: "hidden" }}>
+            <Tabs.Panel value="database">
               <DatabasePanel />
             </Tabs.Panel>
-            <Tabs.Panel value="annotate" flex={1} style={{ overflowY: "hidden" }}>
+            <Tabs.Panel value="annotate">
               <AnnotationPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="analysis" flex={1} style={{ overflowY: "hidden" }}>
+            <Tabs.Panel value="analysis">
               <AnalysisPanel />
             </Tabs.Panel>
           </Tabs>

@@ -1,10 +1,9 @@
 import { tauri } from "@/platform/tauri";
 import { normalizeError, type AppError } from "@/platform/errors";
-import type { getDefaultStore } from "jotai";
+import { useSetAtom, useStore, type getDefaultStore } from "jotai";
 import type { StoreApi } from "zustand";
-import { startTransition } from "react";
+import { createContext, startTransition, useCallback } from "react";
 import type { FileMetadata } from "@/components/files/file";
-import type { WriteExpectation } from "@/bindings";
 import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
 import {
@@ -28,11 +27,11 @@ import {
     type TreeStore,
     type TreeStoreState,
 } from "@/state/store/tree";
-import { getPGN, parsePGN } from "./chess";
+import { defaultPGN, getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
-import { setFileFreshness } from "@/state/fileFreshness";
+import { getFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 export { getTabTreeKey, tabSchema, type GameOrigin, type Tab };
 
 export type FileBackedTab = Tab & {
@@ -79,6 +78,199 @@ export function updateTabById(setTabs: SetTabs, tabId: string, update: React.Set
         }),
     );
     return committed && found;
+}
+
+/** Live access stays inside the caller's workspace provider, including durable refusal. */
+export function useTabActions() {
+    const workspace = useStore();
+    const setTabs = useSetAtom(tabsAtom);
+    const getTab = useCallback(
+        (id: string) => workspace.get(tabsAtom).find((tab) => tab.value === id),
+        [workspace],
+    );
+    const updateTab = useCallback(
+        (id: string, update: React.SetStateAction<Tab>) => updateTabById(setTabs, id, update),
+        [setTabs],
+    );
+    return { getTab, updateTab };
+}
+
+export function sameTabOwner(current: Tab | undefined, captured: Tab): current is Tab {
+    return (
+        !!current &&
+        current.value === captured.value &&
+        getTabTreeKey(current) === getTabTreeKey(captured)
+    );
+}
+
+export const AddGameContext = createContext<((owner: Tab | undefined) => Promise<void>) | null>(
+    null,
+);
+
+type AddGameLease = { owner: FileBackedTab };
+type AddGameAdmission = { lease: AddGameLease | null; listeners: Set<() => void> };
+// One pending Add Game per live store/generation. Weak keys retain no retired store, and an
+// empty admission is removed after its last view unsubscribes. Recovery append has its own owner.
+const addGameAdmissions = new WeakMap<TreeStore, AddGameAdmission>();
+
+function addGameAdmission(store: TreeStore): AddGameAdmission {
+    let admission = addGameAdmissions.get(store);
+    if (!admission) {
+        admission = { lease: null, listeners: new Set() };
+        addGameAdmissions.set(store, admission);
+    }
+    return admission;
+}
+
+function publishAddGameAdmission(store: TreeStore, admission: AddGameAdmission) {
+    for (const listener of admission.listeners) listener();
+    if (!admission.lease && !admission.listeners.size) addGameAdmissions.delete(store);
+}
+
+export function getAddGameLease(store: TreeStore) {
+    return addGameAdmissions.get(store)?.lease ?? null;
+}
+
+export function subscribeAddGame(store: TreeStore, listener: () => void) {
+    const admission = addGameAdmission(store);
+    admission.listeners.add(listener);
+    return () => {
+        admission.listeners.delete(listener);
+        publishAddGameAdmission(store, admission);
+    };
+}
+
+/** Add Game completion belongs to the captured workspace and cached store, not a view. */
+export async function appendBlankGame({
+    captured,
+    store,
+    getTab,
+    updateTab,
+    onError,
+    uncertainMessage,
+    changedMessage,
+}: {
+    captured: Tab | undefined;
+    store: TreeStore;
+    getTab: (id: string) => Tab | undefined;
+    updateTab: UpdateTab;
+    onError: (error: unknown) => void;
+    uncertainMessage: string;
+    changedMessage: string;
+}): Promise<void> {
+    if (!isFileBackedTab(captured)) return;
+    const ownerId = captured.value;
+    const owns = () => {
+        const current = getTab(ownerId);
+        return (
+            sameTabOwner(current, captured) &&
+            matchesFileGameTab(current, captured.gameOrigin) &&
+            getCachedTreeStore(ownerId) === store
+        );
+    };
+    if (!owns()) return;
+    const admission = addGameAdmission(store);
+    if (
+        admission.lease &&
+        sameTabOwner(captured, admission.lease.owner) &&
+        matchesFileGameTab(captured, admission.lease.owner.gameOrigin)
+    )
+        return;
+    const lease = { owner: captured };
+    admission.lease = lease;
+    publishAddGameAdmission(store, admission);
+    const before = getFileFreshness(ownerId);
+    const claimed = setFileFreshness(ownerId, "appending");
+    const notifyError = (error: unknown) => {
+        if (owns()) onError(error);
+    };
+    const unverified = () =>
+        setFileFreshness(ownerId, "unverified", {
+            errorMessage: getFileFreshness(ownerId).errorMessage,
+        });
+    let writeAttempted = false;
+    const refreshFileCount = async () => {
+        if (!owns()) return { ok: true as const };
+        try {
+            const count = await tauri.countPgnGames(captured.gameOrigin.file.handle);
+            if (!owns()) return { ok: true as const };
+            updateTab(ownerId, (previous) => {
+                return {
+                    ...previous,
+                    gameOrigin: {
+                        ...(previous as FileBackedTab).gameOrigin,
+                        file: { ...(previous as FileBackedTab).gameOrigin.file, numGames: count },
+                    },
+                };
+            });
+            return { ok: true as const };
+        } catch (error) {
+            return { ok: false as const, error };
+        }
+    };
+    try {
+        const pgn = defaultPGN();
+        const newGame = await parsePGN(pgn);
+        if (!owns()) return;
+        const latest = getTab(ownerId)! as FileBackedTab;
+        const origin = latest.gameOrigin;
+        const gameNumber = origin.file.numGames;
+        writeAttempted = true;
+        const written = await writeFileGame(origin.file.handle, gameNumber, pgn, {
+            kind: "append",
+        });
+        if (!owns()) return;
+        if (written.stamp === null || written.revision === null) {
+            const countRefresh = await refreshFileCount();
+            if (!owns()) return;
+            unverified();
+            notifyError({
+                category: "applied-despite-error",
+                message: uncertainMessage,
+            });
+            if (!countRefresh.ok) notifyError(countRefresh.error);
+            return;
+        }
+        const originSaved = updateTab(ownerId, (previous) => ({
+            ...previous,
+            gameOrigin: {
+                kind: "file",
+                gameNumber,
+                file: { ...(previous as FileBackedTab).gameOrigin.file, numGames: gameNumber + 1 },
+            },
+        }));
+        if (originSaved) {
+            store.setState({ ...newGame, sourceStamp: written.stamp, practicePath: null });
+            setFileFreshness(ownerId, "verified", { verifiedRevision: written.revision });
+        } else if (owns()) unverified();
+    } catch (error) {
+        if (!owns()) return;
+        const normalized = normalizeError(error);
+        const countRefresh = writeAttempted ? await refreshFileCount() : { ok: true as const };
+        if (!owns()) return;
+        if (writeAttempted) unverified();
+        let visibleError: unknown = normalized;
+        if (writeAttempted && normalized.backendCategory === "stale-game") {
+            visibleError = countRefresh.ok
+                ? { category: "validation", message: changedMessage }
+                : countRefresh.error;
+        } else if (writeAttempted) {
+            visibleError = {
+                ...normalized,
+                message: `${uncertainMessage} ${normalized.message}`,
+            };
+        }
+        notifyError(visibleError);
+    } finally {
+        // A parse failure may restore only its own presentation claim, never a newer Save result.
+        if (owns() && getFileFreshness(ownerId) === claimed) {
+            setFileFreshness(ownerId, before.state, before);
+        }
+        if (admission.lease === lease) {
+            admission.lease = null;
+            publishAddGameAdmission(store, admission);
+        }
+    }
 }
 
 type StagedAdmissionResult =
@@ -238,10 +430,9 @@ export function replaceFileGame({
         const live = treeStore.getState();
         return (
             isCurrent() &&
-            !!current &&
+            sameTabOwner(current, owner) &&
             !store.get(closingTabsAtom).has(owner.value) &&
             sameFileGameOrigin(current.gameOrigin, owner.gameOrigin) &&
-            getTabTreeKey(current) === oldKey &&
             getCachedTreeStore(owner.value) === treeStore &&
             live.root === snapshot.root &&
             live.headers === snapshot.headers
@@ -390,12 +581,8 @@ function sourceChanged(tabId: string): SaveResult {
     return "conflict";
 }
 
-function failed(error: unknown): SaveResult {
+function failed(error: unknown): Extract<SaveResult, { status: "failed" }> {
     return { status: "failed", error: normalizeError(error) };
-}
-
-function writeExpectation(stamp: string): WriteExpectation {
-    return { kind: "game", stamp };
 }
 
 export async function saveToFile({
@@ -416,90 +603,82 @@ export async function saveToFile({
     const currentOrigin = tab.gameOrigin;
     const owns = () => {
         const current = getTab(tabId);
-        return (
-            !!current &&
-            getTabTreeKey(current) === getTabTreeKey(tab) &&
-            sameOrigin(current.gameOrigin, currentOrigin)
-        );
+        return sameTabOwner(current, tab) && sameOrigin(current.gameOrigin, currentOrigin);
     };
     let currentFileOperation = false;
     let writingCurrentOrigin = false;
     let writingSaveAsDestination = false;
     try {
         if (!owns()) return "superseded";
-        const fileOrigin =
-            currentOrigin?.kind === "file" || currentOrigin?.kind === "temp_file"
-                ? currentOrigin
-                : undefined;
+        const fileOrigin = isFileBackedTab(tab) ? tab.gameOrigin : undefined;
         const databaseOrigin = currentOrigin?.kind === "database" ? currentOrigin : undefined;
         const isTempFile = currentOrigin?.kind === "temp_file";
         const sourceStamp = store.getState().sourceStamp;
         const pgn = serializeStoreTree(store);
+        const gameNumber = fileOrigin?.gameNumber ?? 0;
+        const write = (file: FileMetadata, stamp: string) =>
+            writeFileGame(file.handle, gameNumber, pgn, { kind: "game", stamp });
+        const validateSource = async (origin: NonNullable<typeof fileOrigin>) => {
+            currentFileOperation = true;
+            const source = await readFileGame(origin.file.handle, origin.gameNumber);
+            if (!owns()) return "superseded";
+            if (source.stamp !== sourceStamp) return sourceChanged(tabId);
+            currentFileOperation = false;
+        };
         const finishWrite = (
-            written: Awaited<ReturnType<typeof writeFileGame>>,
+            written?: Awaited<ReturnType<typeof writeFileGame>>,
             commitOrigin?: () => boolean,
         ): SaveResult => {
             if (!owns()) return "superseded";
-            if (written.stamp === null || written.revision === null) {
+            if (written && (written.stamp === null || written.revision === null)) {
                 if (written.stamp === null) store.getState().setSourceStamp(null);
                 setFileFreshness(tabId, "unverified");
                 return "conflict";
             }
             if (commitOrigin && !commitOrigin()) return "superseded";
             const unchanged = serializeStoreTree(store) === pgn;
-            if (unchanged) store.getState().save(written.stamp);
-            else store.getState().setSourceStamp(written.stamp);
-            setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+            if (unchanged) store.getState().save(written?.stamp ?? undefined);
+            else if (written) store.getState().setSourceStamp(written.stamp);
+            if (written)
+                setFileFreshness(tabId, "verified", {
+                    verifiedRevision: written.revision ?? undefined,
+                });
             return unchanged ? "saved" : "superseded";
         };
 
         if (databaseOrigin) {
             await tauri.writeDbGame(databaseOrigin.database, databaseOrigin.gameId, pgn);
-            store.getState().save();
-            return "saved";
+            return finishWrite();
         }
 
         if (fileOrigin && !(isTempFile && isUserSave)) {
             currentFileOperation = true;
             writingCurrentOrigin = true;
             if (sourceStamp === null) return sourceChanged(tabId);
-            const written = await writeFileGame(
-                fileOrigin.file.handle,
-                fileOrigin.gameNumber,
-                pgn,
-                writeExpectation(sourceStamp),
-            );
+            const written = await write(fileOrigin.file, sourceStamp);
             return finishWrite(written);
         }
 
         if (isTempFile && fileOrigin) {
             if (sourceStamp === null) return sourceChanged(tabId);
-            currentFileOperation = true;
-            const source = await readFileGame(fileOrigin.file.handle, fileOrigin.gameNumber);
-            if (source.stamp !== sourceStamp) return sourceChanged(tabId);
-            currentFileOperation = false;
+            const result = await validateSource(fileOrigin);
+            if (result) return result;
         }
 
         const selected = await pickPgnFile();
+        if (!owns()) return "superseded";
         if (!selected) return "cancelled";
 
         if (isTempFile && fileOrigin) {
-            currentFileOperation = true;
-            const source = await readFileGame(fileOrigin.file.handle, fileOrigin.gameNumber);
-            if (source.stamp !== sourceStamp) return sourceChanged(tabId);
-            currentFileOperation = false;
+            const result = await validateSource(fileOrigin);
+            if (result) return result;
         }
 
-        const gameNumber = fileOrigin?.gameNumber ?? 0;
         const destination = await readFileGame(selected.handle, gameNumber);
+        if (!owns()) return "superseded";
         currentFileOperation = true;
         writingSaveAsDestination = true;
-        const written = await writeFileGame(
-            selected.handle,
-            gameNumber,
-            pgn,
-            writeExpectation(destination.stamp),
-        );
+        const written = await write(selected, destination.stamp);
         return finishWrite(written, () =>
             updateTab(tabId, (previous) => ({
                 ...previous,
@@ -516,35 +695,33 @@ export async function saveToFile({
         );
     } catch (error) {
         if (!owns()) return "superseded";
-        const normalized = normalizeError(error);
-        if (tab && normalized.backendCategory === "stale-game") {
-            return writingCurrentOrigin ? sourceChanged(tab.value) : failed(error);
+        const failure = failed(error);
+        const normalized = failure.error;
+        if (normalized.backendCategory === "stale-game") {
+            return writingCurrentOrigin ? sourceChanged(tabId) : failure;
         }
-        if (tab && writingCurrentOrigin && normalized.category === "applied-despite-error") {
+        if (writingCurrentOrigin && normalized.category === "applied-despite-error") {
             // The game reached the file but its stamp is unknown: verify it by text, as after a
             // write whose read-back failed.
-            if (owns()) {
-                store.getState().setSourceStamp(null);
-                setFileFreshness(tab.value, "unverified");
-            }
-            return failed(error);
+            store.getState().setSourceStamp(null);
+            setFileFreshness(tabId, "unverified");
+            return failure;
         }
-        if (tab && currentFileOperation && normalized.backendCategory === "conflict") {
-            setFileFreshness(tab.value, "unverified", { errorMessage: normalized.message });
-            return failed(error);
+        if (currentFileOperation && normalized.backendCategory === "conflict") {
+            setFileFreshness(tabId, "unverified", { errorMessage: normalized.message });
+            return failure;
         }
         // A Save-As destination that vanished or refused the slot was never written, and it is not
         // the tab's game: that is an ordinary failure, not an unavailable source.
         if (
-            tab &&
             currentFileOperation &&
             !writingSaveAsDestination &&
             (normalized.backendCategory === "missing-resource" ||
                 normalized.backendCategory === "invalid-input")
         ) {
-            setFileFreshness(tab.value, "unavailable");
+            setFileFreshness(tabId, "unavailable");
             return "conflict";
         }
-        return failed(error);
+        return failure;
     }
 }
