@@ -14470,3 +14470,18 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 Root corrected the initial frozen-phase disposition under push-review-policy section 4. This same-area companion receives a separate atomic Fix in the f-20261001-08 drain run. Decision d-20261010-05 chooses owner-bound discard and immutable root/header snapshots, preserving dirty data until replacement commits. Focused source proof passed 67 tests and full pre-review/contract gates. Source closure and native verification remain pending. Evidence: tasks/handoffs/2026-10-10-game-opening-execution.md, Same-area companion D7.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c26fc9602ecf8b04cd3bc4f8a9ceece6b3959df4d24281c0ad89bff1f2c1345e","input_sha256":"035c89a655e17f917c6ac7e11feab336e4d9efa72353e51094e0c5c52f9162e1","kind":"mutation-receipt","operation":"d50a9c1494c5d1902d6d32745e68191878a13f7d488180f7cc8ae027b18f593a","options":{"section":null},"request_id_sha256":"bd55c03da2939c0fa3b3a9ba437000e57e53c39810746afd25c70f1a56e10f9c","results":["f-20261010-06"],"target":"f-20261010-06","v":1} -->
+
+---
+
+## 2026-10-10 — filed through the inbox spool
+
+### InfoPanel page replacement commits its origin before the replacement tree is durable
+
+* **ID:** f-20261010-07 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
+* **Where:** src/components/panels/info/InfoPanel.tsx loadPage, src/state/store/tree.ts persisted setState, src/state/store/tabStorage.ts write/flush.
+* **Defect:** loadPage saves the new gameNumber through currentTabAtom before setState queues the replacement tree. A later tree-key quota refusal retains the old durable tree under the newly durable origin. Reload can resurrect discarded edits under the wrong game index. The existing refusal test uses an unpersisted store and does not exercise this split.
+* **Origin:** ordering predates this run in 2a6f66df. Successful dirty discard in 8ed6e3ad makes that path reachable for an accepted discard.
+* **Fix and proof:** Coordinate replacement-tree durability and workspace ownership before publishing success. Prove real persisted-store tree and workspace refusal, retained pending edits, reload and retry. The handled f-20260910-09 establishes fresh-ID staging for New Tab replacement, not current file-game page replacement. Root will settle the extension contract in this drain run.
+* **Open question:** Can the proven fresh-ID slot replacement preserve the current file tab's visible configuration and resource lifecycle, or does a stable logical tab need a separate durable tree-key reference? Settle atomic refusal and post-commit cleanup together rather than independently writing the two existing keys.
+* **Found by:** fresh persisted-state closure lens, confidence 97, confirmed by root source trace. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
