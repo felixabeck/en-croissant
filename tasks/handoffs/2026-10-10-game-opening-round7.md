@@ -32,6 +32,155 @@ Limitations: read-only source review, no tests rerun. Inspected root evidence re
 
 VERDICT: REVISE
 
+## Focused revision2 mechanism judgment and authority
+
+All six canonical judges reached EOS and approved R7-POST at plan level. Root adopts the single plan-record should-fix by adding Authority to the existing adopted f29 continuation. d-20261010-10 records the shared prepared installation and acknowledgement implementation, preserving d06 through d09. This is the second correction of the same source package, with no third compression repair or reset. Code and runtime closure remain pending.
+
+### Raw revision2 plan judgment
+
+R7-POST CLOSED at plan level for revision2 against frozen HEAD `f028aa7f` and the supplied matching source hashes. C1/C3 require prepared installation, live ownership and exact successor acknowledgement before observer errors escape. This addresses both traced gaps at `src/state/atoms.ts:106` and `src/utils/tabs.ts:250`. C4 requires completed reconciliation, flush and independent cold observation, replacing the held-read limitation at `src/components/boards/BoardAnalysis.test.tsx:277`.
+
+R7-CQ CLOSED at plan level — plan:41 retains the explanatory-comment Fix for `src/utils/tabs.ts:270`.
+
+R7-REC CLOSED as a record correction — `tasks/findings.md:14842` explicitly supersedes the unrepaired-count claim while preserving pending completion status.
+
+[should-fix] /tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v2.md:41 — The revision adds prepared installation and successor acknowledgement without an explicit `Authority` entry in `## Reviews`. These correct the boundaries at `src/state/store/tree.ts:127` and `src/utils/tabs.ts:250`. Add the authority reference to the existing adoption at `tasks/findings.md:14877`. No new mandate or decision is needed. (confidence: 95)
+
+No mechanism blocker found. The named files cover the shared boundary and its consumers.
+
+Limitation (confidence: 100): this is plan-level closure only. No implementation, runtime probe, tests or release were performed. R7-LEGAL remains a separate source assignment. Detection used the code’s model family, and plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision2 minimalism judgment
+
+R7-POST CLOSED at plan level — revised C1/C3/C4 at `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v2.md:11`, `:19`, and `:23` require prepared installation, matching live ownership, exact-successor acknowledgement before observer errors escape, and completed reconciliation/cold-read witnesses. Both recorded manifestations are covered without expanding the mandate (confidence: 95).
+
+No bloat or duplication findings above the confidence threshold. The smallest sufficient correction uses the three existing production boundaries: tree installation in `tree.ts`, acknowledged publication in `atoms.ts`, and operation-local successor handling in `tabs.ts`. The shared replacement already serves Add Game and InfoPanel. No new file, registry, transaction framework, or duplicated Gate repair is needed.
+
+Named limitation — this closes the revised mechanism at plan level only. Implementation size, source closure, runtime evidence and push remain pending (confidence: 100). Inspected HEAD and all four hashes match the supplied freeze.
+
+Detection ran on the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision2 persisted-state judgment
+
+R7-POST CLOSED at plan level — `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v2.md:11` requires prepared installation and coherent durable/live ownership before observer errors escape. At `:19`, exact canonical successor acknowledgement and publication ordering address subscriber terminality and reentrant replacement. At `:23`, C4 requires completed reconciliation, flush and independent cold reads using actual Jotai/Zustand subscriber failures. These cover both R7 manifestations. (confidence: 95)
+
+No additional persistence defects in the revised contract. Writer/read encoding remains shared, and d06–d09 ownership and refusal obligations remain intact.
+
+Limitation: approval covers revised C1/C3/C4 and the proposed shared mechanism only. Frozen HEAD and all four supplied hashes matched. No tests or runtime probes ran, no files changed, and source/runtime/release closure remains pending.
+
+Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision2 correctness judgment
+
+R7-POST CLOSED at plan level — `/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v2.md:11,19,23` requires prepared installation, matching live workspace/tree ownership before observer errors escape, exact canonical successor acknowledgement, terminal settlement, and suppression after reentrant foreign replacement. C4 requires completed reconciliation followed by flushing and independent cold observation. These obligations address both source-traced manifestations. (confidence: 95)
+
+No correctness blocker found in the revised obligations or their affected integration contracts. C2 and the distinct Save, recovery append and InfoPanel policies remain consistent.
+
+Limitation (confidence: 100): revision2 implementation and runtime behavior are unverified. This closes the mechanism at plan level only, with no source, runtime or push completion claim. Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision2 error-handling judgment
+
+R7-POST CLOSED at plan level — revised C1/C3 require prepared installation, matching live ownership and exact-successor acknowledgement before observer errors escape. C4 requires real subscriber failures, completed reconciliation, flush/cold observation and reentrant foreign-owner suppression (`/tmp/build-game-opening-3b67c3b9/r6-tab-correction-plan-v2.md:11,19,23`). Confidence: 95.
+
+No additional error-handling defects found in the revised obligations.
+
+Limitation (confidence: 100): source inspection establishes feasibility, not implementation or runtime closure. No tests ran or files changed. Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+### Raw revision2 tests judgment
+
+R7-POST CLOSED at plan level — revised C1/C3/C4 require discriminating proof for both manifestations.
+
+- Plan:11,23 — completed reconciliation with distinct old/admitted content, followed by flush and independent cold read, exposes wrong-page persistence if shared finalization is reverted.
+- Plan:19,23 — actual Jotai/Zustand subscriber exceptions must preserve terminal freshness and release the lease. Removing successor acknowledgement would fail the terminality assertion by leaving `appending`.
+- Plan:19,23 — reentrant replacement/removal must preserve foreign ownership and suppress late notifications. Unconditional late publication would fail those preservation assertions.
+- Plan:25 — each essential guarantee requires an unchanged-test semantic fault, direct assertion failure, exit 1 and exact restoration. The named suites match Vitest’s include pattern.
+
+No verification-plan defects found above the confidence threshold.
+
+Limitation (confidence: 100): this closes proposed proof obligations only. Existing held-read exception tests do not establish later reconciliation. Revised tests, final fault evidence, runtime verification and release remain pending. No tests ran or files changed.
+
+Detection used the code’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+
+## Disjoint legality repair source checkpoint
+
+Root inspected the exact four-file diff and independently reran the selected four-suite command, exit0 with195tests. This is source proof only, pending cumulative review and real-app proof. The worker disclosed index stat metadata refresh while HEAD/index content/protected paths remained unchanged. Full evidence follows.
+
+Added the two requested position-legality admission checks. All four-file changes remain unstaged. This is bounded source and unit-test evidence for the orchestrator, with an index metadata deviation disclosed below.
+
+Changed paths:
+
+| Path | Change |
+| --- | --- |
+| `src/state/store/tree.ts:746` | Calls chessops `pos.isLegal(move)` at the actual target before SAN generation, play, sound, header adjudication, tree mutation, cursor movement or dirty publication. |
+| `src/utils/chessops.ts:178` | Requires position legality for the existing UCI fallback and retains `Move | null`. |
+| `src/state/store/tree.test.ts:1203` | Adds actual-store rejection, target-position, sound, legal custom-position, castling, promotion and existing-child replay controls. |
+| `src/utils/tests/chessops.test.ts:139` | Adds direct shared-parser and actual keyboard-parser illegal-UCI rejection plus legal UCI, normalized SAN, castling, Chess960 and promotion controls. |
+
+Every original test body in both owned test files remains byte-identical. `original-test-body-integrity.json` records the comparisons against the captured pre-change files, including the R6 tests. The production diff contains exactly one new reducer guard and one changed parser condition. The R6 reducer and parser-bound behavior, committed Add Game correction, and all protected production and test files remain unchanged.
+
+Consumer trace completed before editing:
+
+* `parseSanOrUci` has exactly two production consumers. `src/utils/chess.ts:329,334` calls it before and after the existing keyboard SAN normalization. `MoveInput.tsx:30` uses the result in its Enter handler and already routes null to `MoveInput.InvalidMove`.
+* `src/state/store/tree.ts:390` calls it in `makeMoves` against the sequential scratch position, before play and the shared reducer. The production callers are `PuzzleBoard.tsx:102`, `RepertoireInfo.tsx:434` and `AnalysisRow.tsx:214`. Legal SAN/UCI input retains the existing route. No batch protocol or caller policy changes were made.
+* `node_modules/chessops/src/chess.ts:377` supplies `isLegal`, including promotion checks, legal destinations and castling normalization. `san.ts` demonstrates that `makeSan` plays a clone without admission validation, while SAN parsing already checks legal destinations.
+* Read all six specified project rules, both specified review references, the complete `lens-chess-semantics-r7.txt`, `r7-illegal-move-finding.md`, and the full f-20260922-13 entry. The separate f-20260922-13 batch atomicity and puzzle-loop terminality limit remains untouched. No full CLAUDE.md or environment file was read.
+
+Exact selected command for every test run:
+
+```text
+pnpm test src/state/store/tree.test.ts src/utils/tests/chessops.test.ts src/utils/tests/chess.test.ts src/utils/tests/treeReducer.test.ts
+```
+
+| Run | Exit | Observed result |
+| --- | --- | --- |
+| `selected-initial` | 0 | 195 tests passed across four files. |
+| `selected-raw-fault` | 1 | Five semantic failures, 190 passed. Illegal raw moves changed the root and inserted children. |
+| `selected-raw-restored` | 0 | 195 tests passed after exact source restoration. |
+| `selected-parser-fault` | 1 | Six semantic failures, 189 passed. Both parsers returned illegal moves where null was asserted. |
+| `selected-parser-restored` | 0 | 195 tests passed after exact source restoration. |
+
+Other exact checks:
+
+| Command | Exit | Evidence |
+| --- | --- | --- |
+| `pnpm exec oxfmt --check src/utils/chessops.ts src/utils/tests/chessops.test.ts src/state/store/tree.ts src/state/store/tree.test.ts` | 0 | All four matched files use the correct format. |
+| `pnpm exec oxlint --deny-warnings src/utils/chessops.ts src/utils/tests/chessops.test.ts src/state/store/tree.ts src/state/store/tree.test.ts` | 0 | Zero warnings and errors. |
+| `pnpm exec tsgo --noEmit` | 0 | No diagnostics. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+Each command has a `.command`, full `.log`, and `.exit` artefact. The final restored bytes match the same frozen source and tests that passed these checks. The final diff check also exited 0.
+
+Fault evidence:
+
+* `raw.patch` and `parser.patch` are exact production-only single-hunk patches from `git diff HEAD -- <source path>`. Reverse checks, verbose reverse applies and verbose forward restorations all exited 0 without offset relocation. Tests remained frozen throughout both completed faults.
+* The raw fault changed only `tree.ts` back to its captured pre-change bytes. `raw-fault.diff` is empty for that source relative to HEAD, and the other parser guard remained present. The direct starting-position assertion `expect(after.root).toBe(before.root)` failed at `tree.test.ts:1227`. The log shows the illegal `e2e5` move stored as SAN `e5`, with the pawn on e5. Wrong-side `e7e5`, check-exposing `e2f2`, and wrong-side moves at the actual makeMove/appendMove target failed the same unchanged-tree requirement. There was no compile failure.
+* The parser fault changed only `chessops.ts` back to its captured pre-change bytes. `parser-fault.diff` is empty for that source relative to HEAD, and the raw reducer guard remained present. `expect(parseSanOrUci(pos, uci)).toBeNull()` at line 155 and `expect(parseKeyboardMove(uci, fen)).toBeNull()` at line 160 both failed for `e2e5`, wrong-side `e7e5`, and check-exposing `e2f2`. There was no compile failure.
+* `pre/`, `final/`, `raw-fault/`, `raw-restored/`, `parser-fault/`, and `parser-restored/` retain source and test copies. Matching SHA256 manifests retain the pre, frozen final, fault, and exact restored identities. `owned-restored-final-sha256.json` equals `owned-final-sha256.json` for all four paths.
+
+Integrity and deviation:
+
+* Actual launch and final HEAD are `f028aa7ff1618e6ce043cc72f0ae9c3819a889b7`. Launch status was clean. Final status contains only the four owned paths, each unstaged.
+* `protected-pre.json` and `protected-final.json` cover 1078 non-owned tracked or visible untracked repository files. No protected path changed or appeared. `final-integrity.json` and every completed fault/restoration checkpoint retain that evidence.
+* Launch and final `git ls-files --stage -z` content is byte-identical. Every completed fault/restoration checkpoint confirms unchanged index content and HEAD. No staging, commit, push or deployment occurred.
+* Byte-identical index preservation did not hold. During two preflight attempts, each restored before tests ran, and the completed raw fault, one index entry's stat metadata refreshed despite `GIT_OPTIONAL_LOCKS=0`. Final bytes differ from launch in 30 bytes, reflecting ctime/mtime and the index checksum. The precise responsible command was not isolated. Patch-command before/after records show no real-index change in the completed raw command boundaries. The parser fault used a copied index for both patch applications and diff reads, with no further real-index byte change observed. Original and final index bytes, debug output and the failed preflight artefacts are retained. See `index-metadata-deviation.md` for exact hashes and evidence.
+
+No source/runtime/push closure is claimed. Root retains integrated proof, the existing fourteen native stages, visible verification, pre-review/contract and fresh cumulative closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
 ## Source probe and proposed revision2 mechanism
 
 The source probe reached EOS. Its findings are source traces, not executed runtime proof or plan approval. Root adopts a shared prepared admission-to-live finalization boundary in existing atoms/tree lifecycle and exact operation-local acknowledgement. This keeps the d06 staged generation and avoids duplicated Gate repairs. Revision2 retains the same mandate and cap policy. The independent legality phase must finish before formal revision2 judgments freeze actual source.
