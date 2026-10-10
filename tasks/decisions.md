@@ -6982,3 +6982,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-09-sqlite-hard-link-admission-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-05 (session d7fc28c0-e3c5-4fb5-b34f-fee1b64dec2f), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"e0992ba3d2ecff6e88424dc4fe5c83da6e6dfd4e500ccdc325a23be132a33ded","input_sha256":"1a7b7e73c1a3b4d517e49adf21cca5be916faef074eb63b1092852d23f72f610","kind":"mutation-receipt","operation":"fe1a6b5fb6f3ffa48519215f214baf6d06c57dd026d83de0e5bcee9ddcf8263c","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-02 — How is the same-directory hard-link admission refusal verified, and what stays outside it?
+
+* **Question:** Who verifies the f-20260929-05 admission refusal, and which adjacent hazards stay outside the task?
+* **Governs:** f-20260929-05
+* **Chosen:** automated Rust runtime regressions at the binding boundary, the repository (real SQLite pools, WAL fixture, revision read) and the content-validation acquisition, plus the existing Windows and macOS CI jobs as runtime authority for those platforms. Out of scope: UI presentation of the conflict (filed as f-20261009-03), registration redesign, cross-process coordination, crash recovery and the other queued db findings.
+* **Rejected:** asking Felix to create hard links by hand or inspect a corruption experiment.
+* **Reason:** this is a deterministic native admission contract that synchronized tests prove directly. Reversal path: add a manual acceptance step if a future change makes the refusal user-visible beyond the existing typed conflict.
+* **Review:** `tasks/handoffs/2026-10-09-sqlite-hard-link-admission-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-05 (session d7fc28c0-e3c5-4fb5-b34f-fee1b64dec2f), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"bf181a3379e1776d201f09160c9ecabbfbe9f19abc40e5388596f2b7f22f10bf","input_sha256":"f6513173e31e4d8bba5045a4279aba12a4ce601a53bdabf8bd281d9fb3bf23a3","kind":"mutation-receipt","operation":"a2c1251135a969b4594816f6c6604b8bc28b7c5dd124ed0c3ac11285c2fa1e2a","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-02"],"target":"decisions-ledger","v":1} -->
