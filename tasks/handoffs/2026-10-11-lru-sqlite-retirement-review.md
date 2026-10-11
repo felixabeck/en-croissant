@@ -6034,4 +6034,16 @@ Lenses on Codex (OpenAI high tier, `--role sensitive`): correctness, root-cause,
 | D7 | code-quality, nit, 93 | Bare test timing literals. | Fix (db366326) | Named constants. |
 | D8 | orchestrator (fix-round red proof) | Pool budget capped at retire_wait made short-retire tests' setup acquisitions time out under load. | Fix (db366326) | Pool wait keeps its own POOL_CONNECTION_TIMEOUT; predecessor waits keep the retire deadline; deterministic witness fails with the cap restored. |
 
-pgn-index: NOT APPLICABLE. platform-semantics: no findings (Windows/macOS runtime proof remains CI's rust-windows-test, rust-macos-test, rust-platform). records: no findings. Closure-round results are recorded in the tasks/build-ledger.md row for this run.
+pgn-index: NOT APPLICABLE. platform-semantics: no findings (Windows/macOS runtime proof remains CI's rust-windows-test, rust-macos-test, rust-platform). records: no findings.
+
+### Diff review r2 — closure round (REVIEWED_THROUGH db366326 plus this record)
+
+Lenses: correctness, root-cause, tests, error-handling, minimalism, code-quality over `6f631aac..db366326` (code), records over d-20261011-13 and this handoff. D1-D8 all CLOSED by their witnessing lenses (correctness D1, D8; root-cause D2; tests D3; error-handling D4; minimalism D5; code-quality D6, D7).
+
+| ID | Lens, rank, confidence | Claim | Disposition |
+| --- | --- | --- | --- |
+| D9 | tests, should-fix, 96 | The scan witness does not assert the admission lifetime: a retirement attempted while the scan admission is held, or after it is released during validation. | Fix (round-3 repair) |
+| D10 | code-quality, should-fix, 90 | `predecessor_admission_for` returns an opaque guard without documenting what it blocks and when to release it. | Fix (round-3 repair) |
+| D11 | records, should-fix, 100 | This handoff claimed the closure results were already in tasks/build-ledger.md, which holds no row for this run yet. | Fix: this subsection replaces that claim; the build-ledger row is appended after the push. |
+
+Later rounds and the final gate and CI results are recorded in the tasks/build-ledger.md row written after the push.
