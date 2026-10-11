@@ -24,7 +24,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Chessground, type ChessgroundRef } from "@/chessground/Chessground";
 import {
   autoPromoteAtom,
-  bestMovesAtom,
+  createBestMovesAtom,
   evalOpenFamily,
   showCommentsFamily,
   enableBoardScrollAtom,
@@ -134,7 +134,7 @@ function Board({
 
   const tabId = useOwnerTabId();
   const arrows = useAtomValue(
-    useMemo(() => bestMovesAtom(tabId, rootFen, moves), [tabId, rootFen, moves]),
+    useMemo(() => createBestMovesAtom(tabId, rootFen, moves), [tabId, rootFen, moves]),
   );
 
   const goToNext = useStore(store, (s) => s.goToNext);

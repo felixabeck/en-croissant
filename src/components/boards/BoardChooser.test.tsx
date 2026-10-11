@@ -46,7 +46,7 @@ vi.mock("@/state/atoms", async (importOriginal) => {
         ])
       : new Map(),
   );
-  return { ...original, bestMovesAtom: () => bestMoves };
+  return { ...original, createBestMovesAtom: () => bestMoves };
 });
 let boardConfig: Config;
 vi.mock("@/chessground/Chessground", () => ({

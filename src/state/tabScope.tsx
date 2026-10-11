@@ -1,7 +1,7 @@
 import { useAtomValue, useSetAtom, type PrimitiveAtom } from "jotai";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import { tabsAtom, updateTabAtom } from "./atoms";
+import { tabsAtom, updateTabById } from "./atoms";
 import type { Tab } from "./workspaceTypes";
 
 type TabScope = {
@@ -60,11 +60,11 @@ export function useOwnerTab(): [Tab | undefined, (update: Tab | ((tab: Tab) => T
   // A missing provider is a developer invariant, never an untrusted-input failure.
   if (!scope) throw new Error("useOwnerTab used outside a TabScope");
   const tabs = useAtomValue(tabsAtom);
-  const updateTab = useSetAtom(updateTabAtom);
+  const setTabs = useSetAtom(tabsAtom);
   const tabId = scope.tabId;
   const setTab = useCallback(
-    (update: Tab | ((tab: Tab) => Tab)) => tabId !== null && updateTab(tabId, update),
-    [tabId, updateTab],
+    (update: Tab | ((tab: Tab) => Tab)) => tabId !== null && updateTabById(setTabs, tabId, update),
+    [tabId, setTabs],
   );
   return [tabs.find((tab) => tab.value === tabId), setTab];
 }

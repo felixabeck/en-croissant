@@ -44,10 +44,13 @@ const mocks = vi.hoisted(() => {
 const currentTab = mocks.currentTab;
 
 vi.mock("@/platform/tauri", () => ({ tauri: { countPgnGames: mocks.countPgnGames } }));
-vi.mock("@/state/atoms", () => ({ tabsAtom: mocks.currentTabAtom, updateTabAtom: {} }));
+vi.mock("@/state/atoms", () => ({
+  tabsAtom: mocks.currentTabAtom,
+  updateTabById: (_setTabs: unknown, _id: string, update: unknown) => mocks.setCurrentTab(update),
+}));
 vi.mock("jotai", () => ({
   useAtomValue: () => (mocks.activeTab ? [mocks.activeTab] : []),
-  useSetAtom: () => (_id: string, update: unknown) => mocks.setCurrentTab(update),
+  useSetAtom: () => vi.fn(),
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => {

@@ -15,6 +15,7 @@ import {
   reportModalOpenFamily,
   practiceStateFamily,
   tabsAtom,
+  updateTabById,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
@@ -33,7 +34,6 @@ import {
   replaceFileGame,
   serializeStoreTree,
   saveToFile,
-  updateTabById,
 } from "@/utils/tabs";
 import { useHotkeys } from "@mantine/hooks";
 import { MantineProvider } from "@mantine/core";

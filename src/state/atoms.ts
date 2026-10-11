@@ -179,28 +179,30 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     return true;
 });
 
-export const updateTabAtom = atom(
-    null,
-    (get, set, tabId: string, newValue: Tab | ((currentTab: Tab) => Tab)) => {
-        const tabs = get(tabsAtom);
-        const currentTab = tabs.find((tab) => tab.value === tabId);
-        if (!currentTab) return false;
-        const nextValue = typeof newValue === "function" ? newValue(currentTab) : newValue;
-        const newTabs = tabs.map((tab) => {
-            if (tab.value === tabId) {
-                return nextValue;
-            }
-            return tab;
-        });
-        return set(tabsAtom, newTabs);
-    },
-);
+export function updateTabById(
+    setTabs: (update: Tab[] | ((tabs: Tab[]) => Tab[])) => boolean,
+    tabId: string,
+    update: SetStateAction<Tab>,
+) {
+    let found = false;
+    const committed = setTabs((tabs) =>
+        tabs.map((tab) => {
+            if (tab.value !== tabId) return tab;
+            found = true;
+            return typeof update === "function" ? update(tab) : update;
+        }),
+    );
+    return committed && found;
+}
 
 export const currentTabAtom = atom(
     (get) => get(tabsAtom).find((tab) => tab.value === get(activeTabAtom)),
     (get, set, newValue: Tab | ((currentTab: Tab) => Tab)) => {
         const activeTab = get(activeTabAtom);
-        return activeTab !== null && set(updateTabAtom, activeTab, newValue);
+        return (
+            activeTab !== null &&
+            updateTabById((update) => set(tabsAtom, update), activeTab, newValue)
+        );
     },
 );
 
@@ -844,8 +846,10 @@ export const engineNoLinesFamily = atomFamily(
     (a, b) => a.tab === b.tab && a.engine === b.engine,
 );
 
-// returns the best moves of each engine for the current position
-export const bestMovesAtom = (tab: string, fen: string, gameMoves: string[]) =>
+const BEST_MOVE_ARROW_MAX_WIN_CHANCE_LOSS = 10; // win-chance percentage points
+
+/** Returns each engine's best moves for the current position. Callers must memoize the result. */
+export const createBestMovesAtom = (tab: string, fen: string, gameMoves: string[]) =>
     atom<Map<number, { pv: string[]; winChance: number }[]>>((get) => {
         const engines = get(enginesAtom);
         if (!engines) return new Map();
@@ -865,7 +869,7 @@ export const bestMovesAtom = (tab: string, fen: string, gameMoves: string[]) =>
                         const winChance = getWinChance(
                             normalizeScore(m.score.value, searchingTurn || "white"),
                         );
-                        if (bestWinChange - winChance < 10) {
+                        if (bestWinChange - winChance < BEST_MOVE_ARROW_MAX_WIN_CHANCE_LOSS) {
                             acc.push({ pv: m.uciMoves, winChance });
                         }
                         return acc;
@@ -877,7 +881,8 @@ export const bestMovesAtom = (tab: string, fen: string, gameMoves: string[]) =>
         return bestMoves;
     });
 
-export const firstEngineWithLinesAtom = (tab: string, fen: string, gameMoves: string[]) =>
+/** Returns the first engine with lines for this position. Callers must memoize the result. */
+export const createFirstEngineWithLinesAtom = (tab: string, fen: string, gameMoves: string[]) =>
     atom<string | null>((get) => {
         const engines = get(enginesAtom);
         if (!engines) return null;

@@ -1,4 +1,5 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
+import domtoimage from "dom-to-image";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
@@ -12,6 +13,7 @@ import BoardControls from "./BoardControls";
 const mocks = vi.hoisted(() => ({
   persistError: vi.fn(),
   saveBoardSnapshot: vi.fn(),
+  notifyUnlessCancelled: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -44,6 +46,7 @@ vi.mock("@/components/common/IconAction", () => ({
 
 vi.mock("@/components/files/notifyError", () => ({
   notifyListenerError: mocks.persistError,
+  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
 
 vi.mock("@/platform/native", () => ({
@@ -88,6 +91,8 @@ describe("BoardControls tab type durability", () => {
     localStorage.clear();
     mocks.persistError.mockReset();
     mocks.saveBoardSnapshot.mockReset();
+    mocks.notifyUnlessCancelled.mockReset();
+    vi.mocked(domtoimage.toBlob).mockReset();
 
     jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [tab], tabId);
@@ -127,6 +132,27 @@ describe("BoardControls tab type durability", () => {
         return originalSetItem.call(this, key, value);
       });
   }
+
+  test("surfaces snapshot save failures without an unhandled rejection", async () => {
+    const failure = new Error("snapshot save failed");
+    const snapshotTarget = document.createElement("div");
+    snapshotTarget.className = "cg-wrap";
+    container.append(snapshotTarget);
+    vi.mocked(domtoimage.toBlob).mockResolvedValue({
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    } as Blob);
+    mocks.saveBoardSnapshot.mockRejectedValue(failure);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Board.Action.TakeSnapshot"]')!
+        .click();
+    });
+
+    expect(domtoimage.toBlob).toHaveBeenCalledWith(snapshotTarget);
+    expect(mocks.saveBoardSnapshot).toHaveBeenCalledWith([1, 2, 3]);
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+  });
 
   test("starts a game only after the analysis-to-play change is durable", async () => {
     const durableWorkspace = sessionStorage.getItem("workspace");

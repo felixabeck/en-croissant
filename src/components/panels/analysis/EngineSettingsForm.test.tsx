@@ -48,7 +48,7 @@ vi.mock("@/state/atoms", () => ({
   enginesAtom: mocks.enginesAtom,
 }));
 vi.mock("jotai", () => ({
-  useAtomValue: (atom: symbol) => (atom === mocks.activeTabAtom ? "tab-1" : engines),
+  useAtomValue: (atom: symbol) => (atom === mocks.activeTabAtom ? "tab-B" : engines),
 }));
 vi.mock("@mantine/core", () => ({
   Checkbox: ({ label, checked, onChange }: any) => (
@@ -111,7 +111,7 @@ afterEach(async () => {
 async function render(setSettings = vi.fn()) {
   await act(async () => {
     root.render(
-      <WorkspaceTabScope tabId="tab-1">
+      <WorkspaceTabScope tabId="tab-A">
         <EngineSettingsForm
           engine={engines[1]}
           settings={settings}
@@ -154,7 +154,7 @@ test("a rejected kill leaves enabled state unchanged and notifies", async () => 
 
   expect(mocks.killEngine).toHaveBeenCalledWith(
     expect.objectContaining({ id: "engine-2" }),
-    "tab-1",
+    "tab-A",
   );
   expect(setSettings).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);

@@ -26,7 +26,7 @@ import {
   engineNoLinesFamily,
   engineProgressFamily,
   enginesAtom,
-  firstEngineWithLinesAtom,
+  createFirstEngineWithLinesAtom,
   tabEngineSettingsFamily,
   tabsAtom,
 } from "@/state/atoms";
@@ -113,7 +113,7 @@ function EvalListener() {
 
   const tabId = useOwnerTabId();
   const firstEngineWithLines = useAtomValue(
-    useMemo(() => firstEngineWithLinesAtom(tabId, fen, moves), [tabId, fen, moves]),
+    useMemo(() => createFirstEngineWithLinesAtom(tabId, fen, moves), [tabId, fen, moves]),
   );
 
   return (engines ?? [])

@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import IconAction from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { autoSaveAtom, gameStateFamily, eraseDrawablesOnClickAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 
@@ -81,12 +82,15 @@ function BoardControls({
     const snapshotTarget = document.querySelector(".cg-wrap") as HTMLElement | null;
     if (!snapshotTarget) return;
 
-    domtoimage.toBlob(snapshotTarget).then(async (blob) => {
+    try {
+      const blob = await domtoimage.toBlob(snapshotTarget);
       if (blob == null) return;
 
       const arrayBuffer = await blob.arrayBuffer();
       await tauri.saveBoardSnapshot(Array.from(new Uint8Array(arrayBuffer)));
-    });
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
+    }
   };
 
   return (

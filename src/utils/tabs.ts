@@ -19,6 +19,7 @@ import {
     initializeWorkspace,
     reclaimTabLocalState,
     tabsAtom,
+    updateTabById,
 } from "@/state/atoms";
 import {
     closeTreeStore,
@@ -67,18 +68,6 @@ export const genID = newWorkspaceId;
 export type SetTabs = (update: Tab[] | ((tabs: Tab[]) => Tab[]), activeTab?: string) => boolean;
 export type SetCurrentTab = (update: React.SetStateAction<Tab>) => boolean;
 export type UpdateTab = (tabId: string, update: React.SetStateAction<Tab>) => boolean;
-
-export function updateTabById(setTabs: SetTabs, tabId: string, update: React.SetStateAction<Tab>) {
-    let found = false;
-    const committed = setTabs((tabs) =>
-        tabs.map((tab) => {
-            if (tab.value !== tabId) return tab;
-            found = true;
-            return typeof update === "function" ? update(tab) : update;
-        }),
-    );
-    return committed && found;
-}
 
 /** Live access stays inside the caller's workspace provider, including durable refusal. */
 export function useTabActions() {

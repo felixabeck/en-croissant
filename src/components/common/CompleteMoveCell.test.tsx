@@ -10,7 +10,7 @@ import { createNotationNodeIndex } from "./notationRows";
 
 const { currentTabAtom } = vi.hoisted(() => ({ currentTabAtom: Symbol("current-tab") }));
 
-vi.mock("@/state/atoms", () => ({ tabsAtom: currentTabAtom, updateTabAtom: {} }));
+vi.mock("@/state/atoms", () => ({ tabsAtom: currentTabAtom, updateTabById: vi.fn() }));
 vi.mock("jotai", () => ({
   useAtomValue: () => [{ value: "tab" }],
   useSetAtom: () => vi.fn(),

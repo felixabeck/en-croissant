@@ -63,7 +63,7 @@ vi.mock("@/state/atoms", () => ({
   practiceTabFamily: () => fixtures.atoms.currentPracticeTab,
   showCommentsFamily: () => fixtures.atoms.currentShowComments,
   tabsAtom: fixtures.atoms.currentTab,
-  updateTabAtom: Symbol("update-tab"),
+  updateTabById: vi.fn(),
   deckAtomFamily: () => fixtures.atoms.deck,
   practiceAutoDifficultyAtom: fixtures.atoms.practiceAutoDifficulty,
   practiceCardStartTimeFamily: () => fixtures.atoms.practiceCardStartTime,

@@ -91,7 +91,7 @@ vi.mock("@/state/atoms", async () => {
         atom<string | null>(null),
       (a, b) => a.tab === b.tab && a.engine === b.engine,
     ),
-    firstEngineWithLinesAtom: () => atom(() => fixtures.scoreOwner),
+    createFirstEngineWithLinesAtom: () => atom(() => fixtures.scoreOwner),
     tabEngineSettingsFamily: atomFamily(
       ({ defaultSettings, defaultGo }: { defaultSettings?: any[]; defaultGo?: any }) =>
         atom({

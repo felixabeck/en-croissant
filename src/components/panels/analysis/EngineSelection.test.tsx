@@ -29,7 +29,7 @@ vi.mock("@/state/atoms", () => ({
 vi.mock("jotai", async (importOriginal) => {
   return {
     ...(await importOriginal<typeof import("jotai")>()),
-    useAtomValue: (atom: symbol) => (atom === mocks.activeTabAtom ? "tab-1" : undefined),
+    useAtomValue: (atom: symbol) => (atom === mocks.activeTabAtom ? "tab-B" : undefined),
     useAtom: () => [
       [
         {
@@ -87,7 +87,7 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
 
   await act(async () =>
     root.render(
-      <WorkspaceTabScope tabId="tab-1">
+      <WorkspaceTabScope tabId="tab-A">
         <EngineSelection />
       </WorkspaceTabScope>,
     ),
@@ -99,7 +99,7 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
 
   expect(mocks.stopEngine).toHaveBeenCalledWith(
     expect.objectContaining({ id: "engine-1" }),
-    "tab-1",
+    "tab-A",
   );
   expect(mocks.setEngines).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
@@ -110,7 +110,7 @@ test("a successful stop flips loaded state", async () => {
 
   await act(async () =>
     root.render(
-      <WorkspaceTabScope tabId="tab-1">
+      <WorkspaceTabScope tabId="tab-A">
         <EngineSelection />
       </WorkspaceTabScope>,
     ),
