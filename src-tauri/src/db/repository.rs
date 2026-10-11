@@ -1035,6 +1035,10 @@ impl DatabaseRepository {
         Ok(DatabaseSchemaIdentity::from_probe(&probe))
     }
 
+    /// Waits for every retired predecessor sharing object or parent identity, with cancellation
+    /// and one absolute deadline of now + retire_wait. The guard blocks matching retirement
+    /// publication through retirement_reserved. Hold it across SQLite establishment, then drop
+    /// it before long work, as content scans do before validate_content.
     pub(super) fn predecessor_admission_for(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -2026,6 +2030,7 @@ pub(crate) enum TestHook {
     RetirementReservedWait,
     ScanBeforeAdmission,
     ScanAfterEstablish,
+    ScanValidationCheckpoint,
     PoolBeyondRetireDeadline,
     #[cfg(unix)]
     AfterBumpOp,
@@ -2064,6 +2069,7 @@ pub(crate) struct TestHooks {
     retirement_reserved_wait: Option<Box<dyn FnMut() + Send>>,
     scan_before_admission: Option<Box<dyn FnMut() + Send>>,
     scan_after_establish: Option<Box<dyn FnMut() + Send>>,
+    scan_validation_checkpoint: Option<Box<dyn FnMut() + Send>>,
     pool_beyond_retire_deadline: Option<Box<dyn FnMut() + Send>>,
     #[cfg(unix)]
     pub(crate) after_bump_op: Option<Box<dyn FnMut() + Send>>,
@@ -2179,6 +2185,7 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::RetirementReservedWait
         | TestHook::ScanBeforeAdmission
         | TestHook::ScanAfterEstablish
+        | TestHook::ScanValidationCheckpoint
         | TestHook::PoolBeyondRetireDeadline => run_noarg_test_hook(hook, path),
         #[cfg(unix)]
         TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
@@ -2225,6 +2232,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
             TestHook::RetirementReservedWait => hooks.retirement_reserved_wait.take(),
             TestHook::ScanBeforeAdmission => hooks.scan_before_admission.take(),
             TestHook::ScanAfterEstablish => hooks.scan_after_establish.take(),
+            TestHook::ScanValidationCheckpoint => hooks.scan_validation_checkpoint.take(),
             TestHook::PoolBeyondRetireDeadline => hooks.pool_beyond_retire_deadline.take(),
             #[cfg(unix)]
             TestHook::AfterBumpOp => hooks.after_bump_op.take(),
@@ -2261,6 +2269,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 | TestHook::RetirementReservedWait
                 | TestHook::ScanBeforeAdmission
                 | TestHook::ScanAfterEstablish
+                | TestHook::ScanValidationCheckpoint
                 | TestHook::PoolBeyondRetireDeadline => {}
                 TestHook::PredecessorWait => hooks.predecessor_wait = Some(callback_fn),
                 #[cfg(unix)]
@@ -3084,6 +3093,134 @@ mod retirement_tests {
             drop(held);
             reached(&established);
             let outcome = result.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            outcome.result.unwrap();
+            assert!(outcome.event.is_none());
+        });
+    }
+
+    #[test]
+    fn scan_admission_blocks_retirement_only_through_establishment() {
+        let root = tempfile::tempdir().unwrap();
+        let scan = path_in(root.path(), "scan", "scan.db3");
+        let repository = DatabaseRepository::default();
+        let (key, gate, mut held) = held_handle(&repository, &scan);
+        held.batch_execute(
+            "PRAGMA journal_mode=DELETE;
+             CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);
+             INSERT INTO Info VALUES ('DataRevision', '0');",
+        )
+        .unwrap();
+        drop(held);
+        let target = test_target(&scan);
+        let identity = repository.database_identity(&target).unwrap();
+        for index in 1..MAX_OPEN_DATABASES {
+            let path = path_in(root.path(), "fill", &format!("{index}.db3"));
+            drop(repository.entry(&test_target(&path), None).unwrap());
+        }
+        let (established, establish_signal) = signal();
+        let (establish_resume, establish_resumed) = signal();
+        let (validating, validation_signal) = signal();
+        let (validation_resume, validation_resumed) = signal();
+        let (boundary, boundaries) = mpsc::channel();
+        let first_reserved = boundary.clone();
+        let second_reserved = boundary.clone();
+        let (retirement_resume, retirement_resumed) = signal();
+        let _hooks = configure_test_hooks(&scan, |hooks| {
+            hooks.scan_after_establish = Some(pause(established, establish_resumed));
+            hooks.scan_validation_checkpoint = Some(pause(validating, validation_resumed));
+            hooks.by_path.insert(
+                (
+                    TestHook::RetirementReservedWait,
+                    normalize_test_hook_path(&scan),
+                ),
+                Box::new(move || {
+                    first_reserved.send(false).unwrap();
+                    reached(&retirement_resumed);
+                }),
+            );
+            hooks.retirement_reserved_wait =
+                Some(Box::new(move || second_reserved.send(false).unwrap()));
+            hooks.retirement_published = Some(Box::new(move || boundary.send(true).unwrap()));
+        });
+        let (scan_done, scan_result) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let repository = &repository;
+            let target = &target;
+            let identity = &identity;
+            scope.spawn(move || {
+                scan_done
+                    .send(super::super::content_validation::scan_worker(
+                        repository,
+                        target,
+                        identity,
+                        &CancellationToken::new(),
+                    ))
+                    .unwrap();
+            });
+            reached(&establish_signal);
+            let first_target = test_target(&path_in(root.path(), "churn", "first.db3"));
+            let first_cancellation = CancellationToken::new();
+            let cancellation = first_cancellation.clone();
+            let (first_done, first_result) = mpsc::channel();
+            scope.spawn(move || {
+                first_done
+                    .send(
+                        repository
+                            .entry(&first_target, Some(&cancellation))
+                            .map(|_| ()),
+                    )
+                    .unwrap();
+            });
+            let published_during_establishment = boundaries.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            if !published_during_establishment {
+                assert!(!gate.snapshot().closed);
+                let state = repository.state.lock().unwrap();
+                assert!(state.entries.contains_key(&key));
+                assert!(state.retired.is_empty());
+                assert!(first_result.try_recv().is_err());
+            }
+            // Cancel the blocked attempt so validation gets a fresh publication attempt.
+            first_cancellation.cancel();
+            let _ = retirement_resume.send(());
+            let first_outcome = first_result.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            if published_during_establishment {
+                establish_resume.send(()).unwrap();
+                validation_resume.send(()).unwrap();
+                panic!("matching retirement published while scan establishment admission was held");
+            }
+            assert!(matches!(first_outcome, Err(Error::Cancellation)));
+            establish_resume.send(()).unwrap();
+            reached(&validation_signal);
+
+            let second_target = test_target(&path_in(root.path(), "churn", "second.db3"));
+            let second_cancellation = CancellationToken::new();
+            let cancellation = second_cancellation.clone();
+            let (second_done, second_result) = mpsc::channel();
+            scope.spawn(move || {
+                second_done
+                    .send(
+                        repository
+                            .entry(&second_target, Some(&cancellation))
+                            .map(|_| ()),
+                    )
+                    .unwrap();
+            });
+            let published_during_validation = boundaries.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            if published_during_validation {
+                assert!(gate.snapshot().closed);
+                assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
+                assert!(scan_result.try_recv().is_err());
+            } else {
+                second_cancellation.cancel();
+            }
+            let second_outcome = second_result.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            validation_resume.send(()).unwrap();
+            let outcome = scan_result.recv_timeout(SIGNAL_TIMEOUT).unwrap();
+            assert!(
+                published_during_validation,
+                "matching retirement still waited on scan admission during content validation"
+            );
+            second_outcome.unwrap();
             outcome.result.unwrap();
             assert!(outcome.event.is_none());
         });

@@ -656,6 +656,7 @@ pub(super) static TEST_CHECKPOINT: Lazy<Mutex<Option<TestCheckpoint>>> =
     Lazy::new(|| Mutex::new(None));
 #[cfg(test)]
 fn test_checkpoint(path: &Path, token: &CancellationToken) {
+    super::repository::run_test_hook(super::repository::TestHook::ScanValidationCheckpoint, path);
     let hook = TEST_CHECKPOINT.lock().clone();
     if let Some(hook) = hook {
         hook(path, token);
