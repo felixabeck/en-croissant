@@ -7004,3 +7004,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d731b0e72e8900b29755df30af20963ab08e22a95f81c9c8636e6b73af32d569","input_sha256":"364481099acab17c0a8c9f99077a51c4ab1997eb842fa4ea82d385f26420e620","kind":"mutation-receipt","operation":"158453e34bd3e2a8637367cc410e238b00243095fdf04d08ffabcb705f231f97","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-04 — Retire the mutation fence and push preflight once mutation is isolated?
+
+* **Question:** Once backend mutation runs in a private snapshot, do the durable fence, dirty-backend refusal and `--check-guard` preflight (d-20260830-10) stay?
+* **Governs:** f-20260929-12
+* **Chosen:** retain them unchanged, including dirty-backend refusal and no override.
+* **Rejected:** retiring them in the same change.
+* **Reason:** legacy interrupted live mutations and unknown descendant cleanup still need the established safety boundary. Reversal path: a later evidenced decision after isolation and recovery have shipped, preserving legacy marker refusal.
+* **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"faa9988efc6c3112751fb91e8410856344cddfa4afd3a1e2aa3581868e1b4916","input_sha256":"d9405ee70cc7bae3ebe252dd79ffa84d0d3671443773fdcf6dbe70b8779e11fe","kind":"mutation-receipt","operation":"13ef410c09774428e70c08864573b67fc57e1e870984ededabb0a71545246f49","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-04"],"target":"decisions-ledger","v":1} -->
