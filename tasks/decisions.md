@@ -7092,3 +7092,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"de4ce47684a6fb3cef0c5c41a16792f835a6b0fe7c10e9098da593936c4dcd99","input_sha256":"ca1e0024c6702487a66b4ba71ccd3f10cf9e06d6bfa25345c8814729bf0041b7","kind":"mutation-receipt","operation":"7f8fe387a3463623331fcfde242b322c81270759ba934d07d128c089790c72c1","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-12 — Which runtime executes the real-app verifier for the LRU retirement change?
+
+* **Question:** Which Node runtime runs scripts/verify-app.mjs now that it imports the production TypeScript codec directly?
+* **Governs:** f-20260930-01
+* **Chosen:** preserve d-20261009-14's Node 24 native-codec route and validate its runtime and codec round-trip prerequisites before the full real-app proof.
+* **Rejected:** treating the package's Node 20 minimum as verifier compatibility evidence, adding another serializer, or changing the project's engine range within this task.
+* **Reason:** the required integration proof must actually start with the changed import, and the current runtime supports that route. Reversal path: a separately reviewed verifier-runtime compatibility change that preserves the canonical codec and the same real-app proof.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7e44399c3ebda5621b9a57714f6120c97329bf31334bc08b0b0526ab4131dbe9","input_sha256":"7a233e84eec5b7f428c7b54913dda763c65d3b128f81f31a9d2946351ab81551","kind":"mutation-receipt","operation":"6d383c73545b4f65a30c16c4929d5508946504d19680cb16c019c5b74683dd7e","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-12"],"target":"decisions-ledger","v":1} -->
