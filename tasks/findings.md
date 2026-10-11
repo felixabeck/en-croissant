@@ -15286,6 +15286,8 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof required:** a PracticePanel/tree test that plays a wrong move on a card and asserts the board reaches the answer node after the delay (red now), plus the existing practice tests unchanged.
 * **Related:** found during the `$push` review of f-20261011-09 (which touched PracticePanel only to rebind its atoms).
 * **Found by:** Claude Code orchestrator, `$push` review of f-20261011-09, 2026-10-11.
+* **Likely origin (2026-10-11):** `a5c93d9f` (f-20260922-04's tree-path-rebasing build) made `goToNext` "advance only along an active drill path" (`src/state/store/tree.ts:308-313`). The incorrect-answer reveal at `PracticePanel.tsx:518` predates or ignored that guard, so the fix must reconcile the reveal with d-20260923-04/-05/-06 rather than revert the guard. Check those decisions first.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b3cfbee3d978c7525f6b282ebf9cb6cb85df8267db2543fc8fdda84ea4568b61","input_sha256":"9777155253d18efff4da41489311e47067650ad9908e3650fc194b07cca43c8b","kind":"mutation-receipt","operation":"6219a18847409b0056885f424a42f2a3abfc5d6f105f0c7c44e883610cc8918a","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-10"],"target":"f-20261011-10","v":1} -->
 
 ---
 
