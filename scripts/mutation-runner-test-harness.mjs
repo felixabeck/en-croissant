@@ -37,9 +37,22 @@ export function startNodeCli(
   script,
   root,
   env,
-  { stdio = ["ignore", "pipe", "pipe"], args = [], nodeArgs = [], afterChildExit = undefined } = {},
+  {
+    stdio = ["ignore", "pipe", "pipe"],
+    args = [],
+    nodeArgs = [],
+    afterChildExit = undefined,
+    containmentScript = undefined,
+    terminalPath = undefined,
+  } = {},
 ) {
-  const child = spawn(process.execPath, [...nodeArgs, script, ...args], {
+  // Backend crash fixtures need an outer subreaper too: a killed owner cannot reap
+  // its escaped descendants. This test-owned boundary cleans them on every exit.
+  const command = containmentScript ? "python3" : process.execPath;
+  const commandArgs = containmentScript
+    ? [containmentScript, terminalPath, "--", process.execPath, ...nodeArgs, script, ...args]
+    : [...nodeArgs, script, ...args];
+  const child = spawn(command, commandArgs, {
     cwd: root,
     env,
     stdio,
@@ -62,7 +75,9 @@ export function startNodeCli(
       child.kill("SIGTERM");
       const settled = await Promise.race([
         done.then(() => true),
-        new Promise((resolve) => setTimeout(() => resolve(false), 5_000).unref()),
+        new Promise((resolve) =>
+          setTimeout(() => resolve(false), containmentScript ? 10_000 : 5_000).unref(),
+        ),
       ]);
       if (!settled) {
         try {

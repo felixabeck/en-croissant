@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -32,6 +42,7 @@ async function installContainmentTools(bin) {
   if (process.platform !== "linux") return;
   await symlink(commandPath("rustc"), join(bin, "rustc"));
   await symlink(commandPath("prlimit"), join(bin, "prlimit"));
+  await symlink(commandPath("python3"), join(bin, "python3"));
 }
 
 function nativeRustHost(runCommand = spawnSync) {
@@ -71,18 +82,28 @@ async function fixture() {
   await mkdir(join(root, "src-tauri", "src"), { recursive: true });
   await mkdir(bin);
   await mkdir(state);
+  await mkdir(join(root, "dist"));
+  await writeFile(join(root, "dist", "index.html"), "<html>fixture</html>");
   await writeFile(join(root, "src-tauri", "Cargo.toml"), '[package]\nname = "fixture"\n');
   await writeFile(join(root, "src-tauri", "src", "sample.rs"), "pub fn sample() {}\n");
   await writeShim(
     join(bin, "cargo"),
     `#!/bin/sh
 echo $$ > "$SHIM_STATE/pid"
+printf '%s' "$PWD" > "$SHIM_STATE/cwd"
+printf '%s' "$CARGO_TARGET_DIR" > "$SHIM_STATE/target"
 : > "$SHIM_STATE/started"
 printf '%s\n' "$@" > "$SHIM_STATE/arguments"
 printf '%s' "\${CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE-}" > "$SHIM_STATE/core-suppression"
-if [ -e mutants.out/backend/.mutation-in-progress ]; then
+if [ -e "$LIVE_ROOT/mutants.out/backend/.mutation-in-progress" ]; then
   : > "$SHIM_STATE/fence-present-at-spawn"
 fi
+output=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--output" ]; then output="$argument"; fi
+  previous="$argument"
+done
 case "$SHIM_MODE" in
   block)
     trap ': > "$SHIM_STATE/terminated"; exit 0' TERM INT
@@ -93,7 +114,7 @@ case "$SHIM_MODE" in
     while :; do /bin/sleep 0.05; done
     ;;
   marker)
-    printf '\n/* ~ changed by cargo-mutants ~ */\n' >> src-tauri/src/sample.rs
+    printf '\n/* ~ changed by cargo-mutants ~ */\n' >> "$LIVE_ROOT/src-tauri/src/sample.rs"
     ;;
   edit)
     printf '\n// unrelated concurrent edit\n' >> src-tauri/src/sample.rs
@@ -106,13 +127,13 @@ case "$SHIM_MODE" in
     exit 4
     ;;
   timeout)
-    mkdir -p mutants.out/backend/database-encoding/mutants.out
-    : > mutants.out/backend/database-encoding/mutants.out/missed.txt
+    mkdir -p "$output/mutants.out"
+    : > "$output/mutants.out/missed.txt"
     exit 3
     ;;
   survivor)
-    mkdir -p mutants.out/backend/database-encoding/mutants.out
-    echo survivor > mutants.out/backend/database-encoding/mutants.out/missed.txt
+    mkdir -p "$output/mutants.out"
+    echo survivor > "$output/mutants.out/missed.txt"
     exit 3
     ;;
 esac
@@ -138,21 +159,126 @@ function environment({ bin, state, mode = "normal", path = `${bin}:${process.env
     PATH: path,
     SHIM_MODE: mode,
     SHIM_STATE: state,
+    LIVE_ROOT: dirname(bin),
     BACKEND_MUTATION_PACKAGE: "database-encoding",
   };
 }
 
 const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
-const start = (t, root, env, options = {}) => startMutationRunner(t, runner, root, env, options);
+const containmentScript = join(projectRoot, "scripts", "mutation-process-containment.py");
+
+test("containment treats processes vanishing during proc reads and pidfd signals as gone", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-B",
+      "-c",
+      `import importlib.util, os, signal, sys
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("containment", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+pid = os.getpid() + 1000000
+for failure in (FileNotFoundError, ProcessLookupError):
+    # Reproduce an opened proc file whose process disappears before read().
+    class VanishedStat:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self): raise failure("process disappeared during read")
+    with patch("builtins.open", return_value=VanishedStat()), patch.object(module.os, "listdir", return_value=[str(pid)]):
+        assert module.identity(pid) is None
+        assert module.descendant(pid) is False
+        module.signal_descendants(signal.SIGTERM)
+        with patch.object(module.os, "pidfd_open", return_value=123), patch.object(module.os, "close"):
+            module.signal_owned(pid, "start", signal.SIGTERM)
+    with patch.object(module.os, "pidfd_open", side_effect=failure("process disappeared before pidfd_open")):
+        module.signal_owned(pid, "start", signal.SIGTERM)
+    with patch.object(module.os, "pidfd_open", return_value=123), patch.object(module.os, "close"), patch.object(module, "identity", return_value=(os.getpid(), "start")), patch.object(module.signal, "pidfd_send_signal", side_effect=failure("process disappeared before signal")):
+        module.signal_owned(pid, "start", signal.SIGTERM)
+with patch("builtins.open", side_effect=PermissionError("proc denied")):
+    try: module.identity(pid)
+    except PermissionError: pass
+    else: raise AssertionError("non-vanishing proc errors must propagate")
+print("proc read, ancestry scan and pidfd disappearance cases passed")
+`,
+      containmentScript,
+    ],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /proc read, ancestry scan and pidfd disappearance cases passed/u);
+});
+
+const start = (t, root, env, options = {}) =>
+  startMutationRunner(t, runner, root, env, {
+    containmentScript,
+    terminalPath: join(env.SHIM_STATE, "test-terminal.json"),
+    ...options,
+  });
+
+async function waitUntil(predicate, message, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(message);
+}
+
+function fields(record) {
+  return Object.fromEntries(
+    record
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const split = line.indexOf("=");
+        return [line.slice(0, split), line.slice(split + 1)];
+      }),
+  );
+}
+
+async function completedOwner(root) {
+  let owner;
+  await waitUntil(async () => {
+    try {
+      owner = fields(await readFile(join(root, fence), "utf8"));
+      return /^\d+$/u.test(owner.pid ?? "") && /^\d+$/u.test(owner.pidStartTime ?? "");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return false;
+    }
+  }, "parent did not publish its completed owner record");
+  return owner;
+}
+
+async function launcherWith(root, hooks) {
+  const launcher = join(root, "launcher.mjs");
+  await writeFile(
+    launcher,
+    `import { writeFileSync, readFileSync, existsSync, unlinkSync, chmodSync } from "node:fs";
+import { runBackendMutation } from ${JSON.stringify(pathToFileURL(runner).href)};
+process.exitCode = await runBackendMutation({ ${hooks} });\n`,
+  );
+  return launcher;
+}
+
+async function terminalEvidence(root) {
+  const output = join(root, "mutants.out", "backend", "database-encoding");
+  const names = (await readdir(output)).filter((name) => name === "terminal.json");
+  assert.equal(names.length, 1, "expected one invocation-owned terminal evidence file");
+  const path = join(output, names[0]);
+  return { path, record: JSON.parse(await readFile(path, "utf8")) };
+}
 
 test("a normal clean run holds the fence for the run and removes it afterwards", async (t) => {
   const { root, bin, state } = await fixture();
   const running = start(t, root, environment({ bin, state, mode: "block" }));
+  await completedOwner(root);
   await waitFor(join(state, "started"));
   await readFile(join(state, "fence-present-at-spawn"));
   assert.match(
     await readFile(join(root, fence), "utf8"),
-    /^started=.*\npid=\d+\npidStartTime=\d+\n$/,
+    /^started=.*\nrunnerPid=\d+\nrunnerStartTime=\d+\nsnapshot=.+\ncache=.+\npid=\d+\npidStartTime=\d+\n$/,
   );
   await writeFile(join(state, "release"), "");
   const result = await running.done;
@@ -321,12 +447,13 @@ test("encoding containment fails closed when host detection or prlimit setup fai
   }
 });
 
-test("a selected non-encoding package runs without containment tools", async () => {
+test("a selected non-encoding package runs without encoding containment tools", async () => {
   const { root, bin, state } = await fixture();
   const isolatedBin = join(root, "non-encoding-bin");
   await mkdir(isolatedBin);
   await symlink("/usr/bin/git", join(isolatedBin, "git"));
   await symlink(join(bin, "cargo"), join(isolatedBin, "cargo"));
+  await symlink(commandPath("python3"), join(isolatedBin, "python3"));
   const env = {
     ...environment({ bin, state, path: isolatedBin }),
     BACKEND_MUTATION_PACKAGE: "database-search",
@@ -379,14 +506,15 @@ test("an uncatchable mid-flight kill leaves the fence and makes the next run ref
   const env = environment({ bin, state, mode: "block" });
   const running = start(t, root, env, { stdio: "ignore" });
   await waitFor(join(state, "started"));
+  const owner = await completedOwner(root);
   const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
-  running.child.kill("SIGKILL");
+  process.kill(Number(owner.runnerPid), "SIGKILL");
+  process.kill(cargoPid, "SIGTERM");
   const killed = await running.done;
-  assert.equal(killed.signal, "SIGKILL");
+  assert.equal(killed.code, 137);
   const retry = run(root, env);
   assert.notEqual(retry.status, 0);
   assert.match(retry.stderr, /Backend mutation fence exists/);
-  process.kill(cargoPid, "SIGTERM");
   await waitFor(join(state, "terminated"));
 });
 
@@ -396,7 +524,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     const running = start(t, root, environment({ bin, state, mode: "ignore-term" }));
     await waitFor(join(state, "started"));
     const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
-    running.child.kill(signal);
+    const owner = await completedOwner(root);
+    process.kill(Number(owner.runnerPid), signal);
     const result = await running.done;
     assert.equal(result.code, signal === "SIGINT" ? 130 : 143, result.stderr);
     assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
@@ -442,8 +571,8 @@ test("cargo failing to spawn runs the finaliser and surfaces the underlying erro
   await symlink("/usr/bin/git", join(isolatedBin, "git"));
   await installContainmentTools(isolatedBin);
   const result = run(root, environment({ bin, state, path: isolatedBin }));
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /spawn cargo ENOENT/);
+  assert.equal(result.status, 127);
+  assert.match(result.stderr, /could not spawn cargo:.*No such file/s);
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 
@@ -474,27 +603,21 @@ process.exitCode = await runBackendMutation({
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 
-test("a fence read failure before spawn removes the unowned fence", async (t) => {
-  // Root ignores the file permission this arranges, so the read would succeed.
-  if (process.getuid?.() === 0) {
-    t.skip("root bypasses the file permission this test relies on");
-    return;
-  }
+test("a preparation hook failure removes the unspawned snapshot and fence", async () => {
   const { root, bin, state } = await fixture();
-  const env = environment({ bin, state });
-  // The directory is created up front with ordinary permissions, so the exclusive
-  // create and both fsyncs succeed; only the fence FILE lands write-only, which is
-  // what makes reading it back fail. Masking the directory instead would fail before
-  // any fence existed and the test would pass against a runner that never cleans up.
-  await mkdir(join(root, dirname(fence)), { recursive: true });
-  const result = spawnSync("/bin/sh", ["-c", 'umask 477; exec "$NODE" "$RUNNER"'], {
-    cwd: root,
-    env: { ...env, NODE: process.execPath, RUNNER: runner },
-    encoding: "utf8",
-  });
+  const launcher = await launcherWith(
+    root,
+    `afterSnapshotCopy({ snapshot }) {
+    writeFileSync(${JSON.stringify(join(state, "snapshot"))}, snapshot);
+    throw new Error("forced preparation failure");
+  }`,
+  );
+  const result = runMutationRunner(launcher, root, environment({ bin, state }));
   assert.equal(result.status, 1);
-  await assert.rejects(() => readFile(join(state, "started")));
-  assert.equal(run(root, env, ["--check-guard"]).status, 0);
+  assert.match(result.stderr, /forced preparation failure/u);
+  assert.equal(existsSync(join(state, "started")), false);
+  assert.equal(existsSync(join(root, fence)), false);
+  assert.equal(existsSync(await readFile(join(state, "snapshot"), "utf8")), false);
 });
 
 test("a fence setup failure after the exclusive create removes the unowned fence", async (t) => {
@@ -539,12 +662,12 @@ test("a pre-existing fence reports liveness and a per-file restore command", asy
   assert.equal(result.status, 1);
   assert.match(
     result.stderr,
-    new RegExp(`Recorded cargo pid: ${process.pid}; currently alive: yes`),
+    new RegExp(`Recorded cargo pid: ${process.pid}, currently alive: yes`),
   );
   assert.match(result.stderr, /git checkout -- 'src-tauri\/src\/sample\.rs'/);
   assert.ok(
     result.stderr.indexOf("1. Confirm") < result.stderr.indexOf("2. Restore") &&
-      result.stderr.indexOf("2. Restore") < result.stderr.indexOf("3. Remove"),
+      result.stderr.indexOf("2. Restore") < result.stderr.indexOf("3. Recorded"),
   );
   assert.doesNotMatch(result.stderr, /git checkout -- src-tauri(?:\s|$)/);
 });
@@ -560,7 +683,7 @@ test("--check-guard treats a reused live pid with the wrong start time as stale"
   assert.equal(result.status, 1);
   assert.match(
     result.stderr,
-    new RegExp(`Recorded cargo pid: ${process.pid}; currently alive: no`),
+    new RegExp(`Recorded cargo pid: ${process.pid}, currently alive: no`),
   );
 });
 
@@ -670,3 +793,521 @@ test("--check-guard passes without a fence and fails with the recovery text when
 });
 
 // The wiring pin lives in check-gate-routing-tests.mjs, "the live repository pins one shared contract-gate list".
+
+test("snapshot isolation keeps live source bytes and mtime unchanged during injected mutation", async (t) => {
+  const { root, bin, state } = await fixture();
+  const source = join(root, "src-tauri", "src", "sample.rs");
+  const original = await readFile(source);
+  const originalStat = await stat(source, { bigint: true });
+  await writeShim(
+    join(bin, "cargo"),
+    `#!/bin/sh
+printf '%s' "$PWD" > "$SHIM_STATE/cwd"
+printf '%s' "$CARGO_TARGET_DIR" > "$SHIM_STATE/target"
+printf '%s\\n' "$@" > "$SHIM_STATE/arguments"
+cp src-tauri/src/sample.rs "$SHIM_STATE/original"
+printf '\\n/* ~ changed by cargo-mutants ~ */\\n' >> src-tauri/src/sample.rs
+cp src-tauri/src/sample.rs "$SHIM_STATE/mutated"
+: > "$SHIM_STATE/edited"
+while [ ! -e "$SHIM_STATE/release" ]; do /bin/sleep 0.02; done
+cp "$SHIM_STATE/original" src-tauri/src/sample.rs
+`,
+  );
+  const running = start(t, root, {
+    ...environment({ bin, state }),
+    CARGO_TARGET_DIR: join(root, "src-tauri", "target"),
+  });
+  let sampling = true;
+  let samples = 0;
+  const reader = (async () => {
+    while (sampling) {
+      assert.deepEqual(
+        await readFile(source),
+        original,
+        "LIVE source bytes changed during snapshot mutation",
+      );
+      assert.equal(
+        (await stat(source, { bigint: true })).mtimeNs,
+        originalStat.mtimeNs,
+        "LIVE source mtime changed during snapshot mutation",
+      );
+      samples += 1;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  })();
+  // Observe rejection immediately, while retaining it for the assertion below.
+  reader.catch(() => {});
+  try {
+    await waitFor(join(state, "edited"));
+    await completedOwner(root);
+    assert.deepEqual(
+      await readFile(source),
+      original,
+      "LIVE source bytes changed during snapshot mutation",
+    );
+    assert.equal(
+      (await stat(source, { bigint: true })).mtimeNs,
+      originalStat.mtimeNs,
+      "LIVE source mtime changed during snapshot mutation",
+    );
+    assert.match(
+      await readFile(join(state, "mutated"), "utf8"),
+      /changed by cargo-mutants/u,
+      "mutant did not reach the copied source",
+    );
+    const cwd = await readFile(join(state, "cwd"), "utf8");
+    assert.notEqual(cwd, root, "Cargo cwd is the live checkout");
+    assert.equal(dirname(cwd), tmpdir(), "snapshot must be outside whole-tree gate scans");
+    assert.equal(
+      await readFile(join(state, "target"), "utf8"),
+      join(root, "mutants.out", "backend", "cargo-target"),
+    );
+    const args = (await readFile(join(state, "arguments"), "utf8")).trim().split("\n");
+    assert.equal(
+      args[args.indexOf("--output") + 1],
+      join(root, "mutants.out", "backend", "database-encoding"),
+      "mutation report path must be absolute in the live checkout",
+    );
+    assert.equal(args[args.indexOf("--manifest-path") + 1], join(cwd, "src-tauri", "Cargo.toml"));
+    assert.ok(samples > 0, "concurrent reader never sampled live input");
+    await writeFile(join(state, "release"), "");
+    const result = await running.done;
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(existsSync(cwd), false, "owned snapshot was not removed");
+    assert.equal(
+      existsSync(join(root, "mutants.out", "backend", "cargo-target")),
+      true,
+      "reusable mutation cache was removed",
+    );
+  } finally {
+    sampling = false;
+    await writeFile(join(state, "release"), "");
+    await reader;
+  }
+});
+
+test("snapshot preparation refuses missing dist, tracked symlinks and deterministic capture edits", async () => {
+  for (const failure of [
+    "missing-dist",
+    "missing-index",
+    "symlink",
+    "capture-edit",
+    "missing-tracked",
+  ]) {
+    const { root, bin, state } = await fixture();
+    let launcher = runner;
+    if (failure === "missing-dist") await rm(join(root, "dist"), { recursive: true });
+    if (failure === "missing-index") await rm(join(root, "dist", "index.html"));
+    if (failure === "symlink") {
+      await symlink("src-tauri/src/sample.rs", join(root, "linked.rs"));
+      git(root, ["add", "linked.rs"]);
+    }
+    if (failure === "missing-tracked") {
+      await writeFile(join(root, "sibling.txt"), "input");
+      git(root, ["add", "sibling.txt"]);
+      await rm(join(root, "sibling.txt"));
+    }
+    if (failure === "capture-edit") {
+      launcher = await launcherWith(
+        root,
+        `afterSnapshotCopy() {
+        writeFileSync("src-tauri/src/sample.rs", "changed during capture");
+      }`,
+      );
+    }
+    const result = runMutationRunner(launcher, root, environment({ bin, state }));
+    assert.equal(result.status, 1, `${failure}: ${result.stderr}`);
+    assert.match(
+      result.stderr,
+      failure.startsWith("missing-d") || failure === "missing-index"
+        ? /pnpm build-vite/u
+        : failure === "symlink"
+          ? /symlink/u
+          : failure === "missing-tracked"
+            ? /ENOENT.*sibling\.txt/su
+            : /source changed during capture/u,
+    );
+    assert.equal(
+      existsSync(join(state, "started")),
+      false,
+      `${failure}: Cargo spawned during refusal`,
+    );
+    assert.equal(existsSync(join(root, fence)), false, `${failure}: unspawned fence remained`);
+  }
+});
+
+test("owner publication exposes only whole parent records at deterministic initial and update barriers", async (t) => {
+  const { root, bin, state } = await fixture();
+  const launcher = await launcherWith(
+    root,
+    `beforeOwnerPublish({ exclusive }) {
+    const stage = exclusive ? "initial" : "update";
+    writeFileSync(${JSON.stringify(state)} + "/" + stage, "");
+    const deadline = Date.now() + 10000;
+    while (!existsSync(${JSON.stringify(state)} + "/" + stage + "-release")) {
+      if (Date.now() > deadline) throw new Error("publication barrier timed out");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }`,
+  );
+  const running = startMutationRunner(
+    t,
+    launcher,
+    root,
+    environment({ bin, state, mode: "block" }),
+    {
+      containmentScript,
+      terminalPath: join(state, "test-terminal.json"),
+    },
+  );
+  await waitFor(join(state, "initial"));
+  assert.equal(
+    existsSync(join(root, fence)),
+    false,
+    "initial fence appeared before whole record publication",
+  );
+  await writeFile(join(state, "initial-release"), "");
+  await waitFor(join(state, "update"));
+  const oldRecord = await readFile(join(root, fence), "utf8");
+  const old = fields(oldRecord);
+  assert.match(
+    oldRecord,
+    /^started=.+\nrunnerPid=\d+\nrunnerStartTime=\d+\nsnapshot=.+\ncache=.+\n$/u,
+    "record is empty or partial before update publish",
+  );
+  assert.equal(existsSync(old.snapshot), true);
+  for (let sample = 0; sample < 5; sample += 1) {
+    assert.equal(
+      await readFile(join(root, fence), "utf8"),
+      oldRecord,
+      "unpublished update changed the live record",
+    );
+  }
+  await writeFile(join(state, "update-release"), "");
+  const owner = await completedOwner(root);
+  assert.equal(owner.runnerPid, old.runnerPid);
+  assert.match(owner.pidStartTime, /^\d+$/u);
+  await waitFor(join(state, "started"));
+  await writeFile(join(state, "release"), "");
+  assert.equal((await running.done).code, 0);
+});
+
+async function escapedDescendantFixture(t) {
+  const fixtureState = await fixture();
+  const { bin, state } = fixtureState;
+  let cleanupError;
+  const cleanup = () => {
+    const result = spawnSync(
+      "python3",
+      [
+        "-B",
+        "-c",
+        `import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location("containment", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    with open(sys.argv[2] + "/descendant") as stream: pid = int(stream.read())
+    with open(sys.argv[2] + "/descendant-startTime") as stream: start = stream.read()
+except FileNotFoundError:
+    sys.exit(0)
+try: fd = os.pidfd_open(pid)
+except (FileNotFoundError, ProcessLookupError): sys.exit(0)
+try:
+    current = module.identity(pid)
+    if current is not None and current[1] == start:
+        try: signal.pidfd_send_signal(fd, signal.SIGKILL)
+        except (FileNotFoundError, ProcessLookupError): pass
+finally: os.close(fd)
+`,
+        containmentScript,
+        state,
+      ],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    if (result.status !== 0) cleanupError = new Error(result.stderr || String(result.error));
+  };
+  // Register before the harness teardown. Also clean on guardian exit, because
+  // an escaped process holding stdout can otherwise prevent the close event.
+  t.after(() => {
+    cleanup();
+    if (cleanupError) throw cleanupError;
+  });
+  fixtureState.protect = (running) => running.child.once("exit", cleanup);
+  await writeShim(
+    join(bin, "cargo"),
+    `#!${commandPath("python3")}
+import os, signal, subprocess, sys, time
+state = os.environ["SHIM_STATE"]
+descendant = """import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+with open("/proc/self/stat") as stream:
+    start = stream.read().rsplit(")", 1)[1].split()[19]
+with open(os.environ["SHIM_STATE"] + "/descendant-startTime", "w") as stream:
+    stream.write(start)
+with open(os.environ["SHIM_STATE"] + "/descendant", "w") as stream:
+    stream.write(str(os.getpid()))
+while True:
+    time.sleep(0.02)
+"""
+subprocess.Popen([sys.executable, "-c", descendant], start_new_session=True)
+deadline = time.monotonic() + 5
+while not os.path.exists(state + "/descendant"):
+    if time.monotonic() > deadline: sys.exit(99)
+    time.sleep(0.01)
+with open(state + "/pid", "w") as stream: stream.write(str(os.getpid()))
+with open(state + "/started", "w") as stream: stream.write("")
+while not os.path.exists(state + "/release"):
+    time.sleep(0.01)
+`,
+  );
+  return fixtureState;
+}
+
+for (const action of ["exit", "SIGTERM", "SIGINT"]) {
+  test(`containment reaps a SIGTERM-ignoring descendant in a new session before cleanup on ${action}`, async (t) => {
+    const { root, bin, state, protect } = await escapedDescendantFixture(t);
+    const launcher = await launcherWith(
+      root,
+      `async afterWrapperExit(terminal) {
+      writeFileSync(${JSON.stringify(join(state, "terminal-before-cleanup"))}, terminal.path);
+      const deadline = Date.now() + 10000;
+      while (!existsSync(${JSON.stringify(join(state, "inspect-release"))})) {
+        if (Date.now() > deadline) throw new Error("terminal barrier timed out");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }`,
+    );
+    const running = startMutationRunner(t, launcher, root, environment({ bin, state }), {
+      containmentScript,
+      terminalPath: join(state, "test-terminal.json"),
+    });
+    protect(running);
+    const owner = await completedOwner(root);
+    await waitFor(join(state, "started"));
+    const descendant = Number(await readFile(join(state, "descendant"), "utf8"));
+    assert.equal(isAlive(descendant), true);
+    if (action === "exit") await writeFile(join(state, "release"), "");
+    else process.kill(Number(owner.runnerPid), action);
+    await waitFor(join(state, "terminal-before-cleanup"), 10_000);
+    assert.equal(existsSync(`/proc/${descendant}`), false, "escaped descendant was not reaped");
+    assert.equal(
+      existsSync(join(root, fence)),
+      true,
+      "fence removed before terminal evidence inspection",
+    );
+    assert.equal(
+      existsSync(owner.snapshot),
+      true,
+      "snapshot removed before terminal evidence inspection",
+    );
+    const evidence = await terminalEvidence(root);
+    assert.equal(evidence.record["no-unwaited-children"], true);
+    assert.equal(evidence.record.pid, Number(owner.pid));
+    await writeFile(join(state, "inspect-release"), "");
+    const result = await running.done;
+    assert.equal(
+      result.code,
+      action === "exit" ? 0 : action === "SIGINT" ? 130 : 143,
+      result.stderr,
+    );
+    assert.equal(existsSync(owner.snapshot), false);
+    assert.equal(existsSync(join(root, fence)), false);
+  });
+}
+
+for (const failure of ["missing", "failed", "malformed-owner", "cleanup"]) {
+  test(`failed terminal/owner/cleanup state retains fence and snapshot: ${failure}`, async (t) => {
+    if (failure === "cleanup" && process.getuid?.() === 0) {
+      t.skip("root bypasses snapshot permissions");
+      return;
+    }
+    const { root, bin, state } = await fixture();
+    const launcher = await launcherWith(
+      root,
+      `afterWrapperExit(terminal) {
+      const record = readFileSync(${JSON.stringify(join(root, fence))}, "utf8");
+      writeFileSync(${JSON.stringify(join(state, "owner"))}, record);
+      ${
+        failure === "missing"
+          ? "unlinkSync(terminal.path);"
+          : failure === "failed"
+            ? 'writeFileSync(terminal.path, JSON.stringify({ "no-unwaited-children": false }));'
+            : failure === "malformed-owner"
+              ? `writeFileSync(${JSON.stringify(join(root, fence))}, "malformed");`
+              : "chmodSync(record.match(/^snapshot=(.+)$/m)[1], 0o500);"
+      }
+    }`,
+    );
+    const result = runMutationRunner(launcher, root, environment({ bin, state }));
+    assert.equal(result.status, 1, result.stderr);
+    const owner = fields(await readFile(join(state, "owner"), "utf8"));
+    assert.equal(existsSync(owner.snapshot), true, "unsafe cleanup removed snapshot");
+    assert.equal(existsSync(join(root, fence)), true, "unsafe cleanup removed fence");
+    assert.equal(
+      run(root, environment({ bin, state })).status,
+      1,
+      "second owner reused unsafe cache",
+    );
+    // Fixtures own these paths. No process remains after a normal wrapper terminal exit.
+    if (failure === "cleanup") await chmod(owner.snapshot, 0o700);
+    await rm(owner.snapshot, { recursive: true });
+  });
+}
+
+for (const killedOwner of ["runner", "containment"]) {
+  test(`SIGKILL of ${killedOwner} retains owned state and reports safe recovery`, async (t) => {
+    const { root, bin, state, protect } = await escapedDescendantFixture(t);
+    const original = await readFile(join(root, "src-tauri", "src", "sample.rs"));
+    const running = start(t, root, environment({ bin, state }));
+    protect(running);
+    const owner = await completedOwner(root);
+    await waitFor(join(state, "started"));
+    const descendant = Number(await readFile(join(state, "descendant"), "utf8"));
+    process.kill(Number(killedOwner === "runner" ? owner.runnerPid : owner.pid), "SIGKILL");
+    // The outer test subreaper owns survivors after either crash and reaps them.
+    if (killedOwner === "runner") await writeFile(join(state, "release"), "");
+    const result = await running.done;
+    assert.equal(result.code, killedOwner === "runner" ? 137 : 1, result.stderr);
+    assert.equal(
+      existsSync(`/proc/${descendant}`),
+      false,
+      "test boundary leaked an escaped descendant",
+    );
+    assert.deepEqual(await readFile(join(root, "src-tauri", "src", "sample.rs")), original);
+    assert.equal(existsSync(owner.snapshot), true);
+    assert.equal(existsSync(join(root, fence)), true);
+    const recovery = run(root, environment({ bin, state }), ["--check-guard"]);
+    assert.equal(recovery.status, 1);
+    assert.match(
+      recovery.stderr,
+      new RegExp(`Recorded containment-owner pid: ${owner.pid}, currently alive:`),
+    );
+    assert.ok(recovery.stderr.includes(`rm -rf -- '${owner.snapshot}'`), recovery.stderr);
+    assert.equal(run(root, environment({ bin, state })).status, 1);
+    await rm(owner.snapshot, { recursive: true });
+  });
+}
+
+test("Python unavailability and subreaper refusal fail before Cargo without a fence", async () => {
+  for (const failure of ["missing-python", "subreaper"]) {
+    const { root, bin, state } = await fixture();
+    const isolatedBin = join(root, "capability-bin");
+    await mkdir(isolatedBin);
+    for (const name of ["git", "rustc", "prlimit"]) {
+      await symlink(commandPath(name), join(isolatedBin, name));
+    }
+    await symlink(join(bin, "cargo"), join(isolatedBin, "cargo"));
+    if (failure !== "missing-python")
+      await symlink(commandPath("python3"), join(isolatedBin, "python3"));
+    const result = run(root, {
+      ...environment({ bin, state, path: isolatedBin }),
+      CHESSFABLE_MUTATION_TEST_PRCTL_FAIL: failure === "subreaper" ? "1" : "",
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /Python 3\/subreaper capability check/u);
+    assert.equal(existsSync(join(state, "started")), false);
+    assert.equal(existsSync(join(root, fence)), false);
+  }
+});
+
+test("malformed snapshot metadata never suggests arbitrary deletion", async () => {
+  const { root, bin, state } = await fixture();
+  await mkdir(join(root, dirname(fence)), { recursive: true });
+  for (const snapshot of [
+    root,
+    "/tmp/arbitrary",
+    "/tmp/chessfable-backend-mutation-../other",
+    "relative",
+    "",
+  ]) {
+    await writeFile(join(root, fence), `started=legacy\nsnapshot=${snapshot}\n`);
+    const result = run(root, environment({ bin, state }), ["--check-guard"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /unknown\/malformed/u);
+    assert.doesNotMatch(result.stderr, /rm -rf/u);
+  }
+});
+
+test("terminal publication failure after rename cannot authorize cleanup when Cargo also exits 125", async () => {
+  const { root, bin, state } = await fixture();
+  await writeShim(
+    join(bin, "cargo"),
+    `#!/bin/sh
+: > "$SHIM_STATE/started"
+exit 125
+`,
+  );
+  const result = run(root, {
+    ...environment({ bin, state }),
+    CHESSFABLE_MUTATION_TEST_EVIDENCE_FAIL: "1",
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(existsSync(join(state, "started")), true, "Cargo never reached the failure fixture");
+  assert.match(result.stderr, /injected terminal publication failure after rename/u);
+  assert.equal(existsSync(join(root, fence)), true, "failed publication released the cache fence");
+  const owner = fields(await readFile(join(root, fence), "utf8"));
+  assert.equal(existsSync(owner.snapshot), true, "failed publication removed the snapshot");
+  assert.equal(
+    existsSync(join(root, "mutants.out", "backend", "database-encoding", "terminal.json")),
+    false,
+    "a failed terminal publication retained positive evidence",
+  );
+  assert.equal(
+    run(root, environment({ bin, state })).status,
+    1,
+    "second runner reused an unsafe cache",
+  );
+  await rm(owner.snapshot, { recursive: true });
+});
+
+for (const alias of ["cache-symlink", "cache-parent-symlink", "target-aliases-cache-ancestor"]) {
+  test(`cache alias refusal preserves live target metadata before any Cargo spawn: ${alias}`, async () => {
+    const { root, bin, state } = await fixture();
+    await writeFile(join(root, ".gitignore"), "/src-tauri/target\n");
+    const target = join(root, "src-tauri", "target");
+    const output = join(root, "mutants.out", "backend");
+    if (alias === "cache-parent-symlink") {
+      await mkdir(target);
+      await symlink(target, join(root, "mutants.out"));
+    } else {
+      await mkdir(output, { recursive: true });
+    }
+    if (alias === "cache-symlink") {
+      await mkdir(target);
+      await symlink(target, join(output, "cargo-target"));
+    } else if (alias === "target-aliases-cache-ancestor") {
+      await symlink(output, target);
+    }
+    const before = await stat(target, { bigint: true });
+    const result = run(root, environment({ bin, state }));
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /Mutation cache.*(?:unsafe ancestor|aliases src-tauri\/target)/u);
+    assert.equal(
+      (await stat(target, { bigint: true })).mtimeNs,
+      before.mtimeNs,
+      "cache preparation modified the aliased live target",
+    );
+    assert.equal(existsSync(join(state, "started")), false, "Cargo spawned with an aliased cache");
+    assert.equal(existsSync(join(root, fence)), false, "cache refusal retained an unspawned fence");
+    if (alias !== "cache-symlink")
+      assert.equal(
+        existsSync(join(output, "cargo-target")),
+        false,
+        "cache preparation created a directory inside the live target alias",
+      );
+  });
+}
+
+test("a temporary directory inside the checkout is refused before snapshot creation", async () => {
+  const { root, bin, state } = await fixture();
+  const temporary = join(root, "temporary");
+  await mkdir(temporary);
+  const result = run(root, { ...environment({ bin, state }), TMPDIR: temporary });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /temporary directory outside the checkout/u);
+  assert.deepEqual(await readdir(temporary), [], "snapshot appeared inside whole-tree gate scans");
+  assert.equal(existsSync(join(state, "started")), false);
+  assert.equal(existsSync(join(root, fence)), false);
+});

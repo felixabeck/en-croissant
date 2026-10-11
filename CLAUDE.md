@@ -111,18 +111,27 @@ packages as a matrix over the runner's `BACKEND_MUTATION_PACKAGE` selector. A si
 backend run is slow enough to crowd GitHub's 6-hour per-job limit, so `test.yml` and local pushes
 never run `mutation:backend`.
 
-`pnpm mutation:backend` runs `cargo-mutants` with `--in-place`: it mutates the **real** working
-tree rather than a copy, to avoid duplicating the multi-gigabyte target directory. Nothing else may
-touch the tree while it runs — no other gate, no `git add`, no parallel session. That is now
-enforced rather than merely written down (`f-20260829-09`): the runner refuses to start on a dirty
-`src-tauri` or a failing `git`, holds an fsynced exclusive fence at
-`mutants.out/backend/.mutation-in-progress` for the whole run, and clears it only after proving no
-tracked file under `src-tauri` still carries a `~ changed by cargo-mutants ~` marker. An abort
-leaves the fence behind by construction, and the next run — or `pnpm mutation:guard:check`, which
-`$push` runs before any other gate — refuses and prints an ordered recovery: terminate any live
-mutator first, then restore **only** the marked files, then remove the fence. Never
-`git checkout -- src-tauri` wholesale; that destroys a concurrent editor's work along with the
-mutant.
+`pnpm mutation:backend` runs `cargo-mutants --in-place` inside a verified private
+snapshot under the system temporary directory, outside the checkout. It copies tracked
+working-tree inputs and the required built `dist/` as independent files, refuses symlinks
+or an inconsistent capture, and requires `pnpm build-vite` first. Cargo uses the reusable
+`mutants.out/backend/cargo-target` cache, never the live `src-tauri/target`. Reports stay at
+`mutants.out/backend/<package>/`. Mutation therefore cannot inject source or build output
+into a checkout being read by another gate.
+
+The runner still refuses a dirty `src-tauri` or failing Git, and holds an exclusive durable
+regular-file fence at `mutants.out/backend/.mutation-in-progress`. Whole atomic owner records
+name the runner, snapshot, cache and Linux Python 3 subreaper. Cleanup requires its terminal
+evidence proving all descendants have been reaped across groups/sessions, then checks the live
+tree for legacy cargo-mutants markers before removing the snapshot and fence. Missing evidence
+or an unsafe cleanup retains owned state. The cache remains for the next run.
+
+The next run or `pnpm mutation:guard:check`, which `$push` runs before any other gate, refuses
+an existing fence and prints ordered recovery: stop every relevant mutation descendant,
+restore **only** live files marked by a legacy interrupted in-place run, remove the recorded
+snapshot only when its path is valid, then remove the fence. Never
+`git checkout -- src-tauri` wholesale, which destroys a concurrent editor's work along with
+a legacy mutant.
 
 Mechanical classes already covered by a checker, so review effort belongs elsewhere:
 untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), direct

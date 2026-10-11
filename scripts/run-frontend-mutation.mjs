@@ -20,6 +20,7 @@ import {
 } from "./child-supervisor.mjs";
 import { gateBudgetBytes, strykerSlots } from "./gate-parallelism.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
+import { durableWrite } from "./durable-write.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { selectMutationPackages } from "./mutation-package-selection.mjs";
@@ -208,19 +209,12 @@ function writeOwner(runnerIdentity, children, spawning = undefined) {
   if (!runnerOwnsFence(runnerIdentity)) {
     throw new Error("Frontend mutation fence owner changed during the run");
   }
-  const temporaryPath = join(fencePath, `.owner.json.tmp-${process.pid}`);
   const record = {
     runner: runnerIdentity,
     children,
     ...(spawning ? { spawning } : {}),
   };
-  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  renameSync(temporaryPath, ownerPath);
-  fsyncDirectory(fencePath);
+  durableWrite(ownerPath, `${JSON.stringify(record, null, 2)}\n`);
 }
 
 function resolveStrykerEntry(cwd) {

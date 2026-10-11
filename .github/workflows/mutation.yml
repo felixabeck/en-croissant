@@ -83,7 +83,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: src-tauri -> ../mutants.out/backend/cargo-target
           key: mutation-${{ matrix.package }}
 
       - name: Install pinned Rust mutation tool

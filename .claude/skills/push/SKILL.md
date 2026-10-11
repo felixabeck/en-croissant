@@ -92,10 +92,12 @@ Run the contract gate on every push and every path, including Markdown and plann
 pnpm gates:contract:check
 ```
 
-The mutation guard is the chain's first member, so it refuses a checkout whose interrupted
-in-place mutation run still owns the backend tree before any other gate starts. In CI the guard is
-vacuous by construction because every job starts from a fresh checkout; locally it is the point
-(`f-20260829-09`).
+The mutation guard stays the chain's first member. It refuses an existing backend fence before
+any other gate starts, including retained private-snapshot runs and legacy interrupted live
+mutations. New backend mutation runs change only an external snapshot and a mutation-only cache,
+so a run starting after the guard cannot inject source or build output into the live checkout.
+Recovery still checks the live tree for legacy markers (`f-20260829-09`). In CI every job starts
+from a fresh checkout.
 
 ### Rust/Tauri backend
 
@@ -242,7 +244,7 @@ lives beside it rather than inside it for that reason.
 Changes to workflows also run every gate whose toolchain they can affect. Changes to `package.json`,
 `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` do the same.
 - `pnpm verify:app` is not a push gate: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
-- The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 2026-10-02 at 346.9 s as the last lane of an all-blocks `pnpm gates:push` inside the `agent-gate` scope, 21 runners per package, packages sequential, no observed OOM event or swap use; see `tasks/handoffs/2026-10-02-agent-gate-convergence-review.md`). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
+- The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 2026-10-02 at 346.9 s as the last lane of an all-blocks `pnpm gates:push` inside the `agent-gate` scope, 21 runners per package, packages sequential, no observed OOM event or swap use; see `tasks/handoffs/2026-10-02-agent-gate-convergence-review.md`). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** its eight-package schedule stays outside push gates. It runs `cargo-mutants --in-place` only in a verified external snapshot, uses `mutants.out/backend/cargo-target` instead of the live target, and requires Linux Python 3 descendant containment. The durable fence and first guard remain for incomplete cleanup and legacy interrupted live mutations (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.
 

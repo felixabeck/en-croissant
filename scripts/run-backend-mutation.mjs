@@ -1,33 +1,40 @@
-// Runs cargo-mutants over eight narrowly scoped packages.
-//
-// `--in-place` mutates the real working tree. The runner therefore refuses a dirty
-// backend, holds a durable fence while cargo-mutants owns the tree, and clears that
-// fence only after proving that no tracked backend file still carries its marker.
-// If a run is interrupted before it can finalise, rerun this command (or use
-// `--check-guard`) for an ordered, path-specific recovery procedure.
+// Runs cargo-mutants over eight packages in an independent snapshot outside the checkout.
+// The durable exclusive fence owns a mutation-only cache and records the Linux
+// subreaper. Cleanup requires positive descendant-terminal evidence before removing
+// the snapshot/fence. The live marker scan also protects interrupted legacy runs.
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
-  closeSync,
+  chmodSync,
+  copyFileSync,
   existsSync,
-  ftruncateSync,
-  fsyncSync,
+  lstatSync,
   mkdirSync,
-  openSync,
+  mkdtempSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
   unlinkSync,
-  writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve, relative, isAbsolute, sep, basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { durableWrite } from "./durable-write.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { selectMutationPackages } from "./mutation-package-selection.mjs";
-import { identityForPid, identityIsLive } from "./process-identity.mjs";
+import { currentIdentity, identityForPid, identityIsLive } from "./process-identity.mjs";
 import { parseRustHostMetadata } from "./rust-host.mjs";
 
+const snapshotPrefix = "chessfable-backend-mutation-";
+const containmentScript = fileURLToPath(
+  new URL("./mutation-process-containment.py", import.meta.url),
+);
 const fencePath = "mutants.out/backend/.mutation-in-progress";
 const mutationMarker = "~ changed by cargo-mutants ~";
-const terminationTimeoutMs = 2_000;
+const terminationTimeoutMs = 8_000;
 // Give each cargo-mutants test at least this many seconds before timing it out.
 const minimumTestTimeoutSeconds = 30;
 const encodingAddressSpaceLimit = "2147483648";
@@ -113,27 +120,40 @@ function shellQuote(path) {
   return `'${path.replaceAll("'", `'\\''`)}'`;
 }
 
-function recordedIdentity() {
-  try {
-    const record = readFileSync(fencePath, "utf8");
-    const pidMatch = record.match(/^pid=(\d+)$/m);
-    if (!pidMatch) return undefined;
-    const startTimeMatch = record.match(/^pidStartTime=(\S+)$/m);
-    return {
-      pid: Number(pidMatch[1]),
-      ...(startTimeMatch ? { startTime: startTimeMatch[1] } : {}),
-    };
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    return undefined;
-  }
+function recordedOwner() {
+  return readFileSync(fencePath, "utf8");
+}
+
+function recordField(record, name) {
+  return record
+    ?.split("\n")
+    .find((line) => line.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+}
+
+function recordedIdentity(record) {
+  const pid = Number(recordField(record, "pid"));
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  const startTime = recordField(record, "pidStartTime");
+  return { pid, ...(startTime ? { startTime } : {}) };
+}
+
+function validSnapshotPath(path) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) return false;
+  return (
+    dirname(path) === resolve(tmpdir()) &&
+    basename(path).startsWith(snapshotPrefix) &&
+    /^[a-zA-Z0-9]{6}$/u.test(basename(path).slice(snapshotPrefix.length))
+  );
 }
 
 function printRecovery() {
   let identity;
+  let record;
   let identityError;
   try {
-    identity = recordedIdentity();
+    record = recordedOwner();
+    identity = recordedIdentity(record);
   } catch (error) {
     identityError = error;
   }
@@ -148,19 +168,25 @@ function printRecovery() {
   console.error(`Backend mutation fence exists: ${fencePath}`);
   console.error("Recovery procedure:");
   console.error("1. Confirm no `cargo mutants` process is running, and terminate it if one is.");
+  console.error(
+    "   Inspect all mutation descendants, including other sessions. Owner death alone does not prove they have stopped.",
+  );
+  const identityLabel = recordField(record, "snapshot") ? "containment-owner" : "cargo";
   if (identity !== undefined) {
     try {
       console.error(
-        `   Recorded cargo pid: ${identity.pid}; currently alive: ${identityIsLive(identity) ? "yes" : "no"}.`,
+        `   Recorded ${identityLabel} pid: ${identity.pid}, currently alive: ${identityIsLive(identity) ? "yes" : "no"}.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
-        `   Recorded cargo pid: ${identity.pid}; currently alive: unknown (${message}).`,
+        `   Recorded ${identityLabel} pid: ${identity.pid}, currently alive: unknown (${message}).`,
       );
     }
   } else {
-    console.error("   No cargo child pid was recorded; inspect the process list by command name.");
+    console.error(
+      "   No containment-owner pid was recorded (legacy record or preparation). Inspect the process list by command name.",
+    );
     if (identityError) {
       console.error(
         `   Fence owner record is unreadable: ${identityError instanceof Error ? identityError.message : String(identityError)}.`,
@@ -178,7 +204,15 @@ function printRecovery() {
     for (const path of markedFiles) console.error(`   ${path}`);
     console.error(`   git checkout -- ${markedFiles.map(shellQuote).join(" ")}`);
   }
-  console.error(`3. Remove the fence: rm -- ${shellQuote(fencePath)}`);
+  const snapshot = recordField(record, "snapshot");
+  if (validSnapshotPath(snapshot)) {
+    console.error(
+      `3. Remove the recorded snapshot only after confirming all mutation descendants have stopped: rm -rf -- ${shellQuote(snapshot)}`,
+    );
+  } else {
+    console.error("3. Recorded snapshot is unknown/malformed. No snapshot deletion is suggested.");
+  }
+  console.error(`4. Remove the fence: rm -- ${shellQuote(fencePath)}`);
 }
 
 if (process.argv.includes("--check-guard")) {
@@ -220,29 +254,133 @@ function assertCleanBackend() {
   }
 }
 
-function discardUnspawnedFence(fd) {
-  if (fd !== undefined) closeSync(fd);
-  unlinkSync(fencePath);
-  fsyncDirectory(dirname(fencePath));
+function excludedInput(path) {
+  return path
+    .split("/")
+    .some(
+      (part) =>
+        [".git", "node_modules", "target", "mutants.out"].includes(part) || part.startsWith(".env"),
+    );
 }
 
-function acquireFence() {
-  mkdirSync(dirname(fencePath), { recursive: true });
-  try {
-    // Assign the module-level handle immediately: from the moment this succeeds the
-    // fence exists on disk, and every failure below has to be able to find it again.
-    fenceFd = openSync(fencePath, "wx");
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      printRecovery();
-      return false;
-    }
-    throw error;
+function regularInput(root, path) {
+  const components = path.split("/");
+  if (isAbsolute(path) || components.some((part) => part === ".." || part === "." || part === "")) {
+    throw new Error(`Unsafe snapshot input path: ${path}`);
   }
-  writeSync(fenceFd, `started=${new Date().toISOString()}\n`);
-  fsyncSync(fenceFd);
-  fsyncDirectory(dirname(fencePath));
-  return true;
+  let current = root;
+  for (const [index, component] of components.entries()) {
+    current = join(current, component);
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || (index < components.length - 1 && !stat.isDirectory())) {
+      throw new Error(
+        `Snapshot input ${path} is a symlink or has a non-directory ancestor. Replace it with independent regular files.`,
+      );
+    }
+    if (index === components.length - 1 && !stat.isFile()) {
+      throw new Error(`Snapshot input is not a regular file: ${path}`);
+    }
+  }
+  return lstatSync(current);
+}
+
+function snapshotManifest(liveRoot) {
+  const listed = runGit(["ls-files", "-z"]);
+  if (listed.status !== 0) throw new Error(`Snapshot git ls-files failed: ${listed.stderr}`);
+  const paths = new Set(listed.stdout.split("\0").filter((path) => path && !excludedInput(path)));
+  const dist = join(liveRoot, "dist");
+  if (!existsSync(dist) || !existsSync(join(dist, "index.html"))) {
+    throw new Error(
+      "Backend mutation requires dist/index.html. Run pnpm build-vite before pnpm mutation:backend.",
+    );
+  }
+  const visit = (path) => {
+    const stat = lstatSync(join(liveRoot, path));
+    if (stat.isSymbolicLink())
+      throw new Error(
+        `Snapshot input is a symlink: ${path}. Replace it with independent regular files.`,
+      );
+    if (!stat.isDirectory()) throw new Error(`Snapshot directory is not a directory: ${path}`);
+    for (const name of readdirSync(join(liveRoot, path))) {
+      const child = `${path}/${name}`;
+      if (excludedInput(child)) continue;
+      const stat = lstatSync(join(liveRoot, child));
+      if (stat.isDirectory()) visit(child);
+      else paths.add(child);
+    }
+  };
+  visit("dist");
+  return [...paths].sort();
+}
+
+function fileHash(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+async function captureSnapshot(liveRoot, snapshot, afterCopy) {
+  const manifest = snapshotManifest(liveRoot);
+  const captured = new Map();
+  for (const path of manifest) {
+    const stat = regularInput(liveRoot, path);
+    const destination = join(snapshot, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(liveRoot, path), destination);
+    chmodSync(destination, stat.mode & 0o777);
+    captured.set(path, { hash: fileHash(destination), mode: stat.mode & 0o777 });
+  }
+  await afterCopy?.({ liveRoot, snapshot });
+  if (JSON.stringify(snapshotManifest(liveRoot)) !== JSON.stringify(manifest)) {
+    throw new Error(
+      "Snapshot input manifest changed during capture. Stop concurrent edits and retry.",
+    );
+  }
+  for (const [path, expected] of captured) {
+    const stat = regularInput(liveRoot, path);
+    if (
+      fileHash(join(liveRoot, path)) !== expected.hash ||
+      (stat.mode & 0o777) !== expected.mode ||
+      fileHash(join(snapshot, path)) !== expected.hash
+    ) {
+      throw new Error(
+        `Snapshot source changed during capture: ${path}. Stop concurrent edits and retry.`,
+      );
+    }
+  }
+}
+
+function prepareCache(liveRoot) {
+  const cache = join(liveRoot, "mutants.out", "backend", "cargo-target");
+  const liveTarget = join(liveRoot, "src-tauri", "target");
+  const resolvedTarget = existsSync(liveTarget) ? realpathSync(liveTarget) : liveTarget;
+  const targetIdentity = existsSync(resolvedTarget)
+    ? lstatSync(resolvedTarget, { bigint: true })
+    : undefined;
+  // Every existing ancestor must be a directory, never a symlink redirecting a build.
+  let current = sep;
+  for (const component of cache.split(sep).filter(Boolean)) {
+    current = join(current, component);
+    if (existsSync(current)) {
+      const stat = lstatSync(current, { bigint: true });
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(
+          `Mutation cache has an unsafe ancestor: ${current}. Remove the alias before retrying.`,
+        );
+      }
+      if (targetIdentity && stat.dev === targetIdentity.dev && stat.ino === targetIdentity.ino) {
+        throw new Error(
+          `Mutation cache aliases src-tauri/target at ${current}. Remove the alias before retrying.`,
+        );
+      }
+    } else mkdirSync(current);
+  }
+  const resolvedCache = realpathSync(cache);
+  if (
+    resolvedCache === resolvedTarget ||
+    !relative(resolvedTarget, resolvedCache).startsWith("..")
+  ) {
+    throw new Error("Mutation cache aliases src-tauri/target. Remove the alias before retrying.");
+  }
+  return cache;
 }
 
 function successfulOutput(command, args, purpose) {
@@ -294,11 +432,11 @@ function prepareEncodingContainment() {
   return encodingCargoArguments(host);
 }
 
-function cargoArguments(mutationPackage, containmentCargoArguments) {
+function cargoArguments(mutationPackage, containmentCargoArguments, snapshot, liveRoot) {
   const cargoArguments = [
     "mutants",
     "--manifest-path",
-    "src-tauri/Cargo.toml",
+    join(snapshot, "src-tauri", "Cargo.toml"),
     "--in-place",
     "--cargo-arg=--locked",
     ...containmentCargoArguments.map((argument) => `--cargo-arg=${argument}`),
@@ -313,15 +451,15 @@ function cargoArguments(mutationPackage, containmentCargoArguments) {
     "--minimum-test-timeout",
     String(minimumTestTimeoutSeconds),
     "--output",
-    `mutants.out/backend/${mutationPackage.id}`,
+    join(liveRoot, "mutants.out", "backend", mutationPackage.id),
     "--",
     mutationPackage.test,
   ];
   return cargoArguments;
 }
 
-function mutationChildEnvironment(mutationPackage) {
-  const environment = { ...process.env };
+function mutationChildEnvironment(mutationPackage, cache) {
+  const environment = { ...process.env, CARGO_TARGET_DIR: cache };
   if (process.platform === "linux" && mutationPackage.id === "database-encoding") {
     environment[suppressMutationCoreEnvironment] = "1";
   } else {
@@ -335,46 +473,12 @@ function clearFence() {
   fsyncDirectory(dirname(fencePath));
 }
 
-let fenceFd;
-let fenceStarted;
-
-async function finalise() {
-  if (fenceFd !== undefined) {
-    closeSync(fenceFd);
-    fenceFd = undefined;
-  }
-
-  let markedFiles;
-  try {
-    markedFiles = trackedMutationFiles();
-  } catch (error) {
-    console.error(`Backend mutation finaliser could not verify the tree: ${error.message}`);
-    return false;
-  }
-  if (markedFiles.length > 0) {
-    console.error("Backend mutation left cargo-mutants markers in tracked files:");
-    for (const path of markedFiles) console.error(path);
-    console.error(`The fence remains at ${fencePath}.`);
-    return false;
-  }
-  clearFence();
-  return true;
-}
-
-function recordSpawnedChild(child) {
-  if (child.pid === undefined) return;
-  const childIdentity = identityForPid(child.pid);
-  ftruncateSync(fenceFd, 0);
-  writeSync(
-    fenceFd,
-    `${fenceStarted}pid=${child.pid}\n${childIdentity ? `pidStartTime=${childIdentity.startTime}\n` : ""}`,
-    0,
-    "utf8",
-  );
-  fsyncSync(fenceFd);
-}
-
-export async function runBackendMutation({ recordChild = recordSpawnedChild } = {}) {
+export async function runBackendMutation({
+  recordChild = undefined,
+  afterSnapshotCopy = undefined,
+  beforeOwnerPublish = undefined,
+  afterWrapperExit = undefined,
+} = {}) {
   if (existsSync(fencePath)) {
     printRecovery();
     return 1;
@@ -383,62 +487,153 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
   const containmentCargoArguments = selectedPackages.some(({ id }) => id === "database-encoding")
     ? prepareEncodingContainment()
     : [];
-  try {
-    if (!acquireFence()) return 1;
-    fenceStarted = readFileSync(fencePath, "utf8");
-  } catch (error) {
-    // Nothing has been spawned yet, so a fence created and then abandoned protects
-    // nothing and would refuse every later run and every `$push` preflight. This is
-    // the only place a fence is removed without verifying the tree, and it is only
-    // reachable before the first spawn.
-    if (fenceFd !== undefined) {
-      const unspawnedFenceFd = fenceFd;
-      fenceFd = undefined;
-      try {
-        discardUnspawnedFence(unspawnedFenceFd);
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "Fence setup failed and the unspawned fence could not be removed",
-        );
-      }
-    }
-    throw error;
+  successfulOutput(
+    "python3",
+    [containmentScript, "--check"],
+    "Python 3/subreaper capability check (install Python 3 on Linux)",
+  );
+  const liveRoot = realpathSync(process.cwd());
+  const temporaryRelative = relative(liveRoot, realpathSync(tmpdir()));
+  if (temporaryRelative !== ".." && !temporaryRelative.startsWith(`..${sep}`)) {
+    throw new Error(
+      "Backend mutation requires a temporary directory outside the checkout. Set TMPDIR to an external directory and retry.",
+    );
   }
-
-  let supervisor;
+  const runnerIdentity = currentIdentity();
   const signalForwarding = installMultiChildSignalForwarding({ label: "backend mutation" });
+  let snapshot;
+  let cache;
+  let ownsFence = false;
+  let fenceSetupCompleted = false;
+  let ownerRecord;
+  let supervisor;
+  const terminals = [];
   let exitCode = 0;
+  let cleanupFailed = false;
+  const started = new Date().toISOString();
+  const makeRecord = (identity = undefined) =>
+    `started=${started}\nrunnerPid=${runnerIdentity.pid}\nrunnerStartTime=${runnerIdentity.startTime}\nsnapshot=${snapshot}\ncache=${cache}\n` +
+    (identity ? `pid=${identity.pid}\npidStartTime=${identity.startTime}\n` : "");
+  const publish = (identity = undefined, exclusive = false) => {
+    const next = makeRecord(identity);
+    if (!exclusive && recordedOwner() !== ownerRecord)
+      throw new Error("Backend mutation fence owner changed or is unreadable");
+    durableWrite(fencePath, next, {
+      exclusive,
+      beforePublish: () => beforeOwnerPublish?.({ exclusive, snapshot, identity }),
+      onPublished: () => {
+        ownsFence = true;
+        ownerRecord = next;
+      },
+    });
+  };
+  const verifyTerminal = (terminal) => {
+    if (!terminal.result || terminal.result.signal || terminal.result.error) {
+      throw new Error(
+        "Containment owner did not exit normally. Terminal evidence cannot authorize cleanup.",
+      );
+    }
+    const evidence = JSON.parse(readFileSync(terminal.path, "utf8"));
+    if (
+      evidence["no-unwaited-children"] !== true ||
+      evidence.pid !== terminal.identity?.pid ||
+      evidence.pidStartTime !== terminal.identity?.startTime ||
+      !Number.isInteger(evidence.status) ||
+      evidence.status !== terminal.result.code ||
+      (evidence.signal !== null &&
+        (!Number.isInteger(evidence.signal) || evidence.status !== 128 + evidence.signal))
+    ) {
+      throw new Error("Containment terminal evidence is missing or malformed");
+    }
+  };
+  const verifyOwnedState = () => {
+    // No malformed or foreign metadata can authorize deletion after publication.
+    if (recordedOwner() !== ownerRecord || !validSnapshotPath(snapshot)) {
+      throw new Error("Backend mutation owner state changed or is unreadable");
+    }
+    const markedFiles = trackedMutationFiles();
+    if (markedFiles.length > 0) {
+      throw new Error(
+        `Backend mutation left cargo-mutants markers in tracked files:\n${markedFiles.join("\n")}`,
+      );
+    }
+  };
   try {
+    cache = prepareCache(liveRoot);
+    snapshot = mkdtempSync(join(tmpdir(), snapshotPrefix));
+    try {
+      publish(undefined, true);
+      fenceSetupCompleted = true;
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        printRecovery();
+        return 1;
+      }
+      throw error;
+    }
+    // Readability is part of preparation, before the first owned child.
+    if (recordedOwner() !== ownerRecord)
+      throw new Error("Backend mutation fence record is unreadable");
+    try {
+      await captureSnapshot(liveRoot, snapshot, afterSnapshotCopy);
+    } catch (error) {
+      throw new Error(
+        `Backend mutation snapshot preparation failed: ${error.message}. Restore the required regular inputs and retry after pnpm build-vite.`,
+        { cause: error },
+      );
+    }
     for (const mutationPackage of selectedPackages) {
       if (signalForwarding.requestedSignal) break;
-      console.log(`\nBackend mutation package: ${mutationPackage.id}`);
+      console.log(
+        `\nBackend mutation package: ${mutationPackage.id}\nSnapshot: ${snapshot}\nCargo target: ${cache}`,
+      );
+      const output = join(liveRoot, "mutants.out", "backend", mutationPackage.id);
+      mkdirSync(output, { recursive: true });
+      const terminal = { path: join(output, "terminal.json") };
+      // Retain the latest proof per package, never an unbounded series of receipts.
+      if (existsSync(terminal.path)) unlinkSync(terminal.path);
+      terminals.push(terminal);
       const child = spawn(
-        "cargo",
-        cargoArguments(
-          mutationPackage,
-          mutationPackage.id === "database-encoding" ? containmentCargoArguments : [],
-        ),
-        { stdio: "inherit", env: mutationChildEnvironment(mutationPackage) },
+        "python3",
+        [
+          containmentScript,
+          terminal.path,
+          "--",
+          "cargo",
+          ...cargoArguments(
+            mutationPackage,
+            mutationPackage.id === "database-encoding" ? containmentCargoArguments : [],
+            snapshot,
+            liveRoot,
+          ),
+        ],
+        {
+          // Whole-tree gates must never see the source being mutated.
+          cwd: snapshot,
+          stdio: "inherit",
+          env: mutationChildEnvironment(mutationPackage, cache),
+        },
       );
       supervisor = superviseChild(child, { terminationTimeoutMs });
       signalForwarding.attach(supervisor, mutationPackage.id);
       try {
-        recordChild(child);
+        terminal.identity = child.pid === undefined ? undefined : identityForPid(child.pid);
+        if (!terminal.identity) throw new Error("Cannot record containment owner identity");
+        publish(terminal.identity);
+        recordChild?.(child);
       } catch (error) {
-        await supervisor.terminate();
+        terminal.result = await supervisor.terminate();
         throw error;
       }
-      const result = await supervisor.done;
+      terminal.result = await supervisor.done;
       supervisor = undefined;
+      await afterWrapperExit?.(terminal);
+      verifyTerminal(terminal);
       if (signalForwarding.requestedSignal) break;
-      if (result.error) throw result.error;
+      const result = terminal.result;
       if (result.code === 0) continue;
-
-      const missedPath = `mutants.out/backend/${mutationPackage.id}/mutants.out/missed.txt`;
+      const missedPath = join(output, "mutants.out", "missed.txt");
       const missed = existsSync(missedPath) ? readFileSync(missedPath, "utf8").trim() : "";
-      // cargo-mutants reports timeouts with exit 3. A timeout is a killed mutant,
-      // but any actual survivor remains a hard failure.
       if (result.code === 3 && missed === "") continue;
       exitCode = result.code ?? 1;
       break;
@@ -447,13 +642,28 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
     console.error(error);
     exitCode = 1;
   } finally {
-    if (supervisor) await supervisor.terminate();
-    await signalForwarding.termination;
-    const finalised = await finalise();
-    if (!finalised) exitCode = 1;
-    signalForwarding.uninstall();
+    try {
+      if (supervisor) {
+        const terminal = terminals.at(-1);
+        terminal.result = await supervisor.terminate();
+      }
+      await signalForwarding.termination;
+      for (const terminal of terminals) verifyTerminal(terminal);
+      if (ownsFence && fenceSetupCompleted) verifyOwnedState();
+      if (snapshot) rmSync(snapshot, { recursive: true });
+      if (ownsFence) clearFence();
+    } catch (error) {
+      cleanupFailed = true;
+      console.error(
+        `Backend mutation finaliser could not verify the tree or terminal state: ${error.message}`,
+      );
+      console.error(`Fence and snapshot retained: ${fencePath}, ${snapshot ?? "unknown"}`);
+      exitCode = 1;
+    } finally {
+      signalForwarding.uninstall();
+    }
   }
-
+  if (cleanupFailed) return 1;
   if (signalForwarding.requestedSignal) {
     return signalForwarding.requestedSignal === "SIGINT" ? 130 : 143;
   }
