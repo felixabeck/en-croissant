@@ -15269,3 +15269,17 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Fix direction:** bind tab-scoped atoms to the owning tab through a scope context (workspace tab scope provided by `TabSwitch`, ephemeral scope for previews), delete `tabValue`, and prove it with a Playwright regression on the repertoire close flow plus unit cases for the cross-tab write.
 * **Related:** f-20260922-09 (tab close ordering, handled; it established the commit-first close order this defect runs into).
 * **Found by:** Claude Code orchestrator from Felix's screenshot, 2026-10-11.
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### An incorrect practice answer never advances the board to the correct move
+
+* **ID:** f-20261011-10 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/panels/practice/PracticePanel.tsx:518` (`scheduleForSession(..., () => goToNextRef.current(), PRACTICE_INCORRECT_DELAY_MS)`), against `src/state/store/tree.ts:308-313` (`goToNext` returns `{}` when `state.position.length >= practicePath.length`) and `PracticePanel.tsx:347-348` (`goToMove(path); setPracticePath(path)` — the practice path equals the card's own position).
+* **Defect (reported by review-chess-semantics, confidence 100; the orchestrator read the three sites and the guard does block it):** after a wrong move the panel schedules `goToNext()` to step into the answer, but the practice path ends at the card position, so the guard sees the cursor already at the path's end and does nothing. Example: White repertoire `1. e4 e5 2. Nf3`, card after `1... e5`, play `Nc3` — the board stays before `Nf3` instead of showing the answer.
+* **Why it matters:** the incorrect-answer feedback the panel intends never reaches the board; whether the reveal or the guard is the intended behaviour must be settled from the practice flow's tests and history before changing either.
+* **Proof required:** a PracticePanel/tree test that plays a wrong move on a card and asserts the board reaches the answer node after the delay (red now), plus the existing practice tests unchanged.
+* **Related:** found during the `$push` review of f-20261011-09 (which touched PracticePanel only to rebind its atoms).
+* **Found by:** Claude Code orchestrator, `$push` review of f-20261011-09, 2026-10-11.
