@@ -87,17 +87,21 @@ const RETIRE_CANCELLATION_POLL: Duration = Duration::from_millis(25);
 
 fn pool_worker_threads() -> Arc<ScheduledThreadPool> {
     // Retired pool workers must not wait for a reaper tick of a pool that no longer exists.
-    Arc::new(
+    let scheduler = Arc::new(
         ScheduledThreadPool::builder()
             .num_threads(POOL_WORKER_THREADS)
             .thread_name_pattern("r2d2-worker-{}")
             .on_drop_behavior(OnPoolDropBehavior::DiscardPendingScheduled)
             .build(),
-    )
+    );
+    #[cfg(test)]
+    LAST_BUILT_POOL_WORKERS.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&scheduler)));
+    scheduler
 }
 
 #[cfg(test)]
 thread_local! {
+    static LAST_BUILT_POOL_WORKERS: std::cell::RefCell<Option<Arc<ScheduledThreadPool>>> = const { std::cell::RefCell::new(None) };
     static SNAPSHOT_COPY_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
     static SNAPSHOT_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnMut() -> String>>> = const { std::cell::RefCell::new(None) };
 }
@@ -2553,13 +2557,26 @@ mod retirement_tests {
         const PENDING_JOB_DELAY: Duration = Duration::from_millis(200);
         const OBSERVATION_WAIT: Duration = Duration::from_millis(700);
 
-        let pool = pool_worker_threads();
+        LAST_BUILT_POOL_WORKERS.with(|slot| slot.borrow_mut().take());
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("scheduler-retirement.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (_, entry, _) = repository.entry(&target, None).unwrap();
+        let scheduler = LAST_BUILT_POOL_WORKERS
+            .with(|slot| slot.borrow_mut().take())
+            .expect("repository pool builder did not use pool_worker_threads");
+        assert!(
+            Arc::strong_count(&scheduler) >= 2,
+            "live repository pool did not retain its worker scheduler"
+        );
+        let retired_scheduler = Arc::downgrade(&scheduler);
         let workers_ready = mpsc::channel();
         let release = Arc::new(std::sync::Barrier::new(POOL_WORKER_THREADS + 1));
         for _ in 0..POOL_WORKER_THREADS {
             let ready = workers_ready.0.clone();
             let release = Arc::clone(&release);
-            pool.execute(move || {
+            scheduler.execute(move || {
                 ready.send(()).unwrap();
                 release.wait();
             });
@@ -2570,10 +2587,20 @@ mod retirement_tests {
 
         let (completed, completion) = mpsc::channel();
         let scheduled_completion = completed.clone();
-        pool.execute_after(PENDING_JOB_DELAY, move || {
+        scheduler.execute_after(PENDING_JOB_DELAY, move || {
             scheduled_completion.send(()).unwrap();
         });
-        drop(pool);
+        drop(scheduler);
+        drop(entry);
+        repository.close_and_invalidate(&target).unwrap();
+        let deadline = Instant::now() + SIGNAL_TIMEOUT;
+        while retired_scheduler.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "retired repository pool retained its worker scheduler"
+            );
+            std::thread::yield_now();
+        }
         release.wait();
         // Keep the channel connected so the observation extends beyond the pending job's delay.
         assert!(
