@@ -13,15 +13,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { findExecutableOnPath } from "./executable-path.mjs";
+import { durableWrite } from "./durable-write.mjs";
 import {
   isAlive,
   runMutationRunner,
   startMutationRunner,
   waitFor,
+  waitUntil,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
 import { encodingCargoArguments, selectBackendMutationPackages } from "./run-backend-mutation.mjs";
@@ -216,15 +218,6 @@ const start = (t, root, env, options = {}) =>
     ...options,
   });
 
-async function waitUntil(predicate, message, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(message);
-}
-
 function fields(record) {
   return Object.fromEntries(
     record
@@ -237,17 +230,50 @@ function fields(record) {
   );
 }
 
+function cleanupRetainedSnapshot(t, root, fallbackRecord = undefined) {
+  t.after(async () => {
+    for (const recordPath of [join(root, fence), fallbackRecord].filter(Boolean)) {
+      let owner;
+      try {
+        owner = fields(await readFile(recordPath, "utf8"));
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!owner.snapshot) continue;
+      assert.equal(
+        dirname(owner.snapshot),
+        tmpdir(),
+        "fixture snapshot escaped its temporary root",
+      );
+      assert.match(basename(owner.snapshot), /^chessfable-backend-mutation-[A-Za-z0-9]{6}$/u);
+      try {
+        await chmod(owner.snapshot, 0o700);
+      } catch (error) {
+        if (error.code === "ENOENT") return;
+        throw error;
+      }
+      await rm(owner.snapshot, { recursive: true });
+      return;
+    }
+  });
+}
+
 async function completedOwner(root) {
   let owner;
-  await waitUntil(async () => {
-    try {
-      owner = fields(await readFile(join(root, fence), "utf8"));
-      return /^\d+$/u.test(owner.pid ?? "") && /^\d+$/u.test(owner.pidStartTime ?? "");
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      return false;
-    }
-  }, "parent did not publish its completed owner record");
+  await waitUntil(
+    async () => {
+      try {
+        owner = fields(await readFile(join(root, fence), "utf8"));
+        return /^\d+$/u.test(owner.pid ?? "") && /^\d+$/u.test(owner.pidStartTime ?? "");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        return false;
+      }
+    },
+    "parent did not publish its completed owner record",
+    10_000,
+  );
   return owner;
 }
 
@@ -505,6 +531,7 @@ test("an uncatchable mid-flight kill leaves the fence and makes the next run ref
   const { root, bin, state } = await fixture();
   const env = environment({ bin, state, mode: "block" });
   const running = start(t, root, env, { stdio: "ignore" });
+  cleanupRetainedSnapshot(t, root);
   await waitFor(join(state, "started"));
   const owner = await completedOwner(root);
   const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
@@ -715,8 +742,9 @@ test("exclusive fence creation rejects a second concurrent runner", async (t) =>
   assert.equal((await first.done).code, 0);
 });
 
-test("exit verification keeps the fence for a marker but ignores an unrelated edit", async () => {
+test("exit verification keeps the fence for a marker but ignores an unrelated edit", async (t) => {
   const marked = await fixture();
+  cleanupRetainedSnapshot(t, marked.root);
   const markedResult = run(
     marked.root,
     environment({ bin: marked.bin, state: marked.state, mode: "marker" }),
@@ -734,8 +762,9 @@ test("exit verification keeps the fence for a marker but ignores an unrelated ed
   assert.equal(run(edited.root, environment(edited), ["--check-guard"]).status, 0);
 });
 
-test("a failed final marker scan keeps the fence and fails the run", async () => {
+test("a failed final marker scan keeps the fence and fails the run", async (t) => {
   const { root, bin, state } = await fixture();
+  cleanupRetainedSnapshot(t, root);
   const failingBin = join(root, "grep-failing-git-bin");
   await mkdir(failingBin);
   await writeFile(
@@ -936,6 +965,51 @@ test("snapshot preparation refuses missing dist, tracked symlinks and determinis
   }
 });
 
+test("durable owner publication preserves old bytes on pre-publish crash and exclusive collision", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "durable-owner-test-"));
+  t.after(() => rm(root, { recursive: true }));
+  const target = join(root, "owner");
+  const oldRecord = "started=old\nrunnerPid=123\nrunnerStartTime=456\n";
+  const newRecord = "started=new\nrunnerPid=789\nrunnerStartTime=101\n";
+  await writeFile(target, oldRecord);
+  assert.throws(
+    () =>
+      durableWrite(target, newRecord, {
+        beforePublish() {
+          throw new Error("simulated pre-publish crash");
+        },
+      }),
+    /simulated pre-publish crash/u,
+  );
+  assert.equal(
+    await readFile(target, "utf8"),
+    oldRecord,
+    "pre-publish crash truncated the old owner record",
+  );
+  assert.deepEqual(
+    (await readdir(root)).filter((name) => name.startsWith(".owner.tmp-")),
+    [],
+    "pre-publish crash left a temporary owner record",
+  );
+  assert.throws(() => durableWrite(target, newRecord, { exclusive: true }), { code: "EEXIST" });
+  assert.equal(
+    await readFile(target, "utf8"),
+    oldRecord,
+    "exclusive collision changed the old owner record",
+  );
+  assert.deepEqual(
+    (await readdir(root)).filter((name) => name.startsWith(".owner.tmp-")),
+    [],
+    "exclusive collision left a temporary owner record",
+  );
+  durableWrite(target, newRecord);
+  assert.equal(
+    await readFile(target, "utf8"),
+    newRecord,
+    "successful replacement did not publish exactly the new bytes",
+  );
+});
+
 test("owner publication exposes only whole parent records at deterministic initial and update barriers", async (t) => {
   const { root, bin, state } = await fixture();
   const launcher = await launcherWith(
@@ -990,6 +1064,42 @@ test("owner publication exposes only whole parent records at deterministic initi
   await waitFor(join(state, "started"));
   await writeFile(join(state, "release"), "");
   assert.equal((await running.done).code, 0);
+});
+
+test("SIGKILL before owner update publication preserves the complete initial fence record", async (t) => {
+  const { root, bin, state, protect } = await escapedDescendantFixture(t);
+  const launcher = await launcherWith(
+    root,
+    `beforeOwnerPublish({ exclusive }) {
+    if (exclusive) return;
+    writeFileSync(${JSON.stringify(join(state, "update-paused"))}, "");
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    throw new Error("owner update barrier timed out");
+  }`,
+  );
+  const running = startMutationRunner(t, launcher, root, environment({ bin, state }), {
+    containmentScript,
+    terminalPath: join(state, "test-terminal.json"),
+  });
+  protect(running);
+  cleanupRetainedSnapshot(t, root);
+  await waitFor(join(state, "update-paused"));
+  await waitFor(join(state, "started"));
+  const initial = await readFile(join(root, fence), "utf8");
+  const initialPattern =
+    /^started=.+\nrunnerPid=\d+\nrunnerStartTime=\d+\nsnapshot=.+\ncache=.+\n$/u;
+  assert.match(initial, initialPattern, "paused update corrupted the complete initial record");
+  const owner = fields(initial);
+  process.kill(Number(owner.runnerPid), "SIGKILL");
+  assert.equal((await running.done).code, 137);
+  const recovered = await readFile(join(root, fence), "utf8");
+  assert.match(recovered, initialPattern, "SIGKILL left an empty or partial owner record");
+  assert.equal(recovered, initial, "SIGKILL changed the unpublished initial record");
+  const recovery = run(root, environment({ bin, state }), ["--check-guard"]);
+  assert.equal(recovery.status, 1);
+  assert.match(recovery.stderr, /Backend mutation fence exists/u);
+  assert.ok(recovery.stderr.includes(`rm -rf -- '${owner.snapshot}'`), recovery.stderr);
 });
 
 async function escapedDescendantFixture(t) {
@@ -1117,13 +1227,30 @@ for (const action of ["exit", "SIGTERM", "SIGINT"]) {
   });
 }
 
-for (const failure of ["missing", "failed", "malformed-owner", "cleanup"]) {
+for (const failure of [
+  "missing",
+  "failed",
+  "wrong-pid",
+  "wrong-start-time",
+  "wrong-status",
+  "wrong-signal",
+  "invalid-json",
+  "malformed-owner",
+  "cleanup",
+]) {
   test(`failed terminal/owner/cleanup state retains fence and snapshot: ${failure}`, async (t) => {
     if (failure === "cleanup" && process.getuid?.() === 0) {
       t.skip("root bypasses snapshot permissions");
       return;
     }
     const { root, bin, state } = await fixture();
+    cleanupRetainedSnapshot(t, root, join(state, "owner"));
+    const evidenceChanges = {
+      "wrong-pid": "evidence.pid += 1;",
+      "wrong-start-time": 'evidence.pidStartTime += "0";',
+      "wrong-status": "evidence.status += 1;",
+      "wrong-signal": "evidence.signal = 2;",
+    };
     const launcher = await launcherWith(
       root,
       `afterWrapperExit(terminal) {
@@ -1136,7 +1263,13 @@ for (const failure of ["missing", "failed", "malformed-owner", "cleanup"]) {
             ? 'writeFileSync(terminal.path, JSON.stringify({ "no-unwaited-children": false }));'
             : failure === "malformed-owner"
               ? `writeFileSync(${JSON.stringify(join(root, fence))}, "malformed");`
-              : "chmodSync(record.match(/^snapshot=(.+)$/m)[1], 0o500);"
+              : failure === "cleanup"
+                ? "chmodSync(record.match(/^snapshot=(.+)$/m)[1], 0o500);"
+                : failure === "invalid-json"
+                  ? 'writeFileSync(terminal.path, "{");'
+                  : `const evidence = JSON.parse(readFileSync(terminal.path, "utf8"));
+                     ${evidenceChanges[failure]}
+                     writeFileSync(terminal.path, JSON.stringify(evidence));`
       }
     }`,
     );
@@ -1150,11 +1283,60 @@ for (const failure of ["missing", "failed", "malformed-owner", "cleanup"]) {
       1,
       "second owner reused unsafe cache",
     );
-    // Fixtures own these paths. No process remains after a normal wrapper terminal exit.
-    if (failure === "cleanup") await chmod(owner.snapshot, 0o700);
-    await rm(owner.snapshot, { recursive: true });
   });
 }
+
+test("finaliser reports snapshot already removed when fence unlink fails", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root bypasses fence directory permissions");
+    return;
+  }
+  const { root, bin, state } = await fixture();
+  const directory = join(root, dirname(fence));
+  t.after(() => chmod(directory, 0o755));
+  cleanupRetainedSnapshot(t, root);
+  const launcher = await launcherWith(
+    root,
+    `afterWrapperExit() {
+    chmodSync(${JSON.stringify(directory)}, 0o500);
+  }`,
+  );
+  const result = runMutationRunner(launcher, root, environment({ bin, state }));
+  assert.equal(result.status, 1, result.stderr);
+  const owner = fields(await readFile(join(root, fence), "utf8"));
+  assert.equal(existsSync(owner.snapshot), false);
+  assert.equal(existsSync(join(root, fence)), true);
+  assert.match(result.stderr, /Fence retained: mutants\.out\/backend\/\.mutation-in-progress/u);
+  assert.ok(result.stderr.includes(`Snapshot already removed: ${owner.snapshot}`), result.stderr);
+  assert.doesNotMatch(result.stderr, /Snapshot retained:/u);
+});
+
+test("finaliser reports both resources already removed when fence directory fsync fails", async (t) => {
+  const { root, bin, state } = await fixture();
+  cleanupRetainedSnapshot(t, root, join(state, "owner"));
+  const launcher = await launcherWith(
+    root,
+    `async afterWrapperExit() {
+    writeFileSync(${JSON.stringify(join(state, "owner"))}, readFileSync(${JSON.stringify(join(root, fence))}, "utf8"));
+    const fs = await import("node:fs");
+    const { syncBuiltinESMExports } = await import("node:module");
+    fs.default.fsyncSync = () => { throw new Error("injected fence directory fsync failure"); };
+    syncBuiltinESMExports();
+  }`,
+  );
+  const result = runMutationRunner(launcher, root, environment({ bin, state }));
+  assert.equal(result.status, 1, result.stderr);
+  const owner = fields(await readFile(join(state, "owner"), "utf8"));
+  assert.equal(existsSync(owner.snapshot), false);
+  assert.equal(existsSync(join(root, fence)), false);
+  assert.match(result.stderr, /injected fence directory fsync failure/u);
+  assert.match(
+    result.stderr,
+    /Fence already removed: mutants\.out\/backend\/\.mutation-in-progress/u,
+  );
+  assert.ok(result.stderr.includes(`Snapshot already removed: ${owner.snapshot}`), result.stderr);
+  assert.doesNotMatch(result.stderr, /(?:Fence|Snapshot) retained:/u);
+});
 
 for (const killedOwner of ["runner", "containment"]) {
   test(`SIGKILL of ${killedOwner} retains owned state and reports safe recovery`, async (t) => {
@@ -1162,6 +1344,7 @@ for (const killedOwner of ["runner", "containment"]) {
     const original = await readFile(join(root, "src-tauri", "src", "sample.rs"));
     const running = start(t, root, environment({ bin, state }));
     protect(running);
+    cleanupRetainedSnapshot(t, root);
     const owner = await completedOwner(root);
     await waitFor(join(state, "started"));
     const descendant = Number(await readFile(join(state, "descendant"), "utf8"));
@@ -1186,7 +1369,6 @@ for (const killedOwner of ["runner", "containment"]) {
     );
     assert.ok(recovery.stderr.includes(`rm -rf -- '${owner.snapshot}'`), recovery.stderr);
     assert.equal(run(root, environment({ bin, state })).status, 1);
-    await rm(owner.snapshot, { recursive: true });
   });
 }
 
@@ -1230,8 +1412,9 @@ test("malformed snapshot metadata never suggests arbitrary deletion", async () =
   }
 });
 
-test("terminal publication failure after rename cannot authorize cleanup when Cargo also exits 125", async () => {
+test("terminal publication failure after rename cannot authorize cleanup when Cargo also exits 125", async (t) => {
   const { root, bin, state } = await fixture();
+  cleanupRetainedSnapshot(t, root);
   await writeShim(
     join(bin, "cargo"),
     `#!/bin/sh
@@ -1259,7 +1442,6 @@ exit 125
     1,
     "second runner reused an unsafe cache",
   );
-  await rm(owner.snapshot, { recursive: true });
 });
 
 for (const alias of ["cache-symlink", "cache-parent-symlink", "target-aliases-cache-ancestor"]) {

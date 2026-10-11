@@ -473,6 +473,23 @@ function clearFence() {
   fsyncDirectory(dirname(fencePath));
 }
 
+function reportRetainedState(label, path) {
+  if (path === undefined) {
+    console.error(`${label} not created`);
+    return;
+  }
+  try {
+    lstatSync(path);
+    console.error(`${label} retained: ${path}`);
+  } catch (error) {
+    console.error(
+      error.code === "ENOENT"
+        ? `${label} already removed: ${path}`
+        : `${label} retention unknown: ${path} (${error.message})`,
+    );
+  }
+}
+
 export async function runBackendMutation({
   recordChild = undefined,
   afterSnapshotCopy = undefined,
@@ -634,6 +651,8 @@ export async function runBackendMutation({
       if (result.code === 0) continue;
       const missedPath = join(output, "mutants.out", "missed.txt");
       const missed = existsSync(missedPath) ? readFileSync(missedPath, "utf8").trim() : "";
+      // cargo-mutants reports timeouts with exit 3. A timeout is a killed mutant,
+      // but any actual survivor remains a hard failure.
       if (result.code === 3 && missed === "") continue;
       exitCode = result.code ?? 1;
       break;
@@ -657,7 +676,8 @@ export async function runBackendMutation({
       console.error(
         `Backend mutation finaliser could not verify the tree or terminal state: ${error.message}`,
       );
-      console.error(`Fence and snapshot retained: ${fencePath}, ${snapshot ?? "unknown"}`);
+      reportRetainedState("Fence", fencePath);
+      reportRetainedState("Snapshot", snapshot);
       exitCode = 1;
     } finally {
       signalForwarding.uninstall();

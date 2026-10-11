@@ -97,13 +97,18 @@ export function startMutationRunner(t, runner, root, env, options = {}) {
   return startNodeCli(t, runner, root, env, options);
 }
 
-export async function waitFor(path, timeoutMs = 5_000) {
+export async function waitUntil(predicate, message, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(path)) return;
+    const result = await predicate();
+    if (result) return result;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.fail(`Timed out waiting for ${path}`);
+  assert.fail(message);
+}
+
+export async function waitFor(path, timeoutMs = 5_000) {
+  await waitUntil(() => existsSync(path), `Timed out waiting for ${path}`, timeoutMs);
 }
 
 export function isAlive(pid) {

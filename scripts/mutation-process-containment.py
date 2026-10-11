@@ -11,6 +11,11 @@ import time
 
 GRACE_SECONDS = 3
 POLL_SECONDS = 0.02
+# prctl(2): adopt orphaned descendants as a child subreaper.
+PR_SET_CHILD_SUBREAPER = 36
+# proc(5): after the last ")", ppid (field 4) and starttime (field 22).
+PROC_PPID_INDEX = 1
+PROC_START_TIME_INDEX = 19
 stop_signal = None
 
 
@@ -20,7 +25,7 @@ def enable_subreaper():
     if os.environ.get("CHESSFABLE_MUTATION_TEST_PRCTL_FAIL"):
         raise RuntimeError("injected PR_SET_CHILD_SUBREAPER refusal")
     libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(36, 1, 0, 0, 0) != 0:
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
@@ -29,7 +34,7 @@ def identity(pid):
     try:
         with open(f"/proc/{pid}/stat", "rb") as stream:
             fields = stream.read().rsplit(b")", 1)[1].split()
-        return int(fields[1]), fields[19].decode()
+        return int(fields[PROC_PPID_INDEX]), fields[PROC_START_TIME_INDEX].decode()
     except (FileNotFoundError, ProcessLookupError):
         return None
 

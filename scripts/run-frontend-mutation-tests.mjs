@@ -20,6 +20,7 @@ import {
   runMutationRunnerWithNodeArgs,
   startMutationRunner,
   waitFor,
+  waitUntil,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
 import { currentIdentity, identityForPid } from "./process-identity.mjs";
@@ -158,23 +159,23 @@ const start = (t, root, env, options = {}) => startMutationRunner(t, runner, roo
 
 async function waitForRecordedChild(root, timeoutMs = 5_000) {
   const path = join(root, fence, "owner.json");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let source;
-    try {
-      source = await readFile(path, "utf8");
-    } catch (error) {
-      if (error?.code === "ENOENT") {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        continue;
+  return waitUntil(
+    async () => {
+      let source;
+      try {
+        source = await readFile(path, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          return false;
+        }
+        throw error;
       }
-      throw error;
-    }
-    const owner = JSON.parse(source);
-    if (owner.children?.length > 0 && !owner.spawning) return owner;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.fail(`Timed out waiting for a child identity in ${path}`);
+      const owner = JSON.parse(source);
+      return owner.children?.length > 0 && !owner.spawning ? owner : false;
+    },
+    `Timed out waiting for a child identity in ${path}`,
+    timeoutMs,
+  );
 }
 
 async function seedFence(root, owner) {
