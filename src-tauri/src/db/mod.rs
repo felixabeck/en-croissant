@@ -182,10 +182,10 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
         (|| {
             conn.batch_execute(
-                "PRAGMA foreign_keys = ON;\
+                "PRAGMA busy_timeout = 30000;\
+                 PRAGMA foreign_keys = ON;\
                  PRAGMA journal_mode = WAL;\
-                 PRAGMA synchronous = FULL;\
-                 PRAGMA busy_timeout = 30000;",
+                 PRAGMA synchronous = FULL;",
             )?;
             Ok(())
         })()
@@ -11842,6 +11842,62 @@ mod tests {
 #[cfg(test)]
 mod setup_policy_tests {
     use super::*;
+
+    #[test]
+    fn connection_options_wait_for_read_lock_before_enabling_wal() {
+        use diesel::r2d2::CustomizeConnection;
+        use std::{sync::mpsc, time::Duration};
+
+        const LOCK_OBSERVATION_WAIT: Duration = Duration::from_millis(200);
+        const COMPLETION_BOUND: Duration = Duration::from_secs(10);
+        #[derive(QueryableByName)]
+        struct JournalMode {
+            #[diesel(sql_type = Text)]
+            journal_mode: String,
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("options.db3");
+        let mut first = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+        first
+            .batch_execute(
+                "PRAGMA journal_mode = DELETE;
+                 CREATE TABLE Locked (value INTEGER);
+                 INSERT INTO Locked VALUES (1);
+                 BEGIN;
+                 SELECT * FROM Locked;",
+            )
+            .unwrap();
+        let mut second = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+        let (started, start_signal) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        let origin = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                started.send(()).unwrap();
+                done.send(ConnectionOptions.on_acquire(&mut second))
+                    .unwrap();
+            });
+            start_signal.recv_timeout(COMPLETION_BOUND).unwrap();
+            std::thread::sleep(LOCK_OBSERVATION_WAIT);
+            let early = result.try_recv();
+            // Release before asserting so the counterproof cannot strand the worker.
+            first.batch_execute("ROLLBACK;").unwrap();
+            assert!(
+                matches!(early, Err(mpsc::TryRecvError::Empty)),
+                "on_acquire returned while the read lock was held: {early:?}"
+            );
+            result.recv_timeout(COMPLETION_BOUND).unwrap().unwrap();
+        });
+        assert_eq!(
+            sql_query("PRAGMA journal_mode")
+                .get_result::<JournalMode>(&mut second)
+                .unwrap()
+                .journal_mode,
+            "wal"
+        );
+        eprintln!("contended on_acquire completed in {:?}", origin.elapsed());
+    }
 
     #[test]
     fn importer_rejects_malformed_fen_and_invalid_king_setups() {
