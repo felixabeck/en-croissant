@@ -15242,3 +15242,17 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Defect:** on the `test` job of run 38157168640 (docs-only commit 822ef846, 2026-10-11) the dialog screenshot differed in 47,116 pixels (ratio 0.06) after Playwright had "captured a stable screenshot"; 106 other tests passed. The rerun of the same job on the same commit passed. A snapshot assertion that fails on unchanged inputs measures rendering nondeterminism (font loading, async validation text, focus ring), not the change, and its red job blocks every later push through `ci:remote:check`.
 * **Evidence:** `gh api repos/felixabeck/en-croissant/actions/jobs/114522424157/logs` (lines ~10600-10667: diff ratio, expected/actual/diff attachment names); rerun job 114524609767 success. The diff image is in the job's artifacts (`artifacts/frontend-audit/test-results/accounts-puzzles-engines-a-439ab--before-any-native-issuance-accounts-puzzles-engines/engine-local-validation-diff.png`).
 * **Proof required:** name which region differs (from the diff artifact) and what in the dialog is not yet settled at capture time; the fix waits for that state (or masks only that element) and the spec passes in a repeated run.
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### Saving a fresh analysis board uses an existing-file picker
+
+* **ID:** f-20261011-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Problem:** A user transcribing an over-the-board game can enter moves and comments on a fresh Analysis Board, but Save PGN cannot create its first file through the native picker. Selecting an existing multi-game file instead targets game zero and replaces that game.
+* **Evidence:** `src/utils/tabs.ts` `saveToFile` calls `pickPgnFile` for origin `none`, uses game number zero and writes that destination game. `src/utils/files.ts` `pickPgnFile` invokes `issuePgnWorkspace`. `src-tauri/src/main.rs` `issue_pgn_workspace` uses `blocking_pick_file`, not a save destination picker. The separate database export destination already uses `blocking_save_file`.
+* **Workaround:** Files → Choose collection → Create file seeds a blank PGN with `*`. Open that file, enter moves, annotate and save before importing through database Add Games.
+* **Fix direction:** Provide a native save destination for a fresh board and preserve existing games when selecting an existing destination. Verify creation, cancellation and existing-file behavior. Run review-ipc-contract and the applicable security lens.
+* **Related:** f-20261004-15 tracks the distinct PGN/database-copy drift problem. This entry concerns first-save destination selection.
