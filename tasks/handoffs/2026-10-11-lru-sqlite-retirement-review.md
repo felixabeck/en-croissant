@@ -6046,7 +6046,7 @@ Lenses: correctness, root-cause, tests, error-handling, minimalism, code-quality
 | D10 | code-quality, should-fix, 90 | `predecessor_admission_for` returns an opaque guard without documenting what it blocks and when to release it. | Fix (round-3 repair) |
 | D11 | records, should-fix, 100 | This handoff claimed the closure results were already in tasks/build-ledger.md, which holds no row for this run yet. | Fix: this subsection replaces that claim; the build-ledger row is appended after the push. |
 
-Later rounds and the final gate and CI results are recorded in the tasks/build-ledger.md row written after the push.
+Later rounds are recorded below; the final gate and CI results will be recorded in the tasks/build-ledger.md row, which is written after the push and does not exist before it.
 
 ### Diff review r3 — closure round (REVIEWED_THROUGH 604051a4)
 
