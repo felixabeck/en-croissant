@@ -42,12 +42,12 @@ async function temporaryRoot(prefix) {
   return root;
 }
 
-async function restorePermissions(path) {
+async function grantOwnerAccessForRemoval(path) {
   const entry = await lstat(path);
   if (entry.isSymbolicLink()) return;
   await chmod(path, 0o700);
   if (entry.isDirectory()) {
-    for (const name of await readdir(path)) await restorePermissions(join(path, name));
+    for (const name of await readdir(path)) await grantOwnerAccessForRemoval(join(path, name));
   }
 }
 
@@ -58,7 +58,7 @@ after(async () => {
       assert.equal(dirname(root), tmpdir(), "fixture escaped its temporary root");
       assert.ok(basename(root).startsWith(prefix), "fixture has an unexpected prefix");
       assert.match(basename(root).slice(prefix.length), /^[A-Za-z0-9]{6}$/u);
-      await restorePermissions(root);
+      await grantOwnerAccessForRemoval(root);
       await rm(root, { recursive: true, force: true });
       temporaryRoots.delete(root);
     }),
@@ -188,6 +188,69 @@ esac
     "fixture",
   ]);
   return { root, bin, state };
+}
+
+if (process.env.CHESSFABLE_FIXTURE_CLEANUP_PROBE === "1") {
+  for (const outcome of ["pass", "fail"]) {
+    test(`fixture cleanup probe ${outcome}`, async (t) => {
+      const { root } = await fixture();
+      if (outcome === "fail") {
+        t.after(async () => {
+          assert.equal(
+            await readFile(join(root, "src-tauri", "src", "sample.rs"), "utf8"),
+            "pub fn sample() {}\n",
+          );
+          process.stdout.write("fixture cleanup probe after hook read succeeded\n");
+        });
+        assert.fail("deliberate fixture cleanup probe failure");
+      }
+    });
+  }
+}
+
+for (const outcome of ["pass", "fail"]) {
+  test(`suite teardown removes fixtures after ${outcome} probe`, async (t) => {
+    const privateTmpdir = await temporaryRoot("backend-mutation-cleanup-probe-");
+    t.after(async () => {
+      await rm(privateTmpdir, { recursive: true, force: true });
+      temporaryRoots.delete(privateTmpdir);
+    });
+    const probeEnvironment = {
+      ...process.env,
+      TMPDIR: privateTmpdir,
+      CHESSFABLE_FIXTURE_CLEANUP_PROBE: "1",
+    };
+    // A new test runner must not inherit the parent's worker context.
+    delete probeEnvironment.NODE_TEST_CONTEXT;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--test",
+        `--test-name-pattern=^fixture cleanup probe ${outcome}$`,
+        fileURLToPath(import.meta.url),
+      ],
+      {
+        cwd: projectRoot,
+        env: probeEnvironment,
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, output);
+    if (outcome === "pass") assert.equal(result.status, 0, output);
+    else {
+      assert.notEqual(result.status, 0, output);
+      assert.match(output, /deliberate fixture cleanup probe failure/u);
+      assert.match(output, /fixture cleanup probe after hook read succeeded/u);
+    }
+    assert.deepEqual(
+      (await readdir(privateTmpdir)).filter((name) => name.startsWith("backend-mutation-runner-")),
+      [],
+      `${outcome} probe leaked a fixture root`,
+    );
+  });
 }
 
 function environment({ bin, state, mode = "normal", path = `${bin}:${process.env.PATH}` }) {
