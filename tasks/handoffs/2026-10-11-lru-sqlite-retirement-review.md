@@ -6047,3 +6047,15 @@ Lenses: correctness, root-cause, tests, error-handling, minimalism, code-quality
 | D11 | records, should-fix, 100 | This handoff claimed the closure results were already in tasks/build-ledger.md, which holds no row for this run yet. | Fix: this subsection replaces that claim; the build-ledger row is appended after the push. |
 
 Later rounds and the final gate and CI results are recorded in the tasks/build-ledger.md row written after the push.
+
+### Diff review r3 — closure round (REVIEWED_THROUGH 604051a4)
+
+Lenses tests, code-quality, correctness, records over `db366326..604051a4`: D9 CLOSED (tests), D10 CLOSED (code-quality), D11 CLOSED (records); correctness found nothing. All APPROVED. Final gates (`pnpm gates:push -- --rust`) green on 604051a4, which was pushed.
+
+### Required CI on 604051a4 and diff review r4
+
+`rust-windows-test` (run 38135146487) failed the two scan witnesses with `CommittedDurabilityUncertain(WorkspaceSidecarReplacement)`: they built the scanned target with `DatabaseFileTarget::for_test_path`, whose retained parent is read-only, and Windows cannot sync a read-only directory handle when scan_worker writes its durable stamp (the reason `for_test_deletion` exists). Repaired in 3d9c6498 by using the writable parent production's `DatabaseMutate` retains. `rust-platform` (all three targets) and `test` were green; `rust-macos-test` was still running when the repair started.
+
+While proving that repair, `delayed_cached_successor_worker_establishment_waits_at_retirement_boundary` failed once inside the serial `db::` suite under load average ~10-20 with r2d2 `Error(Some("database is locked"))` at its final `pool.get_timeout`. It did not reproduce in isolation (0/60 serial, 0/160 at 16-way parallel). Same-area latent defect found while diagnosing it and repaired in aad87640: `ConnectionOptions::on_acquire` switched `journal_mode = WAL` before installing `busy_timeout`, so a pooled connection meeting a reader's lock on a rollback-mode file failed at once (measured on SQLite 3.45.1: ~20 us) instead of waiting. **The flake's cause remains unconfirmed** (review-root-cause r4, should-fix, confidence 95, adopted): the reorder fixes a demonstrated mechanism, but the original lock state was never reproduced, and a held writer lock fails with either order. If the witness flakes again, capture the competing connection's lock state before changing anything.
+
+r4 lenses correctness, root-cause, tests, platform-semantics over `604051a4..aad87640`: all APPROVED; the only finding is the attribution caveat above.
