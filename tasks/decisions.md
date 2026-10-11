@@ -7015,3 +7015,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"faa9988efc6c3112751fb91e8410856344cddfa4afd3a1e2aa3581868e1b4916","input_sha256":"d9405ee70cc7bae3ebe252dd79ffa84d0d3671443773fdcf6dbe70b8779e11fe","kind":"mutation-receipt","operation":"13ef410c09774428e70c08864573b67fc57e1e870984ededabb0a71545246f49","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-05 — Acceptance and scope of the backend mutation isolation change
+
+* **Question:** Who accepts the f-20260929-12 change, and what is in its scope?
+* **Governs:** f-20260929-12, f-20261005-08
+* **Chosen:** agent-owned subprocess and runtime acceptance (fixture suite through the real runner plus one real engine-protocol mutation package in the isolated layout), one cohesive mutation-runner phase that also fixes the same-file fence owner-record race f-20261005-08.
+* **Rejected:** browser acceptance; a redesign of gate receipts or the gate scheduler.
+* **Reason:** no product UI changes; the defect sits at the runner's filesystem and process boundary. Reversal path: split f-20261005-08 back out if the owner-record change proves separable.
+* **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"97d8ac9e77cdfb768d34159a3286663006be131986744e88cefcb09fdc20d8bf","input_sha256":"3a232f8b4372c033888fb189be45a72fbcf68a6b2195f2f0f1ea9395fcc6c3a7","kind":"mutation-receipt","operation":"8893b259d9dfe46890d1c9c4c270445006e607b2a20795e160b0b6917c9886d5","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-05"],"target":"decisions-ledger","v":1} -->
