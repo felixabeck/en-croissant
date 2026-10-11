@@ -15229,3 +15229,16 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Evidence:** `gh api repos/felixabeck/en-croissant/actions/jobs/114468444353/logs` (run 38138896410, step "Run Rust tests with coverage").
 * **Related:** none found in the ledger (no entry mentions ETXTBSY or "Text file busy").
 * **Found by:** Claude Code orchestrator, drain build run for f-20260930-01, while reading the required CI of 533e19de, 2026-10-11.
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### The `engine-local-validation` dialog screenshot differs by 6 % on one CI run and passes on rerun
+
+* **ID:** f-20261011-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** b90b3a13-44fb-4bf1-80a0-3438ca00bf20
+* **Where:** `e2e/accounts-puzzles-engines.spec.ts:425` (`await expect(dialog).toHaveScreenshot("engine-local-validation.png")` in "accounts-puzzles-engines: local engine validation is visible before any native issuance"), snapshot `e2e/accounts-puzzles-engines.spec.ts-snapshots/engine-local-validation-accounts-puzzles-engines.png`.
+* **Defect:** on the `test` job of run 38157168640 (docs-only commit 822ef846, 2026-10-11) the dialog screenshot differed in 47,116 pixels (ratio 0.06) after Playwright had "captured a stable screenshot"; 106 other tests passed. The rerun of the same job on the same commit passed. A snapshot assertion that fails on unchanged inputs measures rendering nondeterminism (font loading, async validation text, focus ring), not the change, and its red job blocks every later push through `ci:remote:check`.
+* **Evidence:** `gh api repos/felixabeck/en-croissant/actions/jobs/114522424157/logs` (lines ~10600-10667: diff ratio, expected/actual/diff attachment names); rerun job 114524609767 success. The diff image is in the job's artifacts (`artifacts/frontend-audit/test-results/accounts-puzzles-engines-a-439ab--before-any-native-issuance-accounts-puzzles-engines/engine-local-validation-diff.png`).
+* **Proof required:** name which region differs (from the diff artifact) and what in the dialog is not yet settled at capture time; the fix waits for that state (or masks only that element) and the spec passes in a repeated run.
