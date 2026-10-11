@@ -9369,10 +9369,14 @@ pub(crate) mod portable_tests {
             fs::read(temp.path().join("instance.lock")).unwrap(),
             b"retained contents"
         );
-        assert!(matches!(
-            admit_test_instance(&app_data, &[]).unwrap(),
-            InstanceAdmission::Owned(_)
-        ));
+        let _guard = crate::infra::fs::retry_until_lock_released(|| {
+            match admit_test_instance(&app_data, &[]).unwrap() {
+                InstanceAdmission::Owned(guard) => Some(guard),
+                InstanceAdmission::HeldElsewhere => None,
+                InstanceAdmission::Unguarded => panic!("re-admission must own the instance lock"),
+            }
+        })
+        .expect("instance lock was not released within the deadline after the holder dropped");
         assert!(temp.path().join("instance.lock").is_file());
     }
 
@@ -9413,10 +9417,14 @@ pub(crate) mod portable_tests {
         assert_eq!(capture.records().len(), 1);
         assert_eq!(capture.records()[0].level, log::Level::Warn);
         // A failed admission must release the data-root lock it acquired before finding contention.
-        assert!(matches!(
-            admit_test_instance(&second, &[]).unwrap(),
-            InstanceAdmission::Owned(_)
-        ));
+        let _second_guard = crate::infra::fs::retry_until_lock_released(|| {
+            match admit_test_instance(&second, &[]).unwrap() {
+                InstanceAdmission::Owned(guard) => Some(guard),
+                InstanceAdmission::HeldElsewhere => None,
+                InstanceAdmission::Unguarded => panic!("data-root re-admission must own the lock"),
+            }
+        })
+        .expect("data-root lock was not released within the deadline after failed admission");
     }
 
     #[test]
@@ -9651,20 +9659,14 @@ pub(crate) mod portable_tests {
         child.0.kill().unwrap();
         child.0.wait().unwrap();
         assert!(temp.path().join("instance.lock").is_file());
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let _guard = loop {
+        let _guard = crate::infra::fs::retry_until_lock_released(|| {
             match admit_test_instance(&app_data, &[]).expect("post-crash admission must not fail") {
-                InstanceAdmission::Owned(guard) => break guard,
-                InstanceAdmission::HeldElsewhere => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "instance lock was not released after the child exited"
-                    );
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+                InstanceAdmission::Owned(guard) => Some(guard),
+                InstanceAdmission::HeldElsewhere => None,
                 InstanceAdmission::Unguarded => panic!("post-crash admission must own the lock"),
             }
-        };
+        })
+        .expect("instance lock was not released within the deadline after the child exited");
     }
 
     pub(crate) struct EngineImageCleanupFixture {

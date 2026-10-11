@@ -132,6 +132,25 @@ pub(crate) fn lock_advisory_file(
     }
 }
 
+/// A forked child can retain a dropped holder's flock until exec closes its inherited descriptor.
+/// Allow that transient retention while bounding the wait for release in tests.
+#[cfg(test)]
+pub(crate) fn retry_until_lock_released<T>(mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+    use std::time::{Duration, Instant};
+
+    const RELEASE_DEADLINE: Duration = Duration::from_secs(5);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(5);
+    let started = Instant::now();
+    while started.elapsed() < RELEASE_DEADLINE {
+        if let Some(value) = attempt() {
+            return Some(value);
+        }
+        let remaining = RELEASE_DEADLINE.saturating_sub(started.elapsed());
+        std::thread::sleep(RETRY_INTERVAL.min(remaining));
+    }
+    None
+}
+
 pub(crate) const MAX_DIRECTORY_LISTING_ENTRIES: usize = 4_096;
 
 /// Check before materialising the next name or staged workspace node.
@@ -5575,8 +5594,14 @@ mod tests {
             Err(AdvisoryLockError::HeldElsewhere(_))
         ));
         drop(first);
-        lock_advisory_file(&second, AdvisoryLockMode::NonBlocking)
-            .map_err(AdvisoryLockError::into_io_error)?;
+        retry_until_lock_released(|| {
+            match lock_advisory_file(&second, AdvisoryLockMode::NonBlocking) {
+                Ok(()) => Some(Ok(())),
+                Err(AdvisoryLockError::HeldElsewhere(_)) => None,
+                Err(AdvisoryLockError::Io(error)) => Some(Err(error)),
+            }
+        })
+        .expect("advisory lock was not released within the deadline after the holder dropped")?;
         Ok(())
     }
 
