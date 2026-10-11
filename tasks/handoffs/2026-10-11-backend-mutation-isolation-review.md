@@ -2748,4 +2748,3 @@ NOT APPLICABLE — The drift changes workspace hydration, schema lifetimes, code
 
 VERDICT: APPROVED
 ```
-
