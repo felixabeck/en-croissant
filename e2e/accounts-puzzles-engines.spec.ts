@@ -411,6 +411,11 @@ test("accounts-puzzles-engines: local engine validation is visible before any na
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
     await expect(dialog.getByText("Name is required", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Path is required", { exact: true })).toBeVisible();
+    // The Add click scrolls the modal content to reveal the button, and where that scroll
+    // settles varies between runs (f-20261011-07). Capture the validation state from the top.
+    const content = page.locator(".mantine-Modal-content");
+    await content.evaluate((element) => element.scrollTo({ top: 0 }));
+    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(0);
     const issuance = await page.evaluate(() =>
         window.__E2E_TAURI__
             .invocations()
