@@ -154,6 +154,44 @@ describe("BoardControls tab type durability", () => {
     expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
   });
 
+  test("surfaces snapshot rendering failures without an unhandled rejection", async () => {
+    const failure = new Error("snapshot rendering failed");
+    const snapshotTarget = document.createElement("div");
+    snapshotTarget.className = "cg-wrap";
+    container.append(snapshotTarget);
+    vi.mocked(domtoimage.toBlob).mockRejectedValue(failure);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Board.Action.TakeSnapshot"]')!
+        .click();
+    });
+
+    expect(domtoimage.toBlob).toHaveBeenCalledWith(snapshotTarget);
+    expect(mocks.saveBoardSnapshot).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+  });
+
+  test("surfaces snapshot conversion failures without an unhandled rejection", async () => {
+    const failure = new Error("snapshot conversion failed");
+    const snapshotTarget = document.createElement("div");
+    snapshotTarget.className = "cg-wrap";
+    container.append(snapshotTarget);
+    const arrayBuffer = vi.fn().mockRejectedValue(failure);
+    vi.mocked(domtoimage.toBlob).mockResolvedValue({ arrayBuffer } as unknown as Blob);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Board.Action.TakeSnapshot"]')!
+        .click();
+    });
+
+    expect(domtoimage.toBlob).toHaveBeenCalledWith(snapshotTarget);
+    expect(arrayBuffer).toHaveBeenCalled();
+    expect(mocks.saveBoardSnapshot).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+  });
+
   test("starts a game only after the analysis-to-play change is durable", async () => {
     const durableWorkspace = sessionStorage.getItem("workspace");
     const storageFailure = refuseWorkspaceWrites();
