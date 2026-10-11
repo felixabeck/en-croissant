@@ -7161,3 +7161,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"60922314376bbf0af7b6f9cd1e41d339ee77ca7759c6744215a74ed27c762d55","input_sha256":"98a10dfa7f058e593c9559dd1a4194cc0562be1f2e149a18da8e450c6fdbd9fb","kind":"mutation-receipt","operation":"50c08c5e2af4b958113aaca8ebd7c9272e11f86c4f227a4d99ebadb40b711ac5","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-02 — What does the user see when a capability operation meets an inode that is live in an incompatible SQLite binding?
+
+* **Question:** Which error reaches the user when a cross-kind alias is refused under the f-20261001-02 inode admission?
+* **Governs:** f-20261001-02
+* **Chosen:** the existing `Error::Conflict` presentation for an incompatible live inode; native I/O errors and existing cancellation are preserved unchanged everywhere else.
+* **Rejected:** new settings, new dialogs or persisted cross-kind prohibitions on capabilities.
+* **Reason:** a transient resource conflict follows the precedents d-20260929-05 and d-20261011-01 and does not change what capability authorization promises. Reversal path: amend the ordinary admission error mapping and its caller tests.
+* **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e1ec6efc7eb08d1c4a6d37ef80f55ff032e859310a593701dd236909c5d992e6","input_sha256":"dd6e4880f894aba93beafed0758a387ce44ec0343b5c40babec4926953a91098","kind":"mutation-receipt","operation":"4b1905f48db9c68f554ac40f8032f5657e325affaf164ff995f4bd9566d49812","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-02"],"target":"decisions-ledger","v":1} -->
