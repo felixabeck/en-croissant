@@ -6503,6 +6503,8 @@ mod bound_sqlite_witnesses {
 
     #[test]
     fn pool_refusal_counter_maps_r2d2_failure_to_conflict_and_retires_entry() {
+        const SHORT_BUDGET_COMPLETION_BOUND: Duration = Duration::from_secs(10);
+
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());
         let path = parent.join("pool-refusal.db3");
@@ -6532,8 +6534,18 @@ mod bound_sqlite_witnesses {
             }));
         });
 
+        let started = Instant::now();
+        let result = repository.initialization_connection(&target, None);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < SHORT_BUDGET_COMPLETION_BOUND,
+            "short-budget failing acquisition took {elapsed:?}, exceeding {SHORT_BUDGET_COMPLETION_BOUND:?} completion bound"
+        );
+        eprintln!(
+            "short-budget failing acquisition completed in {elapsed:?} with {SHORT_POOL_CONNECTION_TIMEOUT:?} pool budget and {SHORT_BUDGET_COMPLETION_BOUND:?} completion bound"
+        );
         assert!(matches!(
-            repository.initialization_connection(&target, None),
+            result,
             Err(Error::Conflict(message)) if message == "database changed after capability resolution"
         ));
         assert!(failed_hook_seen.load(Ordering::SeqCst));
@@ -7310,7 +7322,6 @@ mod bound_sqlite_witnesses {
 
     #[test]
     fn pooled_connection_keeps_the_vfs_registered_until_connection_close() {
-        const STANDALONE_POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("binding-lifetime.db3");
         seed_database(&path, 3, "WAL");
@@ -7322,7 +7333,7 @@ mod bound_sqlite_witnesses {
         let pool = Pool::builder()
             .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .min_idle(Some(0))
-            .connection_timeout(STANDALONE_POOL_CONNECTION_TIMEOUT)
+            .connection_timeout(POOL_CONNECTION_TIMEOUT)
             .connection_customizer(Box::new(ConnectionOptions))
             .build(BoundConnectionManager {
                 database: bound.clone(),
