@@ -73,13 +73,10 @@ where
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 const POOL_WORKER_THREADS: usize = 3;
-// r2d2 retries a failed pooled open until this timeout; tests that drive a refused bound open
-// shorten it so they do not wait the production 30 s.
-const POOL_CONNECTION_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_secs(2)
-} else {
-    Duration::from_secs(30)
-};
+// Ordinary lazy pools need the same establishment budget in every build.
+const POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const SHORT_POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 // Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
 // contended write completes rather than tripping retirement.
 const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -757,6 +754,7 @@ pub struct DatabaseRepository {
     state: Arc<Mutex<RepositoryState>>,
     build_changed: Condvar,
     retire_wait: Duration,
+    pool_connection_timeout: Duration,
     #[cfg(test)]
     fail_next_deletion_release: std::sync::atomic::AtomicBool,
 }
@@ -768,6 +766,7 @@ impl Default for DatabaseRepository {
             state: Arc::new(Mutex::new(RepositoryState::default())),
             build_changed: Condvar::new(),
             retire_wait: RETIRE_WAIT_TIMEOUT,
+            pool_connection_timeout: POOL_CONNECTION_TIMEOUT,
             #[cfg(test)]
             fail_next_deletion_release: std::sync::atomic::AtomicBool::new(false),
         }
@@ -778,11 +777,16 @@ impl DatabaseRepository {
     #[cfg(test)]
     fn with_retire_wait(retire_wait: Duration) -> Self {
         Self {
-            content_validation: Default::default(),
-            state: Arc::new(Mutex::new(RepositoryState::default())),
-            build_changed: Condvar::new(),
             retire_wait,
-            fail_next_deletion_release: std::sync::atomic::AtomicBool::new(false),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_pool_connection_timeout(pool_connection_timeout: Duration) -> Self {
+        Self {
+            pool_connection_timeout,
+            ..Self::default()
         }
     }
 
@@ -1414,7 +1418,7 @@ impl DatabaseRepository {
                 .thread_pool(pool_worker_threads())
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
-                .connection_timeout(POOL_CONNECTION_TIMEOUT)
+                .connection_timeout(self.pool_connection_timeout)
                 .connection_customizer(Box::new(ConnectionOptions))
                 .event_handler(Box::new(PoolEvents {
                     wake: Arc::clone(&pool_wake),
@@ -2343,13 +2347,13 @@ impl DatabaseEntry {
         deadline: Instant,
         cancellation: Option<&CancellationToken>,
     ) -> Result<PooledConnection<BoundConnectionManager>, Error> {
-        let pool_deadline = Instant::now() + POOL_CONNECTION_TIMEOUT;
         let pool = self
             .pool
             .read()
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::Conflict("database pool has been retired".into()))?;
+        let pool_deadline = Instant::now() + pool.connection_timeout();
         let mut requested = false;
         let mut pool_failure = None;
         loop {
@@ -2545,11 +2549,11 @@ mod retirement_tests {
 
     const SIGNAL_TIMEOUT: Duration = Duration::from_secs(10);
     const SHORT_WAIT: Duration = Duration::from_millis(300);
-    // This scheduling allowance remains strictly below the extra two-second pool timeout.
+    // Retirement completion stays bounded independently of the ordinary pool timeout.
     const COMPLETION_BOUND: Duration = Duration::from_millis(1500);
     const MULTI_PREDECESSOR_BUDGET: Duration = Duration::from_millis(700);
     const FIRST_PREDECESSOR_RELEASE_DELAY: Duration = Duration::from_millis(500);
-    // Above the single budget, below release delay + a refreshed budget and extra pool timeout.
+    // Above the single retirement budget, below release delay + a refreshed retirement budget.
     const MULTI_PREDECESSOR_COMPLETION_BOUND: Duration = Duration::from_millis(1050);
 
     #[test]
@@ -2866,6 +2870,7 @@ mod retirement_tests {
 
     #[test]
     fn ordinary_pool_establishment_outlives_short_retire_wait_without_predecessors() {
+        const COMPLETION_BOUND: Duration = Duration::from_secs(2);
         enum AcquisitionEvent {
             BeyondRetireDeadline,
             Completed(Result<(), Error>),
@@ -2900,7 +2905,7 @@ mod retirement_tests {
             });
             reached(&entry_signal);
             assert!(repository.state.lock().unwrap().retired.is_empty());
-            match events.recv_timeout(POOL_CONNECTION_TIMEOUT).unwrap() {
+            match events.recv_timeout(COMPLETION_BOUND).unwrap() {
                 AcquisitionEvent::BeyondRetireDeadline => {}
                 AcquisitionEvent::Completed(outcome) => {
                     // Resume before asserting so a negative proof does not strand the worker.
@@ -2910,20 +2915,64 @@ mod retirement_tests {
             }
             assert!(started.elapsed() >= SHORT_WAIT);
             resume.send(()).unwrap();
-            match events.recv_timeout(POOL_CONNECTION_TIMEOUT).unwrap() {
+            match events.recv_timeout(COMPLETION_BOUND).unwrap() {
                 AcquisitionEvent::Completed(outcome) => outcome.unwrap(),
                 AcquisitionEvent::BeyondRetireDeadline => panic!("duplicate budget observation"),
             }
             assert!(
-                started.elapsed() < POOL_CONNECTION_TIMEOUT,
-                "ordinary acquisition exceeded its pool budget: {:?}",
+                started.elapsed() < COMPLETION_BOUND,
+                "ordinary acquisition exceeded its completion bound: {:?}",
                 started.elapsed()
             );
             eprintln!(
-                "ordinary acquisition completed in {:?} with {:?} retire wait and {:?} pool budget",
+                "ordinary acquisition completed in {:?} with {:?} retire wait and {:?} completion bound",
                 started.elapsed(),
                 SHORT_WAIT,
-                POOL_CONNECTION_TIMEOUT
+                COMPLETION_BOUND
+            );
+        });
+    }
+
+    #[test]
+    fn default_pool_first_establishment_outlives_two_seconds() {
+        const BLOCKED_ESTABLISHMENT_WAIT: Duration = Duration::from_millis(2500);
+
+        let root = tempfile::tempdir().unwrap();
+        let path = path_in(root.path(), "default-budget", "database.db3");
+        let repository = DatabaseRepository::default();
+        let (entered, entry_signal) = signal();
+        let (resume, resumed) = signal();
+        let (completed, completion) = mpsc::channel();
+        let _hooks = configure_test_hooks(&path, |hooks| {
+            hooks.worker_before_establish = Some(pause(entered, resumed));
+        });
+        std::thread::scope(|scope| {
+            let repository = &repository;
+            let path = &path;
+            scope.spawn(move || {
+                completed
+                    .send(
+                        repository
+                            .initialization_connection(&test_target(path), None)
+                            .map(|_| ()),
+                    )
+                    .unwrap();
+            });
+            reached(&entry_signal);
+            let blocked_since = Instant::now();
+            let pending = completion.recv_timeout(BLOCKED_ESTABLISHMENT_WAIT);
+            // Release before asserting so the old-budget negative proof cleans up its worker.
+            resume.send(()).unwrap();
+            assert!(
+                matches!(pending, Err(mpsc::RecvTimeoutError::Timeout)),
+                "default first acquisition ended while establishment was blocked: {pending:?}"
+            );
+            let blocked_for = blocked_since.elapsed();
+            assert!(blocked_for >= BLOCKED_ESTABLISHMENT_WAIT);
+            completion.recv_timeout(SIGNAL_TIMEOUT).unwrap().unwrap();
+            eprintln!(
+                "default first acquisition succeeded after establishment was blocked for {blocked_for:?} with {:?} pool budget",
+                repository.pool_connection_timeout
             );
         });
     }
@@ -4348,6 +4397,7 @@ mod tests {
 
     #[test]
     fn revision_read_refuses_same_parent_alias_before_pool_timeout() {
+        const PROMPT_REFUSAL_BOUND: Duration = Duration::from_secs(1);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
         let alias = directory.path().join("alias.db3");
@@ -4367,7 +4417,7 @@ mod tests {
                 .unwrap();
         });
         let result = result_rx
-            .recv_timeout(POOL_CONNECTION_TIMEOUT / 2)
+            .recv_timeout(PROMPT_REFUSAL_BOUND)
             .expect("revision alias refusal must complete before the r2d2 connection timeout");
         worker.join().unwrap();
         assert!(
@@ -6460,7 +6510,8 @@ mod bound_sqlite_witnesses {
         seed_database(&path, 1, "WAL");
         seed_database(&b_path, 9, "DELETE");
         let target = test_target(&path);
-        let repository = DatabaseRepository::default();
+        let repository =
+            DatabaseRepository::with_pool_connection_timeout(SHORT_POOL_CONNECTION_TIMEOUT);
         let leaf_swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path, &b_path)));
         let before_pool = Arc::clone(&leaf_swap);
         let after_failure = Arc::clone(&leaf_swap);
@@ -6901,7 +6952,7 @@ mod bound_sqlite_witnesses {
                 // Prove the real read-only fallback is reachable, rather than merely arranging
                 // a FIFO that a privileged process could open read-write.
                 assert_eq!(crate::db::bound_sqlite::open_bound_sidecar_for_test(&bound, "-shm", libc::O_RDWR), Err(libc::EACCES), "fixture must force SQLite's read-only SHM fallback");
-                let repository = DatabaseRepository::default();
+                let repository = DatabaseRepository::with_pool_connection_timeout(SHORT_POOL_CONNECTION_TIMEOUT);
                 let mut established = SqliteConnection::establish(&bound.uri(SqliteMode::ReadOnly).unwrap()).expect("establish succeeds before SHM query");
                 let query = read_data_revision(&mut established);
                 eprintln!("FIFO SHM after establish: {query:?}");
@@ -7259,6 +7310,7 @@ mod bound_sqlite_witnesses {
 
     #[test]
     fn pooled_connection_keeps_the_vfs_registered_until_connection_close() {
+        const STANDALONE_POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("binding-lifetime.db3");
         seed_database(&path, 3, "WAL");
@@ -7270,7 +7322,7 @@ mod bound_sqlite_witnesses {
         let pool = Pool::builder()
             .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .min_idle(Some(0))
-            .connection_timeout(POOL_CONNECTION_TIMEOUT)
+            .connection_timeout(STANDALONE_POOL_CONNECTION_TIMEOUT)
             .connection_customizer(Box::new(ConnectionOptions))
             .build(BoundConnectionManager {
                 database: bound.clone(),
