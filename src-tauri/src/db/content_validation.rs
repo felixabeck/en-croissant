@@ -553,12 +553,24 @@ pub(super) fn scan_worker(
             cancellation_check(cancellation)?;
             return Ok(());
         }
+        #[cfg(test)]
+        super::repository::run_test_hook(
+            super::repository::TestHook::ScanBeforeAdmission,
+            target.path(),
+        );
+        let admission = repository.predecessor_admission_for(target, cancellation)?;
         let bound = BoundDatabase::acquire(target)?;
         // SQLite 3.39 ignores stored CHECK violations on SQLITE_OPEN_READONLY.
         // mode=rw never creates the primary; query_only prevents scan mutations.
         let mut connection = SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite)?)
             .map_err(crate::error::map_sqlite_establish)?;
         connection.batch_execute("PRAGMA query_only=ON;")?;
+        #[cfg(test)]
+        super::repository::run_test_hook(
+            super::repository::TestHook::ScanAfterEstablish,
+            target.path(),
+        );
+        drop(admission);
         #[cfg(test)]
         test_checkpoint(target.path(), cancellation);
         let verdict = Verdict::from_result(super::sqlite_cancellation::with_sqlite_cancellation(
