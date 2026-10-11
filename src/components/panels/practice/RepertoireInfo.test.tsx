@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
 import { act, useContext } from "react";
@@ -105,7 +106,9 @@ async function renderRepertoireInfo(
         <Provider store={store}>
           <TreeStateProvider id={id} initial={initial}>
             <CaptureStore onStore={onStore}>
-              <RepertoireInfo />
+              <WorkspaceTabScope tabId="tab">
+                <RepertoireInfo />
+              </WorkspaceTabScope>
             </CaptureStore>
           </TreeStateProvider>
         </Provider>

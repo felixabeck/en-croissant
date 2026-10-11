@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTab } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import {
   Alert,
@@ -21,10 +22,9 @@ import { useStore } from "zustand";
 import { type DatabaseHandle } from "@/bindings";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
-  currentDbTabAtom,
-  currentDbTypeAtom,
-  currentLocalOptionsAtom,
-  currentTabAtom,
+  dbTabFamily,
+  dbTypeFamily,
+  localOptionsFamily,
   lichessOptionsAtom,
   masterOptionsAtom,
   referenceDbAtom,
@@ -138,8 +138,8 @@ function DatabasePanel() {
   const [debouncedFen] = useDebouncedValue(fen, 50);
   const [lichessOptions, setLichessOptions] = useAtom(lichessOptionsAtom);
   const [masterOptions, setMasterOptions] = useAtom(masterOptionsAtom);
-  const [localOptions, setLocalOptions] = useAtom(currentLocalOptionsAtom);
-  const [db, setDb] = useAtom(currentDbTypeAtom);
+  const [localOptions, setLocalOptions] = useAtom(useTabAtom(localOptionsFamily));
+  const [db, setDb] = useAtom(useTabAtom(dbTypeFamily));
   const explorerHandle = sessions.find((session) => session.lichess?.handle)?.lichess?.handle;
   const missingExplorerAuthentication = db !== "local" && !explorerHandle;
 
@@ -184,8 +184,8 @@ function DatabasePanel() {
     }))
     .exhaustive();
 
-  const tab = useAtomValue(currentTabAtom);
-  const [tabType, setTabType] = useAtom(currentDbTabAtom);
+  const [tab] = useOwnerTab();
+  const [tabType, setTabType] = useAtom(useTabAtom(dbTabFamily));
   const openingKey = tabType !== "options" && !missingExplorerAuthentication ? dbType : null;
   const openingOwner = useNativeRequestOwner(openingKey);
 

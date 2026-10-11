@@ -1,15 +1,10 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import {
-  activeTabAtom,
-  currentGameStateAtom,
-  currentTabAtom,
-  gameStateFamily,
-  tabsAtom,
-} from "@/state/atoms";
+import { activeTabAtom, currentTabAtom, gameStateFamily, tabsAtom } from "@/state/atoms";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import type { Tab } from "@/state/workspaceTypes";
 import BoardControls from "./BoardControls";
@@ -107,7 +102,9 @@ describe("BoardControls tab type durability", () => {
       root.render(
         <JotaiProvider store={jotaiStore}>
           <TreeStateContext.Provider value={treeStore}>
-            <BoardControls editingMode={false} toggleEditingMode={vi.fn()} dirty={false} />
+            <WorkspaceTabScope tabId={tabId}>
+              <BoardControls editingMode={false} toggleEditingMode={vi.fn()} dirty={false} />
+            </WorkspaceTabScope>
           </TreeStateContext.Provider>
         </JotaiProvider>,
       );
@@ -142,7 +139,7 @@ describe("BoardControls tab type durability", () => {
     });
 
     expect(jotaiStore.get(currentTabAtom)?.type).toBe("analysis");
-    expect(jotaiStore.get(currentGameStateAtom)).toBe("playing");
+    expect(jotaiStore.get(gameStateFamily(tabId))).toBe("playing");
     expect(sessionStorage.getItem("workspace")).toBe(durableWorkspace);
 
     storageFailure.mockRestore();
@@ -153,6 +150,6 @@ describe("BoardControls tab type durability", () => {
     });
 
     expect(jotaiStore.get(currentTabAtom)?.type).toBe("play");
-    expect(jotaiStore.get(currentGameStateAtom)).toBe("settingUp");
+    expect(jotaiStore.get(gameStateFamily(tabId))).toBe("settingUp");
   });
 });

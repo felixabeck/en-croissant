@@ -1,6 +1,7 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { getDefaultStore } from "jotai";
+import { getDefaultStore, useAtomValue } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BestMovesPayload } from "@/bindings";
 import { INITIAL_FEN } from "chessops/fen";
@@ -74,7 +75,7 @@ vi.mock("@/state/atoms", async () => {
   return {
     activeTabAtom: atom<string | null>("tab-1"),
     closingTabsAtom: atom<Set<string>>(new Set<string>()),
-    currentThreatAtom: atom(false),
+    threatFamily: atomFamily((_tab: string) => atom(false)),
     enginesAtom: atom<any[]>([fixtures.engine]),
     engineMovesFamily: atomFamily(
       ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
@@ -90,7 +91,7 @@ vi.mock("@/state/atoms", async () => {
         atom<string | null>(null),
       (a, b) => a.tab === b.tab && a.engine === b.engine,
     ),
-    firstEngineWithLinesFamily: atomFamily(() => atom(() => fixtures.scoreOwner)),
+    firstEngineWithLinesAtom: () => atom(() => fixtures.scoreOwner),
     tabEngineSettingsFamily: atomFamily(
       ({ defaultSettings, defaultGo }: { defaultSettings?: any[]; defaultGo?: any }) =>
         atom({
@@ -117,7 +118,7 @@ vi.mock("@/components/common/TreeStateContext", async () => {
 import {
   activeTabAtom,
   closingTabsAtom,
-  currentThreatAtom,
+  threatFamily,
   engineMovesFamily,
   engineNoLinesFamily,
   engineProgressFamily,
@@ -160,8 +161,19 @@ async function settleTransition() {
   });
 }
 
+function ActiveWorkspace({ children }: { children: React.ReactNode }) {
+  const tabId = useAtomValue(activeTabAtom);
+  return tabId === null ? null : <WorkspaceTabScope tabId={tabId}>{children}</WorkspaceTabScope>;
+}
+
 async function rerender() {
-  await act(async () => root.render(<EvalListener />));
+  await act(async () =>
+    root.render(
+      <ActiveWorkspace>
+        <EvalListener />
+      </ActiveWorkspace>,
+    ),
+  );
 }
 
 async function unmount() {
@@ -200,7 +212,7 @@ beforeEach(() => {
   store.set(activeTabAtom, "tab-1");
   store.set(tabsAtom, [{ value: "tab-1" }, { value: "tab-2" }] as any);
   store.set(closingTabsAtom, new Set());
-  store.set(currentThreatAtom, false);
+  store.set(threatFamily("tab-1"), false);
   store.set(enginesAtom, [engine] as any);
   store.set(settingsAtom("tab-1"), {
     enabled: true,
@@ -1123,7 +1135,7 @@ test("normal and threat entries coexist and threat toggles restore lines without
   const normal = payload("normal");
   await broadcast(normal);
   await act(async () => {
-    store.set(currentThreatAtom, true);
+    store.set(threatFamily("tab-1"), true);
     await flush();
   });
   const threat = payload("threat", { fen: `threat:${INITIAL_FEN}` });
@@ -1134,13 +1146,13 @@ test("normal and threat entries coexist and threat toggles restore lines without
   expect(store.get(movesAtom()).get("start-fen:")).toEqual(normal.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledExactlyOnceWith(normal.bestLines[0].score);
   await act(async () => {
-    store.set(currentThreatAtom, false);
+    store.set(threatFamily("tab-1"), false);
     await flush();
   });
   expect(store.get(movesAtom()).get("start-fen:")).toEqual(normal.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledTimes(1);
   await act(async () => {
-    store.set(currentThreatAtom, true);
+    store.set(threatFamily("tab-1"), true);
     await flush();
   });
   expect(store.get(movesAtom()).get(`threat:${INITIAL_FEN}:`)).toEqual(threat.bestLines);

@@ -1,4 +1,38 @@
-import { expect, preserveStorageForReload, test } from "./fixtures";
+import {
+    expect,
+    filesWorkspaceCommands,
+    filesWorkspaceFixture,
+    pgnFileCommands,
+    preserveStorageForReload,
+    selectFilesTreeRow,
+    test,
+} from "./fixtures";
+
+test("workspace-tabs: closing the last tab of an opened repertoire file leaves a New Tab", async ({
+    page,
+    mockScenario,
+}) => {
+    const repertoireFile = {
+        ...filesWorkspaceFixture.pgnFile,
+        metadata: { type: "repertoire" as const, tags: [] },
+    };
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], { ...pgnFileCommands }),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: /choose collection/i }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    // Train is an inner tab rendered by PracticePanel, proving its cleanup has mounted.
+    await expect(page.getByRole("tab", { name: "Train", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /close tab/i }).click();
+    await expect(page.getByText(/an error occurred/i)).toHaveCount(0);
+    const workspaceTabs = page.getByRole("tablist").first().getByRole("tab");
+    await expect(workspaceTabs).toHaveCount(1);
+    await expect(workspaceTabs).toHaveText("New Tab");
+    await expect(workspaceTabs).toHaveAttribute("aria-selected", "true");
+});
 
 async function rejectWorkspaceWrites(page: import("@playwright/test").Page) {
     await page.evaluate(() => {

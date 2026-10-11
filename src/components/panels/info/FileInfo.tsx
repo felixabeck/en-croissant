@@ -1,10 +1,9 @@
+import { useOwnerTab } from "@/state/tabScope";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
 import { IconReload } from "@tabler/icons-react";
-import { useAtom } from "jotai";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { currentTabAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import { formatNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
@@ -18,7 +17,7 @@ function FileInfo({
   setGames: React.Dispatch<React.SetStateAction<Map<number, GameSelectorRow>>>;
 }) {
   const { t } = useTranslation();
-  const [tab, setCurrentTab] = useAtom(currentTabAtom);
+  const [tab, setCurrentTab] = useOwnerTab();
   const tabFile = getTabFile(tab);
   const tabId = tab?.value;
   const fileKey = tabFile ? fileWorkspaceKey(tabFile.handle) : null;

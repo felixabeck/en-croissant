@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { tauriSubscriptions } from "@/platform/tauri";
 import { errorUnlessCancelled } from "@/platform/errors";
 import equal from "fast-deep-equal";
@@ -20,12 +21,12 @@ import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/n
 import {
   activeTabAtom,
   closingTabsAtom,
-  currentThreatAtom,
+  threatFamily,
   engineMovesFamily,
   engineNoLinesFamily,
   engineProgressFamily,
   enginesAtom,
-  firstEngineWithLinesFamily,
+  firstEngineWithLinesAtom,
   tabEngineSettingsFamily,
   tabsAtom,
 } from "@/state/atoms";
@@ -95,7 +96,7 @@ function releaseNativeOwner(
 
 function EvalListener() {
   const [engines] = useAtom(enginesAtom);
-  const threat = useAtomValue(currentThreatAtom);
+  const threat = useAtomValue(useTabAtom(threatFamily));
   const store = useContext(TreeStateContext)!;
   const fen = useStore(store, (s) => s.root.fen);
 
@@ -110,11 +111,9 @@ function EvalListener() {
   );
   const isGameOver = position?.isEnd() ?? false;
 
+  const tabId = useOwnerTabId();
   const firstEngineWithLines = useAtomValue(
-    firstEngineWithLinesFamily({
-      fen,
-      gameMoves: moves,
-    }),
+    useMemo(() => firstEngineWithLinesAtom(tabId, fen, moves), [tabId, fen, moves]),
   );
 
   return (engines ?? [])
@@ -153,18 +152,18 @@ function EngineListener({
   const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
   const setScore = useStore(store, (s) => s.setScore);
-  const activeTab = useAtomValue(activeTabAtom);
+  const ownerTabId = useOwnerTabId();
 
-  const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
+  const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
 
-  const [, setEngineVariation] = useAtom(engineMovesFamily({ engine: engine.id, tab: activeTab! }));
-  const [, setNoLinesKey] = useAtom(engineNoLinesFamily({ engine: engine.id, tab: activeTab! }));
+  const [, setEngineVariation] = useAtom(engineMovesFamily({ engine: engine.id, tab: ownerTabId }));
+  const [, setNoLinesKey] = useAtom(engineNoLinesFamily({ engine: engine.id, tab: ownerTabId }));
   const [settings] = useAtom(
     tabEngineSettingsFamily({
       engineId: engine.id,
       defaultSettings: engine.settings ?? undefined,
       defaultGo: engine.go ?? undefined,
-      tab: activeTab!,
+      tab: ownerTabId,
     }),
   );
   const settingsFingerprint = JSON.stringify(settings);
@@ -202,7 +201,7 @@ function EngineListener({
   }, [notifyFailure]);
   useEffect(() => {
     const jotaiStore = getDefaultStore();
-    const tab = activeTab!;
+    const tab = ownerTabId;
     let wasClosing = jotaiStore.get(closingTabsAtom).has(tab);
     return jotaiStore.sub(closingTabsAtom, () => {
       const isClosing = jotaiStore.get(closingTabsAtom).has(tab);
@@ -215,9 +214,9 @@ function EngineListener({
       }
       wasClosing = isClosing;
     });
-  }, [activeTab, setProgress]);
+  }, [ownerTabId, setProgress]);
   const requestFingerprint = JSON.stringify({
-    tab: activeTab,
+    tab: ownerTabId,
     closeRevision,
     fen: searchingFen,
     moves: searchingMoves,
@@ -250,7 +249,7 @@ function EngineListener({
       const ev = payload.bestLines;
       if (
         payload.engine === engine.id &&
-        payload.tab === activeTab &&
+        payload.tab === ownerTabId &&
         payload.fen === searchingFen &&
         equal(payload.moves, searchingMoves) &&
         activeAttempt.current?.nativeOwner?.generation === payload.generation &&
@@ -279,7 +278,7 @@ function EngineListener({
       }
     },
     [
-      activeTab,
+      ownerTabId,
       setScore,
       searchingFen,
       searchingMoves,
@@ -328,7 +327,7 @@ function EngineListener({
     const attempt: SearchAttempt = {
       fingerprint: requestFingerprint,
       engineIdentity: engineIdentity(engine),
-      tab: activeTab!,
+      tab: ownerTabId,
       nativeOwner: null,
       predecessorOwner: previous?.nativeOwner ?? previous?.predecessorOwner ?? null,
       cancelled: false,
@@ -338,7 +337,7 @@ function EngineListener({
     setNoLinesKey(null);
     if (
       !settings.enabled ||
-      previous?.tab !== activeTab ||
+      previous?.tab !== ownerTabId ||
       previous?.engineIdentity !== attempt.engineIdentity
     ) {
       for (const owner of new Set([attempt.predecessorOwner, retainedOwner.current])) {
@@ -360,7 +359,7 @@ function EngineListener({
       attempt.cancelled = true;
     };
   }, [
-    activeTab,
+    ownerTabId,
     engine,
     requestFingerprint,
     setEngineVariation,
@@ -406,7 +405,7 @@ function EngineListener({
         if (!isCurrentAttempt(attempt)) return;
         let nativeGeneration: string;
         try {
-          nativeGeneration = await prepareEngineSearch(engine, activeTab!);
+          nativeGeneration = await prepareEngineSearch(engine, ownerTabId);
         } catch (error) {
           failAttempt(error);
           return;
@@ -417,13 +416,13 @@ function EngineListener({
             const ownerDisappeared =
               !mounted.current ||
               !enabled.current ||
-              jotaiStore.get(activeTabAtom) !== activeTab ||
+              jotaiStore.get(activeTabAtom) !== ownerTabId ||
               !(jotaiStore.get(enginesAtom) ?? []).some(
                 (candidate) =>
                   candidate.loaded && engineIdentity(candidate) === attempt.engineIdentity,
               );
-            if (ownerDisappeared) await releaseEngineSearch(engine, activeTab!, nativeGeneration);
-            else await stopEngine(engine, activeTab!, nativeGeneration);
+            if (ownerDisappeared) await releaseEngineSearch(engine, ownerTabId, nativeGeneration);
+            else await stopEngine(engine, ownerTabId, nativeGeneration);
           } catch (error) {
             notifyUnlessCancelled(t("Common.Error"), error);
           }
@@ -431,7 +430,7 @@ function EngineListener({
         }
         attempt.nativeOwner = {
           engine,
-          tab: activeTab!,
+          tab: ownerTabId,
           generation: nativeGeneration,
           stopPromise: null,
           releasePromise: null,
@@ -443,7 +442,7 @@ function EngineListener({
       // The command lives for the whole search. Only stop and preparation
       // occupy the transition slot; new navigation must be able to stop it.
       void getBestMoves(
-        activeTab!,
+        ownerTabId,
         settings.go,
         { moves: searchingMoves, fen: searchingFen, extraOptions: options },
         attempt.nativeOwner?.generation ?? "",
@@ -493,7 +492,7 @@ function EngineListener({
     searchingFen,
     searchingMoves,
     isGameOver,
-    activeTab,
+    ownerTabId,
     getBestMoves,
     setEngineVariation,
     setNoLinesKey,

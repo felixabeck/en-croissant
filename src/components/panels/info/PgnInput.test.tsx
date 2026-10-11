@@ -1,4 +1,5 @@
 import { act } from "react";
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
@@ -72,7 +73,9 @@ test("PGN editor replacement keeps the same game's source stamp and append marke
     root.render(
       <Provider store={jotaiStore}>
         <TreeStateContext.Provider value={store}>
-          <PgnInput />
+          <WorkspaceTabScope tabId="pgn-input-test">
+            <PgnInput />
+          </WorkspaceTabScope>
         </TreeStateContext.Provider>
       </Provider>,
     ),

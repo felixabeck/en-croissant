@@ -1,3 +1,4 @@
+import { useOwnerTabId } from "@/state/tabScope";
 import { Group, Paper, Text, useMantineTheme } from "@mantine/core";
 import { IconPinnedOff, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
@@ -5,12 +6,7 @@ import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import {
-  activeTabAtom,
-  currentDetachedEngineAtom,
-  enginesAtom,
-  tabEngineSettingsFamily,
-} from "@/state/atoms";
+import { currentDetachedEngineAtom, enginesAtom, tabEngineSettingsFamily } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
 import type { Engine } from "@/utils/engines";
 import { useDisplayedEngineLines } from "../panels/analysis/useDisplayedEngineLines";
@@ -40,7 +36,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const activeTab = useAtomValue(activeTabAtom);
+  const ownerTabId = useOwnerTabId();
   const store = useContext(TreeStateContext)!;
   const rootFen = useStore(store, (s) => s.root.fen);
   const moves = useStore(
@@ -54,7 +50,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
       engineId: engine.id,
       defaultSettings: engine.settings ?? undefined,
       defaultGo: engine.go ?? undefined,
-      tab: activeTab!,
+      tab: ownerTabId,
     }),
   );
 

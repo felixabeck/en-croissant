@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTab } from "@/state/tabScope";
 import {
   Alert,
   Badge,
@@ -48,18 +49,17 @@ import {
   updateCardPerformance,
 } from "@/components/files/opening";
 import {
-  currentEvalOpenAtom,
-  currentInvisibleAtom,
-  currentPracticeTabAtom,
-  currentShowCommentsAtom,
-  currentTabAtom,
+  evalOpenFamily,
+  invisibleFamily,
+  practiceTabFamily,
+  showCommentsFamily,
   deckAtomFamily,
   type PracticeSessionStats,
-  practiceCardStartTimeAtom,
-  practiceCompletedSummaryAtom,
-  practiceMoveControllerAtom,
-  practiceSessionStatsAtom,
-  practiceStateAtom,
+  practiceCardStartTimeFamily,
+  practiceCompletedSummaryFamily,
+  practiceMoveControllerFamily,
+  practiceSessionStatsFamily,
+  practiceStateFamily,
   practiceAutoDifficultyAtom,
 } from "@/state/atoms";
 import {
@@ -95,7 +95,7 @@ function PracticePanel() {
   const setPracticePath = useStore(store, (s) => s.setPracticePath);
   const currentFen = useStore(store, (s) => s.currentNode().fen);
 
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const tabFile = getTabFile(currentTab);
   const [resetModal, toggleResetModal] = useToggle();
   const [repairModal, toggleRepairModal] = useToggle();
@@ -160,15 +160,17 @@ function PracticePanel() {
 
   const stats = getStats(deck.positions);
 
-  const setInvisible = useSetAtom(currentInvisibleAtom);
-  const setShowComments = useSetAtom(currentShowCommentsAtom);
-  const setEvalOpen = useSetAtom(currentEvalOpenAtom);
-  const [practiceState, setPracticeState] = useAtom(practiceStateAtom);
-  const [, setPracticeMoveController] = useAtom(practiceMoveControllerAtom);
-  const [sessionStats, setSessionStats] = useAtom(practiceSessionStatsAtom);
-  const [completedSummary, setCompletedSummary] = useAtom(practiceCompletedSummaryAtom);
-  const setCardStartTime = useSetAtom(practiceCardStartTimeAtom);
-  const cardStartTime = useAtomValue(practiceCardStartTimeAtom);
+  const setInvisible = useSetAtom(useTabAtom(invisibleFamily));
+  const setShowComments = useSetAtom(useTabAtom(showCommentsFamily));
+  const setEvalOpen = useSetAtom(useTabAtom(evalOpenFamily));
+  const [practiceState, setPracticeState] = useAtom(useTabAtom(practiceStateFamily));
+  const [, setPracticeMoveController] = useAtom(useTabAtom(practiceMoveControllerFamily));
+  const [sessionStats, setSessionStats] = useAtom(useTabAtom(practiceSessionStatsFamily));
+  const [completedSummary, setCompletedSummary] = useAtom(
+    useTabAtom(practiceCompletedSummaryFamily),
+  );
+  const setCardStartTime = useSetAtom(useTabAtom(practiceCardStartTimeFamily));
+  const cardStartTime = useAtomValue(useTabAtom(practiceCardStartTimeFamily));
   const practiceAutoDifficulty = useAtomValue(practiceAutoDifficultyAtom);
   const sessionRef = useRef<PracticeSession>(idlePracticeSession());
   const endPracticeSessionRef = useRef<() => void>(() => undefined);
@@ -615,7 +617,7 @@ function PracticePanel() {
 
   const [positionsOpen, setPositionsOpen] = useToggle();
   const [logsOpen, setLogsOpen] = useToggle();
-  const [tab, setTab] = useAtom(currentPracticeTabAtom);
+  const [tab, setTab] = useAtom(useTabAtom(practiceTabFamily));
   const displayedSessionStats = completedSummary ?? sessionStats;
   const showPracticeContent =
     deck.status === "ready" || deck.status === "write-pending" || deck.status === "write-blocked";

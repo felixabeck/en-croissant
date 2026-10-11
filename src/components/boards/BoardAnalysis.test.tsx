@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act, useContext, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider as JotaiProvider, createStore as createJotaiStore, useAtomValue } from "jotai";
@@ -8,11 +9,11 @@ import {
   autoSaveAtom,
   closeWorkspaceTabAtom,
   currentTabAtom,
-  currentTabSelectedAtom,
-  currentAnalysisTabAtom,
-  currentPracticeTabAtom,
-  currentReportModalOpenAtom,
-  practiceStateAtom,
+  tabFamily,
+  analysisTabFamily,
+  practiceTabFamily,
+  reportModalOpenFamily,
+  practiceStateFamily,
   tabsAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
@@ -218,9 +219,11 @@ function RetainedBoardHarness() {
           <CaptureAction action={action} />
         </FileFreshnessGate>
       )}
-      <AddGameContext.Provider value={(owner) => action.current?.(owner) ?? Promise.resolve()}>
-        <BoardAnalysis />
-      </AddGameContext.Provider>
+      <WorkspaceTabScope tabId="11111111-1111-4111-8111-111111111111">
+        <AddGameContext.Provider value={(owner) => action.current?.(owner) ?? Promise.resolve()}>
+          <BoardAnalysis />
+        </AddGameContext.Provider>
+      </WorkspaceTabScope>
     </>
   );
 }
@@ -229,11 +232,13 @@ function ComposedBoardHarness() {
   const tab = useAtomValue(currentTabAtom);
   if (!tab || tab.type !== "analysis") return <div data-testid="away">away</div>;
   return (
-    <TreeStateProvider key={tab.value} id={tab.value} treeKey={getTabTreeKey(tab)}>
-      <FileFreshnessGate tab={tab} closeTab={() => undefined}>
-        <BoardAnalysis />
-      </FileFreshnessGate>
-    </TreeStateProvider>
+    <WorkspaceTabScope tabId={tab.value}>
+      <TreeStateProvider key={tab.value} id={tab.value} treeKey={getTabTreeKey(tab)}>
+        <FileFreshnessGate tab={tab} closeTab={() => undefined}>
+          <BoardAnalysis />
+        </FileFreshnessGate>
+      </TreeStateProvider>
+    </WorkspaceTabScope>
   );
 }
 
@@ -358,9 +363,9 @@ describe("BoardAnalysis add game durability", () => {
       ["info", "correct", false],
     ] as const) {
       await act(async () => {
-        jotaiStore.set(currentTabSelectedAtom, panel);
-        jotaiStore.set(currentPracticeTabAtom, "train");
-        jotaiStore.set(practiceStateAtom, { phase });
+        jotaiStore.set(tabFamily(tabId), panel);
+        jotaiStore.set(practiceTabFamily(tabId), "train");
+        jotaiStore.set(practiceStateFamily(tabId), { phase });
       });
       for (const [keys, nag] of annotations) {
         await act(async () => treeStore.setState({ root: defaultTree().root, dirty: false }));
@@ -386,7 +391,7 @@ describe("BoardAnalysis add game durability", () => {
       })),
     );
     await act(async () => {
-      jotaiStore.set(currentTabSelectedAtom, "info");
+      jotaiStore.set(tabFamily(tabId), "info");
       root.render(
         <MantineProvider>
           <JotaiProvider store={jotaiStore}>
@@ -416,7 +421,7 @@ describe("BoardAnalysis add game durability", () => {
     };
     const keys = jotaiStore.get(keyMapAtom);
     await shortcut(keys.PRACTICE_TAB.keys);
-    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("info");
+    expect(jotaiStore.get(tabFamily(tabId))).toBe("info");
     for (const [binding, panel] of [
       [keys.ANALYSIS_TAB.keys, "analysis"],
       [keys.DATABASE_TAB.keys, "database"],
@@ -424,7 +429,7 @@ describe("BoardAnalysis add game durability", () => {
       [keys.INFO_TAB.keys, "info"],
     ] as const) {
       await shortcut(binding);
-      expect(jotaiStore.get(currentTabSelectedAtom)).toBe(panel);
+      expect(jotaiStore.get(tabFamily(tabId))).toBe(panel);
       expect(container.querySelector('[data-testid="add-game"]') !== null).toBe(panel === "info");
       for (const element of container.querySelectorAll<HTMLElement>('[role="tabpanel"]')) {
         expect(element.style.flex).toBe("1 1 0%");
@@ -433,9 +438,9 @@ describe("BoardAnalysis add game durability", () => {
     }
     const reportEvent = await shortcut(keys.GENERATE_REPORT.keys);
     expect(reportEvent.defaultPrevented).toBe(true);
-    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("analysis");
-    expect(jotaiStore.get(currentAnalysisTabAtom)).toBe("report");
-    expect(jotaiStore.get(currentReportModalOpenAtom)).toBe(true);
+    expect(jotaiStore.get(tabFamily(tabId))).toBe("analysis");
+    expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
+    expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
     if (!isFileBackedTab(tab)) throw new Error("Expected file owner");
     await act(async () =>
       jotaiStore.set(
@@ -463,10 +468,10 @@ describe("BoardAnalysis add game durability", () => {
       "Board.Tabs.Info",
     ]);
     await shortcut(keys.PRACTICE_TAB.keys);
-    expect(jotaiStore.get(currentTabSelectedAtom)).toBe("practice");
+    expect(jotaiStore.get(tabFamily(tabId))).toBe("practice");
     expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(5);
-    expect(jotaiStore.get(currentAnalysisTabAtom)).toBe("report");
-    expect(jotaiStore.get(currentReportModalOpenAtom)).toBe(true);
+    expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
+    expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
   });
 
   test("dirty Add Game asks first and Cancel keeps the edited tree without writing", async () => {
@@ -835,7 +840,9 @@ describe("BoardAnalysis add game durability", () => {
       root.render(
         <JotaiProvider store={jotaiStore}>
           <TreeStateContext.Provider value={treeStore}>
-            <BoardAnalysis />
+            <WorkspaceTabScope tabId={tabId}>
+              <BoardAnalysis />
+            </WorkspaceTabScope>
           </TreeStateContext.Provider>
         </JotaiProvider>,
       );

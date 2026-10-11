@@ -1,16 +1,17 @@
+import { useOwnerTabId } from "@/state/tabScope";
 import { Center, Checkbox, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconCloud, IconCpu } from "@tabler/icons-react";
 import { Link } from "@tanstack/react-router";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom } from "jotai";
 import { memo } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import LocalImage from "@/components/common/LocalImage";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { activeTabAtom, enginesAtom } from "@/state/atoms";
+import { enginesAtom } from "@/state/atoms";
 import { type Engine, stopEngine } from "@/utils/engines";
 
 function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () => void }) {
-  const activeTab = useAtomValue(activeTabAtom);
+  const ownerTabId = useOwnerTabId();
   const { t } = useTranslation();
 
   return (
@@ -22,7 +23,7 @@ function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () 
       onClick={async () => {
         if (engine.loaded && engine.type === "local") {
           try {
-            await stopEngine(engine, activeTab!);
+            await stopEngine(engine, ownerTabId);
           } catch (error) {
             notifyUnlessCancelled(t("Common.Error"), error);
             return;

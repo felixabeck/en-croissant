@@ -1,3 +1,4 @@
+import { useOwnerTab } from "@/state/tabScope";
 import { Box, Menu, Portal, Text } from "@mantine/core";
 import { useClickOutside } from "@mantine/hooks";
 import {
@@ -9,12 +10,11 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import equal from "fast-deep-equal";
-import { useAtomValue } from "jotai";
 import { memo, useContext, useMemo, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import Comment from "@/components/common/Comment";
 import IconAction from "@/components/common/IconAction";
-import { currentTabAtom } from "@/state/atoms";
+
 import type { Annotation } from "@/utils/annotation";
 import { hasMorePriority, stripClock } from "@/utils/chess";
 import { formatMoveNumber } from "@/utils/format";
@@ -211,7 +211,7 @@ function OpenMoveMenu({
   onClose: () => void;
 }) {
   const ref = useClickOutside(onClose);
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const tabFile = getTabFile(currentTab);
   const { t } = useTranslation();
   const actions = store.getState();

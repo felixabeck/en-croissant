@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -83,7 +84,7 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@/state/atoms", () => ({
   activeTabAtom: mocks.activeTabAtom,
-  currentReportModalOpenAtom: mocks.reportModalOpenAtom,
+  reportModalOpenFamily: () => mocks.reportModalOpenAtom,
   enginesAtom: mocks.enginesAtom,
   referenceDbAtom: mocks.referenceDbAtom,
 }));
@@ -223,7 +224,9 @@ async function renderPanel() {
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <ReportPanel />
+        <WorkspaceTabScope tabId={"tab-1"}>
+          <ReportPanel />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });

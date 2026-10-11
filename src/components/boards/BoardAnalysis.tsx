@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTab, useOwnerTabId } from "@/state/tabScope";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Paper, Portal, Stack, Tabs } from "@mantine/core";
 import { useHotkeys, useToggle, type HotkeyItem } from "@mantine/hooks";
@@ -14,16 +15,15 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import {
-  allEnabledAtom,
+  allEnabledFamily,
   autoSaveAtom,
-  currentAnalysisTabAtom,
-  currentPracticeTabAtom,
-  currentReportModalOpenAtom,
-  currentTabAtom,
-  currentTabSelectedAtom,
-  enableAllAtom,
-  practiceMoveControllerAtom,
-  practiceStateAtom,
+  analysisTabFamily,
+  practiceTabFamily,
+  reportModalOpenFamily,
+  tabFamily,
+  enableAllFamily,
+  practiceMoveControllerFamily,
+  practiceStateFamily,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import type { Annotation } from "@/utils/annotation";
@@ -48,7 +48,7 @@ function BoardAnalysis() {
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const { getTab, updateTab } = useTabActions();
   const [addGameConfirm, setAddGameConfirm] = useState(false);
   const tabFile = getTabFile(currentTab);
@@ -120,19 +120,19 @@ function BoardAnalysis() {
     void appendGame();
   }, [tabFile, currentTab, store, appendGame]);
 
-  const [, enable] = useAtom(enableAllAtom);
-  const allEnabled = useAtomValue(allEnabledAtom);
+  const [, enable] = useAtom(enableAllFamily(useOwnerTabId()));
+  const allEnabled = useAtomValue(allEnabledFamily(useOwnerTabId()));
 
   const keyMap = useAtomValue(keyMapAtom);
 
-  const [, setAnalysisTab] = useAtom(currentAnalysisTabAtom);
-  const [currentTabSelected, setCurrentTabSelected] = useAtom(currentTabSelectedAtom);
-  const [, setReportModalOpen] = useAtom(currentReportModalOpenAtom);
-  const practiceTabSelected = useAtomValue(currentPracticeTabAtom);
+  const [, setAnalysisTab] = useAtom(useTabAtom(analysisTabFamily));
+  const [currentTabSelected, setCurrentTabSelected] = useAtom(useTabAtom(tabFamily));
+  const [, setReportModalOpen] = useAtom(useTabAtom(reportModalOpenFamily));
+  const practiceTabSelected = useAtomValue(useTabAtom(practiceTabFamily));
   const isRepertoire = tabFile?.metadata.type === "repertoire";
   const practicing = currentTabSelected === "practice" && practiceTabSelected === "train";
-  const practiceState = useAtomValue(practiceStateAtom);
-  const practiceMoveController = useAtomValue(practiceMoveControllerAtom);
+  const practiceState = useAtomValue(useTabAtom(practiceStateFamily));
+  const practiceMoveController = useAtomValue(useTabAtom(practiceMoveControllerFamily));
   const isPracticeRating = practicing && practiceState.phase === "correct";
 
   const setPracticePath = useStore(store, (s) => s.setPracticePath);

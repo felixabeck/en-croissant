@@ -1,3 +1,4 @@
+import { useTabAtom } from "@/state/tabScope";
 import {
   Box,
   Button,
@@ -20,14 +21,14 @@ import { useTranslation } from "react-i18next";
 import { Chessground } from "@/chessground/Chessground";
 import PiecesGrid from "@/components/boards/PiecesGrid";
 import { PlayerSearchInput } from "@/components/databases/PlayerSearchInput";
-import { currentLocalOptionsAtom } from "@/state/atoms";
+import { localOptionsFamily } from "@/state/atoms";
 
 const YEAR_PRESETS = [1, 3, 5, 10];
 
 function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
   const { t } = useTranslation();
   const boardRef = useRef(null);
-  const [options, setOptions] = useAtom(currentLocalOptionsAtom);
+  const [options, setOptions] = useAtom(useTabAtom(localOptionsFamily));
 
   const setSimilarStructure = async (fen: string) => {
     const setup = parseFen(fen).unwrap();

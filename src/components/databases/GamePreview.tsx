@@ -1,3 +1,4 @@
+import { EphemeralTabScope } from "@/state/tabScope";
 import { Box, Group, Stack } from "@mantine/core";
 import { useElementSize } from "@mantine/hooks";
 import { useContext } from "react";
@@ -73,48 +74,52 @@ function GamePreview({
 
   return (
     <TreeStateProvider initial={game}>
-      {showOpening && <OpeningName />}
-      <Group
-        ref={frameRef}
-        // Top-aligned when fitting: a board limited by a narrow width then sits under the list
-        // instead of below an empty band.
-        align={fitHeight ? "start" : "end"}
-        grow={!fitHeight && !stacked}
-        wrap={fitHeight ? "nowrap" : undefined}
-        style={{
-          overflow: stacked ? "visible" : "hidden",
-          height: stacked ? "auto" : "100%",
-          flexDirection: stacked ? "column" : undefined,
-        }}
-      >
-        <Box
-          ref={boardRef}
-          w={stacked ? "100%" : undefined}
-          // A measured px width, not Mantine's `w`, which reads a number as rem and so doubles it
-          // at a 200% font scale.
-          style={fitHeight ? { width: boardSide, flex: "none" } : undefined}
+      <EphemeralTabScope>
+        {showOpening && <OpeningName />}
+        <Group
+          ref={frameRef}
+          // Top-aligned when fitting: a board limited by a narrow width then sits under the list
+          // instead of below an empty band.
+          align={fitHeight ? "start" : "end"}
+          grow={!fitHeight && !stacked}
+          wrap={fitHeight ? "nowrap" : undefined}
+          style={{
+            overflow: stacked ? "visible" : "hidden",
+            height: stacked ? "auto" : "100%",
+            flexDirection: stacked ? "column" : undefined,
+          }}
         >
-          <PreviewBoard />
-        </Box>
-        {!hideControls && (
-          <Stack
-            style={{ height: stacked ? "auto" : height }}
+          <Box
+            ref={boardRef}
             w={stacked ? "100%" : undefined}
-            className={stacked ? classes.stackedPreviewControls : undefined}
-            gap="xs"
-            flex={fitHeight ? 1 : undefined}
-            miw={fitHeight || stacked ? 0 : undefined}
+            // A measured px width, not Mantine's `w`, which reads a number as rem and so doubles it
+            // at a 200% font scale.
+            style={fitHeight ? { width: boardSide, flex: "none" } : undefined}
           >
-            <Box
-              className={classes.previewNotation}
-              style={stacked ? { height: `${COMPACT_PREVIEW_NOTATION_HEIGHT_REM}rem` } : undefined}
+            <PreviewBoard />
+          </Box>
+          {!hideControls && (
+            <Stack
+              style={{ height: stacked ? "auto" : height }}
+              w={stacked ? "100%" : undefined}
+              className={stacked ? classes.stackedPreviewControls : undefined}
+              gap="xs"
+              flex={fitHeight ? 1 : undefined}
+              miw={fitHeight || stacked ? 0 : undefined}
             >
-              <GameNotation />
-            </Box>
-            <MoveControls readOnly />
-          </Stack>
-        )}
-      </Group>
+              <Box
+                className={classes.previewNotation}
+                style={
+                  stacked ? { height: `${COMPACT_PREVIEW_NOTATION_HEIGHT_REM}rem` } : undefined
+                }
+              >
+                <GameNotation />
+              </Box>
+              <MoveControls readOnly />
+            </Stack>
+          )}
+        </Group>
+      </EphemeralTabScope>
     </TreeStateProvider>
   );
 }

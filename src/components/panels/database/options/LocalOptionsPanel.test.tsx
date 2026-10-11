@@ -1,10 +1,11 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import dayjs from "dayjs";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { activeTabAtom, currentLocalOptionsAtom, tabsAtom } from "@/state/atoms";
+import { activeTabAtom, localOptionsFamily, tabsAtom } from "@/state/atoms";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({ searchPosition: vi.fn() }));
@@ -58,7 +59,7 @@ describe("LocalOptionsPanel explorer filters", () => {
     store = createJotaiStore();
     store.set(tabsAtom, [tab]);
     store.set(activeTabAtom, tabId);
-    store.set(currentLocalOptionsAtom, (q) => ({
+    store.set(localOptionsFamily(tabId), (q) => ({
       ...q,
       path: { id: { id: "local" }, kind: "database" },
       fen: "8/8/8/8/8/8/8/8 w - - 0 1",
@@ -69,9 +70,11 @@ describe("LocalOptionsPanel explorer filters", () => {
     await act(async () => {
       root.render(
         <JotaiProvider store={store}>
-          <MantineProvider>
-            <LocalOptionsPanel boardFen="8/8/8/8/8/8/8/8 w - - 0 1" />
-          </MantineProvider>
+          <WorkspaceTabScope tabId={tabId}>
+            <MantineProvider>
+              <LocalOptionsPanel boardFen="8/8/8/8/8/8/8/8 w - - 0 1" />
+            </MantineProvider>
+          </WorkspaceTabScope>
         </JotaiProvider>,
       );
     });
@@ -102,8 +105,8 @@ describe("LocalOptionsPanel explorer filters", () => {
       input.click();
     });
 
-    expect(store.get(currentLocalOptionsAtom).exclude_fast_events).toBe(true);
-    await searchPosition(store.get(currentLocalOptionsAtom), tabId);
+    expect(store.get(localOptionsFamily(tabId)).exclude_fast_events).toBe(true);
+    await searchPosition(store.get(localOptionsFamily(tabId)), tabId);
     expect(mocks.searchPosition.mock.calls[0][1].exclude_fast_events).toBe(true);
   });
 
@@ -116,7 +119,7 @@ describe("LocalOptionsPanel explorer filters", () => {
       preset.click();
     });
 
-    const options = store.get(currentLocalOptionsAtom);
+    const options = store.get(localOptionsFamily(tabId));
     expect(options.start_date).toBe(dayjs().subtract(3, "year").format("YYYY.MM.DD"));
     expect(options.end_date).toBeUndefined();
   });

@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTab } from "@/state/tabScope";
 import { Stack } from "@mantine/core";
 import {
   IconArrowBack,
@@ -12,18 +13,13 @@ import {
 } from "@tabler/icons-react";
 import { tauri } from "@/platform/tauri";
 import domtoimage from "dom-to-image";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import IconAction from "@/components/common/IconAction";
-import {
-  autoSaveAtom,
-  currentGameStateAtom,
-  currentTabAtom,
-  eraseDrawablesOnClickAtom,
-} from "@/state/atoms";
+import { autoSaveAtom, gameStateFamily, eraseDrawablesOnClickAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 
 interface BoardControlsProps {
@@ -57,8 +53,8 @@ function BoardControls({
   const clearShapes = useStore(store, (s) => s.clearShapes);
 
   const keyMap = useAtomValue(keyMapAtom);
-  const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
-  const setGameState = useSetAtom(currentGameStateAtom);
+  const [currentTab, setCurrentTab] = useOwnerTab();
+  const setGameState = useSetAtom(useTabAtom(gameStateFamily));
   const autoSave = useAtomValue(autoSaveAtom);
   const eraseDrawablesOnClick = useAtomValue(eraseDrawablesOnClickAtom);
 

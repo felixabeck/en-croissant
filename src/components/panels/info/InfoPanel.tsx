@@ -1,3 +1,4 @@
+import { useOwnerTab } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
@@ -63,7 +64,7 @@ function InfoPanel({ addGame }: { addGame?: () => void }) {
   const stats = useStore(store, getStats);
   const headers = useStore(store, (s) => s.headers);
   const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const tabFile = getTabFile(currentTab);
   const gameNumber = getTabGameNumber(currentTab);
   const isReportoire = tabFile?.metadata.type === "repertoire";
@@ -156,7 +157,7 @@ function GameSelectorAccordion({
   addGame?: () => void;
 }) {
   const store = use(TreeStateContext)!;
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const setTabs = useSetAtom(tabsAtom);
   const jotaiStore = useJotaiStore();
 

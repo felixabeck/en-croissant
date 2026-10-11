@@ -1,4 +1,5 @@
 import { MantineProvider } from "@mantine/core";
+import { createStore, Provider } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
@@ -6,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import type { StampedGame } from "@/bindings";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { activeTabAtom, tabsAtom } from "@/state/atoms";
 
 const mocks = vi.hoisted(() => ({
   lexPgn: vi.fn(),
   readGames: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
+  realNotation: false,
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -33,15 +36,29 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
+vi.mock("@/platform/native", () => ({ platform: () => "linux", warn: vi.fn(), error: vi.fn() }));
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getTotalSize: () => count * 32,
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({ index, start: index * 32 })),
+    measureElement: () => undefined,
+    scrollToIndex: () => undefined,
+  }),
+}));
+
 vi.mock("@/chessground/Chessground", () => ({
   Chessground: (props: { drawable?: { autoShapes?: unknown[] } }) => (
     <div data-testid="chessground" data-shapes={JSON.stringify(props.drawable?.autoShapes)} />
   ),
 }));
 
-vi.mock("../common/GameNotation", () => ({
-  default: () => <div data-testid="game-notation" />,
-}));
+vi.mock("../common/GameNotation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../common/GameNotation")>();
+  return {
+    default: () => (mocks.realNotation ? <actual.default /> : <div data-testid="game-notation" />),
+  };
+});
 
 vi.mock("../common/MoveControls", async () => {
   const { useContext } = await import("react");
@@ -300,6 +317,28 @@ describe("GamePreview board sizing", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    mocks.realNotation = false;
+  });
+
+  test("renders real notation when the workspace has zero tabs", async () => {
+    const store = createStore();
+    store.set(tabsAtom, []);
+    mocks.realNotation = true;
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <MantineProvider>
+            <SWRConfig value={{ provider: () => new Map() }}>
+              <GamePreviewWrapper pgn="1. e4" />
+            </SWRConfig>
+          </MantineProvider>
+        </Provider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("e4"));
+    expect(store.get(tabsAtom)).toEqual([]);
+    expect(store.get(activeTabAtom)).toBeNull();
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
   });
 
   async function renderPreview(props: { fitHeight?: boolean; hideControls?: boolean }) {

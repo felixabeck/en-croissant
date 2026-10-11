@@ -1,3 +1,4 @@
+import { useTabAtom } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import {
   Accordion,
@@ -37,8 +38,8 @@ import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
-  currentPuzzleAtom,
-  currentPuzzleTimerAtom,
+  currentPuzzleFamily,
+  puzzleTimerFamily,
   hidePuzzleRatingAtom,
   jumpToNextPuzzleAtom,
   progressivePuzzlesAtom,
@@ -84,7 +85,7 @@ function Puzzles({ id }: { id: string }) {
     key: `${id}-puzzles`,
     defaultValue: [],
   });
-  const [currentPuzzle, setCurrentPuzzle] = useAtom(currentPuzzleAtom);
+  const [currentPuzzle, setCurrentPuzzle] = useAtom(useTabAtom(currentPuzzleFamily));
 
   const [puzzleDbs, setPuzzleDbs] = useState<PuzzleDatabaseInfo[]>([]);
   const [selectedDb, setSelectedDb] = useAtom(selectedPuzzleDbAtom);
@@ -376,7 +377,7 @@ function Puzzles({ id }: { id: string }) {
   const [hideRating, setHideRating] = useAtom(hidePuzzleRatingAtom);
   const [trackTime, setTrackTime] = useAtom(trackPuzzleTimeAtom);
 
-  const [timerStart, setTimerStart] = useAtom(currentPuzzleTimerAtom);
+  const [timerStart, setTimerStart] = useAtom(useTabAtom(puzzleTimerFamily));
   const [, setTick] = useState(0);
   resetWorkspaceRef.current = () => {
     solutionAbortRef.current?.abort();

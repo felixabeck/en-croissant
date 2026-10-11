@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { parseUci } from "chessops";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,9 +21,9 @@ const virtualizerMock = vi.hoisted(() => ({
 }));
 
 vi.mock("@/state/atoms", () => ({
-  currentInvisibleAtom: atoms.invisible,
-  currentShowCommentsAtom: atoms.comments,
-  currentShowVariationsAtom: atoms.variations,
+  invisibleFamily: () => atoms.invisible,
+  showCommentsFamily: () => atoms.comments,
+  showVariationsFamily: () => atoms.variations,
   tableViewAtom: atoms.table,
 }));
 vi.mock("@/state/keybinds", () => ({ keyMapAtom: atoms.keyMap }));
@@ -169,7 +170,9 @@ test("virtualizes a 20,000-node line and navigates/highlights mounted moves", as
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <GameNotation />
+        <WorkspaceTabScope tabId={"notation-test"}>
+          <GameNotation />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });
@@ -206,7 +209,9 @@ test("scrolls to a deep current node row after navigation", async () => {
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <GameNotation />
+        <WorkspaceTabScope tabId={"notation-test"}>
+          <GameNotation />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });
@@ -266,7 +271,9 @@ test("scrolls to the nearest listed ancestor inside a collapsed variation", asyn
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <GameNotation />
+        <WorkspaceTabScope tabId={"notation-test"}>
+          <GameNotation />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });

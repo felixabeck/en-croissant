@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -422,11 +423,15 @@ describe("InfoPanel game loading and cancellation", () => {
   );
 
   function renderPanel(store: TreeStore = treeStore) {
+    const tabId = jotaiStore.get(activeTabAtom);
+    if (tabId === null) throw new Error("Test workspace has no active tab");
     return (
       <MantineProvider env="test">
         <JotaiProvider store={jotaiStore}>
           <TreeStateContext.Provider value={store}>
-            <InfoPanel />
+            <WorkspaceTabScope tabId={tabId}>
+              <InfoPanel />
+            </WorkspaceTabScope>
           </TreeStateContext.Provider>
         </JotaiProvider>
       </MantineProvider>

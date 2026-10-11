@@ -1,3 +1,4 @@
+import { WorkspaceTabScope, EphemeralTabScope } from "@/state/tabScope";
 import { parseUci } from "chessops";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,12 +10,13 @@ import { createNotationNodeIndex } from "./notationRows";
 
 const { currentTabAtom } = vi.hoisted(() => ({ currentTabAtom: Symbol("current-tab") }));
 
-vi.mock("@/state/atoms", () => ({ currentTabAtom }));
+vi.mock("@/state/atoms", () => ({ tabsAtom: currentTabAtom, updateTabAtom: {} }));
 vi.mock("jotai", () => ({
-  useAtomValue: () => ({ value: "tab" }),
+  useAtomValue: () => [{ value: "tab" }],
+  useSetAtom: () => vi.fn(),
 }));
 vi.mock("@/utils/tabs", () => ({
-  getTabFile: () => ({ metadata: { type: "repertoire" } }),
+  getTabFile: (tab: unknown) => (tab ? { metadata: { type: "repertoire" } } : undefined),
 }));
 vi.mock("@mantine/hooks", () => ({ useClickOutside: () => undefined }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -79,99 +81,113 @@ afterEach(async () => {
   host.remove();
 });
 
-test("opens one context menu and sends every action the identity-derived path", async () => {
-  const tree = defaultTree();
-  const first = createNode({
-    fen: "first w - - 0 1",
-    move: { from: 12, to: 28 },
-    san: "e4",
-    halfMoves: 1,
-  });
-  const second = createNode({
-    fen: "second b - - 0 1",
-    move: { from: 51, to: 35 },
-    san: "e5",
-    halfMoves: 2,
-  });
-  tree.root.children = [first, second];
-  const store = createTreeStore();
-  const state = store.getState();
-  const actions = {
-    deleteMove: vi.fn(),
-    promoteVariation: vi.fn(),
-    promoteToMainline: vi.fn(),
-    copyVariationPgn: vi.fn(),
-    setStart: vi.fn(),
-  };
-  store.setState({ ...state, ...actions, root: tree.root });
-  const index = createNotationNodeIndex(tree.root);
-
-  await act(async () => {
-    root.render(
-      <TreeStateContext.Provider value={store}>
-        <CompleteMoveCell
-          node={first}
-          nodeIndex={index}
-          root={tree.root}
-          halfMoves={first.halfMoves}
-          move={first.san}
-          fen={first.fen}
-          comment=""
-          annotations={[]}
-          showComments={false}
-          isStart={false}
-          isCurrentVariation={false}
-        />
-        <CompleteMoveCell
-          node={second}
-          nodeIndex={index}
-          root={tree.root}
-          halfMoves={second.halfMoves}
-          move={second.san}
-          fen={second.fen}
-          comment=""
-          annotations={[]}
-          showComments={false}
-          isStart={false}
-          isCurrentVariation={false}
-        />
-      </TreeStateContext.Provider>,
-    );
-  });
-
-  const moves = () => [...host.querySelectorAll<HTMLButtonElement>("[data-move]")];
-  expect(host.querySelectorAll('[data-menu="true"]').length).toBe(0);
-  await act(async () => {
-    moves()[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
-  });
-  expect(host.querySelectorAll('[data-menu="true"]').length).toBe(1);
-  expect(host.querySelectorAll('[data-menu-item="true"]').length).toBe(5);
-
-  const expectedPath = [0];
-  const clickAction = async (label: string, action: ReturnType<typeof vi.fn>) => {
-    await act(async () => {
-      [...host.querySelectorAll<HTMLButtonElement>('[data-menu-item="true"]')]
-        .find((button) => button.textContent === label)!
-        .click();
+test.each(["workspace", "preview"])(
+  "%s opens one context menu and sends every action the identity-derived path",
+  async (scope) => {
+    const Scope = scope === "workspace" ? WorkspaceTabScope : EphemeralTabScope;
+    const tree = defaultTree();
+    const first = createNode({
+      fen: "first w - - 0 1",
+      move: { from: 12, to: 28 },
+      san: "e4",
+      halfMoves: 1,
     });
-    expect(action).toHaveBeenCalledWith(expectedPath);
+    const second = createNode({
+      fen: "second b - - 0 1",
+      move: { from: 51, to: 35 },
+      san: "e5",
+      halfMoves: 2,
+    });
+    tree.root.children = [first, second];
+    const store = createTreeStore();
+    const state = store.getState();
+    const actions = {
+      deleteMove: vi.fn(),
+      promoteVariation: vi.fn(),
+      promoteToMainline: vi.fn(),
+      copyVariationPgn: vi.fn(),
+      setStart: vi.fn(),
+    };
+    store.setState({ ...state, ...actions, root: tree.root });
+    const index = createNotationNodeIndex(tree.root);
+
+    await act(async () => {
+      root.render(
+        <TreeStateContext.Provider value={store}>
+          <Scope tabId="tab">
+            <CompleteMoveCell
+              node={first}
+              nodeIndex={index}
+              root={tree.root}
+              halfMoves={first.halfMoves}
+              move={first.san}
+              fen={first.fen}
+              comment=""
+              annotations={[]}
+              showComments={false}
+              isStart={false}
+              isCurrentVariation={false}
+            />
+            <CompleteMoveCell
+              node={second}
+              nodeIndex={index}
+              root={tree.root}
+              halfMoves={second.halfMoves}
+              move={second.san}
+              fen={second.fen}
+              comment=""
+              annotations={[]}
+              showComments={false}
+              isStart={false}
+              isCurrentVariation={false}
+            />
+          </Scope>
+        </TreeStateContext.Provider>,
+      );
+    });
+
+    const moves = () => [...host.querySelectorAll<HTMLButtonElement>("[data-move]")];
+    expect(host.querySelectorAll('[data-menu="true"]').length).toBe(0);
     await act(async () => {
       moves()[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     });
-  };
+    expect(host.querySelectorAll('[data-menu="true"]').length).toBe(1);
+    expect(host.querySelectorAll('[data-menu-item="true"]').length).toBe(
+      scope === "workspace" ? 5 : 4,
+    );
 
-  await clickAction("Menu.MarkAsStart", actions.setStart);
-  await clickAction("Menu.PromoteToMainLine", actions.promoteToMainline);
-  await clickAction("Menu.PromoteVariation", actions.promoteVariation);
-  await clickAction("Menu.CopyVariationPGN", actions.copyVariationPgn);
-  await act(async () => {
-    [...host.querySelectorAll<HTMLButtonElement>('[data-menu-item="true"]')]
-      .find((button) => button.textContent === "Menu.DeleteMove")!
-      .click();
-  });
-  expect(actions.deleteMove).toHaveBeenCalledWith(expectedPath);
-  expect(actions.setStart).not.toHaveBeenCalledWith([1]);
-});
+    const expectedPath = [0];
+    const clickAction = async (label: string, action: ReturnType<typeof vi.fn>) => {
+      await act(async () => {
+        [...host.querySelectorAll<HTMLButtonElement>('[data-menu-item="true"]')]
+          .find((button) => button.textContent === label)!
+          .click();
+      });
+      expect(action).toHaveBeenCalledWith(expectedPath);
+      await act(async () => {
+        moves()[0].dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        );
+      });
+    };
+
+    expect(host.textContent?.includes("Menu.MarkAsStart")).toBe(scope === "workspace");
+    if (scope === "workspace") {
+      await clickAction("Menu.MarkAsStart", actions.setStart);
+    }
+    expect(actions.setStart).toHaveBeenCalledTimes(scope === "workspace" ? 1 : 0);
+    await clickAction("Menu.PromoteToMainLine", actions.promoteToMainline);
+    await clickAction("Menu.PromoteVariation", actions.promoteVariation);
+    await clickAction("Menu.CopyVariationPGN", actions.copyVariationPgn);
+    await act(async () => {
+      [...host.querySelectorAll<HTMLButtonElement>('[data-menu-item="true"]')]
+        .find((button) => button.textContent === "Menu.DeleteMove")!
+        .click();
+    });
+    expect(actions.deleteMove).toHaveBeenCalledWith(expectedPath);
+    expect(actions.setStart).not.toHaveBeenCalledWith([1]);
+  },
+);
 
 test("navigates to the first transposition in tree order", async () => {
   const tree = defaultTree();
@@ -224,19 +240,21 @@ test("navigates to the first transposition in tree order", async () => {
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <CompleteMoveCell
-          node={current}
-          nodeIndex={index}
-          root={tree.root}
-          halfMoves={current.halfMoves}
-          move={current.san}
-          fen={current.fen}
-          comment=""
-          annotations={[]}
-          showComments={false}
-          isStart={false}
-          isCurrentVariation={false}
-        />
+        <WorkspaceTabScope tabId="tab">
+          <CompleteMoveCell
+            node={current}
+            nodeIndex={index}
+            root={tree.root}
+            halfMoves={current.halfMoves}
+            move={current.san}
+            fen={current.fen}
+            comment=""
+            annotations={[]}
+            showComments={false}
+            isStart={false}
+            isCurrentVariation={false}
+          />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });
@@ -271,19 +289,21 @@ test("updates transposition actions when another branch is added", async () => {
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <CompleteMoveCell
-          node={current}
-          nodeIndex={initialIndex}
-          root={tree.root}
-          halfMoves={current.halfMoves}
-          move={current.san}
-          fen={current.fen}
-          comment=""
-          annotations={[]}
-          showComments={false}
-          isStart={false}
-          isCurrentVariation={false}
-        />
+        <WorkspaceTabScope tabId="tab">
+          <CompleteMoveCell
+            node={current}
+            nodeIndex={initialIndex}
+            root={tree.root}
+            halfMoves={current.halfMoves}
+            move={current.san}
+            fen={current.fen}
+            comment=""
+            annotations={[]}
+            showComments={false}
+            isStart={false}
+            isCurrentVariation={false}
+          />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });
@@ -302,19 +322,21 @@ test("updates transposition actions when another branch is added", async () => {
   await act(async () => {
     root.render(
       <TreeStateContext.Provider value={store}>
-        <CompleteMoveCell
-          node={current}
-          nodeIndex={nextIndex}
-          root={nextRoot}
-          halfMoves={current.halfMoves}
-          move={current.san}
-          fen={current.fen}
-          comment=""
-          annotations={[]}
-          showComments={false}
-          isStart={false}
-          isCurrentVariation={false}
-        />
+        <WorkspaceTabScope tabId="tab">
+          <CompleteMoveCell
+            node={current}
+            nodeIndex={nextIndex}
+            root={nextRoot}
+            halfMoves={current.halfMoves}
+            move={current.san}
+            fen={current.fen}
+            comment=""
+            annotations={[]}
+            showComments={false}
+            isStart={false}
+            isCurrentVariation={false}
+          />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });

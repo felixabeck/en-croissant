@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import {
   Accordion,
@@ -27,10 +28,10 @@ import { useShallow } from "zustand/react/shallow";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
 import {
-  allEnabledAtom,
-  currentAnalysisTabAtom,
-  currentExpandedEnginesAtom,
-  enableAllAtom,
+  allEnabledFamily,
+  analysisTabFamily,
+  expandedEnginesFamily,
+  enableAllFamily,
   enginesAtom,
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
@@ -75,11 +76,11 @@ function AnalysisPanel() {
     [optimisticEngines],
   );
 
-  const [, enable] = useAtom(enableAllAtom);
-  const allEnabled = useAtomValue(allEnabledAtom);
+  const [, enable] = useAtom(enableAllFamily(useOwnerTabId()));
+  const allEnabled = useAtomValue(allEnabledFamily(useOwnerTabId()));
 
-  const [tab, setTab] = useAtom(currentAnalysisTabAtom);
-  const [expanded, setExpanded] = useAtom(currentExpandedEnginesAtom);
+  const [tab, setTab] = useAtom(useTabAtom(analysisTabFamily));
+  const [expanded, setExpanded] = useAtom(useTabAtom(expandedEnginesFamily));
 
   const [pos] = positionFromFen(currentNodeFen);
   const navigate = useNavigate();

@@ -1,3 +1,4 @@
+import { useTabAtom } from "@/state/tabScope";
 import {
   Box,
   Button,
@@ -17,7 +18,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
-import { currentPgnOptionsAtom } from "@/state/atoms";
+import { pgnOptionsFamily } from "@/state/atoms";
 import { getPGN, parsePGN } from "@/utils/chess";
 
 function PgnInput() {
@@ -25,7 +26,7 @@ function PgnInput() {
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const setState = useStore(store, (s) => s.setState);
-  const [options, setOptions] = useAtom(currentPgnOptionsAtom);
+  const [options, setOptions] = useAtom(useTabAtom(pgnOptionsFamily));
   const { t } = useTranslation();
 
   const realPGN = useMemo(

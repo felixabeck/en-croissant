@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { Box, Center, Group, Text, useMantineTheme, VisuallyHidden } from "@mantine/core";
 import { IconChevronRight } from "@tabler/icons-react";
@@ -23,9 +24,9 @@ import { useShallow } from "zustand/react/shallow";
 import { Chessground, type ChessgroundRef } from "@/chessground/Chessground";
 import {
   autoPromoteAtom,
-  bestMovesFamily,
-  currentEvalOpenAtom,
-  currentShowCommentsAtom,
+  bestMovesAtom,
+  evalOpenFamily,
+  showCommentsFamily,
   enableBoardScrollAtom,
   eraseDrawablesOnClickAtom,
   forcedEnPassantAtom,
@@ -131,11 +132,9 @@ function Board({
   const headers = useStore(store, (s) => s.headers);
   const currentNode = useStore(store, (s) => s.currentNode());
 
+  const tabId = useOwnerTabId();
   const arrows = useAtomValue(
-    bestMovesFamily({
-      fen: rootFen,
-      gameMoves: moves,
-    }),
+    useMemo(() => bestMovesAtom(tabId, rootFen, moves), [tabId, rootFen, moves]),
   );
 
   const goToNext = useStore(store, (s) => s.goToNext);
@@ -183,7 +182,7 @@ function Board({
 
   const keyMap = useAtomValue(keyMapAtom);
   useHotkeys(keyMap.SWAP_ORIENTATION.keys, () => toggleOrientation());
-  const [evalOpen, setEvalOpen] = useAtom(currentEvalOpenAtom);
+  const [evalOpen, setEvalOpen] = useAtom(useTabAtom(evalOpenFamily));
 
   async function makeMove(move: NormalMove) {
     if (!pos) return;
@@ -308,7 +307,7 @@ function Board({
 
   const [enableBoardScroll] = useAtom(enableBoardScrollAtom);
   const [snapArrows] = useAtom(snapArrowsAtom);
-  const showComments = useAtomValue(currentShowCommentsAtom);
+  const showComments = useAtomValue(useTabAtom(showCommentsFamily));
   const visualAnnotation = showComments ? annotations[0] : "";
 
   const setBoardFen = useCallback(

@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -84,7 +85,13 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
   const failure = new Error("stop failed");
   mocks.stopEngine.mockRejectedValue(failure);
 
-  await act(async () => root.render(<EngineSelection />));
+  await act(async () =>
+    root.render(
+      <WorkspaceTabScope tabId="tab-1">
+        <EngineSelection />
+      </WorkspaceTabScope>,
+    ),
+  );
   await act(async () => {
     host.querySelector("button")!.click();
     await Promise.resolve();
@@ -101,7 +108,13 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
 test("a successful stop flips loaded state", async () => {
   mocks.stopEngine.mockResolvedValue(undefined);
 
-  await act(async () => root.render(<EngineSelection />));
+  await act(async () =>
+    root.render(
+      <WorkspaceTabScope tabId="tab-1">
+        <EngineSelection />
+      </WorkspaceTabScope>,
+    ),
+  );
   await act(async () => {
     host.querySelector("button")!.click();
     await Promise.resolve();

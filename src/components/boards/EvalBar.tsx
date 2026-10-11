@@ -1,14 +1,15 @@
+import { useTabAtom } from "@/state/tabScope";
 import type { Color } from "@lichess-org/chessground/types";
 import { Box, Text, Tooltip, useMantineTheme } from "@mantine/core";
 import { useAtom } from "jotai";
 import type { Score } from "@/bindings";
-import { currentEvalBarDisplayAtom, currentEvalOpenAtom } from "@/state/atoms";
+import { evalBarDisplayFamily, evalOpenFamily } from "@/state/atoms";
 import { formatScore, getWinChance } from "@/utils/score";
 
 function EvalBar({ score, orientation }: { score: Score | null; orientation: Color }) {
   const theme = useMantineTheme();
-  const [evalDisplay, setEvalDisplay] = useAtom(currentEvalBarDisplayAtom);
-  const [, setEvalOpen] = useAtom(currentEvalOpenAtom);
+  const [evalDisplay, setEvalDisplay] = useAtom(useTabAtom(evalBarDisplayFamily));
+  const [, setEvalOpen] = useAtom(useTabAtom(evalOpenFamily));
 
   const handleClick = () => {
     if (setEvalDisplay) {

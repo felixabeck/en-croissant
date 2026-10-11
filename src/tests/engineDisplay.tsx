@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import { INITIAL_FEN } from "chessops/fen";
 import { createStore, Provider } from "jotai";
@@ -57,7 +58,9 @@ export function engineDisplayHarness() {
       await act(async () =>
         root.render(
           <Provider store={store}>
-            <MantineProvider env="test">{children}</MantineProvider>
+            <MantineProvider env="test">
+              <WorkspaceTabScope tabId="display-tab">{children}</WorkspaceTabScope>
+            </MantineProvider>
           </Provider>,
         ),
       );

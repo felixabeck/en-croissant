@@ -1,3 +1,4 @@
+import { useOwnerTab } from "@/state/tabScope";
 import {
   Alert,
   Box,
@@ -28,7 +29,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { coverageMinGamesAtom, currentTabAtom, referenceDbAtom } from "@/state/atoms";
+import { coverageMinGamesAtom, referenceDbAtom } from "@/state/atoms";
 import { formatMoveNumber, roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
 import {
@@ -67,7 +68,7 @@ function RepertoireInfo() {
   const setStart = useStore(store, (s) => s.setStart);
 
   const referenceDb = useAtomValue(referenceDbAtom);
-  const currentTab = useAtomValue(currentTabAtom);
+  const [currentTab] = useOwnerTab();
   const minGames = useAtomValue(coverageMinGamesAtom);
 
   const orientation = useMemo(() => headers.orientation || "white", [headers.orientation]);

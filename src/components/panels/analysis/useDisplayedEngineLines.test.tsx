@@ -1,7 +1,8 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { activeTabAtom, currentThreatAtom, engineNoLinesFamily } from "@/state/atoms";
+import { activeTabAtom, threatFamily, engineNoLinesFamily } from "@/state/atoms";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { analysisSearch } from "./analysisSearch";
 import { AnalysisLineMemory } from "./analysisLineMemory";
@@ -12,6 +13,16 @@ import type { Engine } from "@/utils/engines";
 let h: ReturnType<typeof engineDisplayHarness>;
 let display: ReturnType<typeof useDisplayedEngineLines>;
 function Probe({
+  tabId = "display-tab",
+  ...props
+}: Parameters<typeof ScopedProbe>[0] & { tabId?: string }) {
+  return (
+    <WorkspaceTabScope tabId={tabId}>
+      <ScopedProbe {...props} />
+    </WorkspaceTabScope>
+  );
+}
+function ScopedProbe({
   engine = displayEngine,
   fen = INITIAL_FEN,
   moves = [],
@@ -50,6 +61,17 @@ test("uses current lines immediately, then dimmed previous lines with their orig
   await h.remember(displayLines, ["d2d4"]);
   expect(display.loading).toBe(false);
   expect(display.dimmed).toBe(false);
+});
+
+test("changing the active workspace tab leaves the owning reader's fallback intact", async () => {
+  await h.remember();
+  await h.render(<Probe />);
+  await h.render(<Probe moves={["e2e4"]} />);
+  await act(async () => h.store.set(activeTabAtom, "another-tab"));
+  await h.render(<Probe moves={["e2e4"]} />);
+  expect(display.lines).toEqual(displayLines);
+  expect(display.dimmed).toBe(true);
+  expect(display.finalFen).toBe(INITIAL_FEN);
 });
 
 test("first start stays empty until 1000 ms and navigation restarts the deadline", async () => {
@@ -145,7 +167,7 @@ test.each(["engine", "executable", "tab", "settings", "go", "mode"])(
           moves={["e2e4"]}
         />,
       );
-    if (change === "tab") await act(async () => h.store.set(activeTabAtom, "another-tab"));
+    if (change === "tab") await h.render(<Probe tabId="another-tab" moves={["e2e4"]} />);
     if (change === "settings")
       await act(async () =>
         h.store.set(h.settingsAtom, (s) => ({
@@ -157,7 +179,7 @@ test.each(["engine", "executable", "tab", "settings", "go", "mode"])(
       await act(async () =>
         h.store.set(h.settingsAtom, (s) => ({ ...s, go: { t: "Depth", c: 10 } })),
       );
-    if (change === "mode") await act(async () => h.store.set(currentThreatAtom, true));
+    if (change === "mode") await act(async () => h.store.set(threatFamily("display-tab"), true));
     expect(display.dimmed).toBe(false);
     expect(display.lines).toBeUndefined();
   },
@@ -174,10 +196,10 @@ test("rejects memory from old settings and reads remembered lines only for the c
     h.store.set(h.memoryAtom, new Map([[analysisSearch(INITIAL_FEN, [], true).key, displayLines]])),
   );
   expect(display.lines).toBeUndefined();
-  await act(async () => h.store.set(currentThreatAtom, true));
+  await act(async () => h.store.set(threatFamily("display-tab"), true));
   expect(display.lines).toEqual(displayLines);
   expect(display.dimmed).toBe(false);
-  await act(async () => h.store.set(currentThreatAtom, false));
+  await act(async () => h.store.set(threatFamily("display-tab"), false));
   expect(display.lines).toBeUndefined();
 });
 
@@ -196,7 +218,7 @@ test("each mode retains its most recently displayed lines without exposing the o
   await h.remember();
   await h.render(<Probe />);
   await h.render(<Probe moves={["e2e4"]} />);
-  await act(async () => h.store.set(currentThreatAtom, true));
+  await act(async () => h.store.set(threatFamily("display-tab"), true));
   expect(display.lines).toBeUndefined();
   const threats = [{ ...displayLines[0], depth: 33 }];
   await act(async () =>
@@ -209,7 +231,7 @@ test("each mode retains its most recently displayed lines without exposing the o
   await h.render(<Probe moves={["d2d4"]} />);
   expect(display.lines).toEqual(threats);
   expect(display.dimmed).toBe(true);
-  await act(async () => h.store.set(currentThreatAtom, false));
+  await act(async () => h.store.set(threatFamily("display-tab"), false));
   expect(display.lines).toEqual(displayLines);
   expect(display.dimmed).toBe(true);
 });

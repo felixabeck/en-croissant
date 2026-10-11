@@ -1,9 +1,10 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import { Grid, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconZoomCheck } from "@tabler/icons-react";
 import cx from "clsx";
 import equal from "fast-deep-equal";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom } from "jotai";
 import React, { memo, useCallback, useContext, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -11,7 +12,7 @@ import EvalChart from "@/components/common/EvalChart";
 import ProgressButton from "@/components/common/ProgressButton";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { useProgress } from "@/hooks/useProgress";
-import { activeTabAtom, currentReportModalOpenAtom } from "@/state/atoms";
+import { reportModalOpenFamily } from "@/state/atoms";
 import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getGameStats, getMainLine } from "@/utils/chess";
 import classes from "./AnalysisPanel.module.css";
@@ -21,11 +22,11 @@ import { notifyUnlessCancelled } from "@/components/files/notifyError";
 function ReportPanel() {
   const { t } = useTranslation();
 
-  const activeTab = useAtomValue(activeTabAtom);
+  const ownerTabId = useOwnerTabId();
 
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
-  const [reportingMode, setReportingMode] = useAtom(currentReportModalOpenAtom);
+  const [reportingMode, setReportingMode] = useAtom(useTabAtom(reportModalOpenFamily));
 
   const inProgress = useStore(store, (s) => s.report.inProgress);
   const operationId = useStore(store, (s) => s.report.operationId);
@@ -33,7 +34,7 @@ function ReportPanel() {
   const setReportOperationId = useStore(store, (s) => s.setReportOperationId);
 
   // Inert placeholder that never matches an emitted event; useProgress requires a string.
-  const IDLE_REPORT_PROGRESS_ID = `report_${activeTab}`;
+  const IDLE_REPORT_PROGRESS_ID = `report_${ownerTabId}`;
   const progressId = operationId ?? IDLE_REPORT_PROGRESS_ID;
   const { finished } = useProgress(progressId);
 
@@ -107,7 +108,7 @@ function ReportPanel() {
   return (
     <ScrollArea offsetScrollbars>
       <ReportModal
-        tab={activeTab!}
+        tab={ownerTabId}
         initialFen={root.fen}
         moves={getMainLine(root)}
         reportingMode={reportingMode}

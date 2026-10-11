@@ -1,3 +1,4 @@
+import { useOwnerTabId } from "@/state/tabScope";
 import { Checkbox, Group, type MantineColor, Stack, Text } from "@mantine/core";
 import { IconPlayerStopFilled, IconSettings } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -8,7 +9,7 @@ import type { GoMode } from "@/bindings";
 import GoModeInput from "@/components/common/GoModeInput";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { activeTabAtom, enginesAtom } from "@/state/atoms";
+import { enginesAtom } from "@/state/atoms";
 import { type Engine, type EngineSettings, killEngine } from "@/utils/engines";
 import CoresSlider from "./CoresSlider";
 import HashSlider from "./HashSlider";
@@ -45,7 +46,7 @@ function EngineSettingsForm({
   const multipv = settings.settings.findLast((o) => o.name === "MultiPV");
   const threads = settings.settings.findLast((o) => o.name === "Threads");
   const hash = settings.settings.findLast((o) => o.name === "Hash");
-  const activeTab = useAtomValue(activeTabAtom);
+  const ownerTabId = useOwnerTabId();
 
   const setGoMode = useCallback(
     (v: GoMode) => {
@@ -142,7 +143,7 @@ function EngineSettingsForm({
                 variant="default"
                 onClick={async () => {
                   try {
-                    await killEngine(engine, activeTab!);
+                    await killEngine(engine, ownerTabId);
                     setSettings((prev) => ({
                       ...prev,
                       enabled: false,

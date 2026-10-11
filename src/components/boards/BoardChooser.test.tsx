@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import type { Config } from "@lichess-org/chessground/config";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore as createAtomStore } from "jotai";
@@ -14,7 +15,7 @@ import PuzzleBoard from "@/components/puzzles/PuzzleBoard";
 import {
   activeTabAtom,
   tabsAtom,
-  currentEvalOpenAtom,
+  evalOpenFamily,
   showArrowsAtom,
   showVariationArrowsAtom,
 } from "@/state/atoms";
@@ -45,7 +46,7 @@ vi.mock("@/state/atoms", async (importOriginal) => {
         ])
       : new Map(),
   );
-  return { ...original, bestMovesFamily: () => bestMoves };
+  return { ...original, bestMovesAtom: () => bestMoves };
 });
 let boardConfig: Config;
 vi.mock("@/chessground/Chessground", () => ({
@@ -97,26 +98,28 @@ function render(initial: TreeState = initialTree(), puzzle = false) {
   atoms.set(activeTabAtom, "chooser-test");
   atoms.set(showVariationArrowsAtom, true);
   atoms.set(showArrowsAtom, true);
-  atoms.set(currentEvalOpenAtom, true);
+  atoms.set(evalOpenFamily("chooser-test"), true);
   act(() =>
     root.render(
       <Provider store={atoms}>
         <MantineProvider env="test">
-          <TreeStateProvider initial={initial}>
-            <Capture />
-            {puzzle ? (
-              <PuzzleBoard
-                puzzles={[]}
-                currentPuzzle={0}
-                changeCompletion={vi.fn()}
-                generatePuzzle={vi.fn()}
-                db={null}
-              />
-            ) : (
-              <Board editingMode={false} boardRef={{ current: null }} />
-            )}
-            <MoveControls />
-          </TreeStateProvider>
+          <WorkspaceTabScope tabId="chooser-test">
+            <TreeStateProvider initial={initial}>
+              <Capture />
+              {puzzle ? (
+                <PuzzleBoard
+                  puzzles={[]}
+                  currentPuzzle={0}
+                  changeCompletion={vi.fn()}
+                  generatePuzzle={vi.fn()}
+                  db={null}
+                />
+              ) : (
+                <Board editingMode={false} boardRef={{ current: null }} />
+              )}
+              <MoveControls />
+            </TreeStateProvider>
+          </WorkspaceTabScope>
         </MantineProvider>
       </Provider>,
     ),

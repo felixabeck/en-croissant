@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -75,7 +76,11 @@ test("a rejected log fetch notifies once and is not rendered as empty success", 
   mocks.getEngineLogs.mockRejectedValue(failure);
 
   await act(async () => {
-    root.render(<LogsPanel />);
+    root.render(
+      <WorkspaceTabScope tabId="tab-1">
+        <LogsPanel />
+      </WorkspaceTabScope>,
+    );
     await Promise.resolve();
   });
   await vi.waitFor(() => {

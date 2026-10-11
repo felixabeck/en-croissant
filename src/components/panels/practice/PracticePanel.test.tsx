@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -57,18 +58,19 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 vi.mock("@/state/atoms", () => ({
-  currentEvalOpenAtom: fixtures.atoms.currentEvalOpen,
-  currentInvisibleAtom: fixtures.atoms.currentInvisible,
-  currentPracticeTabAtom: fixtures.atoms.currentPracticeTab,
-  currentShowCommentsAtom: fixtures.atoms.currentShowComments,
-  currentTabAtom: fixtures.atoms.currentTab,
+  evalOpenFamily: () => fixtures.atoms.currentEvalOpen,
+  invisibleFamily: () => fixtures.atoms.currentInvisible,
+  practiceTabFamily: () => fixtures.atoms.currentPracticeTab,
+  showCommentsFamily: () => fixtures.atoms.currentShowComments,
+  tabsAtom: fixtures.atoms.currentTab,
+  updateTabAtom: Symbol("update-tab"),
   deckAtomFamily: () => fixtures.atoms.deck,
   practiceAutoDifficultyAtom: fixtures.atoms.practiceAutoDifficulty,
-  practiceCardStartTimeAtom: fixtures.atoms.practiceCardStartTime,
-  practiceCompletedSummaryAtom: fixtures.atoms.practiceCompletedSummary,
-  practiceMoveControllerAtom: fixtures.atoms.practiceMoveController,
-  practiceSessionStatsAtom: fixtures.atoms.practiceSessionStats,
-  practiceStateAtom: fixtures.atoms.practiceState,
+  practiceCardStartTimeFamily: () => fixtures.atoms.practiceCardStartTime,
+  practiceCompletedSummaryFamily: () => fixtures.atoms.practiceCompletedSummary,
+  practiceMoveControllerFamily: () => fixtures.atoms.practiceMoveController,
+  practiceSessionStatsFamily: () => fixtures.atoms.practiceSessionStats,
+  practiceStateFamily: () => fixtures.atoms.practiceState,
 }));
 vi.mock("jotai", () => ({
   useAtom: (atom: symbol) => {
@@ -87,7 +89,7 @@ vi.mock("jotai", () => ({
     return [false, vi.fn()];
   },
   useAtomValue: (atom: symbol) => {
-    if (atom === fixtures.atoms.currentTab) return fixtures.currentTab;
+    if (atom === fixtures.atoms.currentTab) return [fixtures.currentTab];
     if (atom === fixtures.atoms.practiceAutoDifficulty) return fixtures.autoDifficulty;
     if (atom === fixtures.atoms.practiceCardStartTime) return 0;
     return false;
@@ -251,7 +253,9 @@ function renderPanel() {
   act(() => {
     root.render(
       <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
+        <WorkspaceTabScope tabId={"practice-tab"}>
+          <PracticePanel />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     );
   });
@@ -635,7 +639,9 @@ async function rerenderPracticePanel() {
   await act(async () =>
     root?.render(
       <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
+        <WorkspaceTabScope tabId={"practice-tab"}>
+          <PracticePanel />
+        </WorkspaceTabScope>
       </TreeStateContext.Provider>,
     ),
   );

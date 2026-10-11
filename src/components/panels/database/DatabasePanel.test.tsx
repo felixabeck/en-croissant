@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -7,13 +8,7 @@ import { Provider as JotaiProvider, createStore as createJotaiStore } from "jota
 import { SWRConfig } from "swr";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
-import {
-  currentDbTypeAtom,
-  currentDbTabAtom,
-  sessionsAtom,
-  tabsAtom,
-  activeTabAtom,
-} from "@/state/atoms";
+import { dbTypeFamily, dbTabFamily, sessionsAtom, tabsAtom, activeTabAtom } from "@/state/atoms";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
@@ -249,8 +244,8 @@ describe("DatabasePanel online explorer branches", () => {
     const jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [validTab]);
     jotaiStore.set(activeTabAtom, tabId);
-    jotaiStore.set(currentDbTypeAtom, "lch_all");
-    jotaiStore.set(currentDbTabAtom, "moves");
+    jotaiStore.set(dbTypeFamily(tabId), "lch_all");
+    jotaiStore.set(dbTabFamily(tabId), "moves");
     jotaiStore.set(sessionsAtom, [validSession]);
 
     mocks.getLichessGames.mockResolvedValue(mockExplorerData);
@@ -276,9 +271,11 @@ describe("DatabasePanel online explorer branches", () => {
         <MantineProvider>
           <JotaiProvider store={jotaiStore}>
             <TreeStateContext.Provider value={treeStore}>
-              <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                <DatabasePanel />
-              </SWRConfig>
+              <WorkspaceTabScope tabId={tabId}>
+                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+                  <DatabasePanel />
+                </SWRConfig>
+              </WorkspaceTabScope>
             </TreeStateContext.Provider>
           </JotaiProvider>
         </MantineProvider>,
@@ -309,8 +306,8 @@ describe("DatabasePanel online explorer branches", () => {
     const jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [validTab]);
     jotaiStore.set(activeTabAtom, tabId);
-    jotaiStore.set(currentDbTypeAtom, "lch_all");
-    jotaiStore.set(currentDbTabAtom, "moves");
+    jotaiStore.set(dbTypeFamily(tabId), "lch_all");
+    jotaiStore.set(dbTabFamily(tabId), "moves");
     jotaiStore.set(sessionsAtom, [validSession]);
 
     mocks.getLichessGames.mockResolvedValue(mockExplorerData);
@@ -339,9 +336,11 @@ describe("DatabasePanel online explorer branches", () => {
         <MantineProvider>
           <JotaiProvider store={jotaiStore}>
             <TreeStateContext.Provider value={treeStore}>
-              <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                <DatabasePanel />
-              </SWRConfig>
+              <WorkspaceTabScope tabId={tabId}>
+                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+                  <DatabasePanel />
+                </SWRConfig>
+              </WorkspaceTabScope>
             </TreeStateContext.Provider>
           </JotaiProvider>
         </MantineProvider>,
@@ -355,7 +354,7 @@ describe("DatabasePanel online explorer branches", () => {
     expect(initialSignal!.aborted).toBe(false);
 
     await act(async () => {
-      jotaiStore.set(currentDbTypeAtom, "lch_master");
+      jotaiStore.set(dbTypeFamily(tabId), "lch_master");
     });
 
     await vi.waitFor(() => {
@@ -372,8 +371,8 @@ describe("DatabasePanel online explorer branches", () => {
     const jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [validTab]);
     jotaiStore.set(activeTabAtom, tabId);
-    jotaiStore.set(currentDbTypeAtom, "lch_master");
-    jotaiStore.set(currentDbTabAtom, "moves");
+    jotaiStore.set(dbTypeFamily(tabId), "lch_master");
+    jotaiStore.set(dbTabFamily(tabId), "moves");
     jotaiStore.set(sessionsAtom, [validSession]);
 
     mocks.getMasterGames.mockResolvedValue(mockExplorerData);
@@ -399,9 +398,11 @@ describe("DatabasePanel online explorer branches", () => {
         <MantineProvider>
           <JotaiProvider store={jotaiStore}>
             <TreeStateContext.Provider value={treeStore}>
-              <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                <DatabasePanel />
-              </SWRConfig>
+              <WorkspaceTabScope tabId={tabId}>
+                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+                  <DatabasePanel />
+                </SWRConfig>
+              </WorkspaceTabScope>
             </TreeStateContext.Provider>
           </JotaiProvider>
         </MantineProvider>,

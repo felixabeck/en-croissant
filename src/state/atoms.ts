@@ -1,9 +1,7 @@
 import type { MantineColor } from "@mantine/core";
-import equal from "fast-deep-equal";
 import type { SetStateAction } from "react";
-import { atom, type PrimitiveAtom } from "jotai";
+import { atom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
-import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
 import { z } from "zod";
 import type {
     BestMoves,
@@ -181,25 +179,28 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     return true;
 });
 
-export const currentTabAtom = atom(
-    (get) => {
+export const updateTabAtom = atom(
+    null,
+    (get, set, tabId: string, newValue: Tab | ((currentTab: Tab) => Tab)) => {
         const tabs = get(tabsAtom);
-        const activeTab = get(activeTabAtom);
-        return tabs.find((tab) => tab.value === activeTab);
-    },
-    (get, set, newValue: Tab | ((currentTab: Tab) => Tab)) => {
-        const tabs = get(tabsAtom);
-        const activeTab = get(activeTabAtom);
-        const currentTab = tabs.find((tab) => tab.value === activeTab);
+        const currentTab = tabs.find((tab) => tab.value === tabId);
         if (!currentTab) return false;
         const nextValue = typeof newValue === "function" ? newValue(currentTab) : newValue;
         const newTabs = tabs.map((tab) => {
-            if (tab.value === activeTab) {
+            if (tab.value === tabId) {
                 return nextValue;
             }
             return tab;
         });
         return set(tabsAtom, newTabs);
+    },
+);
+
+export const currentTabAtom = atom(
+    (get) => get(tabsAtom).find((tab) => tab.value === get(activeTabAtom)),
+    (get, set, newValue: Tab | ((currentTab: Tab) => Tab)) => {
+        const activeTab = get(activeTabAtom);
+        return activeTab !== null && set(updateTabAtom, activeTab, newValue);
     },
 );
 
@@ -608,27 +609,6 @@ export const gameOpeningBookMaxPlyAtom = atomWithStorage<number>(
     createPreferenceStorage(40),
 );
 
-function tabValue<T extends object | string | boolean | number | bigint | null | undefined>(
-    family: AtomFamily<string, PrimitiveAtom<T>>,
-) {
-    return atom(
-        (get) => {
-            const tab = get(currentTabAtom);
-            if (!tab) throw new Error("No tab selected");
-            const atom = family(tab.value);
-            return get(atom);
-        },
-        (get, set, newValue: T | ((currentValue: T) => T)) => {
-            const tab = get(currentTabAtom);
-            if (!tab) throw new Error("No tab selected");
-            const nextValue =
-                typeof newValue === "function" ? newValue(get(tabValue(family))) : newValue;
-            const atom = family(tab.value);
-            set(atom, nextValue);
-        },
-    );
-}
-
 // Puzzles
 export const hidePuzzleRatingAtom = atomWithStorage<boolean>(
     "hide-puzzle-rating",
@@ -669,7 +649,6 @@ export const coverageMinGamesAtom = atomWithStorage<number>(
 );
 
 export const puzzleTimerFamily = atomFamily((_tab: string) => atom<number | null>(null));
-export const currentPuzzleTimerAtom = tabValue(puzzleTimerFamily);
 
 // CP / WDL
 
@@ -679,31 +658,23 @@ export const scoreTypeFamily = atomFamily((_engine: string) => atom<"cp" | "wdl"
 
 // Per tab settings
 
-const threatFamily = atomFamily((_tab: string) => atom(false));
-export const currentThreatAtom = tabValue(threatFamily);
+export const threatFamily = atomFamily((_tab: string) => atom(false));
 
-const evalOpenFamily = atomFamily((_tab: string) => atom(true));
-export const currentEvalOpenAtom = tabValue(evalOpenFamily);
+export const evalOpenFamily = atomFamily((_tab: string) => atom(true));
 
-const evalBarDisplayFamily = atomFamily((_tab: string) => atom<"cp" | "wdl">("cp"));
-export const currentEvalBarDisplayAtom = tabValue(evalBarDisplayFamily);
+export const evalBarDisplayFamily = atomFamily((_tab: string) => atom<"cp" | "wdl">("cp"));
 
-const invisibleFamily = atomFamily((_tab: string) => atom(false));
-export const currentInvisibleAtom = tabValue(invisibleFamily);
+export const invisibleFamily = atomFamily((_tab: string) => atom(false));
 
-const showCommentsFamily = atomFamily((_tab: string) => atom(true));
-export const currentShowCommentsAtom = tabValue(showCommentsFamily);
+export const showCommentsFamily = atomFamily((_tab: string) => atom(true));
 
-const showVariationsFamily = atomFamily((_tab: string) => atom(true));
-export const currentShowVariationsAtom = tabValue(showVariationsFamily);
+export const showVariationsFamily = atomFamily((_tab: string) => atom(true));
 
 export const tabFamily = atomFamily((_tab: string) => atom("info"));
-export const currentTabSelectedAtom = tabValue(tabFamily);
 
-const reportModalOpenFamily = atomFamily((_tab: string) => atom(false));
-export const currentReportModalOpenAtom = tabValue(reportModalOpenFamily);
+export const reportModalOpenFamily = atomFamily((_tab: string) => atom(false));
 
-const localOptionsFamily = atomFamily((_tab: string) =>
+export const localOptionsFamily = atomFamily((_tab: string) =>
     atom<LocalOptions>({
         path: null,
         type: "exact",
@@ -713,7 +684,6 @@ const localOptionsFamily = atomFamily((_tab: string) =>
         result: "any",
     }),
 );
-export const currentLocalOptionsAtom = tabValue(localOptionsFamily);
 
 export const lichessOptionsAtom = atomWithStorage<LichessGamesOptions>(
     "lichess-all-options",
@@ -737,22 +707,19 @@ export const masterOptionsAtom = atomWithStorage<MasterGamesOptions>(
     },
 );
 
-const dbTypeFamily = atomFamily((_tab: string) =>
+export const dbTypeFamily = atomFamily((_tab: string) =>
     atom<"local" | "lch_all" | "lch_master">("local"),
 );
-export const currentDbTypeAtom = tabValue(dbTypeFamily);
 
-const dbTabFamily = atomFamily((_tab: string) => atom("stats"));
-export const currentDbTabAtom = tabValue(dbTabFamily);
+export const dbTabFamily = atomFamily((_tab: string) => atom("stats"));
 
-const analysisTabFamily = atomFamily((_tab: string) => atom("engines"));
-export const currentAnalysisTabAtom = tabValue(analysisTabFamily);
+export const analysisTabFamily = atomFamily((_tab: string) => atom("engines"));
 
-const practiceTabFamily = atomFamily((_tab: string) => atom("train"));
-export const currentPracticeTabAtom = tabValue(practiceTabFamily);
+export const practiceTabFamily = atomFamily((_tab: string) => atom("train"));
 
-const expandedEnginesFamily = atomFamily((_tab: string) => atom<string[] | undefined>(undefined));
-export const currentExpandedEnginesAtom = tabValue(expandedEnginesFamily);
+export const expandedEnginesFamily = atomFamily((_tab: string) =>
+    atom<string[] | undefined>(undefined),
+);
 
 export const currentDetachedEngineAtom = atomWithStorage<string | null>(
     "detached-engine",
@@ -760,7 +727,7 @@ export const currentDetachedEngineAtom = atomWithStorage<string | null>(
     createZodStorage(z.string().nullable(), localStorage),
 );
 
-const pgnOptionsFamily = atomFamily((_tab: string) =>
+export const pgnOptionsFamily = atomFamily((_tab: string) =>
     atom({
         comments: true,
         glyphs: true,
@@ -768,16 +735,13 @@ const pgnOptionsFamily = atomFamily((_tab: string) =>
         extraMarkups: true,
     }),
 );
-export const currentPgnOptionsAtom = tabValue(pgnOptionsFamily);
 
-const currentPuzzleFamily = atomFamily((_tab: string) => atom(0));
-export const currentPuzzleAtom = tabValue(currentPuzzleFamily);
+export const currentPuzzleFamily = atomFamily((_tab: string) => atom(0));
 
 // Game
 
 type GameState = "settingUp" | "playing" | "gameOver";
 export const gameStateFamily = atomFamily((_tab: string) => atom<GameState>("settingUp"));
-export const currentGameStateAtom = tabValue(gameStateFamily);
 
 export const playersFamily = atomFamily((_tab: string) =>
     atom<{
@@ -785,12 +749,9 @@ export const playersFamily = atomFamily((_tab: string) =>
         black: OpponentSettings;
     }>({ white: {} as OpponentSettings, black: {} as OpponentSettings }),
 );
-export const currentPlayersAtom = tabValue(playersFamily);
 
 export const gameIdFamily = atomFamily((_tab: string) => atom<string | null>(null));
-export const currentGameIdAtom = tabValue(gameIdFamily);
 export const gameSessionFamily = atomFamily((_tab: string) => atom<bigint | null>(null));
-export const currentGameSessionAtom = tabValue(gameSessionFamily);
 export const pendingGameStartFamily = atomFamily((_tab: string) =>
     atom<Promise<void> | null>(null),
 );
@@ -822,7 +783,6 @@ export type PracticeState = {
 export const practiceStateFamily = atomFamily((_tab: string) =>
     atom<PracticeState>({ phase: "idle" }),
 );
-export const practiceStateAtom = tabValue(practiceStateFamily);
 
 /** Runtime-only bridge between the practice controller and the board. */
 export type PracticeMoveController = {
@@ -830,10 +790,9 @@ export type PracticeMoveController = {
     submitMove: (san: string) => void;
 };
 
-const practiceMoveControllerFamily = atomFamily((_tab: string) =>
+export const practiceMoveControllerFamily = atomFamily((_tab: string) =>
     atom<PracticeMoveController | null>(null),
 );
-export const practiceMoveControllerAtom = tabValue(practiceMoveControllerFamily);
 
 export type PracticeSessionStats = {
     mode: "anki" | "full";
@@ -844,7 +803,7 @@ export type PracticeSessionStats = {
     bestStreak: number;
 };
 
-const practiceSessionStatsFamily = atomFamily((_tab: string) =>
+export const practiceSessionStatsFamily = atomFamily((_tab: string) =>
     atom<PracticeSessionStats>({
         mode: "anki",
         remainingPositionKeys: [],
@@ -854,13 +813,11 @@ const practiceSessionStatsFamily = atomFamily((_tab: string) =>
         bestStreak: 0,
     }),
 );
-export const practiceSessionStatsAtom = tabValue(practiceSessionStatsFamily);
 
 /** Completed runs remain visible without keeping an inactive session alive. */
-const practiceCompletedSummaryFamily = atomFamily((_tab: string) =>
+export const practiceCompletedSummaryFamily = atomFamily((_tab: string) =>
     atom<PracticeSessionStats | null>(null),
 );
-export const practiceCompletedSummaryAtom = tabValue(practiceCompletedSummaryFamily);
 
 export const practiceAutoDifficultyAtom = atomWithStorage<"none" | "1" | "2" | "3" | "4">(
     "practice-auto-difficulty",
@@ -868,8 +825,7 @@ export const practiceAutoDifficultyAtom = atomWithStorage<"none" | "1" | "2" | "
     createZodStorage(z.enum(["none", "1", "2", "3", "4"]), localStorage),
 );
 
-const practiceCardStartTimeFamily = atomFamily((_tab: string) => atom<number>(0));
-export const practiceCardStartTimeAtom = tabValue(practiceCardStartTimeFamily);
+export const practiceCardStartTimeFamily = atomFamily((_tab: string) => atom<number>(0));
 
 export const engineMovesFamily = atomFamily(
     ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
@@ -889,69 +845,55 @@ export const engineNoLinesFamily = atomFamily(
 );
 
 // returns the best moves of each engine for the current position
-export const bestMovesFamily = atomFamily(
-    ({ fen, gameMoves }: { fen: string; gameMoves: string[] }) =>
-        atom<Map<number, { pv: string[]; winChance: number }[]>>((get) => {
-            const tab = get(activeTabAtom);
-            if (!tab) return new Map();
-            const engines = get(enginesAtom);
-            if (!engines) return new Map();
-            const bestMoves = new Map<number, { pv: string[]; winChance: number }[]>();
-            let n = 0;
-            for (const engine of engines.filter((e) => e.loaded)) {
-                const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-                const { searchingTurn, key } = analysisSearch(
-                    fen,
-                    gameMoves,
-                    get(currentThreatAtom),
+export const bestMovesAtom = (tab: string, fen: string, gameMoves: string[]) =>
+    atom<Map<number, { pv: string[]; winChance: number }[]>>((get) => {
+        const engines = get(enginesAtom);
+        if (!engines) return new Map();
+        const bestMoves = new Map<number, { pv: string[]; winChance: number }[]>();
+        let n = 0;
+        for (const engine of engines.filter((e) => e.loaded)) {
+            const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
+            const { searchingTurn, key } = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
+            const moves = engineMoves.get(key);
+            if (moves && moves.length > 0) {
+                const bestWinChange = getWinChance(
+                    normalizeScore(moves[0].score.value, searchingTurn || "white"),
                 );
-                const moves = engineMoves.get(key);
-                if (moves && moves.length > 0) {
-                    const bestWinChange = getWinChance(
-                        normalizeScore(moves[0].score.value, searchingTurn || "white"),
-                    );
-                    bestMoves.set(
-                        n,
-                        moves.reduce<{ pv: string[]; winChance: number }[]>((acc, m) => {
-                            const winChance = getWinChance(
-                                normalizeScore(m.score.value, searchingTurn || "white"),
-                            );
-                            if (bestWinChange - winChance < 10) {
-                                acc.push({ pv: m.uciMoves, winChance });
-                            }
-                            return acc;
-                        }, []),
-                    );
-                }
-                n++;
+                bestMoves.set(
+                    n,
+                    moves.reduce<{ pv: string[]; winChance: number }[]>((acc, m) => {
+                        const winChance = getWinChance(
+                            normalizeScore(m.score.value, searchingTurn || "white"),
+                        );
+                        if (bestWinChange - winChance < 10) {
+                            acc.push({ pv: m.uciMoves, winChance });
+                        }
+                        return acc;
+                    }, []),
+                );
             }
-            return bestMoves;
-        }),
-    (a, b) => a.fen === b.fen && equal(a.gameMoves, b.gameMoves),
-);
+            n++;
+        }
+        return bestMoves;
+    });
 
-export const firstEngineWithLinesFamily = atomFamily(
-    ({ fen, gameMoves }: { fen: string; gameMoves: string[] }) =>
-        atom<string | null>((get) => {
-            const tab = get(activeTabAtom);
-            if (!tab) return null;
-            const engines = get(enginesAtom);
-            if (!engines) return null;
+export const firstEngineWithLinesAtom = (tab: string, fen: string, gameMoves: string[]) =>
+    atom<string | null>((get) => {
+        const engines = get(enginesAtom);
+        if (!engines) return null;
 
-            const { key } = analysisSearch(fen, gameMoves, get(currentThreatAtom));
+        const { key } = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
 
-            for (const engine of engines.filter((e) => e.loaded)) {
-                const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-                const moves = engineMoves.get(key);
+        for (const engine of engines.filter((e) => e.loaded)) {
+            const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
+            const moves = engineMoves.get(key);
 
-                if (moves && moves.length > 0) {
-                    return engine.id;
-                }
+            if (moves && moves.length > 0) {
+                return engine.id;
             }
-            return null;
-        }),
-    (a, b) => a.fen === b.fen && equal(a.gameMoves, b.gameMoves),
-);
+        }
+        return null;
+    });
 
 export const tabEngineSettingsFamily = atomFamily(
     ({
@@ -980,43 +922,49 @@ export const tabEngineSettingsFamily = atomFamily(
     (a, b) => a.tab === b.tab && a.engineId === b.engineId,
 );
 
-export const allEnabledAtom = atom((get) => {
-    const engines = get(enginesAtom);
-    if (!engines) return false;
+export const allEnabledFamily = atomFamily((tab: string) =>
+    atom((get) => {
+        const engines = get(enginesAtom);
+        if (!engines) return false;
 
-    const v = engines
-        .filter((e) => e.loaded)
-        .every((engine) => {
+        const v = engines
+            .filter((e) => e.loaded)
+            .every((engine) => {
+                const atom = tabEngineSettingsFamily({
+                    tab,
+                    engineId: engine.id,
+                    defaultSettings: engine.type === "local" ? engine.settings || [] : undefined,
+                    defaultGo: engine.go ?? undefined,
+                });
+                return get(atom).enabled;
+            });
+
+        return v;
+    }),
+);
+
+export const enableAllFamily = atomFamily((tab: string) =>
+    atom(null, (get, set, value: boolean) => {
+        const engines = get(enginesAtom);
+        if (!engines) return;
+
+        for (const engine of engines.filter((e) => e.loaded)) {
             const atom = tabEngineSettingsFamily({
-                tab: get(activeTabAtom)!,
+                tab,
                 engineId: engine.id,
                 defaultSettings: engine.type === "local" ? engine.settings || [] : undefined,
                 defaultGo: engine.go ?? undefined,
             });
-            return get(atom).enabled;
-        });
-
-    return v;
-});
-
-export const enableAllAtom = atom(null, (get, set, value: boolean) => {
-    const engines = get(enginesAtom);
-    if (!engines) return;
-
-    for (const engine of engines.filter((e) => e.loaded)) {
-        const atom = tabEngineSettingsFamily({
-            tab: get(activeTabAtom)!,
-            engineId: engine.id,
-            defaultSettings: engine.type === "local" ? engine.settings || [] : undefined,
-            defaultGo: engine.go ?? undefined,
-        });
-        set(atom, { ...get(atom), enabled: value });
-    }
-});
+            set(atom, { ...get(atom), enabled: value });
+        }
+    }),
+);
 
 /** Remove every runtime atom whose identity is a closed tab, including per-engine entries. */
 export function disposeTabAtoms(tabId: string) {
     for (const family of [
+        allEnabledFamily,
+        enableAllFamily,
         puzzleTimerFamily,
         threatFamily,
         evalOpenFamily,

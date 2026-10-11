@@ -1,15 +1,11 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { DEFAULT_THEME, MantineProvider } from "@mantine/core";
 import { Provider, createStore as createAtomStore } from "jotai";
 import { act, cloneElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
-import {
-  activeTabAtom,
-  currentShowCommentsAtom,
-  moveNotationTypeAtom,
-  tabsAtom,
-} from "@/state/atoms";
+import { activeTabAtom, showCommentsFamily, moveNotationTypeAtom, tabsAtom } from "@/state/atoms";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import Board from "@/components/boards/Board";
 import AnnotationPanel from "@/components/panels/annotation/AnnotationPanel";
@@ -86,7 +82,7 @@ beforeEach(() => {
     { name: "NAGs", value: "nag-test", type: "analysis", gameOrigin: { kind: "none" } },
   ]);
   atoms.set(activeTabAtom, "nag-test");
-  atoms.set(currentShowCommentsAtom, true);
+  atoms.set(showCommentsFamily("nag-test"), true);
   atoms.set(moveNotationTypeAtom, "letters");
 });
 
@@ -104,9 +100,11 @@ async function render(child: ReactNode, nags: number[]) {
       <MantineProvider>
         <Provider store={atoms}>
           <TreeStateContext.Provider value={store}>
-            <VariationChooserContext.Provider value={createVariationChooserStore()}>
-              {child}
-            </VariationChooserContext.Provider>
+            <WorkspaceTabScope tabId={"nag-test"}>
+              <VariationChooserContext.Provider value={createVariationChooserStore()}>
+                {child}
+              </VariationChooserContext.Provider>
+            </WorkspaceTabScope>
           </TreeStateContext.Provider>
         </Provider>
       </MantineProvider>,

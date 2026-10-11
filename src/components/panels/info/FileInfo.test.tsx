@@ -1,8 +1,17 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import FileInfo from "./FileInfo";
+import OwnerFileInfo from "./FileInfo";
+
+function FileInfo(props: React.ComponentProps<typeof OwnerFileInfo>) {
+  return (
+    <WorkspaceTabScope tabId={mocks.currentTab.value}>
+      <OwnerFileInfo {...props} />
+    </WorkspaceTabScope>
+  );
+}
 import { getTabFile } from "@/utils/tabs";
 
 const mocks = vi.hoisted(() => {
@@ -35,9 +44,10 @@ const mocks = vi.hoisted(() => {
 const currentTab = mocks.currentTab;
 
 vi.mock("@/platform/tauri", () => ({ tauri: { countPgnGames: mocks.countPgnGames } }));
-vi.mock("@/state/atoms", () => ({ currentTabAtom: mocks.currentTabAtom }));
+vi.mock("@/state/atoms", () => ({ tabsAtom: mocks.currentTabAtom, updateTabAtom: {} }));
 vi.mock("jotai", () => ({
-  useAtom: () => [mocks.activeTab, mocks.setCurrentTab],
+  useAtomValue: () => (mocks.activeTab ? [mocks.activeTab] : []),
+  useSetAtom: () => (_id: string, update: unknown) => mocks.setCurrentTab(update),
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => {

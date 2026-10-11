@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import { Button, Group, Menu, ScrollArea, Tabs, TextInput } from "@mantine/core";
@@ -452,7 +453,13 @@ const windowsStateAtom = atomWithStorage(
 function TabSwitch({ tab, closeTab }: { tab: Tab; closeTab: (tabId: string) => void }) {
   const [windowsState, setWindowsState] = useAtom(windowsStateAtom);
 
-  if (tab.type === "new") return <NewTabHome id={tab.value} />;
+  if (tab.type === "new") {
+    return (
+      <WorkspaceTabScope tabId={tab.value}>
+        <NewTabHome id={tab.value} />
+      </WorkspaceTabScope>
+    );
+  }
   const layout = (
     <Mosaic<ViewId>
       renderTile={(id) => fullLayout[id]}
@@ -462,20 +469,22 @@ function TabSwitch({ tab, closeTab }: { tab: Tab; closeTab: (tabId: string) => v
     />
   );
   return (
-    <TreeStateProvider id={tab.value} treeKey={getTabTreeKey(tab)}>
-      <TreeRecoveryGate tabId={tab.value} treeKey={getTabTreeKey(tab)}>
-        {tab.type === "analysis" ? (
-          <FileFreshnessGate tab={tab} closeTab={closeTab}>
-            {layout}
-            <BoardAnalysis />
-          </FileFreshnessGate>
-        ) : (
-          <>
-            {layout}
-            {tab.type === "play" ? <BoardGame tabId={tab.value} /> : <Puzzles id={tab.value} />}
-          </>
-        )}
-      </TreeRecoveryGate>
-    </TreeStateProvider>
+    <WorkspaceTabScope tabId={tab.value}>
+      <TreeStateProvider id={tab.value} treeKey={getTabTreeKey(tab)}>
+        <TreeRecoveryGate tabId={tab.value} treeKey={getTabTreeKey(tab)}>
+          {tab.type === "analysis" ? (
+            <FileFreshnessGate tab={tab} closeTab={closeTab}>
+              {layout}
+              <BoardAnalysis />
+            </FileFreshnessGate>
+          ) : (
+            <>
+              {layout}
+              {tab.type === "play" ? <BoardGame tabId={tab.value} /> : <Puzzles id={tab.value} />}
+            </>
+          )}
+        </TreeRecoveryGate>
+      </TreeStateProvider>
+    </WorkspaceTabScope>
   );
 }

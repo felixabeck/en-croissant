@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -110,12 +111,14 @@ afterEach(async () => {
 async function render(setSettings = vi.fn()) {
   await act(async () => {
     root.render(
-      <EngineSettingsForm
-        engine={engines[1]}
-        settings={settings}
-        setSettings={setSettings}
-        remote={false}
-      />,
+      <WorkspaceTabScope tabId="tab-1">
+        <EngineSettingsForm
+          engine={engines[1]}
+          settings={settings}
+          setSettings={setSettings}
+          remote={false}
+        />
+      </WorkspaceTabScope>,
     );
   });
   return setSettings;

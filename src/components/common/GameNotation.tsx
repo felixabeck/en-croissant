@@ -1,3 +1,4 @@
+import { useTabAtom } from "@/state/tabScope";
 import {
   Box,
   Divider,
@@ -32,9 +33,9 @@ import Comment from "@/components/common/Comment";
 import IconAction from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
-  currentInvisibleAtom,
-  currentShowCommentsAtom,
-  currentShowVariationsAtom,
+  invisibleFamily,
+  showCommentsFamily,
+  showVariationsFamily,
   tableViewAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
@@ -58,12 +59,12 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
   const currentNode = useStore(store, (s) => s.currentNode());
   const headers = useStore(store, (s) => s.headers);
   const copyPgn = useStore(store, (s) => s.copyPgn);
-  const showComments = useAtomValue(currentShowCommentsAtom);
-  const showVariations = useAtomValue(currentShowVariationsAtom);
+  const showComments = useAtomValue(useTabAtom(showCommentsFamily));
+  const showVariations = useAtomValue(useTabAtom(showVariationsFamily));
   const [tableView] = useAtom(tableViewAtom);
   const [collapsedVariations, setCollapsedVariations] = useState<Set<TreeNode>>(() => new Set());
   const viewport = useRef<HTMLDivElement>(null);
-  const [invisibleValue, setInvisible] = useAtom(currentInvisibleAtom);
+  const [invisibleValue, setInvisible] = useAtom(useTabAtom(invisibleFamily));
   const invisible = topBar && invisibleValue;
   const colorScheme = useComputedColorScheme("dark");
   const keyMap = useAtomValue(keyMapAtom);
@@ -192,9 +193,9 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
 
 function NotationHeader() {
   const { t } = useTranslation();
-  const [invisible, setInvisible] = useAtom(currentInvisibleAtom);
-  const [showComments, setShowComments] = useAtom(currentShowCommentsAtom);
-  const [showVariations, setShowVariations] = useAtom(currentShowVariationsAtom);
+  const [invisible, setInvisible] = useAtom(useTabAtom(invisibleFamily));
+  const [showComments, setShowComments] = useAtom(useTabAtom(showCommentsFamily));
+  const [showVariations, setShowVariations] = useAtom(useTabAtom(showVariationsFamily));
   const [tableView, setTableView] = useAtom(tableViewAtom);
   return (
     <Stack gap="xs" pt="xs">

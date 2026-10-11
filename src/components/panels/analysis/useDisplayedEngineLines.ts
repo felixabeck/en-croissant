@@ -1,9 +1,9 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import type { BestMoves } from "@/bindings";
 import {
-    activeTabAtom,
-    currentThreatAtom,
+    threatFamily,
     engineMovesFamily,
     engineNoLinesFamily,
     tabEngineSettingsFamily,
@@ -25,8 +25,8 @@ export function useDisplayedEngineLines(
     moves: string[],
     halfMoves = 0,
 ) {
-    const tab = useAtomValue(activeTabAtom)!;
-    const threat = useAtomValue(currentThreatAtom);
+    const tab = useOwnerTabId();
+    const threat = useAtomValue(useTabAtom(threatFamily));
     const settings = useAtomValue(
         tabEngineSettingsFamily({
             tab,

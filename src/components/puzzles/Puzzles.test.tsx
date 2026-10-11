@@ -1,3 +1,4 @@
+import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
 import { act } from "react";
@@ -11,7 +12,7 @@ import type {
 } from "@/bindings";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
 import {
-  currentPuzzleTimerAtom,
+  puzzleTimerFamily,
   puzzleRatingRangeAtom,
   puzzleThemeAtom,
   puzzleWorkspaceGenerationAtom,
@@ -193,9 +194,11 @@ async function renderPuzzles() {
     root.render(
       <MantineProvider>
         <Provider store={store}>
-          <TreeStateProvider>
-            <Puzzles id="puzzles-test" />
-          </TreeStateProvider>
+          <WorkspaceTabScope tabId="puzzles-test">
+            <TreeStateProvider>
+              <Puzzles id="puzzles-test" />
+            </TreeStateProvider>
+          </WorkspaceTabScope>
         </Provider>
       </MantineProvider>,
     );
@@ -593,7 +596,7 @@ test("successful deletion clears the selected puzzle session and closes the moda
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(currentPuzzleTimerAtom, 123);
+    store.set(puzzleTimerFamily("puzzles-test"), 123);
   });
 
   await openAndConfirmDeletion();
@@ -605,7 +608,7 @@ test("successful deletion clears the selected puzzle session and closes the moda
       "0",
     );
   });
-  expect(store.get(currentPuzzleTimerAtom)).toBeNull();
+  expect(store.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
   expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("0");
   expect(document.querySelector('[data-testid="confirm-delete"]')).toBeNull();
   expect(mocks.notificationShow).not.toHaveBeenCalled();
@@ -621,14 +624,14 @@ test("pre-delete failure preserves selection, list, session, timer and modal", a
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(currentPuzzleTimerAtom, 123);
+    store.set(puzzleTimerFamily("puzzles-test"), 123);
   });
 
   await openAndConfirmDeletion();
 
   await vi.waitFor(() => expect(mocks.notificationShow).toHaveBeenCalled());
   expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
-  expect(store.get(currentPuzzleTimerAtom)).toBe(123);
+  expect(store.get(puzzleTimerFamily("puzzles-test"))).toBe(123);
   expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
     "1",
   );
@@ -649,7 +652,7 @@ test("applied deletion converges state, closes the modal and still reports clean
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(currentPuzzleTimerAtom, 123);
+    store.set(puzzleTimerFamily("puzzles-test"), 123);
   });
 
   await openAndConfirmDeletion();
@@ -660,7 +663,7 @@ test("applied deletion converges state, closes the modal and still reports clean
       expect.objectContaining({ color: "red", message: applied.message }),
     );
   });
-  expect(store.get(currentPuzzleTimerAtom)).toBeNull();
+  expect(store.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
   expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
     "0",
   );

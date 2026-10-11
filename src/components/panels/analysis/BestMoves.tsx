@@ -1,3 +1,4 @@
+import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import {
   Accordion,
   Box,
@@ -29,9 +30,8 @@ import { useTranslation } from "react-i18next";
 import type { BestMoves } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
-  activeTabAtom,
   currentDetachedEngineAtom,
-  currentThreatAtom,
+  threatFamily,
   engineProgressFamily,
   enginesAtom,
   tabEngineSettingsFamily,
@@ -73,15 +73,15 @@ function BestMovesComponent({
 }: BestMovesProps) {
   const { t } = useTranslation();
 
-  const activeTab = useAtomValue(activeTabAtom);
-  const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
+  const ownerTabId = useOwnerTabId();
+  const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
   const [, setEngines] = useAtom(enginesAtom);
   const [settings, setSettings2] = useAtom(
     tabEngineSettingsFamily({
       engineId: engine.id,
       defaultSettings: engine.settings ?? undefined,
       defaultGo: engine.go ?? undefined,
-      tab: activeTab!,
+      tab: ownerTabId,
     }),
   );
 
@@ -111,7 +111,7 @@ function BestMovesComponent({
   );
 
   const [settingsOn, toggleSettingsOn] = useToggle();
-  const [threat, setThreat] = useAtom(currentThreatAtom);
+  const [threat, setThreat] = useAtom(useTabAtom(threatFamily));
   const [detachedEngineId, setDetachedEngineId] = useAtom(currentDetachedEngineAtom);
   const isDetached = detachedEngineId === engine.id;
   const theme = useMantineTheme();

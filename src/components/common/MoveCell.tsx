@@ -1,8 +1,9 @@
+import { useTabAtom } from "@/state/tabScope";
 import { Box, rgba, useMantineTheme } from "@mantine/core";
 import { IconFlag } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import type { ReactNode, RefObject } from "react";
-import { currentShowCommentsAtom, moveNotationTypeAtom } from "@/state/atoms";
+import { showCommentsFamily, moveNotationTypeAtom } from "@/state/atoms";
 import { ANNOTATION_INFO, type Annotation, addPieceSymbol } from "@/utils/annotation";
 import classes from "./MoveCell.module.css";
 
@@ -20,7 +21,7 @@ interface MoveCellProps {
 
 function MoveCell(props: MoveCellProps) {
   const [moveNotationType] = useAtom(moveNotationTypeAtom);
-  const [showComments] = useAtom(currentShowCommentsAtom);
+  const [showComments] = useAtom(useTabAtom(showCommentsFamily));
   const visualAnnotation = showComments ? props.annotations[0] : "";
 
   const color = ANNOTATION_INFO[visualAnnotation]?.color || "gray";
