@@ -15319,3 +15319,19 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Found by:** Claude Code orchestrator, `$push` for f-20261011-09 while repairing f-20261011-07, 2026-10-11.
 * **Correction (2026-10-11, records lens):** the defect is the argument *order*, not the flag spelling. Playwright accepts `--update-snapshots changed <spec>` and `--update-snapshots -g '<title>' <spec>`; it fails only when a positional spec path directly follows the bare `--update-snapshots`, which is exactly what `pnpm test:e2e:update -- <spec>` produces because the script ends in that bare flag. The sentence above about the non-pnpm call "exiting without rewriting" was the same failure hidden by an output filter, not a separate behaviour. The fix shape stands: give the script an explicit mode so forwarded arguments cannot be consumed.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7e23e46c1c7b025e383120b9a4f90a2ad98d8d93061da44b99f1366fccfbb2c5","input_sha256":"ee748fe72867f5d2b3b992e0ee58de353bbccaa09831106f5807dfd33a437341","kind":"mutation-receipt","operation":"c6a3c8d1f514c336c2aea931b023b7366f10dd7d79171dd1f15bbc5729d17bfa","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-12"],"target":"f-20261011-12","v":1} -->
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### Remote CI repair: Test
+* **ID:** f-20261011-13 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Found by:** drain remote-CI check (Claude Code)
+* **Where:** workflow `Test`, jobs `test`.
+* **Defect:** failed jobs on `98b7d64ff2c684d28ff4c7073793b9e99d6d79f5`: `test`.
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/38165579060
+* **Proof:** `gh run view 38165579060 --log-failed`
+* **CI run:** 38165579060
+* **Closed (2026-10-11, drain next-finding):** duplicate of f-20261011-07. Run 38165579060 on `98b7d64f` failed only `Run browser accessibility and visual contracts`, with one test red: `engine-local-validation` (`e2e/accounts-puzzles-engines.spec.ts:425`), 47,116 differing pixels (ratio 0.06) — the identical diff recorded in f-20261011-07 for run 38157168640. `98b7d64f` predates the fix `6a5a758c` (pins `.mantine-Modal-content` scrollTop to 0 before capture and re-records the baseline in the pinned container). Proof: run 38174002259 on `3f526224`, which contains `6a5a758c`, passed `Run browser accessibility and visual contracts` (107 browser tests). No code change in this session.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"fa28ac25ef853beb1dbf4860c3de12cd6566a52e67d339ce64969298470cd191","header_sha256":"b47006f11a276a33a631ca8e36be1a2a4a6f2ac3b820e11d42cc6198db295342","header_status":"handled","input_sha256":"f1a31c061ab31d18a32cdaf65704a96186d2d58ecfba0df5db3102beb5c3bd00","kind":"mutation-receipt","operation":"1f285a94e849d5a6cb11c5f86c810f52fd58ec75d7529dbc2bd2429935793e88","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-13"],"target":"f-20261011-13","v":1} -->
