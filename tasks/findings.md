@@ -15283,3 +15283,16 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof required:** a PracticePanel/tree test that plays a wrong move on a card and asserts the board reaches the answer node after the delay (red now), plus the existing practice tests unchanged.
 * **Related:** found during the `$push` review of f-20261011-09 (which touched PracticePanel only to rebind its atoms).
 * **Found by:** Claude Code orchestrator, `$push` review of f-20261011-09, 2026-10-11.
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### Next/previous branch cycles over the wrong sibling set after descending into a fork
+
+* **ID:** f-20261011-11 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/store/tree.ts:~470-520` (`nextBranch` / `previousBranch`).
+* **Defect (reported by review-chess-semantics, confidence 99; the orchestrator read the code):** when the current node has ≥ 2 children and its parent has ≤ 1, both functions push `0` onto `state.position` ("makes the navigation more fluid") but then compute the new last index from the *old* `parent` and `branchIndex`, modulo the old parent's child count. Example: `1. e4 e5 (1... c5)`, cursor on `e4`, previous-branch: `[0]` becomes `[0,0]`, then the last index is set to `(0 ± 1) mod 1 = 0`, so the cursor lands on `e5` instead of cycling to `c5`.
+* **Why it matters:** branch-cycling hotkeys silently pick the mainline instead of the variation in the most common fork shape; `.claude/rules/chess-tree-semantics.md` (move paths after tree mutation) governs.
+* **Proof required:** tree-store tests for both directions on that example (red now) and on a fork at the parent level (unchanged).
+* **Found by:** Claude Code orchestrator, `$push` review of f-20261011-09, 2026-10-11 (pre-existing, outside that diff).
