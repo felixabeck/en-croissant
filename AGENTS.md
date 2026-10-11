@@ -14,8 +14,10 @@ what an implementing agent cannot afford to miss.
 
 `.claude/rules/*.md` carry this codebase's write-time invariants, with their rationale, or a pointer
 to `docs/context/RULE-HISTORY.md`. Claude Code pulls them in automatically via `paths:` frontmatter.
-**You do not — open the file yourself before working in that area.** A rule binds whether or not it
-is in your context.
+**You do not, and neither does Grok — open the file yourself before working in that area.** An
+interactive Grok session opens the always row (`async-resource-invariants.md`) at session start, and
+every other row before working in its area or replying in it; a Grok leaf reads only the rules its
+assignment names. A rule binds whether or not it is in your context.
 
 | File | Read before working on |
 | --- | --- |

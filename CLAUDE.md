@@ -39,9 +39,12 @@ GitHub remote, not this project's name.
 Claude Code loads `async-resource-invariants.md` in every session and pulls the path-scoped rules in
 automatically the moment it touches a matching path (`paths:` frontmatter in each file).
 **This is a delivery mechanism, not a scope limit: the rule binds whether or not it happens to be in
-context.** Codex and review subagents auto-load none of them — open the file yourself before working
-in that area. A path that should trigger one of these but does not is a bug in the frontmatter — add
-the glob to the file rather than working around it.
+context.** Codex, Grok and review subagents auto-load none of them — open the file yourself before
+working in that area. An interactive Grok session opens the always row
+(`async-resource-invariants.md`) at session start, and every other row before working in its area or
+replying in it; a Grok leaf reads only the rules its assignment names. A path that should trigger one
+of these but does not is a bug in the frontmatter — add the glob to the file rather than working
+around it.
 
 ## Gates
 
