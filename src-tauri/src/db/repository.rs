@@ -37,6 +37,7 @@ use diesel::{
     sql_query, Connection, OptionalExtension, SqliteConnection,
 };
 use parking_lot::{Condvar as ParkingCondvar, Mutex as ParkingMutex, RwLock as ParkingRwLock};
+use scheduled_thread_pool::{OnPoolDropBehavior, ScheduledThreadPool};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -71,6 +72,7 @@ where
 
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
+const POOL_WORKER_THREADS: usize = 3;
 // r2d2 retries a failed pooled open until this timeout; tests that drive a refused bound open
 // shorten it so they do not wait the production 30 s.
 const POOL_CONNECTION_TIMEOUT: Duration = if cfg!(test) {
@@ -82,6 +84,17 @@ const POOL_CONNECTION_TIMEOUT: Duration = if cfg!(test) {
 // contended write completes rather than tripping retirement.
 const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const RETIRE_CANCELLATION_POLL: Duration = Duration::from_millis(25);
+
+fn pool_worker_threads() -> Arc<ScheduledThreadPool> {
+    // Retired pool workers must not wait for a reaper tick of a pool that no longer exists.
+    Arc::new(
+        ScheduledThreadPool::builder()
+            .num_threads(POOL_WORKER_THREADS)
+            .thread_name_pattern("r2d2-worker-{}")
+            .on_drop_behavior(OnPoolDropBehavior::DiscardPendingScheduled)
+            .build(),
+    )
+}
 
 #[cfg(test)]
 thread_local! {
@@ -1394,6 +1407,7 @@ impl DatabaseRepository {
                 .enter()
                 .ok_or_else(|| Error::Conflict("database ownership admission has closed".into()))?;
             let pool = Pool::builder()
+                .thread_pool(pool_worker_threads())
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
                 .connection_timeout(POOL_CONNECTION_TIMEOUT)
@@ -2533,6 +2547,44 @@ mod retirement_tests {
     const FIRST_PREDECESSOR_RELEASE_DELAY: Duration = Duration::from_millis(500);
     // Above the single budget, below release delay + a refreshed budget and extra pool timeout.
     const MULTI_PREDECESSOR_COMPLETION_BOUND: Duration = Duration::from_millis(1050);
+
+    #[test]
+    fn retired_pool_workers_discard_pending_scheduled_jobs() {
+        const PENDING_JOB_DELAY: Duration = Duration::from_millis(200);
+        const OBSERVATION_WAIT: Duration = Duration::from_millis(700);
+
+        let pool = pool_worker_threads();
+        let workers_ready = mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(POOL_WORKER_THREADS + 1));
+        for _ in 0..POOL_WORKER_THREADS {
+            let ready = workers_ready.0.clone();
+            let release = Arc::clone(&release);
+            pool.execute(move || {
+                ready.send(()).unwrap();
+                release.wait();
+            });
+        }
+        for _ in 0..POOL_WORKER_THREADS {
+            reached(&workers_ready.1);
+        }
+
+        let (completed, completion) = mpsc::channel();
+        let scheduled_completion = completed.clone();
+        pool.execute_after(PENDING_JOB_DELAY, move || {
+            scheduled_completion.send(()).unwrap();
+        });
+        drop(pool);
+        release.wait();
+        // Keep the channel connected so the observation extends beyond the pending job's delay.
+        assert!(
+            matches!(
+                completion.recv_timeout(OBSERVATION_WAIT),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a retired pool ran a pending scheduled job"
+        );
+        drop(completed);
+    }
 
     fn signal() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
         mpsc::channel()

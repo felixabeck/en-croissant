@@ -818,6 +818,7 @@ dependencies = [
  "rkyv 0.8.14",
  "rusqlite",
  "rustix 1.1.4",
+ "scheduled-thread-pool",
  "serde",
  "serde_json",
  "sha2",
