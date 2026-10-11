@@ -7048,3 +7048,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"34a1933d4e1c34811f513bbb4591b0eae6ba356c9119f3742475052afcc4d36a","input_sha256":"729940c0b059ad3267426b6f79600f3da82794c07ee47433e45b1b44f8c5d28b","kind":"mutation-receipt","operation":"891fb5a451a050eebe828fcb5b72994104379c8c1b7229bdd76a327dc30ebc86","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-08 — Does a fresh revision read count as a reopen for the retired-predecessor barrier?
+
+* **Question:** Does read_revision's transient SQLite open have to wait for retired predecessors like a pool rebuild?
+* **Governs:** f-20260930-01
+* **Chosen:** yes, apply the same retired-predecessor barrier at read_revision without creating a pool.
+* **Rejected:** fencing pool construction alone.
+* **Reason:** a revision read is another SQLite establishment against the same authority-bound file. Reversal path: remove that barrier only if transient revision establishment can no longer overlap an evicted predecessor.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"050f7cc6d7dd2a0030affeec629ec53d176f291a61bacc2dcf30ca1c1877ca9c","input_sha256":"932844b4286b0293dc8acd56b1308560b2a348ee81459f067802db07b8903d75","kind":"mutation-receipt","operation":"4d0854192fcecd65e521c85dcb168242f93e5ae181b8a3d309a0fa72f8f312bf","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-08"],"target":"decisions-ledger","v":1} -->
