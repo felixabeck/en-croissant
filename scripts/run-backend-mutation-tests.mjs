@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -14,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { findExecutableOnPath } from "./executable-path.mjs";
 import { durableWrite } from "./durable-write.mjs";
@@ -33,6 +34,40 @@ const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-backend-mutation.mjs");
 const fence = "mutants.out/backend/.mutation-in-progress";
 const marker = "/* ~ changed by cargo-mutants ~ */";
+const temporaryRoots = new Map();
+
+async function temporaryRoot(prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  temporaryRoots.set(root, prefix);
+  return root;
+}
+
+async function restorePermissions(path) {
+  const entry = await lstat(path);
+  if (entry.isSymbolicLink()) return;
+  await chmod(path, 0o700);
+  if (entry.isDirectory()) {
+    for (const name of await readdir(path)) await restorePermissions(join(path, name));
+  }
+}
+
+// Suite teardown runs after test hooks that still inspect fixtures or reap children.
+after(async () => {
+  const results = await Promise.allSettled(
+    [...temporaryRoots].map(async ([root, prefix]) => {
+      assert.equal(dirname(root), tmpdir(), "fixture escaped its temporary root");
+      assert.ok(basename(root).startsWith(prefix), "fixture has an unexpected prefix");
+      assert.match(basename(root).slice(prefix.length), /^[A-Za-z0-9]{6}$/u);
+      await restorePermissions(root);
+      await rm(root, { recursive: true, force: true });
+      temporaryRoots.delete(root);
+    }),
+  );
+  const errors = results
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length) throw new AggregateError(errors, "Failed to remove mutation test fixtures");
+});
 
 function commandPath(command) {
   const executablePath = findExecutableOnPath(command, { pathValue: process.env.PATH });
@@ -78,7 +113,7 @@ function git(root, args) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "backend-mutation-runner-"));
+  const root = await temporaryRoot("backend-mutation-runner-");
   const bin = join(root, "bin");
   const state = join(root, "shim-state");
   await mkdir(join(root, "src-tauri", "src"), { recursive: true });
@@ -332,7 +367,7 @@ test("the production Cargo arguments enforce executable limits over file and env
     t.skip("Linux /proc limits and prlimit are required");
     return;
   }
-  const root = await mkdtemp(join(tmpdir(), "backend-mutation-limits-"));
+  const root = await temporaryRoot("backend-mutation-limits-");
   const host = nativeRustHost();
   await mkdir(join(root, ".cargo"));
   await mkdir(join(root, "tests"));
@@ -965,9 +1000,8 @@ test("snapshot preparation refuses missing dist, tracked symlinks and determinis
   }
 });
 
-test("durable owner publication preserves old bytes on pre-publish crash and exclusive collision", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "durable-owner-test-"));
-  t.after(() => rm(root, { recursive: true }));
+test("durable owner publication preserves old bytes on pre-publish crash and exclusive collision", async () => {
+  const root = await temporaryRoot("durable-owner-test-");
   const target = join(root, "owner");
   const oldRecord = "started=old\nrunnerPid=123\nrunnerStartTime=456\n";
   const newRecord = "started=new\nrunnerPid=789\nrunnerStartTime=101\n";
