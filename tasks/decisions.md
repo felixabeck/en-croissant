@@ -7172,3 +7172,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e1ec6efc7eb08d1c4a6d37ef80f55ff032e859310a593701dd236909c5d992e6","input_sha256":"dd6e4880f894aba93beafed0758a387ce44ec0343b5c40babec4926953a91098","kind":"mutation-receipt","operation":"4b1905f48db9c68f554ac40f8032f5657e325affaf164ff995f4bd9566d49812","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-03 — Who accepts the cross-capability SQLite lock fix?
+
+* **Question:** Is f-20261001-02 accepted by agent-run native lock witnesses and pushed-head platform CI, or by a manual native picker test?
+* **Governs:** f-20261001-02
+* **Chosen:** agent-run native lock witnesses (real repository connections holding a read transaction, an external child observing the inode's POSIX lock) plus pushed-head macOS/Windows CI.
+* **Rejected:** a manual native picker test as the correctness gate.
+* **Reason:** the defect is descriptor lifecycle, which the existing backend test harness observes directly; no new native GTK surface is introduced. Reversal path: add manual acceptance only for a newly introduced native GTK surface.
+* **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b73b64c505c054fce6477d800925e0e47c85fd38e5fc55879cf83389f5589760","input_sha256":"378f82a31b735460c408822adff56716502021623bf4bcb812cf38362afbd113","kind":"mutation-receipt","operation":"a462f4b78fe9812e71966c2ba5c61f4e98bc15b7165037e360f4a40b847f2327","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-03"],"target":"decisions-ledger","v":1} -->
