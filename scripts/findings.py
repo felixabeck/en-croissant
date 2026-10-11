@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 016e6924267d9576f3939822d95b869deb26851fbd5e013b82bb9b2107fb7db6
+# agent-kit-sha256: 8c8133204cf10986574dc1ba6ef6bdc5ff7d8e7f9eee95fd04a89d34d166e9b3
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -65,6 +65,7 @@ import io
 import itertools
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -339,6 +340,16 @@ ANSWERS = (
 # grace period. Keep this above both those bounds so a hook never races another
 # writer's read or worktree restoration.
 LEDGER_LOCK_WAIT_SECONDS = 660.0
+# Vendored capability marker checked before allocating beside branch worktrees.
+CLONE_WIDE_ID_ALLOCATION_CAPABILITY = "findings-clone-wide-id-allocation-v2"
+CLONE_WIDE_ID_LOCK_NAME = "findings-id-alloc.lock"
+CLONE_WIDE_ID_RESERVATIONS_NAME = "findings-id-reservations"
+CLONE_ID_COLLECTION_MAX_RESTARTS = 3
+TREE_LEDGER_SYMLINK_LIMIT = 16
+_ACTIVE_ID_RESERVATIONS: Path | None = None
+_ACTIVE_CLONE_ID_SCOPES: dict[str, tuple[Path, int]] = {}
+_EXPLICIT_ID_ALLOCATION_PATHS = False
+CLONE_WIDE_WRITER_PATH = "scripts/findings.py"
 # The merge-driver config lock fences only the short `git config` repair in a
 # shared Git common directory; it is never held across a hook, so contention is
 # reported promptly instead of delaying a cheap read command.
@@ -1839,6 +1850,7 @@ class LedgerCommitIntent:
     claim: Path | None = None
     finalize: Callable[[], str] | None = None
     provisional: tuple[str, ...] = ()
+    allocation_lock: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -6161,6 +6173,326 @@ def _allocate_pending(
     return "\n".join(lines), assigned
 
 
+def _clone_id_allocation_root(ledger: Path, *, explicit: bool = False) -> Path | None:
+    """Explicit paths and non-Git ledgers keep their isolated write protocol."""
+    root = REPO_ROOT
+    if explicit or root is None or _canonical_ledger_path(ledger) not in {
+        _canonical_ledger_path(LEDGER), _canonical_ledger_path(DECISIONS),
+    }:
+        return None
+    return root
+
+
+def _clone_id_fence_lock(root: Path) -> Path:
+    return _git_common_directory(
+        root, "could not locate the shared Git directory for ledger id allocation"
+    ) / CLONE_WIDE_ID_LOCK_NAME
+
+
+@contextmanager
+def _clone_id_allocation_scope(
+    ledger: Path, *, explicit: bool = False,
+) -> Iterator[Path | None]:
+    """Fence writes and commits before ledger locks, nesting within one clone."""
+    global _ACTIVE_ID_RESERVATIONS
+    root = _clone_id_allocation_root(ledger, explicit=explicit)
+    if root is None:
+        yield None
+        return
+    lock = _clone_id_fence_lock(root)
+    key = str(lock)
+    holder = _ACTIVE_CLONE_ID_SCOPES.get(key)
+    if holder is not None:
+        held_root, depth = holder
+        if key not in _HELD_LEDGER_LOCKS:
+            raise LedgerError(f"clone-wide ledger id fence {lock} is no longer held")
+        _ACTIVE_CLONE_ID_SCOPES[key] = held_root, depth + 1
+        try:
+            yield held_root
+        finally:
+            _ACTIVE_CLONE_ID_SCOPES[key] = held_root, depth
+        return
+    acquired, waited = acquire_ledger_lock(lock)
+    if not acquired:
+        raise LedgerError(f"clone-wide ledger id lock {lock} busy (waited {waited:.2f}s)")
+    previous_registry = _ACTIVE_ID_RESERVATIONS
+    _ACTIVE_CLONE_ID_SCOPES[key] = root, 1
+    try:
+        registry = lock.parent / CLONE_WIDE_ID_RESERVATIONS_NAME
+        try:
+            registry.mkdir(exist_ok=True)
+        except OSError as exc:
+            raise LedgerError(f"could not open id reservation registry {registry}: {exc}") from exc
+        _ACTIVE_ID_RESERVATIONS = registry
+        yield root
+    finally:
+        del _ACTIVE_CLONE_ID_SCOPES[key]
+        _ACTIVE_ID_RESERVATIONS = previous_registry
+        intent = _ACTIVE_LEDGER_COMMIT
+        if intent is not None and intent.replaced and os.environ.get(LEDGER_COMMIT_ENV) != "0":
+            # A commit hook can temporarily hide the working allocation. Keep
+            # the outer fence until main has attempted the exact-byte commit.
+            intent.allocation_lock = lock
+            _DEFERRED_LEDGER_LOCKS.add(str(lock))
+        else:
+            release_ledger_lock(lock, defer=False)
+
+
+def _id_allocation_test_point(stage: str) -> None:
+    # Test-only file barrier, entirely inert without FINDINGS_TEST_ID_ALLOC_BARRIER.
+    # Tests observe actual lock contention and pause writes or self-commits.
+    barrier = os.environ.get("FINDINGS_TEST_ID_ALLOC_BARRIER")
+    if barrier is None:
+        return
+    path = Path(barrier)
+    path.with_suffix(f".{stage}").touch()
+    if os.environ.get("FINDINGS_TEST_ID_ALLOC_PAUSE") == stage:
+        while not path.with_suffix(".release").exists():
+            time.sleep(0.01)
+
+
+def _allocation_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Translate Git inspection failures without returning a partial id union."""
+    inspection = " ".join(arguments)
+    try:
+        result = _git_for_ledger(root, *arguments)
+    except (OSError, UnicodeError) as exc:
+        raise LedgerError(f"could not inspect {root}: git {inspection}: {exc}") from exc
+    if result.returncode != 0:
+        raise LedgerError(
+            f"could not inspect {root}: git {inspection}: {_git_failure_detail(result)}"
+        )
+    return result
+
+
+def _allocation_blob_ids(root: Path, ref: str, relative: str, kind: str) -> set[str]:
+    """Read identities from a present blob, allowing a ledger not yet tracked."""
+    blob = _head_file_blob(root, ref, relative, strict=True)
+    if blob is None:
+        return set()
+    try:
+        text = _allocation_git(root, "cat-file", "blob", blob).stdout
+    except LedgerError as exc:
+        raise LedgerError(f"could not read {root} {ref}:{relative}: {exc}") from exc
+    return set(_ledger_content(text, kind, strict=False)[0])
+
+
+def _clone_allocation_ids(
+    root: Path | None, ledger: Path, *, retained: Collection[str] = (),
+    own_claim: Path | None = None,
+) -> set[str]:
+    """Collect working, committed, claimed and upstream ids under the clone lock.
+
+    Reads here deliberately bypass the own-ledger rollback guard: a sibling's
+    temporarily shortened working file is covered by its committed HEAD blob.
+    Receipt replay never calls this function and therefore mints no new ids.
+    """
+    if root is None:
+        return set()
+    for _restart in range(CLONE_ID_COLLECTION_MAX_RESTARTS + 1):
+        identifiers = _clone_allocation_ids_once(
+            root, ledger, retained=retained, own_claim=own_claim,
+        )
+        if identifiers is not None:
+            return identifiers
+    registry = _git_common_directory(
+        root, "could not locate the shared Git directory for id reservations"
+    ) / CLONE_WIDE_ID_RESERVATIONS_NAME
+    raise LedgerError(
+        f"clone id snapshot for id reservation registry {registry} kept changing during collection "
+        f"after {CLONE_ID_COLLECTION_MAX_RESTARTS} restarts"
+    )
+
+
+def _clone_allocation_ids_once(
+    root: Path, ledger: Path, *, retained: Collection[str], own_claim: Path | None,
+) -> set[str] | None:
+    """Return None when reservation retirement invalidates this entire snapshot."""
+    relative = next(
+        relative for relative in MERGE_DRIVER_LEDGERS
+        if _canonical_ledger_path(root / relative) == _canonical_ledger_path(ledger)
+    )
+    kind = MERGE_DRIVER_LEDGERS[relative]
+    listing = _allocation_git(root, "worktree", "list", "--porcelain", "-z")
+    taken: set[str] = set()
+    offenders: list[Path] = []
+    current_branch: str | None = None
+    retained_ids = set(retained)
+    working_ledgers: dict[Path, str | None] = {}
+
+    def include(
+        ids: Collection[str], worktree: Path, source: object, *, check: bool = True,
+    ) -> None:
+        conflicts = retained_ids.intersection(ids) if check else set()
+        if conflicts:
+            raise LedgerError(
+                f"retained id {sorted(conflicts)[0]} conflicts with worktree {worktree} ({source})"
+            )
+        taken.update(ids)
+
+    for record in listing.stdout.split("\0\0"):
+        fields = dict(field.partition(" ")[::2] for field in record.split("\0") if field)
+        if not fields:
+            continue
+        if "worktree" not in fields:
+            raise LedgerError(f"could not inspect worktrees of {root}: missing worktree path")
+        worktree = Path(fields["worktree"])
+        if "prunable" in fields or "bare" in fields:
+            continue
+        try:
+            worktree.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise LedgerError(f"could not inspect worktree {worktree}: {exc}") from exc
+        if worktree.resolve() == root.resolve():
+            current_branch = fields.get("branch")
+        if "branch" in fields and worktree.resolve() != root.resolve():
+            writer = worktree / CLONE_WIDE_WRITER_PATH
+            try:
+                writer_text = writer.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                writer_text = None  # No writer in this checkout to race allocation.
+            except (OSError, UnicodeError) as exc:
+                raise LedgerError(f"could not read worktree writer {writer}: {exc}") from exc
+            if writer_text is not None and CLONE_WIDE_ID_ALLOCATION_CAPABILITY not in writer_text:
+                offenders.append(worktree)
+        path = worktree / relative
+        text = _allocation_working_ledger(path)
+        working_ledgers[path] = text
+        if text is not None:
+            include(
+                _ledger_content(text, kind, strict=False)[0], worktree, path,
+                check=worktree.resolve() != root.resolve(),
+            )
+        head = fields.get("HEAD")
+        if head is None:
+            raise LedgerError(f"could not inspect worktree {worktree}: missing HEAD")
+        if head.strip("0"):
+            include(
+                _allocation_blob_ids(root, head, relative, kind), worktree, head,
+                check=worktree.resolve() != root.resolve(),
+            )
+    registry = _git_common_directory(
+        root, "could not locate the shared Git directory for id reservations"
+    ) / CLONE_WIDE_ID_RESERVATIONS_NAME
+    # v1 was never released, and the cutover inventory found no retained consumer claims before this registry.
+    try:
+        members = sorted(registry.iterdir())
+    except OSError as exc:
+        raise LedgerError(f"could not enumerate id reservation registry {registry}: {exc}") from exc
+    for member in members:
+        if member.suffix != ".json":
+            continue  # Interrupted atomic-write scratch files reserve no intent.
+        try:
+            claim, identifiers = _read_id_reservation(member)
+        except LedgerError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                # Its ids may now live in a HEAD newer than our worktree list.
+                return None
+            raise
+        if own_claim is not None and claim == own_claim.resolve():
+            continue
+        include(identifiers, claim.parent, member)
+    # Detached HEAD has no branch and hence no configured branch upstream.
+    if current_branch is not None:
+        upstream = _allocation_git(
+            root, "for-each-ref", "--format=%(upstream)", current_branch
+        ).stdout.strip()
+        if upstream:
+            include(_allocation_blob_ids(root, upstream, relative, kind), root, upstream)
+    # A finalizer can retire a reservation before enumeration even starts.
+    # Accept the union only if both the HEAD inventory and every working ledger
+    # still match. This cannot detect a non-findings commit whose hook hides a
+    # ledger for the WHOLE collection, then fails with HEAD unchanged and the
+    # file restored. Findings commits instead hold the allocation fence.
+    if _allocation_git(root, "worktree", "list", "--porcelain", "-z").stdout != listing.stdout:
+        return None
+    for path, content in working_ledgers.items():
+        if _allocation_working_ledger(path) != content:
+            return None
+    if offenders:
+        # Warn only for the accepted snapshot, once even when collection restarts.
+        print(
+            "WARNING clone-wide ledger id allocation with incompatible branch worktrees:\n"
+            + "\n".join(
+                f"{path}: missing {CLONE_WIDE_ID_ALLOCATION_CAPABILITY}. "
+                f"Run kit worktree remove {shlex.quote(str(path))} or rebase onto the adopting commit"
+                for path in offenders
+            )
+            + "\nan older writer there can still reuse an id allocated here; "
+            "check/merge detects it at integration",
+            file=sys.stderr,
+        )
+    return taken
+
+
+def _allocation_working_ledger(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None  # An absent working file still contributes its HEAD ids.
+    except (OSError, UnicodeError) as exc:
+        raise LedgerError(f"could not read live worktree ledger {path}: {exc}") from exc
+
+
+def _read_id_reservation(path: Path) -> tuple[Path, set[str]]:
+    """Refuse an unreadable or malformed member instead of omitting its ids."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        claim = record["claim"]
+        identifiers = record["ids"]
+        if (
+            not isinstance(claim, str) or not Path(claim).is_absolute()
+            or path.name != f"{_sha256_text(claim)}.json"
+            or not isinstance(identifiers, list)
+            or not all(isinstance(value, str) and ID_RE.fullmatch(value) for value in identifiers)
+        ):
+            raise ValueError("invalid claim or ids")
+        return Path(claim), set(identifiers)
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+        raise LedgerError(f"could not read id reservation {path}: {exc}") from exc
+
+
+def _set_claim_id_reservation(
+    claim: Path, identifiers: Collection[str], *, retain_previous: bool = False,
+    registry: Path | None = None,
+) -> None:
+    """Publish before intent persistence, release only after its durable update."""
+    registry = registry if registry is not None else _ACTIVE_ID_RESERVATIONS
+    if registry is None:
+        return  # Explicit ledger paths and non-Git writers retain their isolation.
+    claim_name = str(claim.resolve())
+    path = registry / f"{_sha256_text(claim_name)}.json"
+    ids = set(identifiers) - {PENDING_ID}
+    try:
+        if retain_previous:
+            try:
+                path.stat()
+            except FileNotFoundError:
+                pass
+            else:
+                ids.update(_read_id_reservation(path)[1])
+        if ids:
+            _fsync_directory(registry.parent)
+            _atomic_write(
+                path, json.dumps({"claim": claim_name, "ids": sorted(ids)}, sort_keys=True),
+                durable_directory=True,
+            )
+        else:
+            path.unlink(missing_ok=True)
+            _fsync_directory(registry)
+    except OSError as exc:
+        raise LedgerError(f"could not update id reservation {path}: {exc}") from exc
+
+
+def _explicit_allocation_paths(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "_explicit_ledger", False)
+        or getattr(args, "_explicit_decisions", False)
+    )
+
+
 def ledger_lock_path(ledger: Path) -> Path:
     """Return the lock file path associated with a ledger."""
     resolved = _resolved_repo_path(ledger)
@@ -6190,10 +6522,14 @@ def _unlock_ledger_lock(lock: Path) -> None:
 
 
 def _release_deferred_ledger_lock(intent: LedgerCommitIntent) -> None:
-    """End one command's deferred release after its self-commit attempt."""
+    """Release ledger ownership, then its allocation fence, after self-commit."""
     lock = ledger_lock_path(intent.ledger)
-    if str(lock) in _DEFERRED_LEDGER_LOCKS:
-        _unlock_ledger_lock(lock)
+    try:
+        if str(lock) in _DEFERRED_LEDGER_LOCKS:
+            _unlock_ledger_lock(lock)
+    finally:
+        if intent.allocation_lock is not None:
+            release_ledger_lock(intent.allocation_lock, defer=False)
 
 
 def acquire_ledger_lock(
@@ -6293,6 +6629,8 @@ def acquire_ledger_lock(
                 raise LedgerError(
                     f"could not acquire ledger lock {lock}: {errno_name} ({exc})"
                 ) from exc
+            if lock.name == CLONE_WIDE_ID_LOCK_NAME:
+                _id_allocation_test_point("waiting")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False, time.monotonic() - started
@@ -6362,12 +6700,24 @@ def _write_if_unchanged(
         )
     if candidate == expected:
         return
+    _id_allocation_test_point("write")
     _atomic_write(path, candidate, durable_directory=durable_directory)
 
 
 @contextmanager
 def _ledger_mutation_scope(path: Path) -> Iterator[str]:
     """Own one ledger lock and translate its read/write failures consistently."""
+    with ExitStack() as scope:
+        if _ACTIVE_LEDGER_COMMIT is not None and os.environ.get(LEDGER_COMMIT_ENV) != "0":
+            scope.enter_context(_clone_id_allocation_scope(
+                path, explicit=_EXPLICIT_ID_ALLOCATION_PATHS,
+            ))
+        with _ledger_mutation_scope_clone_locked(path) as text:
+            yield text
+
+
+@contextmanager
+def _ledger_mutation_scope_clone_locked(path: Path) -> Iterator[str]:
     path = _canonical_ledger_path(path)
     lock = ledger_lock_path(path)
     try:
@@ -6759,7 +7109,11 @@ def _write_claim_intent(
         }
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
+    if ids is not None:
+        _set_claim_id_reservation(claim, ids, retain_previous=True)
     _atomic_write(intent, serialized, durable_directory=True)
+    if ids is not None:
+        _set_claim_id_reservation(claim, ids)
 
 
 def _mark_refused_inbox_claim(claim: Path) -> None:
@@ -7039,6 +7393,19 @@ def _remove_claim_intent(claim: Path) -> None:
     _claim_intent_path(claim).unlink(missing_ok=True)
     for scratch in claim.glob(f"{MERGE_INTENT_NAME}.tmp-*"):
         scratch.unlink(missing_ok=True)
+    registry = _ACTIVE_ID_RESERVATIONS
+    if registry is None and REPO_ROOT is not None:
+        registry = _git_common_directory(
+            REPO_ROOT, "could not locate the shared Git directory for id reservations"
+        ) / CLONE_WIDE_ID_RESERVATIONS_NAME
+    if registry is not None:
+        reservation = registry / f"{_sha256_text(str(claim.resolve()))}.json"
+        try:
+            reservation.stat()
+        except FileNotFoundError:
+            return
+        _fsync_directory(claim)
+        _set_claim_id_reservation(claim, (), registry=registry)
 
 
 def _relocate_quarantined_files(
@@ -9017,6 +9384,16 @@ def _ledger_bytes_postcondition(
 
 def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
     """Commit valid pending ledger dirt before a deferred consumer mutation."""
+    # A hook can hide dirty allocations even when it restores them and fails.
+    # Fence the whole settlement before taking either per-ledger lock. The
+    # caller's later merge acquisition is sequential, after this scope exits.
+    with _clone_id_allocation_scope(
+        intent.findings, explicit=_EXPLICIT_ID_ALLOCATION_PATHS,
+    ):
+        _settle_pending_ledger_dirt_clone_locked(intent)
+
+
+def _settle_pending_ledger_dirt_clone_locked(intent: LedgerCommitIntent) -> None:
     findings = _canonical_ledger_path(intent.findings)
     decisions = _canonical_ledger_path(intent.decisions)
     locks = (ledger_lock_path(decisions), ledger_lock_path(findings))
@@ -9583,6 +9960,26 @@ def merge_inbox(
         print(f"FAIL {exc}", file=sys.stderr)
         return MergeResult(1)
 
+    try:
+        with _clone_id_allocation_scope(
+            ledger, explicit=_EXPLICIT_ID_ALLOCATION_PATHS,
+        ) as root:
+            return _merge_inbox_clone_locked(
+                inbox, ledger, decisions=decisions, mode=mode,
+                allocation_root=root,
+            )
+    except LedgerReadRefused:
+        raise
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return MergeResult(1)
+
+
+def _merge_inbox_clone_locked(
+    inbox: Path, ledger: Path, *, decisions: Path, mode: str,
+    allocation_root: Path | None,
+) -> MergeResult:
+    """Take the per-ledger and publication locks inside the allocation fence."""
     lock = ledger_lock_path(ledger)
     try:
         acquired, waited_seconds = acquire_ledger_lock(lock)
@@ -9606,7 +10003,8 @@ def merge_inbox(
             _sweep_intake(inbox, ledger, decisions)
             try:
                 return _merge_inbox_publish_locked(
-                    inbox, ledger, decisions=decisions, mode=mode
+                    inbox, ledger, decisions=decisions, mode=mode,
+                    allocation_root=allocation_root,
                 )
             except LedgerReadRefused:
                 raise
@@ -9679,6 +10077,7 @@ def _merge_inbox_publish_locked(
     *,
     decisions: Path | None = None,
     mode: str | None = None,
+    allocation_root: Path | None = None,
 ) -> MergeResult:
     """Fold anything filed in the inbox into the ledger.
 
@@ -9855,6 +10254,17 @@ def _merge_inbox_publish_locked(
     assigned_by_file: dict[Path, list[str]] = {}
     parts: list[str] = []
     try:
+        retained = set().union(*(header_ids(text) for text in sources)) - {PENDING_ID}
+        if retained:
+            _set_claim_id_reservation(claim, retained, retain_previous=True)
+        if retained or any(
+            match.group("id") == PENDING_ID
+            for text in sources
+            for _, _, match in _unfenced_header_matches(text)[1]
+        ):
+            taken.update(_clone_allocation_ids(
+                allocation_root, ledger, retained=retained, own_claim=claim,
+            ))
         for path, text in zip(claimed, sources, strict=True):
             # The filing date is resolved only when there is actually an id to
             # mint. A file that already carries its id needs no date, and
@@ -10231,7 +10641,9 @@ def cmd_inbox_filed_by(args: argparse.Namespace) -> int:
 
 def cmd_merge_inbox(args: argparse.Namespace) -> int:
     """CLI entry point over the shared inbox merge implementation."""
-    return merge_inbox(args.inbox, args.ledger, decisions=_args_decisions(args)).returncode
+    return merge_inbox(
+        args.inbox, args.ledger, decisions=_args_decisions(args),
+    ).returncode
 
 
 def _drain_lock_marker_reason(contents: bytes) -> str | None:
@@ -11924,6 +12336,7 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
             match.group("id")
             for _index, match in _decision_heading_matches(text)[1]
         }
+        taken.update(_clone_allocation_ids(allocation_root, args.decisions))
         rewritten, minted = _allocate_pending(
             entry,
             "d",
@@ -11950,7 +12363,10 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
         )
         return candidate, minted, effect
 
-    allocated = _locked_receipted_mutation(args.decisions, request, build)
+    with _clone_id_allocation_scope(
+        args.decisions, explicit=_explicit_allocation_paths(args),
+    ) as allocation_root:
+        allocated = _locked_receipted_mutation(args.decisions, request, build)
     print(f"recorded decision(s) as {' '.join(allocated)}")
     return 0
 
@@ -13469,28 +13885,61 @@ def _commit_blob(
 
 
 def _head_file_mode(root: Path, commit: str, relative: str) -> str:
-    result = _git_for_ledger(root, "ls-tree", commit, "--", relative)
-    if result.returncode != 0:
-        raise LedgerError(f"could not inspect HEAD tree: {_git_failure_detail(result)}")
-    fields = result.stdout.rstrip("\n").split(None, 2)
-    actual_path = fields[2].split("\t", 1)[1] if len(fields) >= 3 and "\t" in fields[2] else ""
-    if len(fields) < 3 or actual_path != relative:
+    entry = _head_file_blob_entry(root, commit, relative, strict=False)
+    if entry is None:
         raise LedgerError(f"ledger path {relative} is not tracked in HEAD")
-    return fields[0]
+    return entry[0]
 
 
-def _head_file_blob(root: Path, commit: str, relative: str) -> str | None:
-    """Return one tracked ledger blob from a named commit, if present."""
-    result = _git_for_ledger(root, "ls-tree", commit, "--", relative)
+def _head_file_blob(
+    root: Path, commit: str, relative: str, *, strict: bool = False,
+) -> str | None:
+    """Share path-to-blob lookup, preserving the commit helper's tolerant parser."""
+    followed = 0
+    while True:
+        entry = _head_file_blob_entry(root, commit, relative, strict=strict)
+        if entry is None:
+            if followed:
+                raise LedgerError(f"dangling ledger symlink in {root} {commit}:{relative}")
+            return None
+        mode, blob = entry
+        if not strict or mode != "120000":
+            return blob
+        if followed >= TREE_LEDGER_SYMLINK_LIMIT:
+            raise LedgerError(
+                f"ledger symlink chain exceeds {TREE_LEDGER_SYMLINK_LIMIT} links "
+                f"in {root} {commit}:{relative}"
+            )
+        target = _allocation_git(root, "cat-file", "blob", blob).stdout
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(relative), target))
+        if not target or resolved.startswith("/") or resolved == ".." or resolved.startswith("../"):
+            raise LedgerError(f"ledger symlink leaves tree in {root} {commit}:{relative}: {target!r}")
+        relative = resolved
+        followed += 1
+
+
+def _head_file_blob_entry(
+    root: Path, commit: str, relative: str, *, strict: bool,
+) -> tuple[str, str] | None:
+    result = (
+        _allocation_git(root, "ls-tree", commit, "-z", "--", relative)
+        if strict else _git_for_ledger(root, "ls-tree", commit, "-z", "--", relative)
+    )
     if result.returncode != 0:
         raise LedgerError(f"could not inspect HEAD tree: {_git_failure_detail(result)}")
-    for line in result.stdout.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) < 3 or "\t" not in fields[2]:
+    for record in result.stdout.split("\0"):
+        if not record:
             continue
-        blob, actual_path = fields[2].split("\t", 1)
+        metadata, separator, actual_path = record.partition("\t")
+        fields = metadata.split()
+        if len(fields) != 3 or not separator:
+            if strict:
+                raise LedgerError(f"could not inspect {root} {commit}:{relative}: malformed tree entry")
+            continue
         if actual_path == relative:
-            return blob
+            if strict and fields[1] != "blob":
+                raise LedgerError(f"could not read {root} {commit}:{relative}: not a ledger blob")
+            return fields[0], fields[2]
     return None
 
 
@@ -13595,6 +14044,13 @@ def _attempt_ledger_commit(
     """Commit exactly the command's bytes through a hooked temporary index."""
     if not intent.replaced or os.environ.get(LEDGER_COMMIT_ENV) == "0":
         return LedgerCommitResult(False)
+    for path in (intent.ledger, intent.companion):
+        if path is None:
+            continue
+        root = _clone_id_allocation_root(path, explicit=_EXPLICIT_ID_ALLOCATION_PATHS)
+        if root is not None and held_ledger_lock_fd(_clone_id_fence_lock(root)) is None:
+            raise LedgerError("ledger commit outside the clone-wide id fence")
+    _id_allocation_test_point("commit")
     scratch = _save_ledger_commit_scratch(intent)
     companion_scratch = (
         _save_ledger_commit_scratch(
@@ -13941,6 +14397,20 @@ def _print_commit_metadata(result: LedgerCommitResult | None = None,
 
 def cmd_commit_ledger(args: argparse.Namespace) -> int:
     """Commit an expected ledger snapshot while holding the writer lock."""
+    try:
+        with ExitStack() as scope:
+            if os.environ.get(LEDGER_COMMIT_ENV) != "0":
+                scope.enter_context(_clone_id_allocation_scope(
+                    args.ledger, explicit=_explicit_allocation_paths(args),
+                ))
+            return _cmd_commit_ledger_clone_locked(args)
+    except LedgerError as exc:
+        _print_commit_metadata(phase="before-update-ref")
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+
+
+def _cmd_commit_ledger_clone_locked(args: argparse.Namespace) -> int:
     ledger = _resolved_repo_path(args.ledger)
     expected_path = _resolved_repo_path(args.expected)
     lock = ledger_lock_path(ledger)
@@ -14228,6 +14698,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_LEDGER_COMMIT, _GUARDED_LEDGER_PATHS
+    global _EXPLICIT_ID_ALLOCATION_PATHS
     parser = build_parser()
     args = parser.parse_args(argv)
     root = _require_git_toplevel()
@@ -14287,6 +14758,8 @@ def main(argv: list[str] | None = None) -> int:
         and bool(getattr(args, "hold_consumer_lock", False))
     )
     command_result: int = 1
+    previous_explicit_paths = _EXPLICIT_ID_ALLOCATION_PATHS
+    _EXPLICIT_ID_ALLOCATION_PATHS = _explicit_allocation_paths(args)
     previous_guard = _GUARDED_LEDGER_PATHS
     if _invocation_persists(args):
         _GUARDED_LEDGER_PATHS = {args.ledger: "findings", args.decisions: "decisions"}
@@ -14423,6 +14896,7 @@ def main(argv: list[str] | None = None) -> int:
                 _release_consumer_lock(args)
             finally:
                 _GUARDED_LEDGER_PATHS = previous_guard
+                _EXPLICIT_ID_ALLOCATION_PATHS = previous_explicit_paths
     return command_result
 
 
