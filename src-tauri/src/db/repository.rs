@@ -2559,6 +2559,17 @@ mod retirement_tests {
         directory.join(leaf)
     }
 
+    fn scan_target(
+        path: &Path,
+        expected_key: &EntryKey,
+    ) -> crate::infra::path_authority::DatabaseFileTarget {
+        // Scans write durable sidecars through the parent, which Windows cannot sync when read-only.
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_deletion(path).unwrap();
+        assert_eq!(entry_key(&target).unwrap(), *expected_key);
+        target
+    }
+
     fn held_handle(
         repository: &DatabaseRepository,
         path: &Path,
@@ -3048,7 +3059,7 @@ mod retirement_tests {
         let scan = path_in(root.path(), "old", "scan.db3");
         let repository = DatabaseRepository::default();
         let (key, _, mut held) = held_handle(&repository, &scan);
-        let target = test_target(&scan);
+        let target = scan_target(&scan, &key);
         // Rollback mode keeps the identity stable when the predecessor's final handle closes.
         held.batch_execute(
             "PRAGMA journal_mode=DELETE;
@@ -3111,7 +3122,7 @@ mod retirement_tests {
         )
         .unwrap();
         drop(held);
-        let target = test_target(&scan);
+        let target = scan_target(&scan, &key);
         let identity = repository.database_identity(&target).unwrap();
         for index in 1..MAX_OPEN_DATABASES {
             let path = path_in(root.path(), "fill", &format!("{index}.db3"));
