@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 136925bfae23ece2785b5399b67cffb292ba8a54d2456bb2aa9e0aaa8bd318a2
+# agent-kit-sha256: 016e6924267d9576f3939822d95b869deb26851fbd5e013b82bb9b2107fb7db6
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -75,12 +75,18 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Collection, Iterator
-from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from contextlib import (
+    ExitStack,
+    contextmanager,
+    redirect_stderr,
+    redirect_stdout,
+    suppress,
+)
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 SUPERVISOR_CONTRACT_ENV = "FINDINGS_SUPERVISOR_CONTRACT"
 # Malformed declarations fall back to the oldest gated behaviour, always safe for a declaring caller.
@@ -1871,6 +1877,8 @@ class ClaimIntent:
     quarantined: dict[str, str] = field(default_factory=dict)
     manual_repair: bool = False
     returning_to_spool: dict[str, AnswerSpoolReturn] = field(default_factory=dict)
+    refused: bool = False
+    provisional_ids: dict[str, set[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1892,6 +1900,8 @@ class Reconciliation:
     fixed: set[str]
     released: bool
     replay: bool = False
+    refused: bool = False
+    provisional_ids: dict[str, set[str]] = field(default_factory=dict)
 
 
 _ACTIVE_LEDGER_COMMIT: LedgerCommitIntent | None = None
@@ -6716,6 +6726,8 @@ def _write_claim_intent(
     quarantined: dict[str, str] | None = None,
     manual_repair: bool = False,
     returning_to_spool: dict[str, AnswerSpoolReturn] | None = None,
+    refused: bool = False,
+    provisional_ids: dict[str, set[str]] | None = None,
 ) -> None:
     payload: dict[str, object] = {"phase": phase}
     if ids is not None:
@@ -6730,6 +6742,13 @@ def _write_claim_intent(
         payload["quarantined"] = dict(sorted(quarantined.items()))
     if manual_repair:
         payload["manual_repair"] = True
+    if refused:
+        payload["refused"] = True
+    if provisional_ids is not None:
+        payload["provisional_ids"] = {
+            name: sorted(identifiers)
+            for name, identifiers in sorted(provisional_ids.items())
+        }
     if returning_to_spool:
         payload[ANSWER_RETURNING_FIELD] = {
             name: {
@@ -6741,6 +6760,32 @@ def _write_claim_intent(
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
     _atomic_write(intent, serialized, durable_directory=True)
+
+
+def _mark_refused_inbox_claim(claim: Path) -> None:
+    """Record a never-written deferred batch without changing its intent fields."""
+    try:
+        intent = _read_claim_intent(claim)
+        if intent is None or intent.phase != "prepared":
+            return
+        path = _claim_intent_path(claim)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["refused"] = True
+        _atomic_write(path, json.dumps(payload, sort_keys=True), durable_directory=True)
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        # Replacement may have succeeded before directory fsync failed.
+        print(f"FAIL could not record refusal of {claim}: {exc}", file=sys.stderr)
+
+
+def _kept_claim_provisional_ids(
+    intent: ClaimIntent, names: Collection[str]
+) -> dict[str, set[str]] | None:
+    """Keep cumulative provisional provenance for the surviving filings."""
+    if intent.provisional_ids is None:
+        return None
+    return {
+        name: ids for name, ids in intent.provisional_ids.items() if name in names
+    }
 
 
 def _write_answers_claim_state(
@@ -7177,6 +7222,10 @@ def _recover_inbox_quarantines(
         kept_receipts,
         fixed=kept_fixed if intent.has_fixed else None,
         **({"manual_repair": True} if intent.manual_repair else {}),
+        refused=intent.refused,
+        provisional_ids=_kept_claim_provisional_ids(
+            intent, {path.name for path in intent.claimed} - set(quarantined)
+        ),
     )
     updated = _read_claim_intent(claim)
     if updated is None:
@@ -7285,7 +7334,7 @@ def _claimed_entry_finding(
     return parsed[0]
 
 
-def _immediate_entry_line_regions(
+def _entry_line_regions(
     text: str,
 ) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
     """Slice non-blank leading and body lines at the receipt parser's headings.
@@ -7307,6 +7356,67 @@ def _immediate_entry_line_regions(
     return regions
 
 
+def _claimed_file_content_proven(
+    path: Path,
+    ledger: Path,
+    ledger_text: str,
+    actual: dict[str, Finding],
+    ledger_regions: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+    entry_id: Callable[[str, int, int, FindingExpectation], str | None],
+    *,
+    unmapped_entry: Callable[
+        [FindingExpectation, tuple[str, ...], tuple[str, ...]], bool
+    ] | None = None,
+) -> bool:
+    """Prove a claimed file's structure and ordered whole-file ledger coverage."""
+    try:
+        sources = _merge_sources([path], ledger)
+        text = sources[0] if sources else ""
+        parsed, problems, _vocabulary = _parse_text(
+            _entry_candidate_text(text, ledger_text), ledger
+        )
+        _lines, _headers, orphans = _unfenced_header_matches(text)
+        entries = _receipt_entry_texts(text)
+        regions = _entry_line_regions(text)
+        if (
+            problems
+            or not entries
+            or len(parsed) != len(entries)
+            or any(finding.controller_export for finding in parsed)
+            or orphans
+            or len(regions) != len(entries)
+        ):
+            return False
+        for index, entry_text in enumerate(entries):
+            finding = _claimed_entry_finding(entry_text, ledger_text, ledger)
+            if finding is None or finding.controller_export:
+                return False
+            _identifier, leading, raw_body = regions[index]
+            prefix = leading if index == 0 else ()
+            expected = _finding_expectation(finding)
+            identifier = entry_id(path.name, index, len(entries), expected)
+            if identifier is None:
+                if unmapped_entry is None or not unmapped_entry(expected, prefix, raw_body):
+                    return False
+                continue
+            finding = actual.get(identifier)
+            if finding is None or not _finding_identity_preserved(expected, finding):
+                return False
+            ledger_region = ledger_regions.get(identifier)
+            if ledger_region is None:
+                return False
+            ledger_leading, ledger_body = ledger_region
+            if not _ordered_content_preserved(prefix, ledger_leading):
+                return False
+            if not _ordered_content_preserved(raw_body, ledger_body):
+                return False
+    except LedgerReadRefused:
+        raise
+    except (OSError, UnicodeError, LedgerError):
+        return False
+    return True
+
+
 def _immediate_claim_content_proven(
     claim: Path, ledger: Path, ledger_text: str, intent: ClaimIntent
 ) -> bool:
@@ -7321,7 +7431,7 @@ def _immediate_claim_content_proven(
         findings, _problems, _vocabulary = _parse_text(ledger_text, ledger)
         ledger_regions = {
             identifier: (leading, body)
-            for identifier, leading, body in _immediate_entry_line_regions(ledger_text)
+            for identifier, leading, body in _entry_line_regions(ledger_text)
         }
     except LedgerReadRefused:
         raise
@@ -7341,56 +7451,27 @@ def _immediate_claim_content_proven(
             and record["id"] not in current_ids
         ):
             return False
+
+    def unmapped_entry(
+        expected: FindingExpectation, prefix: tuple[str, ...], raw_body: tuple[str, ...]
+    ) -> bool:
+        # Older intents cannot map a placeholder to its minted id.
+        if dict_records or not all(item in current_ids for item in intent.ids):
+            return False
+        return not prefix and _ordered_content_preserved(raw_body, expected.body)
+
+    def entry_id(
+        name: str, index: int, count: int, expected: FindingExpectation
+    ) -> str | None:
+        return _immediate_entry_id(
+            expected.identifier, name, index, count, receipt_ids
+        )
+
     for path in intent.claimed:
-        try:
-            sources = _merge_sources([path], ledger)
-            text = sources[0] if sources else ""
-            parsed, problems, _vocabulary = _parse_text(
-                _entry_candidate_text(text, ledger_text), ledger
-            )
-            _lines, _headers, orphans = _unfenced_header_matches(text)
-            entries = _receipt_entry_texts(text)
-            regions = _immediate_entry_line_regions(text)
-            if (
-                problems
-                or not entries
-                or len(parsed) != len(entries)
-                or any(finding.controller_export for finding in parsed)
-                or orphans
-                or len(regions) != len(entries)
-            ):
-                return False
-            for index, entry_text in enumerate(entries):
-                finding = _claimed_entry_finding(entry_text, ledger_text, ledger)
-                if finding is None or finding.controller_export:
-                    return False
-                _identifier, leading, raw_body = regions[index]
-                prefix = leading if index == 0 else ()
-                expected = _finding_expectation(finding)
-                identifier = _immediate_entry_id(
-                    expected.identifier, path.name, index, len(entries), receipt_ids
-                )
-                if identifier is None:
-                    # Older intents cannot map a placeholder to its minted id.
-                    if dict_records or not all(item in current_ids for item in intent.ids):
-                        return False
-                    if prefix or not _ordered_content_preserved(raw_body, expected.body):
-                        return False
-                    continue
-                finding = actual.get(identifier)
-                if finding is None or not _finding_identity_preserved(expected, finding):
-                    return False
-                ledger_region = ledger_regions.get(identifier)
-                if ledger_region is None:
-                    return False
-                ledger_leading, ledger_body = ledger_region
-                if not _ordered_content_preserved(prefix, ledger_leading):
-                    return False
-                if not _ordered_content_preserved(raw_body, ledger_body):
-                    return False
-        except LedgerReadRefused:
-            raise
-        except (OSError, UnicodeError, LedgerError):
+        if not _claimed_file_content_proven(
+            path, ledger, ledger_text, actual, ledger_regions, entry_id,
+            unmapped_entry=unmapped_entry,
+        ):
             return False
     return True
 
@@ -7661,6 +7742,28 @@ def _read_claim_intent(
         manual_repair = record.get("manual_repair", False)
         if not isinstance(manual_repair, bool):
             raise ValueError("manual_repair must be a boolean")
+        refused = record.get("refused", False)
+        if not isinstance(refused, bool):
+            raise ValueError("refused must be a boolean")
+        provisional_ids = None
+        raw_provisional = record.get("provisional_ids")
+        if raw_provisional is not None:
+            if not isinstance(raw_provisional, dict):
+                raise TypeError("provisional_ids must be an object")
+            provisional_ids = {}
+            for name, identifiers in raw_provisional.items():
+                if (
+                    not isinstance(name, str)
+                    or not name.endswith(".md")
+                    or Path(name).name != name
+                    or not isinstance(identifiers, list)
+                    or not all(
+                        isinstance(identifier, str) and ID_RE.fullmatch(identifier) is not None
+                        for identifier in identifiers
+                    )
+                ):
+                    raise ValueError("invalid provisional_ids record")
+                provisional_ids[name] = set(identifiers)
         raw_returning = record.get(ANSWER_RETURNING_FIELD)
         returning_to_spool: dict[str, AnswerSpoolReturn] = {}
         if raw_returning is not None:
@@ -7831,6 +7934,8 @@ def _read_claim_intent(
             quarantined,
             manual_repair,
             returning_to_spool,
+            refused,
+            provisional_ids,
         )
     except _MERGE_INTENT_ERRORS as exc:
         raise LedgerError(f"could not read {intent_path}: {exc}") from exc
@@ -8090,16 +8195,24 @@ def _receipt_entry_texts(text: str) -> list[str]:
     ]
 
 
-def _merge_receipt_digests(inbox: Path, legacy: Path) -> set[str]:
+def _merge_receipt_digests(inbox: Path, legacy: Path, claim: Path | None = None) -> set[str]:
     """Collect batch and orphan digests before the receipt directory is indexed."""
     paths = list(inbox.glob("*.md")) + list(inbox.glob(".*.part"))
+    claimed = set(claim.glob("*.md")) if claim is not None else set()
+    paths.extend(claimed)
     if legacy.exists():
         paths.append(legacy)
     digests: set[str] = set()
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8")
-        except _READ_ERRORS:
+        except OSError as exc:
+            if path in claimed:
+                raise LedgerError(
+                    f"could not read claimed filing {path} while collecting receipt digests: {exc}"
+                ) from exc
+            continue
+        except UnicodeError:
             continue
         entry_texts = _receipt_entry_texts(text) or [text]
         digests.update(
@@ -8471,6 +8584,27 @@ def _claim_finalisation_mode(
     return "deferred"
 
 
+def _claim_repeated_id(claim: Path, intent: ClaimIntent) -> str | None:
+    """Refuse impossible receipt reuse before testing proof of an unwritten batch."""
+    ids: set[str] = set()
+    receipts: set[str] = set()
+    repeated_id = None
+    for filing_key, record in intent.receipt_ids.items():
+        assert isinstance(record, dict)
+        identifier = record["id"]
+        receipt_name = record.get("receipt", f"{filing_key}.json")
+        if receipt_name in receipts:
+            raise LedgerError(
+                f"claim intent {_claim_intent_path(claim)} records {receipt_name} twice; "
+                "the claim is kept — inspect it by hand"
+            )
+        if identifier in ids and repeated_id is None:
+            repeated_id = identifier
+        ids.add(identifier)
+        receipts.add(receipt_name)
+    return repeated_id
+
+
 def _claim_entry_expectations(
     claim: Path, ledger: Path, intent: ClaimIntent
 ) -> dict[str, tuple[Path, FindingExpectation]]:
@@ -8486,23 +8620,12 @@ def _claim_entry_expectations(
             )
         records_by_file.setdefault(record["published"], []).append(filing_key)
 
-    ids: set[str] = set()
-    receipts: set[str] = set()
-    for filing_key, record in intent.receipt_ids.items():
-        identifier = record["id"]
-        receipt_name = record.get("receipt", f"{filing_key}.json")
-        if identifier in ids:
-            raise LedgerError(
-                f"claim intent {_claim_intent_path(claim)} records {identifier} twice; "
-                "the claim is kept — inspect it by hand"
-            )
-        if receipt_name in receipts:
-            raise LedgerError(
-                f"claim intent {_claim_intent_path(claim)} records {receipt_name} twice; "
-                "the claim is kept — inspect it by hand"
-            )
-        ids.add(identifier)
-        receipts.add(receipt_name)
+    repeated_id = _claim_repeated_id(claim, intent)
+    if repeated_id is not None:
+        raise LedgerError(
+            f"claim intent {_claim_intent_path(claim)} records {repeated_id} twice; "
+            "the claim is kept — inspect it by hand"
+        )
 
     claimed_by_name = {path.name: path for path in intent.claimed}
     for published in records_by_file:
@@ -8700,6 +8823,8 @@ def _reconcile_prepared_claim(
             else None,
             fixed=intent.fixed,
             **({"manual_repair": True} if intent.manual_repair else {}),
+            refused=intent.refused,
+            provisional_ids=_kept_claim_provisional_ids(intent, absent_names),
             **intent_kwargs,
         )
         for path, path_state in path_states.items():
@@ -8717,7 +8842,10 @@ def _reconcile_prepared_claim(
     if not remaining_paths:
         release_spool(claim, spool, [], publish_locked=True)
         return Reconciliation([], receipt_names, set(intent.fixed), not claim.exists())
-    return Reconciliation(absent, receipt_names, set(intent.fixed), False)
+    return Reconciliation(
+        absent, receipt_names, set(intent.fixed), False,
+        provisional_ids=intent.provisional_ids or {},
+    )
 
 
 def _reconcile_inbox_claim(
@@ -8741,6 +8869,29 @@ def _reconcile_inbox_claim(
             "finish it with env -u FINDINGS_CLAIM_FINALIZE "
             "FINDINGS_LEDGER_COMMIT=0 findings.py merge-inbox (today's recovery), "
             "or inspect it by hand"
+        )
+
+    if _claim_repeated_id(claim, intent) is not None or intent.refused:
+        # A refusal, or repeated ids the writer could never validate, proves
+        # the batch unwritten. Adopt the files as corrected, not as recorded.
+        provisional_ids = intent.provisional_ids
+        if provisional_ids is None:
+            provisional_ids = {}
+            for record in intent.receipt_ids.values():
+                assert isinstance(record, dict)
+                ids = provisional_ids.setdefault(record["published"], set())
+                if record["id"] not in intent.fixed:
+                    ids.add(record["id"])
+        receipt_names = {
+            key: record.get("receipt", f"{key}.json")
+            for key, record in intent.receipt_ids.items()
+            if isinstance(record, dict)
+        }
+        if not intent.claimed:
+            release_spool(claim, inbox, [], publish_locked=True)
+        return Reconciliation(
+            list(intent.claimed), receipt_names, set(intent.fixed), not claim.exists(),
+            refused=True, provisional_ids=provisional_ids,
         )
 
     entry_expectations = _claim_entry_expectations(claim, ledger, intent)
@@ -8793,6 +8944,37 @@ def _reconcile_inbox_claim(
             return "waiting"
         return "absent"
 
+    def finish_present(keys: Collection[str]) -> None:
+        head_text = cast(str, snapshot.findings_text)
+        ledger_regions = {
+            identifier: (leading, body)
+            for identifier, leading, body in _entry_line_regions(head_text)
+        }
+        present_paths = {entry_expectations[key][0] for key in keys}
+
+        def entry_id(
+            name: str, index: int, count: int, _expected: FindingExpectation
+        ) -> str:
+            key = name if count == 1 else f"{name}#{index}"
+            record = intent.receipt_ids[key]
+            assert isinstance(record, dict)
+            return record["id"]
+
+        for path in intent.claimed:
+            if path not in present_paths:
+                continue
+            if not _claimed_file_content_proven(
+                path, ledger, head_text, head_by_id, ledger_regions, entry_id
+            ):
+                raise LedgerError(
+                    f"{path} in {claim} holds text HEAD does not prove; "
+                    "the claim is kept — inspect it by hand"
+                )
+        _write_merged_receipts(
+            inbox,
+            _receipt_records_from_intent(claim, intent.receipt_ids, keys=keys),
+        )
+
     decisions_hint = f" [{decisions}]" if decisions.exists() else ""
     return _reconcile_prepared_claim(
         claim,
@@ -8801,10 +8983,7 @@ def _reconcile_inbox_claim(
         working_text,
         records=entry_expectations,
         classify=classify,
-        finish_present=lambda keys: _write_merged_receipts(
-            inbox,
-            _receipt_records_from_intent(claim, intent.receipt_ids, keys=keys),
-        ),
+        finish_present=finish_present,
         waiting_message=lambda _path, _key: (
             f"a merged batch in {claim} is not durable yet (the entries are in "
             f"the working ledger but not in HEAD); commit it first: git commit -- "
@@ -9443,13 +9622,16 @@ def _note_folded_legacy(legacy: Path, claimed: bool) -> None:
         print(f"NOTE folded legacy findings inbox {legacy}", file=sys.stderr)
 
 
-def _refuse_entryless_filings(inbox: Path, legacy: Path) -> None:
+def _refuse_entryless_filings(
+    inbox: Path, legacy: Path, *, adopted: Collection[Path] = ()
+) -> None:
     """Refuse the merge while a published filing carries no entry.
 
     Such a filing gets no receipt record, so releasing its batch would delete it
     while its receipt still reads ``published``. Checked before the claim, under
     the publish lock every writer takes, so the refusal leaves the inbox as it
-    was. An empty legacy single-file inbox has no receipt and is removed.
+    was. Refused adoptions check their claimed files before rewriting the intent.
+    An empty legacy single-file inbox has no receipt and is removed.
     """
     if _entry_state(legacy) == _ENTRY_BROKEN:
         raise LedgerError(
@@ -9464,6 +9646,8 @@ def _refuse_entryless_filings(inbox: Path, legacy: Path) -> None:
     filings = sorted(inbox.glob("*.md"))
     if _entry_exists(legacy):
         filings.append(legacy)
+    adopted_paths = set(adopted)
+    filings.extend(sorted(adopted_paths))
     entryless: list[str] = []
     for path in filings:
         try:
@@ -9472,7 +9656,12 @@ def _refuse_entryless_filings(inbox: Path, legacy: Path) -> None:
             if _entry_state(path) != _ENTRY_BROKEN:
                 continue
             raise LedgerError(f"could not read filing {path}: {exc}") from exc
-        except (OSError, UnicodeError) as exc:
+        except UnicodeError as exc:
+            if path in adopted_paths:
+                # The source read retains its existing deterministic refusal.
+                continue
+            raise LedgerError(f"could not read filing {path}: {exc}") from exc
+        except OSError as exc:
             raise LedgerError(f"could not read filing {path}: {exc}") from exc
         if not _unfenced_header_matches(text)[1]:
             entryless.append(str(path))
@@ -9505,10 +9694,10 @@ def _merge_inbox_publish_locked(
     an unpublished file would instead commit a valid-looking partial prefix while
     the writer's remaining lines disappear into an unlinked inode.
 
-    **A refused batch is never destroyed.** A published filing with no entry is
-    refused before anything is claimed, so it stays in the inbox; every later
-    refusal leaves the batch in the fixed claim directory, whose path the error
-    names. The directory records durable ownership of that
+    **A refused batch is never destroyed.** A filing with no entry is refused
+    where it stands, in the inbox before claiming or in the fixed claim directory
+    during adoption. Every later refusal leaves the batch in that directory,
+    whose path the error names. The directory records durable ownership of that
     batch; the ledger flock excludes concurrent ledger writers, while atomic
     ``mkdir`` prevents two consumers from claiming the same published files.
 
@@ -9524,6 +9713,11 @@ def _merge_inbox_publish_locked(
             _deferred_preconditions(ledger, decisions)
     legacy = inbox.with_suffix(".md")
     claim = inbox.with_name(f"{inbox.name}.claim")
+
+    def refuse() -> MergeResult:
+        if mode == "deferred":
+            _mark_refused_inbox_claim(claim)
+        return MergeResult(1)
 
     _sweep_scratch(ledger.parent, lambda target: target == ledger.name)
     _sweep_scratch(
@@ -9543,7 +9737,9 @@ def _merge_inbox_publish_locked(
             claim, inbox, ledger, publish_locked=True, durable_replay=True
         )
     try:
-        receipt_index = _receipt_index(inbox, _merge_receipt_digests(inbox, legacy))
+        receipt_index = _receipt_index(
+            inbox, _merge_receipt_digests(inbox, legacy, claim if mode == "deferred" else None)
+        )
     except LedgerReadRefused:
         raise
     except LedgerError as exc:
@@ -9554,26 +9750,34 @@ def _merge_inbox_publish_locked(
             else ""
         )
         print(f"FAIL {exc}{suffix}", file=sys.stderr)
-        return MergeResult(1)
+        return refuse()
     if not _adopt_orphan_parts(inbox, receipt_index):
         print(
             f"FAIL could not adopt every orphan in {inbox}; the merge "
             "is incomplete and the orphan files were preserved.",
             file=sys.stderr,
         )
-        return MergeResult(1)
-    _refuse_entryless_filings(inbox, legacy)
+        return refuse()
+    if reconciliation is not None and reconciliation.refused:
+        try:
+            _refuse_entryless_filings(inbox, legacy, adopted=reconciliation.absent)
+        except LedgerReadRefused:
+            raise
+        except LedgerError as exc:
+            print(f"FAIL {exc}", file=sys.stderr)
+            return refuse()
+    else:
+        _refuse_entryless_filings(inbox, legacy)
     if reconciliation is not None and claim.exists():
         adopted = list(reconciliation.absent)
         newly_claimed = claim_spool(
             inbox, claim, legacy=legacy, into_existing=True
         )
         if newly_claimed is None:
-            return MergeResult(
-                _report_refused_claim(
-                    claim, batch="", action="merging", stranded="a filed finding"
-                )
+            _report_refused_claim(
+                claim, batch="", action="merging", stranded="a filed finding"
             )
+            return refuse()
         claimed = adopted + newly_claimed
         adopted_paths = set(adopted)
     else:
@@ -9602,7 +9806,11 @@ def _merge_inbox_publish_locked(
         ]
         if adopted_paths:
             sources = [
-                _reset_nonfixed_ids(text, reconciliation.fixed)
+                _reset_nonfixed_ids(
+                    text,
+                    header_ids(text) - reconciliation.provisional_ids.get(path.name, set())
+                    if reconciliation.refused else reconciliation.fixed,
+                )
                 if path in adopted_paths
                 else text
                 for path, text in zip(claimed, sources, strict=True)
@@ -9632,7 +9840,9 @@ def _merge_inbox_publish_locked(
             f"unchanged and the batch is preserved at {claim}.",
             file=sys.stderr,
         )
-        return MergeResult(1)
+        if "new Sentry-origin entries must be filed open" in str(exc):
+            return MergeResult(1)
+        return refuse()
     # Seeded from the whole batch before a single id is handed out, not just
     # from the ledger: a file that picked its own id is still a claim on that
     # number, and allocating it a second time is the very collision the
@@ -9673,7 +9883,7 @@ def _merge_inbox_publish_locked(
             f"at {claim}.",
             file=sys.stderr,
         )
-        return MergeResult(1)
+        return refuse()
     body = "\n\n".join(parts).strip()
     if not body:
         # Unreachable while _refuse_entryless_filings holds; never release here.
@@ -9686,15 +9896,15 @@ def _merge_inbox_publish_locked(
     # An id is handed out here and nowhere else, so it has to survive every
     # later step failing. Two of them can:
     #   * a refusal below leaves the batch in the claim to be corrected and
-    #     replayed — and a replay that re-mints would give the same finding a
-    #     different id each attempt;
+    #     adopted. Deferred refusals preserve per-filing provisional provenance
+    #     so an interrupted rewrite still resets an earlier allocation;
     #   * the ledger write and the spool release are two filesystem steps, and
     #     a crash between them leaves the findings merged but still claimed.
     #     Replaying `f-PENDING` would then append every one of them a SECOND
     #     time, silently, because a fresh id is not a duplicate.
-    # With the ids on disk, both replays re-propose the same ids and hit the
-    # duplicate check — a loud, inspectable stop instead of a quiet double
-    # entry.
+    # Refused deferred adoption resets provisional ids per filing and allocates
+    # them again. Recovery of a possibly written batch re-proposes its on-disk
+    # ids and hits the duplicate check — a loud stop instead of a double entry.
     receipt_records: list[tuple[str, str, str]] = []
     receipt_ids: dict[str, dict[str, str]] = {}
     allocated_receipt_names: set[str] = set()
@@ -9714,6 +9924,14 @@ def _merge_inbox_publish_locked(
                 if reconciliation is not None
                 else None
             )
+            if reused_receipt is not None and reconciliation.refused:
+                receipt = _read_receipt(receipt_directory(inbox) / reused_receipt)
+                if (
+                    len(entry_records) != 1
+                    or receipt is None
+                    or receipt["published"] != path.name
+                ):
+                    reused_receipt = None
             receipt_path = (
                 receipt_directory(inbox) / reused_receipt
                 if reused_receipt is not None
@@ -9745,17 +9963,36 @@ def _merge_inbox_publish_locked(
 
     try:
         fixed = None
+        provisional_ids = None
         if mode == "deferred":
             fixed = set(reconciliation.fixed if reconciliation is not None else ())
-            for path, raw in zip(claimed, raw_sources, strict=True):
-                if path not in adopted_paths:
-                    fixed.update(header_ids(raw))
+            if reconciliation is not None and reconciliation.refused:
+                fixed = set().union(*(header_ids(text) for text in sources))
+            else:
+                for path, raw in zip(claimed, raw_sources, strict=True):
+                    if path not in adopted_paths:
+                        fixed.update(header_ids(raw))
+            provisional_ids = {
+                path.name: (
+                    set(assigned_by_file.get(inbox / path.name, []))
+                    | (
+                        reconciliation.provisional_ids.get(path.name, set())
+                        if reconciliation is not None else set()
+                    )
+                    | (
+                        header_ids(raw) - fixed
+                        if path in adopted_paths else set()
+                    )
+                )
+                for path, raw in zip(claimed, raw_sources, strict=True)
+            }
         _write_claim_intent(
             claim,
             "prepared",
             header_ids(body),
             receipt_ids,
             fixed=fixed,
+            provisional_ids=provisional_ids,
         )
     except LedgerReadRefused:
         raise
@@ -9765,7 +10002,7 @@ def _merge_inbox_publish_locked(
             f"at {claim}.",
             file=sys.stderr,
         )
-        return MergeResult(1)
+        return refuse()
     if assigned:
         try:
             for path, rewritten in zip(claimed, parts, strict=True):
@@ -9778,7 +10015,7 @@ def _merge_inbox_publish_locked(
                 f"at {claim}.",
                 file=sys.stderr,
             )
-            return MergeResult(1)
+            return refuse()
 
     def candidate_issues(candidate_text: str) -> list[str]:
         found = _validate_text(candidate_text, ledger)
@@ -9801,7 +10038,7 @@ def _merge_inbox_publish_locked(
                 f"unchanged and the batch is preserved at {claim}. Fix it there.",
                 file=sys.stderr,
             )
-            return MergeResult(1)
+            return refuse()
 
         kept_indexes: list[int] = []
         quarantined: dict[str, str] = {}
@@ -9831,7 +10068,7 @@ def _merge_inbox_publish_locked(
                 f"unchanged and the batch is preserved at {claim}. Fix it there.",
                 file=sys.stderr,
             )
-            return MergeResult(1)
+            return refuse()
 
         _write_quarantined_inbox_receipts(inbox, receipt_ids, quarantined)
         current_intent = _read_claim_intent(claim)
@@ -9885,7 +10122,7 @@ def _merge_inbox_publish_locked(
             "header line inside a fence is an example, not an entry.",
             file=sys.stderr,
         )
-        return MergeResult(1)
+        return refuse()
 
     merged_ids = sorted(header_ids(body))
     candidate_findings = _parse_text(candidate, ledger)[0]
@@ -10163,15 +10400,16 @@ def cmd_file_status(args: argparse.Namespace) -> int:
 
 
 def _refuse_terminal_filing_receipt(
-    receipt: dict[str, str] | None, receipt_path: Path
+    receipt: dict[str, str] | None, receipt_path: Path, *, invite_again: bool = True
 ) -> bool:
-    """Refuse a repeated normal filing after its receipt reached a terminal state."""
+    """Report a terminal merged or quarantined filing receipt."""
     if receipt is None:
         return False
     if receipt["state"] == "merged":
+        invitation = " Use --again to file it deliberately." if invite_again else ""
         print(
             f"FAIL this entry was already filed as {receipt['id']} according to "
-            f"{receipt_path}. Use --again to file it deliberately.",
+            f"{receipt_path}.{invitation}",
             file=sys.stderr,
         )
         return True
@@ -10194,6 +10432,39 @@ def _intake_filing_token(path: Path) -> str | None:
     return match[1] if match is not None else None
 
 
+_IntakeNameOrder = NamedTuple("_IntakeNameOrder", [("family", str), ("order", tuple[int, int, str])])
+
+
+def _intake_name_order(path: Path) -> _IntakeNameOrder:
+    """Parse <family>[.r<N>-<unique>][-again-<token>].md into family and
+    order (revision, timestamp_ns or 0, name).
+    """
+    token = _intake_filing_token(path)
+    stem = path.name[:-3]
+    if token is not None:
+        stem = stem[:-(len(token) + len("-again-"))]
+    revision = re.fullmatch(r"(.+)\.r(\d+)-\d+-(\d+)-\d+", stem)
+    if revision is not None and int(revision[2]) >= 2:
+        return _IntakeNameOrder(revision[1], (int(revision[2]), int(revision[3]), path.name))
+    unique = re.search(r"-\d+-(\d+)-\d+$", stem)
+    return _IntakeNameOrder(stem, (1, int(unique[1]) if unique is not None else 0, path.name))
+
+
+def _intake_family_members(source: Path) -> list[Path]:
+    family, _order = _intake_name_order(source)
+    try:
+        paths = list(source.parent.iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(
+        (path for path in paths
+         if not path.name.startswith(".") and path.suffix == ".md"
+         and not path.is_symlink() and path.is_file()
+         and _intake_name_order(path).family == family),
+        key=lambda path: _intake_name_order(path).order,
+    )
+
+
 def _make_intake_directory(inbox: Path) -> Path:
     for directory in (inbox, intake_directory(inbox)):
         existed = directory.exists()
@@ -10203,11 +10474,15 @@ def _make_intake_directory(inbox: Path) -> Path:
     return intake_directory(inbox)
 
 
-def _stage_intake(inbox: Path, raw: bytes, *, filing_token: str | None = None) -> Path:
+def _stage_intake(
+    inbox: Path, raw: bytes, *, filing_token: str | None = None,
+    replaces: Path | None = None,
+) -> Path:
     """Persist bytes before validation; an unsuccessful write never removes bytes."""
     suffix = f"-again-{filing_token}" if filing_token is not None else ""
     name = f"{_publish_stamp()}-{_unique_suffix()}{suffix}.md"
     for attempt in range(INTAKE_STAGING_ATTEMPTS):
+        renamed = False
         try:
             directory = _make_intake_directory(inbox)
             staged = directory / name
@@ -10216,10 +10491,34 @@ def _stage_intake(inbox: Path, raw: bytes, *, filing_token: str | None = None) -
                 handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, staged)
-            _fsync_directory(directory)
+            if replaces is None:
+                os.replace(temporary, staged)
+                renamed = True
+                _fsync_directory(directory)
+            else:
+                try:
+                    with _publish_lock(publish_lock_path(inbox)):
+                        if replaces.is_symlink() or not replaces.is_file():
+                            raise LedgerError(
+                                f"{replaces} is no longer in the intake (filed, recovered "
+                                "or replaced by a concurrent merge or filing); nothing was staged"
+                            )
+                        members = _intake_family_members(replaces)
+                        family, _order = _intake_name_order(replaces)
+                        revision, _ns, _name = max(_intake_name_order(p).order for p in members)
+                        staged = directory / f"{family}.r{revision + 1}-{_unique_suffix()}{suffix}.md"
+                        os.replace(temporary, staged)
+                        renamed = True
+                        _fsync_directory(directory)
+                except LedgerError as exc:
+                    exc.staging_temporary = temporary
+                    raise
             return staged
         except OSError as exc:
+            if renamed:
+                if exc.errno == errno.ENOENT:
+                    return staged
+                raise
             if exc.errno != errno.ENOENT or attempt == INTAKE_STAGING_ATTEMPTS - 1:
                 raise
     raise AssertionError("unreachable intake staging retry")
@@ -10322,27 +10621,42 @@ def _publish_filing(inbox: Path, entry: str, *, filing_token: str | None = None)
 
 def _remove_published_intake(
     path: Path, published: Path, *, replaced: bool = False
-) -> None:
+) -> bool:
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
         if replaced:
             print(
                 f"WARN published {published}; "
-                f"could not remove replaced {path}: {exc} — a later merge treats it "
-                "as an unfiled entry (a duplicate is possible)", file=sys.stderr,
+                f"could not remove replaced {path}: {exc} — the next merge clears it",
+                file=sys.stderr,
             )
         else:
             print(
                 f"WARN published {published}; "
                 f"could not remove {path}: {exc} — the next merge clears it", file=sys.stderr
             )
+        return False
+    return True
 
 
-def _complete_intake_filing(source: Path, published: Path, replaces: Path | None) -> None:
-    _remove_published_intake(source, published)
-    if replaces is not None:
-        _remove_published_intake(replaces, published, replaced=True)
+def _complete_intake_filing(source: Path, published: Path) -> None:
+    try:
+        members = _intake_family_members(source)
+    except OSError as exc:
+        print(
+            f"WARN published {published}; could not list the intake family of "
+            f"{source}: {exc} — the next merge clears it", file=sys.stderr,
+        )
+        return
+    source_order = _intake_name_order(source).order
+    older = [p for p in members if _intake_name_order(p).order < source_order]
+    removed = True
+    for path in older:
+        if not _remove_published_intake(path, published, replaced=True):
+            removed = False
+    if removed:
+        _remove_published_intake(source, published)
 
 
 def _intake_covered(inbox: Path, entry: str, token: str | None = None) -> bool:
@@ -10414,6 +10728,62 @@ def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
     )
 
 
+def _intake_bytes_covered(
+    inbox: Path, raw: bytes, ledger: Path, path: Path, token: str | None,
+    *, require_valid: bool, include_recovery: bool,
+) -> bool:
+    """Check staged entry coverage, optionally including its recovery wrapper."""
+    try:
+        entry, issues = _validate_entry_text(_decode_entry_bytes(raw), ledger, path)
+        if entry is not None and (not require_valid or not issues) and _intake_covered(inbox, entry, token):
+            return True
+    except LedgerReadRefused:
+        raise
+    except (LedgerError, UnicodeError) as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise
+    if include_recovery:
+        recovery = _intake_recovery_entry(raw, _read_ledger_text(ledger))
+        wrapped, _issues = _validate_entry_text(recovery, ledger, path)
+        return _intake_covered(inbox, wrapped if wrapped is not None else recovery)
+    return False
+
+
+def _remove_superseded_intake(
+    inbox: Path, ledger: Path, members: list[Path], *, resolved: bool,
+) -> bool:
+    """Remove older intake members when covered or their latest member is resolved."""
+    removed = True
+    for older in members[:-1]:
+        try:
+            raw = older.read_bytes()
+            covered = _intake_bytes_covered(
+                inbox, raw, ledger, older, _intake_filing_token(older),
+                require_valid=False, include_recovery=True,
+            )
+            if covered or resolved:
+                older.unlink(missing_ok=True)
+                if covered:
+                    print(f"intake-cleared {older.name}")
+                else:
+                    print(f"intake-superseded {older.name} by {members[-1].name}")
+            else:
+                print(f"intake-pending {older.name}: superseded by {members[-1].name}")
+        except LedgerReadRefused:
+            raise
+        except (OSError, LedgerError, UnicodeError) as exc:
+            removed = False
+            print(f"WARN intake {older.name}: {exc}", file=sys.stderr)
+    return removed
+
+
+def _finish_intake_family(inbox: Path, ledger: Path, members: list[Path], outcome: str) -> None:
+    """Remove a resolved intake family and print its outcome."""
+    if _remove_superseded_intake(inbox, ledger, members, resolved=True):
+        members[-1].unlink(missing_ok=True)
+        print(outcome)
+
+
 def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
     """Best-effort intake recovery under both merge locks.
 
@@ -10427,7 +10797,30 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
     except OSError as exc:
         print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
         return
+    families: dict[str, list[Path]] = {}
+    other = []
     for path in paths:
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                print(f"WARN intake {path.name}: not a regular non-symlink file", file=sys.stderr)
+                continue
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"WARN intake {path.name}: {exc}", file=sys.stderr)
+            if path.name.startswith(".") or path.suffix != ".md":
+                continue
+        if not path.name.startswith(".") and path.suffix == ".md":
+            family, _order = _intake_name_order(path)
+            families.setdefault(family, []).append(path)
+        else:
+            other.append(path)
+    groups = [sorted(members, key=lambda p: _intake_name_order(p).order)
+              for members in families.values()]
+    groups.extend([path] for path in other)
+    for members in groups:
+        path = members[-1]
+
         try:
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode):
@@ -10438,19 +10831,26 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
             recovery = _intake_recovery_entry(raw, _read_ledger_text(ledger))
             reason = "interrupted staging"
             entry = None
+            temporary = re.fullmatch(r"\.(.+\.md)\.tmp-\d+-\d+-\d+", path.name)
+            if temporary is not None:
+                temporary_token = _intake_filing_token(Path(temporary[1]))
+                if _intake_bytes_covered(
+                    inbox, raw, ledger, path, temporary_token,
+                    require_valid=True, include_recovery=False,
+                ):
+                    _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
+                    continue
             if not path.name.startswith(".") and path.suffix == ".md":
                 try:
                     entry, issues = _validate_entry_text(_decode_entry_bytes(raw), ledger, path)
                     if entry is not None and _intake_covered(inbox, entry, token):
-                        path.unlink(missing_ok=True)
-                        print(f"intake-cleared {path.name}")
+                        _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
                         continue
                     if not issues and entry is not None:
                         issues = _filing_citation_issues(entry, ledger, decisions)
                         if not issues:
                             _publish_filing(inbox, entry, filing_token=token)
-                            path.unlink(missing_ok=True)
-                            print(f"intake-filed {path.name}")
+                            _finish_intake_family(inbox, ledger, members, f"intake-filed {path.name}")
                             continue
                     reason = issues[0] if issues else "entry cannot be filed"
                 except LedgerReadRefused:
@@ -10461,8 +10861,7 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                     reason = str(exc)
             wrapped, wrap_issues = _validate_entry_text(recovery, ledger, path)
             if _intake_covered(inbox, wrapped if wrapped is not None else recovery):
-                path.unlink(missing_ok=True)
-                print(f"intake-cleared {path.name}")
+                _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
                 continue
             if metadata.st_mtime < time.time() - INTAKE_RECOVERY_GRACE_SECONDS:
                 issues = wrap_issues
@@ -10470,11 +10869,11 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                     issues = _filing_citation_issues(wrapped, ledger, decisions)
                     if not issues:
                         _publish_filing(inbox, wrapped)
-                        path.unlink(missing_ok=True)
-                        print(f"intake-recovered {path.name}: {reason}")
+                        _finish_intake_family(inbox, ledger, members, f"intake-recovered {path.name}: {reason}")
                         continue
                 reason = issues[0] if issues else reason
             print(f"intake-pending {path.name}: {reason}")
+            _remove_superseded_intake(inbox, ledger, members, resolved=False)
         except LedgerReadRefused:
             raise
         except (OSError, LedgerError, UnicodeError) as exc:
@@ -10496,6 +10895,24 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                 print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
 
 
+def _print_kept_intake(args: argparse.Namespace, source: Path, token: str | None) -> None:
+    global_options = []
+    for name in ("ledger", "decisions"):
+        if getattr(args, f"_explicit_{name}", False):
+            global_options.extend([f"--{name}", str(getattr(args, name))])
+    options = []
+    if bool(getattr(args, "spool_only", False)):
+        options.append("--spool-only")
+    if getattr(args, "_explicit_inbox", False) or args.inbox != INBOX:
+        options.extend(["--inbox", str(args.inbox)])
+    if token is not None:
+        options.append("--again")
+    command = shlex.join(
+        ["findings.py", *global_options, "file", *options, "--replaces", str(source), "-"]
+    )
+    print(f"kept {source}; file the corrected entry with: {command}", file=sys.stderr)
+
+
 def cmd_file(args: argparse.Namespace) -> int:
     """Publish one pending finding, then merge it when no live drain owns the ledger."""
     try:
@@ -10515,9 +10932,13 @@ def cmd_file(args: argparse.Namespace) -> int:
         replaces = replaces.absolute()
         if (
             replaces.parent.resolve() != intake or replaces.is_symlink()
-            or not replaces.is_file()
+            or not replaces.is_file() or replaces.name.startswith(".")
+            or replaces.suffix != ".md"
         ):
-            print("FAIL --replaces must name a regular file inside the intake", file=sys.stderr)
+            print("FAIL --replaces must name a regular non-symlink, non-dot *.md file inside the intake", file=sys.stderr)
+            return 2
+        if intake_sourced:
+            print("FAIL --replaces cannot be used with an intake entry path", file=sys.stderr)
             return 2
     if intake_sourced and bool(getattr(args, "again", False)):
         print("FAIL --again cannot be used with an intake path", file=sys.stderr)
@@ -10535,12 +10956,101 @@ def cmd_file(args: argparse.Namespace) -> int:
                     raw = stamped.encode("utf-8")
             except (UnicodeError, LedgerError):
                 pass
-            source = _stage_intake(inbox, raw, filing_token=token)
+            source = _stage_intake(inbox, raw, filing_token=token, replaces=replaces)
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        temporary = getattr(exc, "staging_temporary", None)
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                print(f"WARN could not remove staging temporary {temporary}: {cleanup_error}", file=sys.stderr)
+        if isinstance(exc, PublishLockBusyError):
+            if replaces is not None and not replaces.is_symlink() and replaces.is_file():
+                _print_kept_intake(args, replaces, token)
+            else:
+                print(f"{replaces} is no longer in the intake; nothing was staged", file=sys.stderr)
+            return 2
+        return 1
     except (OSError, UnicodeError) as exc:
         print(f"FAIL could not stage entry: {exc}", file=sys.stderr)
         return 1
 
     promoted = False
+    superseded = False
+    merged_refused = False
+    owned = token is not None and not intake_sourced
+
+    def consumed_filing(receipt: dict[str, str] | None, *, locked: bool = False) -> int | None:
+        nonlocal promoted, published
+        # A fresh token proves ownership even when a sweep could not remove the source.
+        owned_covered = owned and receipt is not None and (
+            receipt["state"] in {"merged", "quarantined"}
+            or (receipt["state"] == "published" and _intake_covered(inbox, entry, token))
+        )
+        if owned_covered:
+            promoted = True
+            if receipt["state"] == "published":
+                published = inbox / receipt["published"]
+            if source.exists():
+                if locked:
+                    _complete_intake_filing(source, inbox / receipt["published"])
+                else:
+                    with ExitStack() as cleanup_lock:
+                        try:
+                            cleanup_lock.enter_context(_publish_lock(publish_lock_path(inbox)))
+                        except LedgerError as exc:
+                            print(
+                                f"WARN published {inbox / receipt['published']}; could not clean up "
+                                f"the retained intake copy {source}: {exc} — the next merge clears it",
+                                file=sys.stderr,
+                            )
+                        else:
+                            if receipt["state"] == "published":
+                                return consumed_filing(_read_receipt(receipt_path), locked=True)
+                            _complete_intake_filing(source, inbox / receipt["published"])
+        elif source.exists():
+            return None
+        if receipt is not None:
+            if receipt["state"] == "merged":
+                promoted = True
+                print(f"already filed as {receipt['id']}")
+                return 0
+            if receipt["state"] == "quarantined":
+                if owned:
+                    promoted = True
+                _refuse_terminal_filing_receipt(receipt, receipt_path)
+                return 1
+            if receipt["state"] == "published" and _intake_covered(inbox, entry, token):
+                promoted = True
+                published = inbox / receipt["published"]
+                return None
+        if locked:
+            raise LedgerError(
+                f"{source} was removed before this filing published it; nothing is kept"
+            )
+        return None
+
+    def refuse_terminal_source(receipt: dict[str, str] | None) -> bool:
+        nonlocal merged_refused
+        if receipt is not None and receipt["state"] == "merged":
+            merged_refused = _refuse_terminal_filing_receipt(
+                receipt, receipt_path, invite_again=False
+            )
+            return merged_refused
+        return _refuse_terminal_filing_receipt(receipt, receipt_path)
+
+    def refuse_superseded() -> bool:
+        nonlocal superseded
+        members = _intake_family_members(source)
+        if members and _intake_name_order(members[-1]).order > _intake_name_order(source).order:
+            superseded = True
+            print(
+                f"FAIL {source} is superseded by {members[-1]}; correct or retry that file instead",
+                file=sys.stderr,
+            )
+        return superseded
+
     try:
         entry, issues = _validate_entry_text(_decode_entry_bytes(raw), args.ledger, display_path)
         if issues:
@@ -10553,69 +11063,67 @@ def cmd_file(args: argparse.Namespace) -> int:
             terminal = _read_receipt(receipt_path)
         except LedgerError as exc:
             raise LedgerError(f"{exc}. Use --again to file deliberately.") from exc
-        if terminal is not None and terminal["state"] == "merged" and intake_sourced:
-            with _publish_lock(publish_lock_path(inbox)):
-                _complete_intake_filing(source, inbox / terminal["published"], replaces)
-            promoted = True
-            print(f"already filed as {terminal['id']}")
-            return 0
-        if _refuse_terminal_filing_receipt(terminal, receipt_path):
-            return 1
-        citation_issues = _filing_citation_issues(entry, args.ledger, decisions)
-        if citation_issues:
-            raise LedgerError(
-                f"{display_path} does not validate with {decisions}: "
-                + "; ".join(citation_issues)
-            )
-        preconditions_checked = False
-        if not bool(getattr(args, "spool_only", False)):
-            drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
-            if not drain_held:
-                mode = _claim_finalisation_mode(
-                    args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
-                )
-                if mode == "deferred":
-                    _deferred_preconditions(args.ledger, decisions)
-                    preconditions_checked = True
-        with _publish_lock(publish_lock_path(inbox)):
-            current = _read_receipt(receipt_path)
-            if intake_sourced and current is not None and current["state"] == "merged":
+        outcome = consumed_filing(terminal)
+        if outcome is not None:
+            return outcome
+        if not promoted:
+            if terminal is not None and terminal["state"] == "merged" and intake_sourced:
+                with _publish_lock(publish_lock_path(inbox)):
+                    if refuse_superseded():
+                        return 1
+                    _complete_intake_filing(source, inbox / terminal["published"])
                 promoted = True
-                published = inbox / current["published"]
-                _complete_intake_filing(source, published, replaces)
-                print(f"already filed as {current['id']}")
+                print(f"already filed as {terminal['id']}")
                 return 0
-            try:
-                published = _publish_filing(inbox, entry, filing_token=token)
-            except OSError as exc:
-                raise LedgerError(f"could not publish filing to {inbox}: {exc}") from exc
-            promoted = True
-            _complete_intake_filing(source, published, replaces)
+            if not owned and refuse_terminal_source(terminal):
+                return 1
+        preconditions_checked = False
+        if not promoted:
+            citation_issues = _filing_citation_issues(entry, args.ledger, decisions)
+            if citation_issues:
+                raise LedgerError(
+                    f"{display_path} does not validate with {decisions}: "
+                    + "; ".join(citation_issues)
+                )
+            if not bool(getattr(args, "spool_only", False)):
+                drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
+                if not drain_held:
+                    mode = _claim_finalisation_mode(
+                        args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+                    )
+                    if mode == "deferred":
+                        _deferred_preconditions(args.ledger, decisions)
+                        preconditions_checked = True
+            with _publish_lock(publish_lock_path(inbox)):
+                current = _read_receipt(receipt_path)
+                outcome = consumed_filing(current, locked=True)
+                if outcome is not None:
+                    return outcome
+                if not promoted:
+                    if refuse_superseded():
+                        return 1
+                    if intake_sourced and current is not None and current["state"] == "merged":
+                        promoted = True
+                        published = inbox / current["published"]
+                        _complete_intake_filing(source, published)
+                        print(f"already filed as {current['id']}")
+                        return 0
+                    if not owned and refuse_terminal_source(current):
+                        return 1
+                    try:
+                        published = _publish_filing(inbox, entry, filing_token=token)
+                    except OSError as exc:
+                        raise LedgerError(f"could not publish filing to {inbox}: {exc}") from exc
+                    promoted = True
+                    _complete_intake_filing(source, published)
     except LedgerReadRefused:
         raise
     except (LedgerError, OSError, UnicodeError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 2 if isinstance(exc, (PublishLockBusyError, LedgerDirtyError)) else 1
     finally:
-        if not promoted:
-            global_options = []
-            for name in ("ledger", "decisions"):
-                if getattr(args, f"_explicit_{name}", False):
-                    global_options.extend([f"--{name}", str(getattr(args, name))])
-            options = []
-            if bool(getattr(args, "spool_only", False)):
-                options.append("--spool-only")
-            if getattr(args, "_explicit_inbox", False) or args.inbox != INBOX:
-                options.extend(["--inbox", str(args.inbox)])
-            if token is not None:
-                options.append("--again")
-            command = shlex.join(
-                ["findings.py", *global_options, "file", *options, "--replaces", str(source), "-"]
-            )
-            print(
-                f"kept {source}; file the corrected entry with: {command}",
-                file=sys.stderr,
-            )
+        if not promoted and not superseded and not merged_refused and source.exists():
+            _print_kept_intake(args, source, token)
 
     if bool(getattr(args, "spool_only", False)):
         print(f"published finding entry: {published}; entry awaits a merge")
