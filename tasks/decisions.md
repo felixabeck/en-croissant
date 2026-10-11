@@ -7037,3 +7037,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md` (issue I1)
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"94718aae120abc6f86570dda824e6008f5e71620fb4132fb66d05848c30da204","input_sha256":"13ef07522d75ed01dc5cadd077c369c7f34c44d203fe4086de68b7f9b0f31569","kind":"mutation-receipt","operation":"457e8175af8467ee562ff6adf23dae0fca38e69f0a62417f8b997033bcfe45f1","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-07 — Who owns LRU-evicted but still draining SQLite pools, and when are they pruned?
+
+* **Question:** Who owns evicted-but-draining connection gates and when are they pruned?
+* **Governs:** f-20260930-01
+* **Chosen:** bounded repository retirement records (at most MAX_OPEN_DATABASES, 16) built on the existing connection tickets, synchronous pool/entry disposal outside the repository state mutex, and opportunistic pruning of completed records at retirement and admission boundaries.
+* **Rejected:** evictor-local ownership alone (a concurrent delete or reopen loses the barrier), an unbounded per-key list, or a background reaper.
+* **Reason:** the finding requires future lookups and bounded retention, and no new process is needed. Reversal path: replace the registry only with a protocol proving the same lookup, capacity, failure and teardown-order invariants.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"34a1933d4e1c34811f513bbb4591b0eae6ba356c9119f3742475052afcc4d36a","input_sha256":"729940c0b059ad3267426b6f79600f3da82794c07ee47433e45b1b44f8c5d28b","kind":"mutation-receipt","operation":"891fb5a451a050eebe828fcb5b72994104379c8c1b7229bdd76a327dc30ebc86","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-07"],"target":"decisions-ledger","v":1} -->
