@@ -6059,3 +6059,19 @@ Lenses tests, code-quality, correctness, records over `db366326..604051a4`: D9 C
 While proving that repair, `delayed_cached_successor_worker_establishment_waits_at_retirement_boundary` failed once inside the serial `db::` suite under load average ~10-20 with r2d2 `Error(Some("database is locked"))` at its final `pool.get_timeout`. It did not reproduce in isolation (0/60 serial, 0/160 at 16-way parallel). Same-area latent defect found while diagnosing it and repaired in aad87640: `ConnectionOptions::on_acquire` switched `journal_mode = WAL` before installing `busy_timeout`, so a pooled connection meeting a reader's lock on a rollback-mode file failed at once (measured on SQLite 3.45.1: ~20 us) instead of waiting. **The flake's cause remains unconfirmed** (review-root-cause r4, should-fix, confidence 95, adopted): the reorder fixes a demonstrated mechanism, but the original lock state was never reproduced, and a held writer lock fails with either order. If the witness flakes again, capture the competing connection's lock state before changing anything.
 
 r4 lenses correctness, root-cause, tests, platform-semantics over `604051a4..aad87640`: all APPROVED; the only finding is the attribution caveat above.
+
+### Required CI on 533e19de: macOS thread exhaustion, and diff review r5
+
+`rust-windows-test` and all three `rust-platform` targets passed on 533e19de (run 38138896410); `test` passed on 604051a4. `rust-macos-test` stalled on both 604051a4 and 533e19de with the same signature: the 29 retirement witnesses all passed (including the spelling-alias ones, which run on case-insensitive APFS), then 88 `db::tests` and `engine::process::tests` failed in a burst within one second, then the log was silent for 90 minutes — not even libtest's 60-second notice — until both runs were cancelled for their logs. Linux could not reproduce it, including the recorded `target_os = "linux"` → `"freebsd"` source probe (2152 passed in parallel).
+
+Measured on Linux with `--test-threads=3`, sampling `/proc` every 20 ms: `db::` peak threads 718 at 3ceaa714 and 2048 at 533e19de; the retirement witnesses alone 1432; peak FDs about 100 throughout. Source: r2d2 0.8.10 gives every pool its own 3-thread scheduled-thread-pool, whose default `CompletePendingScheduled` keeps a dropped pool's threads alive until the pending 30 s reaper tick, and the witnesses churn about 17 pools each. Repaired in 302a55a6 (each pool's executor uses `DiscardPendingScheduled`; `scheduled-thread-pool` 0.2.7, already locked, becomes a direct dependency; d-20261011-14, rationale corrected by d-20261011-15): `db::` 2048 → 710, witnesses 1432 → 197.
+
+r5 lenses correctness, root-cause, tests, platform-semantics, minimalism, records over `533e19de..302a55a6`:
+
+| ID | Lens, rank, confidence | Claim | Disposition |
+| --- | --- | --- | --- |
+| D13 | tests, blocker, 98 | The witness built the scheduler directly; removing `.thread_pool(pool_worker_threads())` from the production builder passed every test. | Fix (48c41cea): the witness goes through `repository.entry()` and `close_and_invalidate`; fails with the builder line removed and with `CompletePendingScheduled`. |
+| D14 | records, should-fix, 98 | d-20261011-14 said one blocked worker in a shared executor would starve every other database; starvation needs all shared workers blocked. | Fix: d-20261011-15 supersedes it with the corrected rationale (choice unchanged). |
+| D15 | root-cause, should-fix, 95 | The macOS cause is inferred, not observed: no macOS panic text or thread-creation error exists. | Fix (this record): **the attribution stays provisional until `rust-macos-test` passes on the repaired revision**; if the stall recurs, capture panic text or thread counts on macOS before changing anything. |
+
+Correctness, platform-semantics and minimalism found nothing in their class (correctness rates the attribution at 75 confidence).
