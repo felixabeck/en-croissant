@@ -7070,3 +7070,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"67c8ebfeaf10b197628eb3cee016bea6970117ce543fe04c8d8bc20c37ac5ed5","input_sha256":"dc222891b779f57ac54b32f1636c22303a9507ae4a8dfff52094fa26011b49a1","kind":"mutation-receipt","operation":"7e894c7143c8e1d77fb27a0f7e30ec99d643b9ff612d0999fb4076e91a7f1859","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-10 — How are retired predecessors matched to a replacement name across filesystems?
+
+* **Question:** Which identity matches a retired SQLite predecessor to a later open or delete of a possibly differently spelled name?
+* **Governs:** f-20260930-01
+* **Chosen:** same object identity OR same retained parent identity, using the authority identities already in EntryKey; same-parent matching conservatively fences all retired predecessors in that directory.
+* **Rejected:** canonical path bytes, or a new case-folding approximation.
+* **Reason:** canonical_binding preserves the leaf's spelling, so byte comparison misses a replacement alias on case-insensitive or normalizing filesystems; parent matching gives a portable guarantee with bounded state. Reversal path: narrow parent matching only with authority-backed filesystem name equivalence and replacement witnesses on every supported platform.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"6b1efb1873a9456327a9b8252c125eb9ba057752fafb75ed682518c37eb76384","input_sha256":"285cfc7b28014ba417c5a56052304888ae47778bd3944f1effeb1a35b1233a1c","kind":"mutation-receipt","operation":"8b1d7ae14125ac6e531036ce44f44ddbe17f79485fdb8a9938d1ab647a5e2366","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-10"],"target":"decisions-ledger","v":1} -->
