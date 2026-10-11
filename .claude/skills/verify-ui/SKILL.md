@@ -98,9 +98,8 @@ repo has no `scripts/dev-up.sh`.
    is the canonical form). Keep the snapshots. Missing snapshots are not
    evidence that layout is correct.
 6. For responsive work, the committed matrix already includes 320px and
-   200% font-scale. That layout is a known open defect (clipped headings,
-   `f-20260829-02` in `tasks/findings.md`); a screenshot that records the
-   clip is not evidence that it is fixed.
+   200% font-scale. As of 2026-10-11, the clipped-heading finding
+   `f-20260829-02` in `tasks/findings.md` is handled.
 7. If the behaviour only exists in the real product — lifecycle, IPC, process
    teardown, anything the mocked container suite cannot answer — run
    `pnpm verify:app` and report what it asserted.
