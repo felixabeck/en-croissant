@@ -7026,3 +7026,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"97d8ac9e77cdfb768d34159a3286663006be131986744e88cefcb09fdc20d8bf","input_sha256":"3a232f8b4372c033888fb189be45a72fbcf68a6b2195f2f0f1ea9395fcc6c3a7","kind":"mutation-receipt","operation":"8893b259d9dfe46890d1c9c4c270445006e607b2a20795e160b0b6917c9886d5","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-06 — How is descendant completion proved across cargo-mutants' independent process groups?
+
+* **Question:** cargo-mutants 27.1.0 places every Cargo build/test child in its own process group, so how does the mutation runner prove all descendants stopped before releasing its snapshot, cache or fence?
+* **Governs:** f-20260929-12
+* **Chosen:** one invocation-owned Linux subreaper (a minimal repository-contained Python 3 one-shot wrapper, `scripts/mutation-process-containment.py`) that is established before Cargo spawns, survives Cargo's exit, terminates and reaps adopted descendants across groups and sessions, and publishes terminal evidence only after the kernel reports no unwaited children; missing evidence retains the fence and snapshot.
+* **Rejected:** treating Cargo's exit or the outer group's disappearance as complete cleanup; a machine-specific user systemd service that Ubuntu CI does not have.
+* **Reason:** tagged cargo-mutants source (`process.rs:87`, `process/unix.rs:34`) and a probe of the existing subreaper containment artefact show the boundary and a working kernel mechanism. Reversal path: an already available boundary that proves the same cases without this wrapper.
+* **Review:** `tasks/handoffs/2026-10-11-backend-mutation-isolation-review.md` (issue I1)
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260929-12 (session b6d6a793-3344-454e-9903-1cd58d28807f), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"94718aae120abc6f86570dda824e6008f5e71620fb4132fb66d05848c30da204","input_sha256":"13ef07522d75ed01dc5cadd077c369c7f34c44d203fe4086de68b7f9b0f31569","kind":"mutation-receipt","operation":"457e8175af8467ee562ff6adf23dae0fca38e69f0a62417f8b997033bcfe45f1","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-06"],"target":"decisions-ledger","v":1} -->
