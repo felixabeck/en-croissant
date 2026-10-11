@@ -7081,3 +7081,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"6b1efb1873a9456327a9b8252c125eb9ba057752fafb75ed682518c37eb76384","input_sha256":"285cfc7b28014ba417c5a56052304888ae47778bd3944f1effeb1a35b1233a1c","kind":"mutation-receipt","operation":"8b1d7ae14125ac6e531036ce44f44ddbe17f79485fdb8a9938d1ab647a5e2366","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-11 — Is pool construction the only pooled SQLite establishment boundary for the predecessor barrier?
+
+* **Question:** Must cached-pool acquisition and r2d2 manager establishment also wait on retired predecessors, or only pool construction?
+* **Governs:** f-20260930-01
+* **Chosen:** cached acquisition and actual manager establishment also use the predecessor barrier.
+* **Rejected:** assuming every get creates a fresh pool.
+* **Reason:** lock-only callers can cache a pool before its first SQLite connection, and replenishment runs asynchronously. Reversal path: remove a boundary only if that path can no longer establish SQLite after predecessor retirement.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"de4ce47684a6fb3cef0c5c41a16792f835a6b0fe7c10e9098da593936c4dcd99","input_sha256":"ca1e0024c6702487a66b4ba71ccd3f10cf9e06d6bfa25345c8814729bf0041b7","kind":"mutation-receipt","operation":"7f8fe387a3463623331fcfde242b322c81270759ba934d07d128c089790c72c1","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-11"],"target":"decisions-ledger","v":1} -->
