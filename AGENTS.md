@@ -12,9 +12,10 @@ what an implementing agent cannot afford to miss.
 
 ## Domain rules — read the ones that match what you touch
 
-`.claude/rules/*.md` carry this codebase's write-time invariants, each with the incidents that
-produced it. Claude Code pulls them in automatically via `paths:` frontmatter. **You do not — open
-the file yourself before working in that area.** A rule binds whether or not it is in your context.
+`.claude/rules/*.md` carry this codebase's write-time invariants, with their rationale, or a pointer
+to `docs/context/RULE-HISTORY.md`. Claude Code pulls them in automatically via `paths:` frontmatter.
+**You do not — open the file yourself before working in that area.** A rule binds whether or not it
+is in your context.
 
 | File | Read before working on |
 | --- | --- |

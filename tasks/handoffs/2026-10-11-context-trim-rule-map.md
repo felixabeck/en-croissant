@@ -93,7 +93,7 @@ bindings, bundle, container e2e, mutation, and the Rust compile, clippy and test
 ## Block CLAUDE.md 13: Gates
 
 Disposition: moved
-New home: moved to .claude/rules/gate-tooling.md under Scheduling and placement: scheduler lanes and dependencies, strict launcher ownership, refusal 125, missing-launcher failure, nested placement, cgroup sizing/fallback, e2e reserve and all decision ids. kept-condensed in CLAUDE.md under Gates: never add another flock on heavy-gate.lock.
+New home: moved to .claude/rules/gate-tooling.md under Scheduling and placement: scheduler lanes and dependencies, push/pre-review launcher routing, strict launcher ownership, refusal 125, missing-launcher failure, safe nested placement, standalone receipt placement/locking, cache-only gate:check, flock deadlock prohibition, cgroup sizing/fallback, e2e reserve and all decision ids. kept-condensed in CLAUDE.md under Gates: never add another flock on heavy-gate.lock.
 History spans: none
 Original:
 ~~~
@@ -132,7 +132,7 @@ canonical push contract. Two properties worth knowing before planning any change
 ## Block CLAUDE.md 15: Gates
 
 Disposition: duplicate
-New home: kept-condensed in CLAUDE.md under Gates: generated binding proof/regeneration prohibition and coverage/bundle ratchet prohibitions. Binding mechanism is duplicate of .claude/skills/push/SKILL.md:204. Numeric ratchets, shrink allowance/reporting, scope and blank-measurement guards are duplicate of docs/coverage.md:3, docs/coverage.md:22 and docs/coverage.md:70. Bundle caps are duplicate of .claude/skills/push/SKILL.md:150.
+New home: kept-condensed in CLAUDE.md under Gates: generated binding proof/regeneration prohibition and coverage/bundle ratchet prohibitions. Binding mechanism is duplicate of .claude/skills/push/SKILL.md:191. Numeric ratchets, shrink allowance/reporting, scope and blank-measurement guards are duplicate of docs/coverage.md:3, docs/coverage.md:22 and docs/coverage.md:70. Bundle caps are duplicate of .claude/skills/push/SKILL.md:139.
 History spans:
 - — before that, removing one provably dead branch reddened the gate and the cheapest way to stay green was to leave dead code in place (`f-20260829-15`, `d-20260829-03`).
 Original:
@@ -159,7 +159,7 @@ Original:
 ## Block CLAUDE.md 16: Gates
 
 Disposition: duplicate
-New home: duplicate of .claude/skills/push/SKILL.md:247 under CI, dependencies, and release mechanics: receipt-backed three-package frontend mutation and memory-sized scheduling. moved to .claude/rules/gate-tooling.md under Mutation gate routing: backend workflow, dispatch/weekly matrix and BACKEND_MUTATION_PACKAGE selector. kept-condensed in CLAUDE.md under Gates: never start pnpm mutation:backend as part of a push.
+New home: duplicate of .claude/skills/push/SKILL.md:234 under CI, dependencies, and release mechanics: receipt-backed three-package frontend mutation and memory-sized scheduling. moved to .claude/rules/gate-tooling.md under Mutation gate routing: backend workflow, dispatch/weekly matrix and BACKEND_MUTATION_PACKAGE selector. kept-condensed in CLAUDE.md under Gates: never start pnpm mutation:backend as part of a push.
 History spans:
 - inside the `agent-gate` scope (28 GiB `memory.max` on tuxedo-atlas, a 27 GiB budget after the reserve) one package at a time with 21 Stryker runners. Measured 2026-10-02 as the last lane of an all-blocks `pnpm gates:push` on `c49a852c`: 346.9 s for the mutation lane and 444 s for the whole gate, the three packages strictly sequential, with no observed OOM event and no swap use, under load average 14.9 / 19.8 / 21.0 at start. The scope's `memory.peak` reached `memory.max` because it includes page cache (post-exit split 0.75 MB anonymous against 8.48 GB file); a second run that day took 382.3 s and 481 s.
 - A single sequential backend run is slow enough to crowd GitHub's 6-hour per-job limit,

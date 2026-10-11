@@ -17,6 +17,9 @@ paths:
 
 ## Scheduling and placement
 
+`pnpm gates:push` and `pnpm checks:pre-review` are `agent-gate` commands (tuxedo-config's strict
+launcher, `d-20261002-01`).
+
 The push skill's §2 runs every final gate through one command,
 `pnpm gates:push -- [--rust] [--frontend] [--bindings]` (`scripts/run-push-gates.mjs`; no flags is
 the contract-only run). For the selected blocks, it runs the mutation guard first (always) and
@@ -28,8 +31,12 @@ budget allows one wave. `agent-gate` (tuxedo-config's strict launcher) takes the
 heavy-gate lock (`~/.cache/agent-kit/heavy-gate.lock`; a waiting gate prints `heavy-gate.holder`)
 and runs the whole run in its own `agents.slice/agent-gate-*.scope`, capped at 70 % of the slice's
 `MemoryHigh`. It fails closed: exit 125 (`agent-gate: REFUSED — …`) means nothing started and a
-retry is safe; a missing launcher fails the gate with no in-place fallback. `gate:ensure` and
-`gate:run` are wrapped too; a nested `agent-gate` runs in place. `scripts/gate-parallelism.mjs` sizes
+retry is safe; a missing launcher fails the gate with no in-place fallback. Never wrap a gate
+command in another `flock` on `heavy-gate.lock`: it deadlocks against the launcher's own lock.
+A nested `agent-gate` is safe and runs in place. `gate:ensure` and `gate:run` enter the gate scope
+themselves through `agent-gate` (in place when already inside one), so a standalone receipt run
+is placed and locked like the scheduler; `gate:check` only reads the cache and starts no scope.
+`scripts/gate-parallelism.mjs` sizes
 workers from that scope's complete cgroup chain, including the `agents.slice` budget, and uses the
 recorded conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit
 exists. The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
