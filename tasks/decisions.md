@@ -7148,3 +7148,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Move the `RULE-HISTORY.md` sections and the two rule files' bodies back under their `CLAUDE.md` headings and drop the two table rows.
 * **Decided by:** Claude, interactive build session b90b3a13-44fb-4bf1-80a0-3438ca00bf20 under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"22dc6abb80e1fc7f001775928911d46483f2c608923a5b8c40def8fefcd4529a","input_sha256":"ad1797258a71138541f3f543692a876dde0c7bb921c7bbb41e6d1256b75cd92a","kind":"mutation-receipt","operation":"4caacc46afd5d5a651fa943ef0dfa933e77b38ef5afb5dca0783303f8696765a","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-16"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-12 — recorded through the decisions lock
+
+### d-20261012-01 — How does one inode authorized under two capability kinds stay safe while a game-database binding holds SQLite locks on it?
+
+* **Question:** Should path authority refuse concurrent cross-kind alias access of an inode live in a game-database binding, or keep the access and retain descriptors until the binding releases?
+* **Governs:** f-20261001-02
+* **Chosen:** symmetric Unix inode admission through one process-wide ownership primitive under `src-tauri/src/infra/`, shared by bound SQLite registrations and lifetime-carrying ordinary capability files; either acquisition order refuses the incompatible newcomer with the existing typed `Error::Conflict` before an ordinary descriptor of the database can close.
+* **Rejected:** a pool-live check at resolution only (misses the reverse order: PGN export resolves its destination before acquiring its database connection, `db/mod.rs:3586–3597`); retaining every successful ordinary descriptor until pool release (accumulates descriptors under normal repeated reads).
+* **Reason:** refusal removes the lock-release mechanism itself with explicit ownership instead of patching individual consumers. Reversal path: a measured close-safe shared-descriptor alternative covering all consumers and both acquisition orders can replace admission.
+* **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"60922314376bbf0af7b6f9cd1e41d339ee77ca7759c6744215a74ed27c762d55","input_sha256":"98a10dfa7f058e593c9559dd1a4194cc0562be1f2e149a18da8e450c6fdbd9fb","kind":"mutation-receipt","operation":"50c08c5e2af4b958113aaca8ebd7c9272e11f86c4f227a4d99ebadb40b711ac5","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-01"],"target":"decisions-ledger","v":1} -->
