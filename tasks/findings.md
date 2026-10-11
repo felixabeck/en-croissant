@@ -15256,3 +15256,16 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Workaround:** Files → Choose collection → Create file seeds a blank PGN with `*`. Open that file, enter moves, annotate and save before importing through database Add Games.
 * **Fix direction:** Provide a native save destination for a fresh board and preserve existing games when selecting an existing destination. Verify creation, cancellation and existing-file behavior. Run review-ipc-contract and the applicable security lens.
 * **Related:** f-20261004-15 tracks the distinct PGN/database-copy drift problem. This entry concerns first-save destination selection.
+
+---
+
+## 2026-10-11 — filed through the inbox spool
+
+### Closing the last tab of an opened repertoire file crashes the board page with "No tab selected"
+
+* **ID:** f-20261011-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/atoms.ts:611` `tabValue(family)` (every per-tab `current*`/`practice*` atom resolves through the global `currentTabAtom` and throws `No tab selected` when the workspace has no active tab); triggered by the unmount cleanup `src/components/panels/practice/PracticePanel.tsx:534` (`return () => setPracticeMoveController(null)`).
+* **Defect:** Felix, 2026-10-11, in the real app: opened a file, closed the tab (the only one), and got the route error page "Unexpected Error: No tab selected" with no tab left. Reproduced in the pinned Playwright container: Files → open a PGN whose metadata type is `repertoire` (BoardAnalysis auto-selects Practice, so PracticePanel mounts) → Close tab → error page, 0 tabs, console `Error: No tab selected` thrown from the atom write. `BoardsPage.closeTab` commits the workspace (tabs `[]`, activeTab `null`) before React unmounts the closed panel, so the cleanup's write runs with no active tab and throws during commit. The general mechanism is that components owned by tab X address their state as "the active tab", not "tab X": closing a non-last tab makes the same cleanup write `null` into the neighbour tab's practice controller, and `src/components/databases/GamePreview.tsx` renders `GameNotation` outside any tab, so it toggles the active tab's notation settings and throws when the workspace is empty.
+* **Fix direction:** bind tab-scoped atoms to the owning tab through a scope context (workspace tab scope provided by `TabSwitch`, ephemeral scope for previews), delete `tabValue`, and prove it with a Playwright regression on the repertoire close flow plus unit cases for the cross-tab write.
+* **Related:** f-20260922-09 (tab close ordering, handled; it established the commit-first close order this defect runs into).
+* **Found by:** Claude Code orchestrator from Felix's screenshot, 2026-10-11.
