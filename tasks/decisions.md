@@ -7059,3 +7059,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"050f7cc6d7dd2a0030affeec629ec53d176f291a61bacc2dcf30ca1c1877ca9c","input_sha256":"932844b4286b0293dc8acd56b1308560b2a348ee81459f067802db07b8903d75","kind":"mutation-receipt","operation":"4d0854192fcecd65e521c85dcb168242f93e5ae181b8a3d309a0fa72f8f312bf","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-09 — May close_retired_entry forget a connection gate after a drain timeout or cancellation?
+
+* **Question:** May close_retired_entry remove a retired entry and its gate when the drain times out or is cancelled?
+* **Governs:** f-20260930-01
+* **Chosen:** no, its undrained predecessor stays retained through the shared retirement-ownership contract.
+* **Rejected:** removing the entry and forgetting its gate.
+* **Reason:** a later delete can otherwise reproduce the same post-unlink close the finding forbids. Reversal path: demonstrate another authoritative owner consulted by every future reopen/delete before removing this retention.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"67c8ebfeaf10b197628eb3cee016bea6970117ce543fe04c8d8bc20c37ac5ed5","input_sha256":"dc222891b779f57ac54b32f1636c22303a9507ae4a8dfff52094fa26011b49a1","kind":"mutation-receipt","operation":"7e894c7143c8e1d77fb27a0f7e30ec99d643b9ff612d0999fb4076e91a7f1859","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-09"],"target":"decisions-ledger","v":1} -->
