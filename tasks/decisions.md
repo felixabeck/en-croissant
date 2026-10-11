@@ -7103,3 +7103,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7e44399c3ebda5621b9a57714f6120c97329bf31334bc08b0b0526ab4131dbe9","input_sha256":"7a233e84eec5b7f428c7b54913dda763c65d3b128f81f31a9d2946351ab81551","kind":"mutation-receipt","operation":"6d383c73545b4f65a30c16c4929d5508946504d19680cb16c019c5b74683dd7e","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261011-13 — Does the content-validation scan's direct SQLite open wait for retired predecessors?
+
+* **Question:** Must scan_worker's direct SqliteConnection::establish on the authority-bound file pass the same retired-predecessor barrier as read_revision?
+* **Governs:** f-20260930-01
+* **Chosen:** yes; scan_worker acquires the repository's predecessor admission before BoundDatabase::acquire and holds it through establishment, then releases it before the long validate_content read.
+* **Rejected:** leaving the scan outside the barrier (it opens mode=rw and can create WAL/SHM sidecars beside a still-live retired predecessor, the hazard d-20261011-08 fenced for read_revision); holding the admission for the whole scan (it would block same-parent retirement publication, and therefore LRU construction, for the scan's full duration).
+* **Reason:** the push review of 6f631aac (review-root-cause lens) found the scan is the one remaining production fresh-open path; the hazard is establishment ordering, so the barrier covers establishment. Reversal path: remove it only if the scan stops opening the live file directly.
+* **Review:** `tasks/handoffs/2026-10-11-lru-sqlite-retirement-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20260930-01 (session ef7373e4-a4fe-4625-a7cf-069cad2e98fe), 2026-10-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d6199028f78ee6069d85d6b412015fd188667200c0798559814c1d1a8c0f8a7e","input_sha256":"21a7a3fb2a10048d06a3f4badff4c88977feed9a72d6307c78afd1f284587b4f","kind":"mutation-receipt","operation":"ba9b2f8921659ffcc36c250fbe41fad7b3c0bf9aa543a4684d50e5b0c99a34f2","options":{"section":null},"request_id_sha256":null,"results":["d-20261011-13"],"target":"decisions-ledger","v":1} -->
