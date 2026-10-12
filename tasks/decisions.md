@@ -7386,3 +7386,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"9758fbf92ef45df8444172ab3ce93e98627cbad94cf20c4d14515de0c1d9b238","input_sha256":"1c1c1e99f0a3606e5c81c248712291ab2c1c81bcd22b67e949d2817c811cff84","kind":"mutation-receipt","operation":"58cd20a2ebc12e8ee0cf38eec1344794beb0f056cac2819f6a16a8c0b42f4da8","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-05 — Who accepts the unified Library visually?
+
+* **Question:** Is f-20261001-11 visually accepted by Felix or by the implementing agent?
+* **Governs:** f-20261001-11
+* **Chosen:** the implementing agent, through pinned-container Playwright pixels (database-files, async-errors, files-preview, font-scaled-breakpoints and the full container suite) and `pnpm verify:app` against the real off-screen app.
+* **Rejected:** a manual browser-only pass, or routing routine acceptance through Felix.
+* **Reason:** full auto, and the project already supplies reproducible pixel and native behaviour evidence. Full-auto recommendation, not an answer attributed to Felix. Reversal path: request Felix's acceptance on the Library page.
+* **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"ad7860876be8c0767af0e6634db4b06355460b87fad2679c6ff95a143484c354","input_sha256":"698810efcf707ee67272ac254150311455ec9a6a8db9062f23c65fbec34ead8a","kind":"mutation-receipt","operation":"7623faab9b56fe9044987bccbb078fd7fc2eba815fadfa50327ecb0a7c2509be","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-05"],"target":"decisions-ledger","v":1} -->
