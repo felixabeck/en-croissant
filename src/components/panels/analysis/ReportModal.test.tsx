@@ -142,7 +142,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function renderReportModal() {
+async function renderReportModal(isCurrentOperation = (_id: string, _fingerprint: string) => true) {
   await act(async () => {
     root.render(
       <ReportModal
@@ -153,7 +153,7 @@ async function renderReportModal() {
         closeReportingMode={vi.fn()}
         setInProgress={vi.fn()}
         registerOperation={vi.fn()}
-        isCurrentOperation={() => true}
+        isCurrentOperation={isCurrentOperation}
       />,
     );
     await Promise.resolve();
@@ -163,11 +163,95 @@ async function renderReportModal() {
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
-  const promise = new Promise<T>((settle) => {
+  let reject: (cause: unknown) => void = () => undefined;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
+
+test("P2 report replacement suppresses old failures and the current typed failure shows its safe reason", async () => {
+  const old = deferred<never[]>();
+  const current = deferred<never[]>();
+  let currentId = "old";
+  mocks.prepareAnalysis.mockResolvedValueOnce("old").mockResolvedValueOnce("current");
+  mocks.analyzeGame.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+  await renderReportModal((id) => id === currentId);
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+  currentId = "current";
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+  const failure = {
+    tag: "engine-failure",
+    category: "engine-failure",
+    message: "Engine terminated",
+    engineFailure: {
+      kind: "process-exit",
+      exitStatus: { code: 1, signal: null },
+      reason: "Safe report failure",
+      entries: [],
+    },
+  };
+  await act(async () => old.reject(failure));
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  await act(async () => current.reject(failure));
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+    "Common.Error",
+    expect.objectContaining({ message: "Safe report failure" }),
+  );
+});
+
+test("P2 changed root fingerprint suppresses the report failure notification", async () => {
+  const result = deferred<never[]>();
+  mocks.analyzeGame.mockReturnValueOnce(result.promise);
+  let rootMatches = true;
+  await renderReportModal(
+    (_id, fingerprint) => rootMatches && fingerprint === "start-fen\u0000e2e4",
+  );
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+  rootMatches = false;
+  await act(async () => result.reject(new Error("obsolete root")));
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
+
+test("P2 superseded preparation rejection does not notify against the newer report", async () => {
+  const old = deferred<string>();
+  mocks.prepareAnalysis.mockReturnValueOnce(old.promise).mockResolvedValueOnce("current");
+  mocks.analyzeGame.mockResolvedValue([]);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+  await act(async () => old.reject(new Error("obsolete preparation")));
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
+
+test("P2 a retired preparation's cleanup failure cannot notify against its successor", async () => {
+  const old = deferred<string>();
+  mocks.prepareAnalysis.mockReturnValueOnce(old.promise).mockResolvedValueOnce("current");
+  mocks.analyzeGame.mockResolvedValue([]);
+  mocks.cancelAnalysis.mockRejectedValueOnce(new Error("obsolete cleanup failed"));
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+  await act(async () => old.resolve("obsolete"));
+  expect(mocks.cancelAnalysis).toHaveBeenCalledWith("obsolete");
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
 
 test("completion survives modal unmount while an actual tab close rejects the late result", async () => {
   const completion = deferred<never[]>();

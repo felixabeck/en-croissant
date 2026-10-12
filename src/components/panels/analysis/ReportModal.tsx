@@ -16,8 +16,13 @@ import { goModeSchema, type LocalEngine } from "@/utils/engines";
 import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { reportEngineFailure } from "./useDisplayedEngineLines";
 
 type ReportGoMode = Extract<GoMode, { t: "Depth" | "Time" | "Nodes" }>;
+
+export function reportRootFingerprint(fen: string, moves: string[]): string {
+  return `${fen}\u0000${moves.join("\u0000")}`;
+}
 
 const reportGoModeSchema = goModeSchema.superRefine((mode, context): mode is ReportGoMode => {
   if (mode.t === "Infinite" || mode.t === "PlayersTime") {
@@ -92,6 +97,8 @@ function ReportModal({
   const addAnalysis = useStore(store, (s) => s.addAnalysis);
   const prepareGeneration = useRef(0);
   const pendingPreparation = useRef<AbortController | null>(null);
+  const currentRootFingerprint = useRef("");
+  currentRootFingerprint.current = reportRootFingerprint(initialFen, moves);
 
   useEffect(
     () => () => {
@@ -132,7 +139,7 @@ function ReportModal({
     const generation = ++prepareGeneration.current;
     const ownerEpoch = captureReportOwner(tab);
     setReportSettings(form.values);
-    const rootFingerprint = `${initialFen}\u0000${moves.join("\u0000")}`;
+    const rootFingerprint = reportRootFingerprint(initialFen, moves);
     const variations = form.values.variations;
     const engine = localEngines.find((e) => e.id === form.values.engine);
     if (!engine) return;
@@ -140,16 +147,30 @@ function ReportModal({
     try {
       operationId = await tauri.prepareAnalysis(tab, { signal: preparation.signal });
     } catch (error) {
-      notifyUnlessCancelled(t("Common.Error"), error);
+      if (
+        generation === prepareGeneration.current &&
+        isReportOwnerCurrent(tab, ownerEpoch) &&
+        currentRootFingerprint.current === rootFingerprint
+      )
+        notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
       return;
     } finally {
       if (pendingPreparation.current === preparation) pendingPreparation.current = null;
     }
-    if (generation !== prepareGeneration.current || !isReportOwnerCurrent(tab, ownerEpoch)) {
+    if (
+      generation !== prepareGeneration.current ||
+      !isReportOwnerCurrent(tab, ownerEpoch) ||
+      currentRootFingerprint.current !== rootFingerprint
+    ) {
       try {
         await tauri.cancelAnalysis(operationId);
       } catch (error) {
-        notifyUnlessCancelled(t("Common.Error"), error);
+        if (
+          generation === prepareGeneration.current &&
+          isReportOwnerCurrent(tab, ownerEpoch) &&
+          currentRootFingerprint.current === rootFingerprint
+        )
+          notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
       }
       return;
     }
@@ -188,8 +209,12 @@ function ReportModal({
         }
       })
       .catch(async (error) => {
-        if ((await waitForReportOwner(tab, ownerEpoch)) && isReportOwnerCurrent(tab, ownerEpoch)) {
-          notifyUnlessCancelled(t("Common.Error"), error);
+        if (
+          (await waitForReportOwner(tab, ownerEpoch)) &&
+          isReportOwnerCurrent(tab, ownerEpoch) &&
+          isCurrentOperation(operationId, rootFingerprint)
+        ) {
+          notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
         }
       })
       .finally(async () => {

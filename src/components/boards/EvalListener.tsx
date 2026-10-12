@@ -23,7 +23,8 @@ import {
   closingTabsAtom,
   threatFamily,
   engineMovesFamily,
-  engineNoLinesFamily,
+  engineTerminalFamily,
+  engineRetryFamily,
   engineProgressFamily,
   enginesAtom,
   createFirstEngineWithLinesAtom,
@@ -59,6 +60,8 @@ type SearchAttempt = {
   predecessorOwner: NativeSearchOwner | null;
   cancelled: boolean;
   hasLines: boolean;
+  failed: boolean;
+  dispatched: boolean;
 };
 
 type NativeSearchOwner = {
@@ -157,7 +160,8 @@ function EngineListener({
   const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
 
   const [, setEngineVariation] = useAtom(engineMovesFamily({ engine: engine.id, tab: ownerTabId }));
-  const [, setNoLinesKey] = useAtom(engineNoLinesFamily({ engine: engine.id, tab: ownerTabId }));
+  const [, setTerminal] = useAtom(engineTerminalFamily({ engine: engine.id, tab: ownerTabId }));
+  const [retry, setRetry] = useAtom(engineRetryFamily({ engine: engine.id, tab: ownerTabId }));
   const [settings] = useAtom(
     tabEngineSettingsFamily({
       engineId: engine.id,
@@ -174,9 +178,11 @@ function EngineListener({
   const retainedOwner = useRef<NativeSearchOwner | null>(null);
   const transitionRunning = useRef(false);
   const pendingTransition = useRef<(() => Promise<void>) | null>(null);
+  const translation = useRef(t);
+  translation.current = t;
   const notifyFailure = useCallback(
-    (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error),
-    [t],
+    (error: unknown) => notifyUnlessCancelled(translation.current("Common.Error"), error),
+    [],
   );
   const [closeRevision, advanceCloseRevision] = useReducer((revision: number) => revision + 1, 0);
   const mounted = useRef(false);
@@ -188,6 +194,8 @@ function EngineListener({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      setTerminal(null);
+      setRetry(0);
       const attempt = activeAttempt.current;
       for (const owner of new Set([
         attempt?.nativeOwner,
@@ -198,7 +206,7 @@ function EngineListener({
         void releaseNativeOwner(owner, notifyFailure);
       }
     };
-  }, [notifyFailure]);
+  }, [notifyFailure, setTerminal, setRetry]);
   useEffect(() => {
     const jotaiStore = getDefaultStore();
     const tab = ownerTabId;
@@ -209,12 +217,13 @@ function EngineListener({
         const attempt = activeAttempt.current;
         if (attempt?.tab === tab) attempt.cancelled = true;
         setProgress(0);
+        setTerminal(null);
       } else if (!isClosing && wasClosing) {
         advanceCloseRevision();
       }
       wasClosing = isClosing;
     });
-  }, [ownerTabId, setProgress]);
+  }, [ownerTabId, setProgress, setTerminal]);
   const requestFingerprint = JSON.stringify({
     tab: ownerTabId,
     closeRevision,
@@ -222,6 +231,8 @@ function EngineListener({
     moves: searchingMoves,
     settings: settingsFingerprint,
     engine: engineIdentity(engine),
+    searchedKey,
+    retry,
   });
   const currentFingerprint = useRef(requestFingerprint);
   currentFingerprint.current = requestFingerprint;
@@ -231,6 +242,7 @@ function EngineListener({
       mounted.current &&
       activeAttempt.current === attempt &&
       !attempt.cancelled &&
+      !attempt.failed &&
       currentFingerprint.current === attempt.fingerprint &&
       enabled.current &&
       !gameOver.current &&
@@ -263,7 +275,7 @@ function EngineListener({
       ) {
         const attempt = activeAttempt.current;
         attempt.hasLines = true;
-        setNoLinesKey(null);
+        setTerminal(null);
         startTransition(() => {
           setEngineVariation((prev) => {
             const newMap = new AnalysisLineMemory(prev);
@@ -284,7 +296,7 @@ function EngineListener({
       searchingMoves,
       engine.id,
       setEngineVariation,
-      setNoLinesKey,
+      setTerminal,
       setProgress,
       firstEngineWithLines,
       threat,
@@ -323,6 +335,7 @@ function EngineListener({
 
   useEffect(() => {
     const previous = activeAttempt.current;
+    if (previous?.fingerprint === requestFingerprint && !previous.cancelled) return;
     if (previous) previous.cancelled = true;
     const attempt: SearchAttempt = {
       fingerprint: requestFingerprint,
@@ -332,9 +345,11 @@ function EngineListener({
       predecessorOwner: previous?.nativeOwner ?? previous?.predecessorOwner ?? null,
       cancelled: false,
       hasLines: false,
+      failed: false,
+      dispatched: false,
     };
     activeAttempt.current = attempt;
-    setNoLinesKey(null);
+    setTerminal(null);
     if (
       !settings.enabled ||
       previous?.tab !== ownerTabId ||
@@ -355,15 +370,12 @@ function EngineListener({
       return memory;
     });
     setProgress(0);
-    return () => {
-      attempt.cancelled = true;
-    };
   }, [
     ownerTabId,
     engine,
     requestFingerprint,
     setEngineVariation,
-    setNoLinesKey,
+    setTerminal,
     setProgress,
     settings.enabled,
     settingsFingerprint,
@@ -373,21 +385,36 @@ function EngineListener({
 
   useEffect(() => {
     const attempt = activeAttempt.current;
-    if (!attempt || attempt.fingerprint !== requestFingerprint) return;
-    const finishWithoutLines = (error?: unknown) => {
-      if (
-        engine.type === "local" &&
-        isCurrentAttempt(attempt) &&
-        !attempt.hasLines &&
-        (error === undefined || errorUnlessCancelled(error))
-      ) {
-        setNoLinesKey(searchedKey);
+    if (!attempt || attempt.fingerprint !== requestFingerprint || attempt.dispatched) return;
+    attempt.dispatched = true;
+    const terminalIdentity = () => ({
+      searchedKey,
+      context: lineContext,
+      fingerprint: attempt.fingerprint,
+      engineIdentity: attempt.engineIdentity,
+      generation: attempt.nativeOwner?.generation ?? null,
+      retry,
+    });
+    const finishWithoutLines = () => {
+      if (engine.type === "local" && isCurrentAttempt(attempt) && !attempt.hasLines) {
+        setTerminal({ ...terminalIdentity(), type: "completed-without-lines" });
       }
     };
     const failAttempt = (error: unknown) => {
       if (!isCurrentAttempt(attempt)) return;
+      const failure = errorUnlessCancelled(error);
+      if (!failure || failure.category === "cancelled") return;
+      if (engine.type === "local") {
+        attempt.failed = true;
+        setTerminal({
+          ...terminalIdentity(),
+          type: "failed",
+          snapshot: failure.engineFailure,
+          message: failure.message,
+        });
+        setProgress(0);
+      }
       notifyUnlessCancelled(t("Common.Error"), error);
-      finishWithoutLines(error);
     };
     const runSearch = async () => {
       // A local engine has one native search slot per tab.  Cancelling it on
@@ -456,7 +483,7 @@ function EngineListener({
           ) {
             const [progress, bestMoves] = result;
             attempt.hasLines = true;
-            setNoLinesKey(null);
+            setTerminal(null);
             setEngineVariation((prev) => {
               const newMap = new AnalysisLineMemory(prev);
               newMap.remember(searchedKey, bestMoves, attempt);
@@ -495,7 +522,7 @@ function EngineListener({
     ownerTabId,
     getBestMoves,
     setEngineVariation,
-    setNoLinesKey,
+    setTerminal,
     setProgress,
     engine,
     requestFingerprint,
@@ -503,6 +530,8 @@ function EngineListener({
     t,
     notifyFailure,
     searchedKey,
+    lineContext,
+    retry,
   ]);
   return null;
 }

@@ -3,9 +3,11 @@ import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { displayEngine, engineDisplayHarness } from "@/tests/engineDisplay";
-import { engineNoLinesFamily } from "@/state/atoms";
+import { engineTerminalFamily, engineRetryFamily } from "@/state/atoms";
 import { analysisSearch } from "./analysisSearch";
+import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import BestMoves from "./BestMoves";
+import { errorUnlessCancelled } from "@/platform/errors";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("./EngineSettingsForm", () => ({ default: () => null }));
@@ -41,6 +43,18 @@ const panel = (moves: string[] = []) => (
   </Accordion>
 );
 
+function terminal(moves: string[] = []) {
+  return {
+    type: "completed-without-lines" as const,
+    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key,
+    context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
+    fingerprint: "attempt",
+    engineIdentity: engineIdentity(displayEngine),
+    generation: "generation",
+    retry: 0,
+  };
+}
+
 test("first start has neither skeleton rows nor Loading at 999 ms and has both at 1000 ms", async () => {
   await h.render(panel());
   await act(async () => vi.advanceTimersByTime(999));
@@ -61,8 +75,8 @@ test.each([0, 1000])(
     await act(async () => vi.advanceTimersByTime(elapsed));
     await act(async () =>
       h.store.set(
-        engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id }),
-        analysisSearch(INITIAL_FEN, moves, false).key,
+        engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }),
+        terminal(moves),
       ),
     );
     expect(h.host.querySelector('[data-inert="true"]')).toBeNull();
@@ -103,4 +117,65 @@ test("inactive and no-analysis messages take precedence over delayed loading in 
   expect(h.host.textContent).toContain("Board.Analysis.NoAnalysisAvailable");
   expect(h.host.textContent).not.toContain("Common.Loading");
   expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
+});
+
+test.each([false, true])(
+  "P2 failure ends loading, progress and speed, partial lines %s",
+  async (partial) => {
+    if (partial) await h.remember();
+    await h.render(panel());
+    await act(async () =>
+      h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+        ...terminal(),
+        type: "failed",
+        snapshot: {
+          kind: "process-exit",
+          exitStatus: { code: 1, signal: null },
+          reason: "<b>Safe failure</b>",
+          entries: [],
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(h.host.textContent).toContain("Board.Analysis.EngineFailed");
+    expect(h.host.textContent).toContain("<b>Safe failure</b>");
+    expect(h.host.querySelector("b")).toBeNull();
+    expect(h.host.textContent).not.toContain("n/s");
+    expect(h.host.textContent).not.toContain("Common.Loading");
+    expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
+    expect(h.host.querySelector('[data-animated="true"]')).toBeNull();
+    expect(h.host.querySelector('[data-inert="true"]') !== null).toBe(partial);
+    const settings = h.store.get(h.settingsAtom);
+    await act(async () =>
+      [...h.host.querySelectorAll("button")]
+        .find((b) => b.textContent === "Board.Analysis.RetryEngine")!
+        .click(),
+    );
+    expect(h.store.get(engineRetryFamily({ tab: "display-tab", engine: displayEngine.id }))).toBe(
+      1,
+    );
+    expect(h.store.get(h.settingsAtom)).toBe(settings);
+    expect(h.host.textContent).not.toContain("Board.Analysis.EngineFailed");
+  },
+);
+
+test("a failure without a snapshot renders its retained safe message once", async () => {
+  const raw = "Cannot launch /home/felixb/engines/stockfish token=secret";
+  const message = "Cannot launch [path] token=[redacted]";
+  const failure = errorUnlessCancelled(new Error(raw))!;
+  expect(failure.message).toBe(message);
+  await h.render(panel());
+  await act(async () =>
+    h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+      ...terminal(),
+      type: "failed",
+      message: failure.message,
+    }),
+  );
+  const status = h.host.querySelector('[role="status"]')!;
+  expect(status.textContent?.split(message)).toHaveLength(2);
+  expect(status.textContent?.split("Board.Analysis.EngineFailed")).toHaveLength(2);
+  expect(status.textContent).not.toContain("/home/felixb/engines/stockfish");
+  expect(status.textContent).not.toContain("secret");
+  expect(status.textContent).not.toContain("Board.Analysis.EngineDisconnected");
 });

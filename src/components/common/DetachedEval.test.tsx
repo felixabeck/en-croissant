@@ -1,7 +1,9 @@
 import { act } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { createTreeStore } from "@/state/store/tree";
-import { currentDetachedEngineAtom, enginesAtom } from "@/state/atoms";
+import { currentDetachedEngineAtom, enginesAtom, engineTerminalFamily } from "@/state/atoms";
+import { INITIAL_FEN } from "chessops/fen";
+import { engineIdentity, engineLineContext } from "../panels/analysis/analysisLineContext";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { TreeStateContext } from "./TreeStateContext";
 import DetachedEval from "./DetachedEval";
@@ -29,3 +31,36 @@ test("DetachedEval uses the shared dimmed fallback and replaces it with current 
   expect(h.host.textContent).toContain("d5");
   tree.dispose();
 });
+
+test.each([false, true])(
+  "P2 DetachedEval shows failure with historical evaluation, partial lines %s",
+  async (partial) => {
+    h = engineDisplayHarness();
+    const tree = createTreeStore();
+    await h.store.set(enginesAtom, [displayEngine]);
+    h.store.set(currentDetachedEngineAtom, displayEngine.id);
+    if (partial) await h.remember();
+    await h.render(
+      <TreeStateContext.Provider value={tree}>
+        <DetachedEval />
+      </TreeStateContext.Provider>,
+    );
+    await act(async () =>
+      h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+        type: "failed",
+        searchedKey: `${INITIAL_FEN}:`,
+        fingerprint: "attempt",
+        generation: "generation",
+        retry: 0,
+        context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
+        engineIdentity: engineIdentity(displayEngine),
+      }),
+    );
+    expect(h.host.textContent).toContain("Board.Analysis.EngineFailed");
+    expect(h.host.querySelector("[inert]") !== null).toBe(partial);
+    expect(h.host.querySelector("[inert]")?.textContent).toBe(
+      partial ? "+0.34e4 e5 Nf3" : undefined,
+    );
+    tree.dispose();
+  },
+);

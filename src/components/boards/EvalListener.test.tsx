@@ -86,9 +86,18 @@ vi.mock("@/state/atoms", async () => {
       ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom(0),
       (a, b) => a.tab === b.tab && a.engine === b.engine,
     ),
+    engineRetryFamily: atomFamily(
+      ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom(0),
+      (a, b) => a.tab === b.tab && a.engine === b.engine,
+    ),
+    // Retain the BASE seam so red-on-revert fails on behaviour, not a missing mock export.
     engineNoLinesFamily: atomFamily(
       ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
         atom<string | null>(null),
+      (a, b) => a.tab === b.tab && a.engine === b.engine,
+    ),
+    engineTerminalFamily: atomFamily(
+      ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom<any>(null),
       (a, b) => a.tab === b.tab && a.engine === b.engine,
     ),
     createFirstEngineWithLinesAtom: () => atom(() => fixtures.scoreOwner),
@@ -120,13 +129,15 @@ import {
   closingTabsAtom,
   threatFamily,
   engineMovesFamily,
-  engineNoLinesFamily,
+  engineTerminalFamily,
+  engineRetryFamily,
   engineProgressFamily,
   enginesAtom,
   tabEngineSettingsFamily,
   tabsAtom,
 } from "@/state/atoms";
 import EvalListener from "./EvalListener";
+import { useDisplayedEngineLines } from "../panels/analysis/useDisplayedEngineLines";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -146,7 +157,7 @@ const movesAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
 const progressAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
   engineProgressFamily({ tab, engine: engineId });
 const noLinesAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
-  engineNoLinesFamily({ tab, engine: engineId });
+  engineTerminalFamily({ tab, engine: engineId });
 
 async function flush() {
   await Promise.resolve();
@@ -229,6 +240,7 @@ beforeEach(() => {
   store.set(movesAtom("tab-1"), new Map([["old", payload("cached").bestLines]]));
   store.set(progressAtom("tab-1"), 73);
   store.set(noLinesAtom("tab-1"), null);
+  store.set(engineRetryFamily({ tab: "tab-1", engine: engine.id }), 0);
   store.set(movesAtom("tab-1", chessdbEngine.id), new Map());
   store.set(progressAtom("tab-1", chessdbEngine.id), 0);
   host = document.createElement("div");
@@ -857,7 +869,7 @@ test("a superseded preparation rejection does not mark while the current rejecti
     await flush();
   });
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", conflict);
-  expect(store.get(noLinesAtom())).toBe("fen-b:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe("fen-b:");
   expect(fixtures.getBestMoves).not.toHaveBeenCalled();
 });
 
@@ -1182,7 +1194,7 @@ test("a synchronous launch failure marks its key, notifies once and retires the 
   });
   await rerender();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
-  expect(store.get(noLinesAtom())).toBe("start-fen:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
   fixtures.fen = "fen-b";
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
@@ -1256,7 +1268,7 @@ test("a current local rejection without lines marks its key, notifies once and n
     result.reject(failure);
     await flush();
   });
-  expect(store.get(noLinesAtom())).toBe("start-fen:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
   expect(store.get(movesAtom()).size).toBe(0);
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
   fixtures.fen = "fen-b";
@@ -1279,7 +1291,7 @@ test("an empty local terminal payload followed by a null result marks completion
     result.resolve(null);
     await flush();
   });
-  expect(store.get(noLinesAtom())).toBe("start-fen:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
   expect(store.get(movesAtom()).size).toBe(0);
   expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
   // The same searched key gets a new attempt when its go mode changes.
@@ -1325,7 +1337,7 @@ test.each(["reject", "resolve"])(
       else result.resolve(null);
       await flush();
     });
-    expect(store.get(noLinesAtom())).toBeNull();
+    expect(store.get(noLinesAtom())?.type).toBe(outcome === "reject" ? "failed" : undefined);
     expect(store.get(movesAtom()).get("start-fen:")).toEqual(lines.bestLines);
   },
 );
@@ -1334,16 +1346,180 @@ test("usable terminal results and normal payloads clear a no-lines mark", async 
   const result = deferred<ReturnType<typeof remoteResult>>();
   fixtures.getBestMoves.mockReturnValueOnce(result.promise);
   await rerender();
-  store.set(noLinesAtom(), "start-fen:");
+  store.set(noLinesAtom(), { type: "completed-without-lines", searchedKey: "start-fen:" } as any);
   await act(async () => {
     result.resolve(remoteResult(100));
     await flush();
   });
   expect(store.get(noLinesAtom())).toBeNull();
   expect(store.get(movesAtom()).get("start-fen:")).toEqual(remoteResult(100)[1]);
-  store.set(noLinesAtom(), "start-fen:");
+  store.set(noLinesAtom(), { type: "completed-without-lines", searchedKey: "start-fen:" } as any);
   await broadcast(payload("generation-1"));
   expect(store.get(noLinesAtom())).toBeNull();
+});
+
+const terminalFailure = {
+  tag: "engine-failure",
+  category: "engine-failure",
+  message: "Engine terminated",
+  engineFailure: {
+    kind: "process-exit",
+    exitStatus: { code: 1, signal: null },
+    reason: "CRITICAL ERROR: rejected command",
+    entries: [{ type: "infoString", value: "Safe final line" }],
+  },
+};
+
+test("P2 the mounted listener delivers failure and Retry to the actual shared display owner", async () => {
+  let displayed: ReturnType<typeof useDisplayedEngineLines> | undefined;
+  function DisplayOwner() {
+    displayed = useDisplayedEngineLines(engine, fixtures.fen, fixtures.moves);
+    return null;
+  }
+  const result = deferred<null>();
+  fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+  await act(async () =>
+    root.render(
+      <WorkspaceTabScope tabId="tab-1">
+        <EvalListener />
+        <DisplayOwner />
+      </WorkspaceTabScope>,
+    ),
+  );
+  await broadcast(payload("generation-1"));
+  expect(displayed?.dimmed).toBe(false);
+  await act(async () => {
+    result.reject(terminalFailure);
+    await flush();
+  });
+  expect(displayed?.failure?.snapshot?.reason).toBe("CRITICAL ERROR: rejected command");
+  expect(displayed?.dimmed).toBe(true);
+  expect(displayed?.loading).toBe(false);
+  await broadcast(payload("generation-1"));
+  expect(displayed?.failure).not.toBeNull();
+  await act(async () => store.set(engineRetryFamily({ tab: "tab-1", engine: engine.id }), 1));
+  expect(displayed?.failure).toBeNull();
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
+});
+
+test.each([false, true])(
+  "P2 failure is sticky and rejects late lines, partial output %s",
+  async (partial) => {
+    const result = deferred<null>();
+    fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+    await rerender();
+    if (partial) await broadcast(payload("generation-1"));
+    await act(async () => {
+      result.reject(terminalFailure);
+      await flush();
+    });
+    const terminal = store.get(noLinesAtom());
+    expect(terminal).toMatchObject({
+      type: "failed",
+      searchedKey: "start-fen:",
+      generation: "generation-1",
+      snapshot: terminalFailure.engineFailure,
+      retry: 0,
+    });
+    expect(terminal!.fingerprint).toContain('"fen":"start-fen"');
+    expect(terminal!.context).toBe((store.get(movesAtom()) as any).context);
+    await broadcast(payload("generation-1", { progress: 99 }));
+    expect(store.get(progressAtom())).toBe(0);
+    expect(store.get(movesAtom()).size).toBe(partial ? 1 : 0);
+    await rerender();
+    await act(async () => {
+      await store.set(enginesAtom, [{ ...engine }] as any);
+    });
+    expect(store.get(noLinesAtom())).toBe(terminal);
+    expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(store.get(noLinesAtom())).toBe(terminal);
+  },
+);
+
+test("P2 same-position Retry reserves a fresh generation via the serialized transition", async () => {
+  const result = deferred<null>();
+  fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+  fixtures.prepareEngineSearch
+    .mockResolvedValueOnce("generation-1")
+    .mockResolvedValueOnce("generation-retry");
+  await rerender();
+  await act(async () => {
+    result.reject(terminalFailure);
+    await flush();
+  });
+  const persisted = store.get(settingsAtom());
+  await act(async () =>
+    store.set(engineRetryFamily({ tab: "tab-1", engine: engine.id }), (n) => n + 1),
+  );
+  expect(store.get(settingsAtom())).toBe(persisted);
+  expect(store.get(noLinesAtom())).toBeNull();
+  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
+  expect(fixtures.getBestMoves.mock.calls[1][4]).toBe("generation-retry");
+  await broadcast(payload("generation-1"));
+  expect(store.get(movesAtom()).size).toBe(0);
+  await broadcast(payload("generation-retry"));
+  expect(store.get(movesAtom()).get("start-fen:")).toBeDefined();
+});
+
+test.each(["unload", "remove", "dispose", "context"])(
+  "P2 %s retires the failed terminal state",
+  async (change) => {
+    fixtures.getBestMoves.mockRejectedValueOnce(terminalFailure);
+    await rerender();
+    expect(store.get(noLinesAtom())?.type).toBe("failed");
+    if (change === "unload")
+      await act(async () => store.set(enginesAtom, [{ ...engine, loaded: false }] as any));
+    if (change === "remove") await act(async () => store.set(enginesAtom, []));
+    if (change === "dispose") await unmount();
+    if (change === "context")
+      await act(async () =>
+        store.set(settingsAtom(), (s) => ({ ...s, go: { t: "Depth", c: 12 } })),
+      );
+    expect(store.get(noLinesAtom("tab-1"))).toBeNull();
+  },
+);
+
+test("P2 equal-name and equal-path engines keep failures and other-tab state separate", async () => {
+  const sibling = { ...engine, id: "engine-2" };
+  const first = deferred<null>();
+  fixtures.getBestMoves.mockImplementation((candidate) =>
+    candidate.id === engine.id ? first.promise : new Promise(() => {}),
+  );
+  await act(async () => store.set(enginesAtom, [engine, sibling] as any));
+  const neighbour = { type: "failed", searchedKey: "neighbour:" } as any;
+  store.set(noLinesAtom("tab-2"), neighbour);
+  await rerender();
+  await act(async () => {
+    first.reject(terminalFailure);
+    await flush();
+  });
+  expect(store.get(noLinesAtom("tab-1"))?.type).toBe("failed");
+  expect(store.get(noLinesAtom("tab-1", sibling.id))).toBeNull();
+  expect(store.get(noLinesAtom("tab-2"))).toBe(neighbour);
+  await broadcast(payload("generation-1", { engine: sibling.id }));
+  expect(store.get(movesAtom("tab-1", sibling.id)).get("start-fen:")).toBeDefined();
+});
+
+test("P2 an old rejection cannot replace its successor's terminal diagnostic", async () => {
+  const old = deferred<null>();
+  const current = deferred<null>();
+  fixtures.getBestMoves.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+  await rerender();
+  fixtures.fen = "fen-b";
+  await rerender();
+  await act(async () => {
+    current.reject(terminalFailure);
+    await flush();
+  });
+  const terminal = store.get(noLinesAtom());
+  await act(async () => {
+    old.reject({ ...terminalFailure, message: "obsolete" });
+    await flush();
+  });
+  expect(store.get(noLinesAtom())).toBe(terminal);
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
 });
 
 function payload(generation: string, overrides: Partial<BestMovesPayload> = {}): BestMovesPayload {

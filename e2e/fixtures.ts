@@ -29,7 +29,7 @@ export type MockScenario = {
 
 type MockEngineSearchState = {
     pending: unknown[];
-    settled: { generation: unknown; outcome: "cancelled"; error: ErrorPayload }[];
+    settled: { generation: unknown; outcome: "cancelled" | "failed"; error: ErrorPayload }[];
     stops: { engine: unknown; tab: unknown; expectedGeneration: unknown; result: unknown }[];
 };
 
@@ -611,7 +611,7 @@ const tauriBootstrap = () => {
             }).catch((error: ErrorPayload) => {
                 state.settledSearches.push({
                     generation: args.generation,
-                    outcome: "cancelled",
+                    outcome: error.category === "cancellation" ? "cancelled" : "failed",
                     error,
                 });
                 throw error;
@@ -693,6 +693,14 @@ const tauriBootstrap = () => {
                 state.commands = scenario.commands ?? {};
             },
             emit,
+            failEngineSearch(engine: string, tab: string, generation: string, error: ErrorPayload) {
+                const key = actorKey(engine, tab);
+                const actor = actors.get(key);
+                if (actor?.owner !== generation || !actor.pending) return false;
+                actors.delete(key);
+                actor.pending.reject(error);
+                return true;
+            },
             invocations: () => [...state.invocations],
             engineSearchState: (): MockEngineSearchState => ({
                 pending: [...actors.values()]
@@ -869,6 +877,12 @@ declare global {
             emit(event: string, payload: unknown): void;
             invocations(): { command: string; args: unknown }[];
             engineSearchState(): MockEngineSearchState;
+            failEngineSearch(
+                engine: string,
+                tab: string,
+                generation: string,
+                error: ErrorPayload,
+            ): boolean;
         };
     }
 }

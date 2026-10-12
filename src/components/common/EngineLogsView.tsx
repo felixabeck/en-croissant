@@ -110,6 +110,7 @@ export default function EngineLogsView({
         </Group>
 
         <SegmentedControl
+          style={{ flexShrink: 0 }}
           value={filter}
           onChange={(value) => setFilter(value as LogsFilter)}
           data={[
@@ -128,7 +129,8 @@ export default function EngineLogsView({
           leftSection={<IconFilter size="0.9rem" />}
           value={search}
           onChange={(e) => setSearch(e.currentTarget.value)}
-          style={{ flexGrow: 1, minWidth: 0 }}
+          flex={1}
+          miw={0}
         />
 
         {additionalControls}

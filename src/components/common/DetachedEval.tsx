@@ -57,6 +57,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
   const {
     lines: engineVariations,
     dimmed,
+    failure,
     isGameOver,
   } = useDisplayedEngineLines(engine, rootFen, moves);
 
@@ -84,6 +85,11 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
           <Text fw={700} fz="sm" style={{ whiteSpace: "nowrap" }}>
             {engine.name}
           </Text>
+          {failure && (
+            <Text fz="xs" c="red" role="status">
+              {t("Board.Analysis.EngineFailed")}
+            </Text>
+          )}
           {topLine ? (
             <>
               <Group

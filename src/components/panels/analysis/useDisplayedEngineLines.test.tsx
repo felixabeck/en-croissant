@@ -2,13 +2,23 @@ import { WorkspaceTabScope } from "@/state/tabScope";
 import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { activeTabAtom, threatFamily, engineNoLinesFamily } from "@/state/atoms";
+import {
+  activeTabAtom,
+  threatFamily,
+  engineTerminalFamily,
+  engineRetryFamily,
+} from "@/state/atoms";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { analysisSearch } from "./analysisSearch";
 import { AnalysisLineMemory } from "./analysisLineMemory";
-import { engineLineContext } from "./analysisLineContext";
+import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
 import type { Engine } from "@/utils/engines";
+import { createInstance } from "i18next";
+import english from "@/translation/en-US.json";
+import german from "@/translation/de-DE.json";
+import { engineFailureMessage, reportEngineFailure } from "./useDisplayedEngineLines";
+import { errorUnlessCancelled } from "@/platform/errors";
 
 let h: ReturnType<typeof engineDisplayHarness>;
 let display: ReturnType<typeof useDisplayedEngineLines>;
@@ -42,6 +52,18 @@ afterEach(async () => {
   await h.close();
   vi.useRealTimers();
 });
+
+function terminal(moves: string[] = []) {
+  return {
+    type: "completed-without-lines" as const,
+    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key,
+    context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
+    fingerprint: "attempt",
+    engineIdentity: engineIdentity(displayEngine),
+    generation: "generation",
+    retry: 0,
+  };
+}
 
 test("uses current lines immediately, then dimmed previous lines with their original position until 1000 ms", async () => {
   await h.remember();
@@ -92,8 +114,8 @@ test("a marked key suppresses dimmed fallback and loading beyond 1000 ms while o
   const moves = ["d2d4"];
   await h.render(<Probe moves={moves} />);
   expect(display.dimmed).toBe(true);
-  const terminal = engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id });
-  await act(async () => h.store.set(terminal, analysisSearch(INITIAL_FEN, moves, false).key));
+  const terminalAtom = engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id });
+  await act(async () => h.store.set(terminalAtom, terminal(moves)));
   expect(display.lines).toBeUndefined();
   expect(display.dimmed).toBe(false);
   await act(async () => vi.advanceTimersByTime(1000));
@@ -110,7 +132,7 @@ test("a marked key suppresses dimmed fallback and loading beyond 1000 ms while o
   expect(display.loading).toBe(true);
   await h.render(<Probe moves={moves} />);
   expect(display.loading).toBe(false);
-  await act(async () => h.store.set(terminal, null));
+  await act(async () => h.store.set(terminalAtom, null));
   expect(display.dimmed).toBe(true);
   await act(async () => vi.advanceTimersByTime(1000));
   expect(display.loading).toBe(true);
@@ -119,10 +141,7 @@ test("a marked key suppresses dimmed fallback and loading beyond 1000 ms while o
 test("a no-lines mark preserves valid remembered lines for the same key", async () => {
   await h.remember();
   await act(async () =>
-    h.store.set(
-      engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id }),
-      analysisSearch(INITIAL_FEN, [], false).key,
-    ),
+    h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), terminal()),
   );
   await h.render(<Probe />);
   expect(display.lines).toEqual(displayLines);
@@ -335,4 +354,131 @@ test("the shared reader initializes per-engine option and go defaults", async ()
   );
   expect(display.settings.settings).toEqual(options);
   expect(display.settings.go).toEqual({ t: "Depth", c: 12 });
+});
+
+test.each([false, true])(
+  "P2 failed display is sticky and historical, partial lines %s",
+  async (partial) => {
+    if (partial) await h.remember();
+    await h.render(<Probe />);
+    const failed = { ...terminal(), type: "failed" as const };
+    await act(async () =>
+      h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), failed),
+    );
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(display.failure).toBe(failed);
+    expect(display.loading).toBe(false);
+    expect(display.dimmed).toBe(partial);
+    await h.render(<Probe />);
+    expect(display.failure).toBe(failed);
+    await h.render(<Probe tabId="another-tab" />);
+    expect(display.failure).toBeNull();
+    await h.render(<Probe engine={{ ...displayEngine, id: "other-engine" }} />);
+    expect(display.failure).toBeNull();
+    await h.render(
+      <Probe
+        engine={{
+          type: "chessdb",
+          id: displayEngine.id,
+          name: displayEngine.name,
+          url: "https://chessdb.cn",
+          loaded: true,
+        }}
+      />,
+    );
+    expect(display.failure).toBeNull();
+    await h.render(<Probe />);
+    expect(display.failure).toBe(failed);
+    await act(async () =>
+      h.store.set(engineRetryFamily({ tab: "display-tab", engine: displayEngine.id }), 1),
+    );
+    expect(display.failure).toBeNull();
+  },
+);
+
+test.each(["en", "de"])(
+  "P2 safe reasons and kind/status fallbacks are localized in %s",
+  async (lng) => {
+    const i18n = createInstance();
+    await i18n.init({
+      lng,
+      fallbackLng: false,
+      keySeparator: false,
+      resources: { en: english, de: german },
+    });
+    const fallback = (
+      kind: "disconnected" | "process-exit" | "protocol-failure",
+      code: number | null = null,
+      signal: number | null = null,
+    ) =>
+      engineFailureMessage(i18n.t, {
+        kind,
+        exitStatus: { code, signal },
+        reason: null,
+        entries: [],
+      });
+    expect(fallback("disconnected")).toBe(
+      lng === "en" ? "Engine disconnected" : "Engine-Verbindung getrennt",
+    );
+    expect(fallback("process-exit")).toBe(lng === "en" ? "Engine exited" : "Engine beendet");
+    expect(fallback("protocol-failure")).toBe(
+      lng === "en" ? "Engine protocol failed" : "Engine-Protokoll fehlgeschlagen",
+    );
+    expect(fallback("process-exit", 7)).toContain("7");
+    expect(fallback("process-exit", null, 9)).toContain("9");
+    expect(engineFailureMessage(i18n.t)).toBe(i18n.t("Board.Analysis.EngineDisconnected"));
+    expect(engineFailureMessage(i18n.t, undefined, "")).toBe(
+      i18n.t("Board.Analysis.EngineDisconnected"),
+    );
+    expect(engineFailureMessage(i18n.t, undefined, "Safe launch failure")).toBe(
+      "Safe launch failure",
+    );
+    expect(
+      engineFailureMessage(i18n.t, {
+        kind: "process-exit",
+        exitStatus: null,
+        reason: "Safe reason",
+        entries: [],
+      }),
+    ).toBe("Safe reason");
+  },
+);
+
+test("the failed display retains the normalized safe message without a snapshot", async () => {
+  const raw = "Cannot launch /home/felixb/engines/stockfish token=secret";
+  const safe = "Cannot launch [path] token=[redacted]";
+  const failure = errorUnlessCancelled(new Error(raw))!;
+  await h.render(<Probe />);
+  await act(async () =>
+    h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+      ...terminal(),
+      type: "failed",
+      message: failure.message,
+    }),
+  );
+  const i18n = createInstance();
+  await i18n.init({
+    lng: "en",
+    fallbackLng: false,
+    keySeparator: false,
+    resources: { en: english },
+  });
+  const text = engineFailureMessage(i18n.t, display.failure?.snapshot, display.failure?.message);
+  expect(text).toBe(safe);
+  expect(text).not.toContain("/home/felixb/engines/stockfish");
+  expect(text).not.toContain("secret");
+  expect(
+    reportEngineFailure(i18n.t, {
+      tag: "engine-failure",
+      category: "engine-failure",
+      message: raw,
+    }),
+  ).toMatchObject({ message: safe });
+  expect(
+    engineFailureMessage(
+      i18n.t,
+      { kind: "process-exit", exitStatus: { code: 1, signal: null }, reason: null, entries: [] },
+      safe,
+    ),
+  ).toBe("Engine exited with code 1");
 });

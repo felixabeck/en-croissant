@@ -5,6 +5,7 @@ import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import { z } from "zod";
 import type {
     BestMoves,
+    EngineTerminalSnapshot,
     DatabaseHandle,
     FileWorkspaceHandle,
     GoMode,
@@ -840,9 +841,27 @@ export const engineProgressFamily = atomFamily(
     (a, b) => a.tab === b.tab && a.engine === b.engine,
 );
 
-/** Ephemeral terminal state for the current search, reset by every new attempt. */
-export const engineNoLinesFamily = atomFamily(
-    ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom<string | null>(null),
+export type AnalysisTerminal = {
+    searchedKey: string;
+    context: string;
+    fingerprint: string;
+    engineIdentity: string;
+    generation: string | null;
+    retry: number;
+} & (
+    | { type: "completed-without-lines" }
+    | { type: "failed"; snapshot?: EngineTerminalSnapshot; message?: string }
+);
+
+/** One ephemeral terminal outcome for the owned engine's current attempt. */
+export const engineTerminalFamily = atomFamily(
+    ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
+        atom<AnalysisTerminal | null>(null),
+    (a, b) => a.tab === b.tab && a.engine === b.engine,
+);
+
+export const engineRetryFamily = atomFamily(
+    ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom(0),
     (a, b) => a.tab === b.tab && a.engine === b.engine,
 );
 
@@ -1001,7 +1020,12 @@ export function disposeTabAtoms(tabId: string) {
         family.remove(tabId);
     }
 
-    for (const family of [engineMovesFamily, engineProgressFamily, engineNoLinesFamily]) {
+    for (const family of [
+        engineMovesFamily,
+        engineProgressFamily,
+        engineTerminalFamily,
+        engineRetryFamily,
+    ]) {
         for (const param of Array.from(family.getParams())) {
             if (param.tab === tabId) family.remove(param);
         }

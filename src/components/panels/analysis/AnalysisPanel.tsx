@@ -313,7 +313,8 @@ export function EngineSummary({
   shorten: boolean;
   i: number;
 }) {
-  const { lines: curEval, dimmed } = useDisplayedEngineLines(engine, fen, moves);
+  const { t } = useTranslation();
+  const { lines: curEval, dimmed, failure } = useDisplayedEngineLines(engine, fen, moves);
   const score = curEval && curEval.length > 0 ? curEval[0].score : null;
 
   return (
@@ -331,6 +332,11 @@ export function EngineSummary({
             ? `${getInitials(engine.name)}.`
             : engine.name}
         </Text>
+        {failure && (
+          <Text fz="xs" c="red" role="status">
+            {t("Board.Analysis.EngineFailed")}
+          </Text>
+        )}
         {score ? (
           <Group opacity={dimmed ? 0.5 : 1} inert={dimmed}>
             <ScoreBubble size="sm" score={score} />

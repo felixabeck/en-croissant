@@ -16,8 +16,9 @@ import { reportModalOpenFamily } from "@/state/atoms";
 import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getGameStats, getMainLine } from "@/utils/chess";
 import classes from "./AnalysisPanel.module.css";
-import ReportModal from "./ReportModal";
+import ReportModal, { reportRootFingerprint } from "./ReportModal";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { reportEngineFailure } from "./useDisplayedEngineLines";
 
 function ReportPanel() {
   const { t } = useTranslation();
@@ -54,6 +55,8 @@ function ReportPanel() {
 
     let active = true;
     const queriedId = operationId;
+    const queriedRoot = store.getState().root;
+    const queriedFingerprint = reportRootFingerprint(queriedRoot.fen, getMainLine(queriedRoot));
     tauri
       .getProgress(queriedId)
       .then((item) => {
@@ -63,7 +66,16 @@ function ReportPanel() {
           setInProgress(false);
         }
       })
-      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
+      .catch((error) => {
+        const current = store.getState();
+        const fingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
+        if (
+          active &&
+          current.report.operationId === queriedId &&
+          fingerprint === queriedFingerprint
+        )
+          notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
+      });
 
     return () => {
       active = false;
@@ -75,10 +87,15 @@ function ReportPanel() {
   const handleCancel = useCallback(async () => {
     const id = store.getState().report.operationId;
     if (!id) return;
+    const queriedRoot = store.getState().root;
+    const queriedFingerprint = reportRootFingerprint(queriedRoot.fen, getMainLine(queriedRoot));
     try {
       await tauri.cancelAnalysis(id);
     } catch (error) {
-      notifyUnlessCancelled(t("Common.Error"), error);
+      const current = store.getState();
+      const fingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
+      if (current.report.operationId === id && fingerprint === queriedFingerprint)
+        notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
       throw error;
     }
     // An acknowledgement for an older operation cannot clear its replacement.
@@ -91,7 +108,7 @@ function ReportPanel() {
   const isCurrentOperation = useCallback(
     (id: string, fingerprint: string) => {
       const current = store.getState();
-      const currentFingerprint = `${current.root.fen}\u0000${getMainLine(current.root).join("\u0000")}`;
+      const currentFingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
       return current.report.operationId === id && currentFingerprint === fingerprint;
     },
     [store],

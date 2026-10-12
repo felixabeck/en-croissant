@@ -2,6 +2,7 @@ import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import {
   Accordion,
   Box,
+  Button,
   Code,
   Collapse,
   Group,
@@ -33,6 +34,7 @@ import {
   currentDetachedEngineAtom,
   threatFamily,
   engineProgressFamily,
+  engineRetryFamily,
   enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
@@ -43,7 +45,7 @@ import { formatScore } from "@/utils/score";
 import AnalysisRow from "./AnalysisRow";
 import classes from "./BestMoves.module.css";
 import EngineSettingsForm, { type Settings } from "./EngineSettingsForm";
-import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
+import { engineFailureMessage, useDisplayedEngineLines } from "./useDisplayedEngineLines";
 
 export const arrowColors = [
   { strong: "blue", pale: "paleBlue" },
@@ -75,6 +77,7 @@ function BestMovesComponent({
 
   const ownerTabId = useOwnerTabId();
   const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
+  const [, setRetry] = useAtom(engineRetryFamily({ engine: engine.id, tab: ownerTabId }));
   const [, setEngines] = useAtom(enginesAtom);
   const [settings, setSettings2] = useAtom(
     tabEngineSettingsFamily({
@@ -119,6 +122,7 @@ function BestMovesComponent({
   const {
     lines: engineVariations,
     dimmed,
+    failure,
     loading,
     error,
     isGameOver,
@@ -158,6 +162,7 @@ function BestMovesComponent({
             error={error}
             loading={loading}
             dimmed={dimmed}
+            failed={failure !== null}
           />
         </Accordion.Control>
         <Group gap={0}>
@@ -216,15 +221,36 @@ function BestMovesComponent({
       </Collapse>
 
       <Progress
-        value={isGameOver ? 0 : progress}
-        animated={progress < 100 && settings.enabled && !isGameOver}
+        value={isGameOver || failure ? 0 : progress}
+        animated={progress < 100 && settings.enabled && !isGameOver && !failure}
         size="xs"
-        striped={progress < 100 && !settings.enabled}
+        striped={progress < 100 && !settings.enabled && !failure}
         color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
       />
       <Accordion.Panel pos="relative">
         <Table>
           <Table.Tbody>
+            {failure && (
+              <Table.Tr>
+                <Table.Td colSpan={3}>
+                  <Stack gap="xs" role="status">
+                    <Text c="red" fw={700}>
+                      {t("Board.Analysis.EngineFailed")}
+                    </Text>
+                    <Text size="sm">
+                      {engineFailureMessage(t, failure.snapshot, failure.message)}
+                    </Text>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      onClick={() => setRetry((value) => value + 1)}
+                    >
+                      {t("Board.Analysis.RetryEngine")}
+                    </Button>
+                  </Stack>
+                </Table.Td>
+              </Table.Tr>
+            )}
             {error && (
               <Table.Tr>
                 <Table.Td>
@@ -321,6 +347,7 @@ function EngineTop({
   error,
   loading,
   dimmed,
+  failed,
 }: {
   name: string;
   engineVariations: BestMoves[] | undefined;
@@ -330,6 +357,7 @@ function EngineTop({
   error: any;
   loading: boolean;
   dimmed: boolean;
+  failed: boolean;
 }) {
   const { t } = useTranslation();
   const isComputed = engineVariations && engineVariations.length > 0;
@@ -345,6 +373,7 @@ function EngineTop({
         </Text>
         {loading && enabled && !isGameOver && !error && <Code fz="xs">{t("Common.Loading")}</Code>}
         {progress < 100 &&
+          !failed &&
           enabled &&
           !isGameOver &&
           engineVariations &&

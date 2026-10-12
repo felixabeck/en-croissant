@@ -124,6 +124,7 @@ vi.mock("./ReportModal", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./ReportModal")>();
   const Actual = actual.default;
   return {
+    ...actual,
     default: (props: {
       registerOperation: (id: string) => void;
       isCurrentOperation: (id: string, fingerprint: string) => boolean;
@@ -192,11 +193,91 @@ function fingerprintOf(store: TreeStore) {
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
-  const promise = new Promise<T>((settle) => {
+  let reject: (cause: unknown) => void = () => undefined;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
+
+test.each(["replacement", "root"])(
+  "P2 an old progress failure cannot notify after %s",
+  async (change) => {
+    const lookup = deferred<null>();
+    mocks.getProgress.mockReturnValueOnce(lookup.promise);
+    store.getState().setReportOperationId("old");
+    store.getState().setReportInProgress(true);
+    await renderPanel();
+    await act(async () => {
+      if (change === "replacement") store.getState().setReportOperationId("current");
+      else store.getState().setFen("8/8/8/8/8/8/8/K6k w - - 0 1");
+      lookup.reject(new Error("obsolete lookup"));
+    });
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  },
+);
+
+test("P2 a late cancel failure cannot notify against its successor", async () => {
+  const cancellation = deferred<void>();
+  mocks.cancelAnalysis.mockReturnValueOnce(cancellation.promise);
+  await renderPanel();
+  await act(async () => {
+    mocks.reportModalProps!.registerOperation("old");
+    store.getState().setReportInProgress(true);
+  });
+  const outcome = Promise.resolve(mocks.progressButtonProps!.onCancel!()).catch(() => undefined);
+  await act(async () => {
+    store.getState().setReportOperationId("current");
+    cancellation.reject(new Error("obsolete cancellation"));
+    await outcome;
+  });
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(store.getState().report.operationId).toBe("current");
+});
+
+test.each(["replacement", "root"])(
+  "P2 the actual report owner rejects old analysis failures after %s",
+  async (change) => {
+    mocks.reportingMode = true;
+    const old = deferred<never[]>();
+    const current = deferred<never[]>();
+    mocks.prepareAnalysis
+      .mockResolvedValueOnce("old-report")
+      .mockResolvedValueOnce("current-report");
+    mocks.analyzeGame.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    await renderPanel();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      if (change === "replacement")
+        host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
+      else store.getState().setFen("8/8/8/8/8/8/8/K6k w - - 0 1");
+      await Promise.resolve();
+    });
+    const failure = {
+      tag: "engine-failure",
+      category: "engine-failure",
+      message: "Engine terminated",
+      engineFailure: {
+        kind: "protocol-failure",
+        exitStatus: null,
+        reason: "Safe report reason",
+        entries: [],
+      },
+    };
+    await act(async () => old.reject(failure));
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(store.getState().report.inProgress).toBe(true);
+    if (change === "replacement") await act(async () => current.reject(failure));
+    expect(mocks.notifyUnlessCancelled.mock.calls.map(([_title, cause]) => cause.message)).toEqual(
+      change === "replacement" ? ["Safe report reason"] : [],
+    );
+    expect(store.getState().report.inProgress).toBe(change === "root");
+  },
+);
 
 const completedAnalysis = [
   {
@@ -234,6 +315,13 @@ async function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const mock of [
+    mocks.prepareAnalysis,
+    mocks.analyzeGame,
+    mocks.getProgress,
+    mocks.cancelAnalysis,
+  ])
+    mock.mockReset();
   mocks.prepareAnalysis.mockResolvedValue("report_tab-1_operation-uuid");
   mocks.reportingMode = false;
   mocks.progressId = undefined;

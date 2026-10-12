@@ -15,7 +15,9 @@ import {
     threatFamily,
     disposeTabAtoms,
     engineMovesFamily,
-    engineNoLinesFamily,
+    engineTerminalFamily,
+    engineRetryFamily,
+    type AnalysisTerminal,
     enginesAtom,
     createFirstEngineWithLinesAtom,
     tabsAtom,
@@ -208,22 +210,38 @@ test("atom display selection refreshes LRU recency and tab close disposes line m
     disposeTabAtoms(tab);
 });
 
+function terminal(searchedKey: string): AnalysisTerminal {
+    return {
+        type: "completed-without-lines",
+        searchedKey,
+        context: "context",
+        fingerprint: "attempt",
+        engineIdentity: "engine",
+        generation: "generation",
+        retry: 0,
+    };
+}
+
 test("terminal no-lines atoms are independent per tab and engine and disposed with their tab", () => {
     const owner = { tab: "terminal-owner", engine: "same-name-1" };
     const sibling = { tab: owner.tab, engine: "same-name-2" };
     const otherTab = { tab: "terminal-other", engine: owner.engine };
     const store = createStore();
-    const oldAtom = engineNoLinesFamily(owner);
-    store.set(oldAtom, "position-a:");
-    store.set(engineNoLinesFamily(sibling), "position-b:");
-    store.set(engineNoLinesFamily(otherTab), "position-c:");
-    expect(store.get(engineNoLinesFamily(owner))).toBe("position-a:");
-    expect(store.get(engineNoLinesFamily(sibling))).toBe("position-b:");
+    const oldAtom = engineTerminalFamily(owner);
+    const oldRetry = engineRetryFamily(owner);
+    store.set(oldRetry, 2);
+    store.set(oldAtom, terminal("position-a:"));
+    store.set(engineTerminalFamily(sibling), terminal("position-b:"));
+    store.set(engineTerminalFamily(otherTab), terminal("position-c:"));
+    expect(store.get(engineTerminalFamily(owner))).toEqual(terminal("position-a:"));
+    expect(store.get(engineTerminalFamily(sibling))).toEqual(terminal("position-b:"));
     disposeTabAtoms(owner.tab);
-    expect(engineNoLinesFamily(owner)).not.toBe(oldAtom);
-    expect(store.get(engineNoLinesFamily(owner))).toBeNull();
-    expect(store.get(engineNoLinesFamily(sibling))).toBeNull();
-    expect(store.get(engineNoLinesFamily(otherTab))).toBe("position-c:");
+    expect(engineTerminalFamily(owner)).not.toBe(oldAtom);
+    expect(engineRetryFamily(owner)).not.toBe(oldRetry);
+    expect(store.get(engineRetryFamily(owner))).toBe(0);
+    expect(store.get(engineTerminalFamily(owner))).toBeNull();
+    expect(store.get(engineTerminalFamily(sibling))).toBeNull();
+    expect(store.get(engineTerminalFamily(otherTab))).toEqual(terminal("position-c:"));
     disposeTabAtoms(owner.tab);
     disposeTabAtoms(otherTab.tab);
 });

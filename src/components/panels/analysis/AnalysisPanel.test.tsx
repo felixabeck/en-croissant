@@ -1,4 +1,7 @@
 import { INITIAL_FEN } from "chessops/fen";
+import { act } from "react";
+import { engineTerminalFamily } from "@/state/atoms";
+import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import { afterEach, expect, test, vi } from "vitest";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { EngineSummary } from "./AnalysisPanel";
@@ -27,3 +30,28 @@ test("EngineSummary uses the shared dimmed fallback instead of ??? until a curre
   expect(h.host.querySelector("[inert]")).toBeNull();
   expect(h.host.textContent).toContain("0.55");
 });
+
+test.each([false, true])(
+  "P2 EngineSummary shows failure with historical evaluation, partial lines %s",
+  async (partial) => {
+    h = engineDisplayHarness();
+    if (partial) await h.remember();
+    await h.render(
+      <EngineSummary engine={displayEngine} fen={INITIAL_FEN} moves={[]} shorten={false} i={0} />,
+    );
+    await act(async () =>
+      h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+        type: "failed",
+        searchedKey: `${INITIAL_FEN}:`,
+        fingerprint: "attempt",
+        generation: "generation",
+        retry: 0,
+        context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
+        engineIdentity: engineIdentity(displayEngine),
+      }),
+    );
+    expect(h.host.textContent).toContain("Board.Analysis.EngineFailed");
+    expect(h.host.querySelector("[inert]") !== null).toBe(partial);
+    expect(h.host.querySelector("[inert]")?.textContent).toBe(partial ? "+0.34" : undefined);
+  },
+);

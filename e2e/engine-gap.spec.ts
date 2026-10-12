@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures";
+import type { ErrorPayload } from "../src/bindings/generated";
 
 test("engine-gap: warm actor contract preserves ownership and isolates searches", async ({
     page,
@@ -246,3 +247,152 @@ test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B 
     await expect(panel).toContainText("0.55");
     await expect(panel).not.toContainText("Loading");
 });
+
+for (const partial of [false, true]) {
+    test(`engine-gap: terminal failure ${partial ? "after partial lines" : "before lines"} and explicit Retry`, async ({
+        page,
+        emitTauriEvent,
+        mockScenario,
+    }) => {
+        await page.clock.install({ time: new Date("2026-10-05T12:00:00Z") });
+        await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
+        await mockScenario({ commands: { get_engine_logs: { result: [] } } });
+        await page.addInitScript(() =>
+            localStorage.setItem(
+                "engines",
+                JSON.stringify([
+                    {
+                        type: "local",
+                        id: "e2e-engine",
+                        name: "E2E Stockfish",
+                        version: "19",
+                        filename: "stockfish",
+                        handle: { id: { id: "e2e-engine-handle" }, kind: "engine" },
+                        loaded: true,
+                        settings: [],
+                        go: { t: "Infinite" },
+                    },
+                ]),
+            ),
+        );
+        await page.goto("/");
+        await page.getByRole("button", { name: /^open$/i }).click();
+        await page.getByRole("tab", { name: "Analysis", exact: true }).click();
+        await page.getByRole("button", { name: "Enable engine", exact: true }).click();
+        const searches = () =>
+            page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .filter(({ command }) => command === "get_best_moves"),
+            );
+        await expect.poll(async () => (await searches()).length).toBe(1);
+        const request = (await searches())[0].args as {
+            id: string;
+            tab: string;
+            generation: string;
+            options: { fen: string; moves: string[] };
+        };
+        const panel = page.locator(".mantine-Accordion-item").filter({ hasText: "E2E Stockfish" });
+        const payload = {
+            engine: request.id,
+            tab: request.tab,
+            generation: request.generation,
+            fen: request.options.fen,
+            moves: request.options.moves,
+            progress: 50,
+            bestLines: [
+                {
+                    depth: 20,
+                    multipv: 1,
+                    nodes: 1234,
+                    nps: 5678,
+                    score: { value: { type: "cp", value: 34 }, wdl: null },
+                    sanMoves: ["e4", "e5", "Nf3"],
+                    uciMoves: ["e2e4", "e7e5", "g1f3"],
+                },
+            ],
+        };
+        if (partial) {
+            await emitTauriEvent({ event: "best-moves-payload", payload });
+            await expect(panel.getByRole("button", { name: "e4", exact: true })).toBeVisible();
+        } else {
+            await page.clock.runFor(1000);
+            await expect(panel.locator(".mantine-Skeleton-root")).toHaveCount(1);
+        }
+        const failure: ErrorPayload = {
+            tag: "engine-failure",
+            category: "engine-failure",
+            message: "Engine terminated",
+            engineFailure: {
+                kind: "process-exit",
+                exitStatus: { code: 1, signal: null },
+                reason: "CRITICAL ERROR: Command rejected. Reason: invalid position",
+                entries: [
+                    {
+                        type: "infoString",
+                        value: "CRITICAL ERROR: Command rejected. Reason: invalid position",
+                    },
+                    { type: "stderr", value: "<b>Safe terminal stderr</b>" },
+                    { type: "truncated" },
+                ],
+            },
+        };
+        expect(
+            await page.evaluate(
+                ({ request, failure }) =>
+                    window.__E2E_TAURI__.failEngineSearch(
+                        request.id,
+                        request.tab,
+                        request.generation,
+                        failure,
+                    ),
+                { request, failure },
+            ),
+        ).toBe(true);
+        await expect(panel).toContainText("Engine failed");
+        await expect(panel).toContainText(failure.engineFailure!.reason!);
+        await page.clock.runFor(5000);
+        await expect(panel.locator(".mantine-Skeleton-root")).toHaveCount(0);
+        await expect(panel).not.toContainText("Loading");
+        await expect(panel).not.toContainText("n/s");
+        await expect(panel.locator("[data-animated]")).toHaveCount(0);
+        await expect(panel.locator("tr[inert]")).toHaveCount(partial ? 1 : 0);
+        if (partial) await expect(panel.locator("tr[inert]")).toHaveCSS("opacity", "0.5");
+        await emitTauriEvent({ event: "best-moves-payload", payload });
+        await expect(panel.locator("tr[inert]")).toHaveCount(partial ? 1 : 0);
+        await expect(panel).toContainText("Engine failed");
+        await page.mouse.move(1400, 850);
+        await page.clock.runFor(200);
+        await expect(page).toHaveScreenshot(
+            partial ? "engine-failure-historical-lines.png" : "engine-failure-before-lines.png",
+            { fullPage: true },
+        );
+        if (partial) {
+            await page.getByRole("tab", { name: "Logs", exact: true }).click();
+            await expect(page.getByText("Terminal diagnostics", { exact: true })).toBeVisible();
+            await expect(
+                page.getByText("<b>Safe terminal stderr</b>", { exact: true }),
+            ).toBeVisible();
+            await expect(page).toHaveScreenshot("engine-failure-terminal-logs.png", {
+                fullPage: true,
+            });
+            await page.getByRole("tab", { name: "Engines", exact: true }).click();
+        }
+        await panel.getByRole("button", { name: "Retry", exact: true }).click();
+        await expect.poll(async () => (await searches()).length).toBe(2);
+        const retried = (await searches())[1].args as typeof request;
+        expect(retried.options).toEqual(request.options);
+        expect(retried.generation).not.toBe(request.generation);
+        await expect(panel).not.toContainText("Engine failed");
+        await emitTauriEvent({ event: "best-moves-payload", payload });
+        await emitTauriEvent({
+            event: "best-moves-payload",
+            payload: { ...payload, generation: retried.generation },
+        });
+        await expect(panel.locator("tr[inert]")).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "e4", exact: true })).toBeVisible();
+        await page.getByRole("tab", { name: "Logs", exact: true }).click();
+        await expect(page.getByText("Terminal diagnostics", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("No logs available yet", { exact: true })).toBeVisible();
+    });
+}
