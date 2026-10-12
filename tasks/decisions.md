@@ -7316,3 +7316,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12, after the records lens flagged d-20261010-11 as unsuperseded · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"a5df73ff940ede79dc977eaffac01d1c1bc22fe98392a0f5e16c5647b6a1ab5d","input_sha256":"906b82d23e52a192e0e247c0a886044bce1e3d196f0d46cb5da3e28b3cc09c05","kind":"mutation-receipt","operation":"7b4e26656f2510c1f31b1f7679782814fea7278e760effddb7f3f5423392988d","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-17"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-13 — recorded through the decisions lock
+
+### d-20261013-06 — How do ChessFable builds and drains get their own checkout?
+
+* **Question:** Do ChessFable builds and drains keep running in the main checkout, or in their own `kit worktree create` checkout the way ChessRiddle does since 2026-10-12?
+* **Governs:** -
+* **Chosen:** opt in through `.project.json` `worktreeBuilds` (target `master`, root `/home/felixb/Projekte/chessfable.worktrees`, setup `pnpm-deps` and `rust-cache`). Builds run in a `kit worktree create` checkout and release with `git push origin HEAD:refs/heads/master`; the unchanged `drain-findings.sh` command creates or reuses the drain worktree `<root>/drain` (or `drain-2` … `drain-9` when a leftover that cannot be proven to be an interrupted creation's own occupies the name, agent-kit:d-20261012-33) and forwards `--stop`, `--resume` and `--queue-plans` from the main checkout; while a drain started before the opt-in still holds the main checkout's run lock, start and controls stay with the main checkout. `scripts/install-local.sh` runs only from the checkout whose HEAD equals the verified pushed SHA.
+* **Rejected:** keeping builds and drains in the main checkout (blocks Felix's own work there); a per-repository wrapper command (Felix's commands must stay as they are).
+* **Reason:** Felix's 2026-10-12 mandate: "drains and builds run in their own worktree and the main checkout stays free for my own work; my existing commands stay exactly as they are". Measured setup: `git worktree add` 0.24 s / 45 MB, `pnpm install --frozen-lockfile` 1.5 s / 713 MB, `pnpm build-vite` 11.8 s. Reversal path: remove the `worktreeBuilds` block from `.project.json`; builds and drains fall back to the main checkout.
+* **Review:** agent-kit `tasks/handoffs/2026-10-12-worktree-rollout-review.md`
+* **Decided by:** Claude Code (Opus 5.5), `full auto` worktree-rollout build run (session ca4ec462-e90b-4ff9-948d-758e9ecb4ff4), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1afabd891c8ca18e2f5d296509731d1c7639c78fa1d2ec3bce5429fb06103f95","input_sha256":"b742d6151c3bca791066738c96fc674808c67f2c1d7f5d3c940ba05ee53c62d4","kind":"mutation-receipt","operation":"e3737edff6a4a42cc8ca530c97533379f1ed06231033425111b6239dc92485e9","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-06"],"target":"decisions-ledger","v":1} -->
