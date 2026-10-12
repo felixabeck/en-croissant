@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Щоб користуватися цією функцією, увімкніть UCI_ShowWDL у налаштуваннях рушія.",
     "Board.Analysis.EnableWDLTitle": "Увімкнути WDL",
     "Board.Analysis.Endgame": "Ендшпіль",
+    "Board.Analysis.EngineCleanupFailed": "Тимчасове очищення також завершилося помилкою.",
     "Board.Analysis.EngineDisconnected": "Рушій відключено",
     "Board.Analysis.EngineExitCode": "Рушій завершено з кодом {{code}}",
     "Board.Analysis.EngineExited": "Рушій завершено",

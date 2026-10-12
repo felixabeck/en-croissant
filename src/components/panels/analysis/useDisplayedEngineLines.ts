@@ -27,7 +27,10 @@ export function engineFailureMessage(
     t: TFunction,
     snapshot?: EngineTerminalSnapshot,
     message = "",
+    cleanupFailed = false,
 ): string {
+    if (cleanupFailed)
+        return `${engineFailureMessage(t, snapshot, message)} ${t("Board.Analysis.EngineCleanupFailed")}`;
     if (!snapshot) return message.trim() ? message : t("Board.Analysis.EngineDisconnected");
     if (snapshot?.reason) return snapshot.reason;
     if (snapshot?.exitStatus?.signal != null)
@@ -49,7 +52,15 @@ export function engineTerminalLogs(t: TFunction, entries: EngineTerminalEntry[])
 export function reportEngineFailure(t: TFunction, cause: unknown): unknown {
     const failure = normalizeError(cause);
     return failure.engineFailure || failure.backendCategory === "engine-failure"
-        ? { ...failure, message: engineFailureMessage(t, failure.engineFailure, failure.message) }
+        ? {
+              ...failure,
+              message: engineFailureMessage(
+                  t,
+                  failure.engineFailure,
+                  failure.message,
+                  failure.backendCategory === "operation-and-cleanup",
+              ),
+          }
         : cause;
 }
 

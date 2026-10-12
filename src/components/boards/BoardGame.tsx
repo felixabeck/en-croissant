@@ -24,6 +24,7 @@ import {
 import type { Piece } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { makeUci, parseUci } from "chessops";
+import { normalizeMove } from "chessops/chess";
 import { INITIAL_FEN } from "chessops/fen";
 import { getDefaultStore, useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -44,6 +45,7 @@ import {
   flipBoardAfterMoveAtom,
   gameIdFamily,
   gameSessionFamily,
+  gameInterruptionFamily,
   gameStateFamily,
   gameInputColorAtom,
   gameOpeningBookEnabledAtom,
@@ -112,7 +114,7 @@ function getMainlineUcis(root: TreeNode): string[] {
   return moves;
 }
 
-type BackendMove = { uci: string; clock: number | null };
+type BackendMove = { uci: string; clock: number | null; fenAfter?: string };
 
 type GameCommandContext = {
   gameId: string;
@@ -129,10 +131,13 @@ type GameCommandOptions<TResult, TReturn> = {
   canApplySuccess?: (result: TResult, context: GameCommandContext) => boolean;
 };
 
-function mapBackendMoves(moves: { uci: string; clock: bigint | null }[]): BackendMove[] {
+function mapBackendMoves(
+  moves: { uci: string; clock: bigint | null; fenAfter?: string }[],
+): BackendMove[] {
   return moves.map((m) => ({
     uci: m.uci,
     clock: m.clock !== null ? Number(m.clock) : null,
+    fenAfter: m.fenAfter,
   }));
 }
 
@@ -147,6 +152,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     ownerGameIdAtom,
     ownerSessionAtom,
     ownerPendingStartAtom,
+    ownerInterruptionAtom,
   } = useMemo(
     () => ({
       ownerGameStateAtom: gameStateFamily(ownerTabId),
@@ -154,6 +160,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       ownerGameIdAtom: gameIdFamily(ownerTabId),
       ownerSessionAtom: gameSessionFamily(ownerTabId),
       ownerPendingStartAtom: pendingGameStartFamily(ownerTabId),
+      ownerInterruptionAtom: gameInterruptionFamily(ownerTabId),
     }),
     [ownerTabId],
   );
@@ -192,6 +199,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const resetTree = useStore(store, (s) => s.reset);
+  const initialFenRef = useRef(root.fen);
 
   const [, setTabs] = useAtom(tabsAtom);
   const autoFlipBoard = useAtomValue(flipBoardAfterMoveAtom);
@@ -246,12 +254,10 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     "start" | "move" | "takeback" | "abort" | "resign" | null
   >(null);
   const [commandError, setCommandError] = useState<GameCommandError | null>(null);
-  const [interruption, setInterruption] = useState<
-    | (Extract<GameResult, { type: "interrupted" }> & {
-        engineColor: "white" | "black" | null;
-      })
-    | null
-  >(null);
+  const [interruption, setInterruption] = useAtom(ownerInterruptionAtom);
+  useEffect(() => {
+    if (gameState === "settingUp") setInterruption(null);
+  }, [gameState, setInterruption]);
   const clearQueuedGameUpdates = useCallback(() => {
     if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
     if (premoveTimerRef.current) clearTimeout(premoveTimerRef.current);
@@ -424,8 +430,15 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         const move = backendMoves[i];
         const parentPath = Array(i).fill(0);
         const parentNode = getNodeAtPath(store.getState().root, parentPath);
+        const parsed = parseUci(move.uci);
+        const parentPosition = parentNode ? positionFromFen(parentNode.fen)[0] : null;
         const matchingChildIndex = parentNode?.children.findIndex(
-          (child) => child.move && makeUci(child.move) === move.uci,
+          (child) =>
+            child.move &&
+            parsed &&
+            parentPosition &&
+            makeUci(normalizeMove(parentPosition, child.move)) ===
+              makeUci(normalizeMove(parentPosition, parsed)),
         );
         if (matchingChildIndex === 0) continue;
         if (matchingChildIndex !== undefined && matchingChildIndex > 0) {
@@ -434,7 +447,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           continue;
         }
 
-        const parsed = parseUci(move.uci);
         if (parsed) {
           if (parentNode && parentNode.children.length > 0) {
             store.getState().goToMove(parentPath);
@@ -507,15 +519,13 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       atomStore.set(ownerGameStateAtom, "gameOver");
       store.getState().setResult(gameResultToOutcome(result));
       const configuredPlayers = atomStore.get(ownerPlayersAtom);
-      const endpoint = getNodeAtPath(store.getState().root, Array(moves.length).fill(0));
+      const terminalFen = moves.at(-1)?.fenAfter ?? initialFenRef.current;
       const engineColor =
         configuredPlayers.white.type === "engine" && configuredPlayers.black.type === "human"
           ? "white"
           : configuredPlayers.black.type === "engine" && configuredPlayers.white.type === "human"
             ? "black"
-            : endpoint
-              ? (positionFromFen(endpoint.fen)[0]?.turn ?? null)
-              : null;
+            : (positionFromFen(terminalFen)[0]?.turn ?? null);
       setInterruption(result.type === "interrupted" ? { ...result, engineColor } : null);
       return true;
     },
@@ -526,6 +536,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       atomStore,
       ownerGameStateAtom,
       ownerPlayersAtom,
+      setInterruption,
       store,
     ],
   );
@@ -550,6 +561,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         return false;
       }
 
+      initialFenRef.current = state.initialFen;
       if (initialize) store.getState().setFen(state.initialFen);
       if (state.revision > clockRevisionRef.current) {
         clockRevisionRef.current = state.revision;

@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "需在引擎設定中啟用 UCI_ShowWDL 才能使用此功能。",
     "Board.Analysis.EnableWDLTitle": "啟用 WDL",
     "Board.Analysis.Endgame": "殘局",
+    "Board.Analysis.EngineCleanupFailed": "暫時清理也失敗了。",
     "Board.Analysis.EngineDisconnected": "引擎已中斷連線",
     "Board.Analysis.EngineExitCode": "引擎結束，代碼 {{code}}",
     "Board.Analysis.EngineExited": "引擎已結束",

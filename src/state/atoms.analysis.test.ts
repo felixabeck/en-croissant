@@ -17,6 +17,7 @@ import {
     engineMovesFamily,
     engineTerminalFamily,
     engineRetryFamily,
+    gameInterruptionFamily,
     type AnalysisTerminal,
     enginesAtom,
     createFirstEngineWithLinesAtom,
@@ -32,6 +33,27 @@ const engine = {
     handle: { id: { id: "same-handle" }, kind: "engine" as const },
     loaded: true,
 };
+
+test("game interruption belongs to one tab and is reclaimed on disposal", () => {
+    const store = createStore();
+    const owner = "interrupted-game-owner";
+    const other = "interrupted-game-other";
+    const ownerAtom = gameInterruptionFamily(owner);
+    store.set(ownerAtom, {
+        type: "interrupted",
+        reason: "engineTaskFailed",
+        snapshot: null,
+        engineColor: "black",
+    });
+    expect(store.get(gameInterruptionFamily(owner))).toBe(store.get(ownerAtom));
+    expect(store.get(gameInterruptionFamily(other))).toBeNull();
+    disposeTabAtoms(owner);
+    expect(Array.from(gameInterruptionFamily.getParams())).not.toContain(owner);
+    expect(gameInterruptionFamily(owner)).not.toBe(ownerAtom);
+    expect(store.get(gameInterruptionFamily(owner))).toBeNull();
+    disposeTabAtoms(owner);
+    disposeTabAtoms(other);
+});
 const lines = (uci: string): BestMoves[] => [
     {
         depth: 20,

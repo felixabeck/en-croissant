@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Per poter utilizzare questa funzione devi attivare l'opzione UCI_ShowWDL nel motore.",
     "Board.Analysis.EnableWDLTitle": "Abilita WDL",
     "Board.Analysis.Endgame": "Finale",
+    "Board.Analysis.EngineCleanupFailed": "Anche la pulizia temporanea non è riuscita.",
     "Board.Analysis.EngineDisconnected": "Motore disconnesso",
     "Board.Analysis.EngineExitCode": "Motore terminato con codice {{code}}",
     "Board.Analysis.EngineExited": "Motore terminato",

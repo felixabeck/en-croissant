@@ -37,6 +37,7 @@ vi.mock("@/state/atoms", async () => {
   const { atomFamily } = await vi.importActual<typeof import("jotai/utils")>("jotai/utils");
   const gameIdFamily = atomFamily(() => atom<string | null>(null));
   const gameSessionFamily = atomFamily(() => atom<bigint | null>(null));
+  const gameInterruptionFamily = atomFamily(() => atom<any>(null));
   const gameStateFamily = atomFamily(() => atom<"settingUp" | "playing" | "gameOver">("settingUp"));
   const pendingGameStartFamily = atomFamily(() => atom<Promise<void> | null>(null));
   const playersFamily = atomFamily(() =>
@@ -49,12 +50,14 @@ vi.mock("@/state/atoms", async () => {
     flipBoardAfterMoveAtom: atom(false),
     gameIdFamily,
     gameSessionFamily,
+    gameInterruptionFamily,
     gameStateFamily,
     pendingGameStartFamily,
     playersFamily,
     disposeTabAtoms: (tabId: string) => {
       gameIdFamily.remove(tabId);
       gameSessionFamily.remove(tabId);
+      gameInterruptionFamily.remove(tabId);
       gameStateFamily.remove(tabId);
       pendingGameStartFamily.remove(tabId);
       playersFamily.remove(tabId);
@@ -233,6 +236,7 @@ import {
   gamePlayer1SettingsAtom,
   gamePlayer2SettingsAtom,
   gameSessionFamily,
+  gameInterruptionFamily,
   gameStateFamily,
   pendingGameStartFamily,
   playersFamily,
@@ -405,6 +409,7 @@ beforeEach(() => {
   for (const tabId of ["tab-a", "tab-b"]) {
     store.set(gameIdFamily(tabId), null);
     store.set(gameSessionFamily(tabId), null);
+    store.set(gameInterruptionFamily(tabId), null);
     store.set(gameStateFamily(tabId), "settingUp");
     store.set(pendingGameStartFamily(tabId), null);
   }
@@ -569,6 +574,10 @@ test.each(["event", "snapshot"])(
       await act(async () => vi.advanceTimersByTimeAsync(1000));
     }
     vi.useRealTimers();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Safe reason");
     await act(async () => button("Board.Analysis.Logs").click());
     expect(host.textContent).toContain("Engines.Logs.TerminalDiagnostics");
     expect(fixtures.setEngineLogs).toEqual([
@@ -590,6 +599,99 @@ test.each(["event", "snapshot"])(
   },
 );
 
+test("settingUp reset clears a retained interruption after remount", async () => {
+  store.set(gameInterruptionFamily("tab-a"), {
+    type: "interrupted",
+    reason: "engineTaskFailed",
+    snapshot: null,
+    engineColor: null,
+  });
+  await render();
+  expect(store.get(gameInterruptionFamily("tab-a"))).toBeNull();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("native castling promotes an existing O-O variation and preserves its endpoint", async () => {
+  const { createTreeStore } =
+    await vi.importActual<typeof import("@/state/store/tree")>("@/state/store/tree");
+  const realStore = createTreeStore();
+  fixtures.treeStore = realStore;
+  const initialFen = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
+  realStore.getState().setFen(initialFen);
+  realStore.getState().makeMove({ payload: parseUci("e1f1")!, mainline: true });
+  realStore.getState().goToMove([]);
+  realStore.getState().makeMove({ payload: parseUci("e1h1")!, mainline: false });
+  const castled = realStore.getState().root.children[1];
+  expect(castled.san).toBe("O-O");
+  store.set(gameIdFamily("tab-a"), "castling-game");
+  store.set(gameSessionFamily("tab-a"), 1n);
+  store.set(gameStateFamily("tab-a"), "playing");
+  fixtures.getGameState.mockResolvedValue(
+    state({
+      gameId: "castling-game",
+      initialFen,
+      revision: 1n,
+      moves: [{ uci: "e1g1", clock: null, fenAfter: castled.fen }],
+    }),
+  );
+  await render();
+  const endpoint = realStore.getState().root.children[0];
+  expect(endpoint.san).toBe("O-O");
+  expect(endpoint.fen).toBe("4k3/8/8/8/8/8/8/5RK1 b - - 1 1");
+  expect(realStore.getState().root.children[1].san).toBe("Kf1");
+});
+
+test("odd native moves select terminal Logs independently of a divergent real tree", async () => {
+  const { createTreeStore } =
+    await vi.importActual<typeof import("@/state/store/tree")>("@/state/store/tree");
+  const realStore = createTreeStore();
+  fixtures.treeStore = realStore;
+  for (const [settings, id] of [
+    [gamePlayer1SettingsAtom, "white-odd"],
+    [gamePlayer2SettingsAtom, "black-odd"],
+  ] as const) {
+    store.set(settings, { type: "engine", engine: engine(id), go: { t: "Infinite" } });
+  }
+  await render();
+  await start();
+  // The native terminal owner remains authoritative even if the renderer tree diverges.
+  realStore.getState().setFen("4k3/8/8/8/8/8/8/4K2R w - - 0 1");
+  await act(async () =>
+    fixtures.listeners.get("gameOver")?.({
+      payload: {
+        gameId: store.get(gameIdFamily("tab-a")),
+        session: 1n,
+        revision: 3n,
+        moves: [
+          {
+            uci: "e2e4",
+            clock: null,
+            fenAfter: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+          },
+        ],
+        result: {
+          type: "interrupted",
+          reason: "engineFailure",
+          snapshot: {
+            kind: "process-exit",
+            exitStatus: null,
+            reason: "Black failed",
+            entries: [{ type: "stderr", value: "Black final line" }],
+          },
+        },
+      },
+    }),
+  );
+  expect(realStore.getState().root.children).toHaveLength(0);
+  await act(async () => button("Board.Analysis.Logs").click());
+  expect(host.textContent).not.toContain("Engines.Logs.TerminalDiagnostics");
+  await act(async () => fixtures.logColorChange!("black"));
+  expect(host.textContent).toContain("Engines.Logs.TerminalDiagnostics");
+  expect(fixtures.setEngineLogs).toEqual([{ type: "engine", value: "Black final line" }]);
+  await act(async () => fixtures.logColorChange!("white"));
+  expect(host.textContent).not.toContain("Engines.Logs.TerminalDiagnostics");
+});
+
 test("two-engine terminal diagnostics follow only the failed side's selected color", async () => {
   store.set(gamePlayer1SettingsAtom, {
     type: "engine",
@@ -602,6 +704,9 @@ test("two-engine terminal diagnostics follow only the failed side's selected col
     go: { t: "Infinite" },
   });
   fixtures.startGame.mockImplementation(async (id) =>
+    state({ gameId: id, initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1" }),
+  );
+  fixtures.getGameState.mockImplementation(async (id) =>
     state({ gameId: id, initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1" }),
   );
   await render();

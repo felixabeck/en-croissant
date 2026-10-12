@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Чтобы использовать эту функцию, нужно включить UCI_ShowWDL в настройках движка.",
     "Board.Analysis.EnableWDLTitle": "Включить WDL",
     "Board.Analysis.Endgame": "Эндшпиль",
+    "Board.Analysis.EngineCleanupFailed": "Временная очистка также завершилась ошибкой.",
     "Board.Analysis.EngineDisconnected": "Движок отключён",
     "Board.Analysis.EngineExitCode": "Движок завершён с кодом {{code}}",
     "Board.Analysis.EngineExited": "Движок завершён",

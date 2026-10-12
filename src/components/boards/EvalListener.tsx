@@ -411,6 +411,7 @@ function EngineListener({
           type: "failed",
           snapshot: failure.engineFailure,
           message: failure.message,
+          cleanupFailed: failure.backendCategory === "operation-and-cleanup",
         });
         setProgress(0);
       }

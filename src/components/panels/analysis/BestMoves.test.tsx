@@ -159,6 +159,27 @@ test.each([false, true])(
   },
 );
 
+test("failed BestMoves shows the reason and the cleanup warning", async () => {
+  await h.render(panel());
+  await act(async () =>
+    h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+      ...terminal(),
+      type: "failed",
+      cleanupFailed: true,
+      message: "Engine failed. Temporary cleanup also failed",
+      snapshot: {
+        kind: "process-exit",
+        exitStatus: null,
+        reason: "Safe engine reason",
+        entries: [],
+      },
+    }),
+  );
+  expect(h.host.querySelector('[role="status"]')?.textContent).toContain(
+    "Safe engine reason Board.Analysis.EngineCleanupFailed",
+  );
+});
+
 test("a failure without a snapshot renders its retained safe message once", async () => {
   const raw = "Cannot launch /home/felixb/engines/stockfish token=secret";
   const message = "Cannot launch [path] token=[redacted]";

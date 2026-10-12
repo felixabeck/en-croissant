@@ -238,7 +238,12 @@ function BestMovesComponent({
                       {t("Board.Analysis.EngineFailed")}
                     </Text>
                     <Text size="sm">
-                      {engineFailureMessage(t, failure.snapshot, failure.message)}
+                      {engineFailureMessage(
+                        t,
+                        failure.snapshot,
+                        failure.message,
+                        failure.cleanupFailed,
+                      )}
                     </Text>
                     <Button
                       size="xs"

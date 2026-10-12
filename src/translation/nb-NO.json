@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Du må aktivere UCI_ShowWDL i motorinnstillingene for å bruke denne funksjonen.",
     "Board.Analysis.EnableWDLTitle": "Aktiver WDL",
     "Board.Analysis.Endgame": "Sluttspill",
+    "Board.Analysis.EngineCleanupFailed": "Midlertidig opprydding mislyktes også.",
     "Board.Analysis.EngineDisconnected": "Motor frakoblet",
     "Board.Analysis.EngineExitCode": "Motor avsluttet med kode {{code}}",
     "Board.Analysis.EngineExited": "Motor avsluttet",

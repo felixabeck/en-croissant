@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Bu özelliği kullanmak için motor ayarlarında UCI_ShowWDL'yi etkinleştirmeniz gerekir.",
     "Board.Analysis.EnableWDLTitle": "WDL’yi etkinleştir",
     "Board.Analysis.Endgame": "Oyunsonu",
+    "Board.Analysis.EngineCleanupFailed": "Geçici temizleme de başarısız oldu.",
     "Board.Analysis.EngineDisconnected": "Motor bağlantısı kesildi",
     "Board.Analysis.EngineExitCode": "Motor {{code}} koduyla sonlandı",
     "Board.Analysis.EngineExited": "Motor sonlandı",

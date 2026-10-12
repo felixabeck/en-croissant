@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "이 기능을 사용하려면 엔진 설정에서 UCI_ShowWDL을 활성화해야 합니다.",
     "Board.Analysis.EnableWDLTitle": "WDL 활성화",
     "Board.Analysis.Endgame": "엔드게임",
+    "Board.Analysis.EngineCleanupFailed": "임시 정리도 실패했습니다.",
     "Board.Analysis.EngineDisconnected": "엔진 연결 끊김",
     "Board.Analysis.EngineExitCode": "코드 {{code}}로 엔진 종료",
     "Board.Analysis.EngineExited": "엔진 종료",

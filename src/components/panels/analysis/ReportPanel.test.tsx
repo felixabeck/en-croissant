@@ -419,6 +419,33 @@ test("cancel rejection retains the active report and reports the failure once", 
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
 });
 
+test("report failure shows the snapshot reason and the cleanup warning", async () => {
+  const failure = {
+    tag: "engine-failure",
+    category: "operation-and-cleanup",
+    message: "Engine failed. Temporary cleanup also failed",
+    engineFailure: {
+      kind: "process-exit",
+      exitStatus: null,
+      reason: "Safe engine reason",
+      entries: [],
+    },
+  };
+  mocks.cancelAnalysis.mockRejectedValueOnce(failure);
+  await renderPanel();
+  await act(async () => {
+    mocks.reportModalProps!.registerOperation("report_tab-1_uuid");
+    store.getState().setReportInProgress(true);
+  });
+  await expect(Promise.resolve(mocks.progressButtonProps!.onCancel!())).rejects.toBe(failure);
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
+    "Common.Error",
+    expect.objectContaining({
+      message: "Safe engine reason Board.Analysis.EngineCleanupFailed",
+    }),
+  );
+});
+
 test("a late cancel acknowledgement cannot clear a replacement report", async () => {
   let acknowledge: () => void = () => undefined;
   mocks.cancelAnalysis.mockReturnValueOnce(new Promise<void>((resolve) => (acknowledge = resolve)));

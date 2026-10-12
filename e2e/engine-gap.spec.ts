@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures";
+import type { Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
 
 test("engine-gap: warm actor contract preserves ownership and isolates searches", async ({
@@ -110,12 +111,7 @@ test("engine-gap: warm actor contract preserves ownership and isolates searches"
     });
 });
 
-test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B lines arrive", async ({
-    page,
-    emitTauriEvent,
-}) => {
-    await page.clock.install({ time: new Date("2026-10-05T12:00:00Z") });
-    await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
+async function setupAnalysisEngine(page: Page) {
     await page.addInitScript(() => {
         localStorage.setItem(
             "engines",
@@ -146,6 +142,16 @@ test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B 
         );
     await expect.poll(async () => (await searches()).length).toBe(1);
     const panel = page.locator(".mantine-Accordion-item").filter({ hasText: "E2E Stockfish" });
+    return { searches, panel };
+}
+
+test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B lines arrive", async ({
+    page,
+    emitTauriEvent,
+}) => {
+    await page.clock.install({ time: new Date("2026-10-05T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
+    const { searches, panel } = await setupAnalysisEngine(page);
     await expect(panel.locator(".mantine-Skeleton-root")).toHaveCount(0);
     await expect(panel).not.toContainText("Loading");
     const emitLines = async (
@@ -257,42 +263,13 @@ for (const partial of [false, true]) {
         await page.clock.install({ time: new Date("2026-10-05T12:00:00Z") });
         await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
         await mockScenario({ commands: { get_engine_logs: { result: [] } } });
-        await page.addInitScript(() =>
-            localStorage.setItem(
-                "engines",
-                JSON.stringify([
-                    {
-                        type: "local",
-                        id: "e2e-engine",
-                        name: "E2E Stockfish",
-                        version: "19",
-                        filename: "stockfish",
-                        handle: { id: { id: "e2e-engine-handle" }, kind: "engine" },
-                        loaded: true,
-                        settings: [],
-                        go: { t: "Infinite" },
-                    },
-                ]),
-            ),
-        );
-        await page.goto("/");
-        await page.getByRole("button", { name: /^open$/i }).click();
-        await page.getByRole("tab", { name: "Analysis", exact: true }).click();
-        await page.getByRole("button", { name: "Enable engine", exact: true }).click();
-        const searches = () =>
-            page.evaluate(() =>
-                window.__E2E_TAURI__
-                    .invocations()
-                    .filter(({ command }) => command === "get_best_moves"),
-            );
-        await expect.poll(async () => (await searches()).length).toBe(1);
+        const { searches, panel } = await setupAnalysisEngine(page);
         const request = (await searches())[0].args as {
             id: string;
             tab: string;
             generation: string;
             options: { fen: string; moves: string[] };
         };
-        const panel = page.locator(".mantine-Accordion-item").filter({ hasText: "E2E Stockfish" });
         const payload = {
             engine: request.id,
             tab: request.tab,

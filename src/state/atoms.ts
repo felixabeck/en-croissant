@@ -6,6 +6,7 @@ import { z } from "zod";
 import type {
     BestMoves,
     EngineTerminalSnapshot,
+    GameResult,
     DatabaseHandle,
     FileWorkspaceHandle,
     GoMode,
@@ -850,7 +851,22 @@ export type AnalysisTerminal = {
     retry: number;
 } & (
     | { type: "completed-without-lines" }
-    | { type: "failed"; snapshot?: EngineTerminalSnapshot; message?: string }
+    | {
+          type: "failed";
+          snapshot?: EngineTerminalSnapshot;
+          message?: string;
+          cleanupFailed?: boolean;
+      }
+);
+
+/** Retained only while the owner tab exists, including inactive-tab unmounts. */
+export const gameInterruptionFamily = atomFamily((_tab: string) =>
+    atom<
+        | (Extract<GameResult, { type: "interrupted" }> & {
+              engineColor: "white" | "black" | null;
+          })
+        | null
+    >(null),
 );
 
 /** One ephemeral terminal outcome for the owned engine's current attempt. */
@@ -1010,6 +1026,7 @@ export function disposeTabAtoms(tabId: string) {
         playersFamily,
         gameIdFamily,
         gameSessionFamily,
+        gameInterruptionFamily,
         pendingGameStartFamily,
         practiceStateFamily,
         practiceMoveControllerFamily,

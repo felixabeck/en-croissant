@@ -1370,6 +1370,21 @@ const terminalFailure = {
   },
 };
 
+test("analysis failure retains the operation-and-cleanup warning flag", async () => {
+  fixtures.getBestMoves.mockRejectedValueOnce({
+    ...terminalFailure,
+    category: "operation-and-cleanup",
+    message: "Engine failed. Temporary cleanup also failed",
+  });
+  await rerender();
+  await act(async () => flush());
+  expect(store.get(noLinesAtom())).toMatchObject({
+    type: "failed",
+    cleanupFailed: true,
+    snapshot: terminalFailure.engineFailure,
+  });
+});
+
 test("P2 the mounted listener delivers failure and Retry to the actual shared display owner", async () => {
   let displayed: ReturnType<typeof useDisplayedEngineLines> | undefined;
   function DisplayOwner() {

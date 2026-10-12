@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "You have to enable UCI_ShowWDL in the engine settings to use this feature.",
     "Board.Analysis.EnableWDLTitle": "Enable WDL",
     "Board.Analysis.Endgame": "Endgame",
+    "Board.Analysis.EngineCleanupFailed": "Temporary cleanup also failed.",
     "Board.Analysis.EngineDisconnected": "Engine disconnected",
     "Board.Analysis.EngineExitCode": "Engine exited with code {{code}}",
     "Board.Analysis.EngineExited": "Engine exited",

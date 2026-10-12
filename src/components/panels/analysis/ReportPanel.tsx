@@ -39,6 +39,15 @@ function ReportPanel() {
   const progressId = operationId ?? IDLE_REPORT_PROGRESS_ID;
   const { finished } = useProgress(progressId);
 
+  const isCurrentOperation = useCallback(
+    (id: string, fingerprint: string) => {
+      const current = store.getState();
+      const currentFingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
+      return current.report.operationId === id && currentFingerprint === fingerprint;
+    },
+    [store],
+  );
+
   useEffect(() => {
     if (finished) {
       setInProgress(false);
@@ -67,20 +76,14 @@ function ReportPanel() {
         }
       })
       .catch((error) => {
-        const current = store.getState();
-        const fingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
-        if (
-          active &&
-          current.report.operationId === queriedId &&
-          fingerprint === queriedFingerprint
-        )
+        if (active && isCurrentOperation(queriedId, queriedFingerprint))
           notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
       });
 
     return () => {
       active = false;
     };
-  }, [inProgress, operationId, setInProgress, store, t]);
+  }, [inProgress, operationId, setInProgress, store, t, isCurrentOperation]);
 
   const stats = useMemo(() => getGameStats(root), [root]);
 
@@ -92,9 +95,7 @@ function ReportPanel() {
     try {
       await tauri.cancelAnalysis(id);
     } catch (error) {
-      const current = store.getState();
-      const fingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
-      if (current.report.operationId === id && fingerprint === queriedFingerprint)
+      if (isCurrentOperation(id, queriedFingerprint))
         notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
       throw error;
     }
@@ -103,16 +104,7 @@ function ReportPanel() {
       setReportOperationId(null);
       setInProgress(false);
     }
-  }, [setInProgress, setReportOperationId, store, t]);
-
-  const isCurrentOperation = useCallback(
-    (id: string, fingerprint: string) => {
-      const current = store.getState();
-      const currentFingerprint = reportRootFingerprint(current.root.fen, getMainLine(current.root));
-      return current.report.operationId === id && currentFingerprint === fingerprint;
-    },
-    [store],
-  );
+  }, [setInProgress, setReportOperationId, store, t, isCurrentOperation]);
 
   const openReportingMode = useCallback(() => {
     setReportingMode(true);

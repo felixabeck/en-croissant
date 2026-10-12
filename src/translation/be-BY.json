@@ -57,6 +57,7 @@
     "Board.Analysis.EnableWDL": "Каб карыстацца гэтай функцыяй, у наладах рухавіка трэба ўключыць UCI_ShowWDL.",
     "Board.Analysis.EnableWDLTitle": "Уключыць WDL",
     "Board.Analysis.Endgame": "Эндшпіль",
+    "Board.Analysis.EngineCleanupFailed": "Часовая ачыстка таксама не ўдалася.",
     "Board.Analysis.EngineDisconnected": "Рухавік адключаны",
     "Board.Analysis.EngineExitCode": "Рухавік завершаны з кодам {{code}}",
     "Board.Analysis.EngineExited": "Рухавік завершаны",
