@@ -7216,3 +7216,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"3f05da100e2803b8b5a6b5d4a1b8ceca971a984b6e1ec2b19b0440e0d7f8a85e","input_sha256":"91b181fb8ff670104d08c429035ddc7a0c72b0ae7b76890d8f06f733a4749179","kind":"mutation-receipt","operation":"2fce9cfa41ac978a651fad00af7217821933264e44c39dc201a8464c59fa166f","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-07 — How does a game end when its engine fails?
+
+* **Question:** When a non-cancelled engine task fails during a game, does the engine side lose by Abandonment, does the game end drawn, or is it interrupted without a result?
+* **Governs:** f-20261001-07
+* **Chosen:** a new interrupted GameResult with PGN result `*`, the final board and moves preserved, and a safe localized reason.
+* **Rejected:** an Abandonment loss charged to the engine, and a fabricated draw.
+* **Reason:** the finding rejects attributing a possibly GUI-triggered failure to the engine, and existing game reconciliation never fabricates an outcome. Full-auto recommendation, not an answer attributed to Felix. Reversal path: revise the failure-result policy and its exhaustive projection.
+* **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"773559d7f83d8fb98cfd17272eb87eb663c9496f63e7d4b54a97a8f43af66d37","input_sha256":"54ee9c28131996984a80297f9cb1cf4682ab24b31563436d4f9d8b0e5ce0b112","kind":"mutation-receipt","operation":"88dfc728b802cfca78adc744d870c81112da39440cf3450a0222f84fa61bb03d","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-07"],"target":"decisions-ledger","v":1} -->
