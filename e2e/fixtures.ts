@@ -11,6 +11,8 @@ import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
 import type { Tab } from "../src/state/workspaceTypes";
 
 type MockCommand = {
+    /** Game replies echo the submitted exact identity through the real transport facade. */
+    gameState?: Record<string, unknown>;
     /** Multi-game fixtures retain the requested native index and PGN identity. */
     pgnGames?: StampedGame[];
     pgnTokens?: Record<string, unknown[]>;
@@ -637,6 +639,12 @@ const tauriBootstrap = () => {
             throw failure.error;
         }
         if (outcome) return outcome.result;
+        if (response.gameState)
+            return {
+                ...response.gameState,
+                gameId: args.gameId,
+                session: args.expectedSession ?? response.gameState.session,
+            };
         if (response.pgnGames) {
             if (command === "read_games")
                 return response.pgnGames.slice(Number(args.start), Number(args.end) + 1);

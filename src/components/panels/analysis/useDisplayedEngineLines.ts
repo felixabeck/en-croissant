@@ -1,7 +1,7 @@
 import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
-import type { BestMoves, EngineTerminalSnapshot } from "@/bindings";
+import type { BestMoves, EngineLog, EngineTerminalEntry, EngineTerminalSnapshot } from "@/bindings";
 import type { TFunction } from "i18next";
 import { normalizeError } from "@/platform/errors";
 import {
@@ -37,6 +37,13 @@ export function engineFailureMessage(
     if (snapshot?.kind === "protocol-failure") return t("Board.Analysis.EngineProtocolFailure");
     if (snapshot?.kind === "process-exit") return t("Board.Analysis.EngineExited");
     return t("Board.Analysis.EngineDisconnected");
+}
+
+export function engineTerminalLogs(t: TFunction, entries: EngineTerminalEntry[]): EngineLog[] {
+    return entries.map((entry) => ({
+        type: "engine",
+        value: entry.type === "truncated" ? t("Engines.Logs.TerminalTruncated") : entry.value,
+    }));
 }
 
 export function reportEngineFailure(t: TFunction, cause: unknown): unknown {

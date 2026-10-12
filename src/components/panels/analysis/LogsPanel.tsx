@@ -6,7 +6,6 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import type { EngineLog } from "@/bindings";
 import {
   engineTerminalFamily,
   engineRetryFamily,
@@ -15,7 +14,7 @@ import {
 } from "@/state/atoms";
 import type { LocalEngine } from "@/utils/engines";
 import { engineLineContext } from "./analysisLineContext";
-import { matchingEngineTerminal } from "./useDisplayedEngineLines";
+import { engineTerminalLogs, matchingEngineTerminal } from "./useDisplayedEngineLines";
 import EngineLogsView from "../../common/EngineLogsView";
 
 export default function LogsPanel() {
@@ -72,10 +71,9 @@ function SelectedEngineLogs({
       onError: (cause) => notifyUnlessCancelled(t("Common.Error"), cause),
     },
   );
-  const terminalLogs: EngineLog[] | undefined = failure?.snapshot?.entries.map((entry) => ({
-    type: "engine",
-    value: entry.type === "truncated" ? t("Engines.Logs.TerminalTruncated") : entry.value,
-  }));
+  const terminalLogs = failure?.snapshot
+    ? engineTerminalLogs(t, failure.snapshot.entries)
+    : undefined;
 
   return (
     <Stack flex={1} h="100%">

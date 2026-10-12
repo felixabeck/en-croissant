@@ -80,11 +80,19 @@ import {
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
 import { PRODUCT_NAME } from "@/utils/product.json";
+import {
+  engineFailureMessage,
+  engineTerminalLogs,
+} from "../panels/analysis/useDisplayedEngineLines";
 
 function gameResultToOutcome(result: GameResult): Outcome {
-  if (result.type === "whiteWins") return "1-0";
-  if (result.type === "blackWins") return "0-1";
-  return "1/2-1/2";
+  const outcomes = {
+    whiteWins: "1-0",
+    blackWins: "0-1",
+    draw: "1/2-1/2",
+    interrupted: "*",
+  } satisfies Record<GameResult["type"], Outcome>;
+  return outcomes[result.type];
 }
 
 const RECONCILIATION_INTERVAL_MS = 1000;
@@ -238,6 +246,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     "start" | "move" | "takeback" | "abort" | "resign" | null
   >(null);
   const [commandError, setCommandError] = useState<GameCommandError | null>(null);
+  const [interruption, setInterruption] = useState<
+    | (Extract<GameResult, { type: "interrupted" }> & {
+        engineColor: "white" | "black" | null;
+      })
+    | null
+  >(null);
   const clearQueuedGameUpdates = useCallback(() => {
     if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
     if (premoveTimerRef.current) clearTimeout(premoveTimerRef.current);
@@ -339,6 +353,15 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const [openingBookMaxPly, setOpeningBookMaxPly] = useAtom(gameOpeningBookMaxPlyAtom);
 
   const hasEngine = players.white.type === "engine" || players.black.type === "engine";
+  const selectedLogsColor =
+    players.white.type === "human" && players.black.type === "engine"
+      ? "black"
+      : players.black.type === "human" && players.white.type === "engine"
+        ? "white"
+        : logsColor;
+  const terminalSnapshot =
+    interruption?.engineColor === selectedLogsColor ? interruption.snapshot : null;
+  const terminalLogs = terminalSnapshot ? engineTerminalLogs(t, terminalSnapshot.entries) : null;
 
   const isPlayerVsEngine =
     (players.white.type === "human" && players.black.type === "engine") ||
@@ -356,18 +379,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
 
   const fetchEngineLogs = useCallback(async () => {
     const expectedSession = backendSession;
-    if (!gameId || expectedSession === null || !hasEngine) return;
+    if (!gameId || expectedSession === null || !hasEngine || terminalSnapshot) return;
     const generation = sessionGenerationRef.current;
     if (!ownsUiSession(gameId, expectedSession, generation)) return;
     const request = ++logSequenceRef.current;
-    let color = logsColor;
-    if (players.white.type === "human" && players.black.type === "engine") {
-      color = "black";
-    } else if (players.black.type === "human" && players.white.type === "engine") {
-      color = "white";
-    }
     try {
-      const logs = await tauri.getGameEngineLogs(gameId, expectedSession, color);
+      const logs = await tauri.getGameEngineLogs(gameId, expectedSession, selectedLogsColor);
       if (
         request === logSequenceRef.current &&
         logsOpenedRef.current &&
@@ -384,15 +401,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         notifyUnlessCancelled(tRef.current("Common.Error"), error);
       }
     }
-  }, [
-    gameId,
-    logsColor,
-    hasEngine,
-    players.white.type,
-    players.black.type,
-    backendSession,
-    ownsUiSession,
-  ]);
+  }, [gameId, selectedLogsColor, terminalSnapshot, hasEngine, backendSession, ownsUiSession]);
 
   useEffect(() => {
     logSequenceRef.current += 1;
@@ -477,6 +486,50 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const syncTreeWithMovesRef = useRef(syncTreeWithMoves);
   syncTreeWithMovesRef.current = syncTreeWithMoves;
 
+  const applyTerminalResult = useCallback(
+    (
+      result: GameResult,
+      moves: BackendMove[],
+      ownedGameId: string,
+      ownedSession: bigint,
+      generation: number,
+      revision: bigint,
+    ): boolean => {
+      if (
+        !ownsUiSession(ownedGameId, ownedSession, generation) ||
+        revision < moveRevisionRef.current
+      )
+        return false;
+      moveRevisionRef.current = revision;
+      syncTreeWithMovesRef.current(moves);
+      invalidateUiSession();
+      clearOwnershipIfMatches(ownedGameId, ownedSession);
+      atomStore.set(ownerGameStateAtom, "gameOver");
+      store.getState().setResult(gameResultToOutcome(result));
+      const configuredPlayers = atomStore.get(ownerPlayersAtom);
+      const endpoint = getNodeAtPath(store.getState().root, Array(moves.length).fill(0));
+      const engineColor =
+        configuredPlayers.white.type === "engine" && configuredPlayers.black.type === "human"
+          ? "white"
+          : configuredPlayers.black.type === "engine" && configuredPlayers.white.type === "human"
+            ? "black"
+            : endpoint
+              ? (positionFromFen(endpoint.fen)[0]?.turn ?? null)
+              : null;
+      setInterruption(result.type === "interrupted" ? { ...result, engineColor } : null);
+      return true;
+    },
+    [
+      ownsUiSession,
+      invalidateUiSession,
+      clearOwnershipIfMatches,
+      atomStore,
+      ownerGameStateAtom,
+      ownerPlayersAtom,
+      store,
+    ],
+  );
+
   const applyAuthoritativeState = useCallback(
     (
       state: NativeGameState,
@@ -498,8 +551,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       }
 
       if (initialize) store.getState().setFen(state.initialFen);
-      syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
-      moveRevisionRef.current = state.revision;
       if (state.revision > clockRevisionRef.current) {
         clockRevisionRef.current = state.revision;
         setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
@@ -507,23 +558,22 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       }
 
       if (state.status === "playing") {
+        syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+        moveRevisionRef.current = state.revision;
         atomStore.set(ownerGameStateAtom, "playing");
       } else {
-        invalidateUiSession();
-        clearOwnershipIfMatches(ownedGameId, ownedSession);
-        atomStore.set(ownerGameStateAtom, "gameOver");
-        store.getState().setResult(gameResultToOutcome(state.status.finished.result));
+        return applyTerminalResult(
+          state.status.finished.result,
+          mapBackendMoves(state.moves),
+          ownedGameId,
+          ownedSession,
+          generation,
+          state.revision,
+        );
       }
       return true;
     },
-    [
-      atomStore,
-      clearOwnershipIfMatches,
-      invalidateUiSession,
-      ownerGameStateAtom,
-      ownsUiSession,
-      store,
-    ],
+    [atomStore, applyTerminalResult, ownerGameStateAtom, ownsUiSession, store],
   );
 
   async function startGame() {
@@ -554,6 +604,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           return;
 
         invalidateUiSession(startToken);
+        setInterruption(null);
         setPendingCommand("start");
         moveRevisionRef.current = BigInt(-1);
         clockRevisionRef.current = BigInt(-1);
@@ -964,12 +1015,14 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       )
         return;
 
-      moveRevisionRef.current = payload.revision;
-      invalidateUiSession();
-      syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
-      clearOwnershipIfMatches(payload.gameId, payload.session);
-      atomStore.set(ownerGameStateAtom, "gameOver");
-      store.getState().setResult(gameResultToOutcome(payload.result));
+      applyTerminalResult(
+        payload.result,
+        mapBackendMoves(payload.moves),
+        payload.gameId,
+        payload.session,
+        sessionGenerationRef.current,
+        payload.revision,
+      );
     },
     { onError: reportGameEventError },
   );
@@ -1169,6 +1222,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     }
     if (!ownsMountedOwner()) return;
     invalidateUiSession();
+    setInterruption(null);
     atomStore.set(ownerGameStateAtom, "settingUp");
     setWhiteTime(null);
     setBlackTime(null);
@@ -1223,38 +1277,55 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       <Portal target="#topRight" style={{ height: "100%", overflow: "hidden" }}>
         <Paper withBorder shadow="sm" p="md" h="100%">
           {logsOpened ? (
-            <EngineLogsView
-              logs={engineLogs}
-              onRefresh={fetchEngineLogs}
-              additionalControls={
-                <>
-                  {players.white.type === "engine" && players.black.type === "engine" ? (
-                    <SegmentedControl
-                      value={logsColor}
-                      onChange={(value) => changeLogsColor(value as "white" | "black")}
-                      data={[
-                        { value: "white", label: t("Fen.White") },
-                        { value: "black", label: t("Fen.Black") },
-                      ]}
-                    />
-                  ) : (
-                    <div />
-                  )}
-                  <IconAction
-                    label={t("EngineLogs.Close", { defaultValue: "Close engine logs" })}
-                    flex={0}
-                    onClick={() => toggleLogsOpened()}
-                  >
-                    <IconX size="1.2rem" />
-                  </IconAction>
-                </>
-              }
-            />
+            <Stack h="100%">
+              {terminalSnapshot && (
+                <Text fw={700} role="status">
+                  {t("Engines.Logs.TerminalDiagnostics")}
+                </Text>
+              )}
+              <EngineLogsView
+                logs={terminalLogs ?? engineLogs}
+                onRefresh={terminalSnapshot ? undefined : fetchEngineLogs}
+                additionalControls={
+                  <>
+                    {players.white.type === "engine" && players.black.type === "engine" ? (
+                      <SegmentedControl
+                        value={logsColor}
+                        onChange={(value) => changeLogsColor(value as "white" | "black")}
+                        data={[
+                          { value: "white", label: t("Fen.White") },
+                          { value: "black", label: t("Fen.Black") },
+                        ]}
+                      />
+                    ) : (
+                      <div />
+                    )}
+                    <IconAction
+                      label={t("EngineLogs.Close", { defaultValue: "Close engine logs" })}
+                      flex={0}
+                      onClick={() => toggleLogsOpened()}
+                    >
+                      <IconX size="1.2rem" />
+                    </IconAction>
+                  </>
+                }
+              />
+            </Stack>
           ) : (
             <>
               {commandError && (
                 <Text c="red" role="alert">
                   {translateGameCommandError(t, commandError)}
+                </Text>
+              )}
+              {interruption && (
+                <Text c="red" role="alert">
+                  {t("Board.Opponent.Interrupted", {
+                    reason:
+                      interruption.reason === "engineTaskFailed"
+                        ? t("Board.Opponent.EngineTaskFailed")
+                        : engineFailureMessage(t, interruption.snapshot ?? undefined),
+                  })}
                 </Text>
               )}
               {gameState === "settingUp" && (

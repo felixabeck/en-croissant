@@ -130,7 +130,12 @@ vi.mock("@mantine/hooks", () => ({
     return [value, () => setValue((current) => !current)] as const;
   },
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: any) =>
+      key === "Board.Opponent.Interrupted" ? `${key}: ${options.reason}` : key,
+  }),
+}));
 vi.mock("@mantine/core", () => {
   const Box = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   return {
@@ -418,6 +423,219 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+});
+
+test.each(["event", "snapshot"])(
+  "engine interruption via %s preserves moves and result without duplicate notice",
+  async (delivery) => {
+    vi.useFakeTimers();
+    const query = Promise.withResolvers<any>();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    const result = {
+      type: "interrupted",
+      reason: "engineFailure",
+      snapshot: {
+        kind: "protocol-failure",
+        exitStatus: null,
+        reason: "Invalid engine command",
+        entries: [],
+      },
+    };
+    const moves = [
+      {
+        uci: "e2e4",
+        san: "e4",
+        clock: null,
+        fenAfter: INITIAL_FEN,
+        whiteTime: null,
+        blackTime: null,
+      },
+    ];
+    const terminal = state({ gameId, revision: 3n, moves, status: { finished: { result } } });
+    if (delivery === "event") {
+      fixtures.getGameState.mockReturnValue(query.promise);
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      await act(async () =>
+        fixtures.listeners.get("gameOver")?.({
+          payload: {
+            gameId,
+            session: 1n,
+            revision: 3n,
+            result,
+            moves,
+          },
+        }),
+      );
+      await act(async () => query.resolve(terminal));
+    } else {
+      // A real mounted owner recovers a lost GameOver through its existing query timer.
+      fixtures.getGameState.mockResolvedValue(terminal);
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+    }
+    vi.useRealTimers();
+    await act(async () =>
+      fixtures.listeners.get("gameOver")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 3n,
+          result,
+          moves,
+        },
+      }),
+    );
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    expect(store.get(gameIdFamily("tab-a"))).toBeNull();
+    expect(store.get(gameSessionFamily("tab-a"))).toBeNull();
+    expect(fixtures.setResult).toHaveBeenCalledTimes(1);
+    expect(fixtures.tree.headers.result).toBe("*");
+    expect(mainlineUcis(fixtures.tree.root)).toEqual(["e2e4"]);
+    expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Invalid engine command");
+    expect(fixtures.notify).not.toHaveBeenCalled();
+    await act(async () => button("Home.NewGame").click());
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await start();
+    expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(fixtures.abortGame).not.toHaveBeenCalled();
+  },
+);
+
+test("engine join interruption localizes the generic reason", async () => {
+  await render();
+  await start();
+  await act(async () =>
+    fixtures.listeners.get("gameOver")?.({
+      payload: {
+        gameId: store.get(gameIdFamily("tab-a")),
+        session: 1n,
+        revision: 3n,
+        result: { type: "interrupted", reason: "engineTaskFailed", snapshot: null },
+        moves: [],
+      },
+    }),
+  );
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+    "Board.Opponent.EngineTaskFailed",
+  );
+  expect(fixtures.tree.headers.result).toBe("*");
+});
+
+test.each(["event", "snapshot"])(
+  "interrupted %s diagnostics remain in Logs until the next game",
+  async (delivery) => {
+    vi.useFakeTimers();
+    store.set(gamePlayer2SettingsAtom, {
+      type: "engine",
+      engine: engine("logs-engine"),
+      go: { t: "Infinite" },
+    });
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    const result = {
+      type: "interrupted",
+      reason: "engineFailure",
+      snapshot: {
+        kind: "protocol-failure",
+        exitStatus: null,
+        reason: "Safe reason",
+        entries: [
+          { type: "infoString", value: "Safe final reason" },
+          { type: "stderr", value: "<script>safe diagnostic</script>" },
+          { type: "truncated" },
+        ],
+      },
+    };
+    if (delivery === "event") {
+      await act(async () =>
+        fixtures.listeners.get("gameOver")?.({
+          payload: {
+            gameId,
+            session: 1n,
+            revision: 3n,
+            result,
+            moves: [],
+          },
+        }),
+      );
+    } else {
+      fixtures.getGameState.mockResolvedValue(
+        state({ gameId, revision: 3n, status: { finished: { result } } }),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+    }
+    vi.useRealTimers();
+    await act(async () => button("Board.Analysis.Logs").click());
+    expect(host.textContent).toContain("Engines.Logs.TerminalDiagnostics");
+    expect(fixtures.setEngineLogs).toEqual([
+      { type: "engine", value: "Safe final reason" },
+      { type: "engine", value: "<script>safe diagnostic</script>" },
+      { type: "engine", value: "Engines.Logs.TerminalTruncated" },
+    ]);
+    expect(fixtures.getGameEngineLogs).not.toHaveBeenCalled();
+    expect(fixtures.logRefresh).toBeUndefined();
+    await act(async () => button("EngineLogs.Close").click());
+    await act(async () => button("Home.NewGame").click());
+    fixtures.getGameState.mockImplementation(async (id, session) => state({ gameId: id, session }));
+    fixtures.getGameEngineLogs.mockResolvedValue([{ type: "gui", value: "go infinite" }]);
+    await start();
+    await act(async () => button("Board.Analysis.Logs").click());
+    expect(host.textContent).not.toContain("Engines.Logs.TerminalDiagnostics");
+    expect(fixtures.setEngineLogs).toEqual([{ type: "gui", value: "go infinite" }]);
+    expect(fixtures.getGameEngineLogs).toHaveBeenCalledWith(expect.any(String), 1n, "black");
+  },
+);
+
+test("two-engine terminal diagnostics follow only the failed side's selected color", async () => {
+  store.set(gamePlayer1SettingsAtom, {
+    type: "engine",
+    engine: engine("white-logs"),
+    go: { t: "Infinite" },
+  });
+  store.set(gamePlayer2SettingsAtom, {
+    type: "engine",
+    engine: engine("black-logs"),
+    go: { t: "Infinite" },
+  });
+  fixtures.startGame.mockImplementation(async (id) =>
+    state({ gameId: id, initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1" }),
+  );
+  await render();
+  await start();
+  await act(async () =>
+    fixtures.listeners.get("gameOver")?.({
+      payload: {
+        gameId: store.get(gameIdFamily("tab-a")),
+        session: 1n,
+        revision: 3n,
+        moves: [],
+        result: {
+          type: "interrupted",
+          reason: "engineFailure",
+          snapshot: {
+            kind: "process-exit",
+            exitStatus: null,
+            reason: "Black engine failed",
+            entries: [{ type: "stderr", value: "Black terminal diagnostic" }],
+          },
+        },
+      },
+    }),
+  );
+  await act(async () => button("Board.Analysis.Logs").click());
+  expect(host.textContent).not.toContain("Engines.Logs.TerminalDiagnostics");
+  expect(fixtures.setEngineLogs).toEqual([]);
+  await act(async () => fixtures.logColorChange!("black"));
+  expect(host.textContent).toContain("Engines.Logs.TerminalDiagnostics");
+  expect(fixtures.setEngineLogs).toEqual([{ type: "engine", value: "Black terminal diagnostic" }]);
+  await act(async () => fixtures.logColorChange!("white"));
+  expect(host.textContent).not.toContain("Engines.Logs.TerminalDiagnostics");
+  expect(fixtures.setEngineLogs).toEqual([]);
+  expect(fixtures.getGameEngineLogs).not.toHaveBeenCalled();
 });
 
 test("starting a human game sends numeric configuration and records ChessFable as the PGN Site", async () => {

@@ -33,8 +33,8 @@ use crate::{
     engine::{
         log_registration_cleanup_error, parse_fen_to_position, resolve_launch, spawn_registered,
         verify_option_resources, AdmissionLease, EngineActor, EngineDeadlines, EngineKey,
-        EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime, RegistrationGuard,
-        ResolvedEngineOption, MAX_ENGINE_LIMIT,
+        EngineLog, EngineOption, EngineSupervisor, EngineTerminalSnapshot, GoMode, PlayersTime,
+        RegistrationGuard, ResolvedEngineOption, MAX_ENGINE_LIMIT,
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
@@ -138,9 +138,38 @@ pub enum GameStatus {
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum GameResult {
-    WhiteWins { reason: GameEndReason },
-    BlackWins { reason: GameEndReason },
-    Draw { reason: DrawReason },
+    WhiteWins {
+        reason: GameEndReason,
+    },
+    BlackWins {
+        reason: GameEndReason,
+    },
+    Draw {
+        reason: DrawReason,
+    },
+    Interrupted {
+        reason: GameInterruptionReason,
+        // Terminal diagnostics are transient native output, never persisted input.
+        #[serde(default, deserialize_with = "ignore_terminal_snapshot")]
+        snapshot: Option<EngineTerminalSnapshot>,
+    },
+}
+
+fn ignore_terminal_snapshot<'de, D>(
+    deserializer: D,
+) -> Result<Option<EngineTerminalSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(None)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum GameInterruptionReason {
+    EngineFailure,
+    EngineTaskFailed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
@@ -149,6 +178,7 @@ pub enum GameEndReason {
     Checkmate,
     Timeout,
     Resignation,
+    // Retained for deserialization of older results.
     Abandonment,
 }
 
@@ -727,6 +757,9 @@ impl GameController {
 
     fn get_current_times(&self) -> (Option<u64>, Option<u64>) {
         if let Some(ref clock) = self.clock {
+            if self.status != GameStatus::Playing {
+                return (clock.white_time, clock.black_time);
+            }
             let elapsed = clock.last_tick.elapsed().as_millis() as u64;
 
             let white_time = if self.position.turn() == Color::White {
@@ -750,6 +783,11 @@ impl GameController {
     fn end_game(&mut self, result: GameResult) -> bool {
         if self.status != GameStatus::Playing {
             return false;
+        }
+        let (white_time, black_time) = self.get_current_times();
+        if let Some(clock) = &mut self.clock {
+            clock.white_time = white_time;
+            clock.black_time = black_time;
         }
         self.status = GameStatus::Finished { result };
         self.advance_position_generation();
@@ -1321,6 +1359,18 @@ type AfterHandoffHook = Box<dyn FnOnce(Arc<RwLock<GameController>>) + Send>;
 static GAME_START_AFTER_HANDOFF_HOOKS: crate::infra::test_hooks::KeyedTestValues<
     GameId,
     AfterHandoffHook,
+> = crate::infra::test_hooks::KeyedTestValues::new();
+
+#[cfg(test)]
+type GameLoopEngineTask = (
+    tokio::task::JoinHandle<Result<(), Error>>,
+    CancellationToken,
+);
+
+#[cfg(test)]
+static GAME_LOOP_ENGINE_TASKS: crate::infra::test_hooks::KeyedTestValues<
+    (GameId, u64),
+    GameLoopEngineTask,
 > = crate::infra::test_hooks::KeyedTestValues::new();
 
 #[cfg(all(test, unix))]
@@ -2879,9 +2929,18 @@ async fn game_loop<R: Runtime>(
 ) {
     let controller = live.controller.clone();
     let mut clock_interval = interval(Duration::from_millis(100));
+    #[cfg(not(test))]
     let mut engine_task: Option<tokio::task::JoinHandle<Result<(), Error>>> = None;
+    #[cfg(not(test))]
+    let mut engine_cancellation = None;
+    #[cfg(test)]
+    let (mut engine_task, mut engine_cancellation) = GAME_LOOP_ENGINE_TASKS
+        .take(&(game_id.clone(), live.session))
+        .map(|(task, cancellation)| (Some(task), Some(cancellation)))
+        .unwrap_or_default();
 
     if let Some(context) = maybe_start_engine(&controller, &engine_task).await {
+        engine_cancellation = Some(context.cancellation.clone());
         engine_task = Some(spawn_engine_task(
             &game_id,
             &controller,
@@ -2914,45 +2973,41 @@ async fn game_loop<R: Runtime>(
                 }
             } => {
                 engine_task = None;
+                let cancellation = engine_cancellation.take();
 
                 match result {
                     Some(Ok(Ok(()))) => {
-                        if let Some(context) = maybe_start_engine(&controller, &engine_task).await {
-                            engine_task = Some(spawn_engine_task(
-                                &game_id,
-                                &controller,
-                                &app,
-                                context,
-                                manager.clone(),
-                            ));
-                        }
                     }
                     Some(Ok(Err(e))) => {
-                        error!("Engine move error: {:?}", e);
                         let mut ctrl = controller.write().await;
-                        ctrl.engine_thinking = false;
-                        if ctrl.status == GameStatus::Playing {
-                            let result = if ctrl.position.turn() == Color::White {
-                                GameResult::BlackWins { reason: GameEndReason::Abandonment }
-                            } else {
-                                GameResult::WhiteWins { reason: GameEndReason::Abandonment }
-                            };
-                            ctrl.end_game(result);
+                        if !cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                            error!("Engine move error: {:?}", e);
+                            ctrl.engine_thinking = false;
+                            if ctrl.status == GameStatus::Playing {
+                                ctrl.end_game(GameResult::Interrupted {
+                                    reason: GameInterruptionReason::EngineFailure,
+                                    snapshot: e.engine_failure_snapshot().cloned(),
+                                });
+                            }
+                            attempt_terminal_event_emission(&mut ctrl, &app);
+                            break;
                         }
-                        attempt_terminal_event_emission(&mut ctrl, &app);
-                        break;
                     }
                     Some(Err(join_error)) => {
+                        if join_error.is_cancelled() {
+                            continue;
+                        }
                         error!("Engine task join failed: {join_error}");
                         let mut ctrl = controller.write().await;
+                        if cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                            continue;
+                        }
                         ctrl.engine_thinking = false;
                         if ctrl.status == GameStatus::Playing {
-                            let result = if ctrl.position.turn() == Color::White {
-                                GameResult::BlackWins { reason: GameEndReason::Abandonment }
-                            } else {
-                                GameResult::WhiteWins { reason: GameEndReason::Abandonment }
-                            };
-                            ctrl.end_game(result);
+                            ctrl.end_game(GameResult::Interrupted {
+                                reason: GameInterruptionReason::EngineTaskFailed,
+                                snapshot: None,
+                            });
                         }
                         attempt_terminal_event_emission(&mut ctrl, &app);
                         break;
@@ -2962,10 +3017,21 @@ async fn game_loop<R: Runtime>(
                         break;
                     }
                 }
+                if let Some(context) = maybe_start_engine(&controller, &engine_task).await {
+                    engine_cancellation = Some(context.cancellation.clone());
+                    engine_task = Some(spawn_engine_task(
+                        &game_id,
+                        &controller,
+                        &app,
+                        context,
+                        manager.clone(),
+                    ));
+                }
             }
 
             _ = move_notify_rx.recv() => {
                 if let Some(context) = maybe_start_engine(&controller, &engine_task).await {
+                    engine_cancellation = Some(context.cancellation.clone());
                     engine_task = Some(spawn_engine_task(
                         &game_id,
                         &controller,
@@ -3377,6 +3443,248 @@ pub async fn get_game_engine_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn run_engine_completion_case(
+        game_id: &str,
+        task: tokio::task::JoinHandle<Result<(), Error>>,
+        prior: Option<GameResult>,
+    ) -> (Arc<GameManager>, Arc<RwLock<GameController>>) {
+        let manager = Arc::new(GameManager::new());
+        let (live, controller) = test_live_session(game_id, 1);
+        {
+            let mut ctrl = controller.write().await;
+            ctrl.apply_move_no_clock("e2e4").unwrap();
+            ctrl.engine_thinking = true;
+            if let Some(result) = prior {
+                ctrl.end_game(result);
+            }
+        }
+        manager
+            .publish_live(game_id.into(), 1, live.clone(), || {})
+            .await
+            .unwrap();
+        GAME_LOOP_ENGINE_TASKS.arm((game_id.into(), 1), (task, CancellationToken::new()));
+        let (_move_tx, move_rx) = tokio::sync::mpsc::channel(1);
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                GameOverEvent,
+                ClockUpdateEvent
+            ))
+            .mount_events(&app);
+        let attempts = Arc::new(AtomicU64::new(0));
+        let observed = attempts.clone();
+        use tauri::Listener;
+        app.listen_any("game-over-event", move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        tokio::time::timeout(
+            TEST_WAIT,
+            game_loop(
+                game_id.into(),
+                live.clone(),
+                live.shutdown.subscribe(),
+                move_rx,
+                app.handle().clone(),
+                Arc::downgrade(&manager),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        (manager, controller)
+    }
+
+    #[tokio::test]
+    async fn engine_completion_interrupts_with_safe_snapshot_and_retains_exact_terminal_state() {
+        let safe = crate::engine::EngineTerminalSnapshot {
+            kind: crate::engine::EngineFailureKind::ProtocolFailure,
+            exit_status: None,
+            reason: Some("Invalid engine command".into()),
+            entries: vec![crate::engine::EngineTerminalEntry::InfoString(
+                "Invalid engine command".into(),
+            )],
+        };
+        let snapshot = safe.clone();
+        let task = tokio::spawn(async move {
+            Err(Error::EngineFailure {
+                snapshot: Some(Box::new(snapshot)),
+                cause: Box::new(Error::InvalidInput("private native diagnostic".into())),
+                cleanup: None,
+            })
+        });
+        let (manager, controller) =
+            run_engine_completion_case("engine-completion-safe", task, None).await;
+        let snapshot = manager
+            .get_game_state("engine-completion-safe", 1)
+            .await
+            .unwrap();
+        let result = serde_json::to_value(&snapshot.status).unwrap();
+        assert_eq!(
+            result["finished"]["result"],
+            serde_json::json!({
+                "type": "interrupted", "reason": "engineFailure", "snapshot": safe,
+            })
+        );
+        assert!(!result.to_string().contains("private native"));
+        assert_eq!(snapshot.moves.len(), 1);
+        assert_eq!(snapshot.moves[0].uci, "e2e4");
+        let mut ctrl = controller.write().await;
+        assert!(!ctrl.engine_thinking);
+        assert!(ctrl.terminal_attempt_claimed);
+        let mut duplicate_attempts = 0;
+        assert!(!attempt_terminal_event_emission_with(&mut ctrl, |_| {
+            duplicate_attempts += 1;
+            Ok(())
+        }));
+        assert_eq!(duplicate_attempts, 0);
+        assert_eq!(snapshot.status, ctrl.status);
+        assert_eq!(snapshot.current_fen, ctrl.get_state().current_fen);
+        assert!(manager
+            .get_game_state("engine-completion-safe", 2)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn engine_completion_join_failure_uses_only_generic_safe_reason() {
+        let task = tokio::spawn(async { panic!("private join diagnostic") });
+        let (manager, _) = run_engine_completion_case("engine-completion-join", task, None).await;
+        let snapshot = manager
+            .get_game_state("engine-completion-join", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(snapshot.status).unwrap(),
+            serde_json::json!({
+                "finished": { "result": { "type": "interrupted", "reason": "engineTaskFailed", "snapshot": null } }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_completion_unrequested_cancellation_interrupts_instead_of_hanging() {
+        let task = tokio::spawn(async { Err(Error::Cancellation) });
+        let (manager, controller) =
+            run_engine_completion_case("unrequested-cancellation", task, None).await;
+        let state = manager
+            .get_game_state("unrequested-cancellation", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(state.status).unwrap(),
+            serde_json::json!({
+                "finished": { "result": { "type": "interrupted", "reason": "engineFailure", "snapshot": null } }
+            })
+        );
+        let ctrl = controller.read().await;
+        assert!(!ctrl.engine_thinking);
+        assert!(ctrl.terminal_attempt_claimed);
+    }
+
+    #[tokio::test]
+    async fn engine_completion_preserves_prior_timeout_and_resignation() {
+        for reason in [GameEndReason::Timeout, GameEndReason::Resignation] {
+            let prior = GameResult::WhiteWins { reason };
+            let task = tokio::spawn(async { Err(Error::EngineDisconnected) });
+            let (manager, _) =
+                run_engine_completion_case("engine-completion-race", task, Some(prior.clone()))
+                    .await;
+            assert_eq!(
+                manager
+                    .get_game_state("engine-completion-race", 1)
+                    .await
+                    .unwrap()
+                    .status,
+                GameStatus::Finished { result: prior }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_completion_cancellation_keeps_game_playing() {
+        for aborted in [false, true] {
+            let game_id = if aborted {
+                "engine-completion-aborted"
+            } else {
+                "engine-completion-cancelled"
+            };
+            let manager = Arc::new(GameManager::new());
+            let (live, controller) = test_live_session(game_id, 1);
+            manager
+                .publish_live(game_id.into(), 1, live.clone(), || {})
+                .await
+                .unwrap();
+            let task = if aborted {
+                let task = tokio::spawn(std::future::pending::<Result<(), Error>>());
+                task.abort();
+                task
+            } else {
+                tokio::spawn(async { Err(Error::Cancellation) })
+            };
+            let cancellation = CancellationToken::new();
+            if !aborted {
+                cancellation.cancel();
+            }
+            GAME_LOOP_ENGINE_TASKS.arm((game_id.into(), 1), (task, cancellation));
+            let (_move_tx, move_rx) = tokio::sync::mpsc::channel(1);
+            let app = tauri::test::mock_app();
+            tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+                .events(tauri_specta::collect_events!(
+                    GameOverEvent,
+                    ClockUpdateEvent
+                ))
+                .mount_events(&app);
+            let loop_task = tokio::spawn(game_loop(
+                game_id.into(),
+                live.clone(),
+                live.shutdown.subscribe(),
+                move_rx,
+                app.handle().clone(),
+                Arc::downgrade(&manager),
+            ));
+            tokio::time::timeout(TEST_WAIT, async {
+                while controller.read().await.revision == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(controller.read().await.status, GameStatus::Playing);
+            assert!(!controller.read().await.terminal_attempt_claimed);
+            live.shutdown.send(true).unwrap();
+            tokio::time::timeout(TEST_WAIT, loop_task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn terminal_transition_freezes_clocks_and_legacy_abandonment_still_deserializes() {
+        let mut config = human_config();
+        config.white_time_control = Some(TimeControl {
+            initial_time: 60_000,
+            increment: 0,
+        });
+        config.black_time_control = config.white_time_control.clone();
+        let mut ctrl = GameController::new("frozen-clock".into(), 1, config).unwrap();
+        ctrl.end_game(GameResult::BlackWins {
+            reason: GameEndReason::Resignation,
+        });
+        let times = ctrl.get_current_times();
+        ctrl.clock.as_mut().unwrap().last_tick = Instant::now() - Duration::from_secs(20);
+        assert_eq!(ctrl.get_current_times(), times);
+        assert!(matches!(
+            serde_json::from_value::<GameResult>(serde_json::json!({
+                "type": "whiteWins", "reason": "abandonment"
+            }))
+            .unwrap(),
+            GameResult::WhiteWins {
+                reason: GameEndReason::Abandonment
+            }
+        ));
+    }
 
     #[test]
     fn engine_games_refuse_excess_material_at_creation_but_human_games_keep_it() {
