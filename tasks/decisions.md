@@ -7340,3 +7340,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** agent-kit `tasks/handoffs/2026-10-12-worktree-rollout-review.md`
 * **Decided by:** Claude Code (Opus 5.5), `full auto` worktree-rollout build run (session ca4ec462-e90b-4ff9-948d-758e9ecb4ff4), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"193f9ccd9609ac423255819ed61a1e5ff8a21f7d2f14beecccc516573ce94624","input_sha256":"853f23d6ff5c3e39743ed4c0281ab0a2ac2d56adf66fda8809062cd52d4176ff","kind":"mutation-receipt","operation":"97b20b5a8eccd3d01b285ee6343e2d10508162a4d10a54f115b4fb8be0fbc270","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-07"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-13 — recorded through the decisions lock
+
+### d-20261013-01 — Where does the unified Library overview live?
+
+* **Question:** Which route is the canonical overview once Files and Databases become one Library, and what happens to the old overview URLs and the database explorer URL?
+* **Governs:** f-20261001-11
+* **Chosen:** `/library` is the canonical overview; `/files` and `/databases` redirect to it without rendering the old pages; the explorer stays at `/databases/$databaseId` with capability-key authority, and the single Library sidebar entry covers both the overview and the explorer scope.
+* **Rejected:** moving explorer URLs under `/library`, or a resume query guard on one shared route.
+* **Reason:** separate overview and explorer identities preserve capability routing and the existing sidebar return behaviour. Full-auto recommendation from the reviewed plan, not an answer attributed to Felix. Reversal path: change the overview route/helper destinations and the redirects together, keeping deep-link compatibility.
+* **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b56e55dda777960e6cc6d2ad0493ba9600f2024863dc9fb1f79c4ded84a2a36c","input_sha256":"882c836ae2ea5c452bf5f4f7d32eaa50aac1180361700cd93f8bf1faf7dce766","kind":"mutation-receipt","operation":"56306ffc9c2d320a030c6024b184d6b88a2e0704b5f63273f847348fe3fabbf7","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-01"],"target":"decisions-ledger","v":1} -->
