@@ -35,8 +35,9 @@ The following steps will get you setup to contribute changes to this repo:
 Run `bash scripts/setup-rust.sh` to install the Rust toolchain and components pinned in
 `rust-toolchain.toml`. The pinned cargo tools are:
 
-- `cargo-llvm-cov` 0.8.7 for coverage, with the `nightly-2025-06-01` toolchain.
-- `cargo-mutants` 27.1.0 for backend mutation testing.
+- `cargo-llvm-cov` for coverage, pinned in `.github/workflows/test.yml`. The coverage nightly
+  toolchain is pinned in `scripts/toolchain-versions.mjs`.
+- `cargo-mutants` for backend mutation testing, pinned in `.github/workflows/mutation.yml`.
 - `sccache` 0.18.0 for the shared compile cache. Install it with
   `cargo install sccache --version 0.18.0 --locked` when `sccache --version` reports another
   version or the tool is missing. Worktree setup performs this check automatically.

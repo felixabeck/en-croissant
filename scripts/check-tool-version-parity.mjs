@@ -109,12 +109,16 @@ export const PARITY_FAMILIES = [
   },
   {
     name: "sccache",
-    minimumSites: 3,
+    minimumSites: 4,
     declarations: [
       {
         globs: [".project.json"],
         pattern: /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu,
         authority: true,
+      },
+      {
+        globs: ["CONTRIBUTING.md"],
+        pattern: /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu,
       },
       {
         globs: [".project.json", "CONTRIBUTING.md"],

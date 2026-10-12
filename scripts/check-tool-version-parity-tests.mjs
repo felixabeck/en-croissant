@@ -244,7 +244,7 @@ test("accepts matching declarations and discovers every matching site", async ()
   const families = await discoverToolVersions(root);
   assert.equal(families.find((family) => family.name === "nightly toolchain").sites.length, 4);
   assert.equal(families.find((family) => family.name === "cargo-llvm-cov").sites.length, 2);
-  assert.equal(families.find((family) => family.name === "sccache").sites.length, 3);
+  assert.equal(families.find((family) => family.name === "sccache").sites.length, 4);
   assert.equal(families.find((family) => family.name === "cargo-mutants").sites.length, 1);
 });
 
@@ -253,6 +253,12 @@ test("reports sccache install, version-guard, and documentation drift through th
     ["install", ".project.json", "sccache --version 0.18.0", "sccache --version 0.18.1"],
     ["version guard", ".project.json", "sccache 0.18.0", "sccache 0.18.1"],
     ["documentation", "CONTRIBUTING.md", "`sccache` 0.18.0", "`sccache` 0.18.1"],
+    [
+      "documentation install command",
+      "CONTRIBUTING.md",
+      "sccache --version 0.18.0",
+      "sccache --version 0.18.1",
+    ],
   ];
   for (const [name, path, original, replacement] of cases) {
     await t.test(name, (subtest) =>
@@ -280,13 +286,14 @@ test("requires the sccache setup authority and documentation site through the CL
       subtest,
       "CONTRIBUTING.md",
       (text) => text.replace("`sccache` 0.18.0", "`sccache`"),
-      "sccache: expected at least 3 declaration site(s)",
+      "sccache: expected at least 4 declaration site(s)",
     ),
   );
 });
 
 test("rust-cache setup installs only a missing or different sccache and propagates failure", async (t) => {
   const project = JSON.parse(await readFile(join(repositoryRoot, ".project.json"), "utf8"));
+  assert.deepEqual(project.worktreeBuilds?.setup, ["pnpm-deps", "rust-cache"]);
   const setup = project.environment.setup.find((step) => step.id === "rust-cache");
   assert.deepEqual(setup.creates, []);
   const stubShell = `
