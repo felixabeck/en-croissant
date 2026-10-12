@@ -336,8 +336,8 @@ struct TerminalQuotedToken {
     closes_enclosing: bool,
 }
 
-// JSON wrapping doubles existing escapes and adds one before a delimiter.
-// A literal quote therefore has odd parity relative to its enclosing depth.
+// JSON wrapping changes delimiter escape depth. Only the exact opening depth
+// can close a token. Other depths are ambiguous and remain literal content.
 fn terminal_quoted_token(
     text: &str,
     at: usize,
@@ -354,7 +354,7 @@ fn terminal_quoted_token(
     };
     let (quote, depth, start) = delimiter(at)?;
     let matches_close = |candidate: u8, escapes: usize, quote: u8, depth: usize| {
-        candidate == quote && escapes >= depth && (escapes - depth).is_multiple_of(2 * (depth + 1))
+        candidate == quote && escapes == depth
     };
     let closes_enclosing = enclosing.is_some_and(|(outer_quote, outer_depth)| {
         matches_close(quote, depth, outer_quote, outer_depth)
@@ -5317,28 +5317,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_snapshot_quoted_trailing_backslash_preserves_chess_suffix() {
+    async fn terminal_snapshot_wrapped_literal_quotes_never_end_credentials() {
+        let chess = "e2e4 1/2-1/2";
         for quote in ['"', '\''] {
-            let plain = format!("password={quote}abc\\\\{quote} e2e4 1/2-1/2");
-            for input in [plain.clone(), serde_json::to_string(&plain).unwrap()] {
+            let mut input =
+                format!("password={quote}private \\{quote}quoted\\{quote} pass phrase{quote}");
+            for layer in 0..=2 {
+                if layer > 0 {
+                    input = serde_json::to_string(&input).unwrap();
+                }
                 for stdout in [true, false] {
-                    let diagnostics =
-                        terminal_diagnostics_from_lines(std::slice::from_ref(&input), stdout).await;
+                    let lines = [
+                        format!("CRITICAL ERROR: earlier {input} {chess}"),
+                        format!("CRITICAL ERROR: latest {input} {chess}"),
+                    ];
+                    let diagnostics = terminal_diagnostics_from_lines(&lines, stdout).await;
                     let snapshot = diagnostics
                         .lock()
                         .await
                         .snapshot(EngineFailureKind::ProtocolFailure, None);
                     let bytes = serde_json::to_string(&snapshot).unwrap();
-                    assert!(!bytes.contains("abc"), "leaked secret: {bytes}");
-                    for text in snapshot.reason.iter().map(String::as_str).chain(
-                        snapshot.entries.iter().map(|entry| match entry {
-                            EngineTerminalEntry::InfoString(text)
-                            | EngineTerminalEntry::Stderr(text) => text.as_str(),
-                            EngineTerminalEntry::Truncated => panic!("unexpected truncation"),
-                        }),
-                    ) {
+                    let decoded: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+                    let check = |text: &str| {
+                        for fragment in ["private", "quoted", "pass", "phrase"] {
+                            assert!(
+                                !text
+                                    .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                                    .any(|word| word == fragment),
+                                "source stdout={stdout} layer={layer} input={input:?} leaked {fragment}: {text}"
+                            );
+                        }
+                    };
+                    check(&bytes);
+                    let reason = decoded["reason"].as_str().unwrap();
+                    check(reason);
+                    assert!(reason.contains("latest"));
+                    assert!(reason.contains(chess), "lost suffix: {reason}");
+                    let entries = decoded["entries"].as_array().unwrap();
+                    assert_eq!(entries.len(), 2);
+                    for entry in entries {
+                        let text = entry["value"].as_str().unwrap();
+                        check(text);
                         assert!(text.contains("[redacted]"));
-                        assert!(text.contains("e2e4 1/2-1/2"), "lost suffix: {text}");
+                        assert!(text.contains(chess), "lost suffix: {text}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_ambiguous_trailing_backslash_fails_closed() {
+        for quote in ['"', '\''] {
+            let plain = format!("password={quote}abc\\\\{quote} e2e4 1/2-1/2");
+            let exact = format!("{{{quote}password{quote}:{quote}abc{quote}}} e2e4 1/2-1/2");
+            for (mut input, preserve_suffix) in [(plain, false), (exact, true)] {
+                for layer in 0..=2 {
+                    if layer > 0 {
+                        input = serde_json::to_string(&input).unwrap();
+                    }
+                    for stdout in [true, false] {
+                        let diagnostics =
+                            terminal_diagnostics_from_lines(std::slice::from_ref(&input), stdout)
+                                .await;
+                        let snapshot = diagnostics
+                            .lock()
+                            .await
+                            .snapshot(EngineFailureKind::ProtocolFailure, None);
+                        let bytes = serde_json::to_string(&snapshot).unwrap();
+                        assert!(!bytes.contains("abc"), "leaked secret: {bytes}");
+                        assert!(snapshot.reason.is_some());
+                        assert_eq!(snapshot.entries.len(), 1);
+                        for text in snapshot.reason.iter().map(String::as_str).chain(
+                            snapshot.entries.iter().map(|entry| match entry {
+                                EngineTerminalEntry::InfoString(text)
+                                | EngineTerminalEntry::Stderr(text) => text.as_str(),
+                                EngineTerminalEntry::Truncated => panic!("unexpected truncation"),
+                            }),
+                        ) {
+                            assert!(text.contains("[redacted]"));
+                            assert!(!text.contains("abc"), "leaked secret: {text}");
+                            if preserve_suffix {
+                                assert!(text.contains("e2e4 1/2-1/2"), "lost suffix: {text}");
+                            }
+                        }
                     }
                 }
             }
