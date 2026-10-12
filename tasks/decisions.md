@@ -7282,3 +7282,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"52ced32f9dc97fd1bdd0ad550c1cda2de31d494cb6635dbe8e574cffd16f9233","input_sha256":"acf756e7eb167653865662a27101e068aaee499e4bcec7750d62192ed4b63da6","kind":"mutation-receipt","operation":"42c63c0386f106cc9faa737c1327f1abb98cae20f5093bdb2a3b09617817a1de","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-13 — Who accepts the database resizable-pane layout visually?
+
+* **Question:** Is f-20261001-09 visually accepted by Felix or by the agent's verify-ui pass?
+* **Governs:** f-20261001-09
+* **Chosen:** the implementing agent through verify-ui on the pinned container pixel evidence, covering both adaptive arrangements and the compact mode; sibling findings and independently filed pre-existing defects are excluded.
+* **Rejected:** deferring visual acceptance to Felix.
+* **Reason:** full auto, and the change spans a shared component across several modes and breakpoints. Full-auto recommendation, not an answer attributed to Felix. Reversal path: request Felix's acceptance on a named screen.
+* **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"5856970b5737ea4f4cdb6cf037ffb75603e3aeb7512fb4b11a7247a13f607772","input_sha256":"0cd7903172d80267c99a3f5a412c919cbc08c9806a6365deafca586e12e41639","kind":"mutation-receipt","operation":"56046d62c2eab3220b8ea10aff756bd75cbbba58ce0bc4c7647282643489edf2","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-13"],"target":"decisions-ledger","v":1} -->
