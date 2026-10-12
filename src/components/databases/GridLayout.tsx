@@ -8,6 +8,7 @@ import { IconAction } from "@/components/common/IconAction";
 import {
   clampDatabasePercentage,
   databaseSplitAtoms,
+  DATABASE_SPLIT_STEP_PERCENT,
   DatabaseLayoutContext,
 } from "@/state/databaseLayout";
 import "react-mosaic-component/react-mosaic-component.css";
@@ -57,7 +58,9 @@ function GridLayout({
             label={t("Databases.Layout.EnlargeTable", { defaultValue: "Enlarge table" })}
             variant="default"
             disabled={effective >= 100 - minimum}
-            onClick={() => commit(clampDatabasePercentage(effective + 5, minimum))}
+            onClick={() =>
+              commit(clampDatabasePercentage(effective + DATABASE_SPLIT_STEP_PERCENT, minimum))
+            }
           >
             <IconArrowRight size="1rem" />
           </IconAction>
@@ -65,7 +68,9 @@ function GridLayout({
             label={t("Databases.Layout.EnlargePreview", { defaultValue: "Enlarge preview" })}
             variant="default"
             disabled={effective <= minimum}
-            onClick={() => commit(clampDatabasePercentage(effective - 5, minimum))}
+            onClick={() =>
+              commit(clampDatabasePercentage(effective - DATABASE_SPLIT_STEP_PERCENT, minimum))
+            }
           >
             <IconArrowLeft size="1rem" />
           </IconAction>
