@@ -2185,3 +2185,270 @@ The implementation supports the checked claims. Append-only preservation and all
 VERDICT: REVISE
 ```
 
+
+### Diff closure round 2 — REVIEWED_THROUGH 6de0db98
+
+Delta 6d0fd79d..6de0db98 (repairs e9788213, 46675665, 44f53272 plus records 1c387afc, 6de0db98). Lenses: correctness, root-cause, tests, code-quality, error-handling, minimalism, engine-protocol, persisted-state, chess-semantics, tauri-security (sensitive) and records (mechanical). All round-1 issues DR1-01 … DR1-15 reported CLOSED by their witnesses; DR1-04 stayed Skip.
+
+| ID | Lens | Claim | Disposition | Closure |
+|---|---|---|---|---|
+| DR2-N1 | chess-semantics (blocker, pre-existing) | `isThreeFoldRepetition` compares the raw root FEN (illegal en-passant square kept) with chessops-normalized descendants | Defer to the existing open finding f-20261004-22 (same defect, open mechanism question). A repair leaf that patched only the comparison also re-keyed the transposition-map root that `RepertoireInfo.tsx` still queries raw; its edits were discarded and the evidence annotated on f-20261004-22 (8b486270) | — |
+| DR2-N2 | error-handling (should-fix) | terminal stdout drain stopped at a non-UTF-8 line | Fix | 04514f9e |
+| DR2-N3 | tauri-security (blocker) | escaped value quote bypassed credential redaction | Fix | 04514f9e (reopened as DR3-S1) |
+| DR2-N4 | tests (should-fix) | drain ResourceLimit branch untested | Fix | 04514f9e |
+| DR2-T1 | orchestrator stress run | real-child broken-pipe test failed 4/20 (fork/exec fd inheritance in the test process makes the write succeed and the failure arrive as EOF) | Fix — accept both arrival orders, keep reason and exit assertions; 30/30 green | 04514f9e |
+
+### Diff closure round 3 — REVIEWED_THROUGH 04514f9e
+
+Delta 6de0db98..04514f9e. Lenses: correctness, tests, error-handling, tauri-security (sensitive), records (mechanical). DR2-N2, DR2-N3, DR2-N4 reported CLOSED.
+
+| ID | Lens | Claim | Disposition |
+|---|---|---|---|
+| DR3-S1 | tauri-security (blocker), lineage DR1-03 → DR2-N3 | escaped KEY quotes (`{\"accessToken\":\"…\"}`) bypass the scanner; tests lens: multiword escaped values untested | Lineage escalation (§4a.3): mechanism note and focused fresh-context review-plan judgment (lens-plan-mechanism-r3, raw report below). Chosen: one tokenizer sharing quote/escape-depth rules for keys and values, fail closed on uncertain boundaries; rejected de-escaping, regex-only keys, and declaring nested JSON out of scope. Fix to that mechanism |
+| DR3-C1 | correctness (blocker) | after an oversized-line ResourceLimit, the drain reads the unconsumed suffix as a new line and can report a fabricated reason | Fix |
+| DR3-E1 | error-handling (should-fix) | per-line uncorrelated non-UTF-8 drain logs | Fix — one log with actor identity and count |
+| DR3-R1 | records (should-fix) | this handoff lacked rounds 2–3 and the DR2-N1 history cited by the f-20261004-22 annotation | Fix — this section |
+
+### Raw reports — diff rounds 2 and 3
+
+#### review-correctness (r2)
+
+Raw report from lens-correctness-r2.txt, unchanged:
+
+```text
+No round-1 IDs originated from this lens. No concrete correctness defects found in the repair diff or inspected full-range dependencies.
+
+Limitation: OS-specific exit/reap behavior and React scheduling interleavings were inspected statically, not executed in this read-only review (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+#### review-root-cause (r2)
+
+Raw report from lens-root-cause-r2.txt, unchanged:
+
+```text
+DR1-02 CLOSED — `recover_failed_protocol` now drains bounded terminal stdout before publishing the snapshot, preserving the unread final reason after EPIPE. Fake-IO and real-child regressions cover this failure chain, with supplied red-on-revert evidence. Caller and history checks found no sibling omission or reintroduced prior fix (confidence: 97).
+
+VERDICT: APPROVED
+```
+
+#### review-tests (r2)
+
+Raw report from lens-tests-r2.txt, unchanged:
+
+```text
+DR1-12 CLOSED — The two-engine odd-move test asserts that only Black’s selected Logs show terminal diagnostics despite a divergent real tree.
+
+DR1-14 CLOSED — The test exercises production’s extracted completion helper with failed cleanup. Reverting its typed error fold to string flattening fails the serialized tag, category and snapshot assertions.
+
+[should-fix] src-tauri/src/engine/process.rs:3700 — The new terminal-drain ResourceLimit branch has no regression assertion. Both write-failure fixtures contain only a short fatal line. Replacing discard-and-continue with `break` would pass them while losing a final `info string` queued after oversized stdout. Add that sequence through the bounded reader and assert the retained reason. (confidence: 97)
+
+VERDICT: APPROVED
+```
+
+#### review-code-quality (r2)
+
+Raw report from lens-code-quality-r2.txt, unchanged:
+
+```text
+DR1-13 CLOSED — `src-tauri/src/game.rs:936` names the 100 ms duration `CLOCK_TICK_INTERVAL`, and `game_loop` uses it at line 2944.
+
+No additional readability or local-consistency defects found above 80 confidence.
+
+VERDICT: APPROVED
+```
+
+#### review-error-handling (r2)
+
+Raw report from lens-error-handling-r2.txt, unchanged:
+
+```text
+DR1-05 CLOSED — Cancelled task and stale-registration paths log stop/reap failures with game/session identity and native diagnostics. Both regression tests assert captured errors.
+
+DR1-06 CLOSED — Analysis retains `cleanupFailed`, and report normalization preserves `operation-and-cleanup`. Both displays append the localized cleanup warning, covered by regression tests.
+
+[should-fix] src-tauri/src/engine/process.rs:3705 — Terminal stdout draining stops silently on a non-UTF-8 line, although the reader has consumed that complete line. If a broken-pipe failure leaves malformed output followed by a valid final `info string`, that reason never reaches the snapshot or Logs panel. The user receives a generic protocol-failure message or an older reason. Continue draining after this recoverable decoding error within the existing deadline (confidence: 94).
+
+VERDICT: APPROVED
+```
+
+#### review-minimalism (r2)
+
+Raw report from lens-minimalism-r2.txt, unchanged:
+
+```text
+DR1-07 CLOSED — `complete_exchange` centralizes recovery and reply handling for seven actor command branches, returning the termination decision.
+DR1-08 CLOSED — ReportPanel’s query and cancellation failures reuse `isCurrentOperation`.
+DR1-09 CLOSED — Both engine-gap test paths use `setupAnalysisEngine`, removing duplicated setup.
+
+No new bloat or duplication defects found above 80 confidence.
+
+VERDICT: APPROVED
+```
+
+#### review-engine-protocol (r2)
+
+Raw report from lens-engine-protocol-r2.txt, unchanged:
+
+```text
+DR1-01 CLOSED — `process.rs:2021` excludes terminal actors from reuse, and `:2290` routes them through exact-generation reap. Both restart regression cases verify a fresh actor/generation without the predecessor’s snapshot. No additional in-lens defects found.
+
+VERDICT: APPROVED
+```
+
+#### review-persisted-state (r2)
+
+Raw report from lens-persisted-state-r2.txt, unchanged:
+
+```text
+DR1-10 CLOSED — `BoardGame.tsx:257` reads and writes the owner-tab `gameInterruptionFamily`, preserving the interruption across inactive-tab unmounts. `atoms.ts:1029` removes it on tab disposal. Event and snapshot regression cases in `BoardGame.test.tsx:533` check the reason and terminal Logs after remount. The atom remains ephemeral, with no storage encoding change.
+
+VERDICT: APPROVED
+```
+
+#### review-chess-semantics (r2)
+
+Raw report from lens-chess-semantics-r2.txt, unchanged:
+
+```text
+DR1-11 CLOSED — `syncTreeWithMoves` normalizes both castling representations against the parent position before matching and promoting the existing variation.
+
+[blocker] src/state/store/tree.ts:844 — Repetition compares the raw root FEN against library-normalized descendant FENs. Starting from `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1`, play `g8f6 g1f3 f6g8 f3g1` twice. No en-passant capture is possible, so the endpoint is the third occurrence. The root retains `e3`, descendants contain `-`, and the tree counts only two occurrences, leaving its result `*`. This pre-existing defect is in the move insertion code used by synchronization. (confidence: 99)
+
+VERDICT: REVISE
+```
+
+#### review-tauri-security (r2)
+
+Raw report from lens-tauri-security-r2.txt, unchanged:
+
+```text
+DR1-03 CLOSED — compound-key matching now covers the reported spellings, with serialized-byte regression coverage at src-tauri/src/engine/process.rs:5120.
+
+[blocker] src-tauri/src/engine/process.rs:431 — Escaped opening quotes bypass credential redaction. Engine output `info string {"error":"accessToken=\"lip_secret\""}` makes the unquoted-value scanner redact only the backslash, leaving `lip_secret` intact. The terminal snapshot then exposes that bearer through command-error serialization at src-tauri/src/error.rs:960 and interrupted-game results at src-tauri/src/game.rs:3001. The new regression covers only unescaped quotes. (confidence: 99)
+
+VERDICT: REVISE
+```
+
+#### review-records (r2)
+
+Raw report from lens-records-r2.txt, unchanged:
+
+```text
+DR1-15 CLOSED — the cited handoff is committed in HEAD and preserves all three plan-review rounds.
+
+No findings. Bundle figures and arithmetic agree with `bundle-budgets.json`, all 16 catalogues contain the described new copy, and the named commits support the handoff’s implementation claims. Existing decisions and historical bundle rationale are preserved.
+
+Unverifiable here: recorded test counts, preflight results and independently reproduced base-build measurements. No files changed.
+
+VERDICT: APPROVED
+```
+
+#### review-correctness (r3)
+
+Raw report from lens-correctness-r3.txt, unchanged:
+
+```text
+[blocker] src-tauri/src/engine/process.rs:3706 — Recovery can promote an oversized line’s suffix into a fabricated reason. With 8 KiB reader chunks, a single line containing 65,536 `x` bytes followed by `info string fabricated\n` makes the normal read return ResourceLimit and clear `pending_line` without consuming the suffix. Recovery reads that suffix as a new line and reports `fabricated`, although no valid `info string` line exists. The oversized remainder must be discarded before resuming terminal reads. (confidence: 96)
+
+Limitation: no runtime probes ran. Platform-specific pipe scheduling and exit-status branches were reviewed from source only. (confidence: 100)
+
+VERDICT: REVISE
+```
+
+#### review-tests (r3)
+
+Raw report from lens-tests-r3.txt, unchanged:
+
+```text
+DR2-N4 CLOSED — `terminal_snapshot_final_stdout_after_oversized_line` uses the production bounded reader and asserts the exact final reason and diagnostic entry. Restoring the drain’s stop-on-ResourceLimit behavior fails those assertions.
+
+[should-fix] src-tauri/src/engine/process.rs:5107 — Both escaped-quote fixtures use a single-word secret. Removing the escaped closing-quote search would leave these tests green while leaking `pass phrase` from `password=\"private pass phrase\"`. Add a multiword escaped credential and assert every secret fragment is absent from serialized bytes. (confidence: 99)
+
+VERDICT: APPROVED
+```
+
+#### review-error-handling (r3)
+
+Raw report from lens-error-handling-r3.txt, unchanged:
+
+```text
+DR2-N2 CLOSED — the reader consumes the invalid UTF-8 line, the terminal drain continues, and `terminal_snapshot_final_stdout_after_non_utf8_line` asserts that the typed failure retains the final reason.
+
+[should-fix] src-tauri/src/engine/process.rs:3712 — Every discarded non-UTF-8 line emits an identical error without engine, tab or generation identity. A buffered sequence produces repeated uncorrelated records. Aggregate the discarded-line count into one diagnostic carrying actor identity. (confidence: 94)
+
+VERDICT: APPROVED
+```
+
+#### review-tauri-security (r3)
+
+Raw report from lens-tauri-security-r3.txt, unchanged:
+
+```text
+DR2-N3 CLOSED — escaped value quotes are consumed and redacted, with serialized-byte regressions at src-tauri/src/engine/process.rs:5107.
+
+[blocker] src-tauri/src/engine/process.rs:379 — Escaped JSON keys still bypass redaction. Engine output `info string {"error":"{\"accessToken\":\"lip_secret\"}"}` leaves a backslash after `accessToken`, causing credential recognition to return `None`. `lip_secret` survives in snapshot reason/entries and crosses IPC through src-tauri/src/error.rs:960. The fix handles escaped value quotes but misses escaped key quotes. (confidence: 99)
+
+Limitation: read-only source review, no tests run. Credential persistence, filesystem mutation and signed downloads are absent from this delta.
+
+VERDICT: REVISE
+```
+
+#### review-records (r3)
+
+Raw report from lens-records-r3.txt, unchanged:
+
+```text
+[should-fix] tasks/findings.md:13602 — The cited handoff contains no `DR2-N1` or diff closure round 2. It ends at diff round 1, so it does not substantiate the second witness, repair attempt or deferral history. Preserve that evidence at the cited path. (confidence: 100)
+
+The repetition example is reproducible. Raw-key consumers match the annotation. Append-only preservation and receipt hash pass. No conflicting state found in this entry. No files changed.
+
+VERDICT: REVISE
+```
+
+#### review-plan-mechanism (r3)
+
+Raw report from lens-plan-mechanism-r3.txt, unchanged:
+
+```text
+Choose **(b), with shared quote/escape handling and conservative value boundaries**. One tokenizer must recognize quoted keys and values using the same rules, track escape depth and backslash parity, and distinguish closing delimiters from literal quotes inside a value. If a value boundary is uncertain, redact the remaining diagnostic text.
+
+At HEAD `04514f9e`, the round-3 escaped-key bypass remains open. [process.rs:368](/home/felixb/Projekte/chessfable/src-tauri/src/engine/process.rs:368) accepts only an unescaped closing key quote, then [process.rs:379](/home/felixb/Projekte/chessfable/src-tauri/src/engine/process.rs:379) requires the separator. This rejects `{\"accessToken\":\"lip_secret\"}`. Both stdout and stderr already reach the shared sanitization boundary at [process.rs:270](/home/felixb/Projekte/chessfable/src-tauri/src/engine/process.rs:270), so the correction belongs there.
+
+Reject the alternatives as written:
+
+- **(a):** Dropping escape backslashes loses the distinction between delimiters and embedded literal quotes. The existing scanner can then stop early and expose the remainder.
+- **(c):** The key pattern can detect assignments, but “value until terminator” still needs the same quote and escape semantics. Regex key matching alone does not close this class.
+- **(d):** Ordinary JSON nested inside a JSON string is within the frozen threat model. Calling it deliberately evasive would change that model.
+
+“Until the matching quote” is sufficient for **well-formed quoted multiword values**, provided matching respects escape depth. After recognizing an opening quote, a missing closing quote must redact through end of text. Falling back to whitespace exposes later words. The current escaped-value fallback at [process.rs:437](/home/felixb/Projekte/chessfable/src-tauri/src/engine/process.rs:437) has that weakness.
+
+Whitespace is also insufficient for an **unquoted multiword password**. Unless enclosing syntax establishes its end, redact from the recognized assignment through end of text. Do not silently narrow the invariant to single-word credentials.
+
+The invariant is: **Every credential value in ordinary engine stdout `info string` and stderr diagnostics is replaced before retention and serialization of both snapshot `reason` and `entries`, regardless of compound-key spelling, ordinary JSON string escaping, whitespace inside quoted values, or an incomplete quoted value. Ambiguous boundaries fail closed.** This implements O1 at [the plan:49](/home/felixb/Projekte/chessfable/tasks/plans/2026-10-12-engine-termination-surface.md:49) without changing its obligation.
+
+Minimum regression spellings, shown as diagnostic text:
+
+| Case | Input |
+|---|---|
+| Existing key families | Separate cases for `token`, `accessToken`, `refresh_token`, `clientSecret`, `password`, `passwd`, `dbPasswd`, `apiKey`, `api_key`, `api-key`, `X-Api-Key`, mixed case, `:` and `=` |
+| Plain quoted key/value | `{"accessToken":"lip_secret"}` |
+| Escaped key/value | `{\"accessToken\":\"lip_secret\"}` |
+| Escaped value alone | `accessToken=\"lip_secret\"` |
+| Quoted multiword value | `password="private pass phrase"` |
+| Escaped multiword value | `password=\"private pass phrase\"` |
+| Literal quote inside value | `password="private \"quoted\" pass phrase"` |
+| Nested literal quote | `password=\"private \\\"quoted\\\" pass phrase\"` |
+| Further ordinary wrapping | Generate the JSON credential object through one and two JSON-string serialization layers |
+| Missing closing quote | Both `password="private pass phrase` and `password=\"private pass phrase` |
+| Unquoted ambiguity | `password=private pass phrase` |
+| Authorization forms | `Authorization: Bearer lip_secret`, `Authorization: Basic lip_secret`, `Bearer lip_secret` |
+
+Parameterize quoted cases over both quote characters. Exercise both diagnostic sources, inspect decoded `reason` and every entry, and inspect native serialized bytes. Assert absence of **each secret fragment**, not merely the complete phrase. Include multiple assignments and non-latest entries. Preserve ordinary failure wording, FEN and chess notation in well-formed cases.
+
+No plan-obligation defect found. This approves the specified mechanism, not closure of the current implementation. Runtime and regression proof were not executed under the read-only review rails (confidence: 100).
+
+VERDICT: APPROVED
+```
+
