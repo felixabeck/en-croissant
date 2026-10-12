@@ -16,6 +16,7 @@ import {
     preserveStorageForReload,
     whitePawnSquares,
     waitForScrollAreaScrollbarsHidden,
+    dragMosaicDivider,
 } from "./fixtures";
 
 test("database-files: bounded drag and keyboard steps share a preference across tabs, compact reflow and reload", async ({
@@ -36,16 +37,6 @@ test("database-files: bounded drag and keyboard steps share a preference across 
     const split = layout.locator(".mosaic-split");
     const root = layout.locator(".mosaic-root");
     const saved = () => page.evaluate(() => localStorage.getItem("database-table-percentage"));
-    const drag = async (ratio: number, release = true) => {
-        const box = (await root.boundingBox())!;
-        const divider = (await split.boundingBox())!;
-        await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(box.x + (box.width * ratio) / 100, divider.y + divider.height / 2, {
-            steps: 5,
-        });
-        if (release) await page.mouse.up();
-    };
     await expect(split).toHaveCount(1);
     expect(await saved()).toBeNull();
     await page.getByRole("row").filter({ hasText: "Second White" }).click();
@@ -69,7 +60,13 @@ test("database-files: bounded drag and keyboard steps share a preference across 
         await assertNothingClipped(gamesPanel, { mode: "reachable" });
     };
     const initial = (await board.boundingBox())!.width;
-    await drag(5, false);
+    await dragMosaicDivider(page, {
+        root,
+        split,
+        percentage: 5,
+        direction: "row",
+        release: false,
+    });
     expect(await saved()).toBeNull();
     await page.mouse.up();
     await expect(layout).toHaveAttribute("data-percentage", "20");
@@ -93,7 +90,7 @@ test("database-files: bounded drag and keyboard steps share a preference across 
     await waitForScrollAreaScrollbarsHidden(page);
     await capture("database-adaptive-wide");
     await expect(page).toHaveScreenshot("database-adaptive-wide.png");
-    await drag(95);
+    await dragMosaicDivider(page, { root, split, percentage: 95, direction: "row" });
     await expect(layout).toHaveAttribute("data-percentage", "80");
     await expect(page.getByRole("button", { name: "Enlarge table", exact: true })).toBeDisabled();
     const enlargePreview = page.getByRole("button", { name: "Enlarge preview", exact: true });

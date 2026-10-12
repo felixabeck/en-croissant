@@ -73,6 +73,43 @@ export async function waitForScrollAreaScrollbarsHidden(page: Page) {
     );
 }
 
+export async function dragMosaicDivider(
+    page: Page,
+    {
+        root,
+        split,
+        percentage,
+        direction,
+        release = true,
+        crossAxisRatio = 0.5,
+    }: {
+        root: Locator;
+        split: Locator;
+        percentage: number;
+        direction: "row" | "column";
+        release?: boolean;
+        crossAxisRatio?: number;
+    },
+) {
+    const box = (await root.boundingBox())!;
+    const divider = (await split.boundingBox())!;
+    const x =
+        direction === "row"
+            ? box.x + (box.width * percentage) / 100
+            : divider.x + divider.width * crossAxisRatio;
+    const y =
+        direction === "column"
+            ? box.y + (box.height * percentage) / 100
+            : divider.y + divider.height * crossAxisRatio;
+    await page.mouse.move(
+        direction === "row" ? divider.x + divider.width / 2 : x,
+        direction === "column" ? divider.y + divider.height / 2 : y,
+    );
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 5 });
+    if (release) await page.mouse.up();
+}
+
 // The document-width assertion cannot see content that a container absorbs or cuts away, nor
 // anything pushed off the left edge — overflow to the left never adds to `scrollWidth` — so a page
 // that clipped its content would pass it. This walks every box instead.

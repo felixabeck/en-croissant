@@ -8,6 +8,7 @@ import {
     test,
     gameOpeningCommands,
     gameOpeningFixture,
+    dragMosaicDivider,
 } from "./fixtures";
 
 test("workspace-tabs: analysis row and nested column drags resize panes and restore committed percentages", async ({
@@ -28,27 +29,17 @@ test("workspace-tabs: analysis row and nested column drags resize panes and rest
     const beforeLeft = (await left.boundingBox())!.width;
     const beforeTop = (await top.boundingBox())!.height;
     const beforeBottom = (await bottom.boundingBox())!.height;
-    const box = (await mosaic.boundingBox())!;
     for (const [direction, ratio] of [
         ["row", 60],
         ["column", 65],
     ] as const) {
-        const divider = (await mosaic.locator(`.mosaic-split.-${direction}`).boundingBox())!;
-        const x =
-            direction === "row"
-                ? box.x + (box.width * ratio) / 100
-                : divider.x + divider.width * 0.75;
-        const y =
-            direction === "column"
-                ? box.y + (box.height * ratio) / 100
-                : divider.y + divider.height * 0.25;
-        await page.mouse.move(
-            direction === "row" ? divider.x + divider.width / 2 : x,
-            direction === "column" ? divider.y + divider.height / 2 : y,
-        );
-        await page.mouse.down();
-        await page.mouse.move(x, y, { steps: 5 });
-        await page.mouse.up();
+        await dragMosaicDivider(page, {
+            root: mosaic,
+            split: mosaic.locator(`.mosaic-split.-${direction}`),
+            percentage: ratio,
+            direction,
+            crossAxisRatio: direction === "row" ? 0.25 : 0.75,
+        });
     }
     const percentages = () =>
         page.evaluate(() => {
