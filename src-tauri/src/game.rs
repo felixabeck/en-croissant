@@ -933,6 +933,7 @@ fn attempt_terminal_event_emission<R: Runtime>(
 }
 
 const COMPLETED_GAME_SNAPSHOTS: usize = 128;
+const CLOCK_TICK_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SAFE_JS_COUNTER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2919,6 +2920,18 @@ async fn run_published_loop<R: Runtime>(
     }
 }
 
+fn log_cancelled_engine_error(game_id: &str, session: u64, error: &Error) {
+    if !matches!(
+        error,
+        Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected
+    ) {
+        error!(
+            "Game {game_id} session {session} cancelled engine move failed: {}",
+            error.diagnostic()
+        );
+    }
+}
+
 async fn game_loop<R: Runtime>(
     game_id: GameId,
     live: Arc<LiveSession>,
@@ -2928,7 +2941,7 @@ async fn game_loop<R: Runtime>(
     manager: std::sync::Weak<GameManager>,
 ) {
     let controller = live.controller.clone();
-    let mut clock_interval = interval(Duration::from_millis(100));
+    let mut clock_interval = interval(CLOCK_TICK_INTERVAL);
     #[cfg(not(test))]
     let mut engine_task: Option<tokio::task::JoinHandle<Result<(), Error>>> = None;
     #[cfg(not(test))]
@@ -2976,8 +2989,7 @@ async fn game_loop<R: Runtime>(
                 let cancellation = engine_cancellation.take();
 
                 match result {
-                    Some(Ok(Ok(()))) => {
-                    }
+                    Some(Ok(Ok(()))) => {}
                     Some(Ok(Err(e))) => {
                         let mut ctrl = controller.write().await;
                         if !cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
@@ -2991,6 +3003,8 @@ async fn game_loop<R: Runtime>(
                             }
                             attempt_terminal_event_emission(&mut ctrl, &app);
                             break;
+                        } else {
+                            log_cancelled_engine_error(&game_id, live.session, &e);
                         }
                     }
                     Some(Err(join_error)) => {
@@ -3265,6 +3279,7 @@ async fn request_engine_move<R: Runtime>(
     }
     if let Err(error) = engine_arc.set_position(&initial_fen, &moves).await {
         return if context.cancellation.is_cancelled() {
+            log_cancelled_engine_error(game_id, context.session, &error);
             Ok(())
         } else {
             Err(error)
@@ -3275,14 +3290,19 @@ async fn request_engine_move<R: Runtime>(
     }
     let request_id = match engine_arc.start_search(&go_mode).await {
         Ok(request_id) => request_id,
-        Err(_) if context.cancellation.is_cancelled() => return Ok(()),
+        Err(error) if context.cancellation.is_cancelled() => {
+            log_cancelled_engine_error(game_id, context.session, &error);
+            return Ok(());
+        }
         Err(error) => return Err(error),
     };
     {
         let mut ctrl = controller.write().await;
         if !ctrl.register_engine_request_id(&context, request_id) {
             drop(ctrl);
-            let _ = engine_arc.stop_current().await;
+            if let Err(error) = engine_arc.stop_current().await {
+                log_cancelled_engine_error(game_id, context.session, &error);
+            }
             return Ok(());
         }
     }
@@ -3291,7 +3311,10 @@ async fn request_engine_move<R: Runtime>(
         .await
     {
         Ok(best_move) => best_move,
-        Err(_) if context.cancellation.is_cancelled() => return Ok(()),
+        Err(error) if context.cancellation.is_cancelled() => {
+            log_cancelled_engine_error(game_id, context.session, &error);
+            return Ok(());
+        }
         Err(error) => return Err(error),
     };
 
@@ -3443,6 +3466,157 @@ pub async fn get_game_engine_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_engine_move_logs_failed_stop_and_keeps_playing() {
+        for stale_registration in [false, true] {
+            let capture = crate::error::LogCaptureScope::start();
+            let game_id = "cancelled-stop-proof";
+            let manager = Arc::new(GameManager::new());
+            let (live, controller) = test_live_session(game_id, 1);
+            let actor = EngineActor::recording_failure_test_actor(
+                &[],
+                true,
+                Some("cancelled-reap-native-cause"),
+            );
+            let registered = register_test_game_engine_with_actor(
+                &live.engine_supervisor,
+                game_id,
+                1,
+                "white",
+                "test-engine-id",
+                "test-engine",
+                actor,
+            )
+            .await;
+            let mut context = {
+                let mut ctrl = controller.write().await;
+                ctrl.config.white = fake_engine_player();
+                ctrl.white_engine = Some(registered);
+                ctrl.begin_engine_request().unwrap()
+            };
+            if stale_registration {
+                context.nonce += 1;
+            }
+            let cancellation = context.cancellation.clone();
+            let app = tauri::test::mock_app();
+            let (result, ()) = tokio::time::timeout(TEST_WAIT, async {
+                tokio::join!(
+                    request_engine_move(
+                        game_id,
+                        &controller,
+                        app.handle(),
+                        context,
+                        Arc::downgrade(&manager)
+                    ),
+                    async {
+                        if stale_registration {
+                            return;
+                        }
+                        loop {
+                            if controller
+                                .read()
+                                .await
+                                .active_engine_request
+                                .as_ref()
+                                .is_some_and(|request| request.request_id.is_some())
+                            {
+                                cancellation.cancel();
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                )
+            })
+            .await
+            .unwrap();
+            result.unwrap();
+            assert_eq!(controller.read().await.status, GameStatus::Playing);
+            assert_eq!(
+                controller
+                    .read()
+                    .await
+                    .active_engine_request
+                    .as_ref()
+                    .unwrap()
+                    .request_id
+                    .is_none(),
+                stale_registration
+            );
+            assert!(capture
+                .records()
+                .iter()
+                .any(|record| record.level == log::Level::Error
+                    && record.message.contains(
+                        "Game cancelled-stop-proof session 1 cancelled engine move failed"
+                    )
+                    && record.message.contains("cancelled-reap-native-cause")
+                    && record.message.contains("fake stdin closed")));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_game_loop_logs_cleanup_failure_and_keeps_playing() {
+        let capture = crate::error::LogCaptureScope::start();
+        let game_id = "cancelled-loop-proof";
+        let manager = Arc::new(GameManager::new());
+        let (live, controller) = test_live_session(game_id, 1);
+        manager
+            .publish_live(game_id.into(), 1, live.clone(), || {})
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let task = tokio::spawn(async {
+            Err(Error::with_cleanup(
+                Error::Cancellation,
+                Err(std::io::Error::other("loop-reap-native-cause").into()),
+            ))
+        });
+        GAME_LOOP_ENGINE_TASKS.arm((game_id.into(), 1), (task, cancellation));
+        let (_move_tx, move_rx) = tokio::sync::mpsc::channel(1);
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                GameOverEvent,
+                ClockUpdateEvent
+            ))
+            .mount_events(&app);
+        tokio::time::timeout(TEST_WAIT, async {
+            tokio::join!(
+                game_loop(
+                    game_id.into(),
+                    live.clone(),
+                    live.shutdown.subscribe(),
+                    move_rx,
+                    app.handle().clone(),
+                    Arc::downgrade(&manager)
+                ),
+                async {
+                    while !capture
+                        .messages()
+                        .iter()
+                        .any(|message| message.contains("loop-reap-native-cause"))
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                    assert_eq!(controller.read().await.status, GameStatus::Playing);
+                    live.shutdown.send(true).unwrap();
+                }
+            );
+        })
+        .await
+        .unwrap();
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.level == log::Level::Error
+                && record
+                    .message
+                    .contains("Game cancelled-loop-proof session 1 cancelled engine move failed")
+                && record.message.contains("loop-reap-native-cause")));
+    }
 
     async fn run_engine_completion_case(
         game_id: &str,

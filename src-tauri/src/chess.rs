@@ -936,6 +936,13 @@ async fn get_best_moves_core<R: tauri::Runtime>(
         Ok(())
     };
     guard.disarm();
+    complete_interactive_search(run_result, cleanup)
+}
+
+fn complete_interactive_search(
+    run_result: Result<(), Error>,
+    cleanup: Result<(), Error>,
+) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
     match (run_result, cleanup) {
         (Ok(()), Ok(())) => Ok(None),
         (Err(primary), Ok(())) => Err(primary),
@@ -1695,6 +1702,51 @@ fn naive_eval(pos: &Chess) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use crate::engine::EngineSupervisor;
+    use shakmaty::FromSetup;
+    #[cfg(unix)]
+    use std::time::Duration;
+    use tauri::{Listener, Manager};
+
+    #[tokio::test]
+    async fn terminal_snapshot_production_completion_preserves_failed_exact_cleanup() {
+        let actor = crate::engine::EngineActor::recording_failure_test_actor(
+            &["info string safe fatal reason"],
+            false,
+            Some("exact cleanup failed"),
+        );
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let key = EngineKey::new("terminal-cleanup".into(), "engine".into()).unwrap();
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                crate::infra::path_authority::PathRef { id: "test".into() },
+            )
+            .await
+            .unwrap();
+        let request = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        actor.next_search_line(request).await.unwrap();
+        let error = actor.next_search_line(request).await.unwrap_err();
+        let safe = error.engine_failure_snapshot().unwrap().clone();
+        assert_eq!(safe.reason.as_deref(), Some("safe fatal reason"));
+        let cleanup = supervisor
+            .release_generation(&key, current.generation)
+            .await;
+        assert!(cleanup.is_err());
+        let error = complete_interactive_search(Err(error), cleanup).unwrap_err();
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["tag"], "engine-failure");
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert_eq!(
+            payload["engineFailure"],
+            serde_json::to_value(safe).unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn terminal_snapshot_survives_search_rejection_and_exact_cleanup() {
         let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[
@@ -1736,15 +1788,6 @@ mod tests {
         assert!(!bytes.contains("/private"));
         assert!(supervisor.get_exact(&key).is_none());
     }
-    #[cfg(unix)]
-    use crate::engine::EngineSupervisor;
-    use shakmaty::FromSetup;
-    #[cfg(unix)]
-    use std::time::Duration;
-    use tauri::{Listener, Manager};
-
-    use super::*;
-
     #[tokio::test]
     async fn terminate_analysis_engines_waits_for_pending_reap_and_keeps_failure() {
         let supervisor = Arc::new(crate::engine::EngineSupervisor::default());

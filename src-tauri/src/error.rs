@@ -1070,6 +1070,8 @@ impl Drop for LogCaptureScope {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn engine_failure_tag_preserves_optional_snapshot_and_native_cleanup_diagnostics() {
         let snapshot = crate::engine::EngineTerminalSnapshot {
@@ -1117,8 +1119,6 @@ mod tests {
         assert_eq!(payload["category"], "engine-failure");
         assert!(payload.get("engineFailure").is_none());
     }
-    use super::*;
-
     #[test]
     fn committed_removal_succeeds_without_failure() {
         let mut removal = CommittedRemoval::new(1, None);

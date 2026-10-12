@@ -347,17 +347,21 @@ fn sanitize_terminal_text(text: &str) -> String {
         let lower_rest = &lower[index..];
         let boundary = index == 0 || !text.as_bytes()[index - 1].is_ascii_alphanumeric();
         let secret_prefix = if boundary {
-            [
-                "bearer",
-                "password",
-                "token",
-                "access_token",
-                "api_key",
-                "secret",
-            ]
-            .into_iter()
-            .find_map(|key| {
-                if !lower_rest.starts_with(key) {
+            (|| {
+                let key_length = lower_rest
+                    .bytes()
+                    .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                    .count();
+                let key = &lower_rest[..key_length];
+                let bare_bearer = key == "bearer";
+                if !bare_bearer
+                    && key != "authorization"
+                    && ![
+                        "token", "secret", "password", "passwd", "apikey", "api_key", "api-key",
+                    ]
+                    .iter()
+                    .any(|suffix| key.ends_with(suffix))
+                {
                     return None;
                 }
                 let mut end = index + key.len();
@@ -371,7 +375,7 @@ fn sanitize_terminal_text(text: &str) -> String {
                 {
                     end += 1;
                 }
-                if key != "bearer" {
+                if !bare_bearer {
                     if !matches!(text.as_bytes().get(end), Some(b'=' | b':')) {
                         return None;
                     }
@@ -394,8 +398,29 @@ fn sanitize_terminal_text(text: &str) -> String {
                 if quote.is_some() {
                     end += 1;
                 }
+                if key == "authorization" {
+                    let credential = &lower[end..];
+                    for scheme in ["bearer", "basic"] {
+                        if credential.starts_with(scheme)
+                            && text
+                                .as_bytes()
+                                .get(end + scheme.len())
+                                .is_some_and(u8::is_ascii_whitespace)
+                        {
+                            end += scheme.len();
+                            while text
+                                .as_bytes()
+                                .get(end)
+                                .is_some_and(u8::is_ascii_whitespace)
+                            {
+                                end += 1;
+                            }
+                            break;
+                        }
+                    }
+                }
                 Some((end, quote))
-            })
+            })()
         } else {
             None
         };
@@ -403,7 +428,7 @@ fn sanitize_terminal_text(text: &str) -> String {
             let end = text[start..]
                 .find(|ch: char| match quote {
                     Some(quote) => ch == quote as char,
-                    None => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';'),
+                    None => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';' | '}'),
                 })
                 .map_or(text.len(), |offset| start + offset);
             output.push_str(&text[index..start]);
@@ -473,6 +498,9 @@ pub trait UciIo: Send {
     }
     async fn write_line(&mut self, line: &str) -> Result<(), Error>;
     async fn read_line(&mut self) -> Result<Option<String>, Error>;
+    async fn discard_line_remainder(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
     async fn terminate(
         &mut self,
         quit_timeout: Duration,
@@ -646,6 +674,12 @@ impl UciIo for FakeIo {
             tokio::time::sleep(delay).await;
         }
         self.terminate_calls.fetch_add(1, Ordering::SeqCst);
+        if self.termination_error.is_none() {
+            // A reaped child cannot produce more output. Buffered lines remain
+            // readable, then the pipe reaches EOF as production IO does.
+            self.endless_line = None;
+            self.pending_when_empty = false;
+        }
         self.termination_error
             .clone()
             .map_or(Ok(()), |error| Err(Error::Shared(error)))
@@ -1107,6 +1141,13 @@ impl UciIo for ChildUciIo {
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
         self.line_reader.read_line().await
+    }
+
+    async fn discard_line_remainder(&mut self) -> Result<(), Error> {
+        self.line_reader
+            .discard_line_remainder()
+            .await
+            .map_err(Into::into)
     }
 
     async fn terminate(
@@ -1977,6 +2018,7 @@ impl EngineSupervisor {
             if current.engine_id == admission.admission.engine_id
                 && current.executable == engine.id
                 && !current.cancelled.load(Ordering::SeqCst)
+                && current.actor.terminal_snapshot().is_none()
             {
                 let mirror = current.interactive.lock().await;
                 if mirror.as_ref().is_some_and(|warm| warm.can_reuse(&options)) {
@@ -2245,7 +2287,7 @@ impl EngineSupervisor {
             }
             return Ok(false);
         }
-        if !release {
+        if !release && current.actor.terminal_snapshot().is_none() {
             if let Some(search) = current.current_search() {
                 search.mark_cancelled();
                 let stop = current.actor.stop_current().await;
@@ -3625,21 +3667,46 @@ impl EngineRuntime {
                     "engine emitted a line larger than {MAX_ENGINE_LINE_BYTES} bytes"
                 ))));
             }
-            if let Some(text) = line
-                .trim_start()
-                .strip_prefix("info")
-                .filter(|text| text.starts_with(char::is_whitespace))
-                .and_then(|text| text.trim_start().strip_prefix("string"))
-            {
-                if text.is_empty() || text.starts_with(char::is_whitespace) {
-                    self.diagnostics.lock().await.push(text.trim(), true);
-                }
-            }
-            self.logs.push(EngineLog::Engine(
-                self.resource_redactions.redact(line.clone()),
-            ));
+            self.record_output_line(line).await;
         }
         Ok(line)
+    }
+
+    async fn record_output_line(&mut self, line: &str) {
+        if let Some(text) = line
+            .trim_start()
+            .strip_prefix("info")
+            .filter(|text| text.starts_with(char::is_whitespace))
+            .and_then(|text| text.trim_start().strip_prefix("string"))
+        {
+            if text.is_empty() || text.starts_with(char::is_whitespace) {
+                self.diagnostics.lock().await.push(text.trim(), true);
+            }
+        }
+        self.logs.push(EngineLog::Engine(
+            self.resource_redactions.redact(line.to_owned()),
+        ));
+    }
+
+    async fn drain_terminal_stdout(&mut self) {
+        // Reuse the pipe-join budget. A descendant may still hold stdout open.
+        let _ = timeout(STDERR_REAP_TIMEOUT, async {
+            loop {
+                match self.io.read_line().await {
+                    Ok(Some(line)) if line.len() <= MAX_ENGINE_LINE_BYTES => {
+                        self.record_output_line(&line).await;
+                    }
+                    Ok(Some(_)) => {}
+                    Err(Error::ResourceLimit(_)) => {
+                        if self.io.discard_line_remainder().await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        })
+        .await;
     }
 
     async fn wait_for(
@@ -3784,6 +3851,23 @@ impl EngineActor {
             }),
             EngineDeadlines::default(),
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording_failure_test_actor(
+        lines: &[&str],
+        fail_stop: bool,
+        termination_error: Option<&str>,
+    ) -> Arc<Self> {
+        let mut io = FakeIo::new(
+            Arc::default(),
+            lines.iter().map(|line| Some((*line).into())),
+        );
+        io.fail_stop = fail_stop;
+        io.pending_when_empty = fail_stop;
+        io.termination_error =
+            termination_error.map(|error| Arc::new(std::io::Error::other(error.to_owned()).into()));
+        Arc::new(Self::new(Box::new(io), EngineDeadlines::default()))
     }
 
     #[cfg(test)]
@@ -4460,6 +4544,27 @@ pub(crate) fn engine_launch_key(key: &EngineKey) -> String {
 static ENGINE_LAUNCH_VALUE_FAILURES: crate::infra::test_hooks::KeyedTestValues<EngineKey, ()> =
     crate::infra::test_hooks::KeyedTestValues::new();
 
+async fn complete_exchange<T>(
+    runtime: &mut EngineRuntime,
+    registration_identity: &OnceLock<(EngineKey, u64)>,
+    result: Result<T, Error>,
+    reply: oneshot::Sender<Result<T, Error>>,
+    recover_on: impl FnOnce(&Error) -> bool,
+) -> bool {
+    let terminated = result.as_ref().is_err_and(recover_on);
+    let result = if terminated {
+        recover_failed_protocol(runtime, registration_identity, result).await
+    } else {
+        result
+    };
+    let _ = reply.send(result);
+    terminated
+}
+
+fn exchange_failed_protocol(error: &Error) -> bool {
+    error.is_engine_failure() || matches!(error, Error::EngineTimeout(_))
+}
+
 async fn engine_actor_loop(
     mut runtime: EngineRuntime,
     mut rx: mpsc::Receiver<EngineCommand>,
@@ -4476,22 +4581,22 @@ async fn engine_actor_loop(
         match command {
             EngineCommand::Init(reply) => {
                 let result = runtime.init_uci_cancellable(&interrupt).await;
-                let failed = result.is_err();
-                let result =
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
-                let _ = reply.send(result);
-                if failed {
+                if complete_exchange(&mut runtime, &registration_identity, result, reply, |_| {
+                    true
+                })
+                .await
+                {
                     terminated = true;
                     break;
                 }
             }
             EngineCommand::ConfigureStart(reply) => {
                 let result = runtime.start_uci_configuration(Some(&interrupt)).await;
-                let failed = result.is_err();
-                let result =
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
-                let _ = reply.send(result);
-                if failed {
+                if complete_exchange(&mut runtime, &registration_identity, result, reply, |_| {
+                    true
+                })
+                .await
+                {
                     terminated = true;
                     break;
                 }
@@ -4500,11 +4605,11 @@ async fn engine_actor_loop(
                 let result = runtime
                     .next_configuration_line_cancellable(&interrupt)
                     .await;
-                let failed = result.is_err();
-                let result =
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
-                let _ = reply.send(result);
-                if failed {
+                if complete_exchange(&mut runtime, &registration_identity, result, reply, |_| {
+                    true
+                })
+                .await
+                {
                     terminated = true;
                     break;
                 }
@@ -4525,54 +4630,52 @@ async fn engine_actor_loop(
                         Some(&interrupt),
                     )
                     .await;
-                let failed_protocol = result.as_ref().is_err_and(|error| {
-                    error.is_engine_failure() || matches!(error, Error::EngineTimeout(_))
-                });
-                let result = if failed_protocol {
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await
-                } else {
-                    result
-                };
-                let _ = reply.send(result);
-                if failed_protocol {
+                if complete_exchange(
+                    &mut runtime,
+                    &registration_identity,
+                    result,
+                    reply,
+                    exchange_failed_protocol,
+                )
+                .await
+                {
                     terminated = true;
                     break;
                 }
             }
             EngineCommand::SetPosition { fen, moves, reply } => {
                 let result = runtime.set_position(&fen, &moves, Some(&interrupt)).await;
-                let failed_protocol = result.as_ref().is_err_and(|error| {
-                    error.is_engine_failure() || matches!(error, Error::EngineTimeout(_))
-                });
-                let result = if failed_protocol {
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await
-                } else {
-                    result
-                };
-                let _ = reply.send(result);
-                if failed_protocol {
+                if complete_exchange(
+                    &mut runtime,
+                    &registration_identity,
+                    result,
+                    reply,
+                    exchange_failed_protocol,
+                )
+                .await
+                {
                     terminated = true;
                     break;
                 }
             }
             EngineCommand::EnsureReady(reply) => {
                 let result = runtime.ensure_ready(Some(&interrupt)).await;
-                let result =
-                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
-                let failed = result.is_err();
-                let _ = reply.send(result);
-                if failed {
+                if complete_exchange(&mut runtime, &registration_identity, result, reply, |_| {
+                    true
+                })
+                .await
+                {
                     terminated = true;
                     break;
                 }
             }
             EngineCommand::StartSearch { mode, reply } => {
                 let started = runtime.start_search(&mode, Some(&interrupt)).await;
-                let result =
-                    recover_failed_protocol(&mut runtime, &registration_identity, started).await;
-                let failed = result.is_err();
-                let _ = reply.send(result);
-                if failed {
+                if complete_exchange(&mut runtime, &registration_identity, started, reply, |_| {
+                    true
+                })
+                .await
+                {
                     terminated = true;
                     break;
                 }
@@ -4690,6 +4793,9 @@ async fn recover_failed_protocol<T>(
                 None
             };
             let termination = runtime.terminate().await;
+            if unexpected {
+                runtime.drain_terminal_stdout().await;
+            }
             let primary = if let Some(mut captured) = snapshot.take() {
                 // The existing reap observes status and the bounded stderr join
                 // supplies final pipe output. A forced kill is not exit evidence.
@@ -4904,6 +5010,240 @@ fn reject_command_during_search(command: EngineCommand) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::{
+        collections::VecDeque,
+        io,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
+            Arc,
+        },
+    };
+    use tokio::{
+        io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, ReadBuf},
+        sync::Mutex,
+    };
+
+    #[tokio::test]
+    async fn terminal_snapshot_broken_pipe_drains_queued_fatal_stdout() {
+        let reason = "CRITICAL ERROR: Command position failed. Reason: invalid";
+        let mut io = FakeIo::new(
+            Arc::default(),
+            [Some(format!("info string {reason}")), None],
+        );
+        io.fail_write = true;
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        let result = runtime.ensure_ready(None).await;
+        let error = recover_failed_protocol(&mut runtime, &OnceLock::new(), result)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.engine_failure_snapshot().unwrap().reason.as_deref(),
+            Some(reason)
+        );
+        assert!(runtime
+            .logs
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, EngineLog::Engine(line) if line.contains(reason))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_snapshot_production_child_broken_pipe_keeps_unread_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("fatal.sh");
+        let reason = "CRITICAL ERROR: Command position failed. Reason: invalid";
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho 'info string {reason}'\nexit 1\n"),
+        )
+        .unwrap();
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_owned(),
+            Vec::new(),
+        );
+        let mut child = Command::new("/bin/sh")
+            .arg(&script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let observed_exit = Arc::new(OnceLock::new());
+        let mut control = ProcessChildControl {
+            stdin,
+            child,
+            observed_exit: observed_exit.clone(),
+            kill_started: false,
+            terminate_failure: None,
+            force_kill_started: false,
+        };
+        // Await the real child exit without consuming stdout. The next actor
+        // write is now deterministically EPIPE, with the fatal line still queued.
+        timeout(Duration::from_secs(2), control.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        let actor = EngineActor::new(
+            Box::new(ChildUciIo {
+                control: Some(control),
+                line_reader: ResumableLineReader::new(BufReader::new(stdout)),
+                _executable: executable,
+                observed_exit,
+            }),
+            EngineDeadlines::default(),
+        );
+        let error = actor.ensure_ready().await.unwrap_err();
+        assert!(error.diagnostic().contains("Broken pipe"));
+        assert_eq!(
+            error.engine_failure_snapshot().unwrap().reason.as_deref(),
+            Some(reason)
+        );
+        assert_eq!(
+            error
+                .engine_failure_snapshot()
+                .unwrap()
+                .exit_status
+                .unwrap()
+                .code,
+            Some(1)
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[test]
+    fn terminal_snapshot_compound_credentials_are_redacted_in_serialized_bytes() {
+        let chess = "token is a word. 1. e4 e5 2. Nf3 Nc6 +0.42 #3 e2e4";
+        let raw = format!(
+            r#"{{"accessToken":"access-value"}} refresh_token=refresh-value apiKey: api-value clientSecret=client-value Authorization: Bearer bearer-value X-Api-Key: header-value PASSWORD=pass-value dbPasswd=passwd-value Authorization: Basic basic-value Bearer bare-value {chess}"#
+        );
+        let mut tail = TerminalDiagnostics::default();
+        tail.push(&raw, true);
+        let snapshot = tail.snapshot(EngineFailureKind::ProtocolFailure, None);
+        let bytes = serde_json::to_string(&snapshot).unwrap();
+        for secret in [
+            "access-value",
+            "refresh-value",
+            "api-value",
+            "client-value",
+            "bearer-value",
+            "header-value",
+            "pass-value",
+            "passwd-value",
+            "basic-value",
+            "bare-value",
+        ] {
+            assert!(!bytes.contains(secret), "leaked {secret}: {bytes}");
+        }
+        assert!(bytes.contains(chess));
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_supervisor_starts_a_fresh_generation() {
+        terminal_restart_case(true).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_supervisor_never_reuses_a_terminal_actor() {
+        terminal_restart_case(false).await;
+    }
+
+    async fn terminal_restart_case(stop_first: bool) {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key =
+            EngineKey::new(format!("terminal-restart-{stop_first}"), "engine".into()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("engine");
+        std::fs::write(&file, b"test engine").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
+        let engine = authority
+            .register_engine_file(&file, "terminal restart")
+            .unwrap();
+        let options = crate::chess::EngineOptions {
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+            ..Default::default()
+        };
+        let (actor, _) =
+            EngineActor::recording_test_actor(&["uciok", "readyok", "info string failure from A"]);
+        let old = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                engine.id.clone(),
+            )
+            .await
+            .unwrap();
+        *old.interactive.lock().await = Some(
+            crate::chess::WarmEngine::new(actor.clone(), Vec::new(), &AtomicBool::new(false))
+                .await
+                .unwrap(),
+        );
+        let search = SupervisedSearch::new(old.generation, Arc::new(AtomicBool::new(false)));
+        old.bind_search(search);
+        let request = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        actor.next_search_line(request).await.unwrap();
+        assert_eq!(
+            actor
+                .next_search_line(request)
+                .await
+                .unwrap_err()
+                .engine_failure_snapshot()
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("failure from A")
+        );
+        if stop_first {
+            assert!(!supervisor
+                .stop_or_release(&key, Some(old.generation), false)
+                .await
+                .unwrap());
+            assert!(supervisor.get_exact(&key).is_none());
+        }
+        let fresh = EngineActor::new(
+            Box::new(FakeIo::new(
+                Arc::default(),
+                [
+                    Some("uciok".into()),
+                    Some("readyok".into()),
+                    Some("readyok".into()),
+                ],
+            )),
+            EngineDeadlines::default(),
+        );
+        let _override = SpawnActorOverrideGuard::new(fresh);
+        let admission = supervisor
+            .admit(key.clone(), key.engine.clone(), engine.id.clone(), false)
+            .await
+            .unwrap();
+        let (_, current, _) = supervisor
+            .start_interactive_search(
+                key.clone(),
+                engine,
+                crate::infra::path_authority::SharedPathAuthority::installed(authority),
+                admission,
+                options,
+                &GoMode::Depth(1),
+            )
+            .await
+            .unwrap();
+        assert_ne!(current.generation, old.generation);
+        assert!(!Arc::ptr_eq(&current.actor, &actor));
+        assert!(current.actor.terminal_snapshot().is_none());
+        supervisor.terminate_all().await.unwrap();
+    }
+
     #[tokio::test]
     async fn terminal_snapshot_stale_cleanup_cannot_remove_a_replacement() {
         let supervisor = EngineSupervisor::default();
@@ -5219,7 +5559,6 @@ mod tests {
         assert!(!bytes.contains("hidden"));
         actor.terminate().await.unwrap();
     }
-    use super::*;
 
     #[tokio::test]
     async fn set_position_writes_only_the_canonical_root_and_normalized_moves() {
@@ -5256,19 +5595,6 @@ mod tests {
         assert!(writes.lock().await.is_empty());
         actor.terminate().await.unwrap();
     }
-    use std::{
-        collections::VecDeque,
-        io,
-        sync::{
-            atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
-            Arc,
-        },
-    };
-    use tokio::{
-        io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, ReadBuf},
-        sync::Mutex,
-    };
-
     /// A real child process, spawned exactly the way production spawns an engine,
     /// must read the authorized executable/resource pinned for this launch — not whatever
     /// visible path resolves to once the option is applied. The fixture is a shebang script on
