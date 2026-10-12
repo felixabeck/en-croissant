@@ -390,13 +390,15 @@ fn sanitize_terminal_text(text: &str) -> String {
                 } else if end == index + key.len() {
                     return None;
                 }
+                let escaped_quote = text.as_bytes().get(end) == Some(&b'\\')
+                    && matches!(text.as_bytes().get(end + 1), Some(b'\'' | b'"'));
                 let quote = text
                     .as_bytes()
-                    .get(end)
+                    .get(end + usize::from(escaped_quote))
                     .copied()
                     .filter(|byte| matches!(byte, b'\'' | b'"'));
                 if quote.is_some() {
-                    end += 1;
+                    end += 1 + usize::from(escaped_quote);
                 }
                 if key == "authorization" {
                     let credential = &lower[end..];
@@ -419,16 +421,25 @@ fn sanitize_terminal_text(text: &str) -> String {
                         }
                     }
                 }
-                Some((end, quote))
+                Some((end, quote, escaped_quote))
             })()
         } else {
             None
         };
-        if let Some((start, quote)) = secret_prefix {
-            let end = text[start..]
-                .find(|ch: char| match quote {
-                    Some(quote) => ch == quote as char,
-                    None => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';' | '}'),
+        if let Some((start, quote, escaped_quote)) = secret_prefix {
+            let escaped_end = escaped_quote
+                .then(|| {
+                    text.as_bytes()[start..]
+                        .windows(2)
+                        .position(|pair| pair[0] == b'\\' && Some(pair[1]) == quote)
+                })
+                .flatten();
+            let end = escaped_end
+                .or_else(|| {
+                    text[start..].find(|ch: char| match (quote, escaped_quote) {
+                        (Some(quote), false) => ch == quote as char,
+                        _ => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';' | '}'),
+                    })
                 })
                 .map_or(text.len(), |offset| start + offset);
             output.push_str(&text[index..start]);
@@ -3697,6 +3708,9 @@ impl EngineRuntime {
                         self.record_output_line(&line).await;
                     }
                     Ok(Some(_)) => {}
+                    Err(Error::InvalidInput(reason)) => {
+                        error!("Engine stdout discarded non-UTF-8 line: {reason}");
+                    }
                     Err(Error::ResourceLimit(_)) => {
                         if self.io.discard_line_remainder().await.is_err() {
                             break;
@@ -5024,6 +5038,86 @@ mod tests {
         sync::Mutex,
     };
 
+    struct BufferedBrokenPipeIo {
+        reader: ResumableLineReader<BufReader<std::io::Cursor<Vec<u8>>>>,
+    }
+
+    #[async_trait]
+    impl UciIo for BufferedBrokenPipeIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed engine stdin").into())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            self.reader.read_line().await
+        }
+
+        async fn discard_line_remainder(&mut self) -> Result<(), Error> {
+            self.reader
+                .discard_line_remainder()
+                .await
+                .map_err(Into::into)
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    async fn assert_final_stdout_reason_after_discarded_line(mut input: Vec<u8>) {
+        let reason = "CRITICAL ERROR: Command position failed. Reason: invalid";
+        input.extend_from_slice(format!("\ninfo string {reason}\n").as_bytes());
+        let io = BufferedBrokenPipeIo {
+            reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input))),
+        };
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        let result = runtime.ensure_ready(None).await;
+        let error = recover_failed_protocol(&mut runtime, &OnceLock::new(), result)
+            .await
+            .unwrap_err();
+        let snapshot = error.engine_failure_snapshot().unwrap();
+        assert_eq!(snapshot.reason.as_deref(), Some(reason));
+        assert_eq!(
+            snapshot.entries,
+            vec![EngineTerminalEntry::InfoString(reason.into())]
+        );
+        assert_eq!(
+            runtime
+                .logs
+                .entries()
+                .iter()
+                .filter(|entry| matches!(entry, EngineLog::Engine(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_final_stdout_after_non_utf8_line() {
+        assert_final_stdout_reason_after_discarded_line(vec![0xff, 0xfe]).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_final_stdout_after_oversized_line() {
+        assert_final_stdout_reason_after_discarded_line(vec![b'x'; MAX_ENGINE_LINE_BYTES + 1])
+            .await;
+    }
+
+    #[test]
+    fn terminal_snapshot_escaped_credential_quotes_are_redacted_in_serialized_bytes() {
+        for input in [
+            r#"info string {"error":"accessToken=\"lip_secret\""}"#,
+            r#"info string {"error":"accessToken=\'lip_secret\'"}"#,
+        ] {
+            let mut tail = TerminalDiagnostics::default();
+            tail.push(input, true);
+            let snapshot = tail.snapshot(EngineFailureKind::ProtocolFailure, None);
+            let bytes = serde_json::to_string(&snapshot).unwrap();
+            assert!(!bytes.contains("lip_secret"), "leaked credential: {bytes}");
+            assert!(bytes.contains("[redacted]"));
+        }
+    }
+
     #[tokio::test]
     async fn terminal_snapshot_broken_pipe_drains_queued_fatal_stdout() {
         let reason = "CRITICAL ERROR: Command position failed. Reason: invalid";
@@ -5099,7 +5193,12 @@ mod tests {
             EngineDeadlines::default(),
         );
         let error = actor.ensure_ready().await.unwrap_err();
-        assert!(error.diagnostic().contains("Broken pipe"));
+        // The fork/exec fd-inheritance race can let the write succeed before stdout EOF.
+        assert!(match operation_cause(&error) {
+            Error::Io(error) => error.kind() == io::ErrorKind::BrokenPipe,
+            Error::EngineDisconnected => true,
+            _ => false,
+        });
         assert_eq!(
             error.engine_failure_snapshot().unwrap().reason.as_deref(),
             Some(reason)
