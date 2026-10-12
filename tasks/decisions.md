@@ -7249,3 +7249,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d9c81a3005c1d593bf7f38b0daebfe2cb4ab4e5aed4cd1a08af6850172c7cbb0","input_sha256":"ebc4dad7d0d8ad1c19414e3cff0e00ea8fdfff2f69964efeec87c7202d0ede53","kind":"mutation-receipt","operation":"708c45851a38a3fa4ac2f6eb80dc9035f2c07b41a2eba86215a4d8713847f735","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-10 — Which splitter does the database Games/Players/Tournaments view use?
+
+* **Question:** Does the database list/preview split reuse the installed react-mosaic-component, add a new pointer divider, or expose Mosaic's internal Split?
+* **Governs:** f-20261001-09
+* **Chosen:** a controlled two-tile row Mosaic (stable tiles table and preview, no tree editing), complemented by labelled IconAction buttons that enlarge either pane by a bounded step, because Mosaic's internal divider has no keyboard semantics.
+* **Rejected:** a new pointer-driven divider (a second splitter primitive) and exposing Mosaic's internal non-public Split.
+* **Reason:** the finding requires reusing the shipped splitter primitive; the public Mosaic already provides drag lifecycle and bounded splits. Reversal path: replace only with evidence that the public component cannot satisfy the bounded split contract.
+* **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"db00550f0a41dc44edf2c59be1458d7e857ab25e204fbb157e5e0fb7bb6d254b","input_sha256":"3c440648da8c6a5ea5d607797cb0aa5e971a7b6fc6a3bbd88051bcd9e7061cfd","kind":"mutation-receipt","operation":"3b7b514fb47d086735411d9079e6c912de5f146a0ac7aee91f538e2a03b21120","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-10"],"target":"decisions-ledger","v":1} -->
