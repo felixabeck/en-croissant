@@ -7260,3 +7260,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"db00550f0a41dc44edf2c59be1458d7e857ab25e204fbb157e5e0fb7bb6d254b","input_sha256":"3c440648da8c6a5ea5d607797cb0aa5e971a7b6fc6a3bbd88051bcd9e7061cfd","kind":"mutation-receipt","operation":"3b7b514fb47d086735411d9079e6c912de5f146a0ac7aee91f538e2a03b21120","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-11 — What width does the database split persist, and where?
+
+* **Question:** Is the database split persisted per database, in pixels, inside the analysis windowsState, or as one bounded percentage shared by all database tabs?
+* **Governs:** f-20261001-09
+* **Chosen:** one dedicated createZodStorage preference holding the table percentage, default 50, bounded 20–80, shared by Games, Players and Tournaments; written only on drag release or a keyboard step; displayed ratio clamped transiently to 20rem pane floors without rewriting the preference; a compact stacked layout below the floors that is never persisted.
+* **Rejected:** per-database keys, pixel widths, and reusing the editable analysis windowsState schema.
+* **Reason:** the three callers express one layout preference and a percentage survives window changes; d-20260906-13 governs validation and failure handling. Reversal path: change bounds or scope with observed usability evidence and persisted-compatibility review.
+* **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"83398699e4c6cf873eb6b1ff80ee84182492e3d696edea27f013ca8a5a8b0f33","input_sha256":"7436c475495f5d5387890dda7f8207b9e83fdf0637b0407578618d83eaa5249f","kind":"mutation-receipt","operation":"4e5fdf82c433388e569bda935a4a1a7e211facac163e6c10df53c4b8ea114b66","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-11"],"target":"decisions-ledger","v":1} -->
