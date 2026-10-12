@@ -25,6 +25,10 @@ test("database-files: database view load failure stays reachable at 320px and 20
     assertNoHorizontalOverflow,
     capture,
 }) => {
+    const clockStart = new Date("2026-10-12T00:00:00Z");
+    await page.clock.install({ time: clockStart });
+    // Installation alone keeps ticking. Pause before app timers can schedule SWR's retry.
+    await page.clock.pauseAt(clockStart.getTime() + 1000);
     await page.addInitScript(() => localStorage.setItem("font-size", "200"));
     await page.setViewportSize({ width: 320, height: 900 });
     await mockScenario({
@@ -48,6 +52,7 @@ test("database-files: database view load failure stays reachable at 320px and 20
     await expect(page.locator("html")).toHaveCSS("font-size", "32px");
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
+    const failedAt = await page.evaluate(() => Date.now());
     const message = alert.getByText("Could not load databases. Please try again.", {
         exact: true,
     });
@@ -59,7 +64,6 @@ test("database-files: database view load failure stays reachable at 320px and 20
     await expect(overview).toHaveAttribute("href", "/databases");
     await assertNothingClipped(alert, { mode: "reachable" });
     await assertNoHorizontalOverflow();
-    await capture("database-view-load-failure-320-200");
     const listingAttempts = () =>
         page.evaluate(
             () =>
@@ -68,12 +72,19 @@ test("database-files: database view load failure stays reachable at 320px and 20
                     .filter((call) => call.command === "list_workspace_databases").length,
         );
     expect(await listingAttempts()).toBe(1);
+    await page.clock.runFor(2000);
+    expect(await page.evaluate(() => Date.now())).toBe(failedAt + 2000);
+    expect(await listingAttempts()).toBe(1);
+    await expect(alert).toBeVisible();
+    await capture("database-view-load-failure-320-200");
     await retry.click();
+    await expect.poll(listingAttempts).toBe(2);
     await expect(alert).toHaveCount(0);
     const games = page.getByRole("tabpanel", { name: "Games", exact: true }).first();
     await expect(games).toBeVisible();
     await expect(games.getByRole("row").filter({ hasText: "Second White" })).toBeVisible();
     expect(await listingAttempts()).toBe(2);
+    expect(await page.evaluate(() => Date.now())).toBe(failedAt + 2000);
 });
 
 test("database-files: bounded drag and keyboard steps share a preference across tabs, compact reflow and reload", async ({
