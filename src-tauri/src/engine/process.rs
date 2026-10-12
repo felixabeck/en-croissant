@@ -403,7 +403,6 @@ fn sanitize_terminal_text(text: &str) -> String {
     let mut output = String::new();
     let mut index = 0;
     let mut quotes: Vec<(u8, usize)> = Vec::new();
-    let mut braces: Vec<u8> = Vec::new();
     while index < text.len() {
         let rest = &text[index..];
         let boundary = index == 0 || !text.as_bytes()[index - 1].is_ascii_alphanumeric();
@@ -467,8 +466,8 @@ fn sanitize_terminal_text(text: &str) -> String {
                 if let Some(value) = terminal_quoted_token(&text, end, None) {
                     return Some((value.start, value.close.unwrap_or(text.len()), value.end));
                 }
-                // An unquoted value may contain whitespace. Only the enclosing
-                // syntax establishes its end, otherwise redact the entire tail.
+                // Only an existing double-quoted string can bound an unquoted
+                // value. Prose apostrophes and braces do not establish its end.
                 let mut cursor = end;
                 while cursor < text.len() {
                     if let Some(delimiter) =
@@ -479,8 +478,6 @@ fn sanitize_terminal_text(text: &str) -> String {
                             return Some((end, close, close));
                         }
                         cursor = delimiter.start;
-                    } else if quotes.is_empty() && braces.last() == text.as_bytes().get(cursor) {
-                        return Some((end, cursor, cursor));
                     } else {
                         cursor += 1;
                     }
@@ -497,7 +494,7 @@ fn sanitize_terminal_text(text: &str) -> String {
             index = next;
             continue;
         }
-        if let Some(delimiter) = quoted {
+        if let Some(delimiter) = quoted.filter(|delimiter| delimiter.quote == b'"') {
             if delimiter.closes_enclosing {
                 quotes.pop();
             } else {
@@ -506,14 +503,6 @@ fn sanitize_terminal_text(text: &str) -> String {
             output.push_str(&text[index..delimiter.start]);
             index = delimiter.start;
             continue;
-        }
-        match text.as_bytes()[index] {
-            b'{' => braces.push(b'}'),
-            b'[' => braces.push(b']'),
-            byte if braces.last() == Some(&byte) => {
-                braces.pop();
-            }
-            _ => {}
         }
         let path = boundary
             && (rest.starts_with('/')
@@ -577,7 +566,7 @@ pub trait UciIo: Send {
     }
     async fn write_line(&mut self, line: &str) -> Result<(), Error>;
     async fn read_line(&mut self) -> Result<Option<String>, Error>;
-    fn has_line_remainder(&self) -> bool {
+    fn is_discarding_line(&self) -> bool {
         false
     }
     async fn discard_line_remainder(&mut self) -> Result<(), Error> {
@@ -789,12 +778,12 @@ impl<R: AsyncBufRead + Unpin> ResumableLineReader<R> {
         result
     }
 
-    fn has_line_remainder(&self) -> bool {
-        self.discarding_line || !self.pending_line.is_empty()
+    fn is_discarding_line(&self) -> bool {
+        self.discarding_line
     }
 
     async fn discard_line_remainder(&mut self) -> std::io::Result<()> {
-        if self.has_line_remainder() {
+        if self.discarding_line || !self.pending_line.is_empty() {
             self.discarding_line = true;
             self.pending_line.clear();
             discard_engine_line_remainder(&mut self.reader).await?;
@@ -1238,8 +1227,8 @@ impl UciIo for ChildUciIo {
         self.line_reader.read_line().await
     }
 
-    fn has_line_remainder(&self) -> bool {
-        self.line_reader.has_line_remainder()
+    fn is_discarding_line(&self) -> bool {
+        self.line_reader.is_discarding_line()
     }
 
     async fn discard_line_remainder(&mut self) -> Result<(), Error> {
@@ -3791,7 +3780,7 @@ impl EngineRuntime {
         let mut discarded = 0usize;
         // Reuse the pipe-join budget. A descendant may still hold stdout open.
         let _ = timeout(STDERR_REAP_TIMEOUT, async {
-            if self.io.has_line_remainder() && self.io.discard_line_remainder().await.is_err() {
+            if self.io.is_discarding_line() && self.io.discard_line_remainder().await.is_err() {
                 return;
             }
             loop {
@@ -5137,6 +5126,30 @@ mod tests {
         sync::Mutex,
     };
 
+    async fn terminal_diagnostics_from_lines(
+        lines: &[String],
+        stdout: bool,
+    ) -> Arc<Mutex<TerminalDiagnostics>> {
+        if stdout {
+            let io = FakeIo::new(
+                Arc::default(),
+                lines.iter().map(|line| Some(format!("info string {line}"))),
+            );
+            let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+            for _ in lines {
+                runtime.read_line().await.unwrap();
+            }
+            runtime.diagnostics.clone()
+        } else {
+            let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(
+                format!("{}\n", lines.join("\n")).into_bytes(),
+            )));
+            let diagnostics = Arc::new(Mutex::new(TerminalDiagnostics::default()));
+            drain_engine_stderr(&mut reader, &diagnostics).await;
+            diagnostics
+        }
+    }
+
     #[tokio::test]
     async fn terminal_snapshot_tokenizer_redacts_both_diagnostic_sources() {
         let chess = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 | 1. e4 e5 2. Nf3 Nc6 +0.42 #3 e2e4";
@@ -5214,12 +5227,12 @@ mod tests {
             cases.push((
                 format!("{{{quote}password{quote}:private pass phrase}}"),
                 vec!["private", "pass", "phrase"],
-                true,
+                false,
             ));
             cases.push((
                 format!("{quote}password=private pass phrase{quote}"),
                 vec!["private", "pass", "phrase"],
-                true,
+                quote == '"',
             ));
         }
         cases.push((
@@ -5227,6 +5240,18 @@ mod tests {
             vec!["private", "pass", "phrase"],
             false,
         ));
+        for (input, fragments, preserve_suffix) in [
+            (
+                "can't authenticate password=private user's pass phrase",
+                vec!["private", "user", "pass", "phrase"],
+                false,
+            ),
+            ("it's token=abc def", vec!["abc", "def"], false),
+            ("'password': 'a b'", vec!["a", "b"], true),
+            ("{\"msg\":\"don't password=x y\"}", vec!["x", "y"], true),
+        ] {
+            cases.push((input.into(), fragments, preserve_suffix));
+        }
         for form in [
             "Authorization: Bearer lip_secret",
             "Authorization: Basic lip_secret",
@@ -5240,24 +5265,7 @@ mod tests {
                     format!("CRITICAL ERROR: earlier {input} | {chess}"),
                     format!("CRITICAL ERROR: latest {input} | {chess}"),
                 ];
-                let diagnostics = if stdout {
-                    let io = FakeIo::new(
-                        Arc::default(),
-                        lines.iter().map(|line| Some(format!("info string {line}"))),
-                    );
-                    let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
-                    for _ in &lines {
-                        runtime.read_line().await.unwrap();
-                    }
-                    runtime.diagnostics.clone()
-                } else {
-                    let mut reader = ResumableLineReader::new(BufReader::new(
-                        std::io::Cursor::new(format!("{}\n", lines.join("\n")).into_bytes()),
-                    ));
-                    let diagnostics = Arc::new(Mutex::new(TerminalDiagnostics::default()));
-                    drain_engine_stderr(&mut reader, &diagnostics).await;
-                    diagnostics
-                };
+                let diagnostics = terminal_diagnostics_from_lines(&lines, stdout).await;
                 let snapshot = diagnostics
                     .lock()
                     .await
@@ -5276,12 +5284,22 @@ mod tests {
                 };
                 check(&bytes);
                 check(decoded["reason"].as_str().unwrap());
+                for prose in ["can't authenticate", "it's", "don't"] {
+                    if input.contains(prose) {
+                        assert!(decoded["reason"].as_str().unwrap().contains(prose));
+                    }
+                }
                 let entries = decoded["entries"].as_array().unwrap();
                 assert_eq!(entries.len(), 2);
                 for entry in entries {
                     let text = entry["value"].as_str().unwrap();
                     check(text);
                     assert!(text.contains("CRITICAL ERROR:"));
+                    for prose in ["can't authenticate", "it's", "don't"] {
+                        if input.contains(prose) {
+                            assert!(text.contains(prose));
+                        }
+                    }
                     assert!(text.contains("[redacted]"));
                     if preserve_suffix {
                         assert!(
@@ -5299,6 +5317,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_snapshot_quoted_trailing_backslash_preserves_chess_suffix() {
+        for quote in ['"', '\''] {
+            let plain = format!("password={quote}abc\\\\{quote} e2e4 1/2-1/2");
+            for input in [plain.clone(), serde_json::to_string(&plain).unwrap()] {
+                for stdout in [true, false] {
+                    let diagnostics =
+                        terminal_diagnostics_from_lines(std::slice::from_ref(&input), stdout).await;
+                    let snapshot = diagnostics
+                        .lock()
+                        .await
+                        .snapshot(EngineFailureKind::ProtocolFailure, None);
+                    let bytes = serde_json::to_string(&snapshot).unwrap();
+                    assert!(!bytes.contains("abc"), "leaked secret: {bytes}");
+                    for text in snapshot.reason.iter().map(String::as_str).chain(
+                        snapshot.entries.iter().map(|entry| match entry {
+                            EngineTerminalEntry::InfoString(text)
+                            | EngineTerminalEntry::Stderr(text) => text.as_str(),
+                            EngineTerminalEntry::Truncated => panic!("unexpected truncation"),
+                        }),
+                    ) {
+                        assert!(text.contains("[redacted]"));
+                        assert!(text.contains("e2e4 1/2-1/2"), "lost suffix: {text}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_snapshot_unterminated_pending_stdout_survives_recovery() {
+        let consumed = Arc::new(AtomicBool::new(false));
+        let exit = Arc::new(AtomicBool::new(false));
+        let reader = PendingChunkReader::new(
+            [b"info string final reason".to_vec()],
+            consumed.clone(),
+            exit.clone(),
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(BufferedBrokenPipeIo {
+                reader: ResumableLineReader::new(reader),
+                exit_on_terminate: Some(exit),
+            }),
+            EngineDeadlines::default(),
+        );
+        assert!(timeout(Duration::from_millis(10), runtime.read_line())
+            .await
+            .is_err());
+        assert!(consumed.load(Ordering::SeqCst));
+        let error = recover_failed_protocol::<Option<String>>(
+            &mut runtime,
+            &OnceLock::new(),
+            Err(Error::EngineTimeout("stdout stalled".into())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.engine_failure_snapshot().unwrap().reason.as_deref(),
+            Some("final reason")
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_mid_line_io_error_preserves_prefix() {
+        let mut reader = PendingChunkReader::new(
+            [
+                b"info string retained prefix ".to_vec(),
+                b"info string fabricated\n".to_vec(),
+            ],
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(true)),
+        );
+        reader.error_after_first_chunk = true;
+        let mut runtime = EngineRuntime::new(
+            Box::new(BufferedBrokenPipeIo {
+                reader: ResumableLineReader::new(reader),
+                exit_on_terminate: None,
+            }),
+            EngineDeadlines::default(),
+        );
+        let result = runtime.read_line().await;
+        assert!(matches!(
+            result.as_ref().map_err(operation_cause),
+            Err(Error::Io(_))
+        ));
+        let error = recover_failed_protocol(&mut runtime, &OnceLock::new(), result)
+            .await
+            .unwrap_err();
+        let snapshot = error.engine_failure_snapshot().unwrap();
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("retained prefix info string fabricated")
+        );
+        assert_eq!(snapshot.entries.len(), 1);
+    }
+
+    #[tokio::test]
     async fn terminal_snapshot_oversized_suffix_is_never_a_reason() {
         for next in [None, Some("actual final reason")] {
             let mut input = vec![b'x'; 65_536];
@@ -5309,6 +5423,7 @@ mod tests {
             let mut runtime = EngineRuntime::new(
                 Box::new(BufferedBrokenPipeIo {
                     reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input))),
+                    exit_on_terminate: None,
                 }),
                 EngineDeadlines::default(),
             );
@@ -5336,6 +5451,7 @@ mod tests {
                 reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(vec![
                     0xff, b'\n', 0xfe, b'\n', 0xfd, b'\n',
                 ]))),
+                exit_on_terminate: None,
             }),
             EngineDeadlines::default(),
         );
@@ -5371,12 +5487,13 @@ mod tests {
         }
     }
 
-    struct BufferedBrokenPipeIo {
-        reader: ResumableLineReader<BufReader<std::io::Cursor<Vec<u8>>>>,
+    struct BufferedBrokenPipeIo<R> {
+        reader: ResumableLineReader<R>,
+        exit_on_terminate: Option<Arc<AtomicBool>>,
     }
 
     #[async_trait]
-    impl UciIo for BufferedBrokenPipeIo {
+    impl<R: AsyncBufRead + Unpin + Send> UciIo for BufferedBrokenPipeIo<R> {
         async fn write_line(&mut self, _: &str) -> Result<(), Error> {
             Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed engine stdin").into())
         }
@@ -5385,8 +5502,8 @@ mod tests {
             self.reader.read_line().await
         }
 
-        fn has_line_remainder(&self) -> bool {
-            self.reader.has_line_remainder()
+        fn is_discarding_line(&self) -> bool {
+            self.reader.is_discarding_line()
         }
 
         async fn discard_line_remainder(&mut self) -> Result<(), Error> {
@@ -5397,6 +5514,9 @@ mod tests {
         }
 
         async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            if let Some(exit) = &self.exit_on_terminate {
+                exit.store(true, Ordering::SeqCst);
+            }
             Ok(())
         }
     }
@@ -5406,6 +5526,7 @@ mod tests {
         input.extend_from_slice(format!("\ninfo string {reason}\n").as_bytes());
         let io = BufferedBrokenPipeIo {
             reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input))),
+            exit_on_terminate: None,
         };
         let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
         let result = runtime.ensure_ready(None).await;
@@ -12265,6 +12386,7 @@ mod tests {
         current: Vec<u8>,
         first_chunk_consumed: Arc<AtomicBool>,
         release: Arc<AtomicBool>,
+        error_after_first_chunk: bool,
     }
 
     impl PendingChunkReader {
@@ -12278,6 +12400,7 @@ mod tests {
                 current: Vec::new(),
                 first_chunk_consumed,
                 release,
+                error_after_first_chunk: false,
             }
         }
     }
@@ -12312,6 +12435,9 @@ mod tests {
                     if let Some(chunk) = this.chunks.pop_front() {
                         this.current = chunk;
                     }
+                } else if this.error_after_first_chunk {
+                    this.error_after_first_chunk = false;
+                    return std::task::Poll::Ready(Err(io::Error::other("mid-line read failure")));
                 } else if !this.release.load(Ordering::SeqCst) {
                     return std::task::Poll::Pending;
                 } else if let Some(chunk) = this.chunks.pop_front() {
