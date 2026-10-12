@@ -2452,3 +2452,225 @@ No plan-obligation defect found. This approves the specified mechanism, not clos
 VERDICT: APPROVED
 ```
 
+
+### Diff closure rounds 4–7 — credential-scanner lineage to convergence
+
+Round 3 repairs: 3c95ae77 (escape-aware tokenizer per the review-plan judgment, oversized-suffix discard, one correlated malformed-line log), 9c6c8e97 (this handoff). Two load-sensitive test failures seen by the repair leaf outside this run's area (`db::repository::tests::unlinked_before_pool_build_is_a_prompt_conflict_and_clears_building`, `fs::tests::production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop`) passed 3/3 alone and in the next full run (2205 passed); both were filed to the inbox as separate findings.
+
+| Round | REVIEWED_THROUGH | Lenses | Closed | New issue → disposition → commit |
+|---|---|---|---|---|
+| 4 | 9c6c8e97 | correctness, tests, error-handling, tauri-security, records | DR2-N2, DR2-N4, DR3-C1, DR3-E1, DR3-R1 | DR3-S1 NOT CLOSED / DR4-S1b: prose apostrophes (`can't … user's`) acted as enclosing quotes → Fix: only double quotes may bound an unquoted value → 383645fa. DR4-C1b: recovery discarded a valid unterminated final line → Fix (discard only the oversized remnant) → 383645fa. DR4-T1/T2 test gaps → Fix → 383645fa |
+| 5 | 383645fa | correctness, tests, tauri-security | DR3-S1/DR4-S1b, DR4-C1b, DR4-T1, DR4-T2 | DR5-S1c: a JSON-doubled escaped apostrophe was accepted as a depth-0 close (modulo parity rule) → Fix: close only at exact escape depth, otherwise literal (fail closed; a value ending in a literal backslash now loses its suffix, accepted trade) → 23a7dc23 |
+| 6 | 23a7dc23 | correctness, tests, tauri-security | DR5-S1c | DR6-S1d: an escaped literal quote inside a JSON string faked an enclosing boundary for an unquoted value → Fix that closes the class: the enclosing-boundary exception is removed; every unquoted credential value redacts through end of text → 70e31ac5. DR6-T: trailing-backslash suffix absence unpinned → Fix → 70e31ac5 |
+| 7 | 70e31ac5 | correctness, tests, tauri-security | DR6-S1d, DR6-T | none — all three APPROVED |
+
+Lineage note (DR1-03 → DR2-N3 → DR3-S1 → DR4-S1b → DR5-S1c → DR6-S1d): after the round-3 review-plan judgment fixed the mechanism (one tokenizer, shared quote/escape rules, fail closed), every later reopening was an implementation exception that let a boundary be inferred from ambiguous text. Convergence came from removing exceptions rather than adding spellings: exact-depth closes only, and no enclosing-boundary end for unquoted values. Diff adoption counts: r1=14 r2=5 r3=4 r4=4 r5=1 r6=2 r7=0 (non-convergence trigger not fired: the last three rounds adopted 3 against 13 in the three before them).
+
+### Raw reports — diff rounds 4–7
+
+#### review-correctness (r4)
+
+Raw report from lens-correctness-r4.txt, unchanged:
+
+```text
+DR3-C1 CLOSED — oversized reads set `discarding_line`, and terminal recovery discards through the original newline before accepting subsequent diagnostics.
+
+[blocker] src-tauri/src/engine/process.rs:477 — `can't authenticate password=private user's secretphrase` becomes `can't authenticate password=[redacted]'s secretphrase`. The apostrophe in `can't` enters the quote stack, and the apostrophe in `user's` falsely closes an enclosing value. This leaks `secretphrase` into snapshot reason/entries. The specified fail-closed contract requires redacting the entire ambiguous unquoted tail. (confidence: 99)
+
+[blocker] src-tauri/src/engine/process.rs:3794 — Recovery discards valid buffered diagnostics alongside oversized remainders. If an engine writes `info string final reason` without a newline, stalls until the readiness timeout, then exits on `quit`, `pending_line` contains that diagnostic. `has_line_remainder()` returns true and discard clears it, leaving the snapshot reason absent. The reader explicitly accepts unterminated final lines at EOF, so terminal recovery must preserve this valid pending prefix. (confidence: 97)
+
+Limitation: source-only review. Runtime scheduling and platform-specific termination branches were not executed. No files changed. (confidence: 100)
+
+VERDICT: REVISE
+```
+
+#### review-tests (r4)
+
+Raw report from lens-tests-r4.txt, unchanged:
+
+```text
+DR2-N4 CLOSED — `terminal_snapshot_final_stdout_after_oversized_line` asserts the exact final reason and entry through the bounded reader. Reverting discard-and-continue fails those assertions.
+
+DR3-S1 CLOSED — The spelling table checks escaped keys, multiword values, literal quotes, JSON wrapping and incomplete values across stdout/stderr, serialized bytes, reasons and both retained entries.
+
+[should-fix] src-tauri/src/engine/process.rs:5205 — No fixture exercises a closing quote preceded by an escaped backslash. All accepted closing delimiters have the opening delimiter’s escape depth. Replacing the parity calculation with `escapes == depth` is unguarded, despite losing the chess suffix after an ordinary quoted credential ending in a backslash. Add that spelling and assert suffix preservation. (confidence: 97)
+
+[should-fix] src-tauri/src/engine/process.rs:1095 — Preserving `pending_line` after a reader I/O error has no regression anchor. The new fixtures use an infallible Cursor, and cancellation tests produce Pending rather than an error. Restoring `pending_line.clear()` here escapes their assertions, allowing a partial line’s suffix to become a fabricated reason when reading resumes. (confidence: 96)
+
+VERDICT: APPROVED
+```
+
+#### review-error-handling (r4)
+
+Raw report from lens-error-handling-r4.txt, unchanged:
+
+```text
+DR2-N2 CLOSED — Invalid UTF-8 lines are consumed and draining continues. The regression at `process.rs:5433` asserts preservation of the final reason.
+
+DR3-E1 CLOSED — `process.rs:3789–3823` aggregates malformed lines into one log carrying tab, engine, generation and count. The regression at `:5331` asserts exactly one correlated record.
+
+No new error-handling defects found. Read-only source review, tests not rerun.
+
+VERDICT: APPROVED
+```
+
+#### review-tauri-security (r4)
+
+Raw report from lens-tauri-security-r4.txt, unchanged:
+
+```text
+[blocker] DR3-S1 NOT CLOSED — Escaped-key cases are repaired, but ambiguous unquoted values still fail open.
+
+[blocker] src-tauri/src/engine/process.rs:479 — Engine diagnostic `can't authenticate password=private user's pass phrase` exposes password fragments `pass phrase`. Line 504 treats the contraction’s apostrophe as an enclosing quote, then line 479 treats the password’s apostrophe as its closing boundary. Redaction stops early, retaining `password=[redacted]'s pass phrase` in snapshot `reason` and `entries`, which cross IPC through error serialization. This is ordinary prose and an unquoted multiword credential, within the agreed threat model. (confidence: 98)
+
+Limitation: source review only, no tests run. Credential storage, filesystem mutation and signed downloads are absent from this delta.
+
+VERDICT: REVISE
+```
+
+#### review-records (r4)
+
+Raw report from lens-records-r4.txt, unchanged:
+
+```text
+DR3-R1 CLOSED — The handoff now preserves rounds 2–3 and DR2-N1’s witness, repair attempt and deferral history. All 17 embedded reports match the raw files. The cited commits support the summaries.
+
+No findings or contradictory state found. No files changed.
+
+Unverifiable independently: the historical 4/20 and 30/30 stress counts and attributed fork/exec cause.
+
+VERDICT: APPROVED
+```
+
+#### review-correctness (r5)
+
+Raw report from lens-correctness-r5.txt, unchanged:
+
+```text
+DR3-S1 / DR4-S1b CLOSED — Only double quotes enter the enclosing-quote stack. The reported prose apostrophes no longer bound unquoted credentials, which redact through end of text.
+
+DR4-C1b CLOSED — Recovery discards only oversized-line remnants. Valid pending bytes survive timeout or reader I/O failure and can complete at EOF.
+
+[blocker] src-tauri/src/engine/process.rs:357 — JSON wrapping breaks escaped single-quote handling. For diagnostic text `"password='private \\'quoted\\' pass phrase'"` (two backslashes before each internal apostrophe), the value opens at depth 0. The first internal apostrophe has two escapes, so `matches_close` incorrectly accepts it as the closing delimiter. `quoted` and `pass phrase` remain visible in snapshot reason and entries and cross IPC. This is ordinary JSON wrapping of a single-quoted password containing escaped apostrophes. The reviewed contract requires literal quotes inside values to remain redacted and uncertain boundaries to fail closed. (confidence: 99)
+
+Limitation: source-only review. No runtime probes ran, and platform scheduling and frontend interleavings were not exhaustively verified (confidence: 100).
+
+VERDICT: REVISE
+```
+
+#### review-tests (r5)
+
+Raw report from lens-tests-r5.txt, unchanged:
+
+```text
+DR2-N4 CLOSED — `terminal_snapshot_final_stdout_after_oversized_line` asserts the retained final reason through the production bounded reader.
+
+DR4-T1 CLOSED — `process.rs:5320` tests both quote characters, plain and JSON-wrapped input, and both diagnostic sources. Assertions require credential removal and preservation of `e2e4 1/2-1/2`. Reverting closing-quote handling loses the suffix.
+
+DR4-T2 CLOSED — `process.rs:5382` injects an I/O error after consuming the prefix through `ResumableLineReader`. The exact reason assertion rejects standalone `fabricated` and detects discarded pending bytes.
+
+The central fixes have revert-sensitive anchors. The tokenizer test rejects leaked apostrophe-delimited credential fragments in serialized bytes, reason and entries. The unterminated-line test requires `Some("final reason")`. These tests are reachable through the backend gate’s `cargo test --all-targets`.
+
+Limitation: read-only assertion and execution-path review. Supplied green and red-on-revert results were not independently rerun (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+#### review-tauri-security (r5)
+
+Raw report from lens-tauri-security-r5.txt, unchanged:
+
+```text
+DR2-N3 CLOSED — Shared quote/escape handling redacts escaped values before snapshot retention and serialization.
+
+DR3-S1 / DR4-S1b CLOSED — `src-tauri/src/engine/process.rs:494` tracks only double-quoted enclosing strings. Unbounded unquoted values redact through end of text at `:486`. The regression at `:5243` checks prose apostrophes and every secret fragment across stdout, stderr and serialized snapshots.
+
+No additional in-scope defects found.
+
+Limitation: source-only review. Supplied test results were not rerun. Credential persistence, filesystem mutation and signed-download verification are untouched by this range.
+
+VERDICT: APPROVED
+```
+
+#### review-correctness (r6)
+
+Raw report from lens-correctness-r6.txt, unchanged:
+
+```text
+DR5-S1c CLOSED — Doubled escaped apostrophes at depth 2 no longer close the depth-0 value. Redaction continues to its actual closing quote.
+
+[blocker] src-tauri/src/engine/process.rs:501 — For valid JSON `{"msg":"\"password=private \"quoted\" pass phrase\""}`, the scanner pushes the first escaped literal quote as an enclosing string. The unquoted-password scan then stops at the escaped quote before `quoted`, leaking `quoted` and `pass phrase`. These quotes are literal within the outer JSON string. Their uncertain boundaries must fail closed under O1’s sanitization contract. (confidence: 95)
+
+VERDICT: REVISE
+```
+
+#### review-tests (r6)
+
+Raw report from lens-tests-r6.txt, unchanged:
+
+```text
+DR5-S1c CLOSED — `terminal_snapshot_wrapped_literal_quotes_never_end_credentials` rejects leaked `quoted`, `pass` and `phrase` in serialized bytes, decoded reason and entries across both pipes and 0/1/2 JSON layers. Supplied revert evidence confirms exit 101.
+
+[should-fix] src-tauri/src/engine/process.rs:5400 — The ambiguous trailing-backslash case never asserts that its suffix is redacted. Restoring early closure for this case would still satisfy every assertion while preserving `e2e4 1/2-1/2`. The accepted fail-closed behavior needs an absence assertion in reason and entries. (confidence: 100)
+
+VERDICT: APPROVED
+```
+
+#### review-tauri-security (r6)
+
+Raw report from lens-tauri-security-r6.txt, unchanged:
+
+```text
+DR5-S1c CLOSED — `src-tauri/src/engine/process.rs:357` requires exact escape depth. The regression at line 5320 covers escaped inner quotes through 0/1/2 JSON layers on both diagnostic sources.
+
+No additional in-scope defects found. Credential storage, filesystem mutation and signed downloads are absent from this delta. Read-only review, no tests run.
+
+VERDICT: APPROVED
+```
+
+#### review-correctness (r7)
+
+Raw report from lens-correctness-r7.txt, unchanged:
+
+```text
+DR6-S1d CLOSED — `process.rs:453–454` redacts unquoted credentials through end-of-text. The enclosing-quote exception is gone, and the regression fixture checks that `quoted`, the remaining password fragments and the suffix never survive.
+
+No correctness defects found in the closure delta or inspected surrounding contracts.
+
+Limitation: read-only source review. Runtime tests and cross-platform scheduling were not independently exercised (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+#### review-tests (r7)
+
+Raw report from lens-tests-r7.txt, unchanged:
+
+```text
+DR6-T CLOSED — `src-tauri/src/engine/process.rs:5419-5420` now asserts that both suffix fragments are absent from the reason and every entry, across stdout/stderr and three wrapping depths. Preserving that suffix would fail these assertions.
+
+VERDICT: APPROVED
+```
+
+#### review-tauri-security (r7)
+
+Raw report from lens-tauri-security-r7.txt, unchanged:
+
+```text
+DR6-S1d CLOSED — `src-tauri/src/engine/process.rs:457` redacts unquoted credentials through end-of-text. The regression at `:5289` checks serialized reason and entries across both sources and JSON wrapping.
+DR6-T CLOSED — `src-tauri/src/engine/process.rs:5419` explicitly asserts the ambiguous trailing-backslash suffix is redacted.
+
+No new in-scope defects found. Raw causes remain native-only, and command/game failures carry sanitized snapshots.
+
+Limitation: no tests rerun. Credential storage, filesystem mutation and signed downloads are unchanged.
+
+VERDICT: APPROVED
+```
+
+
+### Verification at 70e31ac5
+
+- `pnpm test:e2e:container`: 112 passed, no snapshot moved. New snapshots from this run: engine-gap `engine-failure-before-lines`, `engine-failure-historical-lines`, `engine-failure-terminal-logs`; game-interruption `game-interrupted`, `game-terminal-logs`. Inspected: failure heading, safe reason and Retry; remembered lines dimmed under the failure; Terminal diagnostics in the Logs panel with an unclipped source filter; interrupted-game notice with the safe reason, preserved board and moves, result `*`; terminal entries in the game Logs view.
+- `pnpm build && pnpm verify:app` (release binary, real Rust backend and IPC, off-screen `kwin_wayland`): 101 of 102 assertions passed, including startup, real IPC, workspace tabs, titlebar close and shutdown; no app or WebKit child remained. The one failure is the known file-freshness timing miss f-20261010-41 (apply 1495 ms against its 1000 ms bound, native read 40 ms, machine load average ~24–30); this diff changes no freshness code, and the occurrence is annotated on that finding.
+- Limits that stay: `verify:app` cannot register an engine (native GTK picker), so a live engine crash is proven by the native production-child tests (initialization exit, broken pipe with unread final line) and the mocked-IPC container scenarios, not by the real window (d-20261012-08). Native GTK chrome was not changed.
+
