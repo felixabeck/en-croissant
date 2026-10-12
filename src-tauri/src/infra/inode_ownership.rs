@@ -1,7 +1,9 @@
-//! One arbitration for SQLite reservations, ordinary descriptors and unsafe-open quarantine.
+//! One arbitration for SQLite reservations, capability descriptors, sidecars and quarantine.
+//! On Unix, capability owners share only with capabilities, SQLite sidecar owners share only
+//! with sidecars, and neither shares with a SQLite primary. Windows has no inode exclusion.
 //! Repository predecessor admission releases its state mutex before this mutex is acquired.
 //! VFS lookup also releases this mutex before callbacks or filesystem work. No nested registry
-//! acquisition is permitted. Ordinary final close precedes ownership release under this mutex.
+//! acquisition is permitted. Both owner classes close before release under this mutex.
 
 use crate::{
     db::bound_sqlite::{BindingKey, Registration},
@@ -26,6 +28,8 @@ pub(crate) struct Registry {
     pub(crate) creating: HashMap<BindingKey, u64>,
     ordinary: HashMap<(u64, u64), usize>,
     #[cfg(unix)]
+    sidecar_counts: HashMap<(u64, u64), usize>,
+    #[cfg(unix)]
     sqlite_sidecars: HashMap<u64, SidecarOwners>,
     #[cfg(unix)]
     pub(crate) quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
@@ -42,6 +46,34 @@ pub(crate) struct Registry {
 }
 
 pub(crate) static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug)]
+enum OwnerClass {
+    Capability,
+    #[cfg(unix)]
+    SqliteSidecar,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn open_descriptor_count(identity: (u64, u64)) -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("read process descriptor directory")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<libc::c_int>().ok())
+        .filter(|fd| {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe { libc::fstat(*fd, stat.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            crate::infra::fs::raw_libc_stat_identity(unsafe { &stat.assume_init() }) == identity
+        })
+        .count()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    pub(crate) static FINAL_RELEASE_COUNTS: std::cell::RefCell<Vec<((u64, u64), usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Per-registration connection counts control sidecar close only. Primary inode admission
 /// always uses the shared by_key/creating state, including cached bindings without connections.
@@ -159,7 +191,7 @@ impl Registry {
     }
 
     pub(crate) fn check_sqlite(&self, identity: (u64, u64)) -> Result<(), Error> {
-        if self.ordinary_live(identity) {
+        if self.ordinary_live(identity) || self.sidecar_live(identity) {
             Err(Error::Conflict(
                 "file is open through an ordinary capability".into(),
             ))
@@ -168,24 +200,63 @@ impl Registry {
         }
     }
 
+    #[cfg(any(test, windows))]
     pub(crate) fn admit(&mut self, identity: (u64, u64)) -> Result<(), Error> {
-        if cfg!(unix) && self.sqlite_live(identity) {
+        self.admit_class(identity, OwnerClass::Capability)
+    }
+
+    fn sidecar_live(&self, identity: (u64, u64)) -> bool {
+        #[cfg(unix)]
+        return self.sidecar_counts.contains_key(&identity);
+        #[cfg(windows)]
+        {
+            let _ = identity;
+            false
+        }
+    }
+
+    fn check_class(&self, identity: (u64, u64), class: OwnerClass) -> Result<(), Error> {
+        let incompatible = match class {
+            OwnerClass::Capability => self.sqlite_live(identity) || self.sidecar_live(identity),
+            #[cfg(unix)]
+            OwnerClass::SqliteSidecar => self.sqlite_live(identity) || self.ordinary_live(identity),
+        };
+        if cfg!(unix) && incompatible {
             return Err(Error::Conflict(
                 "file is open through a SQLite binding".into(),
             ));
         }
-        let count = self.ordinary.entry(identity).or_default();
+        Ok(())
+    }
+
+    fn counts(&mut self, class: OwnerClass) -> &mut HashMap<(u64, u64), usize> {
+        match class {
+            OwnerClass::Capability => &mut self.ordinary,
+            #[cfg(unix)]
+            OwnerClass::SqliteSidecar => &mut self.sidecar_counts,
+        }
+    }
+
+    fn admit_class(&mut self, identity: (u64, u64), class: OwnerClass) -> Result<(), Error> {
+        self.check_class(identity, class)?;
+        let count = self.counts(class).entry(identity).or_default();
         *count = count
             .checked_add(1)
             .ok_or_else(|| Error::ResourceLimit("ordinary file owner count exhausted".into()))?;
         Ok(())
     }
 
-    fn release(&mut self, identity: (u64, u64)) {
-        if let Some(count) = self.ordinary.get_mut(&identity) {
+    fn release(&mut self, identity: (u64, u64), class: OwnerClass) {
+        if let Some(count) = self.counts(class).get_mut(&identity) {
             *count -= 1;
             if *count == 0 {
-                self.ordinary.remove(&identity);
+                self.counts(class).remove(&identity);
+                #[cfg(all(test, target_os = "linux"))]
+                FINAL_RELEASE_COUNTS.with(|counts| {
+                    counts
+                        .borrow_mut()
+                        .push((identity, open_descriptor_count(identity)));
+                });
             }
         }
     }
@@ -202,7 +273,7 @@ impl Registry {
     #[cfg(unix)]
     pub(crate) fn quarantine(&mut self, file: File, identity: Option<(u64, u64)>) {
         match identity {
-            Some(identity) if self.sqlite_live(identity) => self
+            Some(identity) if self.sqlite_live(identity) || self.sidecar_live(identity) => self
                 .quarantined_descriptors
                 .entry(identity)
                 .or_default()
@@ -219,7 +290,7 @@ impl Registry {
             .quarantined_descriptors
             .keys()
             .copied()
-            .filter(|id| !self.sqlite_live(*id))
+            .filter(|id| !self.sqlite_live(*id) && !self.sidecar_live(*id))
             .collect();
         for id in retired {
             drop(self.quarantined_descriptors.remove(&id));
@@ -230,21 +301,24 @@ impl Registry {
     }
 }
 
-/// A regular descriptor and its inseparable inode owner. No consuming raw File escape.
+/// A regular descriptor with an inseparable capability or SQLite-sidecar owner.
+/// Directory carriers are untracked. No consuming raw File escape outside SQLite handoff.
 #[derive(Debug)]
 pub(crate) struct OwnedFile {
     file: Option<File>,
     identity: (u64, u64),
     tracked: bool,
+    class: OwnerClass,
 }
 
 impl OwnedFile {
     /// Called only by opening adapters while holding admission arbitration.
-    fn admitted(file: File, identity: (u64, u64)) -> Self {
+    fn admitted(file: File, identity: (u64, u64), class: OwnerClass) -> Self {
         Self {
             file: Some(file),
             identity,
             tracked: true,
+            class,
         }
     }
 
@@ -258,6 +332,7 @@ impl OwnedFile {
             file: Some(file),
             identity: (0, 0),
             tracked: false,
+            class: OwnerClass::Capability,
         })
     }
 
@@ -289,13 +364,14 @@ impl OwnedFile {
         let file = self.file()?.try_clone()?;
         if self.tracked {
             registry
-                .admit(self.identity)
+                .admit_class(self.identity, self.class)
                 .map_err(|error| io::Error::other(error.diagnostic()))?;
         }
         Ok(Self {
             file: Some(file),
             identity: self.identity,
             tracked: self.tracked,
+            class: self.class,
         })
     }
 
@@ -333,7 +409,7 @@ impl OwnedFile {
     fn close_under(&mut self, registry: &mut Registry) {
         drop(self.file.take());
         if self.tracked {
-            registry.release(self.identity);
+            registry.release(self.identity, self.class);
             self.tracked = false;
         }
     }
@@ -471,7 +547,7 @@ impl From<File> for OwnedFile {
         let identity = crate::infra::path_authority::opened_file_identity(&file).unwrap();
         let admission = lock().unwrap().admit(identity);
         admission.unwrap();
-        Self::admitted(file, identity)
+        Self::admitted(file, identity, OwnerClass::Capability)
     }
 }
 
@@ -499,6 +575,34 @@ pub(crate) fn open_at_mode(
     create: bool,
     mode: rustix::fs::Mode,
 ) -> Result<OwnedFile, Error> {
+    open_at_mode_class(parent, name, flags, create, mode, OwnerClass::Capability)
+}
+
+#[cfg(unix)]
+pub(crate) fn open_sqlite_sidecar_at_mode(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    flags: rustix::fs::OFlags,
+    create: bool,
+    exclusive: bool,
+    mode: rustix::fs::Mode,
+) -> Result<OwnedFile, Error> {
+    if create && exclusive {
+        create_at_mode_class(parent, name, flags, mode, OwnerClass::SqliteSidecar)
+    } else {
+        open_at_mode_class(parent, name, flags, create, mode, OwnerClass::SqliteSidecar)
+    }
+}
+
+#[cfg(unix)]
+fn open_at_mode_class(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    flags: rustix::fs::OFlags,
+    create: bool,
+    mode: rustix::fs::Mode,
+    class: OwnerClass,
+) -> Result<OwnedFile, Error> {
     use rustix::fs::{self as rfs, FileType, OFlags};
     let io_error = |error: rustix::io::Errno| Error::from(io::Error::from(error));
     #[cfg(target_os = "linux")]
@@ -513,9 +617,9 @@ pub(crate) fn open_at_mode(
         ) {
             Ok(fd) => File::from(fd),
             Err(error) if error == rustix::io::Errno::NOENT && create => {
-                match create_at_mode(parent, name, flags, mode) {
+                match create_at_mode_class(parent, name, flags, mode, class) {
                     Err(Error::Io(error)) if error.raw_os_error() == Some(libc::EEXIST) => {
-                        return open_at_mode(parent, name, flags, false, mode)
+                        return open_at_mode_class(parent, name, flags, false, mode, class)
                     }
                     result => return result,
                 }
@@ -546,11 +650,12 @@ pub(crate) fn open_at_mode(
         if !registry.open_admitted() {
             return Err(Error::from(io::Error::from_raw_os_error(libc::EMFILE)));
         }
-        registry.admit(identity)?;
+        registry.admit_class(identity, class)?;
         let mut owned = OwnedFile {
             file: None,
             identity,
             tracked: true,
+            class,
         };
         drop(registry);
         #[cfg(test)]
@@ -589,11 +694,7 @@ pub(crate) fn open_at_mode(
             return Err(Error::from(io::Error::from_raw_os_error(libc::EMFILE)));
         }
         if let Some(identity) = expected {
-            if registry.sqlite_live(identity) {
-                return Err(Error::Conflict(
-                    "file is open through a SQLite binding".into(),
-                ));
-            }
+            registry.check_class(identity, class)?;
         }
         let opened = File::from(
             rfs::openat(
@@ -620,11 +721,11 @@ pub(crate) fn open_at_mode(
             }
         };
         let identity = crate::infra::fs::raw_stat_identity(&stat);
-        if let Err(error) = registry.admit(identity) {
+        if let Err(error) = registry.admit_class(identity, class) {
             registry.quarantine(opened, Some(identity));
             return Err(error);
         }
-        let owned = OwnedFile::admitted(opened, identity);
+        let owned = OwnedFile::admitted(opened, identity, class);
         drop(registry);
         if expected.is_some_and(|expected| expected != identity) {
             return Err(Error::Conflict("file changed while opening".into()));
@@ -656,6 +757,17 @@ pub(crate) fn create_at_mode(
     flags: rustix::fs::OFlags,
     mode: rustix::fs::Mode,
 ) -> Result<OwnedFile, Error> {
+    create_at_mode_class(parent, name, flags, mode, OwnerClass::Capability)
+}
+
+#[cfg(unix)]
+fn create_at_mode_class(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    flags: rustix::fs::OFlags,
+    mode: rustix::fs::Mode,
+    class: OwnerClass,
+) -> Result<OwnedFile, Error> {
     use rustix::fs::{self as rfs, OFlags};
     let mut registry = lock()?;
     if !registry.open_admitted() {
@@ -678,11 +790,11 @@ pub(crate) fn create_at_mode(
         }
     };
     let identity = crate::infra::fs::raw_stat_identity(&stat);
-    if let Err(error) = registry.admit(identity) {
+    if let Err(error) = registry.admit_class(identity, class) {
         registry.quarantine(opened, Some(identity));
         return Err(error);
     }
-    Ok(OwnedFile::admitted(opened, identity))
+    Ok(OwnedFile::admitted(opened, identity, class))
 }
 
 #[cfg(all(test, windows))]
@@ -726,5 +838,5 @@ mod windows_tests {
 pub(in crate::infra) fn own_windows(file: File) -> Result<OwnedFile, Error> {
     let identity = crate::infra::path_authority::opened_file_identity(&file)?;
     lock()?.admit(identity)?;
-    Ok(OwnedFile::admitted(file, identity))
+    Ok(OwnedFile::admitted(file, identity, OwnerClass::Capability))
 }

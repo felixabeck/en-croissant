@@ -1722,8 +1722,19 @@ mod tests {
         assert!(!authority_contains(&authority, &handle));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cross_capability_puzzle_delete_refuses_game_binding_and_retries() {
+    struct RefusedDeletionFixture<C> {
+        _directory: tempfile::TempDir,
+        path: PathBuf,
+        repository: Arc<DatabaseRepository>,
+        handle: crate::infra::path_authority::PathRef,
+        target: crate::infra::path_authority::DatabaseFileTarget,
+        held_connection: C,
+        app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    async fn refused_deletion_fixture(
+        name: &str,
+    ) -> RefusedDeletionFixture<impl std::ops::DerefMut<Target = diesel::SqliteConnection>> {
         let PuzzleDeletionFixture {
             _directory,
             path,
@@ -1732,9 +1743,7 @@ mod tests {
             cache,
             handle,
             resolved,
-        } = puzzle_deletion_fixture(
-            "cross_capability_puzzle_delete_refuses_game_binding_and_retries.db3",
-        );
+        } = puzzle_deletion_fixture(name);
         drop(resolved);
         let target = crate::db::test_target(&path);
         let held_connection = repository.schema_specific_connection(&target).unwrap();
@@ -1760,6 +1769,31 @@ mod tests {
             .unwrap()
             .is_empty());
 
+        RefusedDeletionFixture {
+            _directory,
+            path,
+            repository,
+            handle,
+            target,
+            held_connection,
+            app,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cross_capability_puzzle_delete_refuses_game_binding_and_retries() {
+        let RefusedDeletionFixture {
+            _directory,
+            path,
+            repository,
+            handle,
+            target,
+            held_connection,
+            app,
+        } = refused_deletion_fixture(
+            "cross_capability_puzzle_delete_refuses_game_binding_and_retries.db3",
+        )
+        .await;
         drop(held_connection);
         repository.close_and_invalidate(&target).unwrap();
         delete_puzzle_database(handle, app.state::<crate::AppState>())
@@ -1770,41 +1804,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cross_capability_puzzle_delete_refusal_leaves_shutdown_no_native_job() {
-        let PuzzleDeletionFixture {
+        let RefusedDeletionFixture {
             _directory,
-            path,
             repository,
-            authority,
-            cache,
-            handle,
-            resolved,
-        } = puzzle_deletion_fixture(
+            target,
+            held_connection,
+            app,
+            ..
+        } = refused_deletion_fixture(
             "cross_capability_puzzle_delete_refusal_leaves_shutdown_no_native_job.db3",
-        );
-        drop(resolved);
-        let target = crate::db::test_target(&path);
-        let held_connection = repository.schema_specific_connection(&target).unwrap();
-        let state = crate::AppState {
-            database_repository: Arc::clone(&repository),
-            pgn_path_authority: authority.clone(),
-            puzzle_cache: Arc::clone(&cache),
-            ..Default::default()
-        };
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        let result = delete_puzzle_database(handle.clone(), app.state::<crate::AppState>()).await;
-        assert!(
-            matches!(result, Err(Error::Conflict(_))),
-            "ordinary puzzle deletion must refuse a live game binding"
-        );
-        assert!(path.exists());
-        assert!(cache.lock().await.key.is_some());
-        assert!(app
-            .state::<crate::AppState>()
-            .operations
-            .outstanding_labels()
-            .unwrap()
-            .is_empty());
+        )
+        .await;
         app.state::<crate::AppState>()
             .operations
             .seal_and_request_cancellation()
@@ -2114,9 +2124,6 @@ mod tests {
             .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
             .unwrap();
         drop(database_connection);
-        repository
-            .close_and_invalidate(&crate::db::test_target(&path))
-            .unwrap();
         repository
             .close_and_invalidate(&crate::db::test_target(&path))
             .unwrap();

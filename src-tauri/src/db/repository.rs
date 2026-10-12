@@ -6010,6 +6010,12 @@ mod bound_sqlite_witnesses {
         parent
     }
 
+    // SQLite's WALINDEX_LOCK_OFFSET and SQLITE_SHM_NLOCK.
+    #[cfg(unix)]
+    const WAL_INDEX_LOCK_OFFSET: i64 = 120;
+    #[cfg(unix)]
+    const WAL_INDEX_LOCK_SLOTS: i64 = 8;
+
     #[cfg(unix)]
     fn sqlite_shared_read_lock_query() -> libc::flock {
         const PENDING_BYTE: libc::off_t = 0x4000_0000;
@@ -6067,21 +6073,16 @@ mod bound_sqlite_witnesses {
     }
 
     #[cfg(target_os = "linux")]
-    fn open_descriptor_count(identity: (u64, u64)) -> usize {
-        use crate::infra::fs::raw_libc_stat_identity;
+    use crate::infra::inode_ownership::open_descriptor_count;
 
-        fs::read_dir("/proc/self/fd")
-            .expect("read process descriptor directory")
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().to_str()?.parse::<libc::c_int>().ok())
-            .filter(|fd| {
-                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                if unsafe { libc::fstat(*fd, stat.as_mut_ptr()) } != 0 {
-                    return false;
-                }
-                raw_libc_stat_identity(unsafe { &stat.assume_init() }) == identity
-            })
-            .count()
+    #[cfg(unix)]
+    fn sqlite_shm_lock_query() -> libc::flock {
+        let mut query: libc::flock = unsafe { std::mem::zeroed() };
+        query.l_type = libc::F_WRLCK as _;
+        query.l_whence = libc::SEEK_SET as _;
+        query.l_start = WAL_INDEX_LOCK_OFFSET as _;
+        query.l_len = WAL_INDEX_LOCK_SLOTS as _;
+        query
     }
 
     #[cfg(unix)]
@@ -6211,11 +6212,7 @@ mod bound_sqlite_witnesses {
         let sidecar_target = authority
             .database_file_target(&handle, PathOperation::DatabaseRead)
             .unwrap();
-        let mut query: libc::flock = unsafe { std::mem::zeroed() };
-        query.l_type = libc::F_WRLCK as _;
-        query.l_whence = libc::SEEK_SET as _;
-        query.l_start = 120;
-        query.l_len = 8;
+        let query = sqlite_shm_lock_query();
         let native =
             crate::db::bound_sqlite::open_bound_sidecar_for_test(&bound, "-shm", libc::O_RDONLY)
                 .unwrap();
@@ -6247,8 +6244,23 @@ mod bound_sqlite_witnesses {
             BoundDatabase::acquire(&sidecar_target),
             Err(Error::Conflict(_))
         ));
-        drop(second);
+        #[cfg(target_os = "linux")]
+        let shm_identity = crate::infra::path_authority::opened_file_identity(&probe).unwrap();
         drop(probe);
+        drop(second);
+        #[cfg(target_os = "linux")]
+        crate::infra::inode_ownership::FINAL_RELEASE_COUNTS.with(|counts| {
+            let counts = counts.borrow();
+            let final_count = counts
+                .iter()
+                .rev()
+                .find(|(identity, _)| *identity == shm_identity)
+                .unwrap();
+            assert_eq!(
+                final_count.1, 0,
+                "sidecar descriptor must close before final release"
+            );
+        });
         drop(BoundDatabase::acquire(&sidecar_target).unwrap());
         assert!(
             matches!(
@@ -6261,6 +6273,102 @@ mod bound_sqlite_witnesses {
             ),
             "the idle primary binding remains an incompatible holder"
         );
+        drop(bound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_shm_alias_refuses_capability_after_wal_reader() {
+        use crate::infra::fs::{open_regular_at, RegularFileAccess};
+        use std::os::fd::FromRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("shm-owner.db3");
+        seed_database(&path, 1, "WAL");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let mut reader = repository.initialization_connection(&target, None).unwrap();
+        reader
+            .batch_execute("BEGIN; SELECT Value FROM Info;")
+            .unwrap();
+        let shm = root.path().join("shm-owner.db3-shm");
+        let alias = root.path().join("alias.pgn");
+        fs::hard_link(&shm, &alias).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let native =
+            crate::db::bound_sqlite::open_bound_sidecar_for_test(&bound, "-shm", libc::O_RDONLY)
+                .unwrap();
+        let probe = unsafe { fs::File::from_raw_fd(native) };
+        assert!(native_lock_is_held(&probe, sqlite_shm_lock_query()));
+        let attempt = open_regular_at(
+            target.parent(),
+            alias.file_name().unwrap(),
+            RegularFileAccess::ReadOnly,
+        );
+        assert!(
+            matches!(attempt, Err(Error::Conflict(_))),
+            "capability alias of live SHM must be refused"
+        );
+        assert!(native_lock_is_held(&probe, sqlite_shm_lock_query()));
+        drop(attempt);
+        assert!(
+            native_lock_is_held(&probe, sqlite_shm_lock_query()),
+            "refusal cleanup must preserve SHM locks"
+        );
+        drop(probe);
+        drop(reader);
+        drop(repository);
+        drop(bound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_shm_alias_refuses_wal_after_capability_owner() {
+        use crate::infra::fs::{open_regular_at, RegularFileAccess};
+        use std::os::fd::AsRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("shm-successor.db3");
+        seed_database(&path, 1, "WAL");
+        let target = test_target(&path);
+        let alias = root.path().join("alias.pgn");
+        fs::write(&alias, b"").unwrap();
+        let capability = open_regular_at(
+            target.parent(),
+            alias.file_name().unwrap(),
+            RegularFileAccess::ReadOnly,
+        )
+        .unwrap();
+        let fd = capability.as_raw_fd();
+        fs::hard_link(&alias, root.path().join("shm-successor.db3-shm")).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let open_reader = || {
+            let lifetime = bound.connection_lifetime().unwrap();
+            Connection::open_with_flags(
+                bound.uri(SqliteMode::ReadWrite).unwrap(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .map(|reader| lifetime.wrap(reader))
+            .and_then(|reader| {
+                reader.execute_batch("BEGIN; SELECT Value FROM Info;")?;
+                Ok(reader)
+            })
+        };
+        let attempt = open_reader();
+        assert!(
+            attempt.is_err(),
+            "WAL open must refuse an existing capability owner of SHM"
+        );
+        assert!(
+            bound.refusal_count() > 0,
+            "SHM sidecar admission must record the refusal"
+        );
+        assert!(
+            unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0,
+            "refused sidecar must leave capability descriptor open"
+        );
+        drop(attempt);
+        drop(capability);
+        let retry = open_reader().unwrap();
+        drop(retry);
         drop(bound);
     }
 
@@ -6828,10 +6936,11 @@ mod bound_sqlite_witnesses {
         let path = root.path().join("concurrent.db3");
         seed_database(&path, 1, "DELETE");
         let target = test_target(&path);
-        let probe = fs::File::open(&path).unwrap();
         let ordinary =
             open_regular_at(target.parent(), target.leaf(), RegularFileAccess::ReadOnly).unwrap();
         let fd = ordinary.as_raw_fd();
+        #[cfg(target_os = "linux")]
+        let identity = target.identity();
         let entered = Arc::new(std::sync::Barrier::new(2));
         let resume = Arc::new(std::sync::Barrier::new(2));
         let (release_reader, reader_release) = std::sync::mpsc::channel();
@@ -6841,10 +6950,23 @@ mod bound_sqlite_witnesses {
         std::thread::scope(|scope| {
             let entered_in_close = Arc::clone(&entered);
             let resume_in_close = Arc::clone(&resume);
-            scope.spawn(move || {
+            let closer = scope.spawn(move || {
                 inode_ownership::FINAL_CLOSE_BARRIERS
                     .with(|slot| *slot.borrow_mut() = Some((entered_in_close, resume_in_close)));
                 drop(ordinary);
+                #[cfg(target_os = "linux")]
+                inode_ownership::FINAL_RELEASE_COUNTS.with(|counts| {
+                    let counts = counts.borrow();
+                    let final_count = counts
+                        .iter()
+                        .rev()
+                        .find(|(released, _)| *released == identity)
+                        .unwrap();
+                    assert_eq!(
+                        final_count.1, 0,
+                        "capability descriptor must close before final release"
+                    );
+                });
             });
             entered.wait();
             let descriptor_live = unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
@@ -6881,11 +7003,12 @@ mod bound_sqlite_witnesses {
                 "SQLite cannot pass the paused final close"
             );
             lock.recv_timeout(Duration::from_secs(10)).unwrap();
+            let probe = fs::File::open(&path).unwrap();
             assert_sqlite_shared_read_lock_is_held(&probe);
             release_reader.send(()).unwrap();
+            closer.join().unwrap();
         });
         drop(repository);
-        drop(probe);
     }
 
     #[cfg(unix)]

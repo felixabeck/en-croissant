@@ -660,13 +660,6 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
     registry.drain_quarantine();
 }
 
-/// Checks liveness without upgrading a `Weak` under the registry lock: a temporary `Arc` dropped
-/// here could be the last one, and `Registration::drop` locks the registry again.
-#[cfg(all(unix, not(target_os = "linux")))]
-fn identity_has_live_registration(registry: &Registry, identity: (u64, u64)) -> bool {
-    registry.sqlite_live(identity)
-}
-
 #[cfg(unix)]
 fn leaf_identity_matches(registration: &Registration, stat: &libc::stat) -> bool {
     raw_libc_stat_identity(stat) == registration.binding.identity
@@ -686,19 +679,10 @@ fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
         Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let identity_is_live = identity_has_live_registration(&registry, identity);
-    if identity_is_live {
-        registry
-            .quarantined_descriptors
-            .entry(identity)
-            .or_default()
-            .push(file);
-    } else {
-        drop(file);
-    }
+    registry.quarantine(file, Some(identity));
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, not(target_os = "linux"))))]
 fn retain_unclassified_descriptor(fd: libc::c_int) {
     use std::os::fd::FromRawFd;
 
@@ -711,11 +695,11 @@ fn retain_unclassified_descriptor(fd: libc::c_int) {
         Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    registry.unclassified_descriptors.push(file);
+    registry.quarantine(file, None);
 }
 
-#[cfg(unix)]
-fn lockable_open_is_admitted(is_leaf: bool) -> bool {
+#[cfg(all(unix, not(target_os = "linux")))]
+fn lockable_open_is_admitted() -> bool {
     let Some(registry_mutex) = REGISTRY.get() else {
         return true;
     };
@@ -724,16 +708,13 @@ fn lockable_open_is_admitted(is_leaf: bool) -> bool {
         Err(poisoned) => poisoned.into_inner(),
     };
     #[cfg(not(target_os = "linux"))]
-    if is_leaf
-        && registry
-            .quarantined_descriptors
-            .values()
-            .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
+    if registry
+        .quarantined_descriptors
+        .values()
+        .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
     {
         return false;
     }
-    #[cfg(target_os = "linux")]
-    let _ = is_leaf;
     registry.open_admitted()
 }
 
@@ -1362,23 +1343,14 @@ mod unix_hooks {
             - OFlags::EXCL
             - OFlags::NOFOLLOW;
         let leaf = OsStr::from_bytes(name.as_bytes());
-        let opened: Result<OwnedFile, Error> =
-            if flags & libc::O_EXCL != 0 && flags & libc::O_CREAT != 0 {
-                inode_ownership::create_at_mode(
-                    &registration.binding.parent,
-                    leaf,
-                    native_flags,
-                    Mode::from_raw_mode(mode as _),
-                )
-            } else {
-                inode_ownership::open_at_mode(
-                    &registration.binding.parent,
-                    leaf,
-                    native_flags,
-                    flags & libc::O_CREAT != 0,
-                    Mode::from_raw_mode(mode as _),
-                )
-            };
+        let opened: Result<OwnedFile, Error> = inode_ownership::open_sqlite_sidecar_at_mode(
+            &registration.binding.parent,
+            leaf,
+            native_flags,
+            flags & libc::O_CREAT != 0,
+            flags & libc::O_EXCL != 0,
+            Mode::from_raw_mode(mode as _),
+        );
         match opened.and_then(|file| file.handoff_sqlite(registration)) {
             Ok(fd) => {
                 set_opened_name(registration, leaf);
@@ -1419,6 +1391,7 @@ mod unix_hooks {
 
     /// Both sidecars and non-Linux leaves are lockable. Unknown identities must stay owned
     /// by the registry because closing any descriptor can release this process's SQLite locks.
+    #[cfg(any(test, not(target_os = "linux")))]
     unsafe fn accept_regular_descriptor(
         registration: &Registration,
         fd: c_int,
@@ -1508,59 +1481,52 @@ mod unix_hooks {
                 if !is_leaf {
                     return unsafe { open_owned_sidecar(&registration, &name, flags, mode) };
                 }
-                if is_leaf {
-                    #[cfg(target_os = "linux")]
-                    return unsafe { open_linux_leaf(&registration, &name, flags, mode) };
+                #[cfg(target_os = "linux")]
+                return unsafe { open_linux_leaf(&registration, &name, flags, mode) };
 
-                    #[cfg(all(unix, not(target_os = "linux")))]
-                    {
-                        if !lockable_open_is_admitted(true) {
-                            return syscall_failure(libc::EMFILE);
-                        }
-
-                        // Non-Linux Unix must check before opening because a mismatched lockable
-                        // descriptor can only be retained safely after the race has occurred.
-                        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                        let result = unsafe {
-                            libc::fstatat(
-                                registration.binding.parent.as_raw_fd(),
-                                name.as_ptr(),
-                                stat.as_mut_ptr(),
-                                libc::AT_SYMLINK_NOFOLLOW,
-                            )
-                        };
-                        if result == 0
-                            && !leaf_identity_matches(&registration, unsafe { &stat.assume_init() })
-                        {
-                            increment_refusal(&registration.binding);
-                            return syscall_failure(libc::ESTALE);
-                        }
+                #[cfg(all(unix, not(target_os = "linux")))]
+                {
+                    if !lockable_open_is_admitted() {
+                        return syscall_failure(libc::EMFILE);
                     }
-                }
-                if !is_leaf && !lockable_open_is_admitted(false) {
-                    return syscall_failure(libc::EMFILE);
-                }
-                #[cfg(all(test, unix, not(target_os = "linux")))]
-                if is_leaf {
+
+                    // Non-Linux Unix must check before opening because a mismatched lockable
+                    // descriptor can only be retained safely after the race has occurred.
+                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                    let result = unsafe {
+                        libc::fstatat(
+                            registration.binding.parent.as_raw_fd(),
+                            name.as_ptr(),
+                            stat.as_mut_ptr(),
+                            libc::AT_SYMLINK_NOFOLLOW,
+                        )
+                    };
+                    if result == 0
+                        && !leaf_identity_matches(&registration, unsafe { &stat.assume_init() })
+                    {
+                        increment_refusal(&registration.binding);
+                        return syscall_failure(libc::ESTALE);
+                    }
+                    #[cfg(all(test, unix, not(target_os = "linux")))]
                     invoke_binding_test_hook(&registration.binding.before_openat);
+                    let fd = unsafe {
+                        libc::openat(
+                            registration.binding.parent.as_raw_fd(),
+                            name.as_ptr(),
+                            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                            mode as libc::c_uint,
+                        )
+                    };
+                    if fd < 0 {
+                        return fd;
+                    }
+                    let fd = unsafe { accept_regular_descriptor(&registration, fd, true) };
+                    if fd < 0 {
+                        return fd;
+                    }
+                    set_opened_name(&registration, OsStr::from_bytes(name.as_bytes()));
+                    fd
                 }
-                let fd = unsafe {
-                    libc::openat(
-                        registration.binding.parent.as_raw_fd(),
-                        name.as_ptr(),
-                        flags | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-                        mode as libc::c_uint,
-                    )
-                };
-                if fd < 0 {
-                    return fd;
-                }
-                let fd = unsafe { accept_regular_descriptor(&registration, fd, is_leaf) };
-                if fd < 0 {
-                    return fd;
-                }
-                set_opened_name(&registration, OsStr::from_bytes(name.as_bytes()));
-                fd
             }
         }
     }

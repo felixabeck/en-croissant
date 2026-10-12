@@ -545,6 +545,38 @@ mod tests {
         let body_bytes = read_body(res.into_body()).await;
         assert_eq!(body_bytes, b"1234567890");
 
+        // Full and ranged bodies must survive more than one streaming read.
+        let large: Vec<u8> = (0..200_000).map(|index| (index % 251) as u8).collect();
+        tokio::fs::write(sound_path.join("large.mp3"), &large)
+            .await
+            .unwrap();
+        let res = server::serve_sound(
+            AxumPath("large.mp3".to_string()),
+            HeaderMap::new(),
+            Extension(sound_dir.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get(header::CONTENT_LENGTH).unwrap(), "200000");
+        assert_eq!(read_body(res.into_body()).await, large);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, "bytes=60000-140000".parse().unwrap());
+        let res = server::serve_sound(
+            AxumPath("large.mp3".to_string()),
+            headers,
+            Extension(sound_dir.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(res.headers().get(header::CONTENT_LENGTH).unwrap(), "80001");
+        assert_eq!(
+            res.headers().get(header::CONTENT_RANGE).unwrap(),
+            "bytes 60000-140000/200000"
+        );
+        assert_eq!(read_body(res.into_body()).await, large[60000..=140000]);
+
         // Valid partial range
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, "bytes=2-4".parse().unwrap());
