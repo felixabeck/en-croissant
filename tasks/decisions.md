@@ -6966,8 +6966,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Evidence:** /tmp/chessfable-first-pass-repair.3mlj4B/database-reachability-report.md, /tmp/chessfable-compact-preview.Jb2iyI/report.md and /tmp/chessfable-compact-notation.N0jClt/report.md preserve the measured failures, source fixes, exact candidate hashes and fault/restoration. Screenshot acceptance and native proof are pending at decision creation.
 * **Governs:** f-20261010-36
 * **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. The temporary scope freeze and its relaxation were root worker instructions, not a Felix decision.
-* **Decided by:** Codex drain e838b3a7-7402-4e53-a614-eb2da79f3765 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":11,"effect_sha256":"206a61a59ba21e6a4dc58adebc5399f4ca866cd2c16701652f7e9c496cc5a5d5","input_sha256":"192e1441f730190ee57b818d5c2533ec68ec01aefac1a970430cf36fef9af6fc","kind":"mutation-receipt","operation":"6c0b61a12bfa184adc79fbc2895f92fadbc6699877a5d4418220bee9efcca81c","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-11"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex drain e838b3a7-7402-4e53-a614-eb2da79f3765 · **Superseded-by:** d-20261012-17
+<!-- ledger-meta {"command":"record-decision","effect_lines":11,"effect_sha256":"a8af317e5451aba7ec722a5390d4dc60ba67374f8ef1c97fd817121a457b00b5","input_sha256":"192e1441f730190ee57b818d5c2533ec68ec01aefac1a970430cf36fef9af6fc","kind":"mutation-receipt","operation":"6c0b61a12bfa184adc79fbc2895f92fadbc6699877a5d4418220bee9efcca81c","options":{"section":null},"request_id_sha256":null,"results":["d-20261010-11"],"target":"decisions-ledger","v":1} -->
 
 ## 2026-10-11 — recorded through the decisions lock
 
