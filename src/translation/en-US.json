@@ -414,6 +414,7 @@
     "Databases.LoadError.Title": "There was an error loading this database",
     "Databases.LoadError.TooLarge": "This database folder is too large to list. Choose another.",
     "Databases.LoadError.Unusable": "This database folder cannot be opened. Choose another.",
+    "Databases.LoadRetry": "Retry",
     "Databases.NoSelection": "No database selected",
     "Databases.OpenDatabase": "Open database",
     "Databases.Player.MaxELO": "Max ELO",

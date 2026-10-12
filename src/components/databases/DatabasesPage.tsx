@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { listingFailure, rootFailureMessage } from "@/components/files/listingFailure";
+import { listingFailure } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
 import {
   Box,
@@ -55,6 +55,7 @@ import {
 } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
+import { databaseLoadFailureMessage } from "./databaseLoadFailure";
 
 export default function DatabasesPage() {
   const { t } = useTranslation();
@@ -74,11 +75,7 @@ export default function DatabasesPage() {
     mutate,
   } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
   const failure = listingFailure(error);
-  const loadFailureMessage =
-    rootFailureMessage("database", error, t) ??
-    t("Databases.LoadError", {
-      defaultValue: "Could not load databases. Please try again.",
-    });
+  const loadFailureMessage = databaseLoadFailureMessage(error, t);
   const needsFolder = failure !== "silent" && failure !== "retry";
   function chooseWorkspace() {
     return picker.run(async () => {

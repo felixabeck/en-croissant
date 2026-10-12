@@ -424,6 +424,7 @@
     "Databases.LoadError.Title": "Помилка завантаження цієї бази даних",
     "Databases.LoadError.TooLarge": "Ця тека баз даних завелика для відображення списку. Виберіть іншу.",
     "Databases.LoadError.Unusable": "Ця тека баз даних не може бути відкрита. Виберіть іншу.",
+    "Databases.LoadRetry": "Повторити",
     "Databases.NoSelection": "Базу даних не вибрано",
     "Databases.OpenDatabase": "Відкрити базу даних",
     "Databases.Player.MaxELO": "Макс. Ело",

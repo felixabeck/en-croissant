@@ -419,6 +419,7 @@
     "Databases.LoadError.Title": "Une erreur s'est produite lors du chargement de cette base de données",
     "Databases.LoadError.TooLarge": "Ce dossier de bases de données est trop volumineux pour être listé. Choisissez-en un autre.",
     "Databases.LoadError.Unusable": "Ce dossier de bases de données ne peut pas être ouvert. Choisissez-en un autre.",
+    "Databases.LoadRetry": "Réessayer",
     "Databases.NoSelection": "Aucune base de données sélectionnée",
     "Databases.OpenDatabase": "Ouvrir la base de données",
     "Databases.Player.MaxELO": "ELO Max",

@@ -424,6 +424,7 @@
     "Databases.LoadError.Title": "Адбылася памылка пры загрузцы гэтай базы дадзеных",
     "Databases.LoadError.TooLarge": "Гэта папка баз даных занадта вялікая для паказу спіса. Выберыце іншую.",
     "Databases.LoadError.Unusable": "Гэта папка баз даных не можа быць адкрытая. Выберыце іншую.",
+    "Databases.LoadRetry": "Паўтарыць",
     "Databases.NoSelection": "База дадзеных не выбрана",
     "Databases.OpenDatabase": "Адкрыць базу даных",
     "Databases.Player.MaxELO": "Макс. ELO",

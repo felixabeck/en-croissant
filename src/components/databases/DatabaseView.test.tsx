@@ -7,17 +7,21 @@ import { installResizeObserverStub } from "@/tests/resizeObserver";
 
 installResizeObserverStub();
 
-const mocks = vi.hoisted(() => ({ getDatabases: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getDatabases: vi.fn(), setDatabase: vi.fn() }));
 
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
   return { ...actual, getDatabases: mocks.getDatabases };
 });
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
   useParams: () => ({ databaseId: "db-1" }),
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  }),
+}));
 vi.mock("@tabler/icons-react", () => ({
   IconArrowBackUp: () => null,
   IconChess: () => null,
@@ -26,10 +30,15 @@ vi.mock("@tabler/icons-react", () => ({
 }));
 vi.mock("@mantine/core", () => ({
   Box: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Button: ({ children, onClick }: { children: ReactNode; onClick: () => void }) => (
+    <button onClick={onClick}>{children}</button>
+  ),
   Center: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Group: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Loader: () => <span>loading</span>,
-  Stack: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Stack: ({ children, role }: { children: ReactNode; role?: string }) => (
+    <div role={role}>{children}</div>
+  ),
   Tabs: Object.assign(({ children }: { children: ReactNode }) => <div>{children}</div>, {
     List: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     Tab: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -50,7 +59,7 @@ vi.mock("@/state/store/database", () => {
     activeTab: "games",
     clearDatabase: vi.fn(),
     setActiveTab: vi.fn(),
-    setDatabase: vi.fn(),
+    setDatabase: mocks.setDatabase,
   };
   return {
     activeDatabaseViewStore: { getState: () => state },
@@ -81,7 +90,7 @@ function Tree({
   onData: (v: unknown) => void;
 }) {
   return (
-    <SWRConfig value={{ provider: () => cache }}>
+    <SWRConfig value={{ provider: () => cache, shouldRetryOnError: false }}>
       {view && <DatabaseView />}
       {peer && <Peer onData={onData} />}
     </SWRConfig>
@@ -95,6 +104,7 @@ let root: Root;
 beforeEach(() => {
   cache.clear();
   mocks.getDatabases.mockReset();
+  mocks.setDatabase.mockReset();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -108,6 +118,66 @@ afterEach(async () => {
 async function render(view: boolean, peer: boolean, onData = vi.fn()) {
   await act(async () => root.render(<Tree view={view} peer={peer} onData={onData} />));
 }
+
+test.each([
+  {
+    error: new Error("database listing failed"),
+    message: "Could not load databases. Please try again.",
+  },
+  {
+    error: { category: "not-found", message: "missing root", rootFailure: "missing" },
+    message: "This database folder is no longer available. Choose another.",
+  },
+])(
+  "database listing failure shows an alert with $message and retry",
+  async ({ error, message }) => {
+    mocks.getDatabases.mockRejectedValue(error);
+    await render(true, false);
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain(message);
+    expect(alert?.querySelector("button")?.textContent).toBe("Retry");
+    expect(alert?.querySelector("a")?.getAttribute("href")).toBe("/databases");
+    expect(container.textContent).not.toContain("loading");
+  },
+);
+
+test("retry reloads a matching database and leaves the failure state", async () => {
+  mocks.getDatabases.mockRejectedValueOnce(new Error("database listing failed"));
+  await render(true, false);
+  const retry = container.querySelector<HTMLButtonElement>('[role="alert"] button');
+  expect(retry).not.toBeNull();
+
+  const database = {
+    type: "success",
+    file: { id: { id: "db-1" }, kind: "database" },
+    filename: "db-1.db3",
+    title: "Recovered database",
+    description: "",
+    player_count: 0,
+    event_count: 0,
+    game_count: 0,
+    storage_size: BigInt(0),
+    indexed: false,
+  };
+  mocks.getDatabases.mockResolvedValueOnce([database]);
+  await act(async () => retry!.click());
+
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
+  expect(mocks.setDatabase).toHaveBeenCalledWith(database);
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("cancelled database listing keeps the loader without an alert or retry", async () => {
+  const error = new DOMException("Cancellation", "AbortError");
+  mocks.getDatabases.mockRejectedValue(error);
+  await render(true, false);
+
+  expect(cache.get("databases")?.error).toBe(error);
+  expect(container.textContent).toBe("loading");
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(container.querySelector("button")).toBeNull();
+});
 
 test("real DatabaseView unsubscribe preserves its shared request and peer publication", async () => {
   let resolve!: (value: unknown[]) => void;

@@ -409,6 +409,7 @@
     "Databases.LoadError.Title": "加载此数据库时出错",
     "Databases.LoadError.TooLarge": "此資料庫資料夾太大，無法列出內容。請選擇其他資料夾。",
     "Databases.LoadError.Unusable": "無法開啟此資料庫資料夾。請選擇其他資料夾。",
+    "Databases.LoadRetry": "重試",
     "Databases.NoSelection": "未选择数据库",
     "Databases.OpenDatabase": "開啟資料庫",
     "Databases.Player.MaxELO": "最高等级分",

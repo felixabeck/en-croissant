@@ -409,6 +409,7 @@
     "Databases.LoadError.Title": "데이터베이스 로드 실패",
     "Databases.LoadError.TooLarge": "이 데이터베이스 폴더는 너무 커서 목록을 표시할 수 없습니다. 다른 폴더를 선택하세요.",
     "Databases.LoadError.Unusable": "이 데이터베이스 폴더를 열 수 없습니다. 다른 폴더를 선택하세요.",
+    "Databases.LoadRetry": "다시 시도",
     "Databases.NoSelection": "선택된 데이터베이스 없음",
     "Databases.OpenDatabase": "데이터베이스 열기",
     "Databases.Player.MaxELO": "최대 ELO",

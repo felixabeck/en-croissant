@@ -419,6 +419,7 @@
     "Databases.LoadError.Title": "Ocorreu um erro ao carregar esta base de dados",
     "Databases.LoadError.TooLarge": "Esta pasta de bases de dados é demasiado grande para listar o seu conteúdo. Escolha outra.",
     "Databases.LoadError.Unusable": "Esta pasta de bases de dados não pode ser aberta. Escolha outra.",
+    "Databases.LoadRetry": "Tentar novamente",
     "Databases.NoSelection": "Não foi selecionada nenhuma base de dados",
     "Databases.OpenDatabase": "Abrir base de dados",
     "Databases.Player.MaxELO": "ELO máximo",

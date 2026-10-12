@@ -419,6 +419,7 @@
     "Databases.LoadError.Title": "Si è verificato un errore durante il caricamento del database.",
     "Databases.LoadError.TooLarge": "Questa cartella di database è troppo grande per elencarne il contenuto. Scegline un’altra.",
     "Databases.LoadError.Unusable": "Questa cartella di database non può essere aperta. Scegline un’altra.",
+    "Databases.LoadRetry": "Riprova",
     "Databases.NoSelection": "Nessun database selezionato",
     "Databases.OpenDatabase": "Apri database",
     "Databases.Player.MaxELO": "ELO massimo",

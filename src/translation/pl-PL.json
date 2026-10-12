@@ -424,6 +424,7 @@
     "Databases.LoadError.Title": "Wystąpił błąd podczas wczytywania tej bazy danych",
     "Databases.LoadError.TooLarge": "Ten folder baz danych jest zbyt duży, aby wyświetlić jego zawartość. Wybierz inny.",
     "Databases.LoadError.Unusable": "Ten folder baz danych nie może zostać otwarty. Wybierz inny.",
+    "Databases.LoadRetry": "Spróbuj ponownie",
     "Databases.NoSelection": "Nie wybrano bazy danych",
     "Databases.OpenDatabase": "Otwórz bazę danych",
     "Databases.Player.MaxELO": "Maks. ELO",

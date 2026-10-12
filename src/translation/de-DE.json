@@ -414,6 +414,7 @@
     "Databases.LoadError.Title": "Beim Laden dieser Datenbank ist ein Fehler aufgetreten",
     "Databases.LoadError.TooLarge": "Dieser Datenbankordner ist zu groß, um ihn aufzulisten. Wähle einen anderen.",
     "Databases.LoadError.Unusable": "Dieser Datenbankordner kann nicht geöffnet werden. Wähle einen anderen.",
+    "Databases.LoadRetry": "Erneut versuchen",
     "Databases.NoSelection": "Keine Datenbank ausgewählt",
     "Databases.OpenDatabase": "Datenbank öffnen",
     "Databases.Player.MaxELO": "MaxELO",

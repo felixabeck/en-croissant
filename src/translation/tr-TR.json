@@ -414,6 +414,7 @@
     "Databases.LoadError.Title": "Veritabanı yüklenemedi",
     "Databases.LoadError.TooLarge": "Bu veritabanı klasörü listelenemeyecek kadar büyük. Başka birini seçin.",
     "Databases.LoadError.Unusable": "Bu veritabanı klasörü açılamıyor. Başka birini seçin.",
+    "Databases.LoadRetry": "Tekrar dene",
     "Databases.NoSelection": "Veritabanı seçilmedi",
     "Databases.OpenDatabase": "Veritabanını aç",
     "Databases.Player.MaxELO": "En yüksek ELO",

@@ -1,4 +1,4 @@
-import { Box, Center, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
+import { Box, Button, Center, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
 import { IconArrowBackUp, IconChess, IconTrophy, IconUser } from "@tabler/icons-react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
@@ -17,6 +17,8 @@ import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
 import { resolveDatabaseRoute } from "./databaseRoute";
+import { listingFailure } from "@/components/files/listingFailure";
+import { databaseLoadFailureMessage } from "./databaseLoadFailure";
 import { useElementSize } from "@mantine/hooks";
 import { useAtomValue } from "jotai";
 import { fontSizeAtom } from "@/state/atoms";
@@ -36,9 +38,11 @@ function DatabaseView() {
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
   const { databaseId } = useParams({ from: "/databases/$databaseId" });
   const databaseOwner = useNativeRequestOwner("databases");
-  const { data: databases } = useSWR("databases", () =>
-    databaseOwner!.run((signal) => getDatabases({ signal })),
-  );
+  const {
+    data: databases,
+    error,
+    mutate,
+  } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
 
   const resolution = useMemo(
     () => resolveDatabaseRoute(databases, databaseId, database),
@@ -57,7 +61,19 @@ function DatabaseView() {
     return (
       <Box p="sm" h="100%">
         <Center ref={ref} h="100%">
-          <Loader aria-label={t("Common.Loading")} />
+          {resolution.status === "loading" && listingFailure(error) !== "silent" ? (
+            <Stack role="alert" align="center">
+              <Text c="red" className="wrap-anywhere">
+                {databaseLoadFailureMessage(error, t)}
+              </Text>
+              <Button onClick={() => void mutate()}>
+                {t("Databases.LoadRetry", { defaultValue: "Retry" })}
+              </Button>
+              <Link to="/databases">{t("Databases.Title")}</Link>
+            </Stack>
+          ) : (
+            <Loader aria-label={t("Common.Loading")} />
+          )}
         </Center>
       </Box>
     );

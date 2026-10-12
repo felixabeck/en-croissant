@@ -414,6 +414,7 @@
     "Databases.LoadError.Title": "Det oppsto en feil ved lasting av denne databasen",
     "Databases.LoadError.TooLarge": "Denne databasemappen er for stor til å listes opp. Velg en annen.",
     "Databases.LoadError.Unusable": "Denne databasemappen kan ikke åpnes. Velg en annen.",
+    "Databases.LoadRetry": "Prøv igjen",
     "Databases.NoSelection": "Ingen database valgt",
     "Databases.OpenDatabase": "Åpne database",
     "Databases.Player.MaxELO": "Maks. ELO",
