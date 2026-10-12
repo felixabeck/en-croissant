@@ -67,6 +67,14 @@ direct tool invocations.
 * Handoffs longer than a few lines go in `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never through Felix;
   pass the receiving agent the file path.
 
+### Worktree builds
+
+* **DO:** run `build` in its own worktree via `kit worktree create`. Outreach, records and small edits stay in the main checkout on `master`.
+* **DO:** start drains with the usual `drain-findings.sh` command from the main checkout. It automatically creates or reuses its own drain worktree. `--stop`/`--resume`/`--queue-plans` from the main checkout reach it. Run `findings.py` with the worktree as cwd.
+* **DO NOT:** push a `build/*` or `drain/*` branch or open it as a PR. Only its rebased commits reach `master` through `git push origin HEAD:refs/heads/master`, with upstream `origin/master`.
+* Dev-server ports stay shared across checkouts. Coordinate `pnpm dev` with any existing dev server before starting another checkout.
+* All Rust checkouts share the sccache compile cache through machine wiring in tuxedo-config's `rust-toolchain` module, with no repository Cargo configuration.
+
 ## Verifying a visible change
 
 `.claude/skills/verify-ui/SKILL.md` is the canonical contract; `.agents/skills/verify-ui/SKILL.md`

@@ -12,6 +12,8 @@ import { gitInit } from "./test-git-init.mjs";
 const checkerPath = fileURLToPath(new URL("./check-tool-version-parity.mjs", import.meta.url));
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const rustContractPaths = [
+  ".project.json",
+  "CONTRIBUTING.md",
   "rust-toolchain.toml",
   "scripts/setup-rust.sh",
   "scripts/toolchain-versions.mjs",
@@ -111,6 +113,9 @@ async function fixture() {
     "scripts/setup-rust.sh",
     '#!/usr/bin/env bash\nset -euo pipefail\nif [[ ! -f rust-toolchain.toml ]]; then\n  echo "missing rust-toolchain.toml" >&2\n  exit 1\nfi\nrustup toolchain install --no-self-update\nrustup show active-toolchain\n',
   );
+  for (const path of [".project.json", "CONTRIBUTING.md"]) {
+    await put(root, path, await readFile(join(repositoryRoot, path), "utf8"));
+  }
   return root;
 }
 
@@ -239,7 +244,75 @@ test("accepts matching declarations and discovers every matching site", async ()
   const families = await discoverToolVersions(root);
   assert.equal(families.find((family) => family.name === "nightly toolchain").sites.length, 4);
   assert.equal(families.find((family) => family.name === "cargo-llvm-cov").sites.length, 2);
+  assert.equal(families.find((family) => family.name === "sccache").sites.length, 3);
   assert.equal(families.find((family) => family.name === "cargo-mutants").sites.length, 1);
+});
+
+test("reports sccache install, version-guard, and documentation drift through the CLI", async (t) => {
+  const cases = [
+    ["install", ".project.json", "sccache --version 0.18.0", "sccache --version 0.18.1"],
+    ["version guard", ".project.json", "sccache 0.18.0", "sccache 0.18.1"],
+    ["documentation", "CONTRIBUTING.md", "`sccache` 0.18.0", "`sccache` 0.18.1"],
+  ];
+  for (const [name, path, original, replacement] of cases) {
+    await t.test(name, (subtest) =>
+      mutateCheckedInFileAndRunCli(
+        subtest,
+        path,
+        (text) => text.replace(original, replacement),
+        "sccache mismatch",
+      ),
+    );
+  }
+});
+
+test("requires the sccache setup authority and documentation site through the CLI", async (t) => {
+  await t.test("missing setup authority", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".project.json",
+      (text) => text.replace("cargo install sccache --version 0.18.0 --locked", "false"),
+      "sccache: expected exactly one authority; found 0",
+    ),
+  );
+  await t.test("missing documentation", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      "CONTRIBUTING.md",
+      (text) => text.replace("`sccache` 0.18.0", "`sccache`"),
+      "sccache: expected at least 3 declaration site(s)",
+    ),
+  );
+});
+
+test("rust-cache setup installs only a missing or different sccache and propagates failure", async (t) => {
+  const project = JSON.parse(await readFile(join(repositoryRoot, ".project.json"), "utf8"));
+  const setup = project.environment.setup.find((step) => step.id === "rust-cache");
+  assert.deepEqual(setup.creates, []);
+  const stubShell = `
+sccache() { printf '%s\\n' "$TEST_SCCACHE_VERSION"; return "$TEST_SCCACHE_STATUS"; }
+cargo() { printf '%s\\n' "$*"; return "$TEST_CARGO_STATUS"; }
+`;
+  for (const [name, version, sccacheStatus, cargoStatus, installs] of [
+    ["pinned version", "sccache 0.18.0", 0, 0, false],
+    ["missing tool", "", 127, 0, true],
+    ["different version", "sccache 0.17.0", 0, 0, true],
+    ["failed install", "sccache 0.17.0", 0, 7, true],
+  ]) {
+    await t.test(name, () => {
+      const result = spawnSync("bash", ["-c", stubShell + setup.run], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TEST_SCCACHE_VERSION: version,
+          TEST_SCCACHE_STATUS: String(sccacheStatus),
+          TEST_CARGO_STATUS: String(cargoStatus),
+        },
+      });
+      assert.equal(result.status, installs ? cargoStatus : 0, result.stderr);
+      assert.equal(result.stdout, installs ? "install sccache --version 0.18.0 --locked\n" : "");
+    });
+  }
 });
 
 test("reports both cargo-llvm-cov sites and values when the authority differs", async () => {

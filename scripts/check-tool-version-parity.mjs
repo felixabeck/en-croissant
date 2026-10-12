@@ -23,6 +23,10 @@ the named message and status 1 in the same run. The test names are the node:test
   push-skill setup fence -> ... / push skill setup fence;
   family minimum/authority/mismatch -> ... / tool-version family minimum, tool-version family
     authority, tool-version family mismatch;
+  sccache setup/guard/docs mismatch -> reports sccache install, version-guard, and documentation
+    drift through the CLI;
+  sccache missing authority/docs -> requires the sccache setup authority and documentation site
+    through the CLI;
   release clauses (1a)-(1d) -> reports each release matrix target-coverage clause / matching clause;
   release (1e), one per required target -> ... / missing aarch64-apple-darwin, missing
     x86_64-apple-darwin, missing x86_64-pc-windows-msvc;
@@ -100,6 +104,21 @@ export const PARITY_FAMILIES = [
       {
         globs: [".claude/skills/*/SKILL.md"],
         pattern: /cargo-llvm-cov`?\s+(\d+\.\d+\.\d+)\b/gu,
+      },
+    ],
+  },
+  {
+    name: "sccache",
+    minimumSites: 3,
+    declarations: [
+      {
+        globs: [".project.json"],
+        pattern: /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu,
+        authority: true,
+      },
+      {
+        globs: [".project.json", "CONTRIBUTING.md"],
+        pattern: /\bsccache`?\s+(\d+\.\d+\.\d+)\b/gu,
       },
     ],
   },

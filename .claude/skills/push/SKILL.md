@@ -44,7 +44,7 @@ interrupted runs, and accumulated work from another session.
 ## 1. Establish the exact push scope
 
 - Inspect `git status --porcelain=v1`, `git branch --show-current`, `git rev-parse --abbrev-ref @{u}`, `git remote get-url origin`, and `git remote get-url --push origin`.
-- This repository's expected remote is `felixabeck/en-croissant` in either of its two legitimate forms — `git@github.com:felixabeck/en-croissant.git` (the `tuxedo-atlas` clone) or `https://github.com/felixabeck/en-croissant.git`. Any other owner, repository or host is a stop. Reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
+- This repository's expected remote is `felixabeck/en-croissant` in either of its two legitimate forms — `git@github.com:felixabeck/en-croissant.git` (the `tuxedo-atlas` clone) or `https://github.com/felixabeck/en-croissant.git`. Any other owner, repository or host is a stop. Reject a separate `remote.origin.pushurl`. In an opted-in linked worktree, require `.project.json`'s `worktreeBuilds.target` to be `master` and the branch's configured upstream to be `origin/master`. Otherwise the current local branch must track the same-named `origin/<branch>`, so `master` must track `origin/master`. A `build/*` or `drain/*` branch may release only from that opted-in worktree route. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
 - Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched. Commits already ahead of the upstream in this single-user checkout are Felix's own agents' unpushed work: they are in the reviewed range (`~/.claude/references/push-review-policy.md` §2) and are carried by this push, never a reason to stop for Felix; stop only for a committer outside the Multi-Agent rubric or an unexpected remote (§1). A drain session (`--yes` at drain start) or a `build` run invoking this skill is the explicit push request. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
 - Gates execute against the complete worktree. Therefore stop before any compile, generator, formatter, or browser gate when a foreign dirty path is code, generated output, dependency/configuration, test, asset, locale, workflow, or another input to an affected gate. Only clearly inert foreign Markdown/planning files may remain. Never generate or commit an owned output from foreign dirty inputs.
 - Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Claude Code`, `Codex`, or `Grok`). Leave the author untouched and add no co-author trailer.
@@ -370,7 +370,7 @@ pnpm ci:remote:check
   machine cannot reproduce remain `rust-windows-test`, `rust-macos-test` and the `rust-platform`
   matrix of the `Test` workflow, including the MSVC target. All Windows tests stay CI-only. These
   named jobs only decide what to wait for after the push.
-- Run ordinary non-force `git push` to the configured upstream.
+- In an opted-in linked worktree, recheck that `worktreeBuilds.target` is `master` and the branch still tracks `origin/master`, then release its rebased commits with exactly `git push origin HEAD:refs/heads/master`. Never push a `build/*` or `drain/*` branch or open it as a PR. Otherwise run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
 - Wait for those jobs on the pushed SHA (measured at about five minutes; the whole run takes about
   twenty) and gate on each job's `conclusion`, never on the run having started. Red returns to
@@ -378,7 +378,7 @@ pnpm ci:remote:check
   because `gh run view --log-failed` returned nothing for these runs on 2026-09-19.
 - The post-push coordination-record exception remains governed by
   `~/.claude/references/coordination-file-commits.md`; it does not generalize to implementation changes.
-- On `master`, after that verification, run the installer (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`):
+- After a verified release to `master`, including the required remote-CI wait above, run the installer from the main checkout on `master` or from the releasing linked worktree whose `worktreeBuilds.target` is `master` and upstream is `origin/master` (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`):
 
 ```bash
 bash scripts/install-local.sh

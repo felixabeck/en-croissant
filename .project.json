@@ -1,0 +1,24 @@
+{
+  "worktreeBuilds": {
+    "target": "master",
+    "root": "/home/felixb/Projekte/chessfable.worktrees",
+    "setup": ["pnpm-deps", "rust-cache"]
+  },
+  "environment": {
+    "schema_version": 1,
+    "setup": [
+      {
+        "id": "pnpm-deps",
+        "run": "pnpm install --frozen-lockfile",
+        "inputs": ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+        "creates": ["node_modules/.bin/vite"]
+      },
+      {
+        "id": "rust-cache",
+        "run": "if [ \"$(sccache --version 2>/dev/null)\" != \"sccache 0.18.0\" ]; then cargo install sccache --version 0.18.0 --locked; fi",
+        "inputs": [],
+        "creates": []
+      }
+    ]
+  }
+}

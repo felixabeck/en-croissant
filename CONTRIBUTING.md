@@ -8,6 +8,7 @@ your contribution.
 
 - [Initial Steps](#initial-steps)
 - [Development](#development)
+  - [Rust/Tauri setup](#rusttauri-setup)
   - [Commands](#commands)
 - [Submitting a Pull Request](#submitting-a-pull-request)
 - [Extra Notes](#extra-notes)
@@ -28,6 +29,20 @@ The following steps will get you setup to contribute changes to this repo:
 - Open the code in your preferred IDE and contribute your changes
 
 > It is recommended take a look at the [Commands](#commands) and [Extra Notes](#extra-notes) sections before starting.
+
+### Rust/Tauri setup
+
+Run `bash scripts/setup-rust.sh` to install the Rust toolchain and components pinned in
+`rust-toolchain.toml`. The pinned cargo tools are:
+
+- `cargo-llvm-cov` 0.8.7 for coverage, with the `nightly-2025-06-01` toolchain.
+- `cargo-mutants` 27.1.0 for backend mutation testing.
+- `sccache` 0.18.0 for the shared compile cache. Install it with
+  `cargo install sccache --version 0.18.0 --locked` when `sccache --version` reports another
+  version or the tool is missing. Worktree setup performs this check automatically.
+
+The shared compile cache is wired at machine level by tuxedo-config's `rust-toolchain` module.
+Do not add repository Cargo configuration. CI does not require sccache.
 
 ### Commands
 
