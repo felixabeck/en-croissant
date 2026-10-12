@@ -7364,3 +7364,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7ecf7f164414eaec981f1305e39a1b91bec1cd433d0008129602a4baf018aade","input_sha256":"39dde11f288c5fbfb188538a661ec090db38d29d6bf32569fbc30e99c4f00ce1","kind":"mutation-receipt","operation":"afa84407e20e00ce36bcf371b873f793a0ddcdd14e6688919b8e9393ca0bd889","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-03 — What happens to the Library selection when filtering hides it?
+
+* **Question:** Does a search or type filter that hides the selected Library item clear the selection, and what does a selected database show while it is a conversion target?
+* **Governs:** f-20261001-11
+* **Chosen:** the selection is resolved against the full current source listing; filtering does not discard it; it clears only when the item is authoritatively removed or its owning file workspace changes; a selected database that becomes an active conversion target keeps its handle but suppresses actionable detail until eligible again.
+* **Rejected:** clearing on every search; keeping actionable detail for a conversion-hidden database.
+* **Reason:** preserves the current pages' filtering continuity while preventing operations on a target the existing page makes unavailable. Full-auto recommendation from the reviewed plan. Reversal path: change the transient selection policy and its focused tests together.
+* **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"54a8f2b21f774636f6549fe9bcfc01ccd08186431cd454a0a23361c64ac1a630","input_sha256":"02a5d8469a0abb8473830e07795f6f2d801c609fba80ee050fc38495c5d1474b","kind":"mutation-receipt","operation":"ff5a1b34c6da9fa86b9565e26ebbadd3be7d58020dcd8784c29b591d5ce249a9","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-03"],"target":"decisions-ledger","v":1} -->
