@@ -15362,3 +15362,96 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **CI run:** 38165579060
 * **Closed (2026-10-11, drain next-finding):** duplicate of f-20261011-07. Run 38165579060 on `98b7d64f` failed only `Run browser accessibility and visual contracts`, with one test red: `engine-local-validation` (`e2e/accounts-puzzles-engines.spec.ts:425`), 47,116 differing pixels (ratio 0.06) — the identical diff recorded in f-20261011-07 for run 38157168640. `98b7d64f` predates the fix `6a5a758c` (pins `.mantine-Modal-content` scrollTop to 0 before capture and re-records the baseline in the pinned container). Proof: run 38174002259 on `3f526224`, which contains `6a5a758c`, passed `Run browser accessibility and visual contracts` (107 browser tests). No code change in this session.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"fa28ac25ef853beb1dbf4860c3de12cd6566a52e67d339ce64969298470cd191","header_sha256":"b47006f11a276a33a631ca8e36be1a2a4a6f2ac3b820e11d42cc6198db295342","header_status":"handled","input_sha256":"f1a31c061ab31d18a32cdaf65704a96186d2d58ecfba0df5db3102beb5c3bd00","kind":"mutation-receipt","operation":"1f285a94e849d5a6cb11c5f86c810f52fd58ec75d7529dbc2bd2429935793e88","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-13"],"target":"f-20261011-13","v":1} -->
+
+---
+
+## 2026-10-12 — filed through the inbox spool
+
+### `pnpm i18n:extract` deletes the live `Window.Restore` key, because TopBar picks it through a ternary inside one `t()` call
+
+* **ID:** f-20261012-01 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
+* **Where:** `src/components/TopBar.tsx:288` (`t(isMaximized ? "Window.Restore" : "Window.Maximize")`), `i18next.config.ts:33` (`removeUnusedKeys: true`), every `src/translation/*.json`.
+* **Defect:** `i18next-cli extract` recognises only one branch of the ternary as a key. Running `pnpm i18n:extract` (the documented route after adding keys, `docs/localization.md`) removed `"Window.Restore"` from all 16 catalogues in the f-20261001-07 build run on 2026-10-12, while `TopBar.tsx` still renders it as the Restore label of the maximised window. The run restored the key by hand; the next `i18n:extract` by any session deletes it again, and the window-control tooltip then shows the raw key.
+* **Fix shape:** select between two literal calls (`isMaximized ? t("Window.Restore") : t("Window.Maximize")`) so the extractor sees both keys, then prove that `pnpm i18n:extract` on a clean tree leaves every catalogue byte-identical. Grep for other `t(<cond> ? "…" : "…")` sites and fix them the same way.
+* **Proof:** `pnpm i18n:extract` followed by `git diff --exit-code -- src/translation`; `pnpm i18n:check`.
+* **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, reviewing the phase-2 leaf's catalogue diff.
+
+### The chessfable script test suites leave thousands of mkdtemp directories in /tmp per day
+
+* **ID:** f-20261012-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Files:** scripts/coverage-report-tests.mjs (line 67 `mkdtemp(join(tmpdir(), "coverage-report-"))` without a matching `rm`), scripts/check-gate-routing-tests.mjs (line 27), scripts/gate-receipt-tests.mjs, scripts/check-skill-bridges-tests.mjs, scripts/check-tool-version-parity-tests.mjs, scripts/check-workflow-permissions-tests.mjs, scripts/check-bundle-budget-tests.mjs, scripts/check-ui-boundaries-tests.mjs, scripts/app-driver-tests.mjs, scripts/install-local-tests.mjs, scripts/entrypoint-tests.mjs
+* **Evidence:** measured 2026-10-12 on tuxedo while fixing agent-kit f-20261012-10 (the 648 GB pytest leak that filled the system disk). /tmp held about 35,000 top-level leftover directories, nearly all from chessfable script tests: 16,600 `coverage-report-*` (639 MB), 10,710 `gate-routing-*` (1.9 GB), 2,652 `gate-receipt-test-*` (1.9 GB), 1,260 `skill-bridges-*` (226 MB), 816 `tool-version-parity-*` (144 MB), plus `workflow-permissions-*`, `bundle-budget-*`, `ui-boundaries-*` and others. `coverage-report-*` by date: 996 on 10-09, 6,474 on 10-10, 7,304 on 10-11, 1,826 by 08:50 on 10-12. In total about 4.8 GB and roughly 7,000 directories per day while drains run the gates. Of the 23 test scripts that call `mkdtemp(join(tmpdir(), …))`, the eleven listed under Files have no `rm(` or `rmSync` at all; others clean only some call sites (coverage-report-tests.mjs cleans its line-968 and line-3321 roots through `t.after`, but not the line-67 helper). /tmp is on the root filesystem; tmpfiles `D /tmp 30d` lets this grow for a month.
+* **Disposition:** every mkdtemp root a test creates is removed by that test: route the creating helpers through one shared helper that registers `t.after(() => rm(root, { recursive: true, force: true }))` (restoring write permission first where a test chmods inside the root), and add a check that fails a script test which leaves a new `tmpdir()` entry behind.
+* **Proof:** count `/tmp` top-level entries with each prefix before and after one full gate run; the after count must not grow.
+* **Related:** agent-kit f-20261012-10 (the pytest leak of the same class).
+
+### Push skill still prescribes a manual `~/.cargo/bin` PATH prefix that tuxedo-atlas no longer needs
+
+* **ID:** f-20261012-03 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 0f9fb9f3-3d65-445f-a72d-18e23c1542b7
+
+* **Where:** `.claude/skills/push/SKILL.md:113` ("`spawn cargo ENOENT` from any of these means `~/.cargo/bin` is missing from that shell's `PATH` … prefix the call with `PATH="$HOME/.cargo/bin:$PATH"`"), and the Codex push skill if it carries the same sentence.
+* **Cause fixed upstream:** tuxedo-config f-20261011-03 (commit `3376320`, module `rust-toolchain/`) puts `~/.cargo/bin` on the systemd user manager's PATH (`~/.config/environment.d/zy-rust-toolchain.conf`) and in non-interactive bash (`~/.bashrc` above the interactive guard). Measured 2026-10-12 on tuxedo-atlas: `systemd-run --user --wait --pipe bash -c 'command -v rustup'` prints `~/.cargo/bin/rustup`, and `pnpm -s tools:parity:test` run that way passes 132/132, including "negative control proves plain rustup show would hide the unavailable pin", which failed with exit 127 on 2026-10-11.
+* **Change:** replace the manual-prefix workaround with a diagnosis: `spawn cargo ENOENT` / `rustup: command not found` means the host's tuxedo-config `rust-toolchain/` install is missing or the shell was started with a replaced PATH; check it with that module's Verify commands instead of prefixing every gate call.
+* **Proof:** `pnpm skills:check` and `pnpm skills:bridges:test` green; in a fresh drain session `command -v rustup` resolves and `pnpm gates:push --` passes without a PATH prefix.
+
+### `unlinked_before_pool_build_is_a_prompt_conflict_and_clears_building` failed once under machine load with a non-Conflict result
+
+* **ID:** f-20261012-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
+* **Where:** `src-tauri/src/db/repository.rs:4987` (test `db::repository::tests::unlinked_before_pool_build_is_a_prompt_conflict_and_clears_building`).
+* **Defect:** in a full `cargo test --all-targets --locked` run on 2026-10-12 (load average ~30, the f-20261001-07 build run; the diff touched no `db/` code) the assertion `matches!(result, Err(Error::Conflict(message)) if message == "database changed after capability resolution")` failed. The same test passed 3/3 in isolation and in the next full run (2205 passed). Either the test relies on scheduling between the unlink and the pool build, or the production path can return another outcome for an unlink racing the build — the run did not determine which.
+* **Open question:** is the non-Conflict outcome a legitimate production result for this race (then the test must pin the race deterministically), or does the build path mis-classify the unlink (then the product returns the wrong error)?
+* **Evidence:** full suite log retained at `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/flake-full-suite.log` (may be cleaned); reproduce with repeated full-suite runs under load.
+* **Proof:** a deterministic test (or a fix) that stays green across 50 consecutive full `cargo test --all-targets` runs under parallel load.
+* **Found by:** Claude Code (Opus 5.5) orchestrating the f-20261001-07 build run; first observed by its Codex repair leaf.
+
+### `production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop` times out under machine load
+
+* **ID:** f-20261012-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
+* **Where:** `src-tauri/src/fs.rs:6058` (test `fs::tests::production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop`).
+* **Defect:** in a full `cargo test --all-targets --locked` run on 2026-10-12 (load average ~30, the f-20261001-07 build run; the diff touched no `fs.rs` code) the test panicked with `called Result::unwrap() on an Err value: Elapsed(())` — a fixed wall-clock timeout expired. It passed 3/3 in isolation and in the next full run. A wall-clock bound in a test that waits on detached work turns machine load into red gates.
+* **Open question:** should the test wait on an event or terminal record instead of a wall-clock timeout, or does the production download core genuinely take longer than its contract allows under load?
+* **Evidence:** full suite log retained at `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/flake-full-suite.log` (may be cleaned).
+* **Proof:** the test waits on a deterministic completion signal and stays green across 50 consecutive full runs under parallel load.
+* **Related:** the Windows download-core test notes on this test name are a different defect (missing write leaf resolution), not this timeout.
+* **Found by:** Claude Code (Opus 5.5) orchestrating the f-20261001-07 build run; first observed by its Codex repair leaf.
+
+### `zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal` failed once with a false SQLite-binding conflict during a full backend-test run
+
+* **ID:** f-20261012-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
+* **Where:** test `db::deletion_tests::zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal`, panic at `src-tauri/src/infra/path_authority/mod.rs:5274` (`test grant promotion: Conflict("file is open through a SQLite binding")`); the process-wide inode admission introduced for f-20261001-02 (`d-20261012-01`, `src-tauri/src/infra/`).
+* **Defect:** the final `pnpm gates:push` backend-test lane of the f-20261001-07 drain run (HEAD 23c09c77, 2026-10-12, load average ~22–25) failed this one test; 2205 others passed. The test passed 5/5 alone and three consecutive full `cargo test --bins` runs were green (2206 passed). The f-20261001-07 diff touches no `db/` or path-authority code. A plausible but unverified cause: the inode admission registry is process-wide, and a concurrently running test's live SQLite binding (or an inode reused after another test's unlink) makes this test's grant promotion see a conflicting live inode.
+* **Open question:** is the admission registry's identity (device + inode) reusable across tests in one process while a stale registration survives, which would also be reachable in production after an unlink and inode reuse — or is this purely test isolation (shared process-wide registry across parallel tests)?
+* **Evidence:** gate transcript copy `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/inode-flake.log` (may be cleaned); original under `artifacts/gates/20261012T134044416Z-2939075/receipt-backend-test.log`.
+* **Proof:** the cause measured (e.g. logging the conflicting registration's owner when the test fails), then a fix that stays green across 50 consecutive full backend-test runs under parallel load.
+* **Related:** f-20261001-02 (handled; introduced the inode admission), the two load-sensitive db/fs test failures filed by the same run.
+* **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, final push gate.
+
+### `production_index_generation_and_open_have_bounded_rust_heap_peaks` failed once with "unable to open database file" during a full backend-test run under load
+
+* **ID:** f-20261012-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
+* **Impact class:** tooling
+* **Where:** test `db::tests::production_index_generation_and_open_have_bounded_rust_heap_peaks`, panic at `src-tauri/src/db/mod.rs:6896` (`database_repository.connection(...).unwrap()` → `Diesel(DatabaseError(Unknown, "unable to open database file"))`).
+* **Defect:** the second final `pnpm gates:push` attempt of the f-20261001-07 drain run (HEAD 23c09c77, 2026-10-12 ~16:18, load average peaking near 60 from parallel drains) failed this one test; 2205 others passed. It passed 5/5 alone. The diff under test touches no `db/` code. The previous gate attempt on the same HEAD failed a different db test (`db::deletion_tests::zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal`, false SQLite-binding conflict, filed by the same session); whether both share a cause in the repository's connection/admission path under parallel tests is not determined.
+* **Open question:** what makes SQLite's open fail for this test's fresh database under parallel load — a shared temp path or registry entry with another test, the process-wide inode admission, or a real resource limit — and does the same failure reach production opens?
+* **Evidence:** gate transcript copy `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/heap-peak-flake.log` (may be cleaned); original `artifacts/gates/20261012T141810693Z-466927/receipt-backend-test.log`.
+* **Proof:** cause measured (log the OS errno behind SQLite's open failure), then green across 50 consecutive full backend-test runs under parallel load.
+* **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, final push gate.
+
+### `spawn_child_observers_are_isolated_by_command_target` misses its 1 s observer deadline under coverage instrumentation and machine load
+
+* **ID:** f-20261012-08 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs:12075-12085` (origin/master `3d1d9f3c`-era tree), test `engine::process::tests::spawn_child_observers_are_isolated_by_command_target`.
+* **Defect:** measured 2026-10-12 in a scratch worktree of origin/master: the rust-coverage lane of `pnpm gates:push -- --rust` (nightly, `-C instrument-coverage`, run under `agent-gate` while other gates loaded the machine) failed with `assertion left == right failed, left: None, right: Some(1536023)` at `process.rs:12085`. Both marker files held pids within the 5 s marker window, but `pid_a_rx.recv_timeout(Duration::from_secs(1))` returned no observed pid. The same test passed in the plain rust-test lane of that run. A fixed 1 s receive deadline after the markers already exist is a timing assumption, not an ordering guarantee.
+* **Failure scenario:** a loaded machine or a slower instrumented build delays the observer callback past 1 s; the backend-coverage receipt goes red and a drain or `$push` stops on a test that would pass on retry.
+* **Spotted outside diff:** yes — during the worktree-rollout build's compile-cache measurement in agent-kit's session (no ChessFable code was changed).
+* **Disposition:** make the observation deadline derive from the event (wait on the channel with the same bounded window as the marker wait, or assert the observer after termination), and keep the isolation assertion unchanged.
+* **Proof:** the test stays green under `pnpm gates:push -- --rust` on a loaded machine; a forced 1.5 s observer delay passes.
+* **Impact class:** tooling
+* **Related:** `tasks/handoffs/2026-09-14-macos-engine-launch-review.md:923` (the test's origin, D8-14).
+* **Found by:** Claude Code (Opus 5.5), agent-kit worktree-rollout build session, 2026-10-12.
