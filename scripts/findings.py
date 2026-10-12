@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 8c8133204cf10986574dc1ba6ef6bdc5ff7d8e7f9eee95fd04a89d34d166e9b3
+# agent-kit-sha256: dc7ddaa2482aaba68ec85c64b1274503b29fc14461feef068b08ffc7739c176b
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -92,6 +92,8 @@ from typing import Literal, NamedTuple, cast
 SUPERVISOR_CONTRACT_ENV = "FINDINGS_SUPERVISOR_CONTRACT"
 # Malformed declarations fall back to the oldest gated behaviour, always safe for a declaring caller.
 SUPERVISOR_CONTRACT_BASELINE = 1
+# First level whose callers get impact-ranked cells and the new filing rules. Lower declared levels keep c57b00c behaviour.
+IMPACT_QUEUE_CONTRACT_LEVEL = 2
 
 
 def _parse_supervisor_contract_level(value: str | None) -> int | None:
@@ -121,6 +123,12 @@ def supervisor_contract_level() -> int | None:
     (references/python-interpreter-contract.md §7).
     """
     return _SUPERVISOR_CONTRACT_LEVEL
+
+
+def _impact_queue_enabled() -> bool:
+    """Keep level-1 writer behaviour while enabling the impact queue for new callers."""
+    level = supervisor_contract_level()
+    return level is None or level >= IMPACT_QUEUE_CONTRACT_LEVEL
 
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
@@ -390,6 +398,16 @@ ANSWER_RETURNING_FIELD = "returning_to_spool"
 STATUSES = frozenset({"open", "handled", "rejected"})
 ENTRIES = frozenset({"inline", "lens", "build"})
 ENTRY_RANK = {"inline": 0, "lens": 1, "build": 2}
+IMPACT_RANK = {
+    "security": 0,
+    "data-loss": 0,
+    "behaviour": 1,
+    "unclassified": 2,
+    "ux": 3,
+    "tooling": 4,
+}
+IMPACT_CLASSES = frozenset(IMPACT_RANK) - {"unclassified"}
+FOLLOW_UP_ESCALATION_MIN = 3
 ROOT_CLUSTER_MIN_CARRIERS = 2
 CO_LOCATED_MAX = 2
 
@@ -589,6 +607,22 @@ OPEN_QUESTION_REFUSAL = (
     "{where}: `Entry: build` needs an '**Open question:**' bullet naming the design "
     "question the plan has to answer. If the question cannot be written, file it as "
     "`inline` or `lens`."
+)
+IMPACT_CLASS_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Impact class:\*\*[ \t]*(?P<value>[^\n]*)$",
+    re.MULTILINE,
+)
+FOLLOW_UP_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Follow-up of:\*\*[ \t]*(?P<ids>[^\n]*)$",
+    re.MULTILINE,
+)
+OUTSIDE_DIFF_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Spotted outside diff:\*\*",
+    re.MULTILINE,
+)
+FAILURE_SCENARIO_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Failure scenario:\*\*[ \t]*(?P<scenario>\S[^\n]*)$",
+    re.MULTILINE,
 )
 # Brief quality is not what makes a question his, so no amount of prose in the
 # contract catches this — only a bullet the parking session has to write and
@@ -1408,6 +1442,18 @@ class Finding:
     def paths(self) -> set[str]:
         """Every path-shaped token anywhere in the body."""
         return scan_paths(self.body, self.body_fenced)
+
+    def impact_class(self, tooling_areas: Collection[str] = ()) -> tuple[str, bool]:
+        """Return the effective impact class and whether its last bullet is explicit."""
+        body = _unfenced_body(self)
+        matches = list(IMPACT_CLASS_RE.finditer(body))
+        if matches:
+            return matches[-1].group("value").strip(), True
+        if _body_is_sentry_origin(body):
+            return "behaviour", False
+        if self.area in tooling_areas:
+            return "tooling", False
+        return "unclassified", False
 
     def summary(self) -> str:
         """Two-line rendering: header facts, then the title."""
@@ -3201,6 +3247,37 @@ def validate(
     return issues
 
 
+def _impact_class_issues(findings: list[Finding]) -> list[str]:
+    """Validate the new body field without changing the imported legacy validator."""
+    if not _impact_queue_enabled():
+        return []
+    issues = []
+    for finding in findings:
+        value, explicit = finding.impact_class()
+        if explicit and value not in IMPACT_CLASSES:
+            issues.append(
+                f"{finding.id} (line {finding.line}): '**Impact class:**' value "
+                f"{value!r} is not in {sorted(IMPACT_CLASSES)}"
+            )
+    return issues
+
+
+def _impact_admission_issues(finding: Finding, where: object) -> list[str]:
+    """Apply the out-of-diff scenario bar on every new-entry admission route."""
+    if not _impact_queue_enabled():
+        return []
+    body = _unfenced_body(finding)
+    if OUTSIDE_DIFF_RE.search(body) and not FAILURE_SCENARIO_RE.search(body):
+        return [
+            f"{where}: '**Spotted outside diff:**' needs a non-empty "
+            "'**Failure scenario:**' bullet naming input or user action → wrong result. "
+            "Run `findings.py related --file <path>`, then "
+            "`findings.py annotate <nearest-id> <note-file>`. "
+            "The bar is the scenario, never size or effort."
+        ]
+    return []
+
+
 def _park_brief_issues(where: str, joined: str) -> list[str]:
     """Check a `felix-decision` park's brief, reporting every missing part.
 
@@ -3425,6 +3502,7 @@ def _ranked_clusters(
     findings: list[Finding],
     *,
     excluded_ids: Collection[str] = (),
+    tooling_areas: Collection[str] = (),
 ) -> tuple[
     list[tuple[tuple[str, str], list[Finding]]],
     list[Finding],
@@ -3432,6 +3510,11 @@ def _ranked_clusters(
     dict[str, tuple[str, str]],
 ]:
     """Evaluate pickability once and group evidenced roots in one queue pass."""
+    if _impact_queue_enabled():
+        cells = _impact_cells(
+            findings, excluded_ids=excluded_ids, tooling_areas=tooling_areas
+        )
+        return cells.clusters, cells.pickable, cells.grouped, cells.key_by_id
     queue_keys = _effective_queue_cluster_keys(findings)
 
     grouped: dict[tuple[str, str], list[Finding]] = {}
@@ -3456,9 +3539,127 @@ def _ranked_clusters(
     return clusters, pickable, grouped, key_by_id
 
 
-def rank(findings: list[Finding]) -> list[tuple[tuple[str, str], list[Finding]]]:
-    """Pickable root clusters and singletons, ordered by relation then age."""
-    clusters, _pickable, _grouped, _key_by_id = _ranked_clusters(findings)
+@dataclass
+class ImpactCells:
+    """One pin-independent queue partition, with its effective tiers and waiting carriers."""
+
+    clusters: list[tuple[tuple[str, str], list[Finding]]]
+    pickable: list[Finding]
+    grouped: dict[tuple[str, str], list[Finding]]
+    key_by_id: dict[str, tuple[str, str]]
+    entries: dict[str, str]
+    escalations: dict[str, tuple[str, list[str]]]
+    waiting_builds: dict[str, Finding]
+
+
+def _impact_cell_entry(members: list[Finding], cells: ImpactCells) -> str:
+    """Use effective tiers consistently for cell filters and selected output."""
+    return max((cells.entries[f.id] for f in members), key=ENTRY_RANK.__getitem__)
+
+
+def _follow_up_escalations(findings: list[Finding]) -> dict[str, tuple[str, list[str]]]:
+    """Find three lineage follow-ups on one full source path, cycle-safe and status-independent."""
+    by_id = {finding.id: finding for finding in findings}
+    links: dict[str, set[str]] = {fid: set() for fid in by_id}
+    follow_ups: set[str] = set()
+    full_paths = {finding.id: source_file_keys(finding.paths())[0] for finding in findings}
+    for finding in findings:
+        matches = list(FOLLOW_UP_RE.finditer(_unfenced_body(finding)))
+        if matches:
+            follow_ups.add(finding.id)
+        for match in matches:
+            for parent in re.findall(r"f-\d{8}-\d{2,}", match.group("ids")):
+                if parent in by_id:
+                    links[finding.id].add(parent)
+                    links[parent].add(finding.id)
+    escalations: dict[str, tuple[str, list[str]]] = {}
+    visited: set[str] = set()
+    for fid in sorted(follow_ups):
+        if fid in visited:
+            continue
+        lineage: set[str] = set()
+        pending = [fid]
+        while pending:
+            current = pending.pop()
+            if current in lineage:
+                continue
+            lineage.add(current)
+            pending.extend(links[current] - lineage)
+        visited.update(lineage)
+        path_members: dict[str, list[str]] = {}
+        for member in sorted(lineage & follow_ups):
+            for path in sorted(full_paths[member]):
+                path_members.setdefault(path, []).append(member)
+        for member in sorted(lineage & follow_ups):
+            for path in sorted(full_paths[member]):
+                if len(path_members[path]) >= FOLLOW_UP_ESCALATION_MIN:
+                    escalations[member] = (path, sorted(lineage))
+                    break
+    return escalations
+
+
+def _impact_cells(
+    findings: list[Finding],
+    *,
+    excluded_ids: Collection[str] = (),
+    tooling_areas: Collection[str] = (),
+) -> ImpactCells:
+    """Keep one cell per evidenced Root, holding at most one effective build carrier."""
+    escalations = _follow_up_escalations(findings)
+    entries = {
+        finding.id: "build" if finding.id in escalations else finding.entry
+        for finding in findings
+    }
+    excluded = set(excluded_ids)
+    grouped: dict[tuple[str, str], list[Finding]] = {}
+    for finding, key in zip(findings, _effective_queue_cluster_keys(findings), strict=True):
+        if finding.pickable and finding.id not in excluded:
+            grouped.setdefault(key, []).append(finding)
+
+    def member_order(finding: Finding) -> tuple[int, str]:
+        return (
+            IMPACT_RANK.get(
+                finding.impact_class(tooling_areas)[0], IMPACT_RANK["unclassified"]
+            ),
+            finding.id,
+        )
+
+    waiting_builds: dict[str, Finding] = {}
+    for key, members in grouped.items():
+        builds = sorted(
+            (f for f in members if entries[f.id] == "build"), key=member_order
+        )
+        if key[0] == "root" and len(builds) > 1:
+            for waiting in builds[1:]:
+                waiting_builds[waiting.id] = builds[0]
+            members = [f for f in members if f.id not in waiting_builds]
+        anchor = min(members, key=member_order)
+        grouped[key] = [
+            anchor,
+            *sorted((f for f in members if f.id != anchor.id), key=lambda f: f.id),
+        ]
+    clusters = sorted(
+        grouped.items(),
+        key=lambda item: (
+            member_order(item[1][0])[0],
+            0 if item[0][0] == "root" else 1,
+            item[1][0].id,
+        ),
+    )
+    key_by_id = {finding.id: key for key, members in clusters for finding in members}
+    pickable = [finding for finding in findings if finding.id in key_by_id]
+    return ImpactCells(
+        clusters, pickable, grouped, key_by_id, entries, escalations, waiting_builds
+    )
+
+
+def rank(
+    findings: list[Finding], *, tooling_areas: Collection[str] = ()
+) -> list[tuple[tuple[str, str], list[Finding]]]:
+    """Rank pickable cells by the declared contract, deriving legacy classes at query time."""
+    clusters, _pickable, _grouped, _key_by_id = _ranked_clusters(
+        findings, tooling_areas=tooling_areas
+    )
     return clusters
 
 
@@ -3974,6 +4175,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"installed git merge driver {MERGE_DRIVER_NAME}", file=sys.stderr)
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
+    issues += _impact_class_issues(findings)
     ledger_text = _read_ledger_text(args.ledger)
     ledger_metadata, ledger_meta_issues = _scan_ledger_metadata(
         ledger_text, args.ledger
@@ -4711,6 +4913,34 @@ def _co_located_singletons(
     return sorted(candidates)[:CO_LOCATED_MAX]
 
 
+def _impact_joiners(
+    selected_key: tuple[str, str],
+    members: list[Finding],
+    cells: ImpactCells,
+    excluded: set[tuple[str, str]],
+    tooling_areas: Collection[str],
+) -> list[str]:
+    """Attach mechanical single-carrier cells sharing a full source path with the anchor."""
+    anchor_full, _bare = source_file_keys(members[0].paths())
+    candidates = []
+    for key, candidate_members in cells.clusters:
+        if key == selected_key or key in excluded or len(candidate_members) != 1:
+            continue
+        finding = candidate_members[0]
+        if cells.entries[finding.id] not in {"inline", "lens"}:
+            continue
+        full, _bare = source_file_keys(finding.paths())
+        if shared_source_files((anchor_full, set()), (full, set())):
+            candidates.append(finding)
+    candidates.sort(
+        key=lambda f: (
+            IMPACT_RANK.get(f.impact_class(tooling_areas)[0], IMPACT_RANK["unclassified"]),
+            f.id,
+        )
+    )
+    return [finding.id for finding in candidates]
+
+
 PICK_CLAIM_LOCK_WAIT_SECONDS = 5.0
 PICK_CLAIM_VERSION = 1
 PICK_CLAIM_ANCESTOR_MAX = 16
@@ -4965,6 +5195,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
 def _cmd_next_selection(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
+    issues += _impact_class_issues(findings)
     if issues:
         print("refusing to pick from an invalid ledger; run `check`", file=sys.stderr)
         return 1
@@ -4979,9 +5210,30 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         print(f"refusing to pick while {exc}", file=sys.stderr)
         return 1
     waiting_rows = _waiting_rows(findings)
-    clusters, pickable, grouped, key_by_id = _ranked_clusters(
-        findings, excluded_ids=set(answers_claim_ids) | set(args._pick_claims)
-    )
+    cells = None
+    tooling_areas: Collection[str] = ()
+    excluded: set[tuple[str, str]] = set()
+    if _impact_queue_enabled():
+        tooling_areas = load_tooling_areas_from_path(args.ledger)
+        cells = _impact_cells(
+            findings,
+            excluded_ids=set(answers_claim_ids) | set(args._pick_claims),
+            tooling_areas=tooling_areas,
+        )
+        clusters, pickable, grouped, key_by_id = (
+            cells.clusters, cells.pickable, cells.grouped, cells.key_by_id
+        )
+    else:
+        clusters, pickable, grouped, key_by_id = _ranked_clusters(
+            findings, excluded_ids=set(answers_claim_ids) | set(args._pick_claims)
+        )
+
+    if cells is not None or not args.pin:
+        try:
+            excluded = _next_exclusion_keys(list(getattr(args, "exclude", None) or []))
+        except ValueError as exc:
+            print(f"invalid next filter: {exc}", file=sys.stderr)
+            return 1
 
     if args.pin:
         chosen = next((f for f in findings if f.id == args.pin), None)
@@ -5008,6 +5260,14 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        if cells is not None and args.pin in cells.waiting_builds:
+            build_member = cells.waiting_builds[args.pin]
+            print(
+                f"{args.pin} is not pickable (waits on the design question of "
+                f"{build_member.id} in root {chosen.root})",
+                file=sys.stderr,
+            )
+            return 1
         key = key_by_id.get(args.pin)
         if key is None:
             sentry_state = chosen.sentry_verification
@@ -5025,19 +5285,14 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         members = grouped[key]
         reason = f"pinned: {args.pin}"
     else:
-        try:
-            excluded = _next_exclusion_keys(
-                list(getattr(args, "exclude", None) or [])
-            )
-        except ValueError as exc:
-            print(f"invalid next filter: {exc}", file=sys.stderr)
-            return 1
         requested_entry = getattr(args, "entry", None)
         remaining: list[tuple[tuple[str, str], list[Finding]]] = []
         for candidate_key, candidate_members in clusters:
             effective_entry, _candidate_ids = _cluster_entry_and_ids(
                 candidate_members
             )
+            if cells is not None:
+                effective_entry = _impact_cell_entry(candidate_members, cells)
             if candidate_key in excluded:
                 continue
             if requested_entry is not None and effective_entry != requested_entry:
@@ -5071,9 +5326,24 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         )
 
     entry, ids = _cluster_entry_and_ids(members)
-    co_located = _co_located_singletons(
-        key, entry, members, pickable, key_by_id
-    )
+    if cells is not None:
+        entry = _impact_cell_entry(members, cells)
+        co_located = _impact_joiners(key, members, cells, excluded, tooling_areas)
+        impact, explicit = members[0].impact_class(tooling_areas)
+        reason = (
+            f"anchor {members[0].id}, impact {impact} "
+            f"({'explicit' if explicit else 'derived'}), cell {key[0]}:{key[1]}"
+        )
+        if members[0].id in cells.escalations:
+            shared_path, lineage_ids = cells.escalations[members[0].id]
+            reason += (
+                f". Follow-up escalation to build: design review of {shared_path}, "
+                f"lineage {' '.join(lineage_ids)}"
+            )
+    else:
+        co_located = _co_located_singletons(
+            key, entry, members, pickable, key_by_id
+        )
     args._pick_ids = list(dict.fromkeys(ids + (co_located or [])))
     if _json_requested(args):
         return _print_json(
@@ -5713,7 +5983,9 @@ def _validate_text_with_metadata(
                 return issues, metadata
             findings, problems, vocabulary = parse(scratch)
             return (
-                metadata_issues + validate(findings, problems, vocabulary),
+                metadata_issues
+                + validate(findings, problems, vocabulary)
+                + _impact_class_issues(findings),
                 metadata,
             )
     except LedgerReadRefused:
@@ -5876,6 +6148,7 @@ def _validate_entry_text(
         return None, [f"could not read or parse {entry_path}: {exc}"]
 
     issues = validate(findings, problems, vocabulary, allow_pending=True)
+    issues += _impact_class_issues(findings)
     if not findings:
         issues.append(f"{entry_path} has no readable `###` finding entry")
     elif len(findings) != 1:
@@ -5889,6 +6162,7 @@ def _validate_entry_text(
             "the real finding id"
         )
     if len(findings) == 1:
+        issues += _impact_admission_issues(findings[0], entry_path)
         if (
             _body_is_sentry_origin(_unfenced_body(findings[0]))
             and findings[0].status != "open"
@@ -5934,6 +6208,14 @@ def _warn_filing_entry(entry: str, ledger: Path, decisions: Path) -> None:
         return
 
     finding = findings[0]
+    if _impact_queue_enabled() and finding.impact_class(
+        load_tooling_areas_from_text(ledger_text)
+    )[0] == "unclassified":
+        print(
+            f"WARN {finding.id} has unclassified impact. Add '**Impact class:**' "
+            f"with one of {sorted(IMPACT_CLASSES)}.",
+            file=sys.stderr,
+        )
     if finding.root != "-" and not any(
         other.root == finding.root for other in existing
     ):
@@ -10427,8 +10709,17 @@ def _merge_inbox_publish_locked(
             )
             return refuse()
 
-    def candidate_issues(candidate_text: str) -> list[str]:
+    def candidate_issues(
+        candidate_text: str, new_parts: Collection[tuple[Path, str]] = ()
+    ) -> list[str]:
         found = _validate_text(candidate_text, ledger)
+        if _impact_queue_enabled():
+            for path, part in new_parts:
+                findings, _problems, _vocabulary = _parse_text(
+                    _entry_candidate_text(part, ledger_text), ledger
+                )
+                for finding in findings:
+                    found += _impact_admission_issues(finding, path)
         if not found and mode == "deferred":
             valid_pair, pair_detail = _validate_candidate_pair(
                 candidate_text, ledger, decisions
@@ -10437,7 +10728,7 @@ def _merge_inbox_publish_locked(
                 found.append(f"merged candidate does not validate: {pair_detail}")
         return found
 
-    issues = candidate_issues(candidate)
+    issues = candidate_issues(candidate, list(zip(claimed, parts, strict=True)))
     if issues:
         base_issues = candidate_issues(ledger_text)
         if base_issues:
@@ -10454,7 +10745,7 @@ def _merge_inbox_publish_locked(
         quarantined: dict[str, str] = {}
         for index, (path, part) in enumerate(zip(claimed, parts, strict=True)):
             single = ledger_text.rstrip() + section + part.strip() + "\n"
-            single_issues = candidate_issues(single)
+            single_issues = candidate_issues(single, [(path, part)])
             if single_issues:
                 quarantined[path.name] = (
                     single_issues[0].replace("\r", " ").replace("\n", " ")
@@ -10469,7 +10760,9 @@ def _merge_inbox_publish_locked(
             if kept_body
             else ledger_text
         )
-        kept_issues = candidate_issues(kept_candidate)
+        kept_issues = candidate_issues(
+            kept_candidate, [(claimed[index], parts[index]) for index in kept_indexes]
+        )
         if not quarantined or kept_issues:
             for issue in issues:
                 print(f"FAIL {issue}", file=sys.stderr)
