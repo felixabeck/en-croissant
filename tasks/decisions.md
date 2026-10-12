@@ -7271,3 +7271,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"83398699e4c6cf873eb6b1ff80ee84182492e3d696edea27f013ca8a5a8b0f33","input_sha256":"7436c475495f5d5387890dda7f8207b9e83fdf0637b0407578618d83eaa5249f","kind":"mutation-receipt","operation":"4e5fdf82c433388e569bda935a4a1a7e211facac163e6c10df53c4b8ea114b66","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-12 — How does the database preview board grow without regressing the Files preview?
+
+* **Question:** Does the board grow by changing every fitHeight GamePreview consumer, by widening the fixed equal-column preview, or by a database-only adaptive opt-in?
+* **Governs:** f-20261001-09
+* **Chosen:** an explicit adaptive opt-in from GameCard with a definite remaining frame that chooses board-beside-notation (wide) or notation-below-board (tall or narrow) and sizes the largest square board in pixels while reserving notation and control space; the compact stacked preview is its compact case; Files keeps its fitHeight/hideControls contract.
+* **Rejected:** changing every fitHeight consumer (breaks the proven Files contract) and merely widening the equal-column preview (keeps the half-width cap).
+* **Reason:** the finding asks for the board to grow into available height and to stack notation when the column is tall. Reversal path: revisit through shared preview geometry evidence while keeping the Files regressions green.
+* **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"52ced32f9dc97fd1bdd0ad550c1cda2de31d494cb6635dbe8e574cffd16f9233","input_sha256":"acf756e7eb167653865662a27101e068aaee499e4bcec7750d62192ed4b63da6","kind":"mutation-receipt","operation":"42c63c0386f106cc9faa737c1327f1abb98cae20f5093bdb2a3b09617817a1de","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-12"],"target":"decisions-ledger","v":1} -->
