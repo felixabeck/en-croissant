@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
-    fs::File,
     io::Write,
     path::Path,
     sync::{Arc, OnceLock},
@@ -278,7 +277,7 @@ impl Drop for PracticeMutexLease {
 }
 
 struct AdvisoryDeckLock {
-    _file: File,
+    _file: crate::infra::inode_ownership::OwnedFile,
 }
 
 impl AdvisoryDeckLock {

@@ -2287,7 +2287,7 @@ fn engine_resource_directory_arm_takes_a_directory_and_target_without_refusals()
 #[test]
 fn post_rename_identity_uses_the_retained_handle() {
     let source = source_for("infra/fs.rs");
-    let body = braced_body(source, "fn metadata(temp: &File)");
+    let body = braced_body(source, "fn metadata(temp: &OwnedFile)");
     let body = compact(&source[body]);
     assert!(body.contains("opened_file_identity(temp)"));
     assert!(!body.contains("Path::new"));

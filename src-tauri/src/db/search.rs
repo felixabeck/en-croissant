@@ -350,6 +350,14 @@ fn open_valid_preferred(
     Ok((index.source() == expected_source).then_some((identity, index)))
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn ownership_preferred_probe(
+    target: &DatabaseFileTarget,
+    source: &IndexSource,
+) -> Result<(), Error> {
+    open_valid_preferred(target, source, &CancellationToken::new()).map(|_| ())
+}
+
 fn cache_loaded_index(
     search_cache: &SearchCache,
     identity: SearchIndexIdentity,

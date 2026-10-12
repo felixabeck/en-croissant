@@ -145,10 +145,9 @@ type AcquiredConnection = (
 );
 
 /// Keeps the binding alive until after the SQLite connection closes. Field
-/// order is deliberate: Rust drops `connection`, then `_binding`, before the ticket.
+/// order is deliberate: Rust drops the native connection and its binding before the ticket.
 struct BoundSqliteConnection {
-    connection: SqliteConnection,
-    _binding: BoundDatabase,
+    connection: super::bound_sqlite::BoundConnection<SqliteConnection>,
     // The ticket drops last, after SQLite has closed and the binding is released.
     _connection: DrainTicket,
 }
@@ -372,11 +371,15 @@ impl ManageConnection for BoundConnectionManager {
         if let Some(barrier) = &self.barrier {
             run_test_hook(TestHook::WorkerBeforeEstablish, &barrier.key.path);
         }
+        let binding = self.database.connection_lifetime().map_err(|error| {
+            diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
+                error.diagnostic(),
+            ))
+        })?;
         let connection =
             SqliteConnection::establish(&self.uri).map_err(diesel::r2d2::Error::ConnectionError)?;
         Ok(BoundSqliteConnection {
-            connection,
-            _binding: self.database.clone(),
+            connection: binding.wrap(connection),
             _connection: ticket,
         })
     }
@@ -411,7 +414,7 @@ impl CustomizeConnection<BoundSqliteConnection, diesel::r2d2::Error> for Connect
 pub struct DatabaseConnection {
     connection: DatabaseConnectionInner,
     _lease: Option<EntryLease>,
-    _pinned_file: Option<std::fs::File>,
+    _pinned_file: Option<crate::infra::inode_ownership::OwnedFile>,
     _authority_snapshot: Option<tempfile::NamedTempFile>,
 }
 
@@ -905,7 +908,7 @@ impl DatabaseRepository {
     /// A→B→A replacement from redirecting the connection.
     pub fn schema_specific_connection_expected_file_cancellable(
         &self,
-        file: std::fs::File,
+        file: crate::infra::inode_ownership::OwnedFile,
         expected_object: (u64, u64),
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<DatabaseConnection, Error> {
@@ -1065,6 +1068,8 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: &CancellationToken,
     ) -> Result<impl Drop, Error> {
+        super::cancellation_check(cancellation)?;
+        crate::infra::inode_ownership::check_sqlite(target.identity())?;
         let key = entry_key(target)?;
         predecessor_admission(
             &self.state,
@@ -1087,10 +1092,11 @@ impl DatabaseRepository {
         let bound = BoundDatabase::acquire(target)?;
         let uri = bound.uri(SqliteMode::ReadOnly)?;
         let refusal_count = bound.refusal_count();
+        let connection_lifetime = bound.connection_lifetime()?;
         let connection =
             SqliteConnection::establish(&uri).map_err(crate::error::map_sqlite_establish);
         let mut connection = match connection {
-            Ok(connection) => connection,
+            Ok(connection) => connection_lifetime.wrap(connection),
             Err(error) => {
                 return Err(self.classify_bound_open_error(target, &bound, refusal_count, error));
             }
@@ -1355,6 +1361,10 @@ impl DatabaseRepository {
         deadline: Instant,
         cancellation: Option<&CancellationToken>,
     ) -> Result<(EntryKey, Arc<DatabaseEntry>, RegularFileMetadata), Error> {
+        if let Some(cancellation) = cancellation {
+            super::cancellation_check(cancellation)?;
+        }
+        crate::infra::inode_ownership::check_sqlite(target.identity())?;
         // Identity and lock-only callers can create the pool before `connection()` is reached.
         // Register the SQLite auto-extension at the one shared construction boundary so every
         // pooled connection receives the cancellation progress handler.
@@ -2763,6 +2773,86 @@ mod retirement_tests {
         assert!(repository.state.lock().unwrap().retired.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_retired_draining_pool_refuses_ordinary_alias_and_preserves_locks() {
+        let root = tempfile::tempdir().unwrap();
+        let path = path_in(root.path(), "holder", "database.db3");
+        let repository = DatabaseRepository::default();
+        let target = test_target(&path);
+        let probe = std::fs::File::open(&path).unwrap();
+        let (key, gate, mut held) = held_handle(&repository, &path);
+        migrations::prepare_database(&mut held, "retired ownership", "").unwrap();
+        held.batch_execute("BEGIN; SELECT Value FROM Info WHERE Name='DataRevision';")
+            .unwrap();
+        super::bound_sqlite_witnesses::assert_sqlite_shared_read_lock_is_held(&probe);
+        force_lru(&repository, &key, root.path(), "churn");
+        assert_retained(&repository, &key);
+        let alias = path.with_file_name("alias.pgn");
+        std::fs::hard_link(&path, &alias).unwrap();
+        for leaf in [target.leaf(), alias.file_name().unwrap()] {
+            let result = crate::infra::fs::open_regular_at(
+                target.parent(),
+                leaf,
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            );
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            super::bound_sqlite_witnesses::assert_sqlite_shared_read_lock_is_held(&probe);
+        }
+        drop(held);
+        assert_eq!(gate.snapshot().outstanding, 0);
+        drop(repository);
+        drop(probe);
+        drop(
+            crate::infra::fs::open_regular_at(
+                target.parent(),
+                target.leaf(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_ordinary_conflict_precedes_retired_parent_wait() {
+        let root = tempfile::tempdir().unwrap();
+        let path = path_in(root.path(), "holder", "database.db3");
+        let repository = DatabaseRepository::default();
+        let (key, _gate, held) = held_handle(&repository, &path);
+        force_lru(&repository, &key, root.path(), "churn");
+        assert_retained(&repository, &key);
+        let ordinary_path = path.with_file_name("ordinary.db3");
+        let target = test_target(&ordinary_path);
+        let ordinary = crate::infra::fs::open_regular_at(
+            target.parent(),
+            target.leaf(),
+            crate::infra::fs::RegularFileAccess::ReadOnly,
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_wait = cancellation.clone();
+        let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&waited);
+        let _hooks = configure_test_hooks(&ordinary_path, |hooks| {
+            hooks.predecessor_wait = Some(Box::new(move || {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                cancel_wait.cancel();
+            }));
+        });
+        let result = repository.initialization_connection(&target, Some(&cancellation));
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "an ordinary conflict must refuse before predecessor admission"
+        );
+        assert!(
+            !waited.load(std::sync::atomic::Ordering::SeqCst),
+            "ownership refusal cannot wait on retirement"
+        );
+        drop(ordinary);
+        drop(held);
+    }
+
     #[test]
     fn lru_disposal_is_outstanding_even_without_sqlite_tickets() {
         let root = tempfile::tempdir().unwrap();
@@ -3734,26 +3824,32 @@ mod retirement_tests {
 
     #[test]
     fn retirement_churn_is_bounded_and_completed_names_are_pruned_on_other_access() {
-        let root = tempfile::tempdir().unwrap();
-        let repository = DatabaseRepository::default();
-        for index in 0..MAX_OPEN_DATABASES * 4 {
-            let path = path_in(root.path(), &format!("parent-{index}"), "churn.db3");
+        let body = || {
+            let root = tempfile::tempdir().unwrap();
+            let repository = DatabaseRepository::default();
+            for index in 0..MAX_OPEN_DATABASES * 4 {
+                let path = path_in(root.path(), &format!("parent-{index}"), "churn.db3");
+                drop(
+                    repository
+                        .initialization_connection(&test_target(&path), None)
+                        .unwrap(),
+                );
+                let state = repository.state.lock().unwrap();
+                assert!(state.retired.len() + state.retirement_reservations <= MAX_OPEN_DATABASES);
+                assert!(state.entries.len() <= MAX_OPEN_DATABASES);
+            }
+            let path = path_in(root.path(), "unrelated", "prune.db3");
             drop(
                 repository
                     .initialization_connection(&test_target(&path), None)
                     .unwrap(),
             );
-            let state = repository.state.lock().unwrap();
-            assert!(state.retired.len() + state.retirement_reservations <= MAX_OPEN_DATABASES);
-            assert!(state.entries.len() <= MAX_OPEN_DATABASES);
-        }
-        let path = path_in(root.path(), "unrelated", "prune.db3");
-        drop(
-            repository
-                .initialization_connection(&test_target(&path), None)
-                .unwrap(),
-        );
-        assert!(repository.state.lock().unwrap().retired.is_empty());
+            assert!(repository.state.lock().unwrap().retired.is_empty());
+        };
+        #[cfg(unix)]
+        crate::db::test_support::run_isolated("db::repository::retirement_tests::retirement_churn_is_bounded_and_completed_names_are_pruned_on_other_access", body);
+        #[cfg(not(unix))]
+        body();
     }
 
     #[test]
@@ -4173,7 +4269,7 @@ mod tests {
 
         let error = DatabaseRepository::default()
             .schema_specific_connection_expected_file_cancellable(
-                file,
+                file.into(),
                 identity,
                 &CancellationToken::new(),
             )
@@ -5930,18 +6026,33 @@ mod bound_sqlite_witnesses {
     }
 
     #[cfg(unix)]
-    fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
-        use std::os::fd::AsRawFd;
+    pub(super) fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
+        assert!(
+            sqlite_shared_read_lock_is_held(probe),
+            "SQLite shared read lock absent"
+        );
+    }
 
-        let mut lock = sqlite_shared_read_lock_query();
+    #[cfg(unix)]
+    fn sqlite_shared_read_lock_is_held(probe: &fs::File) -> bool {
+        native_lock_is_held(probe, sqlite_shared_read_lock_query())
+    }
 
+    #[cfg(unix)]
+    fn native_lock_is_held(probe: &impl std::os::fd::AsRawFd, mut lock: libc::flock) -> bool {
         let probe_fd = probe.as_raw_fd();
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork lock observer");
         if child == 0 {
             let result = unsafe { libc::fcntl(probe_fd, libc::F_GETLK, &mut lock) };
-            let held = result == 0 && lock.l_type != libc::F_UNLCK as libc::c_short;
-            unsafe { libc::_exit(if held { 0 } else { 1 }) };
+            let status = if result != 0 {
+                2
+            } else if lock.l_type != libc::F_UNLCK as libc::c_short {
+                0
+            } else {
+                1
+            };
+            unsafe { libc::_exit(status) };
         }
 
         let mut status = 0;
@@ -5951,11 +6062,8 @@ mod bound_sqlite_witnesses {
             libc::WIFEXITED(status),
             "lock observer did not exit normally"
         );
-        assert_eq!(
-            libc::WEXITSTATUS(status),
-            0,
-            "SQLite shared read lock absent"
-        );
+        assert!(libc::WEXITSTATUS(status) <= 1, "F_GETLK observer failed");
+        libc::WEXITSTATUS(status) == 0
     }
 
     #[cfg(target_os = "linux")]
@@ -6011,6 +6119,801 @@ mod bound_sqlite_witnesses {
     }
 
     #[cfg(unix)]
+    fn ownership_repository(
+        path: &Path,
+    ) -> (
+        DatabaseRepository,
+        crate::infra::path_authority::DatabaseFileTarget,
+        fs::File,
+        DatabaseConnection,
+    ) {
+        let repository = DatabaseRepository::default();
+        let target = test_target(path);
+        let mut connection = repository.initialization_connection(&target, None).unwrap();
+        migrations::prepare_database(&mut connection, "ownership witness", "").unwrap();
+        let probe = fs::File::open(path).unwrap();
+        connection
+            .batch_execute("BEGIN; SELECT Value FROM Info WHERE Name='DataRevision';")
+            .unwrap();
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        (repository, target, probe, connection)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_expired_registration_uses_the_same_admission_liveness() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("expired.db3");
+        let (repository, target, probe, connection) = ownership_repository(&path);
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        crate::db::bound_sqlite::set_registration_drop_hook(&target, move || {
+            entered.send(()).unwrap();
+            let _ = resumed.recv_timeout(Duration::from_secs(10));
+        });
+        drop(connection);
+        std::thread::scope(|scope| {
+            scope.spawn(move || drop(repository));
+            entry.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(
+                !sqlite_shared_read_lock_is_held(&probe),
+                "all SQLite connections must be closed before registration removal"
+            );
+            let ordinary = crate::infra::fs::open_regular_at(
+                target.parent(),
+                target.leaf(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap();
+            assert!(
+                matches!(BoundDatabase::acquire(&target), Err(Error::Conflict(_))),
+                "the ordinary owner must exclude a successor binding"
+            );
+            resume.send(()).unwrap();
+            drop(ordinary);
+        });
+        drop(probe);
+        drop(BoundDatabase::acquire(&target).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_sidecar_handoff_keeps_shm_locks_and_releases_at_last_connection() {
+        use crate::infra::path_authority::{DatabaseHandle, PathAuthority, PathOperation};
+        use std::os::fd::FromRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner.db3");
+        seed_database(&path, 1, "DELETE");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let first = bound.connection_lifetime().unwrap().wrap(
+            Connection::open_with_flags(
+                bound.uri(SqliteMode::ReadWrite).unwrap(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .unwrap(),
+        );
+        first.execute_batch("PRAGMA journal_mode=WAL; UPDATE Info SET Value='2' WHERE Name='DataRevision'; BEGIN; SELECT Value FROM Info;").unwrap();
+        let shm = root.path().join("owner.db3-shm");
+        let alias = root.path().join("shm-alias.db3");
+        fs::hard_link(&shm, &alias).unwrap();
+        let mut authority =
+            PathAuthority::open(root.path().join("authority.json"), vec![]).unwrap();
+        let handle = DatabaseHandle::new(
+            authority
+                .grant_persistent_file_for_test(
+                    &alias,
+                    "sidecar alias",
+                    vec![PathOperation::DatabaseRead],
+                )
+                .id,
+        );
+        let sidecar_target = authority
+            .database_file_target(&handle, PathOperation::DatabaseRead)
+            .unwrap();
+        let mut query: libc::flock = unsafe { std::mem::zeroed() };
+        query.l_type = libc::F_WRLCK as _;
+        query.l_whence = libc::SEEK_SET as _;
+        query.l_start = 120;
+        query.l_len = 8;
+        let native =
+            crate::db::bound_sqlite::open_bound_sidecar_for_test(&bound, "-shm", libc::O_RDONLY)
+                .unwrap();
+        let probe = unsafe { fs::File::from_raw_fd(native) };
+        assert!(
+            native_lock_is_held(&probe, query),
+            "handoff must not close a fresh descriptor of SQLite's locked SHM inode"
+        );
+        let second = bound.connection_lifetime().unwrap().wrap(
+            Connection::open_with_flags(
+                bound.uri(SqliteMode::ReadWrite).unwrap(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .unwrap(),
+        );
+        second
+            .execute_batch("BEGIN; SELECT Value FROM Info;")
+            .unwrap();
+        assert!(matches!(
+            BoundDatabase::acquire(&sidecar_target),
+            Err(Error::Conflict(_))
+        ));
+        drop(first);
+        assert!(
+            native_lock_is_held(&probe, query),
+            "one surviving connection retains SHM locks"
+        );
+        assert!(matches!(
+            BoundDatabase::acquire(&sidecar_target),
+            Err(Error::Conflict(_))
+        ));
+        drop(second);
+        drop(probe);
+        drop(BoundDatabase::acquire(&sidecar_target).unwrap());
+        assert!(
+            matches!(
+                crate::infra::fs::open_regular_at(
+                    target.parent(),
+                    target.leaf(),
+                    crate::infra::fs::RegularFileAccess::ReadOnly
+                ),
+                Err(Error::Conflict(_))
+            ),
+            "the idle primary binding remains an incompatible holder"
+        );
+        drop(bound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_resolved_consumers_preserve_repository_locks_in_both_orders() {
+        use crate::infra::path_authority::{
+            EngineHandle, EngineImageHandle, EngineResourceHandle, EngineResourceHandleKind,
+            OpeningBookHandle, PathAuthority, PathOperation as Op, SharedPathAuthority,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("locked.db3");
+        let alias = root.path().join("hard-link.db3");
+        let (repository, target, probe, connection) = ownership_repository(&path);
+        fs::hard_link(&path, &alias).unwrap();
+        let independent = root.path().join("independent");
+        fs::write(&independent, b"[Event \"independent\"]\n\n1. e4 *\n").unwrap();
+        for operation in [
+            Op::PuzzleRead,
+            Op::PuzzleDelete,
+            Op::ReadPgn,
+            Op::WritePgn,
+            Op::EngineExecute,
+            Op::EngineResourceRead,
+            Op::OpeningBookRead,
+            Op::ImageRead,
+            Op::DownloadFile,
+        ] {
+            for selected in [&path, &alias, &independent] {
+                let mut authority =
+                    PathAuthority::open(root.path().join("authority.json"), vec![]).unwrap();
+                let grant = authority
+                    .grant_persistent_file_for_test(selected, "picked file", vec![operation])
+                    .id;
+                let result = match operation {
+                    Op::PuzzleRead | Op::PuzzleDelete => {
+                        let shared = SharedPathAuthority::installed(authority);
+                        crate::puzzle::resolve_puzzle_with_authority(&shared, &grant, operation)
+                            .map(|_| ())
+                    }
+                    Op::EngineExecute => authority
+                        .engine_executable(&EngineHandle::new(grant), operation)
+                        .map(|_| ()),
+                    Op::EngineResourceRead => authority
+                        .engine_resource(&EngineResourceHandle::new(
+                            grant,
+                            EngineResourceHandleKind::File,
+                            "resource".into(),
+                        ))
+                        .map(|_| ()),
+                    Op::OpeningBookRead => authority
+                        .opening_book_descriptor(&OpeningBookHandle::new(grant))
+                        .map(|_| ()),
+                    Op::ImageRead => {
+                        let shared = SharedPathAuthority::uninitialized();
+                        shared.install(authority).unwrap();
+                        crate::infra::path_authority::engine_image_reader_for(
+                            &shared,
+                            &EngineImageHandle::new(grant),
+                            usize::MAX,
+                        )
+                        .map(|_| ())
+                    }
+                    _ => authority.resolve(&grant, operation, &[]).map(|_| ()),
+                };
+                assert_sqlite_shared_read_lock_is_held(&probe);
+                if selected == &independent {
+                    assert!(result.is_ok(), "independent {operation:?}: {result:?}");
+                } else {
+                    assert!(
+                        matches!(result, Err(Error::Conflict(_))),
+                        "alias {operation:?}: {result:?}"
+                    );
+                }
+            }
+        }
+        drop(connection);
+        drop(repository);
+        drop(probe);
+        for operation in [
+            Op::PuzzleRead,
+            Op::PuzzleDelete,
+            Op::ReadPgn,
+            Op::WritePgn,
+            Op::EngineExecute,
+            Op::EngineResourceRead,
+            Op::OpeningBookRead,
+            Op::ImageRead,
+            Op::DownloadFile,
+        ] {
+            for selected in [&path, &alias] {
+                let mut authority =
+                    PathAuthority::open(root.path().join("reverse-authority.json"), vec![])
+                        .unwrap();
+                let grant = authority
+                    .grant_persistent_file_for_test(selected, "picked alias", vec![operation])
+                    .id;
+                let ordinary = authority.resolve(&grant, operation, &[]).unwrap();
+                assert!(
+                    matches!(BoundDatabase::acquire(&target), Err(Error::Conflict(_))),
+                    "reverse {operation:?}"
+                );
+                drop(ordinary);
+                drop(BoundDatabase::acquire(&target).unwrap());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_sidecar_consumers_preserve_repository_locks() {
+        use crate::db::search_index::{
+            integrity_stamp_leaf, legacy_sidecar_leaf, preferred_sidecar_leaf, IndexSource,
+        };
+        use crate::infra::path_authority::{PathAuthority, PathClass, PathOperation};
+        for hard_link in [false, true] {
+            for family in [
+                "preferred",
+                "legacy",
+                "integrity",
+                "metadata",
+                "workspace-file",
+                "sqlite-wal",
+                "sqlite-shm",
+                "sqlite-journal",
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let owner = root.path().join("owner.db3");
+                let owner_target = test_target(&owner);
+                let leaf = match family {
+                    "preferred" => preferred_sidecar_leaf(owner_target.leaf()),
+                    "legacy" => legacy_sidecar_leaf(owner_target.leaf()),
+                    "integrity" => integrity_stamp_leaf(owner_target.leaf()),
+                    "metadata" => crate::infra::path_authority::workspace_sidecar_leaf(OsStr::new(
+                        "workspace.pgn",
+                    ))
+                    .unwrap(),
+                    "workspace-file" => "workspace.pgn".into(),
+                    suffix => format!("owner.db3-{}", suffix.trim_start_matches("sqlite-")).into(),
+                };
+                let sidecar = root.path().join(&leaf);
+                let locked = if hard_link {
+                    root.path().join("locked.db3")
+                } else {
+                    sidecar.clone()
+                };
+                let (repository, locked_target, probe, connection) = ownership_repository(&locked);
+                if hard_link {
+                    fs::hard_link(&locked, &sidecar).unwrap();
+                }
+                let source = IndexSource::from_database_identity(
+                    &repository.database_identity(&locked_target).unwrap(),
+                )
+                .unwrap();
+                let result = match family {
+                    "preferred" => {
+                        crate::db::search::ownership_preferred_probe(&owner_target, &source)
+                    }
+                    "legacy" => crate::db::search_index::probe_legacy_index_sidecar_at(
+                        owner_target.parent(),
+                        &leaf,
+                        &source,
+                        None,
+                    )
+                    .map(|_| ()),
+                    "integrity" => {
+                        crate::db::content_validation::ownership_stamp_probe(&owner_target)
+                    }
+                    "workspace-file" => crate::file_workspace::count_installed_workspace_pgn(
+                        owner_target.parent(),
+                        &leaf,
+                        locked_target.identity(),
+                        &crate::pgn::PgnRepository::default(),
+                        &CancellationToken::new(),
+                    )
+                    .map(|_| ()),
+                    "metadata" => {
+                        fs::write(
+                            root.path().join("workspace.pgn"),
+                            b"[Event \"workspace\"]\n\n*\n",
+                        )
+                        .unwrap();
+                        let mut authority =
+                            PathAuthority::open(root.path().join("authority.json"), vec![])
+                                .unwrap();
+                        let grant = authority
+                            .grant_dialog(
+                                root.path(),
+                                "workspace",
+                                PathClass::SingleDialogGrant,
+                                PathOperation::ReadPgn,
+                                Duration::from_secs(30),
+                                1,
+                            )
+                            .unwrap();
+                        let directory = authority
+                            .capability_directory(&grant, PathOperation::ReadPgn)
+                            .unwrap();
+                        let entry = directory
+                            .entries(&CancellationToken::new(), &mut |name| {
+                                name == OsStr::new("workspace.pgn")
+                            })
+                            .unwrap()
+                            .pop()
+                            .unwrap();
+                        crate::file_workspace::metadata_from(&directory, &entry).map(|_| ())
+                    }
+                    suffix => {
+                        let owner_binding = BoundDatabase::acquire(&owner_target).unwrap();
+                        let suffix = format!("-{}", suffix.trim_start_matches("sqlite-"));
+                        let result = crate::db::bound_sqlite::open_bound_sidecar_for_test(
+                            &owner_binding,
+                            &suffix,
+                            libc::O_RDONLY,
+                        );
+                        assert_eq!(result, Err(libc::ESTALE));
+                        Err(Error::Conflict("sidecar ownership refused".into()))
+                    }
+                };
+                assert!(
+                    matches!(result, Err(Error::Conflict(_))),
+                    "{family}, hard link={hard_link}: {result:?}"
+                );
+                assert_sqlite_shared_read_lock_is_held(&probe);
+                drop(connection);
+                drop(repository);
+                drop(probe);
+                let ordinary = crate::infra::fs::open_regular_at(
+                    owner_target.parent(),
+                    &leaf,
+                    crate::infra::fs::RegularFileAccess::ReadOnly,
+                )
+                .unwrap();
+                assert!(matches!(
+                    BoundDatabase::acquire(&locked_target),
+                    Err(Error::Conflict(_))
+                ));
+                drop(ordinary);
+                drop(BoundDatabase::acquire(&locked_target).unwrap());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_pgn_import_export_entry_points_preserve_repository_locks() {
+        use crate::infra::path_authority::{
+            DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation as Op,
+            SharedPathAuthority,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("locked.db3");
+        let (repository, _target, probe, connection) = ownership_repository(&path);
+        let alias = root.path().join("alias.pgn");
+        fs::hard_link(&path, &alias).unwrap();
+        let independent = root.path().join("independent.pgn");
+        fs::write(&independent, b"[Event \"independent\"]\n\n1. e4 *\n").unwrap();
+        let other_database = root.path().join("import.db3");
+        drop(test_target(&other_database));
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events![crate::db::ConvertProgress])
+            .mount_events(&app);
+        let cache = crate::SearchCache::default();
+        let mut authority =
+            PathAuthority::open(root.path().join("authority.json"), vec![]).unwrap();
+        let protected = DatabaseHandle::new(
+            authority
+                .grant_persistent_file_for_test(&path, "locked database", vec![Op::DatabaseExport])
+                .id,
+        );
+        let destination = DatabaseHandle::new(
+            authority
+                .grant_persistent_file_for_test(
+                    &other_database,
+                    "import database",
+                    vec![Op::DatabaseCreate],
+                )
+                .id,
+        );
+        let mut cases = Vec::new();
+        for selected in [&path, &alias, &independent] {
+            let input = FileWorkspaceHandle::new(
+                authority
+                    .grant_persistent_file_for_test(selected, "source.pgn", vec![Op::ReadPgn])
+                    .id,
+            );
+            let output = FileWorkspaceHandle::new(
+                authority
+                    .grant_persistent_file_for_test(selected, "output.pgn", vec![Op::WritePgn])
+                    .id,
+            );
+            cases.push((selected == &independent, input, output));
+        }
+        let shared = SharedPathAuthority::installed(authority);
+        for (independent, input, output) in cases {
+            let imported = crate::db::convert_pgn_blocking(
+                &shared,
+                &repository,
+                &cache,
+                vec![input],
+                destination.clone(),
+                None,
+                app.handle().clone(),
+                "import".into(),
+                None,
+                "ownership-import".into(),
+                &CancellationToken::new(),
+            );
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            let exported = crate::db::export_to_pgn_blocking(
+                &shared,
+                &repository,
+                protected.clone(),
+                output,
+                &CancellationToken::new(),
+            );
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            if independent {
+                assert!(imported.is_ok(), "independent import: {imported:?}");
+                assert!(exported.is_ok(), "independent export: {exported:?}");
+            } else {
+                assert!(
+                    matches!(imported, Err(Error::Conflict(_))),
+                    "import alias: {imported:?}"
+                );
+                assert!(
+                    matches!(exported, Err(Error::Conflict(_))),
+                    "export alias: {exported:?}"
+                );
+            }
+        }
+        drop(connection);
+        drop(repository);
+        drop(probe);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_independent_index_sidecars_and_exclusive_creation_succeed() {
+        use crate::db::search_index::{
+            legacy_sidecar_leaf, preferred_sidecar_leaf, write_entries_to_at, IndexSource,
+        };
+        use crate::infra::fs::{create_regular_at, open_regular_at, RegularFileAccess};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("locked.db3");
+        let (repository, target, probe, connection) = ownership_repository(&path);
+        let source =
+            IndexSource::from_database_identity(&repository.database_identity(&target).unwrap())
+                .unwrap();
+        let token = CancellationToken::new();
+        for leaf in [
+            preferred_sidecar_leaf(target.leaf()),
+            legacy_sidecar_leaf(target.leaf()),
+        ] {
+            crate::infra::fs::require_durable(
+                write_entries_to_at(
+                    target.parent(),
+                    &leaf,
+                    source.clone(),
+                    std::iter::empty(),
+                    &token,
+                )
+                .unwrap(),
+                crate::error::DurabilityStage::SearchIndexReplacement,
+            )
+            .unwrap();
+        }
+        crate::db::search::ownership_preferred_probe(&target, &source).unwrap();
+        let legacy = crate::db::search_index::probe_legacy_index_sidecar_at(
+            target.parent(),
+            &legacy_sidecar_leaf(target.leaf()),
+            &source,
+            None,
+        )
+        .unwrap();
+        assert!(legacy.source_matches);
+        drop(legacy);
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        let leaf = OsStr::new("created.pgn");
+        let (mut created, _) = create_regular_at(target.parent(), leaf).unwrap();
+        created.write_all(b"newly reachable").unwrap();
+        created.sync_all().unwrap();
+        let created_target = test_target(&root.path().join(leaf));
+        assert!(matches!(
+            BoundDatabase::acquire(&created_target),
+            Err(Error::Conflict(_))
+        ));
+        drop(created);
+        drop(BoundDatabase::acquire(&created_target).unwrap());
+        drop(open_regular_at(target.parent(), leaf, RegularFileAccess::ReadOnly).unwrap());
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        drop(connection);
+        drop(repository);
+        drop(probe);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_clone_transfer_cancellation_malformed_and_last_release() {
+        use crate::infra::fs::{open_regular_at, RegularFileAccess};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.db3");
+        seed_database(&path, 1, "DELETE");
+        let target = test_target(&path);
+        let original =
+            open_regular_at(target.parent(), target.leaf(), RegularFileAccess::ReadOnly).unwrap();
+        let duplicate = original.try_clone().unwrap();
+        drop(original);
+        assert!(matches!(
+            BoundDatabase::acquire(&target),
+            Err(Error::Conflict(_))
+        ));
+        let transferred = std::thread::spawn(move || duplicate).join().unwrap();
+        assert!(matches!(
+            BoundDatabase::acquire(&target),
+            Err(Error::Conflict(_))
+        ));
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = DatabaseRepository::default()
+            .schema_specific_connection_expected_file_cancellable(
+                transferred,
+                target.identity(),
+                &token,
+            );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        drop(BoundDatabase::acquire(&target).unwrap());
+        for cancelled in [false, true] {
+            let file = open_regular_at(target.parent(), target.leaf(), RegularFileAccess::ReadOnly)
+                .unwrap();
+            let token = CancellationToken::new();
+            if cancelled {
+                token.cancel();
+            }
+            assert!(
+                crate::db::search_index::MmapSearchIndex::open_file_cancellable(file, &token)
+                    .is_err()
+            );
+            drop(BoundDatabase::acquire(&target).unwrap());
+        }
+        let pgn_path = root.path().join("malformed.pgn");
+        fs::write(&pgn_path, b"[Event \"broken\"]\n\n1. e4 { never closes").unwrap();
+        let pgn_target = test_target(&pgn_path);
+        for cancelled in [false, true] {
+            use crate::infra::path_authority::{PathAuthority, PathOperation};
+            let mut authority =
+                PathAuthority::open(root.path().join("pgn-authority.json"), vec![]).unwrap();
+            let grant = authority
+                .grant_persistent_file_for_test(&pgn_path, "PGN", vec![PathOperation::ReadPgn])
+                .id;
+            let resolved = authority
+                .resolve(&grant, PathOperation::ReadPgn, &[])
+                .unwrap();
+            let snapshot = resolved.pgn_snapshot().unwrap();
+            let token = CancellationToken::new();
+            if cancelled {
+                token.cancel();
+            }
+            let result = crate::pgn::count_pgn_games_core_blocking(
+                snapshot,
+                &token,
+                &crate::pgn::PgnRepository::default(),
+            );
+            assert!(result.is_err(), "malformed/canceled PGN must fail");
+            drop(resolved);
+            drop(BoundDatabase::acquire(&pgn_target).unwrap());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_open_boundary_substitution_and_errno_preserve_locks() {
+        crate::db::test_support::run_isolated("db::repository::bound_sqlite_witnesses::cross_capability_open_boundary_substitution_and_errno_preserve_locks", || {
+            use crate::infra::{fs::{open_regular_at, RegularFileAccess}, inode_ownership::OPEN_TEST_CONTROLS};
+            let root = tempfile::tempdir().unwrap();
+            let locked = root.path().join("locked.db3");
+            let (repository, target, probe, connection) = ownership_repository(&locked);
+            let selected = root.path().join("selected.pgn");
+            fs::write(&selected, b"independent PGN bytes").unwrap();
+            let held_name = root.path().join("selected-backup.pgn");
+            let swapped_name = selected.clone();
+            let locked_name = locked.clone();
+            let backup = held_name.clone();
+            OPEN_TEST_CONTROLS.with(|controls| controls.borrow_mut().after_identify = Some(Box::new(move || {
+                fs::rename(&swapped_name, backup).unwrap();
+                fs::hard_link(locked_name, swapped_name).unwrap();
+            })));
+            let opened = open_regular_at(target.parent(), selected.file_name().unwrap(), RegularFileAccess::ReadOnly);
+            #[cfg(target_os = "linux")]
+            {
+                let mut file = opened.unwrap();
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, b"independent PGN bytes", "reopen must follow the O_PATH descriptor");
+                drop(file);
+            }
+            #[cfg(not(target_os = "linux"))]
+            assert!(matches!(opened, Err(Error::Conflict(_))), "foreign descriptor must be quarantined");
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            fs::remove_file(&selected).unwrap();
+            fs::rename(&held_name, &selected).unwrap();
+            OPEN_TEST_CONTROLS.with(|controls| controls.borrow_mut().inspect_error = Some(libc::EIO));
+            let error = open_regular_at(target.parent(), selected.file_name().unwrap(), RegularFileAccess::ReadOnly).unwrap_err();
+            assert!(matches!(error, Error::Io(error) if error.raw_os_error() == Some(libc::EIO)));
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            #[cfg(not(target_os = "linux"))]
+            {
+                use crate::infra::inode_ownership::{lock, QUARANTINE_ADMISSION_LIMIT};
+                let initial = lock().unwrap().unclassified_descriptors.len();
+                for count in initial..QUARANTINE_ADMISSION_LIMIT {
+                    let swapped = selected.clone();
+                    let backup = held_name.clone();
+                    let foreign = locked.clone();
+                    OPEN_TEST_CONTROLS.with(|controls| {
+                        let mut controls = controls.borrow_mut();
+                        controls.inspect_error = Some(libc::EIO);
+                        controls.after_identify = Some(Box::new(move || {
+                            fs::rename(&swapped, backup).unwrap();
+                            fs::hard_link(foreign, swapped).unwrap();
+                        }));
+                    });
+                    let error = open_regular_at(target.parent(), selected.file_name().unwrap(), RegularFileAccess::ReadOnly).unwrap_err();
+                    assert!(matches!(error, Error::Io(error) if error.raw_os_error() == Some(libc::EIO)));
+                    assert_eq!(lock().unwrap().unclassified_descriptors.len(), count + 1);
+                    assert_sqlite_shared_read_lock_is_held(&probe);
+                    fs::remove_file(&selected).unwrap();
+                    fs::rename(&held_name, &selected).unwrap();
+                }
+                let error = open_regular_at(target.parent(), selected.file_name().unwrap(), RegularFileAccess::ReadOnly).unwrap_err();
+                assert!(matches!(error, Error::Io(error) if error.raw_os_error() == Some(libc::EMFILE)));
+                assert_eq!(lock().unwrap().unclassified_descriptors.len(), QUARANTINE_ADMISSION_LIMIT);
+                assert_sqlite_shared_read_lock_is_held(&probe);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                OPEN_TEST_CONTROLS.with(|controls| controls.borrow_mut().reopen_error = Some(libc::ENOENT));
+                let error = open_regular_at(target.parent(), selected.file_name().unwrap(), RegularFileAccess::ReadOnly).unwrap_err();
+                assert!(matches!(error, Error::Io(error) if error.raw_os_error() == Some(libc::ENOENT)));
+                let independent_target = test_target(&selected);
+                drop(BoundDatabase::acquire(&independent_target).unwrap());
+                assert_sqlite_shared_read_lock_is_held(&probe);
+            }
+            drop(connection);
+            drop(repository);
+            drop(probe);
+            #[cfg(not(target_os = "linux"))]
+            {
+                let registry = crate::infra::inode_ownership::lock().unwrap();
+                assert!(registry.quarantined_descriptors.is_empty());
+                assert!(registry.unclassified_descriptors.is_empty());
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_final_close_and_sqlite_admission_share_arbitration() {
+        use crate::infra::{
+            fs::{open_regular_at, RegularFileAccess},
+            inode_ownership,
+        };
+        use std::os::fd::AsRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("concurrent.db3");
+        seed_database(&path, 1, "DELETE");
+        let target = test_target(&path);
+        let probe = fs::File::open(&path).unwrap();
+        let ordinary =
+            open_regular_at(target.parent(), target.leaf(), RegularFileAccess::ReadOnly).unwrap();
+        let fd = ordinary.as_raw_fd();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::new(std::sync::Barrier::new(2));
+        let (release_reader, reader_release) = std::sync::mpsc::channel();
+        let (started, start) = std::sync::mpsc::channel();
+        let (locked, lock) = std::sync::mpsc::channel();
+        let repository = DatabaseRepository::default();
+        std::thread::scope(|scope| {
+            let entered_in_close = Arc::clone(&entered);
+            let resume_in_close = Arc::clone(&resume);
+            scope.spawn(move || {
+                inode_ownership::FINAL_CLOSE_BARRIERS
+                    .with(|slot| *slot.borrow_mut() = Some((entered_in_close, resume_in_close)));
+                drop(ordinary);
+            });
+            entered.wait();
+            let descriptor_live = unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
+            let close_arbitration = matches!(
+                inode_ownership::REGISTRY.get().unwrap().try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            let target = &target;
+            let repository = &repository;
+            scope.spawn(move || {
+                started.send(()).unwrap();
+                let mut connection = repository.initialization_connection(target, None).unwrap();
+                connection
+                    .batch_execute("BEGIN; SELECT Value FROM Info WHERE Name='DataRevision';")
+                    .unwrap();
+                locked.send(()).unwrap();
+                let _ = reader_release.recv_timeout(Duration::from_secs(10));
+                drop(connection);
+            });
+            let started = start.recv_timeout(Duration::from_secs(10));
+            let admission_excluded = lock.try_recv().is_err();
+            resume.wait();
+            started.unwrap();
+            assert!(
+                descriptor_live,
+                "ordinary descriptor is still live at the close barrier"
+            );
+            assert!(
+                close_arbitration,
+                "final close must hold SQLite admission arbitration"
+            );
+            assert!(
+                admission_excluded,
+                "SQLite cannot pass the paused final close"
+            );
+            lock.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            release_reader.send(()).unwrap();
+        });
+        drop(repository);
+        drop(probe);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_poison_preserves_live_lock_and_closes_owned_files_safely() {
+        crate::db::test_support::run_isolated("db::repository::bound_sqlite_witnesses::cross_capability_poison_preserves_live_lock_and_closes_owned_files_safely", || {
+            use crate::infra::{fs::{open_regular_at, RegularFileAccess}, inode_ownership};
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("locked.db3");
+            let independent = root.path().join("independent.pgn");
+            fs::write(&independent, b"ordinary").unwrap();
+            let (repository, target, probe, connection) = ownership_repository(&path);
+            let ordinary = open_regular_at(target.parent(), independent.file_name().unwrap(), RegularFileAccess::ReadOnly).unwrap();
+            let _ = std::panic::catch_unwind(|| {
+                let _guard = inode_ownership::lock().unwrap();
+                panic!("ownership poison witness");
+            });
+            assert!(matches!(BoundDatabase::acquire(&target), Err(Error::Conflict(_))));
+            assert!(matches!(open_regular_at(target.parent(), target.leaf(), RegularFileAccess::ReadOnly), Err(Error::Conflict(_))));
+            drop(ordinary);
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            drop(connection);
+            drop(repository);
+            drop(probe);
+        });
+    }
+
+    #[cfg(unix)]
     #[test]
     fn database_probe_current_keeps_pooled_sqlite_shared_read_lock_held() {
         let root = tempfile::tempdir().unwrap();
@@ -6063,13 +6966,22 @@ mod bound_sqlite_witnesses {
     }
 
     #[cfg(unix)]
-    fn open_bound_connection(bound: &BoundDatabase) -> rusqlite::Result<Connection> {
-        Connection::open_with_flags(
+    fn open_bound_connection(
+        bound: &BoundDatabase,
+    ) -> rusqlite::Result<crate::db::bound_sqlite::BoundConnection<Connection>> {
+        let lifetime = bound.connection_lifetime().map_err(|error| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some(error.diagnostic()),
+            )
+        })?;
+        let connection = Connection::open_with_flags(
             bound
                 .uri(SqliteMode::ReadOnly)
                 .expect("bound read-only URI"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-        )
+        )?;
+        Ok(lifetime.wrap(connection))
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]

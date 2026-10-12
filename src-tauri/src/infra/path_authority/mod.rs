@@ -11,6 +11,7 @@ use crate::infra::fs::{
     assert_entry_identity, open_directory_at, open_regular_at, probe_regular_file_at,
     read_directory_entries_at, ParentAccess, RegularFileAccess,
 };
+use crate::infra::inode_ownership::{FileMetadata, OwnedFile};
 use crate::{
     error::Error,
     infra::fs::{
@@ -717,7 +718,7 @@ impl CapabilityDirectory {
     pub(crate) fn open_metadata_sidecar(
         &self,
         pgn: &DirectoryEntry,
-    ) -> Result<Option<fs::File>, Error> {
+    ) -> Result<Option<OwnedFile>, Error> {
         crate::infra::fs::single_leaf(&pgn.name)?;
         let sidecar = workspace_sidecar_leaf(&pgn.name)?;
         #[cfg(all(test, unix))]
@@ -978,12 +979,16 @@ impl DatabaseFileTarget {
         path.file_name()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
-        let _file = fs::OpenOptions::new()
-            .read(true)
+        // Opening an existing inode here would release SQLite's process-wide POSIX locks.
+        match fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error),
+        }?;
         let acquired = acquire_target(path, AcquireShape::File { parent_access })?;
         let (parent, leaf) = acquired
             .parent_and_leaf
@@ -1021,8 +1026,11 @@ pub(crate) mod database_test_support {
 }
 
 mod verified_identity {
-    use crate::{error::Error, infra::fs::AtomicFileOutcome};
-    use std::{ffi::OsStr, fs};
+    use crate::{
+        error::Error,
+        infra::{fs::AtomicFileOutcome, inode_ownership::OwnedFile},
+    };
+    use std::ffi::OsStr;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct VerifiedIdentity((u64, u64));
@@ -1052,7 +1060,7 @@ mod verified_identity {
             write_fn: F,
         ) -> Result<(AtomicFileOutcome, VerifiedIdentity), Error>
         where
-            F: FnOnce(&mut fs::File) -> Result<(), Error>,
+            F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         {
             let installed = crate::infra::fs::atomic_replace_at_identified(
                 self.directory.as_file(),
@@ -1111,7 +1119,7 @@ mod verified_identity {
     }
 
     impl super::ResolvedPath {
-        pub(super) fn create_database_file(&self) -> Result<(fs::File, VerifiedIdentity), Error> {
+        pub(super) fn create_database_file(&self) -> Result<(OwnedFile, VerifiedIdentity), Error> {
             if self.operation() != super::PathOperation::DatabaseCreate {
                 return Err(Error::InvalidInput(
                     "resolved capability is not a database creation target".into(),
@@ -1150,7 +1158,7 @@ fn refuse_unobserved(
 }
 
 #[cfg(all(test, unix))]
-type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&fs::File)>;
+type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&OwnedFile)>;
 #[cfg(test)]
 type RefreshEntryHook = Box<dyn Fn(&str)>;
 
@@ -1288,7 +1296,7 @@ impl AuthorizedDir {
         self.remove_leaf_identified(leaf, VerifiedIdentity::from_pair(identity))
     }
 
-    pub(crate) fn open_regular_relative(&self, relative: &Path) -> Result<fs::File, Error> {
+    pub(crate) fn open_regular_relative(&self, relative: &Path) -> Result<OwnedFile, Error> {
         let components = relative_components(relative);
         validate_components(&components)?;
         let (leaf, directories) = components
@@ -1307,7 +1315,7 @@ impl AuthorizedDir {
     pub(crate) fn open_or_create_regular_relative(
         &self,
         relative: &Path,
-    ) -> Result<fs::File, Error> {
+    ) -> Result<OwnedFile, Error> {
         let components = relative_components(relative);
         validate_components(&components)?;
         let (leaf, directories) = components
@@ -1511,7 +1519,7 @@ impl EngineResourceHandle {
 #[derive(Debug)]
 pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
-    file: fs::File,
+    file: OwnedFile,
     #[cfg(target_os = "macos")]
     target: std::sync::OnceLock<PathBuf>,
     #[cfg(target_os = "macos")]
@@ -1520,13 +1528,13 @@ pub(crate) struct EngineResourceLease {
     is_directory: bool,
     #[cfg(windows)]
     /// Holds the no-delete handle until the lease is dropped.
-    _file: fs::File,
+    _file: OwnedFile,
     #[cfg(windows)]
     target: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
-fn descriptor_path(file: &fs::File) -> Result<PathBuf, Error> {
+fn descriptor_path(file: &impl std::os::fd::AsFd) -> Result<PathBuf, Error> {
     use std::os::unix::ffi::OsStrExt;
 
     rustix::fs::getpath(file)
@@ -1537,7 +1545,7 @@ fn descriptor_path(file: &fs::File) -> Result<PathBuf, Error> {
 impl EngineResourceLease {
     #[cfg(unix)]
     fn from_file(
-        file: fs::File,
+        file: OwnedFile,
         is_directory: bool,
         target_override: Option<PathBuf>,
     ) -> Result<Self, Error> {
@@ -1587,7 +1595,7 @@ impl EngineResourceLease {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn file(&self) -> &fs::File {
+    pub(crate) fn file(&self) -> &OwnedFile {
         &self.file
     }
 
@@ -1643,14 +1651,14 @@ impl EngineResourceLease {
         let fallback_target = Some(descriptor_path(&file).unwrap_or_else(|_| PathBuf::new()));
         #[cfg(not(target_os = "macos"))]
         let fallback_target = None;
-        Self::from_file(file, false, fallback_target)
+        Self::from_file(file.into(), false, fallback_target)
             .expect("test file lease must be constructible")
     }
 
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn test_directory(file: fs::File) -> Self {
         let fallback_target = Some(descriptor_path(&file).unwrap_or_default());
-        Self::from_file(file, true, fallback_target)
+        Self::from_file(file.into(), true, fallback_target)
             .expect("test directory lease must be constructible")
     }
 }
@@ -1665,7 +1673,7 @@ impl EngineExecutable {
         let command_path =
             descriptor_path(&file).unwrap_or_else(|_| working_directory.join("engine"));
         Self {
-            file,
+            file: file.into(),
             working_directory,
             resource_leases: resource_leases.into_iter().map(Arc::new).collect(),
             #[cfg(target_os = "macos")]
@@ -1810,7 +1818,7 @@ pub enum OpeningBookHandleKind {
 /// be redirected by a replacement after capability resolution.
 pub(crate) struct OpeningBookDescriptor {
     pub(crate) file_name: String,
-    file: fs::File,
+    file: OwnedFile,
 }
 
 impl OpeningBookDescriptor {
@@ -1863,7 +1871,7 @@ impl OpeningBookHandle {
 /// path. Callers cannot obtain a filesystem path from a renderer capability.
 pub(crate) struct EngineExecutable {
     #[cfg(unix)]
-    file: fs::File,
+    file: OwnedFile,
     working_directory: PathBuf,
     resource_leases: Vec<Arc<EngineResourceLease>>,
     #[cfg(target_os = "macos")]
@@ -1874,7 +1882,7 @@ pub(crate) struct EngineExecutable {
     materialized_files: Vec<MaterializedFile>,
     #[cfg(windows)]
     /// Holds the no-delete handle until the executable is dropped.
-    _file: fs::File,
+    _file: OwnedFile,
     #[cfg(windows)]
     command_path: PathBuf,
 }
@@ -1944,7 +1952,7 @@ impl EngineExecutable {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn image_file(&self) -> &fs::File {
+    pub(crate) fn image_file(&self) -> &OwnedFile {
         &self.file
     }
 
@@ -2576,7 +2584,7 @@ pub(crate) struct AppDataDir {
 }
 
 pub(crate) struct InstanceLockGuard {
-    _files: Vec<fs::File>,
+    _files: Vec<OwnedFile>,
 }
 
 pub(crate) enum InstanceAdmission {
@@ -2630,7 +2638,7 @@ fn startup_acquisition_failure(error: Error, prefix: &str, message: &str) -> Err
 fn admit_instance_with_lock(
     app_data: &AppDataDir,
     extra_roots: &[(&'static str, &Path)],
-    mut lock: impl FnMut(&fs::File) -> Result<(), crate::infra::fs::AdvisoryLockError>,
+    mut lock: impl FnMut(&OwnedFile) -> Result<(), crate::infra::fs::AdvisoryLockError>,
 ) -> Result<InstanceAdmission, Error> {
     use crate::infra::fs::{advisory_lock_is_unsupported, AdvisoryLockError, AdvisoryLockPlatform};
     #[cfg(target_os = "linux")]
@@ -2924,7 +2932,7 @@ pub(crate) struct EngineLaunchRoot {
 #[derive(Debug)]
 struct EngineLaunchRootInner {
     _root: fs::File,
-    _lock: fs::File,
+    _lock: OwnedFile,
     instance: fs::File,
     instance_path: PathBuf,
     registry: std::sync::Mutex<LaunchLeafRegistry>,
@@ -2999,7 +3007,7 @@ impl MaterializedFile {
 
     pub(crate) fn create_from(
         &mut self,
-        source: &fs::File,
+        source: &impl crate::infra::inode_ownership::NativeFile,
         mode: u32,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
@@ -3309,33 +3317,15 @@ fn sweep_engine_launch_root(
 pub(crate) fn initialize_engine_launch_root(
     app_data: &AppDataDir,
 ) -> Result<EngineLaunchRoot, Error> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    use std::os::unix::ffi::OsStrExt;
     let root = ensure_app_owned_default_dir(app_data, AppOwnedDefaultRoot::EngineLaunch)?;
     let id = Uuid::new_v4().to_string();
     let lock_name = OsString::from(format!("{id}.lock"));
-    let lock_name_c = std::ffi::CString::new(lock_name.as_os_str().as_bytes())
-        .map_err(|_| Error::InvalidInput("engine launch lock name contains NUL".into()))?;
-    let raw_lock = unsafe {
-        // SAFETY: root is an open directory descriptor, and lock_name_c is a live NUL-terminated
-        // string for the duration of this single call.
-        libc::openat(
-            root.directory.as_file().as_raw_fd(),
-            lock_name_c.as_ptr(),
-            libc::O_CREAT
-                | libc::O_EXCL
-                | libc::O_NOFOLLOW
-                | libc::O_CLOEXEC
-                | libc::O_EXLOCK
-                | libc::O_NONBLOCK,
-            ENGINE_LAUNCH_LOCK_MODE,
-        )
-    };
-    if raw_lock < 0 {
-        return Err(Error::Io(Box::new(std::io::Error::last_os_error())));
-    }
-    // SAFETY: openat returned a uniquely owned descriptor on success.
-    let lock = unsafe { fs::File::from_raw_fd(raw_lock) };
+    let lock = crate::infra::inode_ownership::create_at_mode(
+        root.directory.as_file(),
+        &lock_name,
+        rustix::fs::OFlags::from_bits_retain((libc::O_EXLOCK | libc::O_NONBLOCK) as _),
+        rustix::fs::Mode::from_raw_mode(ENGINE_LAUNCH_LOCK_MODE as _),
+    )?;
     #[cfg(test)]
     ENGINE_LAUNCH_LOCK_CREATED_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -3658,7 +3648,7 @@ pub(crate) async fn activate_download_artifact_runtime(
 }
 
 fn sha256_open_file(
-    file: &mut fs::File,
+    file: &mut impl Read,
     #[cfg(test)] observer: Option<&Arc<dyn ActivationObserver + Send + Sync>>,
 ) -> Result<(u64, String), Error> {
     let mut hasher = Sha256::new();
@@ -3684,7 +3674,7 @@ fn sha256_open_file(
 /// Change stamp paired with the opaque file identity. It is never a standalone authority check:
 /// Unix uses inode ctime; Windows uses the handle's last-write FILETIME. Platforms without a
 /// stable handle timestamp reject post-rename marker publication rather than making a claim.
-fn opened_file_change_stamp(file: &fs::File) -> Result<i128, Error> {
+fn opened_file_change_stamp(file: &impl FileMetadata) -> Result<i128, Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -3703,7 +3693,7 @@ fn opened_file_change_stamp(file: &fs::File) -> Result<i128, Error> {
 }
 /// Stable identity for any already-opened object. This intentionally exposes no path and
 /// uses the Windows handle index instead of lossy metadata fallbacks.
-pub(crate) fn opened_file_identity(file: &fs::File) -> Result<(u64, u64), Error> {
+pub(crate) fn opened_file_identity(file: &impl FileMetadata) -> Result<(u64, u64), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -3717,7 +3707,7 @@ pub(crate) fn opened_file_identity(file: &fs::File) -> Result<(u64, u64), Error>
     }
 }
 
-fn identity_from_open_file(file: &fs::File) -> Result<Identity, Error> {
+fn identity_from_open_file(file: &impl FileMetadata) -> Result<Identity, Error> {
     let (a, b) = opened_file_identity(file)?;
     Ok(Identity { a, b })
 }
@@ -3752,11 +3742,10 @@ fn windows_identity(path: &Path) -> Result<Identity, Error> {
     windows_file_identity(&file)
 }
 #[cfg(windows)]
-pub(crate) fn windows_file_identity(file: &fs::File) -> Result<Identity, Error> {
-    use std::os::windows::io::AsRawHandle;
+pub(crate) fn windows_file_identity(file: &impl FileMetadata) -> Result<Identity, Error> {
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
     let mut info = unsafe { std::mem::zeroed() };
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+    if unsafe { GetFileInformationByHandle(file.native_handle() as _, &mut info) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok(Identity {
@@ -6402,7 +6391,7 @@ impl PathAuthority {
                     let file = resolved.take_directory().ok_or_else(|| {
                         Error::InvalidInput("engine resource must be a directory".into())
                     })?;
-                    EngineResourceLease::from_file(file, true, None)
+                    EngineResourceLease::from_file(OwnedFile::directory(file)?, true, None)
                 }
                 #[cfg(windows)]
                 {
@@ -6411,9 +6400,9 @@ impl PathAuthority {
                     // arm above. The handle is retained for the lease lifetime; the path is
                     // only the UCI/CreateProcess string.
                     Ok(EngineResourceLease {
-                        _file: resolved.take_directory().ok_or_else(|| {
-                            Error::InvalidInput("engine resource must be a directory".into())
-                        })?,
+                        _file: OwnedFile::directory(resolved.take_directory().ok_or_else(
+                            || Error::InvalidInput("engine resource must be a directory".into()),
+                        )?)?,
                         target: resolved.take_target().ok_or_else(|| {
                             Error::Conflict("engine resource target is unavailable".into())
                         })?,
@@ -6483,7 +6472,7 @@ impl PathAuthority {
     where
         F: FnMut(
             &Path,
-            Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+            Box<dyn FnOnce(&mut OwnedFile) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
     {
         if crate::infra::fs::single_leaf(leaf).is_err()
@@ -8934,7 +8923,7 @@ impl PathAuthority {
     where
         F: FnMut(
             &Path,
-            Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+            Box<dyn FnOnce(&mut OwnedFile) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
     {
         self.save_entries_with_baseline(
@@ -8962,7 +8951,7 @@ impl PathAuthority {
     where
         F: FnMut(
             &Path,
-            Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+            Box<dyn FnOnce(&mut OwnedFile) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
     {
         let candidate_snapshot = self.registry_admission_snapshot(
@@ -20989,7 +20978,7 @@ mod tests {
                     if observed.get() == 1 {
                         return Err(Error::Io(Box::new(std::io::Error::other("retry"))));
                     }
-                    let mut sink = tempfile::tempfile().unwrap();
+                    let mut sink: OwnedFile = tempfile::tempfile().unwrap().into();
                     write(&mut sink)?;
                     Ok(AtomicFileOutcome::DurableCommit)
                 },
@@ -21307,7 +21296,7 @@ mod tests {
 
         let file_field = resolved
             .lines()
-            .find(|line| line.trim_start().starts_with("file: Option<fs::File>"))
+            .find(|line| line.trim_start().starts_with("file: Option<OwnedFile>"))
             .expect("ResolvedPath file field");
         assert!(!file_field.contains("pub"), "{file_field}");
         for forbidden in [
@@ -21386,7 +21375,7 @@ mod tests {
         fs::write(&path, b"book").unwrap();
         let mut descriptor = OpeningBookDescriptor {
             file_name: "book.bin".into(),
-            file: fs::File::open(&path).unwrap(),
+            file: fs::File::open(&path).unwrap().into(),
         };
         assert_eq!(
             descriptor
@@ -21398,7 +21387,7 @@ mod tests {
         cancelled.cancel();
         let mut cancelled_descriptor = OpeningBookDescriptor {
             file_name: "book.bin".into(),
-            file: fs::File::open(path).unwrap(),
+            file: fs::File::open(path).unwrap().into(),
         };
         assert!(matches!(
             cancelled_descriptor.read_bounded_bytes_cancellable(4, &cancelled),

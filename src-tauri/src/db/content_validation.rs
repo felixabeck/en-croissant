@@ -188,6 +188,11 @@ fn read_stamp(target: &DatabaseFileTarget) -> Result<Option<Stamp>, Error> {
         .filter(|stamp| stamp.version == VERSION))
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn ownership_stamp_probe(target: &DatabaseFileTarget) -> Result<(), Error> {
+    read_stamp(target).map(|_| ())
+}
+
 fn write_stamp(
     repository: &DatabaseRepository,
     target: &DatabaseFileTarget,
@@ -560,10 +565,13 @@ pub(super) fn scan_worker(
         );
         let admission = repository.predecessor_admission_for(target, cancellation)?;
         let bound = BoundDatabase::acquire(target)?;
+        let connection_lifetime = bound.connection_lifetime()?;
         // SQLite 3.39 ignores stored CHECK violations on SQLITE_OPEN_READONLY.
         // mode=rw never creates the primary; query_only prevents scan mutations.
-        let mut connection = SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite)?)
-            .map_err(crate::error::map_sqlite_establish)?;
+        let mut connection = connection_lifetime.wrap(
+            SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite)?)
+                .map_err(crate::error::map_sqlite_establish)?,
+        );
         connection.batch_execute("PRAGMA query_only=ON;")?;
         #[cfg(test)]
         super::repository::run_test_hook(

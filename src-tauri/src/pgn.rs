@@ -1,6 +1,7 @@
+#[cfg(test)]
+use std::fs::File;
 use std::{
     collections::HashMap,
-    fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     sync::Arc,
 };
@@ -844,7 +845,7 @@ fn checked_range(start: i32, end: i32) -> Result<(usize, usize), Error> {
 }
 
 fn read_range_bytes(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     range: GameRange,
     cancellation: &CancellationToken,
 ) -> Result<Vec<u8>, Error> {
@@ -873,7 +874,7 @@ fn read_range_bytes(
 }
 
 fn read_ranges(
-    mut file: File,
+    mut file: impl Read + Seek,
     ranges: Vec<GameRange>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, Error> {
@@ -975,8 +976,8 @@ pub(crate) fn revision_string(snapshot: &crate::infra::path_authority::PgnSnapsh
 }
 
 pub(crate) fn copy_range(
-    source: &mut File,
-    target: &mut File,
+    source: &mut (impl Read + Seek),
+    target: &mut impl Write,
     start: u64,
     end: u64,
     cancellation: &CancellationToken,

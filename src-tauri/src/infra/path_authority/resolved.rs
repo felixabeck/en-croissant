@@ -1,5 +1,6 @@
 #[cfg(unix)]
 use crate::infra::fs::RegularFileAccess;
+use crate::infra::inode_ownership::OwnedFile;
 use crate::{
     error::Error,
     infra::fs::{AtomicFileOutcome, AtomicInstalledFile},
@@ -95,7 +96,7 @@ fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, 
 /// resolution cannot be used to reach a sibling.
 pub struct ResolvedPath {
     operation: PathOperation,
-    file: Option<fs::File>,
+    file: Option<OwnedFile>,
     directory: Option<fs::File>,
     parent: Option<fs::File>,
     leaf: Option<OsString>,
@@ -103,11 +104,11 @@ pub struct ResolvedPath {
 }
 
 impl ResolvedPath {
-    pub(super) fn file(&self) -> Option<&fs::File> {
+    pub(super) fn file(&self) -> Option<&OwnedFile> {
         self.file.as_ref()
     }
 
-    pub(super) fn take_file(&mut self) -> Option<fs::File> {
+    pub(super) fn take_file(&mut self) -> Option<OwnedFile> {
         self.file.take()
     }
 
@@ -173,7 +174,7 @@ impl ResolvedPath {
 
     /// Transfers the already-opened, identity-checked regular file to a native
     /// streaming consumer.  This is intentionally not a path accessor.
-    pub(crate) fn into_read_file(mut self) -> Result<fs::File, Error> {
+    pub(crate) fn into_read_file(mut self) -> Result<OwnedFile, Error> {
         if !matches!(
             self.operation,
             PathOperation::ReadPgn | PathOperation::DatabaseRead | PathOperation::PuzzleRead
@@ -196,53 +197,28 @@ impl ResolvedPath {
             .leaf
             .as_ref()
             .ok_or_else(|| Error::Conflict("PGN leaf handle is unavailable".into()))?;
-        #[cfg(unix)]
-        {
-            use rustix::fs::{self as rfs, Mode, OFlags};
-            let file = fs::File::from(
-                rfs::openat(
-                    parent,
-                    leaf,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|error| Error::from(std::io::Error::from(error)))?,
-            );
-            Self::pgn_snapshot_file(file)
-        }
-        #[cfg(windows)]
-        {
-            use std::ptr::null;
-            use windows_sys::{
-                Wdk::Storage::FileSystem::FILE_OPEN,
-                Win32::{Foundation::GENERIC_READ, Storage::FileSystem::SYNCHRONIZE},
-            };
-            Self::pgn_snapshot_file(super::open_windows_child(
-                parent,
-                leaf,
-                FILE_OPEN,
-                SYNCHRONIZE | GENERIC_READ,
-                null(),
-                false,
-                true,
-            )?)
-        }
+        Self::pgn_snapshot_file(crate::infra::fs::open_regular_at(
+            parent,
+            leaf,
+            crate::infra::fs::RegularFileAccess::ReadOnly,
+        )?)
     }
 
     /// Snapshot of an already-opened regular file whose identity the caller has proved.
     /// A descriptor whose identity differs from `expected` is refused with `Conflict`.
     pub(crate) fn pgn_snapshot_from_identified_file(
-        file: fs::File,
+        file: impl Into<OwnedFile>,
         expected: (u64, u64),
     ) -> Result<PgnSnapshot, Error> {
-        let snapshot = Self::pgn_snapshot_file(file)?;
+        let snapshot = Self::pgn_snapshot_file(file.into())?;
         if snapshot.identity.pair() != expected {
             return Err(Error::Conflict("workspace PGN changed concurrently".into()));
         }
         Ok(snapshot)
     }
 
-    fn pgn_snapshot_file(file: fs::File) -> Result<PgnSnapshot, Error> {
+    fn pgn_snapshot_file(file: impl Into<OwnedFile>) -> Result<PgnSnapshot, Error> {
+        let file = file.into();
         let meta = file.metadata()?;
         let modified = signed_unix_nanos(meta.modified()?)?;
         #[cfg(unix)]
@@ -287,7 +263,7 @@ impl ResolvedPath {
     #[cfg(all(test, unix))]
     pub(crate) fn atomic_replace_download<F>(&self, write: F) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         self.atomic_replace_download_cancellable(&CancellationToken::new(), write)
     }
@@ -302,7 +278,7 @@ impl ResolvedPath {
         write: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         self.atomic_replace_download_cancellable_inner(cancellation, None, write)
     }
@@ -314,7 +290,7 @@ impl ResolvedPath {
         write: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         if self.operation != PathOperation::DownloadFile {
             return Err(Error::InvalidInput(
@@ -355,7 +331,7 @@ impl ResolvedPath {
         write: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         self.atomic_replace_download_cancellable_inner(cancellation, Some(commit_gate), write)
     }
@@ -550,7 +526,7 @@ impl ResolvedPath {
     /// Duplicate the already-authorized descriptor for SQLite. The caller owns
     /// this duplicate for the complete database connection lifetime, so a
     /// pathname swap cannot redirect SQLite after capability resolution.
-    pub(crate) fn puzzle_database_file(&self) -> Result<fs::File, Error> {
+    pub(crate) fn puzzle_database_file(&self) -> Result<OwnedFile, Error> {
         self.puzzle_database_path()?;
         self.file
             .as_ref()
@@ -633,7 +609,7 @@ impl ResolvedPath {
         write: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut fs::File, &mut fs::File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile, &mut OwnedFile) -> Result<(), Error>,
     {
         crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
         if self.operation != PathOperation::WritePgn {
@@ -689,7 +665,7 @@ impl ResolvedPath {
     }
 
     #[cfg(test)]
-    fn file_mut(&mut self) -> Result<&mut fs::File, Error> {
+    fn file_mut(&mut self) -> Result<&mut OwnedFile, Error> {
         self.file.as_mut().ok_or_else(|| {
             Error::InvalidInput(
                 "resolved capability names a directory; a file component is required".into(),
@@ -701,7 +677,7 @@ impl ResolvedPath {
     /// are private to this module, and the Windows-only test cannot run on the Linux source-pin
     /// host, so this is the only way to exercise the counterpart body without a full resolve.
     #[cfg(all(test, windows))]
-    fn windows_test(operation: PathOperation, file: Option<fs::File>) -> Self {
+    fn windows_test(operation: PathOperation, file: Option<OwnedFile>) -> Self {
         Self {
             operation,
             file,
@@ -751,7 +727,7 @@ pub(crate) struct PgnSnapshotRevision {
     pub ctime_nanos: i128,
 }
 pub(crate) struct PgnSnapshot {
-    pub file: fs::File,
+    pub file: OwnedFile,
     pub identity: PgnSnapshotIdentity,
     pub revision: PgnSnapshotRevision,
 }
@@ -1137,7 +1113,7 @@ pub(super) fn resolve_windows(
             }
             return Ok(ResolvedPath {
                 operation,
-                file: Some(file),
+                file: Some(crate::infra::inode_ownership::own_windows(file)?),
                 directory: None,
                 parent: Some(handle.try_clone()?),
                 leaf: Some(name.clone()),
@@ -1218,7 +1194,7 @@ mod windows_tests {
     #[test]
     fn mark_engine_executable_windows_is_a_checked_noop() {
         let file = tempfile::tempfile().unwrap();
-        ResolvedPath::windows_test(PathOperation::EngineInstall, Some(file))
+        ResolvedPath::windows_test(PathOperation::EngineInstall, Some(file.into()))
             .mark_engine_executable()
             .unwrap();
         assert!(matches!(

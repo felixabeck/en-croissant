@@ -4,6 +4,9 @@
 //! contains only public metadata and a durable journal used to complete interrupted add/delete
 //! operations without ever serialising a bearer token.
 
+#[cfg(test)]
+use std::fs;
+
 use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
@@ -21,7 +24,6 @@ use specta::Type;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    fs,
     io::{Read, Write},
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
@@ -777,7 +779,9 @@ fn credential_failure(error: Error) -> Error {
     Error::CredentialFailure(error.to_string())
 }
 
-fn open_private_registry(dir: &AuthorizedDir) -> Result<Option<fs::File>, Error> {
+fn open_private_registry(
+    dir: &AuthorizedDir,
+) -> Result<Option<crate::infra::inode_ownership::OwnedFile>, Error> {
     let file = match dir.open_regular_relative(Path::new(REGISTRY_FILE)) {
         Ok(file) => file,
         Err(error) if error.is_missing_entry() => return Ok(None),
@@ -789,7 +793,7 @@ fn open_private_registry(dir: &AuthorizedDir) -> Result<Option<fs::File>, Error>
 }
 
 #[cfg(unix)]
-fn chmod_registry_file(file: &fs::File) -> Result<(), Error> {
+fn chmod_registry_file(file: &crate::infra::inode_ownership::OwnedFile) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(PermissionsExt::from_mode(0o600))
         .map_err(|source| Error::CredentialFailure(source.to_string()))

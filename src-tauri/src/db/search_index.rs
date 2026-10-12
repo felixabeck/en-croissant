@@ -628,15 +628,17 @@ impl MmapSearchIndex {
         Self::open_file(File::open(path)?)
     }
 
-    pub(crate) fn open_file(file: File) -> io::Result<Self> {
-        Self::open_file_inner(file, None)
+    pub(crate) fn open_file(
+        file: impl Into<crate::infra::inode_ownership::OwnedFile>,
+    ) -> io::Result<Self> {
+        Self::open_file_inner(file.into(), None)
     }
 
     pub(crate) fn open_file_cancellable(
-        file: File,
+        file: impl Into<crate::infra::inode_ownership::OwnedFile>,
         cancellation: &CancellationToken,
     ) -> Result<Self, Error> {
-        Self::open_file_inner(file, Some(cancellation)).map_err(|error| {
+        Self::open_file_inner(file.into(), Some(cancellation)).map_err(|error| {
             if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() {
                 Error::Cancellation
             } else {
@@ -645,7 +647,10 @@ impl MmapSearchIndex {
         })
     }
 
-    fn open_file_inner(file: File, cancellation: Option<&CancellationToken>) -> io::Result<Self> {
+    fn open_file_inner(
+        file: crate::infra::inode_ownership::OwnedFile,
+        cancellation: Option<&CancellationToken>,
+    ) -> io::Result<Self> {
         let check = || {
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
                 Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
@@ -894,7 +899,7 @@ pub(crate) fn legacy_sidecar_leaf(database_leaf: &OsStr) -> OsString {
 }
 
 pub(crate) struct LegacySidecarProbe {
-    pub(crate) file: File,
+    pub(crate) file: crate::infra::inode_ownership::OwnedFile,
     pub(crate) identity: (u64, u64),
     pub(crate) source_matches: bool,
 }

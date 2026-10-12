@@ -14,10 +14,31 @@ mod server {
         routing::get,
         Extension, Router,
     };
+    use std::io::{Read, Seek};
     use std::net::TcpListener;
     use std::{path::Path, sync::Arc};
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    use tokio_util::io::ReaderStream;
+
+    fn sound_stream(
+        file: crate::infra::inode_ownership::OwnedFile,
+        remaining: u64,
+    ) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
+        futures_util::stream::try_unfold((file, remaining), |(mut file, remaining)| async move {
+            if remaining == 0 {
+                return Ok(None);
+            }
+            tokio::task::spawn_blocking(move || {
+                let mut bytes = vec![0; remaining.min(65536) as usize];
+                let count = file.read(&mut bytes)?;
+                if count == 0 {
+                    return Ok(None);
+                }
+                bytes.truncate(count);
+                Ok(Some((bytes, (file, remaining - count as u64))))
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        })
+    }
 
     #[derive(Debug, PartialEq)]
     pub enum RangeParseResult {
@@ -103,7 +124,7 @@ mod server {
         let opened =
             tokio::task::spawn_blocking(move || directory.open_regular_relative(&relative)).await;
         let mut file = match opened {
-            Ok(Ok(file)) => tokio::fs::File::from_std(file),
+            Ok(Ok(file)) => file,
             Ok(Err(Error::InvalidInput(_))) => return StatusCode::NOT_FOUND.into_response(),
             Ok(Err(error)) if error.is_missing_entry() => {
                 return StatusCode::NOT_FOUND.into_response();
@@ -118,7 +139,20 @@ mod server {
             }
         };
 
-        let metadata = match file.metadata().await {
+        let (opened, metadata) = match tokio::task::spawn_blocking(move || {
+            let metadata = file.metadata();
+            (file, metadata)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("sound request {:?} metadata task failed: {}", path, error);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+        file = opened;
+        let metadata = match metadata {
             Ok(m) => m,
             Err(error) => {
                 log::warn!("sound request {:?} metadata failed: {}", path, error);
@@ -137,13 +171,25 @@ mod server {
                 match parse_range(range_str, total_len) {
                     RangeParseResult::Valid(start, end) => {
                         let length = end - start + 1;
-                        if let Err(error) = file.seek(std::io::SeekFrom::Start(start as u64)).await
-                        {
+                        let seek = tokio::task::spawn_blocking(move || {
+                            let result = file.seek(std::io::SeekFrom::Start(start as u64));
+                            (file, result)
+                        })
+                        .await;
+                        let (opened, result) = match seek {
+                            Ok(result) => result,
+                            Err(error) => {
+                                log::warn!("sound request {:?} seek task failed: {}", path, error);
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                        };
+                        file = opened;
+                        if let Err(error) = result {
                             log::warn!("sound request {:?} seek failed: {}", path, error);
                             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                         }
 
-                        let stream = ReaderStream::with_capacity(file.take(length as u64), 65536);
+                        let stream = sound_stream(file, length as u64);
                         let body = StreamBody::new(stream);
 
                         return (
@@ -174,7 +220,7 @@ mod server {
             }
         }
 
-        let stream = ReaderStream::with_capacity(file, 65536);
+        let stream = sound_stream(file, u64::MAX);
         let body = StreamBody::new(stream);
 
         (

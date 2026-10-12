@@ -4,7 +4,7 @@ use crate::infra::path_authority::PathAuthority;
 use crate::progress::ProgressUpdateHook;
 #[cfg(all(test, unix))]
 pub(crate) mod allocation_probe;
-mod bound_sqlite;
+pub(crate) mod bound_sqlite;
 mod content_validation;
 mod encoding;
 mod migrations;

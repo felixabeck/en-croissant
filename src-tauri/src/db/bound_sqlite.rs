@@ -10,7 +10,6 @@
 //! puzzle snapshot in the temp dir.
 
 use std::{
-    collections::HashMap,
     ffi::{CString, OsStr, OsString},
     fs::File,
     sync::{
@@ -21,8 +20,9 @@ use std::{
 
 use rusqlite::ffi;
 
-#[cfg(test)]
-use std::collections::HashSet;
+#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+use crate::infra::inode_ownership::QUARANTINE_ADMISSION_LIMIT;
+use crate::infra::inode_ownership::{Registry, REGISTRY};
 
 #[cfg(unix)]
 use crate::infra::fs::raw_libc_stat_identity;
@@ -33,13 +33,6 @@ use crate::{
 
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
-/// A full unclassified bucket refuses sidecar opens with `EMFILE` on every Unix.
-/// Non-Linux leaf opens also check per-identity buckets. Linux `O_PATH` leaf opens and
-/// verified-inode reopens bypass these checks. Already admitted opens can exceed the limit,
-/// and a full bucket never causes retained descriptors to close.
-#[cfg(unix)]
-const QUARANTINE_ADMISSION_LIMIT: usize = 8;
-
 type VfsOpenFn = unsafe extern "C" fn(
     *mut ffi::sqlite3_vfs,
     *const std::os::raw::c_char,
@@ -73,8 +66,8 @@ pub(crate) enum SqliteMode {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct BindingKey {
-    identity: (u64, u64),
+pub(crate) struct BindingKey {
+    pub(crate) identity: (u64, u64),
     parent_identity: (u64, u64),
     leaf: OsString,
 }
@@ -91,9 +84,6 @@ impl BindingKey {
 
 #[cfg(test)]
 type BindingTestHook = Box<dyn FnOnce() + Send>;
-#[cfg(test)]
-type RegistryTestHook = Box<dyn FnOnce() + Send>;
-
 struct Binding {
     parent: File,
     leaf: OsString,
@@ -117,8 +107,8 @@ struct Binding {
     before_delete_disposition: Mutex<Option<BindingTestHook>>,
 }
 
-struct Registration {
-    token: u64,
+pub(crate) struct Registration {
+    pub(crate) token: u64,
     key: BindingKey,
     binding: Binding,
     vfs_name: Option<CString>,
@@ -140,33 +130,67 @@ impl Drop for Registration {
                 std::mem::forget(name);
             }
         }
+        #[cfg(test)]
+        {
+            let hook = REGISTRY
+                .get()
+                .and_then(|registry| registry.lock().ok())
+                .and_then(|mut registry| registry.drop_hooks.remove(&self.key));
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         remove_registration_if_current(&self.key, self.token, self);
     }
 }
 
-#[derive(Default)]
-struct Registry {
-    by_token: HashMap<u64, Weak<Registration>>,
-    by_key: HashMap<BindingKey, (u64, Weak<Registration>)>,
-    creating: HashMap<BindingKey, u64>,
-    #[cfg(all(unix, not(target_os = "linux")))]
-    quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
-    #[cfg(unix)]
-    unclassified_descriptors: Vec<File>,
-    #[cfg(test)]
-    creation_hooks: HashMap<BindingKey, RegistryTestHook>,
-    #[cfg(test)]
-    creation_failures: HashSet<BindingKey>,
-    #[cfg(test)]
-    waiting_hooks: HashMap<BindingKey, RegistryTestHook>,
-}
-
-static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 static REGISTRY_CHANGED: OnceLock<Condvar> = OnceLock::new();
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub(crate) struct BoundDatabase(Arc<Registration>);
+
+/// Drops after the native connection, while retaining its binding through sidecar cleanup.
+#[derive(Debug)]
+pub(crate) struct BoundConnectionLifetime(BoundDatabase);
+
+#[derive(Debug)]
+pub(crate) struct BoundConnection<C> {
+    connection: C,
+    _lifetime: BoundConnectionLifetime,
+}
+
+impl<C> std::ops::Deref for BoundConnection<C> {
+    type Target = C;
+    fn deref(&self) -> &C {
+        &self.connection
+    }
+}
+
+impl<C> std::ops::DerefMut for BoundConnection<C> {
+    fn deref_mut(&mut self) -> &mut C {
+        &mut self.connection
+    }
+}
+
+impl BoundConnectionLifetime {
+    pub(crate) fn wrap<C>(self, connection: C) -> BoundConnection<C> {
+        BoundConnection {
+            connection,
+            _lifetime: self,
+        }
+    }
+}
+
+impl Drop for BoundConnectionLifetime {
+    fn drop(&mut self) {
+        let token = self.0 .0.token;
+        #[cfg(unix)]
+        crate::infra::inode_ownership::finish_connection(token);
+        #[cfg(not(unix))]
+        let _ = token;
+    }
+}
 
 impl std::fmt::Debug for BoundDatabase {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,6 +202,11 @@ impl std::fmt::Debug for BoundDatabase {
 }
 
 impl BoundDatabase {
+    pub(crate) fn connection_lifetime(&self) -> Result<BoundConnectionLifetime, Error> {
+        #[cfg(unix)]
+        crate::infra::inode_ownership::begin_connection(self.0.token)?;
+        Ok(BoundConnectionLifetime(self.clone()))
+    }
     /// Reuses identical keys and admits only one distinct key per inode, including reservations.
     pub(crate) fn acquire(target: &DatabaseFileTarget) -> Result<Self, Error> {
         ensure_hooks_installed()?;
@@ -205,7 +234,9 @@ impl BoundDatabase {
             if registry.creating.contains_key(&key) {
                 #[cfg(test)]
                 if let Some(hook) = registry.waiting_hooks.remove(&key) {
+                    drop(registry);
                     hook();
+                    continue;
                 }
                 drop(
                     changed.wait(registry).map_err(|_| {
@@ -214,6 +245,7 @@ impl BoundDatabase {
                 );
                 continue;
             }
+            registry.check_sqlite(identity)?;
             let conflicts =
                 |existing: &&BindingKey| existing.identity == identity && **existing != key;
             if let Some(existing) = registry
@@ -238,6 +270,11 @@ impl BoundDatabase {
                 .map_err(|_| Error::ResourceLimit("bound SQLite token space exhausted".into()))?;
             registry.creating.insert(key.clone(), token);
             break token;
+        };
+
+        let _reservation = CreationReservation {
+            key: key.clone(),
+            token,
         };
 
         #[cfg(test)]
@@ -497,6 +534,17 @@ pub(super) fn has_binding_for_test(target: &DatabaseFileTarget) -> bool {
     })
 }
 
+#[cfg(all(test, unix))]
+pub(super) fn set_registration_drop_hook(
+    target: &DatabaseFileTarget,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    let key = BindingKey::for_target(target).unwrap();
+    let mut registry = REGISTRY.get().unwrap().lock().unwrap();
+    assert!(!registry.drop_hooks.contains_key(&key));
+    registry.drop_hooks.insert(key, Box::new(hook));
+}
+
 #[cfg(test)]
 fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
     let callback = hook.lock().ok().and_then(|mut hook| hook.take());
@@ -569,9 +617,23 @@ fn remove_reservation(key: &BindingKey, token: u64) {
     };
     if registry.creating.get(key) == Some(&token) {
         registry.creating.remove(key);
+        #[cfg(unix)]
+        registry.remove_sidecars(token);
     }
+    #[cfg(unix)]
+    registry.drain_quarantine();
     if let Some(changed) = REGISTRY_CHANGED.get() {
         changed.notify_all();
+    }
+}
+
+struct CreationReservation {
+    key: BindingKey,
+    token: u64,
+}
+impl Drop for CreationReservation {
+    fn drop(&mut self) {
+        remove_reservation(&self.key, self.token);
     }
 }
 
@@ -592,36 +654,17 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
     }
     remove_key_if_token(&mut registry, key, token);
 
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        let identity = registration.binding.identity;
-        let identity_is_live = identity_has_live_registration(&registry, identity);
-        if !identity_is_live {
-            // Drain while holding the registry lock so a new binding cannot acquire this inode
-            // between the last-registration check and closing the quarantined descriptors.
-            drop(registry.quarantined_descriptors.remove(&identity));
-        }
-    }
     #[cfg(unix)]
-    {
-        if !registry
-            .by_key
-            .values()
-            .any(|(_, weak)| weak.strong_count() != 0)
-        {
-            drop(std::mem::take(&mut registry.unclassified_descriptors));
-        }
-    }
+    registry.remove_sidecars(token);
+    #[cfg(unix)]
+    registry.drain_quarantine();
 }
 
 /// Checks liveness without upgrading a `Weak` under the registry lock: a temporary `Arc` dropped
 /// here could be the last one, and `Registration::drop` locks the registry again.
 #[cfg(all(unix, not(target_os = "linux")))]
 fn identity_has_live_registration(registry: &Registry, identity: (u64, u64)) -> bool {
-    registry
-        .by_key
-        .iter()
-        .any(|(key, (_, weak))| key.identity == identity && weak.strong_count() != 0)
+    registry.sqlite_live(identity)
 }
 
 #[cfg(unix)]
@@ -691,7 +734,7 @@ fn lockable_open_is_admitted(is_leaf: bool) -> bool {
     }
     #[cfg(target_os = "linux")]
     let _ = is_leaf;
-    registry.unclassified_descriptors.len() < QUARANTINE_ADMISSION_LIMIT
+    registry.open_admitted()
 }
 
 #[cfg(all(test, unix, not(target_os = "linux")))]
@@ -1274,6 +1317,82 @@ mod unix_hooks {
         }
     }
 
+    unsafe fn open_owned_sidecar(
+        registration: &Registration,
+        name: &CString,
+        flags: c_int,
+        mode: c_int,
+    ) -> c_int {
+        use crate::infra::inode_ownership::{self, OwnedFile};
+        use rustix::fs::{Mode, OFlags};
+        // The injection exercises the legacy VFS unknown-descriptor quarantine. Production
+        // Linux opens identify with O_PATH, so inspection failure cannot create this descriptor.
+        #[cfg(test)]
+        if let Some(error) = registration
+            .binding
+            .sidecar_fstat_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            use std::os::fd::FromRawFd;
+            let mut registry = match inode_ownership::lock() {
+                Ok(registry) => registry,
+                Err(_) => return syscall_failure(libc::EIO),
+            };
+            if !registry.open_admitted() {
+                return syscall_failure(libc::EMFILE);
+            }
+            let fd = unsafe {
+                libc::openat(
+                    registration.binding.parent.as_raw_fd(),
+                    name.as_ptr(),
+                    flags | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                    mode as libc::c_uint,
+                )
+            };
+            if fd < 0 {
+                return fd;
+            }
+            registry.quarantine(unsafe { File::from_raw_fd(fd) }, None);
+            return syscall_failure(error);
+        }
+        let native_flags = OFlags::from_bits_retain((flags | libc::O_NONBLOCK) as _)
+            - OFlags::CREATE
+            - OFlags::EXCL
+            - OFlags::NOFOLLOW;
+        let leaf = OsStr::from_bytes(name.as_bytes());
+        let opened: Result<OwnedFile, Error> =
+            if flags & libc::O_EXCL != 0 && flags & libc::O_CREAT != 0 {
+                inode_ownership::create_at_mode(
+                    &registration.binding.parent,
+                    leaf,
+                    native_flags,
+                    Mode::from_raw_mode(mode as _),
+                )
+            } else {
+                inode_ownership::open_at_mode(
+                    &registration.binding.parent,
+                    leaf,
+                    native_flags,
+                    flags & libc::O_CREAT != 0,
+                    Mode::from_raw_mode(mode as _),
+                )
+            };
+        match opened.and_then(|file| file.handoff_sqlite(registration)) {
+            Ok(fd) => {
+                set_opened_name(registration, leaf);
+                fd
+            }
+            Err(Error::Io(error)) => syscall_failure(error.raw_os_error().unwrap_or(libc::EIO)),
+            Err(Error::Conflict(_)) => {
+                increment_refusal(&registration.binding);
+                syscall_failure(libc::ESTALE)
+            }
+            Err(_) => syscall_failure(libc::EINVAL),
+        }
+    }
+
     pub(super) fn is_own_child(token: u64, path: *const c_char) -> bool {
         matches!(
             resolve(path),
@@ -1386,6 +1505,9 @@ mod unix_hooks {
                 name,
                 is_leaf,
             } => {
+                if !is_leaf {
+                    return unsafe { open_owned_sidecar(&registration, &name, flags, mode) };
+                }
                 if is_leaf {
                     #[cfg(target_os = "linux")]
                     return unsafe { open_linux_leaf(&registration, &name, flags, mode) };
@@ -2942,6 +3064,79 @@ mod tests {
         );
         let accessed = unsafe { unix_hooks::access_hook(name.as_ptr(), libc::F_OK) };
         assert_eq!(accessed, 0, "access must observe the symlink itself");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_creation_reservation_refuses_ordinary_and_unwinds() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("creation.db3");
+        std::fs::write(&path, b"fixture").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let key = BindingKey::for_target(&target).unwrap();
+        let parent = target.parent().try_clone().unwrap();
+        let leaf = target.leaf().to_os_string();
+        REGISTRY
+            .get_or_init(|| Mutex::new(Registry::default()))
+            .lock()
+            .unwrap()
+            .creation_hooks
+            .insert(
+                key.clone(),
+                Box::new(move || {
+                    let result = crate::infra::fs::open_regular_at(
+                        &parent,
+                        &leaf,
+                        crate::infra::fs::RegularFileAccess::ReadOnly,
+                    );
+                    assert!(
+                        matches!(result, Err(Error::Conflict(_))),
+                        "pending creation must exclude ordinary opens"
+                    );
+                    panic!("creation unwind witness");
+                }),
+            );
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            BoundDatabase::acquire(&target)
+        }))
+        .expect_err("the creation hook must unwind");
+        assert_eq!(
+            unwind.downcast_ref::<&str>().copied(),
+            Some("creation unwind witness"),
+            "an unexpected assertion must not masquerade as the planned unwind"
+        );
+        assert!(!REGISTRY
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creating
+            .contains_key(&key));
+        drop(
+            crate::infra::fs::open_regular_at(
+                target.parent(),
+                target.leaf(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap(),
+        );
+        REGISTRY
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creation_failures
+            .insert(key);
+        assert!(BoundDatabase::acquire(&target).is_err());
+        drop(
+            crate::infra::fs::open_regular_at(
+                target.parent(),
+                target.leaf(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap(),
+        );
+        drop(BoundDatabase::acquire(&target).unwrap());
     }
 
     #[cfg(unix)]

@@ -194,7 +194,7 @@ impl SearchIndexIdentity {
     pub(crate) fn from_opened_sidecar(
         target: &crate::infra::path_authority::DatabaseFileTarget,
         source: IndexSource,
-        file: &std::fs::File,
+        file: &impl crate::infra::inode_ownership::FileMetadata,
     ) -> Result<Self, Error> {
         #[cfg(test)]
         if FAIL_NEXT_SIDECAR_STAMP.with(|fail| fail.replace(false)) {

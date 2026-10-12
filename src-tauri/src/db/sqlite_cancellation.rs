@@ -479,7 +479,13 @@ mod tests {
         } else {
             let seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
             drop(seed);
-            let file = std::fs::File::open(&path).unwrap();
+            let parent = std::fs::File::open(directory.path()).unwrap();
+            let file = crate::infra::fs::open_regular_at(
+                &parent,
+                path.file_name().unwrap(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap();
             let identity = crate::infra::path_authority::opened_file_identity(&file).unwrap();
             repository
                 .schema_specific_connection_expected_file_cancellable(

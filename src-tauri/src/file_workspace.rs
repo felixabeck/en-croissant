@@ -149,7 +149,7 @@ fn serialize_metadata(metadata: &WorkspaceMetadata) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn metadata_from(
+pub(crate) fn metadata_from(
     directory: &CapabilityDirectory,
     pgn: &DirectoryEntry,
 ) -> Result<WorkspaceMetadata, Error> {
@@ -341,7 +341,7 @@ fn unidentified_directory_not_removed() -> Error {
     Error::Conflict("created directory could not be identified and was not removed".into())
 }
 
-fn count_installed_workspace_pgn(
+pub(crate) fn count_installed_workspace_pgn(
     parent: &fs::File,
     leaf: &OsStr,
     identity: (u64, u64),
@@ -435,7 +435,8 @@ std::thread_local! {
 }
 
 #[cfg(test)]
-type WorkspaceFileWriteHook = Box<dyn FnOnce(&fs::File) -> Result<(), Error>>;
+type WorkspaceFileWriteHook =
+    Box<dyn FnOnce(&crate::infra::inode_ownership::OwnedFile) -> Result<(), Error>>;
 
 #[cfg(all(test, unix))]
 std::thread_local! {

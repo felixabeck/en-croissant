@@ -1,18 +1,22 @@
 /// The field is private to this submodule so a pathname-opened `File` cannot be
 /// substituted at the `main.rs` call sites.
 mod mint {
-    pub(crate) struct VerifiedFile(std::fs::File);
+    pub(crate) struct VerifiedFile(crate::infra::inode_ownership::OwnedFile);
 
     impl VerifiedFile {
         pub(super) fn from_resolved(resolved: &mut super::super::ResolvedPath) -> Option<Self> {
             resolved.take_file().map(Self)
         }
 
-        pub(in crate::infra::path_authority) fn into_inner(self) -> std::fs::File {
+        pub(in crate::infra::path_authority) fn into_inner(
+            self,
+        ) -> crate::infra::inode_ownership::OwnedFile {
             self.0
         }
 
-        pub(in crate::infra::path_authority) fn as_file(&self) -> &std::fs::File {
+        pub(in crate::infra::path_authority) fn as_file(
+            &self,
+        ) -> &crate::infra::inode_ownership::OwnedFile {
             &self.0
         }
 
@@ -32,7 +36,7 @@ mod mint {
         #[cfg(all(test, unix))]
         pub(in crate::infra::path_authority) fn try_clone_inner(
             &self,
-        ) -> std::io::Result<std::fs::File> {
+        ) -> std::io::Result<crate::infra::inode_ownership::OwnedFile> {
             self.0.try_clone()
         }
     }

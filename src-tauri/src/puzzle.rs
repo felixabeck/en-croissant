@@ -90,7 +90,7 @@ fn resolve_puzzle(
     resolve_puzzle_with_authority(&state.pgn_path_authority, file, operation)
 }
 
-fn resolve_puzzle_with_authority(
+pub(crate) fn resolve_puzzle_with_authority(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &crate::infra::path_authority::PathRef,
     operation: crate::infra::path_authority::PathOperation,
@@ -108,7 +108,7 @@ fn puzzle_binding(
 
 fn load_puzzles(
     repository: &DatabaseRepository,
-    file: std::fs::File,
+    file: crate::infra::inode_ownership::OwnedFile,
     expected_object: (u64, u64),
     min_rating: u16,
     max_rating: u16,
@@ -148,7 +148,7 @@ fn load_puzzles(
 
 fn load_puzzle_themes(
     repository: &DatabaseRepository,
-    file: std::fs::File,
+    file: crate::infra::inode_ownership::OwnedFile,
     expected_object: (u64, u64),
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, Error> {
@@ -175,7 +175,7 @@ fn load_puzzle_themes(
 
 fn load_themes_for_puzzle(
     repository: &DatabaseRepository,
-    file: std::fs::File,
+    file: crate::infra::inode_ownership::OwnedFile,
     expected_object: (u64, u64),
     puzzle_id: i32,
     cancellation: &CancellationToken,
@@ -199,7 +199,7 @@ fn load_themes_for_puzzle(
 fn puzzle_database_info(
     repository: &DatabaseRepository,
     path: &Path,
-    file_handle: std::fs::File,
+    file_handle: crate::infra::inode_ownership::OwnedFile,
     expected_object: (u64, u64),
     file: crate::infra::path_authority::PathRef,
     cancellation: &CancellationToken,
@@ -917,6 +917,9 @@ mod deletion_tests {
         db.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
             .unwrap();
         drop(database_connection);
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         (directory, path, repository)
     }
 
@@ -960,7 +963,11 @@ mod deletion_tests {
             .unwrap();
         let cache_key = PuzzleCacheKey {
             database: repository
-                .database_identity(&crate::db::test_target(&path))
+                .identity_from_probe(
+                    &crate::db::test_target(&path),
+                    &CancellationToken::new(),
+                    false,
+                )
                 .unwrap(),
             database_path: path.clone(),
             min_rating: 0,
@@ -1254,12 +1261,6 @@ mod tests {
     use super::*;
     use tauri::Manager;
 
-    async fn yield_until(mut ready: impl FnMut() -> bool) {
-        while !ready() {
-            tokio::task::yield_now().await;
-        }
-    }
-
     fn delete_puzzle_with_parent_sync_fault_and_log_capture(
         fixture: &PuzzleDeletionFixture,
     ) -> (Result<(), Error>, Vec<crate::error::CapturedLogRecord>) {
@@ -1379,10 +1380,18 @@ mod tests {
         let (_one_dir, one_path, one_repository) = puzzle_database("one.db", 1200);
         let (_two_dir, two_path, two_repository) = puzzle_database("two.db", 2200);
         let one_identity = one_repository
-            .database_identity(&crate::db::test_target(&one_path))
+            .identity_from_probe(
+                &crate::db::test_target(&one_path),
+                &CancellationToken::new(),
+                false,
+            )
             .unwrap();
         let two_identity = two_repository
-            .database_identity(&crate::db::test_target(&two_path))
+            .identity_from_probe(
+                &crate::db::test_target(&two_path),
+                &CancellationToken::new(),
+                false,
+            )
             .unwrap();
         let one_key = PuzzleCacheKey {
             database: one_identity,
@@ -1399,12 +1408,12 @@ mod tests {
             theme: Some("fork".into()),
         };
         let one_object = crate::infra::path_authority::opened_file_identity(
-            &std::fs::File::open(&one_path).unwrap(),
+            &crate::infra::inode_ownership::OwnedFile::open(&one_path).unwrap(),
         )
         .unwrap();
         let one = load_puzzles(
             &one_repository,
-            std::fs::File::open(&one_path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&one_path).unwrap(),
             one_object,
             1000,
             1500,
@@ -1414,12 +1423,12 @@ mod tests {
         .unwrap();
         assert_eq!(one.len(), 1);
         let two_object = crate::infra::path_authority::opened_file_identity(
-            &std::fs::File::open(&two_path).unwrap(),
+            &crate::infra::inode_ownership::OwnedFile::open(&two_path).unwrap(),
         )
         .unwrap();
         let two = load_puzzles(
             &two_repository,
-            std::fs::File::open(&two_path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&two_path).unwrap(),
             two_object,
             2000,
             2500,
@@ -1442,7 +1451,11 @@ mod tests {
         let (_dir, path, repository) = puzzle_database("one.db", 1200);
         let key = PuzzleCacheKey {
             database: repository
-                .database_identity(&crate::db::test_target(&path))
+                .identity_from_probe(
+                    &crate::db::test_target(&path),
+                    &CancellationToken::new(),
+                    false,
+                )
                 .unwrap(),
             database_path: path.clone(),
             min_rating: 0,
@@ -1476,9 +1489,13 @@ mod tests {
     fn assert_cancelled_during_snapshot_copy<T>(
         path: &Path,
         _repository: &DatabaseRepository,
-        run: impl FnOnce(std::fs::File, (u64, u64), &CancellationToken) -> Result<T, Error>,
+        run: impl FnOnce(
+            crate::infra::inode_ownership::OwnedFile,
+            (u64, u64),
+            &CancellationToken,
+        ) -> Result<T, Error>,
     ) {
-        let file = std::fs::File::open(path).unwrap();
+        let file = crate::infra::inode_ownership::OwnedFile::open(path).unwrap();
         let object = crate::infra::path_authority::opened_file_identity(&file).unwrap();
         let cancellation = CancellationToken::new();
         crate::db::cancel_snapshot_copy_after_chunks(cancellation.clone(), 2);
@@ -1535,7 +1552,7 @@ mod tests {
     fn real_random_and_count_queries_cancel_at_sqlite_checkpoints() {
         let fixture = puzzle_deletion_fixture("sql-cancel.db3");
         for run_count in [false, true] {
-            let file = std::fs::File::open(&fixture.path).unwrap();
+            let file = crate::infra::inode_ownership::OwnedFile::open(&fixture.path).unwrap();
             let object = crate::infra::path_authority::opened_file_identity(&file).unwrap();
             let cancellation = CancellationToken::new();
             let checkpoints =
@@ -1663,8 +1680,9 @@ mod tests {
             .unwrap();
         assert_eq!(first.id, second.id);
 
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"replacement").unwrap();
+        let replacement = directory.path().join("replacement.db3");
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
         assert!(reopened
             .get_or_create_persistent_file(&path, "Persistent puzzle database", operations)
             .is_err());
@@ -1705,7 +1723,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn production_puzzle_delete_tail_survives_command_caller_drop() {
+    async fn cross_capability_puzzle_delete_refuses_game_binding_and_retries() {
         let PuzzleDeletionFixture {
             _directory,
             path,
@@ -1713,8 +1731,11 @@ mod tests {
             authority,
             cache,
             handle,
-            resolved: _,
-        } = puzzle_deletion_fixture("caller-drop-delete.db3");
+            resolved,
+        } = puzzle_deletion_fixture(
+            "cross_capability_puzzle_delete_refuses_game_binding_and_retries.db3",
+        );
+        drop(resolved);
         let target = crate::db::test_target(&path);
         let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
@@ -1725,40 +1746,30 @@ mod tests {
         };
         let app = tauri::test::mock_app();
         app.manage(state);
-        let command_app = app.handle().clone();
-        let command_handle = handle.clone();
-        let caller = tokio::spawn(async move {
-            let state = command_app.state::<crate::AppState>();
-            delete_puzzle_database(command_handle, state).await
-        });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            yield_until(|| repository.deletion_is_waiting(&target).unwrap()),
-        )
-        .await
-        .unwrap();
-        caller.abort();
-        drop(held_connection);
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            yield_until(|| {
-                app.state::<crate::AppState>()
-                    .operations
-                    .outstanding_labels()
-                    .unwrap()
-                    .is_empty()
-            }),
-        )
-        .await
-        .unwrap();
+        let result = delete_puzzle_database(handle.clone(), app.state::<crate::AppState>()).await;
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "ordinary puzzle deletion must refuse a live game binding"
+        );
+        assert!(path.exists());
+        assert!(cache.lock().await.key.is_some());
+        assert!(app
+            .state::<crate::AppState>()
+            .operations
+            .outstanding_labels()
+            .unwrap()
+            .is_empty());
 
+        drop(held_connection);
+        repository.close_and_invalidate(&target).unwrap();
+        delete_puzzle_database(handle, app.state::<crate::AppState>())
+            .await
+            .unwrap();
         assert!(!path.exists());
-        assert!(cache.lock().await.key.is_none());
-        assert!(!authority_contains(&authority, &handle));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shutdown_cancels_puzzle_delete_while_waiting_for_active_connection() {
+    async fn cross_capability_puzzle_delete_refusal_leaves_shutdown_no_native_job() {
         let PuzzleDeletionFixture {
             _directory,
             path,
@@ -1766,8 +1777,11 @@ mod tests {
             authority,
             cache,
             handle,
-            resolved: _,
-        } = puzzle_deletion_fixture("queued-shutdown-delete.db3");
+            resolved,
+        } = puzzle_deletion_fixture(
+            "cross_capability_puzzle_delete_refusal_leaves_shutdown_no_native_job.db3",
+        );
+        drop(resolved);
         let target = crate::db::test_target(&path);
         let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
@@ -1778,48 +1792,32 @@ mod tests {
         };
         let app = tauri::test::mock_app();
         app.manage(state);
-        let command_app = app.handle().clone();
-        let command_handle = handle.clone();
-        let caller = tokio::spawn(async move {
-            let state = command_app.state::<crate::AppState>();
-            delete_puzzle_database(command_handle, state).await
-        });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            yield_until(|| repository.deletion_is_waiting(&target).unwrap()),
-        )
-        .await
-        .expect("delete must wait on the held production connection");
+        let result = delete_puzzle_database(handle.clone(), app.state::<crate::AppState>()).await;
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "ordinary puzzle deletion must refuse a live game binding"
+        );
+        assert!(path.exists());
+        assert!(cache.lock().await.key.is_some());
+        assert!(app
+            .state::<crate::AppState>()
+            .operations
+            .outstanding_labels()
+            .unwrap()
+            .is_empty());
         app.state::<crate::AppState>()
             .operations
             .seal_and_request_cancellation()
-            .expect("request shutdown cancellation");
-        let error = tokio::time::timeout(std::time::Duration::from_secs(5), caller)
-            .await
-            .expect("delete must cancel while the connection remains held")
-            .expect("join delete")
-            .expect_err("queued delete must cancel");
-        assert!(matches!(error, Error::Cancellation));
-        assert!(
-            path.exists(),
-            "pre-unlink cancellation must preserve the database"
-        );
-        assert!(
-            cache.lock().await.key.is_some(),
-            "cache remains authoritative"
-        );
-        assert!(authority_contains(&authority, &handle));
+            .unwrap();
         drop(held_connection);
-        repository
-            .schema_specific_connection(&crate::db::test_target(&path))
-            .expect("cancellation must unwind repository retirement state");
+        repository.close_and_invalidate(&target).unwrap();
     }
 
     #[test]
     fn cache_key_uses_the_resolved_puzzle_binding() {
         let fixture = puzzle_deletion_fixture("cache-key.db3");
         let expected = crate::infra::path_authority::opened_file_identity(
-            &std::fs::File::open(&fixture.path).unwrap(),
+            &crate::infra::inode_ownership::OwnedFile::open(&fixture.path).unwrap(),
         )
         .unwrap();
         let (target, identity) = puzzle_binding(&fixture.resolved).unwrap();
@@ -1883,7 +1881,11 @@ mod tests {
     fn puzzle_cache_key_eq_ignores_database_path() {
         let (_directory, path, repository) = puzzle_database("cache-eq.db3", 1200);
         let database = repository
-            .database_identity(&crate::db::test_target(&path))
+            .identity_from_probe(
+                &crate::db::test_target(&path),
+                &CancellationToken::new(),
+                false,
+            )
             .unwrap();
         let first = PuzzleCacheKey {
             database: database.clone(),
@@ -1957,7 +1959,7 @@ mod tests {
     fn puzzle_query_rejects_replacement_after_authority_identity_was_captured() {
         let (directory, path, repository) = puzzle_database("original.db3", 1200);
         let expected = crate::infra::path_authority::opened_file_identity(
-            &std::fs::File::open(&path).unwrap(),
+            &crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
         )
         .unwrap();
         let replacement = directory.path().join("replacement.db3");
@@ -1973,11 +1975,14 @@ mod tests {
             )
             .unwrap();
         drop(replacement_connection);
+        repository
+            .close_and_invalidate(&crate::db::test_target(&replacement))
+            .unwrap();
         std::fs::rename(replacement, &path).unwrap();
 
         assert!(load_puzzles(
             &repository,
-            std::fs::File::open(&path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
             expected,
             0,
             u16::MAX,
@@ -1991,7 +1996,7 @@ mod tests {
     #[test]
     fn retained_authority_descriptor_queries_original_database_after_path_swap() {
         let (directory, path, repository) = puzzle_database("original.db3", 1200);
-        let retained_file = std::fs::File::open(&path).unwrap();
+        let retained_file = crate::infra::inode_ownership::OwnedFile::open(&path).unwrap();
         let expected = crate::infra::path_authority::opened_file_identity(&retained_file).unwrap();
         let replacement = directory.path().join("replacement.db3");
         let mut replacement_connection = repository
@@ -2006,6 +2011,9 @@ mod tests {
             )
             .unwrap();
         drop(replacement_connection);
+        repository
+            .close_and_invalidate(&crate::db::test_target(&replacement))
+            .unwrap();
         std::fs::rename(replacement, &path).unwrap();
 
         let rows = load_puzzles(
@@ -2033,13 +2041,16 @@ mod tests {
                 .schema_specific_connection(&crate::db::test_target(&path))
                 .unwrap(),
         );
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         let object = crate::infra::path_authority::opened_file_identity(
-            &std::fs::File::open(&path).unwrap(),
+            &crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
         )
         .unwrap();
         assert!(load_puzzles(
             &repository,
-            std::fs::File::open(&path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
             object,
             0,
             u16::MAX,
@@ -2050,8 +2061,10 @@ mod tests {
     }
 
     fn opened_identity(path: &Path) -> (u64, u64) {
-        crate::infra::path_authority::opened_file_identity(&std::fs::File::open(path).unwrap())
-            .unwrap()
+        crate::infra::path_authority::opened_file_identity(
+            &crate::infra::inode_ownership::OwnedFile::open(path).unwrap(),
+        )
+        .unwrap()
     }
 
     fn serialized_payload(error: &Error) -> (String, serde_json::Value) {
@@ -2070,10 +2083,13 @@ mod tests {
                 .schema_specific_connection(&crate::db::test_target(&path))
                 .unwrap(),
         );
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         let object = opened_identity(&path);
         let error = load_puzzle_themes(
             &repository,
-            std::fs::File::open(&path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
             object,
             &CancellationToken::new(),
         )
@@ -2098,10 +2114,16 @@ mod tests {
             .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
             .unwrap();
         drop(database_connection);
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         let object = opened_identity(&path);
         let error = load_puzzle_themes(
             &repository,
-            std::fs::File::open(&path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
             object,
             &CancellationToken::new(),
         )
@@ -2140,10 +2162,13 @@ mod tests {
             .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
             .unwrap();
         drop(database_connection);
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         let object = opened_identity(&path);
         let error = load_puzzles(
             &repository,
-            std::fs::File::open(&path).unwrap(),
+            crate::infra::inode_ownership::OwnedFile::open(&path).unwrap(),
             object,
             0,
             u16::MAX,

@@ -9,7 +9,7 @@
 //! detection before that window, not compare-and-swap semantics. Commits never follow a target
 //! link or leave the opened parent directory.
 
-use crate::error::Error;
+use crate::{error::Error, infra::inode_ownership::OwnedFile};
 #[cfg(unix)]
 use std::time::Duration;
 // `temp.flush()` in replace_at_driver is platform-neutral, so this trait must be in scope on
@@ -74,7 +74,7 @@ pub(crate) fn advisory_lock_is_unsupported(
 
 /// Exclusively locks an already open regular file until its handle is dropped.
 pub(crate) fn lock_advisory_file(
-    file: &File,
+    file: &impl crate::infra::inode_ownership::NativeFile,
     mode: AdvisoryLockMode,
 ) -> Result<(), AdvisoryLockError> {
     #[cfg(unix)]
@@ -94,7 +94,6 @@ pub(crate) fn lock_advisory_file(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::{
             Foundation::{ERROR_LOCK_VIOLATION, HANDLE},
             Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY},
@@ -342,7 +341,7 @@ pub(crate) fn read_directory_entries_at(
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error> {
+pub(crate) fn held_matches_path(held: &impl std::os::fd::AsFd, path: &Path) -> Result<bool, Error> {
     use rustix::{fs, io::Errno};
 
     let held_stat = match fs::fstat(held) {
@@ -555,7 +554,7 @@ pub(crate) trait AtomicWriterInjector {
     }
 
     #[cfg(windows)]
-    fn inspect_temp(&self, _: &File) -> std::io::Result<()> {
+    fn inspect_temp(&self, _: &OwnedFile) -> std::io::Result<()> {
         Ok(())
     }
 
@@ -677,7 +676,7 @@ fn record_durability(label: &'static str) {
 fn record_durability(_: &'static str) {}
 
 #[cfg(all(test, windows))]
-fn inspect_test_atomic_temp(temp: &File) -> Result<(), Error> {
+fn inspect_test_atomic_temp(temp: &OwnedFile) -> Result<(), Error> {
     current_test_atomic_file_injector()
         .map_or(Ok(()), |injector| injector.inspect_temp(temp).map_err(io))
 }
@@ -711,28 +710,29 @@ trait AtomicReplaceAdapter {
         &self,
         dir: &File,
         original: Option<&Self::Target>,
-    ) -> Result<(OsString, File), Error>;
+    ) -> Result<(OsString, OwnedFile), Error>;
     fn before_write(
         &self,
         dir: &File,
-        temp: &File,
+        temp: &OwnedFile,
         original: Option<&Self::Target>,
     ) -> Result<(), Error>;
     fn finalize_metadata(
         &self,
-        temp: &mut File,
+        temp: &mut OwnedFile,
         original: Option<&Self::Target>,
     ) -> Result<(), Error>;
     fn rename(
         &self,
         dir: &File,
-        temp: &mut File,
+        temp: &mut OwnedFile,
         temp_name: &OsStr,
         target: &OsStr,
         replace: bool,
     ) -> Result<(), Error>;
-    fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error>;
-    fn cleanup(&self, dir: &File, temp_name: &OsStr, temp: &mut File, primary: Error) -> Error;
+    fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error>;
+    fn cleanup(&self, dir: &File, temp_name: &OsStr, temp: &mut OwnedFile, primary: Error)
+        -> Error;
 }
 
 /// Leaf-name prefix for the one sibling backup a Windows existing-target install takes before it
@@ -745,7 +745,7 @@ fn cleanup_with_adapter<A: AtomicReplaceAdapter>(
     adapter: &A,
     dir: &File,
     temp_name: &OsStr,
-    temp: &mut File,
+    temp: &mut OwnedFile,
     primary: Error,
 ) -> Error {
     adapter.cleanup(dir, temp_name, temp, primary)
@@ -960,7 +960,7 @@ fn replace_at_driver<A, F, P>(
 ) -> Result<AtomicInstalledFile, Error>
 where
     A: AtomicReplaceAdapter,
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
     let target_name_ref = target_name.as_os_str();
@@ -1893,23 +1893,15 @@ mod unix {
             &self,
             dir: &File,
             _original: Option<&Self::Target>,
-        ) -> Result<(OsString, File), Error> {
+        ) -> Result<(OsString, OwnedFile), Error> {
             let created = (0..16)
                 .find_map(|_| {
                     let candidate = temp_name();
-                    match fs::openat(
-                        dir,
-                        &candidate,
-                        OFlags::CREATE
-                            | OFlags::EXCL
-                            | OFlags::WRONLY
-                            | OFlags::NOFOLLOW
-                            | OFlags::CLOEXEC,
-                        Mode::from_raw_mode(0o600),
-                    ) {
-                        Ok(fd) => Some(Ok((candidate, File::from(fd)))),
-                        Err(error) if error == Errno::EXIST => None,
-                        Err(error) => Some(Err(io(error.into()))),
+                    match crate::infra::inode_ownership::create_at(dir, &candidate, OFlags::WRONLY)
+                    {
+                        Ok(file) => Some(Ok((candidate, file))),
+                        Err(Error::Io(error)) if error.raw_os_error() == Some(libc::EEXIST) => None,
+                        Err(error) => Some(Err(error)),
                     }
                 })
                 .transpose()?
@@ -1925,7 +1917,7 @@ mod unix {
         fn before_write(
             &self,
             _dir: &File,
-            _temp: &File,
+            _temp: &OwnedFile,
             _original: Option<&Self::Target>,
         ) -> Result<(), Error> {
             Ok(())
@@ -1933,7 +1925,7 @@ mod unix {
 
         fn finalize_metadata(
             &self,
-            temp: &mut File,
+            temp: &mut OwnedFile,
             original: Option<&Self::Target>,
         ) -> Result<(), Error> {
             let final_mode = original.map_or(0o600, |stat| stat.st_mode & 0o7777);
@@ -1947,7 +1939,7 @@ mod unix {
         fn rename(
             &self,
             dir: &File,
-            _temp: &mut File,
+            _temp: &mut OwnedFile,
             temp_name: &OsStr,
             target: &OsStr,
             replace: bool,
@@ -1960,7 +1952,7 @@ mod unix {
             }
         }
 
-        fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error> {
+        fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
             let stat = fs::fstat(temp)
                 .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
             record_durability("temp.metadata");
@@ -1976,7 +1968,7 @@ mod unix {
             &self,
             dir: &File,
             temp_name: &OsStr,
-            _temp: &mut File,
+            _temp: &mut OwnedFile,
             primary: Error,
         ) -> Error {
             cleanup(dir, temp_name, primary)
@@ -1989,7 +1981,7 @@ mod unix {
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
         #[cfg(test)]
@@ -2023,7 +2015,7 @@ mod unix {
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
         replace_at_driver(UnixAdapter, dir, target_name, precommit, write_fn)
@@ -2040,17 +2032,11 @@ mod unix {
                 )));
             }
             match FileType::from_raw_mode(stat.st_mode) {
-                FileType::RegularFile => File::from(
-                    fs::openat(
-                        dir,
-                        &name,
-                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    )
-                    .map_err(|e| io(e.into()))?,
-                )
-                .sync_all()
-                .map_err(io)?,
+                FileType::RegularFile => {
+                    super::open_regular_at(dir, &name, RegularFileAccess::ReadOnly)?
+                        .sync_all()
+                        .map_err(io)?
+                }
                 FileType::Directory => {
                     let child = File::from(
                         fs::openat(
@@ -2490,7 +2476,7 @@ mod win {
     }
 
     fn get_kernel_object_security(
-        file: &File,
+        file: &impl crate::infra::inode_ownership::NativeFile,
         descriptor: &mut AlignedBuffer,
     ) -> Result<(), Error> {
         let mut returned = 0_u32;
@@ -2526,7 +2512,7 @@ mod win {
     }
 
     fn set_kernel_object_security(
-        file: &File,
+        file: &impl crate::infra::inode_ownership::NativeFile,
         descriptor: &impl AsSecurityDescriptor,
     ) -> Result<(), Error> {
         if unsafe {
@@ -2701,7 +2687,9 @@ mod win {
         TestTempNamesGuard(previous)
     }
 
-    fn capture_security_descriptor(file: &File) -> Result<AlignedBuffer, Error> {
+    fn capture_security_descriptor(
+        file: &impl crate::infra::inode_ownership::NativeFile,
+    ) -> Result<AlignedBuffer, Error> {
         let mut required = 0_u32;
         let _ = unsafe {
             GetKernelObjectSecurity(
@@ -2744,13 +2732,13 @@ mod win {
     pub(super) fn create_temp(
         dir: &File,
         _original: Option<&Target>,
-    ) -> Result<(OsString, File), Error> {
+    ) -> Result<(OsString, OwnedFile), Error> {
         let security_descriptor = PrivateSecurityDescriptor::new(FILE_ALL_ACCESS)?;
         (0..PRIVATE_TEMP_RETRIES)
             .find_map(|_| {
                 let candidate = temp_name();
                 match open_temp_child(dir, &candidate, &security_descriptor) {
-                    Ok(file) => Some(Ok((candidate, file))),
+                    Ok(file) => Some(crate::infra::inode_ownership::own_windows(file).map(|file| (candidate, file))),
                     Err(Error::Conflict(message)) if message == "Windows object name collision" => {
                         None
                     }
@@ -2769,7 +2757,7 @@ mod win {
 
     pub(super) fn rename_child(
         dir: &File,
-        temp: &mut File,
+        temp: &mut impl crate::infra::inode_ownership::NativeFile,
         _temp_name: &OsStr,
         target: &OsStr,
         replace: bool,
@@ -2834,7 +2822,7 @@ mod win {
         Ok(())
     }
 
-    fn delete_temp(temp: &File) -> Result<(), Error> {
+    fn delete_temp(temp: &OwnedFile) -> Result<(), Error> {
         // FILE_DISPOSITION_INFORMATION is a single BOOLEAN DeleteFile; the struct says that,
         // where a bare [1_u8] left the reader to infer both the layout and the meaning.
         let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
@@ -3932,7 +3920,7 @@ mod win {
         unlink_posix(&opened)
     }
 
-    fn cleanup(temp: &mut File, temp_name: &OsStr, primary: Error) -> Error {
+    fn cleanup(temp: &mut OwnedFile, temp_name: &OsStr, primary: Error) -> Error {
         #[cfg(test)]
         let injected = inject_atomic_file(AtomicFileFaultPoint::Cleanup).err();
         #[cfg(not(test))]
@@ -3944,7 +3932,7 @@ mod win {
         }
     }
 
-    fn metadata(temp: &File) -> Result<TempMetadata, std::io::Error> {
+    fn metadata(temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
         use std::os::windows::fs::MetadataExt;
         let identity = opened_file_identity(temp).map_err(as_io)?;
         let stamp = temp.metadata()?.last_write_time();
@@ -3957,7 +3945,9 @@ mod win {
     }
 
     #[cfg(test)]
-    pub(super) fn test_security_descriptor(file: &File) -> Result<Vec<u8>, Error> {
+    pub(super) fn test_security_descriptor(
+        file: &impl crate::infra::inode_ownership::NativeFile,
+    ) -> Result<Vec<u8>, Error> {
         let descriptor = capture_security_descriptor(file)?;
         Ok(unsafe { std::slice::from_raw_parts(descriptor.as_ptr(), descriptor.len()).to_vec() })
     }
@@ -4047,7 +4037,9 @@ mod win {
     }
 
     #[cfg(test)]
-    pub(super) fn test_security_descriptor_is_creator_only(file: &File) -> Result<bool, Error> {
+    pub(super) fn test_security_descriptor_is_creator_only(
+        file: &impl crate::infra::inode_ownership::NativeFile,
+    ) -> Result<bool, Error> {
         let descriptor = capture_security_descriptor(file)?;
         let mut control = 0_u16;
         let mut revision = 0_u32;
@@ -4159,14 +4151,14 @@ mod win {
             &self,
             dir: &File,
             original: Option<&Self::Target>,
-        ) -> Result<(OsString, File), Error> {
+        ) -> Result<(OsString, OwnedFile), Error> {
             create_temp(dir, original)
         }
 
         fn before_write(
             &self,
             _dir: &File,
-            temp: &File,
+            temp: &OwnedFile,
             original: Option<&Self::Target>,
         ) -> Result<(), Error> {
             let Some(original) = original else {
@@ -4182,7 +4174,7 @@ mod win {
 
         fn finalize_metadata(
             &self,
-            _temp: &mut File,
+            _temp: &mut OwnedFile,
             _original: Option<&Self::Target>,
         ) -> Result<(), Error> {
             Ok(())
@@ -4191,7 +4183,7 @@ mod win {
         fn rename(
             &self,
             dir: &File,
-            temp: &mut File,
+            temp: &mut OwnedFile,
             temp_name: &OsStr,
             target: &OsStr,
             replace: bool,
@@ -4199,7 +4191,7 @@ mod win {
             rename_child(dir, temp, temp_name, target, replace)
         }
 
-        fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error> {
+        fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
             metadata(temp)
         }
 
@@ -4207,7 +4199,7 @@ mod win {
             &self,
             _dir: &File,
             temp_name: &OsStr,
-            temp: &mut File,
+            temp: &mut OwnedFile,
             primary: Error,
         ) -> Error {
             cleanup(temp, temp_name, primary)
@@ -4280,7 +4272,7 @@ mod win {
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
         #[cfg(test)]
@@ -4322,7 +4314,7 @@ mod win {
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
         replace_at_driver(WindowsAdapter, dir, target_name, precommit, write_fn)
@@ -4356,7 +4348,7 @@ pub fn atomic_replace_with_precommit<F, P>(
     write_fn: F,
 ) -> Result<AtomicFileOutcome, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
     #[cfg(unix)]
@@ -4370,7 +4362,7 @@ where
 }
 pub fn atomic_replace<F>(target: &Path, write_fn: F) -> Result<AtomicFileOutcome, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
 {
     atomic_replace_with_precommit(target, || Ok(()), write_fn)
 }
@@ -4449,7 +4441,7 @@ impl NativeExportDest {
 
     pub(crate) fn replace<F>(&self, write_fn: F) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         atomic_replace_at(&self.parent, &self.leaf, write_fn)
     }
@@ -4464,7 +4456,7 @@ pub fn atomic_replace_at<F>(
     write_fn: F,
 ) -> Result<AtomicFileOutcome, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
 {
     atomic_replace_at_with_precommit(parent, leaf, || Ok(()), write_fn)
 }
@@ -4890,31 +4882,13 @@ pub(crate) fn open_regular_at(
     parent: &File,
     name: &OsStr,
     access: RegularFileAccess,
-) -> Result<File, Error> {
+) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
     single_leaf(name)?;
-    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
-    let opened = File::from(
-        rfs::openat(
-            parent,
-            name,
-            match access {
-                RegularFileAccess::ReadOnly => OFlags::RDONLY,
-                RegularFileAccess::ReadWrite => OFlags::RDWR,
-            } | OFlags::NOFOLLOW
-                | OFlags::CLOEXEC
-                | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|error| Error::Io(Box::new(error.into())))?,
-    );
-    let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(Error::InvalidInput("target must be a regular file".into()));
-    }
-    let flags = rfs::fcntl_getfl(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
-    rfs::fcntl_setfl(&opened, flags - OFlags::NONBLOCK)
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    Ok(opened)
+    let flags = match access {
+        RegularFileAccess::ReadOnly => rustix::fs::OFlags::RDONLY,
+        RegularFileAccess::ReadWrite => rustix::fs::OFlags::RDWR,
+    };
+    crate::infra::inode_ownership::open_at(parent, name, flags, false)
 }
 
 #[cfg(windows)]
@@ -4922,68 +4896,51 @@ pub(crate) fn open_regular_at(
     parent: &File,
     name: &OsStr,
     access: RegularFileAccess,
-) -> Result<File, Error> {
-    win::open_regular_at(parent, name, access)
+) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
+    crate::infra::inode_ownership::own_windows(win::open_regular_at(parent, name, access)?)
 }
 
-/// Opens an existing regular leaf or creates it when absent. This is intentionally separate from
-/// `create_regular_at`: advisory lock leaves are shared by processes and therefore must not use
-/// `O_EXCL`, while they still require the same no-follow and regular-file checks.
+/// Shared advisory lock leaves use open-or-create while preserving regular-file admission.
 #[cfg(unix)]
-pub(crate) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+pub(crate) fn open_or_create_regular_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
     single_leaf(name)?;
-    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
-    let opened = File::from(
-        rfs::openat(
-            parent,
-            name,
-            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        )
-        .map_err(|error| Error::Io(Box::new(error.into())))?,
-    );
-    let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(Error::InvalidInput(
-            "lock leaf must be a regular file".into(),
-        ));
-    }
-    Ok(opened)
+    crate::infra::inode_ownership::open_at(parent, name, rustix::fs::OFlags::RDWR, true)
 }
 
 #[cfg(windows)]
-pub(crate) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
-    win::open_or_create_regular_at(parent, name)
+pub(crate) fn open_or_create_regular_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
+    crate::infra::inode_ownership::own_windows(win::open_or_create_regular_at(parent, name)?)
 }
 
-/// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
-/// no-follow open is the namespace mutation; the returned inode identity is the only identity
-/// callers may use for later registration or cleanup.
+/// Exclusive creates retain ownership even after the new leaf becomes reachable by SQLite.
 #[cfg(unix)]
-pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
+pub(crate) fn create_regular_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<(crate::infra::inode_ownership::OwnedFile, (u64, u64)), Error> {
     single_leaf(name)?;
-    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
-    let created = File::from(
-        rfs::openat(
-            parent,
-            name,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        )
-        .map_err(|error| Error::Io(Box::new(error.into())))?,
-    );
-    let stat = rfs::fstat(&created).map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(Error::InvalidInput(
-            "created file must be a regular file".into(),
-        ));
-    }
-    Ok((created, unix::raw_stat_identity(&stat)))
+    let created =
+        crate::infra::inode_ownership::create_at(parent, name, rustix::fs::OFlags::WRONLY)?;
+    let identity = crate::infra::path_authority::opened_file_identity(&created)?;
+    Ok((created, identity))
 }
 
 #[cfg(windows)]
-pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
-    win::create_regular_at(parent, name)
+pub(crate) fn create_regular_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<(crate::infra::inode_ownership::OwnedFile, (u64, u64)), Error> {
+    let (created, identity) = win::create_regular_at(parent, name)?;
+    Ok((
+        crate::infra::inode_ownership::own_windows(created)?,
+        identity,
+    ))
 }
 
 #[cfg(unix)]
@@ -5196,7 +5153,7 @@ pub fn atomic_replace_at_with_precommit<F, P>(
     write_fn: F,
 ) -> Result<AtomicFileOutcome, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
     atomic_replace_at_identified_with_precommit(parent, leaf, precommit, write_fn)
@@ -5211,7 +5168,7 @@ pub fn atomic_replace_at_identified<F>(
     write_fn: F,
 ) -> Result<AtomicInstalledFile, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
 {
     atomic_replace_at_identified_with_precommit(parent, leaf, || Ok(()), write_fn)
 }
@@ -5223,7 +5180,7 @@ pub fn atomic_replace_at_identified_with_precommit<F, P>(
     write_fn: F,
 ) -> Result<AtomicInstalledFile, Error>
 where
-    F: FnOnce(&mut File) -> Result<(), Error>,
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
     single_leaf(leaf)?;
@@ -5459,7 +5416,10 @@ impl OwnedStagingDir {
 
     /// Exclusively creates the regular-file leaf of `relative` (mode 0o600 on unix) after
     /// creating-if-missing its parent components below the held child.
-    pub(crate) fn create_relative_regular(&self, relative: &Path) -> Result<File, Error> {
+    pub(crate) fn create_relative_regular(
+        &self,
+        relative: &Path,
+    ) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
         let components = owned_staging_components(relative)?;
         let (leaf, parents) = components
             .split_last()
@@ -5832,7 +5792,7 @@ mod tests {
         enumerated_directory_entry_for_test(parent, leaf)
     }
 
-    fn opened_modified_seconds(file: &File) -> i64 {
+    fn opened_modified_seconds(file: &impl crate::infra::inode_ownership::FileMetadata) -> i64 {
         let metadata = file.metadata().expect("retained metadata");
         #[cfg(unix)]
         {
@@ -8516,7 +8476,7 @@ mod tests {
         }
 
         #[cfg(windows)]
-        fn inspect_temp(&self, temp: &File) -> std::io::Result<()> {
+        fn inspect_temp(&self, temp: &OwnedFile) -> std::io::Result<()> {
             assert!(
                 win::test_security_descriptor_is_creator_only(temp)
                     .map_err(|error| std::io::Error::other(error.to_string()))?,
@@ -8732,7 +8692,7 @@ mod tests {
         write_fn: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         set_test_atomic_file_injector(Some(injector));
         let result = atomic_replace(target, write_fn);
@@ -9340,7 +9300,7 @@ mod tests {
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
-        F: FnOnce(&mut File) -> Result<(), Error>,
+        F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     {
         set_test_atomic_file_injector(Some(injector));
         let result = atomic_replace_at_identified(parent, leaf, write_fn);
