@@ -19,6 +19,63 @@ import {
     dragMosaicDivider,
 } from "./fixtures";
 
+test("database-files: database view load failure stays reachable at 320px and 200% and Retry recovers", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "200"));
+    await page.setViewportSize({ width: 320, height: 900 });
+    await mockScenario({
+        commands: {
+            ...gameOpeningCommands,
+            list_workspace_databases: {
+                ...gameOpeningCommands.list_workspace_databases,
+                outcomes: [
+                    {
+                        error: {
+                            tag: "backend-error",
+                            category: "database",
+                            message: "Database listing unavailable",
+                        },
+                    },
+                ],
+            },
+        },
+    });
+    await page.goto(`/databases/${gameOpeningFixture.databaseId}`);
+    await expect(page.locator("html")).toHaveCSS("font-size", "32px");
+    const alert = page.getByRole("alert");
+    await expect(alert).toBeVisible();
+    const message = alert.getByText("Could not load databases. Please try again.", {
+        exact: true,
+    });
+    const retry = alert.getByRole("button", { name: "Retry", exact: true });
+    const overview = alert.getByRole("link", { name: "Databases", exact: true });
+    for (const element of [message, retry, overview]) {
+        await expect(element).toBeInViewport({ ratio: 1 });
+    }
+    await expect(overview).toHaveAttribute("href", "/databases");
+    await assertNothingClipped(alert, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    await capture("database-view-load-failure-320-200");
+    const listingAttempts = () =>
+        page.evaluate(
+            () =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .filter((call) => call.command === "list_workspace_databases").length,
+        );
+    expect(await listingAttempts()).toBe(1);
+    await retry.click();
+    await expect(alert).toHaveCount(0);
+    const games = page.getByRole("tabpanel", { name: "Games", exact: true }).first();
+    await expect(games).toBeVisible();
+    await expect(games.getByRole("row").filter({ hasText: "Second White" })).toBeVisible();
+    expect(await listingAttempts()).toBe(2);
+});
+
 test("database-files: bounded drag and keyboard steps share a preference across tabs, compact reflow and reload", async ({
     page,
     mockScenario,
