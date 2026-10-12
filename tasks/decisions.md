@@ -7205,3 +7205,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"fa321f0c2dcbc6f1340a4d8da3ec9fb641afa7689117fd840b3d23f96e400b32","input_sha256":"a5d884f134a8044fa4f53be2c3831a076038defca5dd4eb8aba9839b00a32caa","kind":"mutation-receipt","operation":"a8b0ebec9cde94c83138fd1d995016cd01a2fa36d6bbadce4edf39fead37f8f9","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-06 — How does a failed analysis restart?
+
+* **Question:** After an engine failure, does analysis retry automatically, resume through pause/resume, or wait for an explicit Retry control?
+* **Governs:** f-20261001-07
+* **Chosen:** an explicit localized Retry control that reserves a fresh native search generation through an ephemeral retry discriminator, even when FEN and settings are unchanged.
+* **Rejected:** automatic retries, and changing persisted settings to force a restart.
+* **Reason:** the finding names an error state with retry, and the existing generation ownership already provides the restart boundary. Reversal path: change the control behaviour and its owner tests.
+* **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"3f05da100e2803b8b5a6b5d4a1b8ceca971a984b6e1ec2b19b0440e0d7f8a85e","input_sha256":"91b181fb8ff670104d08c429035ddc7a0c72b0ae7b76890d8f06f733a4749179","kind":"mutation-receipt","operation":"2fce9cfa41ac978a651fad00af7217821933264e44c39dc201a8464c59fa166f","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-06"],"target":"decisions-ledger","v":1} -->
