@@ -1007,6 +1007,11 @@ impl DatabaseFileTarget {
 pub(crate) mod database_test_support {
     use super::*;
 
+    #[cfg(unix)]
+    pub(crate) fn set_database_child_post_resolve_hook(hook: impl FnOnce() + 'static) {
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
     /// Replaces `path`'s parent directory with a fresh one holding a hard link to the same
     /// inode: the leaf identity is unchanged, the parent identity is not. Returns the moved
     /// original parent.
@@ -1095,6 +1100,10 @@ mod verified_identity {
         pub(crate) fn identity(&self) -> Result<VerifiedIdentity, Error> {
             if let Some(file) = self.file() {
                 return super::opened_file_identity(file).map(VerifiedIdentity);
+            }
+            #[cfg(unix)]
+            if let Some(identity) = self.observed_file_identity() {
+                return Ok(VerifiedIdentity(identity));
             }
             if let Some(directory) = self.directory() {
                 return super::opened_file_identity(directory).map(VerifiedIdentity);
@@ -7039,7 +7048,7 @@ impl PathAuthority {
         let path = root_path.join(filename);
         let validated_identity =
             validate_target(&path, PathClass::PersistentFile).map_err(|error| {
-                if resolved.file().is_some()
+                if resolved.is_regular_file()
                     && (error.is_missing_entry()
                         || matches!(&error, Error::InvalidInput(message)
                         if message == "file authority must be a regular file"
@@ -13543,6 +13552,17 @@ mod tests {
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseExport,
         ] {
+            let mut resolved = authority
+                .resolve(handle.path_ref(), operation, &[])
+                .unwrap();
+            assert!(resolved.file().is_none());
+            assert!(resolved.is_regular_file());
+            assert_eq!(resolved.identity().unwrap().pair(), expected_identity);
+            assert_eq!(resolved.parent_identity().unwrap(), expected_parent);
+            assert_eq!(resolved.leaf(), Some(OsStr::new("created.db3")));
+            assert!(resolved.directory().is_none());
+            assert!(resolved.read_bytes().is_err());
+            assert!(resolved.into_read_file().is_err());
             let target = authority.database_file_target(&handle, operation).unwrap();
             assert_eq!(target.identity(), expected_identity);
             assert_eq!(target.path(), expected_path);

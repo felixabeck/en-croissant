@@ -7089,6 +7089,56 @@ mod bound_sqlite_witnesses {
 
     #[cfg(unix)]
     #[test]
+    fn database_listing_keeps_pooled_sqlite_shared_read_lock_without_leaf_descriptors() {
+        use crate::infra::path_authority::{database_test_support, PathAuthority, PathOperation};
+        use tokio_util::sync::CancellationToken;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("held.db3");
+        let mut authority = PathAuthority::open(root.path().join("registry.json"), vec![]).unwrap();
+        let database_root = authority
+            .get_or_create_database_root(&parent, "Databases", None)
+            .unwrap();
+        let (repository, target, probe, connection) = ownership_repository(&path);
+        repository.mark_schema_validated(&target).unwrap();
+        let probe = Arc::new(probe);
+        #[cfg(target_os = "linux")]
+        let before = open_descriptor_count(target.identity());
+        let observed = Arc::new(AtomicBool::new(false));
+        let hook_observed = observed.clone();
+        let hook_probe = probe.clone();
+        #[cfg(target_os = "linux")]
+        let identity = target.identity();
+        database_test_support::set_database_child_post_resolve_hook(move || {
+            assert_sqlite_shared_read_lock_is_held(&hook_probe);
+            #[cfg(target_os = "linux")]
+            assert_eq!(open_descriptor_count(identity), before);
+            hook_observed.store(true, Ordering::SeqCst);
+        });
+
+        let children = authority
+            .list_database_children_cancellable(&database_root, &CancellationToken::new())
+            .expect("listing a pooled database must not open its leaf");
+        assert!(observed.load(Ordering::SeqCst));
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].filename, "held.db3");
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        #[cfg(target_os = "linux")]
+        assert_eq!(open_descriptor_count(target.identity()), before);
+
+        let listed_target = authority
+            .database_file_target(&children[0].handle, PathOperation::DatabaseRead)
+            .unwrap();
+        assert_eq!(listed_target.identity(), target.identity());
+        let usable = repository.connection(&listed_target, None).unwrap();
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        drop(usable);
+        drop(connection);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn database_probe_current_keeps_pooled_sqlite_shared_read_lock_held() {
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());

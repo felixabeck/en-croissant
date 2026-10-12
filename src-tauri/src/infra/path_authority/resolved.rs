@@ -97,6 +97,8 @@ fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, 
 pub struct ResolvedPath {
     operation: PathOperation,
     file: Option<OwnedFile>,
+    #[cfg(unix)]
+    regular_file_identity: Option<super::Identity>,
     directory: Option<fs::File>,
     parent: Option<fs::File>,
     leaf: Option<OsString>,
@@ -104,6 +106,19 @@ pub struct ResolvedPath {
 }
 
 impl ResolvedPath {
+    pub(super) fn is_regular_file(&self) -> bool {
+        #[cfg(unix)]
+        if self.regular_file_identity.is_some() {
+            return true;
+        }
+        self.file.is_some()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn observed_file_identity(&self) -> Option<(u64, u64)> {
+        self.regular_file_identity.as_ref().map(|id| (id.a, id.b))
+    }
+
     pub(super) fn file(&self) -> Option<&OwnedFile> {
         self.file.as_ref()
     }
@@ -177,7 +192,7 @@ impl ResolvedPath {
     pub(crate) fn into_read_file(mut self) -> Result<OwnedFile, Error> {
         if !matches!(
             self.operation,
-            PathOperation::ReadPgn | PathOperation::DatabaseRead | PathOperation::PuzzleRead
+            PathOperation::ReadPgn | PathOperation::PuzzleRead
         ) {
             return Err(Error::InvalidInput(
                 "resolved capability is not readable".into(),
@@ -650,7 +665,6 @@ impl ResolvedPath {
         if !matches!(
             self.operation,
             PathOperation::ReadPgn
-                | PathOperation::DatabaseRead
                 | PathOperation::PuzzleRead
                 | PathOperation::OpeningBookRead
                 | PathOperation::ImageRead
@@ -697,6 +711,8 @@ impl ResolvedPath {
         Self {
             operation: PathOperation::DownloadArchive,
             file: None,
+            #[cfg(unix)]
+            regular_file_identity: None,
             directory: None,
             parent: None,
             leaf: None,
@@ -814,6 +830,7 @@ pub(super) fn resolve_unix(
             .to_os_string()]
     };
     let mut exact_file = None;
+    let mut regular_file_identity = None;
     for (index, name) in names.iter().enumerate() {
         let last = index + 1 == names.len();
         let stat = match rfs::statat(&handle, name, rfs::AtFlags::SYMLINK_NOFOLLOW) {
@@ -831,6 +848,7 @@ pub(super) fn resolve_unix(
                 return Ok(ResolvedPath {
                     operation,
                     file: None,
+                    regular_file_identity: None,
                     directory: None,
                     parent: Some(handle.try_clone()?),
                     leaf: Some(name.clone()),
@@ -859,22 +877,27 @@ pub(super) fn resolve_unix(
                     "file authority changed concurrently".into(),
                 ));
             }
-            #[cfg(test)]
-            super::RESOLVE_PRE_REGULAR_OPEN_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
+            // SQLite consumes database bytes through its binding, never through this resolver.
+            // Retain the no-follow observation without opening a lockable leaf descriptor.
+            if !super::is_database_file_operation(operation) {
+                #[cfg(test)]
+                super::RESOLVE_PRE_REGULAR_OPEN_HOOK.with(|slot| {
+                    if let Some(hook) = slot.borrow_mut().take() {
+                        hook();
+                    }
+                });
+                let access = if is_write_operation(operation) {
+                    RegularFileAccess::ReadWrite
+                } else {
+                    RegularFileAccess::ReadOnly
+                };
+                let file = crate::infra::fs::open_regular_at(&handle, name, access)?;
+                if file_identity(&file.metadata()?) != leaf_identity {
+                    return Err(Error::Conflict("file changed while resolving".into()));
                 }
-            });
-            let access = if is_write_operation(operation) {
-                RegularFileAccess::ReadWrite
-            } else {
-                RegularFileAccess::ReadOnly
-            };
-            let file = crate::infra::fs::open_regular_at(&handle, name, access)?;
-            if file_identity(&file.metadata()?) != leaf_identity {
-                return Err(Error::Conflict("file changed while resolving".into()));
+                exact_file = Some(file);
             }
-            exact_file = Some(file);
+            regular_file_identity = Some(leaf_identity);
         }
         if ty == FileType::Directory {
             #[cfg(test)]
@@ -905,11 +928,11 @@ pub(super) fn resolve_unix(
             }
         }
     }
-    let parent = exact_file
+    let parent = regular_file_identity
         .as_ref()
         .map(|_| handle.try_clone())
         .transpose()?;
-    let leaf = if exact_file.is_some() {
+    let leaf = if regular_file_identity.is_some() {
         Some(
             names
                 .last()
@@ -919,7 +942,7 @@ pub(super) fn resolve_unix(
     } else {
         None
     };
-    let directory = if exact_file.is_none() {
+    let directory = if regular_file_identity.is_none() {
         Some(handle)
     } else {
         None
@@ -927,6 +950,7 @@ pub(super) fn resolve_unix(
     Ok(ResolvedPath {
         operation,
         file: exact_file,
+        regular_file_identity,
         directory,
         parent,
         leaf,
