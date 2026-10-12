@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: dc7ddaa2482aaba68ec85c64b1274503b29fc14461feef068b08ffc7739c176b
+# agent-kit-sha256: 6691a7f3315c1258c90f5a33b7d55e04ee219d105127fb1ce1f587baf3c21998
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -6020,7 +6020,9 @@ def _entry_candidate_text(entry: str, ledger_text: str) -> str:
     return "\n".join(prefix) + "\n\n## filed entry\n\n" + entry
 
 
-def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
+def _normalise_sentry_origin_entry(
+    entry: str, ledger: Path, *, ledger_text: str | None = None
+) -> str:
     """Canonicalise the verification blocker on a Sentry-origin entry.
 
     Filing and merging both use this content-driven, idempotent normalisation
@@ -6028,7 +6030,8 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
     conventional ``Blocked: none`` form conform before the first validation pass.
     """
     try:
-        ledger_text = _read_ledger_text(ledger)
+        if ledger_text is None:
+            ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, _vocabulary = _parse_text(candidate, ledger)
     except LedgerReadRefused:
@@ -6134,12 +6137,13 @@ def _read_and_validate_entry(
 
 
 def _validate_entry_text(
-    entry: str, ledger: Path, entry_path: Path
+    entry: str, ledger: Path, entry_path: Path, *, ledger_text: str | None = None
 ) -> tuple[str | None, list[str]]:
     """Normalise staged text without attributing it to the sweeper."""
     try:
-        entry = _normalise_sentry_origin_entry(entry, ledger)
-        ledger_text = _read_ledger_text(ledger)
+        entry = _normalise_sentry_origin_entry(entry, ledger, ledger_text=ledger_text)
+        if ledger_text is None:
+            ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, vocabulary = _parse_text(candidate, ledger)
     except LedgerReadRefused:
@@ -11229,8 +11233,12 @@ def _stage_intake(
     raise AssertionError("unreachable intake staging retry")
 
 
-def _filing_citation_issues(entry: str, ledger: Path, decisions: Path) -> list[str]:
-    candidate = _read_ledger_text(ledger).rstrip() + "\n\n" + entry + "\n"
+def _filing_citation_issues(
+    entry: str, ledger: Path, decisions: Path, *, ledger_text: str | None = None
+) -> list[str]:
+    if ledger_text is None:
+        ledger_text = _read_ledger_text(ledger)
+    candidate = ledger_text.rstrip() + "\n\n" + entry + "\n"
     return _candidate_citation_issues(candidate, ledger, decisions)
 
 
@@ -11435,11 +11443,13 @@ def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
 
 def _intake_bytes_covered(
     inbox: Path, raw: bytes, ledger: Path, path: Path, token: str | None,
-    *, require_valid: bool, include_recovery: bool,
+    *, require_valid: bool, include_recovery: bool, ledger_text: str,
 ) -> bool:
     """Check staged entry coverage, optionally including its recovery wrapper."""
     try:
-        entry, issues = _validate_entry_text(_decode_entry_bytes(raw), ledger, path)
+        entry, issues = _validate_entry_text(
+            _decode_entry_bytes(raw), ledger, path, ledger_text=ledger_text
+        )
         if entry is not None and (not require_valid or not issues) and _intake_covered(inbox, entry, token):
             return True
     except LedgerReadRefused:
@@ -11448,14 +11458,17 @@ def _intake_bytes_covered(
         if isinstance(exc.__cause__, OSError):
             raise
     if include_recovery:
-        recovery = _intake_recovery_entry(raw, _read_ledger_text(ledger))
-        wrapped, _issues = _validate_entry_text(recovery, ledger, path)
+        recovery = _intake_recovery_entry(raw, ledger_text)
+        wrapped, _issues = _validate_entry_text(
+            recovery, ledger, path, ledger_text=ledger_text
+        )
         return _intake_covered(inbox, wrapped if wrapped is not None else recovery)
     return False
 
 
 def _remove_superseded_intake(
     inbox: Path, ledger: Path, members: list[Path], *, resolved: bool,
+    ledger_text: str,
 ) -> bool:
     """Remove older intake members when covered or their latest member is resolved."""
     removed = True
@@ -11464,7 +11477,7 @@ def _remove_superseded_intake(
             raw = older.read_bytes()
             covered = _intake_bytes_covered(
                 inbox, raw, ledger, older, _intake_filing_token(older),
-                require_valid=False, include_recovery=True,
+                require_valid=False, include_recovery=True, ledger_text=ledger_text,
             )
             if covered or resolved:
                 older.unlink(missing_ok=True)
@@ -11482,9 +11495,14 @@ def _remove_superseded_intake(
     return removed
 
 
-def _finish_intake_family(inbox: Path, ledger: Path, members: list[Path], outcome: str) -> None:
+def _finish_intake_family(
+    inbox: Path, ledger: Path, members: list[Path], outcome: str,
+    *, ledger_text: str,
+) -> None:
     """Remove a resolved intake family and print its outcome."""
-    if _remove_superseded_intake(inbox, ledger, members, resolved=True):
+    if _remove_superseded_intake(
+        inbox, ledger, members, resolved=True, ledger_text=ledger_text
+    ):
         members[-1].unlink(missing_ok=True)
         print(outcome)
 
@@ -11523,6 +11541,7 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
     groups = [sorted(members, key=lambda p: _intake_name_order(p).order)
               for members in families.values()]
     groups.extend([path] for path in other)
+    snapshot: str | None = None
     for members in groups:
         path = members[-1]
 
@@ -11533,7 +11552,8 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                 continue
             raw = path.read_bytes()
             token = _intake_filing_token(path)
-            recovery = _intake_recovery_entry(raw, _read_ledger_text(ledger))
+            if snapshot is None:
+                snapshot = _read_ledger_text(ledger)
             reason = "interrupted staging"
             entry = None
             temporary = re.fullmatch(r"\.(.+\.md)\.tmp-\d+-\d+-\d+", path.name)
@@ -11541,21 +11561,34 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                 temporary_token = _intake_filing_token(Path(temporary[1]))
                 if _intake_bytes_covered(
                     inbox, raw, ledger, path, temporary_token,
-                    require_valid=True, include_recovery=False,
+                    require_valid=True, include_recovery=False, ledger_text=snapshot,
                 ):
-                    _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
+                    _finish_intake_family(
+                        inbox, ledger, members, f"intake-cleared {path.name}",
+                        ledger_text=snapshot,
+                    )
                     continue
             if not path.name.startswith(".") and path.suffix == ".md":
                 try:
-                    entry, issues = _validate_entry_text(_decode_entry_bytes(raw), ledger, path)
+                    entry, issues = _validate_entry_text(
+                        _decode_entry_bytes(raw), ledger, path, ledger_text=snapshot
+                    )
                     if entry is not None and _intake_covered(inbox, entry, token):
-                        _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
+                        _finish_intake_family(
+                            inbox, ledger, members, f"intake-cleared {path.name}",
+                            ledger_text=snapshot,
+                        )
                         continue
                     if not issues and entry is not None:
-                        issues = _filing_citation_issues(entry, ledger, decisions)
+                        issues = _filing_citation_issues(
+                            entry, ledger, decisions, ledger_text=snapshot
+                        )
                         if not issues:
                             _publish_filing(inbox, entry, filing_token=token)
-                            _finish_intake_family(inbox, ledger, members, f"intake-filed {path.name}")
+                            _finish_intake_family(
+                                inbox, ledger, members, f"intake-filed {path.name}",
+                                ledger_text=snapshot,
+                            )
                             continue
                     reason = issues[0] if issues else "entry cannot be filed"
                 except LedgerReadRefused:
@@ -11564,21 +11597,34 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                     if isinstance(exc.__cause__, OSError):
                         raise
                     reason = str(exc)
-            wrapped, wrap_issues = _validate_entry_text(recovery, ledger, path)
+            recovery = _intake_recovery_entry(raw, snapshot)
+            wrapped, wrap_issues = _validate_entry_text(
+                recovery, ledger, path, ledger_text=snapshot
+            )
             if _intake_covered(inbox, wrapped if wrapped is not None else recovery):
-                _finish_intake_family(inbox, ledger, members, f"intake-cleared {path.name}")
+                _finish_intake_family(
+                    inbox, ledger, members, f"intake-cleared {path.name}",
+                    ledger_text=snapshot,
+                )
                 continue
             if metadata.st_mtime < time.time() - INTAKE_RECOVERY_GRACE_SECONDS:
                 issues = wrap_issues
                 if not issues and wrapped is not None:
-                    issues = _filing_citation_issues(wrapped, ledger, decisions)
+                    issues = _filing_citation_issues(
+                        wrapped, ledger, decisions, ledger_text=snapshot
+                    )
                     if not issues:
                         _publish_filing(inbox, wrapped)
-                        _finish_intake_family(inbox, ledger, members, f"intake-recovered {path.name}: {reason}")
+                        _finish_intake_family(
+                            inbox, ledger, members, f"intake-recovered {path.name}: {reason}",
+                            ledger_text=snapshot,
+                        )
                         continue
                 reason = issues[0] if issues else reason
             print(f"intake-pending {path.name}: {reason}")
-            _remove_superseded_intake(inbox, ledger, members, resolved=False)
+            _remove_superseded_intake(
+                inbox, ledger, members, resolved=False, ledger_text=snapshot
+            )
         except LedgerReadRefused:
             raise
         except (OSError, LedgerError, UnicodeError) as exc:
