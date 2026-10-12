@@ -329,20 +329,14 @@ impl TerminalDiagnostics {
 #[derive(Clone, Copy)]
 struct TerminalQuotedToken {
     quote: u8,
-    depth: usize,
     start: usize,
     close: Option<usize>,
     end: usize,
-    closes_enclosing: bool,
 }
 
 // JSON wrapping changes delimiter escape depth. Only the exact opening depth
 // can close a token. Other depths are ambiguous and remain literal content.
-fn terminal_quoted_token(
-    text: &str,
-    at: usize,
-    enclosing: Option<(u8, usize)>,
-) -> Option<TerminalQuotedToken> {
+fn terminal_quoted_token(text: &str, at: usize) -> Option<TerminalQuotedToken> {
     let bytes = text.as_bytes();
     let delimiter = |at: usize| {
         let depth = bytes[at..]
@@ -356,20 +350,15 @@ fn terminal_quoted_token(
     let matches_close = |candidate: u8, escapes: usize, quote: u8, depth: usize| {
         candidate == quote && escapes == depth
     };
-    let closes_enclosing = enclosing.is_some_and(|(outer_quote, outer_depth)| {
-        matches_close(quote, depth, outer_quote, outer_depth)
-    });
     let mut cursor = start;
     while cursor < bytes.len() {
         if let Some((candidate, escapes, end)) = delimiter(cursor) {
             if matches_close(candidate, escapes, quote, depth) {
                 return Some(TerminalQuotedToken {
                     quote,
-                    depth,
                     start,
-                    close: Some(cursor + escapes - depth),
+                    close: Some(cursor),
                     end,
-                    closes_enclosing,
                 });
             }
             cursor = end;
@@ -379,11 +368,9 @@ fn terminal_quoted_token(
     }
     Some(TerminalQuotedToken {
         quote,
-        depth,
         start,
         close: None,
         end: bytes.len(),
-        closes_enclosing,
     })
 }
 
@@ -402,11 +389,10 @@ fn sanitize_terminal_text(text: &str) -> String {
         .collect();
     let mut output = String::new();
     let mut index = 0;
-    let mut quotes: Vec<(u8, usize)> = Vec::new();
     while index < text.len() {
         let rest = &text[index..];
         let boundary = index == 0 || !text.as_bytes()[index - 1].is_ascii_alphanumeric();
-        let quoted = terminal_quoted_token(&text, index, quotes.last().copied());
+        let quoted = terminal_quoted_token(&text, index);
         let secret = if boundary {
             (|| {
                 let (key_start, key_end, mut end) = match quoted {
@@ -463,25 +449,10 @@ fn sanitize_terminal_text(text: &str) -> String {
                         end += 1;
                     }
                 }
-                if let Some(value) = terminal_quoted_token(&text, end, None) {
+                if let Some(value) = terminal_quoted_token(&text, end) {
                     return Some((value.start, value.close.unwrap_or(text.len()), value.end));
                 }
-                // Only an existing double-quoted string can bound an unquoted
-                // value. Prose apostrophes and braces do not establish its end.
-                let mut cursor = end;
-                while cursor < text.len() {
-                    if let Some(delimiter) =
-                        terminal_quoted_token(&text, cursor, quotes.last().copied())
-                    {
-                        if delimiter.closes_enclosing {
-                            let close = cursor + delimiter.depth - quotes.last()?.1;
-                            return Some((end, close, close));
-                        }
-                        cursor = delimiter.start;
-                    } else {
-                        cursor += 1;
-                    }
-                }
+                // Unquoted credentials have no reliable boundary. Redact the tail.
                 Some((end, text.len(), text.len()))
             })()
         } else {
@@ -495,11 +466,6 @@ fn sanitize_terminal_text(text: &str) -> String {
             continue;
         }
         if let Some(delimiter) = quoted.filter(|delimiter| delimiter.quote == b'"') {
-            if delimiter.closes_enclosing {
-                quotes.pop();
-            } else {
-                quotes.push((delimiter.quote, delimiter.depth));
-            }
             output.push_str(&text[index..delimiter.start]);
             index = delimiter.start;
             continue;
@@ -5232,7 +5198,7 @@ mod tests {
             cases.push((
                 format!("{quote}password=private pass phrase{quote}"),
                 vec!["private", "pass", "phrase"],
-                quote == '"',
+                false,
             ));
         }
         cases.push((
@@ -5248,7 +5214,7 @@ mod tests {
             ),
             ("it's token=abc def", vec!["abc", "def"], false),
             ("'password': 'a b'", vec!["a", "b"], true),
-            ("{\"msg\":\"don't password=x y\"}", vec!["x", "y"], true),
+            ("{\"msg\":\"don't password=x y\"}", vec!["x", "y"], false),
         ] {
             cases.push((input.into(), fragments, preserve_suffix));
         }
@@ -5273,11 +5239,14 @@ mod tests {
                 let bytes = serde_json::to_string(&snapshot).unwrap();
                 let decoded: serde_json::Value = serde_json::from_str(&bytes).unwrap();
                 let check = |text: &str| {
-                    for fragment in &fragments {
+                    let later_fragments = chess
+                        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                        .filter(|word| !word.is_empty() && !preserve_suffix);
+                    for fragment in fragments.iter().copied().chain(later_fragments) {
                         assert!(
                             !text
                                 .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-                                .any(|word| word == *fragment),
+                                .any(|word| word == fragment),
                             "source stdout={stdout} input={input:?} leaked {fragment}: {text}"
                         );
                     }
@@ -5311,6 +5280,53 @@ mod tests {
                 assert!(decoded["reason"].as_str().unwrap().contains("latest"));
                 if preserve_suffix {
                     assert!(decoded["reason"].as_str().unwrap().contains(chess));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_unquoted_credentials_redact_every_remaining_fragment() {
+        let mut input = r#"{"msg":"\"password=private \"quoted\" pass phrase\""}"#.to_owned();
+        let chess = "e2e4 1/2-1/2";
+        for layer in 0..=2 {
+            if layer > 0 {
+                input = serde_json::to_string(&input).unwrap();
+            }
+            for stdout in [true, false] {
+                let lines = [
+                    format!("CRITICAL ERROR: earlier {chess} {input} aftersecretfragment"),
+                    format!("CRITICAL ERROR: latest {chess} {input} aftersecretfragment"),
+                ];
+                let diagnostics = terminal_diagnostics_from_lines(&lines, stdout).await;
+                let snapshot = diagnostics
+                    .lock()
+                    .await
+                    .snapshot(EngineFailureKind::ProtocolFailure, None);
+                let bytes = serde_json::to_string(&snapshot).unwrap();
+                let decoded: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+                let check = |text: &str| {
+                    for fragment in ["private", "quoted", "pass", "phrase", "aftersecretfragment"] {
+                        assert!(
+                            !text
+                                .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                                .any(|word| word == fragment),
+                            "source stdout={stdout} layer={layer} input={input:?} leaked {fragment}: {text}"
+                        );
+                    }
+                };
+                check(&bytes);
+                let reason = decoded["reason"].as_str().unwrap();
+                check(reason);
+                assert!(reason.contains(&format!("CRITICAL ERROR: latest {chess}")));
+                let entries = decoded["entries"].as_array().unwrap();
+                assert_eq!(entries.len(), 2);
+                for entry in entries {
+                    let text = entry["value"].as_str().unwrap();
+                    check(text);
+                    assert!(text.contains("CRITICAL ERROR:"));
+                    assert!(text.contains(chess));
+                    assert!(text.ends_with("[redacted]"));
                 }
             }
         }
@@ -5399,6 +5415,9 @@ mod tests {
                             assert!(!text.contains("abc"), "leaked secret: {text}");
                             if preserve_suffix {
                                 assert!(text.contains("e2e4 1/2-1/2"), "lost suffix: {text}");
+                            } else {
+                                assert!(!text.contains("e2e4"), "leaked suffix: {text}");
+                                assert!(!text.contains("1/2-1/2"), "leaked suffix: {text}");
                             }
                         }
                     }
