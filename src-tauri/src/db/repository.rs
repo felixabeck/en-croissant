@@ -6075,6 +6075,19 @@ mod bound_sqlite_witnesses {
     #[cfg(target_os = "linux")]
     use crate::infra::inode_ownership::open_descriptor_count;
 
+    #[cfg(target_os = "linux")]
+    fn assert_final_release_closed_descriptors(identity: (u64, u64), diagnostic: &str) {
+        crate::infra::inode_ownership::FINAL_RELEASE_COUNTS.with(|counts| {
+            let counts = counts.borrow();
+            let final_count = counts
+                .iter()
+                .rev()
+                .find(|(released, _)| *released == identity)
+                .expect("final release observation");
+            assert_eq!(final_count.1, 0, "{diagnostic}");
+        });
+    }
+
     #[cfg(unix)]
     fn sqlite_shm_lock_query() -> libc::flock {
         let mut query: libc::flock = unsafe { std::mem::zeroed() };
@@ -6083,6 +6096,22 @@ mod bound_sqlite_witnesses {
         query.l_start = WAL_INDEX_LOCK_OFFSET as _;
         query.l_len = WAL_INDEX_LOCK_SLOTS as _;
         query
+    }
+
+    #[cfg(unix)]
+    fn bound_wal_reader(
+        bound: &BoundDatabase,
+    ) -> rusqlite::Result<crate::db::bound_sqlite::BoundConnection<Connection>> {
+        let lifetime = bound.connection_lifetime().unwrap();
+        Connection::open_with_flags(
+            bound.uri(SqliteMode::ReadWrite).unwrap(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map(|reader| lifetime.wrap(reader))
+        .and_then(|reader| {
+            reader.execute_batch("BEGIN; SELECT Value FROM Info;")?;
+            Ok(reader)
+        })
     }
 
     #[cfg(unix)]
@@ -6249,18 +6278,10 @@ mod bound_sqlite_witnesses {
         drop(probe);
         drop(second);
         #[cfg(target_os = "linux")]
-        crate::infra::inode_ownership::FINAL_RELEASE_COUNTS.with(|counts| {
-            let counts = counts.borrow();
-            let final_count = counts
-                .iter()
-                .rev()
-                .find(|(identity, _)| *identity == shm_identity)
-                .unwrap();
-            assert_eq!(
-                final_count.1, 0,
-                "sidecar descriptor must close before final release"
-            );
-        });
+        assert_final_release_closed_descriptors(
+            shm_identity,
+            "sidecar descriptor must close before final release",
+        );
         drop(BoundDatabase::acquire(&sidecar_target).unwrap());
         assert!(
             matches!(
@@ -6340,19 +6361,7 @@ mod bound_sqlite_witnesses {
         let fd = capability.as_raw_fd();
         fs::hard_link(&alias, root.path().join("shm-successor.db3-shm")).unwrap();
         let bound = BoundDatabase::acquire(&target).unwrap();
-        let open_reader = || {
-            let lifetime = bound.connection_lifetime().unwrap();
-            Connection::open_with_flags(
-                bound.uri(SqliteMode::ReadWrite).unwrap(),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-            )
-            .map(|reader| lifetime.wrap(reader))
-            .and_then(|reader| {
-                reader.execute_batch("BEGIN; SELECT Value FROM Info;")?;
-                Ok(reader)
-            })
-        };
-        let attempt = open_reader();
+        let attempt = bound_wal_reader(&bound);
         assert!(
             attempt.is_err(),
             "WAL open must refuse an existing capability owner of SHM"
@@ -6367,9 +6376,59 @@ mod bound_sqlite_witnesses {
         );
         drop(attempt);
         drop(capability);
-        let retry = open_reader().unwrap();
+        let retry = bound_wal_reader(&bound).unwrap();
         drop(retry);
         drop(bound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_capability_shm_alias_refuses_another_registration_and_preserves_locks() {
+        use std::os::fd::FromRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let first_path = root.path().join("first-domain.db3");
+        let second_path = root.path().join("second-domain.db3");
+        seed_database(&first_path, 1, "WAL");
+        seed_database(&second_path, 2, "WAL");
+        let first_target = test_target(&first_path);
+        let second_target = test_target(&second_path);
+        assert_ne!(first_target.identity(), second_target.identity());
+        let first = BoundDatabase::acquire(&first_target).unwrap();
+        let first_reader = bound_wal_reader(&first).unwrap();
+        let first_shm = root.path().join("first-domain.db3-shm");
+        fs::hard_link(&first_shm, root.path().join("second-domain.db3-shm")).unwrap();
+        let native =
+            crate::db::bound_sqlite::open_bound_sidecar_for_test(&first, "-shm", libc::O_RDONLY)
+                .unwrap();
+        let probe = unsafe { fs::File::from_raw_fd(native) };
+        assert!(native_lock_is_held(&probe, sqlite_shm_lock_query()));
+        let second = BoundDatabase::acquire(&second_target).unwrap();
+        assert_ne!(first.token(), second.token());
+        let attempt = bound_wal_reader(&second);
+        assert!(
+            attempt.is_err(),
+            "another registration must not share the locked SHM inode"
+        );
+        assert!(
+            second.refusal_count() > 0,
+            "SHM domain conflict must record a refusal"
+        );
+        assert!(
+            native_lock_is_held(&probe, sqlite_shm_lock_query()),
+            "refused WAL open must preserve the first registration's SHM locks"
+        );
+        drop(attempt);
+        drop(second);
+        assert!(
+            native_lock_is_held(&probe, sqlite_shm_lock_query()),
+            "refusal cleanup must preserve the first registration's SHM locks"
+        );
+        drop(probe);
+        drop(first_reader);
+        drop(first);
+        let retry = BoundDatabase::acquire(&second_target).unwrap();
+        drop(bound_wal_reader(&retry).unwrap());
+        drop(retry);
     }
 
     #[cfg(unix)]
@@ -6955,18 +7014,10 @@ mod bound_sqlite_witnesses {
                     .with(|slot| *slot.borrow_mut() = Some((entered_in_close, resume_in_close)));
                 drop(ordinary);
                 #[cfg(target_os = "linux")]
-                inode_ownership::FINAL_RELEASE_COUNTS.with(|counts| {
-                    let counts = counts.borrow();
-                    let final_count = counts
-                        .iter()
-                        .rev()
-                        .find(|(released, _)| *released == identity)
-                        .unwrap();
-                    assert_eq!(
-                        final_count.1, 0,
-                        "capability descriptor must close before final release"
-                    );
-                });
+                assert_final_release_closed_descriptors(
+                    identity,
+                    "capability descriptor must close before final release",
+                );
             });
             entered.wait();
             let descriptor_live = unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;

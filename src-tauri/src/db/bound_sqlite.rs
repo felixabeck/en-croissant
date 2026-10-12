@@ -20,7 +20,7 @@ use std::{
 
 use rusqlite::ffi;
 
-#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+#[cfg(all(test, unix))]
 use crate::infra::inode_ownership::QUARANTINE_ADMISSION_LIMIT;
 use crate::infra::inode_ownership::{Registry, REGISTRY};
 
@@ -707,14 +707,6 @@ fn lockable_open_is_admitted() -> bool {
         Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    #[cfg(not(target_os = "linux"))]
-    if registry
-        .quarantined_descriptors
-        .values()
-        .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
-    {
-        return false;
-    }
     registry.open_admitted()
 }
 
@@ -1350,6 +1342,7 @@ mod unix_hooks {
             flags & libc::O_CREAT != 0,
             flags & libc::O_EXCL != 0,
             Mode::from_raw_mode(mode as _),
+            registration.token,
         );
         match opened.and_then(|file| file.handoff_sqlite(registration)) {
             Ok(fd) => {

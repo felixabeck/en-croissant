@@ -1,6 +1,7 @@
 //! One arbitration for SQLite reservations, capability descriptors, sidecars and quarantine.
-//! On Unix, capability owners share only with capabilities, SQLite sidecar owners share only
-//! with sidecars, and neither shares with a SQLite primary. Windows has no inode exclusion.
+//! On Unix, each ordinary inode belongs to one domain: all capability owners, or the sidecars
+//! of one SQLite registration token. Different domains and SQLite primaries cannot share it.
+//! Windows has no inode exclusion.
 //! Repository predecessor admission releases its state mutex before this mutex is acquired.
 //! VFS lookup also releases this mutex before callbacks or filesystem work. No nested registry
 //! acquisition is permitted. Both owner classes close before release under this mutex.
@@ -28,7 +29,7 @@ pub(crate) struct Registry {
     pub(crate) creating: HashMap<BindingKey, u64>,
     ordinary: HashMap<(u64, u64), usize>,
     #[cfg(unix)]
-    sidecar_counts: HashMap<(u64, u64), usize>,
+    sidecar_counts: HashMap<(u64, u64), (u64, usize)>,
     #[cfg(unix)]
     sqlite_sidecars: HashMap<u64, SidecarOwners>,
     #[cfg(unix)]
@@ -51,7 +52,7 @@ pub(crate) static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 enum OwnerClass {
     Capability,
     #[cfg(unix)]
-    SqliteSidecar,
+    SqliteSidecar(u64),
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -191,9 +192,13 @@ impl Registry {
     }
 
     pub(crate) fn check_sqlite(&self, identity: (u64, u64)) -> Result<(), Error> {
-        if self.ordinary_live(identity) || self.sidecar_live(identity) {
+        if self.ordinary_live(identity) {
             Err(Error::Conflict(
                 "file is open through an ordinary capability".into(),
+            ))
+        } else if self.sidecar_live(identity) {
+            Err(Error::Conflict(
+                "file is open through a SQLite binding".into(),
             ))
         } else {
             Ok(())
@@ -216,30 +221,43 @@ impl Registry {
     }
 
     fn check_class(&self, identity: (u64, u64), class: OwnerClass) -> Result<(), Error> {
-        let incompatible = match class {
-            OwnerClass::Capability => self.sqlite_live(identity) || self.sidecar_live(identity),
-            #[cfg(unix)]
-            OwnerClass::SqliteSidecar => self.sqlite_live(identity) || self.ordinary_live(identity),
-        };
-        if cfg!(unix) && incompatible {
+        if cfg!(unix) && self.sqlite_live(identity) {
             return Err(Error::Conflict(
                 "file is open through a SQLite binding".into(),
             ));
         }
-        Ok(())
-    }
-
-    fn counts(&mut self, class: OwnerClass) -> &mut HashMap<(u64, u64), usize> {
         match class {
-            OwnerClass::Capability => &mut self.ordinary,
+            OwnerClass::Capability if self.sidecar_live(identity) => Err(Error::Conflict(
+                "file is open through a SQLite binding".into(),
+            )),
             #[cfg(unix)]
-            OwnerClass::SqliteSidecar => &mut self.sidecar_counts,
+            OwnerClass::SqliteSidecar(_) if self.ordinary_live(identity) => Err(Error::Conflict(
+                "file is open through an ordinary capability".into(),
+            )),
+            #[cfg(unix)]
+            OwnerClass::SqliteSidecar(token)
+                if self
+                    .sidecar_counts
+                    .get(&identity)
+                    .is_some_and(|(owner, _)| *owner != token) =>
+            {
+                Err(Error::Conflict(
+                    "file is open through a SQLite binding".into(),
+                ))
+            }
+            _ => Ok(()),
         }
     }
 
     fn admit_class(&mut self, identity: (u64, u64), class: OwnerClass) -> Result<(), Error> {
         self.check_class(identity, class)?;
-        let count = self.counts(class).entry(identity).or_default();
+        let count = match class {
+            OwnerClass::Capability => self.ordinary.entry(identity).or_default(),
+            #[cfg(unix)]
+            OwnerClass::SqliteSidecar(token) => {
+                &mut self.sidecar_counts.entry(identity).or_insert((token, 0)).1
+            }
+        };
         *count = count
             .checked_add(1)
             .ok_or_else(|| Error::ResourceLimit("ordinary file owner count exhausted".into()))?;
@@ -247,10 +265,27 @@ impl Registry {
     }
 
     fn release(&mut self, identity: (u64, u64), class: OwnerClass) {
-        if let Some(count) = self.counts(class).get_mut(&identity) {
+        let count = match class {
+            OwnerClass::Capability => self.ordinary.get_mut(&identity),
+            #[cfg(unix)]
+            OwnerClass::SqliteSidecar(token) => self
+                .sidecar_counts
+                .get_mut(&identity)
+                .filter(|(owner, _)| *owner == token)
+                .map(|(_, count)| count),
+        };
+        if let Some(count) = count {
             *count -= 1;
             if *count == 0 {
-                self.counts(class).remove(&identity);
+                match class {
+                    OwnerClass::Capability => {
+                        self.ordinary.remove(&identity);
+                    }
+                    #[cfg(unix)]
+                    OwnerClass::SqliteSidecar(_) => {
+                        self.sidecar_counts.remove(&identity);
+                    }
+                }
                 #[cfg(all(test, target_os = "linux"))]
                 FINAL_RELEASE_COUNTS.with(|counts| {
                     counts
@@ -586,11 +621,19 @@ pub(crate) fn open_sqlite_sidecar_at_mode(
     create: bool,
     exclusive: bool,
     mode: rustix::fs::Mode,
+    token: u64,
 ) -> Result<OwnedFile, Error> {
     if create && exclusive {
-        create_at_mode_class(parent, name, flags, mode, OwnerClass::SqliteSidecar)
+        create_at_mode_class(parent, name, flags, mode, OwnerClass::SqliteSidecar(token))
     } else {
-        open_at_mode_class(parent, name, flags, create, mode, OwnerClass::SqliteSidecar)
+        open_at_mode_class(
+            parent,
+            name,
+            flags,
+            create,
+            mode,
+            OwnerClass::SqliteSidecar(token),
+        )
     }
 }
 
