@@ -7293,3 +7293,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"5856970b5737ea4f4cdb6cf037ffb75603e3aeb7512fb4b11a7247a13f607772","input_sha256":"0cd7903172d80267c99a3f5a412c919cbc08c9806a6365deafca586e12e41639","kind":"mutation-receipt","operation":"56046d62c2eab3220b8ea10aff756bd75cbbba58ce0bc4c7647282643489edf2","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-13"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-14 — How is the terminal Mosaic drag boundary made reliable?
+
+* **Question:** Does the persisted database split rely on Mosaic 6.1.1's onRelease as shipped, keep a hidden splitter mounted, add a wrapper timer, or patch Mosaic's throttle and listener cleanup?
+* **Governs:** f-20261001-09
+* **Chosen:** a reproducible pnpm patch of react-mosaic-component 6.1.1 that cancels the pending throttled movement before release and on unmount, removes the element-owned touchstart listener on unmount, and treats touchcancel as an interrupted drag that detaches document listeners without releasing.
+* **Rejected:** relying on onRelease alone, keeping a hidden splitter mounted to avoid cleanup, and a wrapper timer.
+* **Reason:** a probe against the shipped lib/Split.js recorded a change callback after release and a cleared-ref exception after unmount, and four document listeners left after touchcancel; these break the persisted split and the compact transition. Reversal path: remove the patch when a dependency release supplies equivalent lifecycle behaviour and the regression tests pass against it.
+* **Review:** `tasks/handoffs/2026-10-12-database-resizable-panes-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-09 (session d8910561-8552-4b30-bf33-e9b481739416), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"5bb5966923b7349a72d70b40fc6e0f93d419ca07b944f85425e3b5b5cb320b4d","input_sha256":"b54f49b8fe449e81b4fd2cb7cd78de3e598ab2b51c2994075746ff21adc2140d","kind":"mutation-receipt","operation":"49dce747db37cae1fcd0e306c04dea5307a58708e7d4542ad3091df06503eb1c","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-14"],"target":"decisions-ledger","v":1} -->
