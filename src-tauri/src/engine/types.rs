@@ -8,6 +8,41 @@ use crate::{
     infra::path_authority::{EngineResourceHandle, EngineResourceHandleKind},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum EngineFailureKind {
+    Disconnected,
+    ProcessExit,
+    ProtocolFailure,
+}
+
+/// Observed process status. Signals stay absent on platforms without Unix exit signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineExitStatus {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+pub enum EngineTerminalEntry {
+    InfoString(String),
+    Stderr(String),
+    Truncated,
+}
+
+/// Engine text is sanitized and bounded natively before entering this payload.
+/// An absent reason asks the renderer to localize the failure kind/status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineTerminalSnapshot {
+    pub kind: EngineFailureKind,
+    pub exit_status: Option<EngineExitStatus>,
+    pub reason: Option<String>,
+    pub entries: Vec<EngineTerminalEntry>,
+}
+
 /// A stable, exact identity for one interactive engine process.  In
 /// particular, `tab == "a"` and `tab == "ab"` are different identities;
 /// callers must never implement cleanup with prefix matching.

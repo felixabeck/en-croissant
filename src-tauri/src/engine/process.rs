@@ -42,8 +42,9 @@ use crate::infra::{
 use super::{
     canonicalize_engine_position,
     types::{
-        resolve_engine_option_leases, validate_uci_text, EngineDeadlines, EngineKey, EngineOption,
-        EngineRequestId, EngineState, GoMode, ResolvedEngineOption,
+        resolve_engine_option_leases, validate_uci_text, EngineDeadlines, EngineExitStatus,
+        EngineFailureKind, EngineKey, EngineOption, EngineRequestId, EngineState,
+        EngineTerminalEntry, EngineTerminalSnapshot, GoMode, ResolvedEngineOption,
     },
     GAME_ENGINE_KEY_PREFIX,
 };
@@ -57,6 +58,9 @@ const MAX_RESOURCE_REDACTIONS: usize = 256;
 const MAX_RESOURCE_REDACTION_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
+const MAX_TERMINAL_ENTRIES: usize = 32;
+const MAX_TERMINAL_BYTES: usize = 16 * 1024;
+const MAX_TERMINAL_REASON_BYTES: usize = 2048;
 const MAX_RETIRED_ENGINE_IDS: usize = 4096;
 const MAX_RETIRED_PATH_REFS: usize = 4096;
 const MAX_RETIRED_ENGINE_BINARIES: usize = 4096;
@@ -233,11 +237,240 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
     value.truncate(end);
 }
 
+/// This tail is shared only by the actor and its stderr drain. All retained text
+/// is safe already, and registering provenance also scrubs earlier echoes.
+#[derive(Default)]
+struct TerminalDiagnostics {
+    entries: VecDeque<EngineTerminalEntry>,
+    resource_values: Vec<String>,
+    dropped: bool,
+    last_info: Option<String>,
+    last_stderr: Option<String>,
+}
+
+impl TerminalDiagnostics {
+    fn register(&mut self, values: &[String]) {
+        self.resource_values = values.to_vec();
+        for entry in &mut self.entries {
+            if let EngineTerminalEntry::InfoString(text) | EngineTerminalEntry::Stderr(text) = entry
+            {
+                *text = redact_line(std::mem::take(text), values);
+            }
+        }
+        for text in [&mut self.last_info, &mut self.last_stderr]
+            .into_iter()
+            .flatten()
+        {
+            *text = redact_line(std::mem::take(text), values);
+        }
+        self.evict();
+    }
+
+    fn push(&mut self, text: &str, info: bool) {
+        let mut text = sanitize_terminal_text(&redact_line(text.into(), &self.resource_values));
+        if text.trim().is_empty() {
+            return;
+        }
+        if text.len() > MAX_TERMINAL_REASON_BYTES {
+            truncate_utf8(&mut text, MAX_TERMINAL_REASON_BYTES - "… [truncated]".len());
+            text.push_str("… [truncated]");
+            self.dropped = true;
+        }
+        if info {
+            self.last_info = Some(text.clone());
+            self.entries
+                .push_back(EngineTerminalEntry::InfoString(text));
+        } else {
+            self.last_stderr = Some(text.clone());
+            self.entries.push_back(EngineTerminalEntry::Stderr(text));
+        }
+        self.evict();
+    }
+
+    fn evict(&mut self) {
+        // Serialized accounting includes the entry tags, escaped strings and
+        // the visible truncation marker, as well as all UTF-8 text bytes.
+        loop {
+            let entries = self.entries();
+            let bytes = serde_json::to_vec(&entries).map_or(usize::MAX, |bytes| bytes.len());
+            if entries.len() <= MAX_TERMINAL_ENTRIES && bytes <= MAX_TERMINAL_BYTES {
+                break;
+            }
+            if self.entries.pop_front().is_none() {
+                break;
+            }
+            self.dropped = true;
+        }
+    }
+
+    fn entries(&self) -> Vec<EngineTerminalEntry> {
+        let mut entries = Vec::with_capacity(self.entries.len() + usize::from(self.dropped));
+        if self.dropped {
+            entries.push(EngineTerminalEntry::Truncated);
+        }
+        entries.extend(self.entries.iter().cloned());
+        entries
+    }
+
+    fn snapshot(
+        &self,
+        kind: EngineFailureKind,
+        exit_status: Option<EngineExitStatus>,
+    ) -> EngineTerminalSnapshot {
+        EngineTerminalSnapshot {
+            kind,
+            exit_status,
+            reason: self.last_info.clone().or_else(|| self.last_stderr.clone()),
+            entries: self.entries(),
+        }
+    }
+}
+
+/// Treat diagnostics as plain text. Credentials and native path spellings are
+/// removed before truncation, while FEN boards and PGN draw notation survive.
+fn sanitize_terminal_text(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || ch.is_whitespace() {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let lower = text.to_ascii_lowercase();
+    let mut output = String::new();
+    let mut index = 0;
+    while index < text.len() {
+        let rest = &text[index..];
+        let lower_rest = &lower[index..];
+        let boundary = index == 0 || !text.as_bytes()[index - 1].is_ascii_alphanumeric();
+        let secret_prefix = if boundary {
+            [
+                "bearer",
+                "password",
+                "token",
+                "access_token",
+                "api_key",
+                "secret",
+            ]
+            .into_iter()
+            .find_map(|key| {
+                if !lower_rest.starts_with(key) {
+                    return None;
+                }
+                let mut end = index + key.len();
+                if matches!(text.as_bytes().get(end), Some(b'\'' | b'"')) {
+                    end += 1;
+                }
+                while text
+                    .as_bytes()
+                    .get(end)
+                    .is_some_and(u8::is_ascii_whitespace)
+                {
+                    end += 1;
+                }
+                if key != "bearer" {
+                    if !matches!(text.as_bytes().get(end), Some(b'=' | b':')) {
+                        return None;
+                    }
+                    end += 1;
+                    while text
+                        .as_bytes()
+                        .get(end)
+                        .is_some_and(u8::is_ascii_whitespace)
+                    {
+                        end += 1;
+                    }
+                } else if end == index + key.len() {
+                    return None;
+                }
+                let quote = text
+                    .as_bytes()
+                    .get(end)
+                    .copied()
+                    .filter(|byte| matches!(byte, b'\'' | b'"'));
+                if quote.is_some() {
+                    end += 1;
+                }
+                Some((end, quote))
+            })
+        } else {
+            None
+        };
+        if let Some((start, quote)) = secret_prefix {
+            let end = text[start..]
+                .find(|ch: char| match quote {
+                    Some(quote) => ch == quote as char,
+                    None => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';'),
+                })
+                .map_or(text.len(), |offset| start + offset);
+            output.push_str(&text[index..start]);
+            output.push_str("[redacted]");
+            index = end;
+            continue;
+        }
+        let path = boundary
+            && (rest.starts_with('/')
+                || rest.starts_with("\\\\")
+                || rest.starts_with("~/")
+                || rest.starts_with("~\\")
+                || rest.starts_with("./")
+                || rest.starts_with("../")
+                || rest.starts_with(".\\")
+                || rest.starts_with("..\\")
+                || (rest.len() >= 3
+                    && rest.as_bytes()[0].is_ascii_alphabetic()
+                    && rest.as_bytes()[1] == b':'
+                    && matches!(rest.as_bytes()[2], b'/' | b'\\')));
+        if path {
+            let quote = index
+                .checked_sub(1)
+                .and_then(|previous| text.as_bytes().get(previous))
+                .copied()
+                .filter(|byte| matches!(byte, b'\'' | b'"'));
+            let end = rest
+                .find(|ch: char| match quote {
+                    Some(quote) => ch == quote as char,
+                    None => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';' | ')'),
+                })
+                .map_or(text.len(), |offset| index + offset);
+            output.push_str("[path]");
+            index = end;
+            continue;
+        }
+        // Copy whole chess tokens so their internal slashes cannot look like
+        // absolute paths at the next scanner step.
+        if boundary && "rnbqkpRNBQKP12345678".contains(rest.as_bytes()[0] as char) {
+            let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let token = &rest[..token_end];
+            if token == "1/2-1/2"
+                || (token.contains('/')
+                    && token.chars().all(|ch| "/rnbqkpRNBQKP12345678".contains(ch)))
+            {
+                output.push_str(token);
+                index += token.len();
+                continue;
+            }
+        }
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
+}
+
 /// The minimal child-process surface used by the actor.  The production
 /// implementation owns every child handle; deterministic tests can provide a
 /// fake without creating or killing OS processes.
 #[async_trait]
 pub trait UciIo: Send {
+    fn observed_exit(&self) -> Option<EngineExitStatus> {
+        None
+    }
     async fn write_line(&mut self, line: &str) -> Result<(), Error>;
     async fn read_line(&mut self) -> Result<Option<String>, Error>;
     async fn terminate(
@@ -448,11 +681,14 @@ struct ChildUciIo {
     // Linux executes `/proc/self/fd/N`, so dropping it would invalidate the
     // sealed command target after process creation.
     _executable: EngineExecutable,
+    observed_exit: Arc<OnceLock<EngineExitStatus>>,
 }
 
 struct ProcessChildControl {
     stdin: ChildStdin,
     child: Child,
+    observed_exit: Arc<OnceLock<EngineExitStatus>>,
+    kill_started: bool,
     #[cfg(all(test, unix))]
     terminate_failure: Option<TerminateFailure>,
     #[cfg(all(test, unix))]
@@ -473,6 +709,7 @@ trait ChildControl: ChildCleanup {
 #[async_trait]
 impl ChildCleanup for ProcessChildControl {
     fn start_kill(&mut self) -> Result<(), Error> {
+        self.kill_started = true;
         #[cfg(all(test, unix))]
         if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
             self.force_kill_started = true;
@@ -500,8 +737,25 @@ impl ChildCleanup for ProcessChildControl {
             self.child.wait().await?;
             return Err(Error::Conflict("injected engine reap failure".into()));
         }
-        self.child.wait().await?;
+        let status = self.child.wait().await?;
+        if !self.kill_started {
+            let _ = self.observed_exit.set(observed_exit_status(status));
+        }
         Ok(())
+    }
+}
+
+fn observed_exit_status(status: std::process::ExitStatus) -> EngineExitStatus {
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal = None;
+    EngineExitStatus {
+        code: status.code(),
+        signal,
     }
 }
 
@@ -774,14 +1028,18 @@ async fn discard_engine_line_remainder<R: AsyncBufRead + Unpin>(
     }
 }
 
-async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(reader: &mut ResumableLineReader<R>) {
+async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(
+    reader: &mut ResumableLineReader<R>,
+    diagnostics: &Mutex<TerminalDiagnostics>,
+) {
     let mut total = 0usize;
     let mut truncated = false;
     loop {
         match reader.read_line().await {
             Ok(Some(line)) => {
+                diagnostics.lock().await.push(&line, false);
                 let next_total = total.saturating_add(line.len());
-                if next_total > MAX_ENGINE_STDERR_BYTES {
+                if truncated || next_total > MAX_ENGINE_STDERR_BYTES {
                     if !truncated {
                         error!("Engine stderr truncated after {MAX_ENGINE_STDERR_BYTES} bytes");
                         truncated = true;
@@ -836,6 +1094,9 @@ impl Drop for AbortJoinHandleOnDrop {
 
 #[async_trait]
 impl UciIo for ChildUciIo {
+    fn observed_exit(&self) -> Option<EngineExitStatus> {
+        self.observed_exit.get().copied()
+    }
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
         let control = self.control.as_mut().ok_or(Error::EngineDisconnected)?;
         control.stdin.write_all(line.as_bytes()).await?;
@@ -879,6 +1140,8 @@ struct EngineRuntime {
     /// `terminate`; aborted in `Drop` if the runtime is discarded first.
     stderr_drain_task: Option<tokio::task::JoinHandle<()>>,
     termination_outcome: Option<ActorTerminationOutcome>,
+    diagnostics: Arc<Mutex<TerminalDiagnostics>>,
+    terminal_snapshot: Arc<OnceLock<EngineTerminalSnapshot>>,
 }
 
 type ActorTerminationOutcome = Arc<OnceLock<Result<(), Arc<Error>>>>;
@@ -897,6 +1160,7 @@ pub struct EngineActor {
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     joined: Arc<StdMutex<Option<ActorJoin>>>,
     termination_outcome: ActorTerminationOutcome,
+    terminal_snapshot: Arc<OnceLock<EngineTerminalSnapshot>>,
     interrupt: CancellationToken,
     registration_identity: Arc<OnceLock<(EngineKey, u64)>>,
     pub(crate) resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
@@ -2983,6 +3247,8 @@ impl EngineRuntime {
             resource_redactions: ResourceRedactions::default(),
             stderr_drain_task: None,
             termination_outcome: None,
+            diagnostics: Arc::default(),
+            terminal_snapshot: Arc::default(),
         }
     }
 
@@ -3076,10 +3342,13 @@ impl EngineRuntime {
                 .await)
             }
         };
+        let diagnostics = Arc::new(Mutex::new(TerminalDiagnostics::default()));
+        let observed_exit = Arc::new(OnceLock::new());
         let stderr_drain_task = child.stderr.take().map(|stderr| {
+            let diagnostics = diagnostics.clone();
             tokio::spawn(async move {
                 let mut reader = ResumableLineReader::new(BufReader::new(stderr));
-                drain_engine_stderr(&mut reader).await;
+                drain_engine_stderr(&mut reader, &diagnostics).await;
             })
         });
         let mut runtime = Self::new(
@@ -3087,6 +3356,8 @@ impl EngineRuntime {
                 control: Some(ProcessChildControl {
                     stdin,
                     child,
+                    observed_exit: observed_exit.clone(),
+                    kill_started: false,
                     #[cfg(all(test, unix))]
                     terminate_failure: take_terminate_failure(),
                     #[cfg(all(test, unix))]
@@ -3094,10 +3365,12 @@ impl EngineRuntime {
                 }),
                 line_reader: ResumableLineReader::new(BufReader::new(stdout)),
                 _executable: executable,
+                observed_exit,
             }),
             deadlines,
         );
         runtime.stderr_drain_task = stderr_drain_task;
+        runtime.diagnostics = diagnostics;
         Ok(runtime)
     }
 
@@ -3141,13 +3414,14 @@ impl EngineRuntime {
         cancellation: &CancellationToken,
     ) -> Result<Option<String>, Error> {
         let deadline = Instant::now() + self.deadlines.uciok;
-        exchange_io(
+        let line = exchange_io(
             self.read_line(),
             deadline,
             "waiting for uciok",
             Some(cancellation),
         )
-        .await
+        .await?;
+        line.map(Some).ok_or_else(disconnected_failure)
     }
 
     async fn set_option_with_resources(
@@ -3162,6 +3436,10 @@ impl EngineRuntime {
         validate_uci_text("option value", value)?;
         self.resource_redactions
             .register(resource_values, &mut self.logs)?;
+        self.diagnostics
+            .lock()
+            .await
+            .register(&self.resource_redactions.values);
         #[cfg(all(test, unix))]
         if !resource_values.is_empty() {
             let hook = SET_OPTION_BEFORE_SEND_HOOK.with(|slot| slot.borrow_mut().take());
@@ -3326,22 +3604,36 @@ impl EngineRuntime {
         self.logs.push(EngineLog::Gui(
             self.resource_redactions.redact(format!("{command}\n")),
         ));
-        exchange_io(
+        let result = exchange_io(
             self.io.write_line(command),
             deadline,
             "writing engine command",
             interrupt,
         )
-        .await
+        .await;
+        result.map_err(|error| match error {
+            Error::EngineDisconnected | Error::EngineTimeout(_) => error,
+            error => protocol_failure(error),
+        })
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        let line = self.io.read_line().await?;
+        let line = self.io.read_line().await.map_err(protocol_failure)?;
         if let Some(line) = &line {
             if line.len() > MAX_ENGINE_LINE_BYTES {
-                return Err(Error::ResourceLimit(format!(
+                return Err(protocol_failure(Error::ResourceLimit(format!(
                     "engine emitted a line larger than {MAX_ENGINE_LINE_BYTES} bytes"
-                )));
+                ))));
+            }
+            if let Some(text) = line
+                .trim_start()
+                .strip_prefix("info")
+                .filter(|text| text.starts_with(char::is_whitespace))
+                .and_then(|text| text.trim_start().strip_prefix("string"))
+            {
+                if text.is_empty() || text.starts_with(char::is_whitespace) {
+                    self.diagnostics.lock().await.push(text.trim(), true);
+                }
             }
             self.logs.push(EngineLog::Engine(
                 self.resource_redactions.redact(line.clone()),
@@ -3381,7 +3673,7 @@ impl EngineRuntime {
             let Some(line) =
                 exchange_io(self.read_line(), deadline, timeout_label, cancellation).await?
             else {
-                return Err(Error::EngineDisconnected);
+                return Err(disconnected_failure());
             };
             if is_terminal(&line) {
                 return Ok(());
@@ -3588,6 +3880,7 @@ impl EngineActor {
         let interrupt = CancellationToken::new();
         let registration_identity = Arc::new(OnceLock::new());
         let termination_outcome = Arc::new(OnceLock::new());
+        let terminal_snapshot = runtime.terminal_snapshot.clone();
         runtime.termination_outcome = Some(termination_outcome.clone());
         let task = tokio::spawn(engine_actor_loop(
             runtime,
@@ -3602,6 +3895,7 @@ impl EngineActor {
             task: Arc::new(Mutex::new(Some(task))),
             joined: Arc::default(),
             termination_outcome,
+            terminal_snapshot,
             interrupt,
             registration_identity,
             resources,
@@ -3644,8 +3938,8 @@ impl EngineActor {
         self.tx
             .send(command)
             .await
-            .map_err(|_| Error::EngineDisconnected)?;
-        reply.await.map_err(|_| Error::EngineDisconnected)
+            .map_err(|_| self.disconnected_error())?;
+        reply.await.map_err(|_| self.disconnected_error())
     }
 
     async fn request_control<T>(
@@ -3819,6 +4113,11 @@ impl EngineActor {
         }
     }
     pub async fn stop_current(&self) -> Result<(), Error> {
+        // Recovery already stopped/reaped a terminal actor. Report that reap,
+        // rather than treating its closed command channel as another failure.
+        if self.terminal_snapshot().is_some() {
+            return self.final_termination_outcome().await;
+        }
         let (reply_tx, reply) = oneshot::channel();
         self.request_control(EngineCommand::Stop(reply_tx), reply)
             .await?
@@ -3905,6 +4204,22 @@ impl EngineActor {
         let (reply_tx, reply) = oneshot::channel();
         self.request_control(EngineCommand::Logs(reply_tx), reply)
             .await
+    }
+
+    /// Kept independently of the consumed runtime and exact-generation reap.
+    pub fn terminal_snapshot(&self) -> Option<&EngineTerminalSnapshot> {
+        self.terminal_snapshot.get()
+    }
+
+    fn disconnected_error(&self) -> Error {
+        match self.terminal_snapshot() {
+            Some(snapshot) => Error::EngineFailure {
+                snapshot: Some(Box::new(snapshot.clone())),
+                cause: Box::new(Error::EngineDisconnected),
+                cleanup: None,
+            },
+            None => Error::EngineDisconnected,
+        }
     }
 }
 
@@ -4160,17 +4475,39 @@ async fn engine_actor_loop(
     } {
         match command {
             EngineCommand::Init(reply) => {
-                let _ = reply.send(runtime.init_uci_cancellable(&interrupt).await);
+                let result = runtime.init_uci_cancellable(&interrupt).await;
+                let failed = result.is_err();
+                let result =
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::ConfigureStart(reply) => {
-                let _ = reply.send(runtime.start_uci_configuration(Some(&interrupt)).await);
+                let result = runtime.start_uci_configuration(Some(&interrupt)).await;
+                let failed = result.is_err();
+                let result =
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::ConfigureNext(reply) => {
-                let _ = reply.send(
-                    runtime
-                        .next_configuration_line_cancellable(&interrupt)
-                        .await,
-                );
+                let result = runtime
+                    .next_configuration_line_cancellable(&interrupt)
+                    .await;
+                let failed = result.is_err();
+                let result =
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::SetOption {
                 name,
@@ -4179,20 +4516,44 @@ async fn engine_actor_loop(
                 operation_cancellation,
                 reply,
             } => {
-                let _ = reply.send(
-                    runtime
-                        .set_option_with_resources(
-                            &name,
-                            &value,
-                            &resource_values,
-                            operation_cancellation.as_ref(),
-                            Some(&interrupt),
-                        )
-                        .await,
-                );
+                let result = runtime
+                    .set_option_with_resources(
+                        &name,
+                        &value,
+                        &resource_values,
+                        operation_cancellation.as_ref(),
+                        Some(&interrupt),
+                    )
+                    .await;
+                let failed_protocol = result.as_ref().is_err_and(|error| {
+                    error.is_engine_failure() || matches!(error, Error::EngineTimeout(_))
+                });
+                let result = if failed_protocol {
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await
+                } else {
+                    result
+                };
+                let _ = reply.send(result);
+                if failed_protocol {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::SetPosition { fen, moves, reply } => {
-                let _ = reply.send(runtime.set_position(&fen, &moves, Some(&interrupt)).await);
+                let result = runtime.set_position(&fen, &moves, Some(&interrupt)).await;
+                let failed_protocol = result.as_ref().is_err_and(|error| {
+                    error.is_engine_failure() || matches!(error, Error::EngineTimeout(_))
+                });
+                let result = if failed_protocol {
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await
+                } else {
+                    result
+                };
+                let _ = reply.send(result);
+                if failed_protocol {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::EnsureReady(reply) => {
                 let result = runtime.ensure_ready(Some(&interrupt)).await;
@@ -4307,13 +4668,74 @@ async fn recover_failed_protocol<T>(
     match result {
         Ok(value) => Ok(value),
         Err(primary) => {
+            let unexpected =
+                primary.is_engine_failure() || matches!(primary, Error::EngineTimeout(_));
+            let mut snapshot = if unexpected {
+                let kind = match &primary {
+                    Error::EngineFailure { cause, .. }
+                        if matches!(cause.as_ref(), Error::EngineDisconnected) =>
+                    {
+                        EngineFailureKind::Disconnected
+                    }
+                    _ => EngineFailureKind::ProtocolFailure,
+                };
+                Some(
+                    runtime
+                        .diagnostics
+                        .lock()
+                        .await
+                        .snapshot(kind, runtime.io.observed_exit()),
+                )
+            } else {
+                None
+            };
             let termination = runtime.terminate().await;
+            let primary = if let Some(mut captured) = snapshot.take() {
+                // The existing reap observes status and the bounded stderr join
+                // supplies final pipe output. A forced kill is not exit evidence.
+                captured.exit_status = runtime.io.observed_exit().or(captured.exit_status);
+                if captured.kind == EngineFailureKind::Disconnected
+                    && captured.exit_status.is_some()
+                {
+                    captured.kind = EngineFailureKind::ProcessExit;
+                }
+                let tail = runtime.diagnostics.lock().await;
+                captured.reason = tail.last_info.clone().or_else(|| tail.last_stderr.clone());
+                captured.entries = tail.entries();
+                let _ = runtime.terminal_snapshot.set(captured);
+                match primary {
+                    Error::EngineFailure { cause, cleanup, .. } => Error::EngineFailure {
+                        snapshot: runtime.terminal_snapshot.get().cloned().map(Box::new),
+                        cause,
+                        cleanup,
+                    },
+                    primary => Error::EngineFailure {
+                        snapshot: runtime.terminal_snapshot.get().cloned().map(Box::new),
+                        cause: Box::new(primary),
+                        cleanup: None,
+                    },
+                }
+            } else {
+                primary
+            };
             if let Err(error) = &termination {
                 log_actor_cleanup_failure(registration_identity, error);
             }
             Err(Error::with_cleanup(primary, termination))
         }
     }
+}
+
+fn protocol_failure(cause: Error) -> Error {
+    Error::EngineFailure {
+        snapshot: None,
+        cause: Box::new(cause),
+        cleanup: None,
+    }
+}
+
+fn disconnected_failure() -> Error {
+    protocol_failure(Error::EngineDisconnected)
 }
 
 async fn stop_at_protocol_boundary(
@@ -4353,14 +4775,7 @@ async fn service_search_read(
                     EngineCommand::Stop(control_reply) => {
                         let result =
                             stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
-                        let failed = result.is_err();
-                        let _ = reply.send(if failed {
-                            Err(Error::EngineDisconnected)
-                        } else {
-                            Ok(None)
-                        });
-                        let _ = control_reply.send(result);
-                        return !failed;
+                        return reply_to_stopped_search(result, reply, control_reply);
                     }
                     EngineCommand::StopRequest { id: target, reply: control_reply } => {
                         if target != id {
@@ -4368,10 +4783,7 @@ async fn service_search_read(
                             continue;
                         }
                         let result = stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
-                        let failed = result.is_err();
-                        let _ = reply.send(if failed { Err(Error::EngineDisconnected) } else { Ok(None) });
-                        let _ = control_reply.send(result);
-                        return !failed;
+                        return reply_to_stopped_search(result, reply, control_reply);
                     }
                     EngineCommand::Logs(control_reply) => {
                         let _ = control_reply.send(runtime.logs.entries());
@@ -4397,13 +4809,15 @@ async fn service_search_read(
                     }
                     Ok(Ok(None)) => {
                         runtime.state = EngineState::Idle;
-                        Err(Error::EngineDisconnected)
+                        Err(disconnected_failure())
                     }
                     Ok(Err(error)) => Err(error),
                     Err(_) => Err(Error::EngineTimeout("waiting for engine search output".into())),
                 };
+                let failed = result.is_err();
+                let result = recover_failed_protocol(runtime, registration_identity, result).await;
                 let _ = reply.send(result);
-                return true;
+                return !failed;
             }
             command = rx.recv() => match command {
                 Some(EngineCommand::Terminate(control_reply)) => {
@@ -4413,14 +4827,7 @@ async fn service_search_read(
                 }
                 Some(EngineCommand::Stop(control_reply)) => {
                     let result = stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
-                    let failed = result.is_err();
-                        let _ = reply.send(if failed {
-                        Err(Error::EngineDisconnected)
-                    } else {
-                        Ok(None)
-                        });
-                        let _ = control_reply.send(result);
-                    return !failed;
+                    return reply_to_stopped_search(result, reply, control_reply);
                 }
                 Some(EngineCommand::Logs(control_reply)) => {
                     // Logs are observational. They must remain available while
@@ -4437,6 +4844,31 @@ async fn service_search_read(
                     return false;
                 }
             }
+        }
+    }
+}
+
+fn reply_to_stopped_search(
+    result: Result<(), Error>,
+    reply: oneshot::Sender<Result<Option<String>, Error>>,
+    control_reply: oneshot::Sender<Result<(), Error>>,
+) -> bool {
+    match result {
+        Ok(()) => {
+            let _ = reply.send(Ok(None));
+            let _ = control_reply.send(Ok(()));
+            true
+        }
+        Err(error) if error.is_engine_failure() => {
+            let error = Arc::new(error);
+            let _ = reply.send(Err(Error::Shared(error.clone())));
+            let _ = control_reply.send(Err(Error::Shared(error)));
+            false
+        }
+        Err(error) => {
+            let _ = reply.send(Err(Error::EngineDisconnected));
+            let _ = control_reply.send(Err(error));
+            false
         }
     }
 }
@@ -4472,6 +4904,321 @@ fn reject_command_during_search(command: EngineCommand) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn terminal_snapshot_stale_cleanup_cannot_remove_a_replacement() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("terminal-stale".into(), "engine".into()).unwrap();
+        let (old_actor, _) =
+            EngineActor::recording_test_actor(&["info string old terminal reason"]);
+        let old = supervisor
+            .replace_handle(
+                key.clone(),
+                old_actor.clone(),
+                key.engine.clone(),
+                path_ref("old-terminal"),
+            )
+            .await
+            .unwrap();
+        let request = old_actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        old_actor.next_search_line(request).await.unwrap();
+        let error = old_actor.next_search_line(request).await.unwrap_err();
+        let (replacement, _) = EngineActor::recording_test_actor(&[]);
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                replacement.clone(),
+                key.engine.clone(),
+                path_ref("replacement-terminal"),
+            )
+            .await
+            .unwrap();
+        supervisor
+            .release_generation(&key, old.generation)
+            .await
+            .unwrap();
+        assert_eq!(
+            supervisor.get_exact(&key).unwrap().generation,
+            current.generation
+        );
+        assert_eq!(
+            error.engine_failure_snapshot().unwrap().reason.as_deref(),
+            Some("old terminal reason")
+        );
+        assert_eq!(
+            old_actor.terminal_snapshot(),
+            error.engine_failure_snapshot()
+        );
+        assert!(replacement.terminal_snapshot().is_none());
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[test]
+    fn terminal_snapshot_entry_count_includes_the_truncation_marker() {
+        let mut diagnostics = TerminalDiagnostics::default();
+        for index in 0..100 {
+            diagnostics.push(&format!("line {index}"), false);
+        }
+        let snapshot = diagnostics.snapshot(EngineFailureKind::Disconnected, None);
+        assert_eq!(snapshot.entries.len(), MAX_TERMINAL_ENTRIES);
+        assert_eq!(
+            snapshot.entries.first(),
+            Some(&EngineTerminalEntry::Truncated)
+        );
+        assert_eq!(snapshot.reason.as_deref(), Some("line 99"));
+    }
+    #[test]
+    fn terminal_snapshot_sanitizes_quoted_paths_credentials_and_chess_notation() {
+        let input = "e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3 CRITICAL ERROR password=\"private pass phrase\" token=\u{2003}hidden '/private/My Book.bin' \"C:\\private\\My Book.bin\"";
+        let mut diagnostics = TerminalDiagnostics::default();
+        diagnostics.push(input, true);
+        let bytes =
+            serde_json::to_string(&diagnostics.snapshot(EngineFailureKind::ProtocolFailure, None))
+                .unwrap();
+        for secret in ["private", "Book.bin", "phrase", "hidden"] {
+            assert!(!bytes.contains(secret), "{bytes}");
+        }
+        assert!(bytes.contains("e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3 CRITICAL ERROR"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_observed_signal_has_no_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            observed_exit_status(std::process::ExitStatus::from_raw(libc::SIGTERM)),
+            EngineExitStatus {
+                code: None,
+                signal: Some(libc::SIGTERM)
+            }
+        );
+    }
+    fn operation_cause(error: &Error) -> &Error {
+        match error {
+            Error::EngineFailure { cause, .. } => operation_cause(cause),
+            Error::Shared(error) => operation_cause(error),
+            error => error,
+        }
+    }
+    #[tokio::test]
+    async fn terminal_snapshot_selects_info_then_stderr_then_kind() {
+        for (info, stderr, expected) in [
+            (
+                Some("command e2e4 rejected"),
+                Some("stderr last"),
+                Some("command e2e4 rejected"),
+            ),
+            (None, Some("stderr last"), Some("stderr last")),
+            (Some("  "), None, None),
+        ] {
+            let runtime = EngineRuntime::new(
+                Box::new(FakeIo::new(Arc::default(), [])),
+                EngineDeadlines::default(),
+            );
+            if let Some(text) = info {
+                runtime.diagnostics.lock().await.push(text, true);
+            }
+            if let Some(text) = stderr {
+                runtime.diagnostics.lock().await.push(text, false);
+            }
+            let actor = EngineActor::from_runtime(runtime);
+            let error = actor.ensure_ready().await.unwrap_err();
+            let snapshot = actor.terminal_snapshot().unwrap();
+            assert_eq!(snapshot.reason.as_deref(), expected);
+            assert_eq!(snapshot.kind, EngineFailureKind::Disconnected);
+            assert_eq!(snapshot.exit_status, None);
+            assert_eq!(error.engine_failure_snapshot(), Some(snapshot));
+            actor.terminate().await.unwrap();
+            assert_eq!(actor.terminal_snapshot(), Some(snapshot));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_native_bytes_are_bounded_and_redacted_after_late_provenance() {
+        let mut runtime = EngineRuntime::new(Box::new(FakeIo::new(Arc::default(), [Some("info string echo opaque-resource-token password=hidden /private/book.bin e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3".into())])), EngineDeadlines::default());
+        runtime.read_line().await.unwrap();
+        runtime
+            .set_option_with_resources(
+                "Book",
+                "opaque-resource-token",
+                &["opaque-resource-token".into()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        runtime.diagnostics.lock().await.push("stderr Bearer hidden2 C:\\private\\book.bin \\\\server\\private ~/private/book.bin ./private/book.bin {\"token\":\"hidden3\"}", false);
+        let error = recover_failed_protocol::<()>(
+            &mut runtime,
+            &OnceLock::new(),
+            Err(disconnected_failure()),
+        )
+        .await
+        .unwrap_err();
+        let bytes = serde_json::to_string(&error).unwrap();
+        for secret in ["opaque-resource-token", "hidden", "private", "server"] {
+            assert!(!bytes.contains(secret), "{bytes}");
+        }
+        assert!(bytes.contains("e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3"));
+        assert!(bytes.contains("[redacted]"));
+        assert!(bytes.contains("[path]"));
+
+        let mut diagnostics = TerminalDiagnostics::default();
+        for _ in 0..100 {
+            diagnostics.push(&"棋\"".repeat(1000), false);
+        }
+        diagnostics.push(&"ä".repeat(2048), true);
+        let snapshot = diagnostics.snapshot(EngineFailureKind::ProtocolFailure, None);
+        assert!(snapshot.reason.as_ref().unwrap().len() <= MAX_TERMINAL_REASON_BYTES);
+        assert!(snapshot.reason.as_ref().unwrap().ends_with("… [truncated]"));
+        assert!(snapshot.entries.len() <= MAX_TERMINAL_ENTRIES);
+        assert!(serde_json::to_vec(&snapshot.entries).unwrap().len() <= MAX_TERMINAL_BYTES);
+        assert!(matches!(
+            snapshot.entries.first(),
+            Some(EngineTerminalEntry::Truncated)
+        ));
+        let serialized = serde_json::to_vec(&snapshot).unwrap();
+        let _: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_stderr_tail_survives_exhausted_logging_budget() {
+        let mut input = vec![];
+        for _ in 0..20 {
+            input.extend_from_slice(&vec![b'x'; MAX_ENGINE_LINE_BYTES / 2]);
+            input.push(b'\n');
+        }
+        input.extend_from_slice(b"terminal stderr token=secret /private/book.bin\n");
+        let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
+        let diagnostics = Mutex::new(TerminalDiagnostics::default());
+        drain_engine_stderr(&mut reader, &diagnostics).await;
+        let snapshot = diagnostics
+            .lock()
+            .await
+            .snapshot(EngineFailureKind::Disconnected, None);
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("terminal stderr token=[redacted] [path]")
+        );
+        let bytes = serde_json::to_string(&snapshot).unwrap();
+        assert!(!bytes.contains("secret"));
+        assert!(!bytes.contains("private"));
+    }
+
+    struct ObservedExitIo {
+        status: EngineExitStatus,
+    }
+    #[async_trait]
+    impl UciIo for ObservedExitIo {
+        fn observed_exit(&self) -> Option<EngineExitStatus> {
+            Some(self.status)
+        }
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_observed_nonzero_exit_does_not_mean_failed_reap() {
+        let status = EngineExitStatus {
+            code: Some(17),
+            signal: None,
+        };
+        let actor = EngineActor::new(
+            Box::new(ObservedExitIo { status }),
+            EngineDeadlines::default(),
+        );
+        let error = actor.init_uci().await.unwrap_err();
+        let snapshot = error.engine_failure_snapshot().unwrap();
+        assert_eq!(snapshot.kind, EngineFailureKind::ProcessExit);
+        assert_eq!(snapshot.exit_status, Some(status));
+        assert!(snapshot.reason.is_none());
+        actor.terminate().await.unwrap();
+        assert_eq!(actor.terminal_snapshot(), Some(snapshot));
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_intentional_interruption_is_not_a_crash() {
+        let mut io = FakeIo::new(Arc::default(), []);
+        io.pending_when_empty = true;
+        let actor = Arc::new(EngineActor::new(Box::new(io), EngineDeadlines::default()));
+        let requested = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.init_uci().await }
+        });
+        tokio::task::yield_now().await;
+        actor.terminate().await.unwrap();
+        assert!(matches!(
+            requested.await.unwrap(),
+            Err(Error::EngineDisconnected)
+        ));
+        assert!(actor.terminal_snapshot().is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_preserves_cleanup_failure_and_shared_error_without_egress() {
+        let mut io = FakeIo::new(Arc::default(), []);
+        io.termination_error = Some(Arc::new(Error::Io(Box::new(std::io::Error::other(
+            "/private/cleanup token=secret",
+        )))));
+        let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+        let error = actor.init_uci().await.unwrap_err();
+        assert_ne!(error.category(), crate::error::ErrorCategory::Cancellation);
+        assert!(error.diagnostic().contains("/private/cleanup"));
+        assert!(error.engine_failure_snapshot().is_some());
+        assert!(actor.terminate().await.is_err());
+        let shared = Error::Shared(Arc::new(error));
+        let wrapped =
+            Error::with_cleanup(shared, Err(Error::Conflict("second native cleanup".into())));
+        assert!(wrapped.engine_failure_snapshot().is_some());
+        assert!(wrapped.diagnostic().contains("second native cleanup"));
+        let bytes = serde_json::to_string(&wrapped).unwrap();
+        assert!(!bytes.contains("private"));
+        assert!(!bytes.contains("secret"));
+        assert!(!bytes.contains("second native cleanup"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_snapshot_production_child_exit_during_initialization() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("terminal-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\nIFS= read -r line\necho 'stderr token=hidden /private/book.bin' >&2\necho 'info string CRITICAL ERROR: e2e4 rejected password=hidden2'\nexit 17\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let actor = EngineActor::spawn(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        let error = actor.init_uci().await.unwrap_err();
+        let snapshot = actor.terminal_snapshot().unwrap();
+        assert_eq!(snapshot.kind, EngineFailureKind::ProcessExit);
+        assert_eq!(
+            snapshot.exit_status,
+            Some(EngineExitStatus {
+                code: Some(17),
+                signal: None
+            })
+        );
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("CRITICAL ERROR: e2e4 rejected password=[redacted]")
+        );
+        assert!(snapshot.entries.iter().any(|entry| matches!(entry, EngineTerminalEntry::Stderr(text) if text == "stderr token=[redacted] [path]")));
+        let bytes = serde_json::to_string(&error).unwrap();
+        assert!(!bytes.contains("private"));
+        assert!(!bytes.contains("hidden"));
+        actor.terminate().await.unwrap();
+    }
     use super::*;
 
     #[tokio::test]
@@ -6479,9 +7226,14 @@ mod tests {
         .map(|(_, mut guard, ())| guard.disarm());
 
         match result {
-            Err(Error::OperationAndCleanup { primary, cleanup }) => {
-                assert_eq!(primary, "Engine disconnected");
-                assert!(cleanup.contains("fake terminate failed"));
+            Err(error @ Error::EngineFailure { .. }) => {
+                assert!(matches!(operation_cause(&error), Error::EngineDisconnected));
+                assert!(error.diagnostic().contains("fake terminate failed"));
+                assert!(error.engine_failure_snapshot().is_some());
+                assert_eq!(
+                    error.category(),
+                    crate::error::ErrorCategory::OperationAndCleanup
+                );
             }
             other => panic!(
                 "expected initialization and cleanup failure, got {:?}",
@@ -7131,9 +7883,10 @@ mod tests {
             .expect_err("the injected go write fails and cleanup also fails");
 
         match error {
-            Error::OperationAndCleanup { primary, cleanup } => {
-                assert!(primary.contains(OPERATION));
-                assert!(cleanup.contains(TERMINATION));
+            error @ Error::EngineFailure { .. } => {
+                assert!(operation_cause(&error).diagnostic().contains(OPERATION));
+                assert!(error.diagnostic().contains(TERMINATION));
+                assert!(error.engine_failure_snapshot().is_some());
             }
             other => panic!("expected protocol and termination failure, got {other:?}"),
         }
@@ -7200,11 +7953,15 @@ mod tests {
         actor.start_search(&GoMode::Depth(1)).await.unwrap();
         let error = actor.start_search(&GoMode::Depth(2)).await.unwrap_err();
         assert!(matches!(
-            error,
+            operation_cause(&error),
             Error::EngineTimeout(message) if message == "waiting for bestmove after stop"
         ));
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(3)).await,
+            actor
+                .start_search(&GoMode::Depth(3))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
         let writes = writes.lock().await;
@@ -7291,7 +8048,11 @@ mod tests {
         // No `readyok` follows: the barrier cannot prove the pipe is clean, so
         // no `go` may be written on it.
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(2)).await,
+            actor
+                .start_search(&GoMode::Depth(2))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
         assert_eq!(*writes.lock().await, vec!["go depth 1", "isready"]);
@@ -7323,7 +8084,11 @@ mod tests {
         let (actor, _) = actor(&[]);
         let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         assert!(matches!(
-            actor.next_search_line(id).await,
+            actor
+                .next_search_line(id)
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
     }
@@ -8234,12 +8999,18 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), pending)
                 .await
                 .expect("stop failure must finish the pending read")
-                .unwrap(),
+                .unwrap()
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::Io(_))
         ));
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(2)).await,
+            actor
+                .start_search(&GoMode::Depth(2))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
     }
@@ -8322,7 +9093,11 @@ mod tests {
         assert!(actor.stop_current().await.is_err());
         assert_eq!(terminate_calls.load(AtomicOrdering::SeqCst), 1);
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(2)).await,
+            actor
+                .start_search(&GoMode::Depth(2))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
     }
@@ -10221,7 +10996,7 @@ mod tests {
     async fn uci_acknowledgement_requires_exact_token() {
         let (actor, writes) = actor(&["uciok-not-an-ack"]);
         assert!(matches!(
-            actor.init_uci().await,
+            actor.init_uci().await.as_ref().map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
         assert_eq!(*writes.lock().await, vec!["uci"]);
@@ -10241,7 +11016,11 @@ mod tests {
         let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
 
         assert!(matches!(
-            runtime.ensure_ready(None).await,
+            runtime
+                .ensure_ready(None)
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
         assert_eq!(*writes.lock().await, vec!["isready"]);
@@ -10648,12 +11427,16 @@ mod tests {
             .await
             .expect("chatty actor stop must be bounded");
         assert!(matches!(
-            result,
+            result.as_ref().map_err(operation_cause),
             Err(Error::EngineTimeout(message)) if message == "waiting for bestmove after stop"
         ));
         assert!(terminate_calls.load(AtomicOrdering::SeqCst) >= 1);
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(2)).await,
+            actor
+                .start_search(&GoMode::Depth(2))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
     }
@@ -10679,7 +11462,7 @@ mod tests {
         let elapsed = tokio::time::Instant::now() - isready_completed_at;
 
         assert!(matches!(
-            result,
+            result.as_ref().map_err(operation_cause),
             Err(Error::EngineTimeout(message)) if message == "waiting for readyok"
         ));
         assert!(
@@ -10693,7 +11476,11 @@ mod tests {
         assert_eq!(*writes.lock().await, vec!["isready"]);
         assert!(terminate_calls.load(AtomicOrdering::SeqCst) >= 1);
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(1)).await,
+            actor
+                .start_search(&GoMode::Depth(1))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::EngineDisconnected)
         ));
     }
@@ -10702,7 +11489,11 @@ mod tests {
     async fn broken_stdin_does_not_enter_or_leave_a_search_state() {
         let ((actor, _), _) = actor_with(&[], true, None);
         assert!(matches!(
-            actor.start_search(&GoMode::Depth(1)).await,
+            actor
+                .start_search(&GoMode::Depth(1))
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::Io(_))
         ));
     }
@@ -10790,10 +11581,15 @@ mod tests {
         let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
         let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         assert!(matches!(
-            actor.next_search_line(id).await,
+            actor
+                .next_search_line(id)
+                .await
+                .as_ref()
+                .map_err(operation_cause),
             Err(Error::ResourceLimit(_))
         ));
-        assert!(actor.logs().await.unwrap().len() <= MAX_LOG_LINES);
+        assert!(actor.logs().await.is_err());
+        assert!(actor.terminal_snapshot().unwrap().entries.is_empty());
     }
 
     #[tokio::test]
@@ -11358,7 +12154,14 @@ mod tests {
             let later = actor.as_ref().clone();
             assert_same_termination_failure(&later.terminate().await.unwrap_err(), &failure);
             let exchange_error = exchange.await.unwrap().unwrap_err();
-            assert!(matches!(exchange_error, Error::OperationAndCleanup { .. }));
+            assert_eq!(
+                exchange_error.category(),
+                crate::error::ErrorCategory::OperationAndCleanup
+            );
+            assert_eq!(
+                exchange_error.engine_failure_snapshot().is_some(),
+                !preempted
+            );
             assert_eq!(reaps.load(Ordering::SeqCst), 1);
         }
     }
@@ -11708,7 +12511,7 @@ mod tests {
         input.extend_from_slice(b"still-alive\n");
         let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
 
-        drain_engine_stderr(&mut reader).await;
+        drain_engine_stderr(&mut reader, &Mutex::new(TerminalDiagnostics::default())).await;
 
         assert!(
             reader.reader.fill_buf().await.unwrap().is_empty(),
@@ -11722,7 +12525,7 @@ mod tests {
         input.extend_from_slice(b"\nstill-alive\n");
         let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
 
-        drain_engine_stderr(&mut reader).await;
+        drain_engine_stderr(&mut reader, &Mutex::new(TerminalDiagnostics::default())).await;
 
         assert!(
             reader.reader.fill_buf().await.unwrap().is_empty(),

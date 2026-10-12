@@ -81,6 +81,7 @@ pub enum ErrorCategory {
     OperationAndCleanup,
     EngineTimeout,
     EnginePositionRejected,
+    EngineFailure,
     Permission,
     PuzzleThemesUnavailable,
 }
@@ -107,6 +108,7 @@ impl std::fmt::Display for ErrorCategory {
             Self::OperationAndCleanup => "operation and cleanup failure",
             Self::EngineTimeout => "engine timeout",
             Self::EnginePositionRejected => "engine position rejected",
+            Self::EngineFailure => "engine failure",
             Self::Permission => "permission denied",
             Self::PuzzleThemesUnavailable => "puzzle themes unavailable",
         })
@@ -117,6 +119,7 @@ impl std::fmt::Display for ErrorCategory {
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorPayloadTag {
     BackendError,
+    EngineFailure,
 }
 
 #[derive(Serialize, Type)]
@@ -128,6 +131,9 @@ pub struct ErrorPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub root_failure: Option<RootFailure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub engine_failure: Option<crate::engine::EngineTerminalSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -239,6 +245,14 @@ pub enum Error {
 
     #[error("Engine disconnected")]
     EngineDisconnected,
+
+    #[error("Engine failed{}", if .cleanup.is_some() { ". Temporary cleanup also failed" } else { "" })]
+    EngineFailure {
+        snapshot: Option<Box<crate::engine::EngineTerminalSnapshot>>,
+        #[source]
+        cause: Box<Error>,
+        cleanup: Option<Box<Error>>,
+    },
 
     #[error("Engine timeout: {0}")]
     EngineTimeout(String),
@@ -403,6 +417,16 @@ impl Error {
 
     /// Returns the local diagnostic without changing the message exposed on the wire.
     pub(crate) fn diagnostic(&self) -> String {
+        if let Self::EngineFailure { cause, cleanup, .. } = self {
+            return match cleanup {
+                Some(cleanup) => format!(
+                    "primary={}; cleanup={}",
+                    cause.diagnostic(),
+                    cleanup.diagnostic()
+                ),
+                None => cause.diagnostic(),
+            };
+        }
         if let Self::Shared(error) = self {
             return error.diagnostic();
         }
@@ -475,18 +499,57 @@ impl Error {
             Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
             Self::EngineTimeout(_) => ErrorCategory::EngineTimeout,
             Self::EnginePositionRejected(_) => ErrorCategory::EnginePositionRejected,
+            Self::EngineFailure {
+                cleanup: Some(_), ..
+            } => ErrorCategory::OperationAndCleanup,
+            Self::EngineFailure { .. } => ErrorCategory::EngineFailure,
             Self::PuzzleThemesUnavailable => ErrorCategory::PuzzleThemesUnavailable,
         }
     }
 
     /// Preserves the operation error and appends a cleanup failure when one exists.
     pub(crate) fn with_cleanup(primary: Error, cleanup: Result<(), Error>) -> Error {
-        match cleanup {
-            Ok(()) => primary,
-            Err(cleanup) => Self::OperationAndCleanup {
+        match (primary, cleanup) {
+            (primary, Ok(())) => primary,
+            (
+                Self::EngineFailure {
+                    snapshot,
+                    cause,
+                    cleanup: None,
+                },
+                Err(cleanup),
+            ) => Self::EngineFailure {
+                snapshot,
+                cause,
+                cleanup: Some(Box::new(cleanup)),
+            },
+            (primary, Err(cleanup)) if primary.is_engine_failure() => Self::EngineFailure {
+                snapshot: primary.engine_failure_snapshot().cloned().map(Box::new),
+                cause: Box::new(primary),
+                cleanup: Some(Box::new(cleanup)),
+            },
+            (primary, Err(cleanup)) => Self::OperationAndCleanup {
                 primary: primary.diagnostic(),
                 cleanup: cleanup.diagnostic(),
             },
+        }
+    }
+
+    pub(crate) fn is_engine_failure(&self) -> bool {
+        match self {
+            Self::Shared(error) => error.is_engine_failure(),
+            Self::RootFailure { error, .. } => error.is_engine_failure(),
+            Self::EngineFailure { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn engine_failure_snapshot(&self) -> Option<&crate::engine::EngineTerminalSnapshot> {
+        match self {
+            Self::Shared(error) => error.engine_failure_snapshot(),
+            Self::RootFailure { error, .. } => error.engine_failure_snapshot(),
+            Self::EngineFailure { snapshot, .. } => snapshot.as_deref(),
+            _ => None,
         }
     }
 }
@@ -886,10 +949,15 @@ impl serde::Serialize for Error {
     {
         // Backend log records do not reach the renderer; the payload stays on the fixed Display.
         ErrorPayload {
-            tag: ErrorPayloadTag::BackendError,
+            tag: if self.is_engine_failure() {
+                ErrorPayloadTag::EngineFailure
+            } else {
+                ErrorPayloadTag::BackendError
+            },
             category: self.category(),
             message: self.to_string(),
             root_failure: self.root_failure(),
+            engine_failure: self.engine_failure_snapshot().cloned(),
         }
         .serialize(serializer)
     }
@@ -1002,6 +1070,53 @@ impl Drop for LogCaptureScope {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn engine_failure_tag_preserves_optional_snapshot_and_native_cleanup_diagnostics() {
+        let snapshot = crate::engine::EngineTerminalSnapshot {
+            kind: crate::engine::EngineFailureKind::ProtocolFailure,
+            exit_status: None,
+            reason: Some("command e2e4 rejected".into()),
+            entries: vec![crate::engine::EngineTerminalEntry::InfoString(
+                "command e2e4 rejected".into(),
+            )],
+        };
+        let failure = Error::EngineFailure {
+            snapshot: Some(Box::new(snapshot.clone())),
+            cause: Box::new(Error::Io(Box::new(std::io::Error::other(
+                "/private/primary token=hidden",
+            )))),
+            cleanup: None,
+        };
+        let error = Error::with_cleanup(
+            Error::Shared(std::sync::Arc::new(failure)),
+            Err(Error::Io(Box::new(std::io::Error::other(
+                "/private/cleanup password=hidden2",
+            )))),
+        );
+        let error = cancelled_search_error(error, true);
+        assert_eq!(error.category(), ErrorCategory::OperationAndCleanup);
+        assert!(error.to_string().contains("cleanup also failed"));
+        assert_eq!(error.engine_failure_snapshot(), Some(&snapshot));
+        assert!(error.diagnostic().contains("/private/primary"));
+        assert!(error.diagnostic().contains("/private/cleanup"));
+        let bytes = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+        assert_eq!(payload["tag"], "engine-failure");
+        assert_eq!(payload["engineFailure"]["reason"], "command e2e4 rejected");
+        assert!(!bytes.contains("private"));
+        assert!(!bytes.contains("hidden"));
+
+        let error = Error::EngineFailure {
+            snapshot: None,
+            cause: Box::new(Error::EngineDisconnected),
+            cleanup: None,
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();
+        assert_eq!(payload["tag"], "engine-failure");
+        assert_eq!(payload["category"], "engine-failure");
+        assert!(payload.get("engineFailure").is_none());
+    }
     use super::*;
 
     #[test]

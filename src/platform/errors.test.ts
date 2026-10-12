@@ -3,6 +3,7 @@ import { TauriCommandError } from "./tauri";
 import {
     errorUnlessCancelled,
     normalizeError,
+    safeFailureContext,
     runAppliedMutationWithRefresh,
     runDestructiveWithRefresh,
     runWithAppliedRecovery,
@@ -54,6 +55,63 @@ describe("warnSafely", () => {
 });
 
 describe("normalizeError", () => {
+    test("preserves the typed terminal snapshot and re-redacts retained engine text", () => {
+        const error = {
+            tag: "engine-failure",
+            category: "engine-failure",
+            message: "Engine failed",
+            engineFailure: {
+                kind: "process-exit",
+                exitStatus: { code: 7, signal: null },
+                reason: "e2e4 rejected at /private/book.bin token=secret",
+                entries: [
+                    { type: "truncated" },
+                    { type: "infoString", value: "e2e4 token=secret" },
+                    { type: "stderr", value: "failed at C:\\private\\book.bin" },
+                ],
+            },
+        };
+        const expected = {
+            kind: "process-exit",
+            exitStatus: { code: 7, signal: null },
+            reason: "e2e4 rejected at [path] token=[redacted]",
+            entries: [
+                { type: "truncated" },
+                { type: "infoString", value: "e2e4 token=[redacted]" },
+                { type: "stderr", value: "failed at [path]" },
+            ],
+        };
+        expect(normalizeError(error)).toEqual({
+            category: "unexpected",
+            backendCategory: "engine-failure",
+            message: "Engine failed",
+            engineFailure: expected,
+        });
+        expect(normalizeError(new TauriCommandError(normalizeError(error)))).toEqual(
+            normalizeError(error),
+        );
+        expect(
+            safeFailureContext({
+                category: "unexpected",
+                message: "Engine failed",
+                engineFailure: error.engineFailure,
+            }),
+        ).toEqual({ category: "unexpected", message: "Engine failed", engineFailure: expected });
+    });
+
+    test("keeps a typed engine failure without a snapshot unexpected", () => {
+        expect(
+            normalizeError({
+                tag: "engine-failure",
+                category: "engine-failure",
+                message: "Engine failed",
+            }),
+        ).toEqual({
+            category: "unexpected",
+            backendCategory: "engine-failure",
+            message: "Engine failed",
+        });
+    });
     test("retains sanitized causes of an empty-message subscriber AggregateError", () => {
         const error = new AggregateError([
             new Error("Subscriber failed at /private/game.pgn token=secret"),

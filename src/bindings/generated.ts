@@ -1214,6 +1214,11 @@ export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveReservationJournal
 export type EngineAttachmentAction = { action: "prepare"; retained_ids: PathRef[] } | { action: "reconcile"; retained_ids: PathRef[] | null; abandoned_ids: PathRef[]; startup: boolean }
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**
+ * Observed process status. Signals stay absent on platforms without Unix exit signals.
+ */
+export type EngineExitStatus = { code: number | null; signal: number | null }
+export type EngineFailureKind = "disconnected" | "process-exit" | "protocol-failure"
+/**
  * Opaque exact executable capability. It is distinct from its installation root.
  */
 export type EngineHandle = { id: PathRef; kind: EngineHandleKind }
@@ -1249,9 +1254,15 @@ export type EngineResourceHandleKind = "file" | "directory"
  */
 export type EngineRootHandle = { id: PathRef; kind: EngineRootHandleKind }
 export type EngineRootHandleKind = "engineRoot"
-export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "permission" | "puzzle-themes-unavailable"
-export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string; rootFailure?: RootFailure | null }
-export type ErrorPayloadTag = "backend-error"
+export type EngineTerminalEntry = { type: "infoString"; value: string } | { type: "stderr"; value: string } | { type: "truncated" }
+/**
+ * Engine text is sanitized and bounded natively before entering this payload.
+ * An absent reason asks the renderer to localize the failure kind/status.
+ */
+export type EngineTerminalSnapshot = { kind: EngineFailureKind; exitStatus: EngineExitStatus | null; reason: string | null; entries: EngineTerminalEntry[] }
+export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "engine-failure" | "permission" | "puzzle-themes-unavailable"
+export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string; rootFailure?: RootFailure | null; engineFailure?: EngineTerminalSnapshot | null }
+export type ErrorPayloadTag = "backend-error" | "engine-failure"
 export type Event = { id: number; name: string | null }
 export type FileWorkspaceDescriptor = { handle: FileWorkspaceHandle; displayName: string; availability: PathAvailability }
 /**

@@ -1,4 +1,10 @@
-import type { ErrorCategory, ErrorPayload, RootFailure } from "@/bindings";
+import type {
+    EngineTerminalSnapshot,
+    ErrorCategory,
+    ErrorPayload,
+    ErrorPayloadTag,
+    RootFailure,
+} from "@/bindings";
 import { error as logError, warn as logWarn } from "./native";
 
 export type AppErrorCategory =
@@ -16,6 +22,7 @@ export type AppError = {
     diagnostic?: string;
     backendCategory?: ErrorCategory;
     rootFailure?: RootFailure;
+    engineFailure?: EngineTerminalSnapshot;
 };
 
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
@@ -48,8 +55,14 @@ const BACKEND_CATEGORY: Record<ErrorCategory, AppErrorCategory> = {
     "operation-and-cleanup": "unexpected",
     "engine-timeout": "unexpected",
     "engine-position-rejected": "validation",
+    "engine-failure": "unexpected",
     permission: "permission",
     "puzzle-themes-unavailable": "not-found",
+};
+
+const BACKEND_TAG: Record<ErrorPayloadTag, true> = {
+    "backend-error": true,
+    "engine-failure": true,
 };
 
 const FEN_BOARD_PATTERN = /[rnbqkpRNBQKP1-8]+(?:\/[rnbqkpRNBQKP1-8]+){1,7}/g;
@@ -63,7 +76,8 @@ function isErrorPayload(value: unknown): value is ErrorPayload {
     return (
         typeof value === "object" &&
         value !== null &&
-        (value as { tag?: unknown }).tag === "backend-error"
+        typeof (value as { tag?: unknown }).tag === "string" &&
+        Object.hasOwn(BACKEND_TAG, (value as { tag: string }).tag)
     );
 }
 
@@ -212,6 +226,9 @@ export function normalizeError(error: unknown): AppError {
             backendCategory: error.category,
             message: redact(error.message),
             ...(error.rootFailure == null ? {} : { rootFailure: error.rootFailure }),
+            ...(error.engineFailure == null
+                ? {}
+                : { engineFailure: safeEngineFailure(error.engineFailure) }),
         };
     }
     if (isAppError(error)) return error;
@@ -229,9 +246,20 @@ export function normalizeError(error: unknown): AppError {
     return { category: classify(source), message: redact(source) };
 }
 
+function safeEngineFailure(snapshot: EngineTerminalSnapshot): EngineTerminalSnapshot {
+    return {
+        ...snapshot,
+        reason: snapshot.reason == null ? null : redact(snapshot.reason),
+        entries: snapshot.entries.map((entry) =>
+            entry.type === "truncated" ? entry : { ...entry, value: redact(entry.value) },
+        ),
+    };
+}
+
 export type SafeFailureContext = {
     category: AppErrorCategory;
     message: string;
+    engineFailure?: EngineTerminalSnapshot;
 };
 
 /** Normalizes and re-redacts a failure before it can reach logs or fallback context. */
@@ -240,6 +268,9 @@ export function safeFailureContext(cause: unknown): SafeFailureContext {
     return {
         category: normalized.category,
         message: redact(normalized.message),
+        ...(normalized.engineFailure == null
+            ? {}
+            : { engineFailure: safeEngineFailure(normalized.engineFailure) }),
     };
 }
 

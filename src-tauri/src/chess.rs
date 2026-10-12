@@ -940,10 +940,7 @@ async fn get_best_moves_core<R: tauri::Runtime>(
         (Ok(()), Ok(())) => Ok(None),
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
-        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: cleanup.to_string(),
-        }),
+        (Err(primary), Err(cleanup)) => Err(Error::with_cleanup(primary, Err(cleanup))),
     }
 }
 
@@ -1698,6 +1695,47 @@ fn naive_eval(pos: &Chess) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn terminal_snapshot_survives_search_rejection_and_exact_cleanup() {
+        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[
+            "info string CRITICAL ERROR: e2e4 rejected token=secret /private/book.bin",
+        ]);
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let key = crate::engine::EngineKey::new("terminal-proof".into(), "terminal-engine".into())
+            .unwrap();
+        let registered = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                crate::infra::path_authority::PathRef {
+                    id: "terminal-proof".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let request = actor
+            .start_search(&crate::engine::GoMode::Depth(1))
+            .await
+            .unwrap();
+        assert!(actor.next_search_line(request).await.unwrap().is_some());
+        let error = actor.next_search_line(request).await.unwrap_err();
+        let cleanup = supervisor
+            .release_generation(&key, registered.generation)
+            .await;
+        let error = crate::error::Error::with_cleanup(error, cleanup);
+        let bytes = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+        assert_eq!(payload["tag"], "engine-failure");
+        assert_eq!(
+            payload["engineFailure"]["reason"],
+            "CRITICAL ERROR: e2e4 rejected token=[redacted] [path]"
+        );
+        assert!(payload["engineFailure"]["exitStatus"].is_null());
+        assert!(!bytes.contains("secret"));
+        assert!(!bytes.contains("/private"));
+        assert!(supervisor.get_exact(&key).is_none());
+    }
     #[cfg(unix)]
     use crate::engine::EngineSupervisor;
     use shakmaty::FromSetup;
