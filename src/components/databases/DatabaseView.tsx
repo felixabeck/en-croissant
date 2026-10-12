@@ -17,13 +17,20 @@ import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
 import { resolveDatabaseRoute } from "./databaseRoute";
-import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
+import { useElementSize } from "@mantine/hooks";
+import { useAtomValue } from "jotai";
+import { fontSizeAtom } from "@/state/atoms";
+import { databasePaneGeometry, DatabaseLayoutContext } from "@/state/databaseLayout";
 import classes from "./GridLayout.module.css";
-import { COMPACT_DATABASE_WIDTH_EM } from "./GridLayout";
 
 function DatabaseView() {
   const { t } = useTranslation();
-  const compact = useScaledMaxWidth(COMPACT_DATABASE_WIDTH_EM);
+  const { ref, width } = useElementSize();
+  const fontSize = useAtomValue(fontSizeAtom);
+  const rootFont =
+    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || (16 * fontSize) / 100;
+  const geometry = { ...databasePaneGeometry(width, rootFont), rootFont };
+  const { compact } = geometry;
   const database = useActiveDatabaseViewStore((s) => s.database);
   const mode = useActiveDatabaseViewStore((s) => s.activeTab);
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
@@ -49,7 +56,7 @@ function DatabaseView() {
   if (resolution.status === "loading" || resolution.status === "synchronizing") {
     return (
       <Box p="sm" h="100%">
-        <Center h="100%">
+        <Center ref={ref} h="100%">
           <Loader aria-label={t("Common.Loading")} />
         </Center>
       </Box>
@@ -59,7 +66,7 @@ function DatabaseView() {
   if (resolution.status === "not_found") {
     return (
       <Box p="sm" h="100%">
-        <Center h="100%">
+        <Center ref={ref} h="100%">
           <Stack align="center">
             <Text c="dimmed">{t("Databases.NoSelection")}</Text>
             <Link to="/databases">{t("Databases.Title")}</Link>
@@ -72,47 +79,57 @@ function DatabaseView() {
   const databaseForRoute = resolution.database;
 
   return (
-    <Box p="sm" h="100%" className={classes.view} data-compact={compact || undefined}>
-      <DatabaseViewStateContext.Provider value={activeDatabaseViewStore}>
-        <Stack className={classes.viewStack}>
-          <Group align="center" style={{ flexShrink: 0 }}>
-            <Link to="/databases">
-              <IconAction label={t("Common.Back")} variant="default">
-                <IconArrowBackUp size="1rem" />
-              </IconAction>
-            </Link>
-            <Title miw={0} className="wrap-anywhere">
-              {databaseForRoute.title}
-            </Title>
-          </Group>
-          <Tabs
-            value={mode}
-            onChange={(value) => setActiveTab((value ?? "games") as DatabaseViewStore["activeTab"])}
-            className={classes.tabs}
-          >
-            <Tabs.List style={{ flexShrink: 0 }}>
-              <Tabs.Tab leftSection={<IconChess size="1rem" />} value="games">
-                {t("Common.Games")}
-              </Tabs.Tab>
-              <Tabs.Tab leftSection={<IconUser size="1rem" />} value="players">
-                {t("Databases.Card.Players")}
-              </Tabs.Tab>
-              <Tabs.Tab leftSection={<IconTrophy size="1rem" />} value="tournaments">
-                {t("Databases.Settings.Events")}
-              </Tabs.Tab>
-            </Tabs.List>
-            <Tabs.Panel value="games" className={classes.panel} pt="md">
-              <GameTable />
-            </Tabs.Panel>
-            <Tabs.Panel value="players" className={classes.panel} pt="md">
-              <PlayerTable />
-            </Tabs.Panel>
-            <Tabs.Panel value="tournaments" className={classes.panel} pt="md">
-              <TournamentTable />
-            </Tabs.Panel>
-          </Tabs>
-        </Stack>
-      </DatabaseViewStateContext.Provider>
+    <Box
+      p="sm"
+      h="100%"
+      className={classes.view}
+      data-database-view
+      data-compact={compact || undefined}
+    >
+      <DatabaseLayoutContext.Provider value={geometry}>
+        <DatabaseViewStateContext.Provider value={activeDatabaseViewStore}>
+          <Stack ref={ref} className={classes.viewStack}>
+            <Group align="center" style={{ flexShrink: 0 }}>
+              <Link to="/databases">
+                <IconAction label={t("Common.Back")} variant="default">
+                  <IconArrowBackUp size="1rem" />
+                </IconAction>
+              </Link>
+              <Title miw={0} className="wrap-anywhere">
+                {databaseForRoute.title}
+              </Title>
+            </Group>
+            <Tabs
+              value={mode}
+              onChange={(value) =>
+                setActiveTab((value ?? "games") as DatabaseViewStore["activeTab"])
+              }
+              className={classes.tabs}
+            >
+              <Tabs.List style={{ flexShrink: 0 }}>
+                <Tabs.Tab leftSection={<IconChess size="1rem" />} value="games">
+                  {t("Common.Games")}
+                </Tabs.Tab>
+                <Tabs.Tab leftSection={<IconUser size="1rem" />} value="players">
+                  {t("Databases.Card.Players")}
+                </Tabs.Tab>
+                <Tabs.Tab leftSection={<IconTrophy size="1rem" />} value="tournaments">
+                  {t("Databases.Settings.Events")}
+                </Tabs.Tab>
+              </Tabs.List>
+              <Tabs.Panel value="games" className={classes.panel} pt="md">
+                <GameTable />
+              </Tabs.Panel>
+              <Tabs.Panel value="players" className={classes.panel} pt="md">
+                <PlayerTable />
+              </Tabs.Panel>
+              <Tabs.Panel value="tournaments" className={classes.panel} pt="md">
+                <TournamentTable />
+              </Tabs.Panel>
+            </Tabs>
+          </Stack>
+        </DatabaseViewStateContext.Provider>
+      </DatabaseLayoutContext.Provider>
     </Box>
   );
 }

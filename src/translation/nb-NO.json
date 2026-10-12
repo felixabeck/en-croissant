@@ -402,6 +402,8 @@
     "Databases.Game.NoSelection": "Ingen partier valgt",
     "Databases.Game.Plies": "Halvtrekk",
     "Databases.ImportUnfinished": "Importen ble ikke fullført — slett databasen og importer den på nytt",
+    "Databases.Layout.EnlargePreview": "Utvid forhåndsvisning",
+    "Databases.Layout.EnlargeTable": "Utvid tabell",
     "Databases.LoadError": "Kunne ikke laste databaser. Prøv igjen.",
     "Databases.LoadError.Changed": "Denne databasemappen er endret. Velg en annen.",
     "Databases.LoadError.Description": "Kontroller at filen finnes og ikke er skadet.",

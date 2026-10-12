@@ -6,7 +6,76 @@ import {
     preserveStorageForReload,
     selectFilesTreeRow,
     test,
+    gameOpeningCommands,
+    gameOpeningFixture,
 } from "./fixtures";
+
+test("workspace-tabs: analysis row and nested column drags resize panes and restore committed percentages", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, gameOpeningFixture.file.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    const mosaic = page.locator(".mosaic-root");
+    const left = page.locator(".mosaic-tile:has(> #left)");
+    const top = page.locator(".mosaic-tile:has(> #topRight)");
+    const bottom = page.locator(".mosaic-tile:has(> #bottomRight)");
+    const beforeLeft = (await left.boundingBox())!.width;
+    const beforeTop = (await top.boundingBox())!.height;
+    const beforeBottom = (await bottom.boundingBox())!.height;
+    const box = (await mosaic.boundingBox())!;
+    for (const [direction, ratio] of [
+        ["row", 60],
+        ["column", 65],
+    ] as const) {
+        const divider = (await mosaic.locator(`.mosaic-split.-${direction}`).boundingBox())!;
+        const x =
+            direction === "row"
+                ? box.x + (box.width * ratio) / 100
+                : divider.x + divider.width * 0.75;
+        const y =
+            direction === "column"
+                ? box.y + (box.height * ratio) / 100
+                : divider.y + divider.height * 0.25;
+        await page.mouse.move(
+            direction === "row" ? divider.x + divider.width / 2 : x,
+            direction === "column" ? divider.y + divider.height / 2 : y,
+        );
+        await page.mouse.down();
+        await page.mouse.move(x, y, { steps: 5 });
+        await page.mouse.up();
+    }
+    const percentages = () =>
+        page.evaluate(() => {
+            const node = JSON.parse(localStorage.getItem("windowsState")!).currentNode;
+            return { row: node.splitPercentage, column: node.second.splitPercentage };
+        });
+    await expect.poll(async () => Math.abs((await percentages()).row - 60)).toBeLessThan(0.5);
+    await expect.poll(async () => Math.abs((await percentages()).column - 65)).toBeLessThan(0.5);
+    const committed = await percentages();
+    expect((await left.boundingBox())!.width).toBeGreaterThan(beforeLeft);
+    expect((await top.boundingBox())!.height).toBeGreaterThan(beforeTop);
+    expect((await bottom.boundingBox())!.height).toBeLessThan(beforeBottom);
+    const dimensions = [
+        await left.boundingBox(),
+        await top.boundingBox(),
+        await bottom.boundingBox(),
+    ];
+    await preserveStorageForReload(page);
+    await expect.poll(percentages).toEqual(committed);
+    await expect
+        .poll(async () => [
+            await left.boundingBox(),
+            await top.boundingBox(),
+            await bottom.boundingBox(),
+        ])
+        .toEqual(dimensions);
+});
 
 test("workspace-tabs: closing the last tab of an opened repertoire file leaves a New Tab", async ({
     page,

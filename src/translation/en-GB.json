@@ -402,6 +402,8 @@
     "Databases.Game.NoSelection": "No game selected",
     "Databases.Game.Plies": "Plies",
     "Databases.ImportUnfinished": "Import did not finish — delete it and import again",
+    "Databases.Layout.EnlargePreview": "Enlarge preview",
+    "Databases.Layout.EnlargeTable": "Enlarge table",
     "Databases.LoadError": "Could not load databases. Please try again.",
     "Databases.LoadError.Changed": "This database folder changed. Choose another.",
     "Databases.LoadError.Description": "Check if the file exists and that it is not corrupted.",

@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  react-mosaic-component@6.1.1:
+    hash: ecf9e2bb070bc3b6a6a779628ded0a4e6fcd127b50690f6549ac01d77d24eab7
+    path: patches/react-mosaic-component@6.1.1.patch
+
 importers:
 
   .:
@@ -169,7 +174,7 @@ importers:
         version: 10.1.0(@types/react@19.2.14)(react@19.2.4)
       react-mosaic-component:
         specifier: ^6.1.1
-        version: 6.1.1(@types/hoist-non-react-statics@3.3.6)(@types/react@19.2.14)(dnd-core@16.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 6.1.1(patch_hash=ecf9e2bb070bc3b6a6a779628ded0a4e6fcd127b50690f6549ac01d77d24eab7)(@types/hoist-non-react-statics@3.3.6)(@types/react@19.2.14)(dnd-core@16.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       recharts:
         specifier: ^3.7.0
         version: 3.7.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react-is@18.3.1)(react@19.2.4)(redux@5.0.1)
@@ -8022,7 +8027,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-mosaic-component@6.1.1(@types/hoist-non-react-statics@3.3.6)(@types/react@19.2.14)(dnd-core@16.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  react-mosaic-component@6.1.1(patch_hash=ecf9e2bb070bc3b6a6a779628ded0a4e6fcd127b50690f6549ac01d77d24eab7)(@types/hoist-non-react-statics@3.3.6)(@types/react@19.2.14)(dnd-core@16.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
       classnames: 2.5.1
       immutability-helper: 3.1.1

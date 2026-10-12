@@ -3,6 +3,9 @@ import { createRoot, type Root } from "react-dom/client";
 import useSWR, { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { installResizeObserverStub } from "@/tests/resizeObserver";
+
+installResizeObserverStub();
 
 const mocks = vi.hoisted(() => ({ getDatabases: vi.fn() }));
 

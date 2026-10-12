@@ -10,3 +10,5 @@ onlyBuiltDependencies:
   - core-js
   - esbuild
   - protobufjs
+patchedDependencies:
+  react-mosaic-component@6.1.1: patches/react-mosaic-component@6.1.1.patch

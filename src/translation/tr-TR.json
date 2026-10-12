@@ -402,6 +402,8 @@
     "Databases.Game.NoSelection": "Oyun seçilmedi",
     "Databases.Game.Plies": "Yarım hamle",
     "Databases.ImportUnfinished": "İçe aktarma tamamlanmadı — veritabanını silip yeniden içe aktarın",
+    "Databases.Layout.EnlargePreview": "Önizlemeyi büyüt",
+    "Databases.Layout.EnlargeTable": "Tabloyu büyüt",
     "Databases.LoadError": "Veritabanları yüklenemedi. Lütfen tekrar deneyin.",
     "Databases.LoadError.Changed": "Bu veritabanı klasörü değişti. Başka birini seçin.",
     "Databases.LoadError.Description": "Veritabanı yüklenirken bir hata oluştu.",

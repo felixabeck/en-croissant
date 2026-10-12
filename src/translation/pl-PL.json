@@ -412,6 +412,8 @@
     "Databases.Game.NoSelection": "Nie wybrano partii",
     "Databases.Game.Plies": "Półruchy",
     "Databases.ImportUnfinished": "Import nie został ukończony — usuń bazę danych i zaimportuj ją ponownie",
+    "Databases.Layout.EnlargePreview": "Powiększ podgląd",
+    "Databases.Layout.EnlargeTable": "Powiększ tabelę",
     "Databases.LoadError": "Nie udało się wczytać baz danych. Spróbuj ponownie.",
     "Databases.LoadError.Changed": "Ten folder baz danych uległ zmianie. Wybierz inny.",
     "Databases.LoadError.Description": "Sprawdź, czy plik istnieje i nie jest uszkodzony.",

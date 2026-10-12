@@ -407,6 +407,8 @@
     "Databases.Game.NoSelection": "Aucune partie sélectionnée",
     "Databases.Game.Plies": "Demi-coups",
     "Databases.ImportUnfinished": "L’importation n’est pas terminée — supprimez la base de données et importez-la à nouveau",
+    "Databases.Layout.EnlargePreview": "Agrandir l’aperçu",
+    "Databases.Layout.EnlargeTable": "Agrandir le tableau",
     "Databases.LoadError": "Impossible de charger les bases de données. Veuillez réessayer.",
     "Databases.LoadError.Changed": "Ce dossier de bases de données a changé. Choisissez-en un autre.",
     "Databases.LoadError.Description": "Vérifiez si le fichier existe et qu'il n'est pas corrompu.",

@@ -12,9 +12,303 @@ import {
     gameOpeningFixture,
     gameOpeningCommands,
     activeWorkspaceTab,
+    databaseLayoutCommands,
+    preserveStorageForReload,
+    whitePawnSquares,
+    waitForScrollAreaScrollbarsHidden,
 } from "./fixtures";
 
+test("database-files: bounded drag and keyboard steps share a preference across tabs, compact reflow and reload", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "100"));
+    await page.setViewportSize({ width: 2000, height: 1200 });
+    await mockScenario({ commands: databaseLayoutCommands });
+    await page.goto(`/databases/${gameOpeningFixture.databaseId}`);
+    await expect
+        .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize))
+        .toBe("16px");
+    const gamesPanel = page.getByRole("tabpanel", { name: "Games", exact: true }).first();
+    const layout = gamesPanel.locator("[data-database-layout]");
+    const split = layout.locator(".mosaic-split");
+    const root = layout.locator(".mosaic-root");
+    const saved = () => page.evaluate(() => localStorage.getItem("database-table-percentage"));
+    const drag = async (ratio: number, release = true) => {
+        const box = (await root.boundingBox())!;
+        const divider = (await split.boundingBox())!;
+        await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + (box.width * ratio) / 100, divider.y + divider.height / 2, {
+            steps: 5,
+        });
+        if (release) await page.mouse.up();
+    };
+    await expect(split).toHaveCount(1);
+    expect(await saved()).toBeNull();
+    await page.getByRole("row").filter({ hasText: "Second White" }).click();
+    const board = page.locator(".cg-wrap");
+    const assertPreview = async () => {
+        const square = (await board.boundingBox())!;
+        expect(Math.abs(square.width - square.height)).toBeLessThanOrEqual(1);
+        const frame = (await page.locator("[data-preview-arrangement]").boundingBox())!;
+        const metadata = (await gamesPanel
+            .locator(".mantine-Paper-root:has([data-preview-arrangement])")
+            .first()
+            .locator(".mantine-SimpleGrid-root")
+            .boundingBox())!;
+        expect(frame.y).toBeGreaterThan(metadata.y + metadata.height);
+        expect(square.y + square.height).toBeLessThanOrEqual(frame.y + frame.height + 1);
+        for (const name of ["d4", "d5", "Go to start", "Previous move", "Next move", "Go to end"]) {
+            await expect(page.getByRole("button", { name, exact: true })).toBeInViewport({
+                ratio: 1,
+            });
+        }
+        await assertNothingClipped(gamesPanel, { mode: "reachable" });
+    };
+    const initial = (await board.boundingBox())!.width;
+    await drag(5, false);
+    expect(await saved()).toBeNull();
+    await page.mouse.up();
+    await expect(layout).toHaveAttribute("data-percentage", "20");
+    expect(Number(await saved())).toBe(20);
+    await expect(page.getByRole("button", { name: "Enlarge preview", exact: true })).toBeDisabled();
+    await expect.poll(async () => (await board.boundingBox())!.width).toBeGreaterThan(500);
+    expect((await board.boundingBox())!.width).toBeGreaterThan(initial);
+    await expect(page.locator("[data-preview-arrangement]")).toHaveAttribute(
+        "data-preview-arrangement",
+        "beside",
+    );
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    const selected = ["a2", "b2", "c2", "d4", "e2", "f2", "g2", "h2"];
+    await expect.poll(() => whitePawnSquares(board)).toEqual(selected);
+    for (const name of ["Go to start", "Previous move", "Next move", "Go to end"]) {
+        await expect(page.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+    }
+    await assertPreview();
+    await page.mouse.move(1999, 1199);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await waitForScrollAreaScrollbarsHidden(page);
+    await capture("database-adaptive-wide");
+    await expect(page).toHaveScreenshot("database-adaptive-wide.png");
+    await drag(95);
+    await expect(layout).toHaveAttribute("data-percentage", "80");
+    await expect(page.getByRole("button", { name: "Enlarge table", exact: true })).toBeDisabled();
+    const enlargePreview = page.getByRole("button", { name: "Enlarge preview", exact: true });
+    await page.getByRole("tab", { name: "Games", exact: true }).first().focus();
+    await page.keyboard.press("Tab");
+    await expect(enlargePreview).toBeFocused();
+    await enlargePreview.press("Enter");
+    await expect(layout).toHaveAttribute("data-percentage", "75");
+    expect(await saved()).toBe("75");
+    await expect(page.locator("[data-preview-arrangement]")).toHaveAttribute(
+        "data-preview-arrangement",
+        "below",
+    );
+    await expect.poll(() => whitePawnSquares(board)).toEqual(selected);
+    await assertPreview();
+    await page.mouse.move(1999, 1199);
+    await waitForScrollAreaScrollbarsHidden(page);
+    await capture("database-adaptive-tall");
+    await expect(page).toHaveScreenshot("database-adaptive-tall.png");
+    for (const name of ["Players", "Events", "Games"]) {
+        await page.getByRole("tab", { name, exact: true }).first().click();
+        await expect(page.locator("[data-database-layout]:visible")).toHaveAttribute(
+            "data-percentage",
+            "75",
+        );
+    }
+    await page.setViewportSize({ width: 900, height: 900 });
+    await expect
+        .poll(async () => Number(await layout.getAttribute("data-percentage")))
+        .toBeLessThan(75);
+    expect(await saved()).toBe("75");
+    expect(
+        (await gamesPanel.locator('[data-database-pane="preview"]').boundingBox())!.width,
+    ).toBeGreaterThanOrEqual(320);
+    await page.setViewportSize({ width: 320, height: 900 });
+    await expect(split).toHaveCount(0);
+    expect(await saved()).toBe("75");
+    await expect.poll(() => whitePawnSquares(board)).toEqual(selected);
+    await page.setViewportSize({ width: 2000, height: 1200 });
+    await expect(layout).toHaveAttribute("data-percentage", "75");
+    await expect.poll(() => whitePawnSquares(board)).toEqual(selected);
+    await preserveStorageForReload(page);
+    await expect(layout).toHaveAttribute("data-percentage", "75");
+    expect(await saved()).toBe("75");
+    await assertNoHorizontalOverflow();
+});
+
+for (const width of [320, 1250]) {
+    test(`database-files: populated compact tabs remain reachable at ${width}px and 200%`, async ({
+        page,
+        mockScenario,
+        assertNoHorizontalOverflow,
+    }) => {
+        await page.addInitScript(() => localStorage.setItem("font-size", "200"));
+        await page.setViewportSize({ width, height: 900 });
+        await mockScenario({ commands: databaseLayoutCommands });
+        await page.goto(`/databases/${gameOpeningFixture.databaseId}`);
+        const view = page.locator("[data-database-view]");
+        await expect(view).toHaveAttribute("data-compact", "true");
+        await expect(view).toHaveCSS("overflow-y", "auto");
+        await expect(view.locator(".mosaic-split")).toHaveCount(0);
+        if (width === 1250) {
+            expect(await page.evaluate(() => matchMedia("(min-width: 72em)").matches)).toBe(true);
+            expect(await view.evaluate((element) => element.clientWidth)).toBeLessThan(1286);
+        }
+        for (const name of ["Games", "Players", "Events"]) {
+            const tab = page.getByRole("tab", { name, exact: true }).first();
+            await tab.scrollIntoViewIfNeeded();
+            await tab.click();
+            const panel = page.getByRole("tabpanel", { name, exact: true }).first();
+            const row = panel.locator('[data-database-pane="table"] tbody tr').filter({
+                hasText:
+                    name === "Games"
+                        ? "Second White"
+                        : name === "Players"
+                          ? "First White"
+                          : "First event",
+            });
+            await row.scrollIntoViewIfNeeded();
+            await row.click();
+            const preview = panel.locator('[data-database-pane="preview"]');
+            await expect(preview).toContainText(
+                name === "Games"
+                    ? "Second event"
+                    : name === "Players"
+                      ? "First White"
+                      : "First event",
+            );
+            if (name === "Games") {
+                for (const element of [
+                    preview.locator(".cg-wrap"),
+                    preview.getByRole("button", { name: "d4", exact: true }),
+                    ...["Go to start", "Previous move", "Next move", "Go to end", "Open game"].map(
+                        (label) => preview.getByRole("button", { name: label, exact: true }),
+                    ),
+                ]) {
+                    await element.evaluate((node) => node.scrollIntoView({ block: "center" }));
+                    if (
+                        width === 1250 &&
+                        (await element.evaluate((node) => node.classList.contains("cg-wrap")))
+                    ) {
+                        for (const edge of ["start", "end"] as const) {
+                            await element.evaluate(
+                                (node, block) => node.scrollIntoView({ block }),
+                                edge,
+                            );
+                            await expect
+                                .poll(() =>
+                                    element.evaluate((node, block) => {
+                                        const view = node
+                                            .closest("[data-database-view]")!
+                                            .getBoundingClientRect();
+                                        const board = node.getBoundingClientRect();
+                                        return block === "start"
+                                            ? board.top >= view.top - 1
+                                            : board.bottom <= view.bottom + 1;
+                                    }, edge),
+                                )
+                                .toBe(true);
+                        }
+                    } else await expect(element).toBeInViewport({ ratio: 1 });
+                    await assertNothingClipped(element, { mode: "reachable" });
+                }
+                expect(await view.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+            } else {
+                await preview.scrollIntoViewIfNeeded();
+                if (name === "Players")
+                    await expect(preview.locator(".recharts-surface")).not.toHaveCount(0);
+                else
+                    await expect(
+                        preview.getByRole("row").filter({ hasText: "Second White" }),
+                    ).toBeVisible();
+            }
+            await assertNothingClipped(panel, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+        }
+    });
+}
+
 const { openingDirectory, pgnFile } = filesWorkspaceFixture;
+
+test("database-files: long player metadata leaves nested preview tabs and charts reachable", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}) => {
+    const longName = `First White ${"Long ".repeat(100)}`;
+    await page.addInitScript(() => localStorage.setItem("font-size", "200"));
+    await page.setViewportSize({ width: 320, height: 900 });
+    await mockScenario({
+        commands: {
+            ...databaseLayoutCommands,
+            get_players: { result: { data: [{ id: 1, name: longName, elo: 1500 }], count: 1 } },
+        },
+    });
+    await page.goto(`/databases/${gameOpeningFixture.databaseId}`);
+    await page.getByRole("tab", { name: "Players", exact: true }).click();
+    const panel = page.getByRole("tabpanel", { name: "Players", exact: true });
+    await panel.locator('[data-database-pane="table"] tbody tr').click();
+    const preview = panel.locator('[data-database-pane="preview"]');
+    await expect(preview.getByText(longName, { exact: true })).toBeVisible();
+    const overview = preview.getByRole("tab", { name: "Overview", exact: true });
+    const label = overview.locator(".mantine-Tabs-tabLabel");
+    await label.evaluate((node) => node.scrollIntoView({ block: "center" }));
+    await expect(label).toBeInViewport({ ratio: 1 });
+    await overview.click();
+    await assertNothingClipped(overview, { mode: "reachable" });
+    await expect(preview.locator(".recharts-surface")).not.toHaveCount(0);
+    await assertNothingClipped(preview, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+});
+
+test("database-files: short split panes retain table rows, board, notation and controls at 200%", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "200"));
+    await page.setViewportSize({ width: 2000, height: 720 });
+    await mockScenario({ commands: databaseLayoutCommands });
+    await page.goto(`/databases/${gameOpeningFixture.databaseId}`);
+    const panel = page.getByRole("tabpanel", { name: "Games", exact: true }).first();
+    await expect(panel.locator(".mosaic-split")).toHaveCount(1);
+    await page.keyboard.press("ArrowDown");
+    const preview = panel.locator('[data-database-pane="preview"]');
+    const board = preview.locator(".cg-wrap");
+    await expect.poll(async () => (await board.boundingBox())?.width ?? 0).toBeGreaterThan(0);
+    const row = panel
+        .locator('[data-database-pane="table"] tbody tr')
+        .filter({ hasText: "First White" });
+    const playerName = row.getByText("First White", { exact: true });
+    await playerName.scrollIntoViewIfNeeded();
+    await expect(playerName).toBeInViewport({ ratio: 1 });
+    await assertNothingClipped(row, { mode: "reachable" });
+    for (const edge of ["start", "end"] as const) {
+        await board.evaluate((node, block) => node.scrollIntoView({ block }), edge);
+        await expect(board).toBeInViewport();
+        await assertNothingClipped(board, { mode: "reachable" });
+    }
+    for (const name of [
+        "e4",
+        "e5",
+        "Go to start",
+        "Previous move",
+        "Next move",
+        "Go to end",
+        "Open game",
+    ]) {
+        const control = preview.getByRole("button", { name, exact: true });
+        await control.evaluate((node) => node.scrollIntoView({ block: "center" }));
+        await expect(control).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(control, { mode: "reachable" });
+    }
+    await assertNoHorizontalOverflow();
+});
 
 for (const gesture of ["button", "double-click", "Enter"] as const) {
     test(`database-files: visible database opener and explicit game ${gesture}`, async ({
@@ -43,6 +337,8 @@ for (const gesture of ["button", "double-click", "Enter"] as const) {
             await expect(second).toHaveAttribute("aria-selected", "true");
             await expect(openGame).toBeEnabled();
             await expect(openGame).toHaveText("Open game");
+            await page.mouse.move(1399, 899);
+            await waitForScrollAreaScrollbarsHidden(page);
             await capture("database-labelled-game");
             await expect(page).toHaveScreenshot("database-labelled-game.png", { fullPage: true });
             await openGame.click();

@@ -397,6 +397,8 @@
     "Databases.Game.NoSelection": "未选择对局",
     "Databases.Game.Plies": "半步",
     "Databases.ImportUnfinished": "匯入未完成 — 請刪除資料庫並重新匯入",
+    "Databases.Layout.EnlargePreview": "放大預覽",
+    "Databases.Layout.EnlargeTable": "放大表格",
     "Databases.LoadError": "無法載入資料庫。請再試一次。",
     "Databases.LoadError.Changed": "此資料庫資料夾已變更。請選擇其他資料夾。",
     "Databases.LoadError.Description": "请检查文件是否存在且未损坏",

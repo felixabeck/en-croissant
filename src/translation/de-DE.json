@@ -402,6 +402,8 @@
     "Databases.Game.NoSelection": "Keine Auswahl",
     "Databases.Game.Plies": "Halbzüge",
     "Databases.ImportUnfinished": "Der Import wurde nicht abgeschlossen — lösche die Datenbank und importiere sie erneut",
+    "Databases.Layout.EnlargePreview": "Vorschau vergrößern",
+    "Databases.Layout.EnlargeTable": "Tabelle vergrößern",
     "Databases.LoadError": "Datenbanken konnten nicht geladen werden. Bitte versuche es erneut.",
     "Databases.LoadError.Changed": "Dieser Datenbankordner hat sich geändert. Wähle einen anderen.",
     "Databases.LoadError.Description": "Prüfe, ob die Datei existiert und nicht beschädigt ist.",

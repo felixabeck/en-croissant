@@ -67,6 +67,12 @@ const stampedPgnGame = {
     present: true,
 };
 
+export async function waitForScrollAreaScrollbarsHidden(page: Page) {
+    await expect(page.locator('.mantine-ScrollArea-scrollbar[data-state="visible"]')).toHaveCount(
+        0,
+    );
+}
+
 // The document-width assertion cannot see content that a container absorbs or cuts away, nor
 // anything pushed off the left edge — overflow to the left never adds to `scrollWidth` — so a page
 // that clipped its content would pass it. This walks every box instead.
@@ -129,6 +135,8 @@ export async function assertNothingClipped(
         // loader mounted at opacity 0, parked above the button, for its exit transition.
         const invisible = (node: Element) => {
             if (getComputedStyle(node).visibility === "hidden") return true;
+            // Screen-reader-only labels intentionally have a zero-area visual clip.
+            if (getComputedStyle(node).clip === "rect(0px, 0px, 0px, 0px)") return true;
             for (let box: Element | null = node; box; box = box.parentElement) {
                 if (getComputedStyle(box).opacity === "0") return true;
             }
@@ -445,6 +453,34 @@ export const gameOpeningCommands: NonNullable<MockScenario["commands"]> = {
     read_game: { pgnGames: openingPgnGames },
     file_revision: { result: "opening-fixture-revision" },
     lex_pgn: { pgnTokens: openingTokens },
+};
+
+/** Populated split-layout coverage without changing the opening journeys' empty tab replies. */
+export const databaseLayoutCommands: NonNullable<MockScenario["commands"]> = {
+    ...gameOpeningCommands,
+    get_players: { result: { data: [{ id: 1, name: "First White", elo: 1500 }], count: 1 } },
+    get_tournaments: { result: { data: [{ id: 1, name: "First event" }], count: 1 } },
+    get_players_game_info: {
+        result: {
+            site_stats_data: [
+                {
+                    site: "?",
+                    player: "First White",
+                    daily: [
+                        {
+                            date: "2026.10.01",
+                            time_control: "600",
+                            won: 1,
+                            drawn: 0,
+                            lost: 0,
+                            max_player_elo: 1500,
+                        },
+                    ],
+                    openings: [],
+                },
+            ],
+        },
+    },
 };
 
 /** Listing and metadata answers for one available database, in their IPC wire shapes. */

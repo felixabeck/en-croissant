@@ -412,6 +412,8 @@
     "Databases.Game.NoSelection": "Партия не выбрана",
     "Databases.Game.Plies": "Полуходы",
     "Databases.ImportUnfinished": "Импорт не завершён — удалите базу данных и импортируйте её снова",
+    "Databases.Layout.EnlargePreview": "Увеличить предпросмотр",
+    "Databases.Layout.EnlargeTable": "Увеличить таблицу",
     "Databases.LoadError": "Не удалось загрузить базы данных. Повторите попытку.",
     "Databases.LoadError.Changed": "Эта папка баз данных изменилась. Выберите другую.",
     "Databases.LoadError.Description": "Проверьте, существует ли файл и не повреждён ли он.",

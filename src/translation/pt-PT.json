@@ -407,6 +407,8 @@
     "Databases.Game.NoSelection": "Não foi selecionada nenhuma partida",
     "Databases.Game.Plies": "Meias-jogadas",
     "Databases.ImportUnfinished": "A importação não terminou — elimina a base de dados e importa-a novamente",
+    "Databases.Layout.EnlargePreview": "Aumentar pré-visualização",
+    "Databases.Layout.EnlargeTable": "Aumentar tabela",
     "Databases.LoadError": "Não foi possível carregar as bases de dados. Tente novamente.",
     "Databases.LoadError.Changed": "Esta pasta de bases de dados foi alterada. Escolha outra.",
     "Databases.LoadError.Description": "Verifique se o ficheiro existe e não está corrompido.",

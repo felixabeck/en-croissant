@@ -18,7 +18,115 @@
 }
 
 .layout {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  gap: var(--mantine-spacing-xs);
+}
+
+.splitControls {
+  flex: none;
+}
+
+.mosaicFrame {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  :global(.mosaic-tile) {
+    margin: 0;
+  }
+  .pane {
+    width: calc(100% - 3px);
+  }
+  .pane[data-database-pane="preview"] {
+    margin-left: 3px;
+  }
+}
+
+.gameCard {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.gameCardStack {
+  flex: 1;
+  min-height: 0;
+  > :not(:last-child) {
+    flex-shrink: 0;
+  }
+}
+
+.gameMetadata {
+  position: relative;
+  overflow-x: auto;
+  flex: none;
+  > * {
+    min-width: 36rem;
+  }
+  :global(.mantine-DateInput-root) {
+    width: 6.5rem;
+  }
+}
+
+.previewContent {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  /* Font-scaled axis labels need space outside the chart's SVG viewport. */
+  :global(.recharts-responsive-container) {
+    padding-inline: 0.5rem;
+  }
+  :global(svg.recharts-surface) {
+    overflow: visible;
+  }
+  > :global(.mantine-Paper-root):not(.gameCard) {
+    overflow: auto !important;
+    :global(.mantine-Tabs-root) {
+      min-height: 20rem;
+    }
+  }
+}
+
+.previewShell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--mantine-spacing-xs);
+  > :first-child {
+    flex-shrink: 0;
+  }
+}
+
+.adaptiveFrame {
+  display: flex;
+  gap: 1rem;
+  align-items: start;
+  flex: 1;
+  /* Keep a usable board and notation reachable when headers exceed the remaining height. */
+  min-height: 21rem;
+  min-width: 0;
+}
+
+.adaptiveControls {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  > :global(.mantine-Group-root) {
+    flex: none;
+  }
+}
+
+.adaptiveNotation {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 
 .pane {
@@ -28,10 +136,12 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
 }
 
 .table {
-  display: contents;
+  flex: 1;
+  min-height: 12rem;
 }
 
 .view[data-compact] {
@@ -58,10 +168,50 @@
     flex-direction: column;
   }
 
-  .layout > .pane {
+  .mosaicFrame,
+  .mosaicFrame :global(.mosaic),
+  .mosaicFrame :global(.mosaic-root),
+  .mosaicFrame :global(.mosaic-tile) {
+    position: static;
+    height: auto;
+    overflow: visible;
+  }
+
+  .mosaicFrame :global(.mosaic-root) {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .mosaicFrame :global(.mosaic-tile) {
+    margin: 0;
+  }
+  .gameCardStack {
+    min-height: auto;
+  }
+  .gameCard {
+    overflow: visible;
+  }
+  .adaptiveFrame {
+    min-height: 0;
+  }
+  .previewContent:has(> .gameCard) {
+    flex: none;
+    overflow: visible;
+  }
+  .previewContent:has(> :global(.mantine-Paper-root):not(.gameCard)) {
+    height: 32rem;
+    flex: none;
+    > * {
+      min-width: 20rem;
+    }
+  }
+
+  .mosaicFrame .pane {
     flex: none;
     width: 100%;
     max-width: 100%;
+    margin: 0;
   }
 
   .table {
@@ -93,14 +243,6 @@
 
 .previewNotation {
   display: contents;
-}
-
-.stackedPreviewControls > .previewNotation {
-  display: flex;
-  flex-direction: column;
-  flex: none;
-  min-width: 0;
-  min-height: 0;
 }
 
 .stackedPreviewControls > :global(.mantine-Group-root) > * {

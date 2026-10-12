@@ -412,6 +412,8 @@
     "Databases.Game.NoSelection": "Гру не вибрано",
     "Databases.Game.Plies": "Півходи",
     "Databases.ImportUnfinished": "Імпорт не завершено — видаліть базу даних та імпортуйте її знову",
+    "Databases.Layout.EnlargePreview": "Збільшити попередній перегляд",
+    "Databases.Layout.EnlargeTable": "Збільшити таблицю",
     "Databases.LoadError": "Не вдалося завантажити бази даних. Спробуйте ще раз.",
     "Databases.LoadError.Changed": "Ця тека баз даних змінилася. Виберіть іншу.",
     "Databases.LoadError.Description": "Перевірте, чи існує файл і чи не пошкоджений він.",

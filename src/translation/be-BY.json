@@ -412,6 +412,8 @@
     "Databases.Game.NoSelection": "Гульня не выбрана",
     "Databases.Game.Plies": "Паўхады",
     "Databases.ImportUnfinished": "Імпарт не завершаны — выдаліце базу даных і імпартуйце зноў",
+    "Databases.Layout.EnlargePreview": "Павялічыць папярэдні прагляд",
+    "Databases.Layout.EnlargeTable": "Павялічыць табліцу",
     "Databases.LoadError": "Не ўдалося загрузіць базы дадзеных. Паўтарыце спробу.",
     "Databases.LoadError.Changed": "Гэта папка баз даных змянілася. Выберыце іншую.",
     "Databases.LoadError.Description": "Праверце, ці існуе файл і ці не пашкоджаны ён.",

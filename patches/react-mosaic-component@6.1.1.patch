@@ -1,0 +1,99 @@
+diff --git a/lib/Split.js b/lib/Split.js
+index 6841ebb92cf438032fa78bc32ebafc8ebce594cd..9594fbc34377ade548e536be9194eef481380085 100644
+--- a/lib/Split.js
++++ b/lib/Split.js
+@@ -56,10 +56,15 @@ var Split = /** @class */ (function (_super) {
+             _this.bindListeners();
+         };
+         _this.onMouseUp = function (event) {
++            _this.throttledUpdatePercentage.cancel();
+             _this.unbindListeners();
+             var percentage = _this.calculateRelativePercentage(event);
+             _this.props.onRelease(percentage);
+         };
++        _this.onTouchCancel = function () {
++            _this.throttledUpdatePercentage.cancel();
++            _this.unbindListeners();
++        };
+         _this.onMouseMove = function (event) {
+             event.preventDefault();
+             _this.throttledUpdatePercentage(event);
+@@ -84,9 +89,10 @@ var Split = /** @class */ (function (_super) {
+         this.rootElement.current.addEventListener('touchstart', this.onMouseDown, TOUCH_EVENT_OPTIONS);
+     };
+     Split.prototype.componentWillUnmount = function () {
++        this.throttledUpdatePercentage.cancel();
+         this.unbindListeners();
+         if (this.rootElement.current) {
+-            this.rootElement.current.ownerDocument.removeEventListener('touchstart', this.onMouseDown, TOUCH_EVENT_OPTIONS);
++            this.rootElement.current.removeEventListener('touchstart', this.onMouseDown, TOUCH_EVENT_OPTIONS);
+         }
+     };
+     Split.prototype.bindListeners = function () {
+@@ -95,6 +101,7 @@ var Split = /** @class */ (function (_super) {
+             this.rootElement.current.ownerDocument.addEventListener('touchmove', this.onMouseMove, TOUCH_EVENT_OPTIONS);
+             this.rootElement.current.ownerDocument.addEventListener('mouseup', this.onMouseUp, true);
+             this.rootElement.current.ownerDocument.addEventListener('touchend', this.onMouseUp, true);
++            this.rootElement.current.ownerDocument.addEventListener('touchcancel', this.onTouchCancel, true);
+             this.listenersBound = true;
+         }
+     };
+@@ -104,6 +111,7 @@ var Split = /** @class */ (function (_super) {
+             this.rootElement.current.ownerDocument.removeEventListener('touchmove', this.onMouseMove, TOUCH_EVENT_OPTIONS);
+             this.rootElement.current.ownerDocument.removeEventListener('mouseup', this.onMouseUp, true);
+             this.rootElement.current.ownerDocument.removeEventListener('touchend', this.onMouseUp, true);
++            this.rootElement.current.ownerDocument.removeEventListener('touchcancel', this.onTouchCancel, true);
+             this.listenersBound = false;
+         }
+     };
+diff --git a/src/Split.tsx b/src/Split.tsx
+index d050fb38a9a6dd01442a37174b7097cd960ad4cf..6e0017bf49e645b5036ecdf3505b207d32ab4d73 100644
+--- a/src/Split.tsx
++++ b/src/Split.tsx
+@@ -53,9 +53,10 @@ export class Split extends React.PureComponent<SplitProps> {
+   }
+ 
+   componentWillUnmount() {
++    this.throttledUpdatePercentage.cancel();
+     this.unbindListeners();
+     if (this.rootElement.current) {
+-      this.rootElement.current.ownerDocument!.removeEventListener('touchstart', this.onMouseDown, TOUCH_EVENT_OPTIONS);
++      this.rootElement.current.removeEventListener('touchstart', this.onMouseDown, TOUCH_EVENT_OPTIONS);
+     }
+   }
+ 
+@@ -65,6 +66,7 @@ export class Split extends React.PureComponent<SplitProps> {
+       this.rootElement.current!.ownerDocument!.addEventListener('touchmove', this.onMouseMove, TOUCH_EVENT_OPTIONS);
+       this.rootElement.current!.ownerDocument!.addEventListener('mouseup', this.onMouseUp, true);
+       this.rootElement.current!.ownerDocument!.addEventListener('touchend', this.onMouseUp, true);
++      this.rootElement.current!.ownerDocument!.addEventListener('touchcancel', this.onTouchCancel, true);
+       this.listenersBound = true;
+     }
+   }
+@@ -75,6 +77,7 @@ export class Split extends React.PureComponent<SplitProps> {
+       this.rootElement.current.ownerDocument!.removeEventListener('touchmove', this.onMouseMove, TOUCH_EVENT_OPTIONS);
+       this.rootElement.current.ownerDocument!.removeEventListener('mouseup', this.onMouseUp, true);
+       this.rootElement.current.ownerDocument!.removeEventListener('touchend', this.onMouseUp, true);
++      this.rootElement.current.ownerDocument!.removeEventListener('touchcancel', this.onTouchCancel, true);
+       this.listenersBound = false;
+     }
+   }
+@@ -101,12 +104,18 @@ export class Split extends React.PureComponent<SplitProps> {
+   };
+ 
+   private onMouseUp = (event: MouseEvent | TouchEvent) => {
++    this.throttledUpdatePercentage.cancel();
+     this.unbindListeners();
+ 
+     const percentage = this.calculateRelativePercentage(event);
+     this.props.onRelease!(percentage);
+   };
+ 
++  private onTouchCancel = () => {
++    this.throttledUpdatePercentage.cancel();
++    this.unbindListeners();
++  };
++
+   private onMouseMove = (event: MouseEvent | TouchEvent) => {
+     event.preventDefault();
+ 

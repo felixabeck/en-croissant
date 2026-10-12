@@ -8,6 +8,7 @@ import { cancellationError } from "@/platform/tauri";
 import type { StampedGame } from "@/bindings";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { DatabaseLayoutContext } from "@/state/databaseLayout";
 
 const mocks = vi.hoisted(() => ({
   lexPgn: vi.fn(),
@@ -48,8 +49,12 @@ vi.mock("@tanstack/react-virtual", () => ({
 }));
 
 vi.mock("@/chessground/Chessground", () => ({
-  Chessground: (props: { drawable?: { autoShapes?: unknown[] } }) => (
-    <div data-testid="chessground" data-shapes={JSON.stringify(props.drawable?.autoShapes)} />
+  Chessground: (props: { fen?: string; drawable?: { autoShapes?: unknown[] } }) => (
+    <div
+      data-testid="chessground"
+      data-fen={props.fen}
+      data-shapes={JSON.stringify(props.drawable?.autoShapes)}
+    />
   ),
 }));
 
@@ -341,13 +346,23 @@ describe("GamePreview board sizing", () => {
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
   });
 
-  async function renderPreview(props: { fitHeight?: boolean; hideControls?: boolean }) {
+  async function renderPreview(
+    props: {
+      fitHeight?: boolean;
+      hideControls?: boolean;
+      adaptive?: boolean;
+      showOpening?: boolean;
+    },
+    rootFont = 16,
+  ) {
     await act(async () => {
       root.render(
         <MantineProvider>
-          <SWRConfig value={{ provider: () => new Map() }}>
-            <GamePreviewWrapper pgn={`1. e4 ${JSON.stringify(props)}`} {...props} />
-          </SWRConfig>
+          <DatabaseLayoutContext.Provider value={{ compact: false, minimum: 20, rootFont }}>
+            <SWRConfig value={{ provider: () => new Map() }}>
+              <GamePreviewWrapper pgn={`1. e4 ${JSON.stringify(props)}`} {...props} />
+            </SWRConfig>
+          </DatabaseLayoutContext.Provider>
         </MantineProvider>,
       );
     });
@@ -390,6 +405,49 @@ describe("GamePreview board sizing", () => {
     await reportSize(frame, 600, 200);
 
     expect(boardBox.style.width).toBe("200px");
+    expect(container.querySelector("[data-testid='move-controls']")).not.toBeNull();
+  });
+
+  test("adaptive remaining frame after headers chooses both arrangements without replacing position or chooser", async () => {
+    mocks.lexPgn.mockResolvedValue([
+      { type: "San", value: "e4" },
+      { type: "ParenOpen" },
+      { type: "San", value: "d4" },
+      { type: "ParenClose" },
+    ]);
+    const { boardBox, frame } = await renderPreview({ adaptive: true, showOpening: true });
+    expect(container.querySelector("[data-testid='opening-name']")!.parentElement).toBe(
+      frame.parentElement,
+    );
+    await reportSize(frame, 900, 700);
+    expect(frame.dataset.previewArrangement).toBe("beside");
+    expect(boardBox.style.width).toBe("692px");
+    await act(async () =>
+      (container.querySelector("[data-testid='move-controls']") as HTMLElement).click(),
+    );
+    const chooser = container.querySelector('[role="listbox"]')!;
+    const board = container.querySelector("[data-testid='chessground']")!;
+    const fen = board.getAttribute("data-fen");
+    await reportSize(frame, 500, 850);
+    expect(frame.dataset.previewArrangement).toBe("below");
+    expect(boardBox.style.width).toBe("500px");
+    expect(container.querySelector('[role="listbox"]')).toBe(chooser);
+    expect(container.querySelector("[data-testid='chessground']")).toBe(board);
+    expect(board.getAttribute("data-fen")).toBe(fen);
+    await act(async () => (chooser.querySelector('[role="option"]') as HTMLElement).click());
+    const selectedFen = board.getAttribute("data-fen");
+    expect(selectedFen).not.toBe(fen);
+    await reportSize(frame, 1000, 600);
+    expect(frame.dataset.previewArrangement).toBe("beside");
+    expect(board.getAttribute("data-fen")).toBe(selectedFen);
+  });
+
+  test("adaptive measured geometry at 200% stays in pixels and reserves usable notation and controls", async () => {
+    const { boardBox, frame } = await renderPreview({ adaptive: true }, 32);
+    await reportSize(frame, 1200, 600);
+    expect(frame.dataset.previewArrangement).toBe("beside");
+    expect(boardBox.style.width).toBe("600px");
+    expect(container.querySelector("[data-testid='game-notation']")).not.toBeNull();
     expect(container.querySelector("[data-testid='move-controls']")).not.toBeNull();
   });
 
