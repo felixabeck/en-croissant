@@ -7353,3 +7353,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b56e55dda777960e6cc6d2ad0493ba9600f2024863dc9fb1f79c4ded84a2a36c","input_sha256":"882c836ae2ea5c452bf5f4f7d32eaa50aac1180361700cd93f8bf1faf7dce766","kind":"mutation-receipt","operation":"56306ffc9c2d320a030c6024b184d6b88a2e0704b5f63273f847348fe3fabbf7","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-02 — How does the Library compose PGN files and databases?
+
+* **Question:** Does the Library mount the two old pages side by side, build a universal collection backend, or compose source-specific controllers into one mixed list?
+* **Governs:** f-20261001-11
+* **Chosen:** source-specific listing controllers and detail panes, composed into one mixed list with a transient kind-qualified selection, one shared search and type filter, and the existing file hierarchy.
+* **Rejected:** mounting the two old pages under a new shell; a universal resource backend over both sources.
+* **Reason:** one user destination needs one interaction model, while the unrelated native ownership (workspace listing vs database listing, conversions) stays with each source. Full-auto recommendation from the reviewed plan. Reversal path: replace the presentation adapter without changing storage or command contracts.
+* **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7ecf7f164414eaec981f1305e39a1b91bec1cd433d0008129602a4baf018aade","input_sha256":"39dde11f288c5fbfb188538a661ec090db38d29d6bf32569fbc30e99c4f00ce1","kind":"mutation-receipt","operation":"afa84407e20e00ce36bcf371b873f793a0ddcdd14e6688919b8e9393ca0bd889","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-02"],"target":"decisions-ledger","v":1} -->
