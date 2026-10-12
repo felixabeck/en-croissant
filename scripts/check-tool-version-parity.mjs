@@ -56,6 +56,8 @@ export const REQUIRED_NON_LINUX_TARGETS = [
 const RUST_PLATFORM_CLIPPY =
   "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings";
 const RUST_TEST_COMMAND = "cargo test --manifest-path src-tauri/Cargo.toml --all-targets";
+const SCCACHE_INSTALL_COMMAND_PATTERN =
+  /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu;
 const RUST_TEST_JOBS = [
   { job: "rust-macos-test", runner: "macos-latest", clauses: ["6a", "6b"] },
   { job: "rust-windows-test", runner: "windows-latest", clauses: ["7a", "7b", "7c"] },
@@ -113,12 +115,12 @@ export const PARITY_FAMILIES = [
     declarations: [
       {
         globs: [".project.json"],
-        pattern: /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu,
+        pattern: SCCACHE_INSTALL_COMMAND_PATTERN,
         authority: true,
       },
       {
         globs: ["CONTRIBUTING.md"],
-        pattern: /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu,
+        pattern: SCCACHE_INSTALL_COMMAND_PATTERN,
       },
       {
         globs: [".project.json", "CONTRIBUTING.md"],
