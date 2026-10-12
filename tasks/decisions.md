@@ -7227,3 +7227,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"773559d7f83d8fb98cfd17272eb87eb663c9496f63e7d4b54a97a8f43af66d37","input_sha256":"54ee9c28131996984a80297f9cb1cf4682ab24b31563436d4f9d8b0e5ce0b112","kind":"mutation-receipt","operation":"88dfc728b802cfca78adc744d870c81112da39440cf3450a0222f84fa61bb03d","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-08 — Who accepts the engine-termination behaviour?
+
+* **Question:** Is f-20261001-07 accepted by agent-run tests and screenshots, or by Felix reproducing a live engine crash?
+* **Governs:** f-20261001-07
+* **Chosen:** agent-owned native production-child tests, renderer/integration tests, canonical container screenshots and the off-screen real Tauri startup/IPC/shutdown run, naming that the native GTK picker cannot register an engine there.
+* **Rejected:** Felix repeating deterministic races by hand, Chrome MCP on Vite, and presenting mocked IPC as live-child evidence.
+* **Reason:** full auto and d-20260908-05. Reversal path: use an authorized live-engine registration route if one is later added.
+* **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"bbba9fcd99a25c492aaad420a1cb509cd2e563ea783c9ad607a2d36d010ff696","input_sha256":"8cee764f9e5b8fb525be13861233070c914341b30dda1cad39f45332d3d60305","kind":"mutation-receipt","operation":"6c0be7de57d64a44ea01f7237a103c926427fc63dc0e7bda4264bf7bd2df7f38","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-08"],"target":"decisions-ledger","v":1} -->
