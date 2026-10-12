@@ -326,6 +326,67 @@ impl TerminalDiagnostics {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TerminalQuotedToken {
+    quote: u8,
+    depth: usize,
+    start: usize,
+    close: Option<usize>,
+    end: usize,
+    closes_enclosing: bool,
+}
+
+// JSON wrapping doubles existing escapes and adds one before a delimiter.
+// A literal quote therefore has odd parity relative to its enclosing depth.
+fn terminal_quoted_token(
+    text: &str,
+    at: usize,
+    enclosing: Option<(u8, usize)>,
+) -> Option<TerminalQuotedToken> {
+    let bytes = text.as_bytes();
+    let delimiter = |at: usize| {
+        let depth = bytes[at..]
+            .iter()
+            .take_while(|byte| **byte == b'\\')
+            .count();
+        let quote = *bytes.get(at + depth)?;
+        matches!(quote, b'\'' | b'"').then_some((quote, depth, at + depth + 1))
+    };
+    let (quote, depth, start) = delimiter(at)?;
+    let matches_close = |candidate: u8, escapes: usize, quote: u8, depth: usize| {
+        candidate == quote && escapes >= depth && (escapes - depth).is_multiple_of(2 * (depth + 1))
+    };
+    let closes_enclosing = enclosing.is_some_and(|(outer_quote, outer_depth)| {
+        matches_close(quote, depth, outer_quote, outer_depth)
+    });
+    let mut cursor = start;
+    while cursor < bytes.len() {
+        if let Some((candidate, escapes, end)) = delimiter(cursor) {
+            if matches_close(candidate, escapes, quote, depth) {
+                return Some(TerminalQuotedToken {
+                    quote,
+                    depth,
+                    start,
+                    close: Some(cursor + escapes - depth),
+                    end,
+                    closes_enclosing,
+                });
+            }
+            cursor = end;
+        } else {
+            cursor += 1;
+        }
+    }
+    Some(TerminalQuotedToken {
+        quote,
+        depth,
+        start,
+        close: None,
+        end: bytes.len(),
+        closes_enclosing,
+    })
+}
+
 /// Treat diagnostics as plain text. Credentials and native path spellings are
 /// removed before truncation, while FEN boards and PGN draw notation survive.
 fn sanitize_terminal_text(text: &str) -> String {
@@ -339,22 +400,37 @@ fn sanitize_terminal_text(text: &str) -> String {
             }
         })
         .collect();
-    let lower = text.to_ascii_lowercase();
     let mut output = String::new();
     let mut index = 0;
+    let mut quotes: Vec<(u8, usize)> = Vec::new();
+    let mut braces: Vec<u8> = Vec::new();
     while index < text.len() {
         let rest = &text[index..];
-        let lower_rest = &lower[index..];
         let boundary = index == 0 || !text.as_bytes()[index - 1].is_ascii_alphanumeric();
-        let secret_prefix = if boundary {
+        let quoted = terminal_quoted_token(&text, index, quotes.last().copied());
+        let secret = if boundary {
             (|| {
-                let key_length = lower_rest
+                let (key_start, key_end, mut end) = match quoted {
+                    Some(token) => (token.start, token.close?, token.end),
+                    None => {
+                        let length = rest
+                            .bytes()
+                            .take_while(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                            })
+                            .count();
+                        (index, index + length, index + length)
+                    }
+                };
+                let key = text[key_start..key_end].to_ascii_lowercase();
+                if !key
                     .bytes()
-                    .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-                    .count();
-                let key = &lower_rest[..key_length];
-                let bare_bearer = key == "bearer";
-                if !bare_bearer
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                {
+                    return None;
+                }
+                let bearer = key == "bearer";
+                if !bearer
                     && key != "authorization"
                     && ![
                         "token", "secret", "password", "passwd", "apikey", "api_key", "api-key",
@@ -364,10 +440,6 @@ fn sanitize_terminal_text(text: &str) -> String {
                 {
                     return None;
                 }
-                let mut end = index + key.len();
-                if matches!(text.as_bytes().get(end), Some(b'\'' | b'"')) {
-                    end += 1;
-                }
                 while text
                     .as_bytes()
                     .get(end)
@@ -375,7 +447,11 @@ fn sanitize_terminal_text(text: &str) -> String {
                 {
                     end += 1;
                 }
-                if !bare_bearer {
+                if bearer {
+                    if end == key_end {
+                        return None;
+                    }
+                } else {
                     if !matches!(text.as_bytes().get(end), Some(b'=' | b':')) {
                         return None;
                     }
@@ -387,65 +463,57 @@ fn sanitize_terminal_text(text: &str) -> String {
                     {
                         end += 1;
                     }
-                } else if end == index + key.len() {
-                    return None;
                 }
-                let escaped_quote = text.as_bytes().get(end) == Some(&b'\\')
-                    && matches!(text.as_bytes().get(end + 1), Some(b'\'' | b'"'));
-                let quote = text
-                    .as_bytes()
-                    .get(end + usize::from(escaped_quote))
-                    .copied()
-                    .filter(|byte| matches!(byte, b'\'' | b'"'));
-                if quote.is_some() {
-                    end += 1 + usize::from(escaped_quote);
+                if let Some(value) = terminal_quoted_token(&text, end, None) {
+                    return Some((value.start, value.close.unwrap_or(text.len()), value.end));
                 }
-                if key == "authorization" {
-                    let credential = &lower[end..];
-                    for scheme in ["bearer", "basic"] {
-                        if credential.starts_with(scheme)
-                            && text
-                                .as_bytes()
-                                .get(end + scheme.len())
-                                .is_some_and(u8::is_ascii_whitespace)
-                        {
-                            end += scheme.len();
-                            while text
-                                .as_bytes()
-                                .get(end)
-                                .is_some_and(u8::is_ascii_whitespace)
-                            {
-                                end += 1;
-                            }
-                            break;
+                // An unquoted value may contain whitespace. Only the enclosing
+                // syntax establishes its end, otherwise redact the entire tail.
+                let mut cursor = end;
+                while cursor < text.len() {
+                    if let Some(delimiter) =
+                        terminal_quoted_token(&text, cursor, quotes.last().copied())
+                    {
+                        if delimiter.closes_enclosing {
+                            let close = cursor + delimiter.depth - quotes.last()?.1;
+                            return Some((end, close, close));
                         }
+                        cursor = delimiter.start;
+                    } else if quotes.is_empty() && braces.last() == text.as_bytes().get(cursor) {
+                        return Some((end, cursor, cursor));
+                    } else {
+                        cursor += 1;
                     }
                 }
-                Some((end, quote, escaped_quote))
+                Some((end, text.len(), text.len()))
             })()
         } else {
             None
         };
-        if let Some((start, quote, escaped_quote)) = secret_prefix {
-            let escaped_end = escaped_quote
-                .then(|| {
-                    text.as_bytes()[start..]
-                        .windows(2)
-                        .position(|pair| pair[0] == b'\\' && Some(pair[1]) == quote)
-                })
-                .flatten();
-            let end = escaped_end
-                .or_else(|| {
-                    text[start..].find(|ch: char| match (quote, escaped_quote) {
-                        (Some(quote), false) => ch == quote as char,
-                        _ => ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | ';' | '}'),
-                    })
-                })
-                .map_or(text.len(), |offset| start + offset);
+        if let Some((start, end, next)) = secret {
             output.push_str(&text[index..start]);
             output.push_str("[redacted]");
-            index = end;
+            output.push_str(&text[end..next]);
+            index = next;
             continue;
+        }
+        if let Some(delimiter) = quoted {
+            if delimiter.closes_enclosing {
+                quotes.pop();
+            } else {
+                quotes.push((delimiter.quote, delimiter.depth));
+            }
+            output.push_str(&text[index..delimiter.start]);
+            index = delimiter.start;
+            continue;
+        }
+        match text.as_bytes()[index] {
+            b'{' => braces.push(b'}'),
+            b'[' => braces.push(b']'),
+            byte if braces.last() == Some(&byte) => {
+                braces.pop();
+            }
+            _ => {}
         }
         let path = boundary
             && (rest.starts_with('/')
@@ -509,6 +577,9 @@ pub trait UciIo: Send {
     }
     async fn write_line(&mut self, line: &str) -> Result<(), Error>;
     async fn read_line(&mut self) -> Result<Option<String>, Error>;
+    fn has_line_remainder(&self) -> bool {
+        false
+    }
     async fn discard_line_remainder(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -700,6 +771,7 @@ impl UciIo for FakeIo {
 struct ResumableLineReader<R> {
     reader: R,
     pending_line: Vec<u8>,
+    discarding_line: bool,
 }
 
 impl<R: AsyncBufRead + Unpin> ResumableLineReader<R> {
@@ -707,15 +779,28 @@ impl<R: AsyncBufRead + Unpin> ResumableLineReader<R> {
         Self {
             reader,
             pending_line: Vec::new(),
+            discarding_line: false,
         }
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        read_bounded_engine_line(&mut self.reader, &mut self.pending_line).await
+        let result = read_bounded_engine_line(&mut self.reader, &mut self.pending_line).await;
+        self.discarding_line = matches!(result, Err(Error::ResourceLimit(_)));
+        result
+    }
+
+    fn has_line_remainder(&self) -> bool {
+        self.discarding_line || !self.pending_line.is_empty()
     }
 
     async fn discard_line_remainder(&mut self) -> std::io::Result<()> {
-        discard_engine_line_remainder(&mut self.reader).await
+        if self.has_line_remainder() {
+            self.discarding_line = true;
+            self.pending_line.clear();
+            discard_engine_line_remainder(&mut self.reader).await?;
+            self.discarding_line = false;
+        }
+        Ok(())
     }
 }
 
@@ -1007,7 +1092,6 @@ async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
             let available = match reader.fill_buf().await {
                 Ok(available) => available,
                 Err(error) => {
-                    pending_line.clear();
                     return Err(error.into());
                 }
             };
@@ -1152,6 +1236,10 @@ impl UciIo for ChildUciIo {
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
         self.line_reader.read_line().await
+    }
+
+    fn has_line_remainder(&self) -> bool {
+        self.line_reader.has_line_remainder()
     }
 
     async fn discard_line_remainder(&mut self) -> Result<(), Error> {
@@ -3699,18 +3787,20 @@ impl EngineRuntime {
         ));
     }
 
-    async fn drain_terminal_stdout(&mut self) {
+    async fn drain_terminal_stdout(&mut self, registration_identity: &OnceLock<(EngineKey, u64)>) {
+        let mut discarded = 0usize;
         // Reuse the pipe-join budget. A descendant may still hold stdout open.
         let _ = timeout(STDERR_REAP_TIMEOUT, async {
+            if self.io.has_line_remainder() && self.io.discard_line_remainder().await.is_err() {
+                return;
+            }
             loop {
                 match self.io.read_line().await {
                     Ok(Some(line)) if line.len() <= MAX_ENGINE_LINE_BYTES => {
                         self.record_output_line(&line).await;
                     }
                     Ok(Some(_)) => {}
-                    Err(Error::InvalidInput(reason)) => {
-                        error!("Engine stdout discarded non-UTF-8 line: {reason}");
-                    }
+                    Err(Error::InvalidInput(_)) => discarded += 1,
                     Err(Error::ResourceLimit(_)) => {
                         if self.io.discard_line_remainder().await.is_err() {
                             break;
@@ -3721,6 +3811,15 @@ impl EngineRuntime {
             }
         })
         .await;
+        if discarded > 0 {
+            match registration_identity.get() {
+                Some((key, generation)) => error!(
+                    "Engine stdout discarded non-UTF-8 lines: tab={} engine={} generation={} count={}",
+                    key.tab, key.engine, generation, discarded
+                ),
+                None => error!("Engine stdout discarded non-UTF-8 lines: unregistered count={discarded}"),
+            }
+        }
     }
 
     async fn wait_for(
@@ -4808,7 +4907,7 @@ async fn recover_failed_protocol<T>(
             };
             let termination = runtime.terminate().await;
             if unexpected {
-                runtime.drain_terminal_stdout().await;
+                runtime.drain_terminal_stdout(registration_identity).await;
             }
             let primary = if let Some(mut captured) = snapshot.take() {
                 // The existing reap observes status and the bounded stderr join
@@ -5038,6 +5137,240 @@ mod tests {
         sync::Mutex,
     };
 
+    #[tokio::test]
+    async fn terminal_snapshot_tokenizer_redacts_both_diagnostic_sources() {
+        let chess = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 | 1. e4 e5 2. Nf3 Nc6 +0.42 #3 e2e4";
+        let mut cases = Vec::new();
+        for quote in ['"', '\''] {
+            for key in [
+                "token",
+                "accessToken",
+                "refresh_token",
+                "clientSecret",
+                "password",
+                "passwd",
+                "dbPasswd",
+                "apiKey",
+                "api_key",
+                "api-key",
+                "X-Api-Key",
+                "AcCeSsToKeN",
+            ] {
+                for separator in [':', '='] {
+                    cases.push((
+                        format!("{key}{separator}{quote}lip_secret{quote}"),
+                        vec!["lip_secret"],
+                        true,
+                    ));
+                }
+            }
+            let object = format!("{{{quote}accessToken{quote}:{quote}lip_secret{quote}}}");
+            cases.push((object.clone(), vec!["lip_secret"], true));
+            let mut wrapped = object;
+            for _ in 0..2 {
+                wrapped = serde_json::to_string(&wrapped).unwrap();
+                cases.push((wrapped.clone(), vec!["lip_secret"], true));
+            }
+            let escaped = format!("\\{quote}");
+            for depth in [1, 2, 3, 7] {
+                let delimiter = format!("{}{quote}", "\\".repeat(depth));
+                cases.push((
+                    format!(
+                        "{{{delimiter}accessToken{delimiter}:{delimiter}lip_secret{delimiter}}}"
+                    ),
+                    vec!["lip_secret"],
+                    true,
+                ));
+            }
+            cases.push((
+                format!("accessToken={escaped}lip_secret{escaped}"),
+                vec!["lip_secret"],
+                true,
+            ));
+            for delimiter in [quote.to_string(), escaped.clone()] {
+                cases.push((
+                    format!("password={delimiter}private pass phrase{delimiter}"),
+                    vec!["private", "pass", "phrase"],
+                    true,
+                ));
+                cases.push((
+                    format!("password={delimiter}private pass phrase"),
+                    vec!["private", "pass", "phrase"],
+                    false,
+                ));
+            }
+            cases.push((
+                format!("password={quote}private \\{quote}quoted\\{quote} pass phrase{quote}"),
+                vec!["private", "quoted", "pass", "phrase"],
+                true,
+            ));
+            let literal = format!("{}{quote}", "\\".repeat(3));
+            cases.push((
+                format!("password={escaped}private {literal}quoted{literal} pass phrase{escaped}"),
+                vec!["private", "quoted", "pass", "phrase"],
+                true,
+            ));
+            cases.push((format!("password={quote}lip_secret{quote} clientSecret={escaped}private pass phrase{escaped}"), vec!["lip_secret", "private", "pass", "phrase"], true));
+            cases.push((
+                format!("{{{quote}password{quote}:private pass phrase}}"),
+                vec!["private", "pass", "phrase"],
+                true,
+            ));
+            cases.push((
+                format!("{quote}password=private pass phrase{quote}"),
+                vec!["private", "pass", "phrase"],
+                true,
+            ));
+        }
+        cases.push((
+            "password=private pass phrase".into(),
+            vec!["private", "pass", "phrase"],
+            false,
+        ));
+        for form in [
+            "Authorization: Bearer lip_secret",
+            "Authorization: Basic lip_secret",
+            "Bearer lip_secret",
+        ] {
+            cases.push((form.into(), vec!["lip_secret"], false));
+        }
+        for (input, fragments, preserve_suffix) in cases {
+            for stdout in [true, false] {
+                let lines = [
+                    format!("CRITICAL ERROR: earlier {input} | {chess}"),
+                    format!("CRITICAL ERROR: latest {input} | {chess}"),
+                ];
+                let diagnostics = if stdout {
+                    let io = FakeIo::new(
+                        Arc::default(),
+                        lines.iter().map(|line| Some(format!("info string {line}"))),
+                    );
+                    let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+                    for _ in &lines {
+                        runtime.read_line().await.unwrap();
+                    }
+                    runtime.diagnostics.clone()
+                } else {
+                    let mut reader = ResumableLineReader::new(BufReader::new(
+                        std::io::Cursor::new(format!("{}\n", lines.join("\n")).into_bytes()),
+                    ));
+                    let diagnostics = Arc::new(Mutex::new(TerminalDiagnostics::default()));
+                    drain_engine_stderr(&mut reader, &diagnostics).await;
+                    diagnostics
+                };
+                let snapshot = diagnostics
+                    .lock()
+                    .await
+                    .snapshot(EngineFailureKind::ProtocolFailure, None);
+                let bytes = serde_json::to_string(&snapshot).unwrap();
+                let decoded: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+                let check = |text: &str| {
+                    for fragment in &fragments {
+                        assert!(
+                            !text
+                                .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                                .any(|word| word == *fragment),
+                            "source stdout={stdout} input={input:?} leaked {fragment}: {text}"
+                        );
+                    }
+                };
+                check(&bytes);
+                check(decoded["reason"].as_str().unwrap());
+                let entries = decoded["entries"].as_array().unwrap();
+                assert_eq!(entries.len(), 2);
+                for entry in entries {
+                    let text = entry["value"].as_str().unwrap();
+                    check(text);
+                    assert!(text.contains("CRITICAL ERROR:"));
+                    assert!(text.contains("[redacted]"));
+                    if preserve_suffix {
+                        assert!(
+                            text.contains(chess),
+                            "lost chess notation for {input:?}: {text}"
+                        );
+                    }
+                }
+                assert!(decoded["reason"].as_str().unwrap().contains("latest"));
+                if preserve_suffix {
+                    assert!(decoded["reason"].as_str().unwrap().contains(chess));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_oversized_suffix_is_never_a_reason() {
+        for next in [None, Some("actual final reason")] {
+            let mut input = vec![b'x'; 65_536];
+            input.extend_from_slice(b"info string fabricated\n");
+            if let Some(reason) = next {
+                input.extend_from_slice(format!("info string {reason}\n").as_bytes());
+            }
+            let mut runtime = EngineRuntime::new(
+                Box::new(BufferedBrokenPipeIo {
+                    reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input))),
+                }),
+                EngineDeadlines::default(),
+            );
+            let result = runtime.read_line().await;
+            assert!(matches!(
+                result.as_ref().map_err(operation_cause),
+                Err(Error::ResourceLimit(_))
+            ));
+            let error = recover_failed_protocol(&mut runtime, &OnceLock::new(), result)
+                .await
+                .unwrap_err();
+            let snapshot = error.engine_failure_snapshot().unwrap();
+            assert_eq!(snapshot.reason.as_deref(), next);
+            assert!(!serde_json::to_string(snapshot)
+                .unwrap()
+                .contains("fabricated"));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_invalid_stdout_has_one_correlated_log() {
+        let capture = crate::error::LogCaptureScope::start();
+        let mut runtime = EngineRuntime::new(
+            Box::new(BufferedBrokenPipeIo {
+                reader: ResumableLineReader::new(BufReader::new(std::io::Cursor::new(vec![
+                    0xff, b'\n', 0xfe, b'\n', 0xfd, b'\n',
+                ]))),
+            }),
+            EngineDeadlines::default(),
+        );
+        let identity = OnceLock::new();
+        identity
+            .set((
+                EngineKey::new("discard-tab".into(), "discard-engine".into()).unwrap(),
+                88,
+            ))
+            .unwrap();
+        let result = runtime.ensure_ready(None).await;
+        recover_failed_protocol(&mut runtime, &identity, result)
+            .await
+            .unwrap_err();
+        let records = capture
+            .records()
+            .into_iter()
+            .filter(|record| record.message.contains("discarded non-UTF-8"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].level, log::Level::Error);
+        for part in [
+            "tab=discard-tab",
+            "engine=discard-engine",
+            "generation=88",
+            "count=3",
+        ] {
+            assert!(
+                records[0].message.contains(part),
+                "missing {part}: {}",
+                records[0].message
+            );
+        }
+    }
+
     struct BufferedBrokenPipeIo {
         reader: ResumableLineReader<BufReader<std::io::Cursor<Vec<u8>>>>,
     }
@@ -5050,6 +5383,10 @@ mod tests {
 
         async fn read_line(&mut self) -> Result<Option<String>, Error> {
             self.reader.read_line().await
+        }
+
+        fn has_line_remainder(&self) -> bool {
+            self.reader.has_line_remainder()
         }
 
         async fn discard_line_remainder(&mut self) -> Result<(), Error> {
@@ -5219,7 +5556,7 @@ mod tests {
     fn terminal_snapshot_compound_credentials_are_redacted_in_serialized_bytes() {
         let chess = "token is a word. 1. e4 e5 2. Nf3 Nc6 +0.42 #3 e2e4";
         let raw = format!(
-            r#"{{"accessToken":"access-value"}} refresh_token=refresh-value apiKey: api-value clientSecret=client-value Authorization: Bearer bearer-value X-Api-Key: header-value PASSWORD=pass-value dbPasswd=passwd-value Authorization: Basic basic-value Bearer bare-value {chess}"#
+            r#"{{"accessToken":"access-value"}} refresh_token="refresh-value" apiKey: "api-value" clientSecret="client-value" Authorization: "Bearer bearer-value" X-Api-Key: "header-value" PASSWORD="pass-value" dbPasswd="passwd-value" Authorization: "Basic basic-value" Bearer "bare-value" {chess}"#
         );
         let mut tail = TerminalDiagnostics::default();
         tail.push(&raw, true);
@@ -5473,7 +5810,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_snapshot_native_bytes_are_bounded_and_redacted_after_late_provenance() {
-        let mut runtime = EngineRuntime::new(Box::new(FakeIo::new(Arc::default(), [Some("info string echo opaque-resource-token password=hidden /private/book.bin e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3".into())])), EngineDeadlines::default());
+        let mut runtime = EngineRuntime::new(Box::new(FakeIo::new(Arc::default(), [Some("info string echo opaque-resource-token password=\"hidden\" /private/book.bin e2e4 1/2-1/2 4k3/8/8/8/8/8/8/4K3".into())])), EngineDeadlines::default());
         runtime.read_line().await.unwrap();
         runtime
             .set_option_with_resources(
@@ -5485,7 +5822,7 @@ mod tests {
             )
             .await
             .unwrap();
-        runtime.diagnostics.lock().await.push("stderr Bearer hidden2 C:\\private\\book.bin \\\\server\\private ~/private/book.bin ./private/book.bin {\"token\":\"hidden3\"}", false);
+        runtime.diagnostics.lock().await.push("stderr Bearer \"hidden2\" C:\\private\\book.bin \\\\server\\private ~/private/book.bin ./private/book.bin {\"token\":\"hidden3\"}", false);
         let error = recover_failed_protocol::<()>(
             &mut runtime,
             &OnceLock::new(),
@@ -5526,7 +5863,7 @@ mod tests {
             input.extend_from_slice(&vec![b'x'; MAX_ENGINE_LINE_BYTES / 2]);
             input.push(b'\n');
         }
-        input.extend_from_slice(b"terminal stderr token=secret /private/book.bin\n");
+        input.extend_from_slice(b"terminal stderr token=\"secret\" /private/book.bin\n");
         let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
         let diagnostics = Mutex::new(TerminalDiagnostics::default());
         drain_engine_stderr(&mut reader, &diagnostics).await;
@@ -5536,7 +5873,7 @@ mod tests {
             .snapshot(EngineFailureKind::Disconnected, None);
         assert_eq!(
             snapshot.reason.as_deref(),
-            Some("terminal stderr token=[redacted] [path]")
+            Some("terminal stderr token=\"[redacted]\" [path]")
         );
         let bytes = serde_json::to_string(&snapshot).unwrap();
         assert!(!bytes.contains("secret"));
@@ -5628,7 +5965,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("terminal-engine.sh");
-        std::fs::write(&script, "#!/bin/sh\nIFS= read -r line\necho 'stderr token=hidden /private/book.bin' >&2\necho 'info string CRITICAL ERROR: e2e4 rejected password=hidden2'\nexit 17\n").unwrap();
+        std::fs::write(&script, "#!/bin/sh\nIFS= read -r line\necho 'stderr token=\"hidden\" /private/book.bin' >&2\necho 'info string CRITICAL ERROR: e2e4 rejected password=hidden2'\nexit 17\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let executable = EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
@@ -5652,7 +5989,7 @@ mod tests {
             snapshot.reason.as_deref(),
             Some("CRITICAL ERROR: e2e4 rejected password=[redacted]")
         );
-        assert!(snapshot.entries.iter().any(|entry| matches!(entry, EngineTerminalEntry::Stderr(text) if text == "stderr token=[redacted] [path]")));
+        assert!(snapshot.entries.iter().any(|entry| matches!(entry, EngineTerminalEntry::Stderr(text) if text == "stderr token=\"[redacted]\" [path]")));
         let bytes = serde_json::to_string(&error).unwrap();
         assert!(!bytes.contains("private"));
         assert!(!bytes.contains("hidden"));

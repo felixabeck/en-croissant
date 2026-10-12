@@ -1781,7 +1781,7 @@ mod tests {
         assert_eq!(payload["tag"], "engine-failure");
         assert_eq!(
             payload["engineFailure"]["reason"],
-            "CRITICAL ERROR: e2e4 rejected token=[redacted] [path]"
+            "CRITICAL ERROR: e2e4 rejected token=[redacted]"
         );
         assert!(payload["engineFailure"]["exitStatus"].is_null());
         assert!(!bytes.contains("secret"));
