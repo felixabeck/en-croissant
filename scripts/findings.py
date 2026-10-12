@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 6691a7f3315c1258c90f5a33b7d55e04ee219d105127fb1ce1f587baf3c21998
+# agent-kit-sha256: d53fc154f8fa882152139afbbdd8a9fecfbfa36a2f7322fccc677361311e14ec
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -185,10 +185,18 @@ def _probe_git_toplevel() -> tuple[Path | None, str]:
 DRAIN_LOCK_KEY_CHARS = 8
 
 
+def _claude_home() -> Path:
+    """The configuration root, derived exactly as `drain_supervisor_paths.claude_home()`."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+
+
 def _lock_for_root(root: Path) -> Path:
-    """Consumer-lock path for one git toplevel, matching drain-lock-name.sh."""
+    """Consumer-lock path matching drain-lock-name.sh and RepoPaths.consumer_lock.
+
+    Both use the same configuration root.
+    """
     key = hashlib.sha256(str(root).encode()).hexdigest()[:DRAIN_LOCK_KEY_CHARS]
-    return Path.home() / ".claude" / f"drain-lock-{root.name}-{key}"
+    return _claude_home() / f"drain-lock-{root.name}-{key}"
 
 
 def _require_git_toplevel() -> Path:
@@ -272,7 +280,7 @@ def append_drain_breadcrumb(label: str, detail: str) -> None:
         return
     library = os.environ.get(
         "DRAIN_BREADCRUMB_LIB",
-        str(Path.home() / ".claude" / "scripts" / "lib" / "drain-breadcrumb.sh"),
+        str(_claude_home() / "scripts" / "lib" / "drain-breadcrumb.sh"),
     )
     try:
         result = subprocess.run(
@@ -331,7 +339,7 @@ def append_drain_breadcrumb(label: str, detail: str) -> None:
 DEFAULT_DRAIN_LOCK = (
     _lock_for_root(REPO_ROOT)
     if REPO_ROOT is not None
-    else Path.home() / ".claude" / "drain-lock-unknown"
+    else _claude_home() / "drain-lock-unknown"
 )
 # Felix's answers to parked decisions. A separate spool from INBOX because the two
 # do opposite things: the inbox appends whole new entries, an answer *edits* an
