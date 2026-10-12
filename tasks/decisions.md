@@ -7183,3 +7183,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-12-cross-capability-sqlite-locks-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-02 (session ae18b2d2-7445-4939-8b9b-8f73918c4320), 2026-10-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b73b64c505c054fce6477d800925e0e47c85fd38e5fc55879cf83389f5589760","input_sha256":"378f82a31b735460c408822adff56716502021623bf4bcb812cf38362afbd113","kind":"mutation-receipt","operation":"a462f4b78fe9812e71966c2ba5c61f4e98bc15b7165037e360f4a40b847f2327","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261012-04 — Who owns the final word of a terminated engine?
+
+* **Question:** Does a terminated engine's last reason travel as a typed error carrying a bounded snapshot, or through a retained supervisor-wide post-mortem log?
+* **Governs:** f-20261001-07
+* **Chosen:** an actor-owned bounded terminal snapshot inside the existing typed error, retained by the current renderer owner (tab/engine) for the failure display and the Logs panel.
+* **Rejected:** a persistent or supervisor-wide post-mortem archive, and a new termination broadcast event.
+* **Reason:** the search promise already owns delivery and a current failure is all the mandate needs. Reversal path: replace only the snapshot delivery/retention boundary with a separately justified archive.
+* **Review:** `tasks/handoffs/2026-10-12-engine-termination-surface-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-07 (session 789f2f5a-cecf-48c9-be14-da27602ae6e9), 2026-10-12 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"ad625a3225ac823bf827f45fb6ceaa9f4ffbbe1a38c8e2e17853e2b50874bc4c","input_sha256":"0cb19ac38b9145fe323031e6de1366db5530ca6f78f393f649246f678ea4425f","kind":"mutation-receipt","operation":"cb743d7b5fa956bc54b6d7f61d90ac0f047e0e3a55672d86c6fc567132add664","options":{"section":null},"request_id_sha256":null,"results":["d-20261012-04"],"target":"decisions-ledger","v":1} -->
