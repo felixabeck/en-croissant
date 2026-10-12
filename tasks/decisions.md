@@ -7375,3 +7375,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"54a8f2b21f774636f6549fe9bcfc01ccd08186431cd454a0a23361c64ac1a630","input_sha256":"02a5d8469a0abb8473830e07795f6f2d801c609fba80ee050fc38495c5d1474b","kind":"mutation-receipt","operation":"ff5a1b34c6da9fa86b9565e26ebbadd3be7d58020dcd8784c29b591d5ce249a9","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-04 — Which type labels and persistence does the Library filter use?
+
+* **Question:** Does the Library type filter introduce database purpose metadata or persisted search/filter/selection state?
+* **Governs:** f-20261001-11
+* **Chosen:** the existing PGN metadata categories (game, repertoire, tournament, puzzle, other) plus one "Games database" category for `.db3` collections; search, filter and selection stay local, unpersisted state.
+* **Rejected:** adding database purpose metadata, guessing purpose from titles, or persisting new Library state.
+* **Reason:** the chosen phase 1 changes presentation only; purpose metadata and linked collections belong to f-20261004-15. Full-auto recommendation from the reviewed plan. Reversal path: separately authorize and design metadata or persisted state under the linked-collection scope.
+* **Review:** `tasks/handoffs/2026-10-13-unified-library-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-11 (session fab6795c-3780-4adc-8356-6d9441cd768f), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"9758fbf92ef45df8444172ab3ce93e98627cbad94cf20c4d14515de0c1d9b238","input_sha256":"1c1c1e99f0a3606e5c81c248712291ab2c1c81bcd22b67e949d2817c811cff84","kind":"mutation-receipt","operation":"58cd20a2ebc12e8ee0cf38eec1344794beb0f056cac2819f6a16a8c0b42f4da8","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-04"],"target":"decisions-ledger","v":1} -->
