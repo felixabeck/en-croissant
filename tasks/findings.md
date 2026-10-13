@@ -15442,6 +15442,9 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 * **Correction (2026-10-11, records lens):** the defect is the argument *order*, not the flag spelling. Playwright accepts `--update-snapshots changed <spec>` and `--update-snapshots -g '<title>' <spec>`; it fails only when a positional spec path directly follows the bare `--update-snapshots`, which is exactly what `pnpm test:e2e:update -- <spec>` produces because the script ends in that bare flag. The sentence above about the non-pnpm call "exiting without rewriting" was the same failure hidden by an output filter, not a separate behaviour. The fix shape stands: give the script an explicit mode so forwarded arguments cannot be consumed.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7e23e46c1c7b025e383120b9a4f90a2ad98d8d93061da44b99f1366fccfbb2c5","input_sha256":"ee748fe72867f5d2b3b992e0ee58de353bbccaa09831106f5807dfd33a437341","kind":"mutation-receipt","operation":"c6a3c8d1f514c336c2aea931b023b7366f10dd7d79171dd1f15bbc5729d17bfa","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-12"],"target":"f-20261011-12","v":1} -->
 
+* **Why rejected:** Snapshot-update argument order; the working spelling is known. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d1a56eed323ff2eeab449ae70a51f6d107b0c40b83ea0230f5f44c09f55827d4","input_sha256":"401876d39c83145cacb3f6d915564e1f9ec1cdb2312eb9804d2d1422a8bac655","kind":"mutation-receipt","operation":"f6a87be7e4d1b855a4e3801524c5c98b1a5de4d65975fdf13ebf2ac687a3fc58","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-12"],"target":"f-20261011-12","v":1} -->
+
 ---
 
 ## 2026-10-11 — filed through the inbox spool
