@@ -15433,7 +15433,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 
 ### `pnpm test:e2e:update -- <spec>` cannot target a spec: Playwright reads the path as the update mode
 
-* **ID:** f-20261011-12 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261011-12 · **Status:** rejected · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `package.json` script `test:e2e:update` (`node scripts/run-e2e-container.mjs --update-snapshots`), `scripts/run-e2e-container.mjs` `playwrightArguments`.
 * **Defect:** measured 2026-10-11: `pnpm test:e2e:update -- e2e/accounts-puzzles-engines.spec.ts -g 'local engine validation'` fails with `error: option '-u, --update-snapshots [mode]' argument 'e2e/accounts-puzzles-engines.spec.ts' is invalid. Allowed choices are all, changed, missing, none.` Playwright's flag takes an optional mode, so the first forwarded positional is consumed as that mode. The same call without pnpm (`node scripts/run-e2e-container.mjs --update-snapshots e2e/… -g …`) exits without rewriting anything visible in the filtered output. Only `--update-snapshots=changed <spec>` works.
 * **Why it matters:** the verify-ui contract tells every agent to re-record one moved snapshot through this script; the documented route cannot select a single spec, which pushes agents towards re-recording the whole suite (moving snapshots nobody predicted) or improvising flags.
