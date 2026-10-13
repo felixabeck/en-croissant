@@ -7431,3 +7431,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"dda5cbe0b3b056199d4b7959eab8c75e093fce3d1be23559d5658b574cda906f","input_sha256":"27d2c4ab0c28e2bd4becd54e32546de4a816e72ba4d3d92df1488455145a0dab","kind":"mutation-receipt","operation":"c9909b0f3f8261a0c6fdbb852b1c5b0327c0b93e565d60b8323b6118aa12b97e","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-11 — Which comments stay inline in the move flow?
+
+* **Question:** Which move comments may stay in the move flow instead of ending the notation row?
+* **Governs:** f-20261001-10
+* **Chosen:** all of them, in every inline move run (the inline view's mainline and variations, and the table view's variation runs): a move comment no longer closes the `moves` row, and a variation's starting comment travels with its move instead of becoming its own `comment` row; the existing `Comment` line rule decides inline span versus block. Rows still close on variations, on `NOTATION_ROW_MAX_MOVES` and at the end of a line. Because a row may now be taller than the viewport, navigation scrolls the current move's own cell into view instead of only centring its row.
+* **Rejected:** a character-length threshold for "short" (panel-width dependent, absent before `88ad35ef`); keeping a row break after multi-line comments (a block comment already occupies its own line); re-breaking rows by accumulated comment length (a heuristic that still leaves one long comment taller than a small viewport).
+* **Reason:** restores the flow that `88ad35ef` (virtualized notation, d-20260923-01) broke without a recorded reason; d-20260923-01's virtualization and row model stand. Full-auto recommendation from the reviewed plan. Reversal path: the break condition in the inline run builder of `notationRows.ts`.
+* **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"73ac110e3aea777d1c49d9aa3173e582ad0b1cd290ed1f4de572dd0e55a653b8","input_sha256":"1e03272acd7897b3e29e093985a1c60c9691c19cf24d11594bc0efca65252313","kind":"mutation-receipt","operation":"57da87eae0469fd672bce9cd23a314a9397275b0032b4aef5b1a4e555c4f1c25","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-11"],"target":"decisions-ledger","v":1} -->
