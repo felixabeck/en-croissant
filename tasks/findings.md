@@ -13160,7 +13160,7 @@ Recovery update 2026-10-08: this supersedes the recurrence annotation's pending-
 
 ### Three chess.rs tests prove engine structure by matching source text instead of behaviour
 
-* **ID:** f-20261002-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261002-06 · **Status:** rejected · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs` tests `interactive_commands_register_through_engine_process_new` (~3181, asserts `get_best_moves`/`analyze_game` bodies contain a call), `config_probe_uses_a_unique_supervised_key` (~3206, asserts `get_engine_config` contains `Uuid::new_v4()` and `EngineKey::new("engine-config"`), `production_uci_paths_share_ingest_and_live_publish` (~3383, splits the file at `mod tests {` and matches function names), all via `include_str!("chess.rs")`.
 * **Defect:** each test passes as long as the asserted text is present, whatever the code around it does — e.g. a call kept but its result discarded, or a unique key built and then not used. The two analogous delegation scans for `retire_engine` and `retire_engine_binary` were replaced in the Stockfish 19 upgrade push by calls of the real command through `engine_test_app()`, after a review lens showed a wrapper returning `Ok(())` over a failed delegate would still pass the scan.
 * **Why it matters:** `~/.claude/references/push-review-policy.md` "Proof selection before custom source verification" requires the behavioural route first; these three are evidence that cannot go red for the class of regression they are named after.
