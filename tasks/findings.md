@@ -14475,7 +14475,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### An unchanged PLAN-REFRESH drift round has contradictory review-packet instructions
 
-* **ID:** f-20261009-05 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261009-05 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 5d2c07c1-c10f-4012-a9b8-be15c61702c2 · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-1/run/attempt-5d2c07c1-c10f-4012-a9b8-be15c61702c2-1.jsonl
 * **Where:** `/home/felixb/.claude/references/review-lens-contract.md:246` (re-review packet for every round >= 2), `/home/felixb/.claude/skills/build/SKILL.md:274` (first PLAN-REFRESH drift round), and `build/SKILL.md:516` with `scripts/plan-review-delta.py:220` (UNCHANGED forbids a revision round and emits no ROUND/DELTA/REVISED/SETTLED block).
 * **Defect:** Refresh continues the published numbering, so the first source-drift round is round 2 or later even when the approved plan body has not changed. The refresh contract requires that round with the exact old-base/new-base source diff and permits the plan to stand. The generic re-review contract also requires a script-generated plan-delta block on every round >= 2. The actual delta producer emits only UNCHANGED and exits 3 on the unchanged body, while build forbids launching a revision round on that result. No clause explicitly distinguishes the required first refresh drift packet from a plan-revision closure packet. A literal reviewer therefore flags the missing plan-delta block even when the source-drift packet meets the refresh contract.
