@@ -14400,7 +14400,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### Findings ledger preamble falsely claims there is no Python test suite and no unconditional contract gate
 
-* **ID:** f-20261009-01 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261009-01 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** a51461c5-317b-40c0-8297-ab16a2fc6904 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-a51461c5-317b-40c0-8297-ab16a2fc6904-1.jsonl
 * **Where:** tasks/findings.md:20-24, CLAUDE.md Findings ledger section, and the shared findings writer's non-entry maintenance boundary.
 * **Defect:** the preamble says this repository has no Python test suite and that findings.py check only runs on task changes or filing. scripts/findings-atomic-write-tests.py defines three unittest cases, package.json runs them as findings:test, and the unconditional gates:contract:check includes findings:test and findings:check. The preamble also still uses the upstream project name for this project's vocabulary.
