@@ -14404,7 +14404,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### Native full-app proof intermittently aborts at the first practice rating
 
-* **ID:** f-20261009-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261009-02 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** a51461c5-317b-40c0-8297-ab16a2fc6904 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-a51461c5-317b-40c0-8297-ab16a2fc6904-1.jsonl
 * **Where:** scripts/verify-app.mjs, verifyFullApplication's `rate practice cards` loop and diagnostic catch. scripts/app-driver.mjs, Session.call and five-second fetchWithTimeout.
 * **Defect:** The restored renderer-input control run in drain a51461c5-317b-40c0-8297-ab16a2fc6904 exited 1 before its NAG checks. It printed `This operation was aborted; stage: rate practice cards (rating 1)`. Its follow-up renderer query succeeded, showing the practice panel on `/`, 12,000 unseen positions and no practiced card. Driver output contained connection-refused and incomplete-message errors but no heap-corruption diagnostic in this run. The diagnostic does not identify which request within the rating step exceeded its five-second request bound. The earlier corrected control and three individually broken NAG-input runs all completed the same practice scenario successfully.
