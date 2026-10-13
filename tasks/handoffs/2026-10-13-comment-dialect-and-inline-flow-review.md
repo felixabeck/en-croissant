@@ -3149,8 +3149,11 @@ contract and a separate design) → deferred as one `build`-tier successor.
 **Successor:** filed through the inbox spool as
 `tasks/findings-inbox/20261013-095358-2561660-1791878038456800562-6.md` ("The Annotate editor's
 Markdown save can still change a comment …", Entry `build`). It owns D5-1 and D5-2 and must load
-this file before plan review. Its filed entry carries no `**Proof:**` bullet (records lens, round
-D6); the proof it owes, red at `2fd8711f` and green after its fix:
+this file before plan review. Its filed entry carries no `**Proof:**` bullet (records lens, rounds
+D6/D7: no supported route corrects a published pending entry). **First step for the session that
+picks the successor, before plan review:** `./scripts/findings.py annotate <allocated-id> <file>` with
+a `* **Proof:** …` bullet stating the proof below. The proof it owes, red at `2fd8711f` and green
+after its fix:
 `pnpm vitest run src/components/panels/annotation` with mounted save → reload cases for (a) literal
 `a++bc` with only `c` underlined — the reload shows the text `a++bc` with `c` underlined, or the
 save is refused with the draft kept; (b) `[a](https://a.test)[b](https://b.test)` plus a typed `!`
