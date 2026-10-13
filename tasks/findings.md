@@ -14430,6 +14430,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Writer defect lives in agent-kit (2026-10-13):** the vendored findings.py cannot be edited here; the same defect class is tracked in agent-kit f-20261011-08 (close refused after a reopen). Close this entry when the next vendor bump carries that fix.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"23e086333ea0e93e04e8851b2da6be0e435f15b8325c2c646eb0f441c3288c5a","input_sha256":"a9b8989fe64f9b384358759ab778f0c010a31c106b524c24dd3ad1e01be1f9ea","kind":"mutation-receipt","operation":"9958365b4037b29e5cab70a206a5585b534a71d37894353173705be72e0b2c08","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-15"],"target":"f-20261008-15","v":1} -->
 
+* **Correction to the 2026-10-13 note above:** agent-kit f-20261011-08 is a different defect (the literal "Still open" guard), not this stale close-receipt header hash. This entry's reclose failure was added to agent-kit f-20261011-08 as a second witness of the same close path, so one writer fix covers both; close this entry when the vendor bump carries it.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a68de94e9228bd49abd6fd7c17e43d0ad9130ca17eca12ada3de7e1f44b97972","input_sha256":"6d4142d20590d998e44114c94a38a81d0d4d0fb44ec855480c61ceab2598d08e","kind":"mutation-receipt","operation":"0e94726659cd2bdc2d8f93443056efa20c33b879e2f59fa0baccd294b5920cd0","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-15"],"target":"f-20261008-15","v":1} -->
+
 ---
 
 ## 2026-10-08 — filed through the inbox spool
