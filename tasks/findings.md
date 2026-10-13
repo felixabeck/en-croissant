@@ -10919,7 +10919,7 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 
 ### `atomic_install_download_dir` reopens its staging and target directories by path, so the engine-archive install has the same identity-only containment gap as its siblings
 
-* **ID:** f-20260920-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260920-01 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority/resolved.rs` `atomic_install_download_dir` (~:149) and the `private_tempdir_in` / install sequence it drives; consumer `publish_engine_archive_tree` (`src-tauri/src/fs.rs`).
 * **Defect (reported by a lens, confirm before fixing):** the resolved directory identity is dropped and both the temporary directory and the target are reopened by pathname. If the validated engine parent is replaced by another real directory between validation and installation, both reopen under the substitute, the same-parent check still passes, and a signed archive is installed outside the authorised root. Same containment class as `f-20260918-02` (`reserve_download_artifact`, `activate_download_artifact`, `workspace_entry_path`), which does not name this door.
 * **Why it matters:** an engine binary installed outside the workspace the user authorised, from a path the authority believed it had validated.
