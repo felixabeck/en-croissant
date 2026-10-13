@@ -14414,6 +14414,8 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Evidence:** Full log and exit record at `/tmp/build-a51461c5-317b-40c0-8297-ab16a2fc6904/phase-2-evidence/gate-phase2-restored.MUcjHu/`. Successful practice controls are sibling `gate-phase2-native-retry.jZuRPv`, `gate-phase2-path.3BVzvg`, `gate-phase2-title.NDZGFb` and `gate-phase2-opacity.SF8Rs4`. A fresh restored retry is in progress at filing time, with no result claimed here.
 * **Handoff:** [Native-proof repair history](../handoffs/2026-10-09-f-20260926-07-review.md). The successor owns diagnosis of the exact first-rating request and must load this handoff and its named completed native logs before selecting a remedy. The restored retry subsequently passed all 86 checks with exit 0 at `gate-phase2-restored-retry.sYptxf` in the same evidence directory.
 * **Found by:** Codex root inspecting completed native-proof artifacts, required proof repair for f-20260926-07, 2026-10-09.
+* **Why rejected:** verify:app practice abort; single unexplained flake. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"54dc23402f050643e3af12f383c1a74d214a84c554e5206b1e3f92ce15efb2c0","input_sha256":"fd6715d151c7e844c7aed9109279914fed2c686e7025a99a2b803a2a7d097c8e","kind":"mutation-receipt","operation":"ff4f1ff3ae90b3e46881edb7c698c5aeb1cf75eb4c7f401ca3b2a1f6d2f8f979","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-02"],"target":"f-20261009-02","v":1} -->
 
 ---
 
