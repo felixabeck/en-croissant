@@ -12394,7 +12394,7 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 
 ### Seven test files each carry their own inert ResizeObserver stub
 
-* **ID:** f-20260928-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260928-01 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/databases/GamePreview.test.tsx:254`, `src/components/databases/FideInfo.test.tsx`, `src/components/files/FileCard.test.tsx:77`, `src/components/panels/database/DatabasePanel.test.tsx`, `src/components/panels/database/options/LocalOptionsPanel.test.tsx`, `src/components/panels/practice/RepertoireInfo.test.tsx`, `src/components/panels/info/InfoPanel.test.tsx:181`, `src/components/puzzles/Puzzles.test.tsx:97`.
 * **Defect:** each file defines its own `ResizeObserver` stand-in (`observe/unobserve/disconnect` no-ops, installed through `globalThis` or `Object.defineProperty`), the duplication rule 11 forbids. `f38fa6a5` (f-20260829-02) added the shared `installResizeObserverStub()` in `src/tests/resizeObserver.ts`, beside `installMatchMediaStub()`, for `ThemeButton.test.tsx`; the older copies were left because they sit in other areas.
 * **Fix:** route every inert copy through `installResizeObserverStub()`. Keep `GamePreview.test.tsx`'s reporting observer local (it records callbacks to drive sizes) unless the helper gains that as an option.
