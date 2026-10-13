@@ -15327,7 +15327,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 
 ### `verify:app` practice stage timed out at rating 25 of 50 once under high load, then passed on an immediate rerun
 
-* **ID:** f-20261011-05 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261011-05 · **Status:** rejected · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** ef7373e4-a4fe-4625-a7cf-069cad2e98fe
 * **Where:** `scripts/verify-app.mjs`, the practice rating loop (`waitFor(\`practice rating ${index + 1} to advance\`)` near line 2733; the failure is rethrown at 2763 with the renderer state).
 * **Defect:** on 2026-10-11 the f-20260930-01 drain ran `pnpm build && pnpm verify:app` on HEAD 604051a4 under load average ~22. About 40 checks passed, then the run failed with `timed out waiting for practice rating 25 to advance; stage: rate practice cards (rating 25)`. The captured renderer state showed the practice panel back on its overview with `PRACTICED 25 · DUE 0 · UNSEEN 11975` and `Start Practice` instead of `Make your move`, so the session had left the card view after the 25th Good rating rather than merely rendering slowly. An immediate rerun on the same binary exited 0 with 102 `ok` lines and `all checks passed`. The change under test (SQLite pool retirement in `src-tauri/src/db/repository.rs` and the content-validation scan) does not touch `src-tauri/src/practice.rs` or the practice panel.
