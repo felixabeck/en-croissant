@@ -214,17 +214,14 @@ no longer redden or silence this gate.
 env -u KIT_ROOT pnpm findings:kit:check
 ```
 
-`./scripts/findings.py check` and `pnpm findings:test` are members of the unconditional
-contract gate. `check` validates the ledger: a malformed header or an area outside the closed
+`./scripts/findings.py check` is a member of the unconditional contract gate (the generic
+writer tests live in agent-kit since 2026-10-13). It validates the ledger: a malformed header or an area outside the closed
 vocabulary silently drops a finding out of the derived queue, which is exactly the loss the ledger
 exists to prevent. `tasks/findings.md` names this gate as `$push`'s job, so it runs here.
 
-As a contract-gate member, `findings:test` is the only test over `scripts/findings.py` itself, and it
-is deliberately narrow — it pins the failure reporting of `_atomic_write` (f-20260829-14), not the
-tool's behaviour at large.
 `scripts/findings.py` is byte-identical across Felix's projects by contract, so **nothing
-repository-specific may be added to it**; a change there is a change to every copy, and the test
-lives beside it rather than inside it for that reason.
+repository-specific may be added to it**; a change there is a change to every copy. Its behaviour,
+including the `_atomic_write` failure reporting of f-20260829-14, is tested in agent-kit.
 
 ### CI, dependencies, and release mechanics
 
