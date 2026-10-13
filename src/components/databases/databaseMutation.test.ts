@@ -34,20 +34,32 @@ describe("database game query refresh", () => {
         ];
         const cache = new Map<string, State>();
         const matches: boolean[] = [];
-        const mutate = vi.fn(async (key: Arguments | ((key: Arguments) => boolean)) => {
-            if (typeof key === "function") {
-                for (const original of keys) matches.push(key(original));
-                return [];
-            }
-            cache.set(unstable_serialize(key), { data: "refreshed" });
-            return "refreshed";
-        });
+        const mutate = vi.fn(
+            async (
+                key: Arguments | ((key: Arguments) => boolean),
+                _data?: unknown,
+                options?: { revalidate: boolean },
+            ) => {
+                if (typeof key === "function") {
+                    for (const original of keys) matches.push(key(original));
+                    return [];
+                }
+                if (options?.revalidate === false) {
+                    cache.set(unstable_serialize(key), { data: undefined, error: undefined });
+                    return undefined;
+                }
+                cache.set(unstable_serialize(key), { data: "refreshed" });
+                return "refreshed";
+            },
+        );
         expect(await refreshDatabaseGameQueries(file, cache, mutate as ScopedMutator)).toEqual(
             Array.from({ length: 4 }, () => ({ status: "fulfilled", value: "refreshed" })),
         );
         expect(matches).toEqual(keys.map(() => false));
-        expect(mutate.mock.calls.slice(1)).toEqual(keys.slice(0, 4).map((key) => [key]));
-        for (const call of mutate.mock.calls) expect(call).toHaveLength(1);
+        expect(mutate.mock.calls.slice(1)).toEqual([
+            ...keys.slice(0, 4).map((key) => [key, undefined, { revalidate: false }]),
+            ...keys.slice(0, 4).map((key) => [key]),
+        ]);
     });
 
     it("reads fetch errors from cache after revalidation and settles delayed siblings and direct exceptions", async () => {
@@ -60,21 +72,31 @@ describe("database game query refresh", () => {
         const related = new Promise<void>((resolve) => {
             completeRelated = resolve;
         });
-        const mutate = vi.fn((key: Arguments | ((key: Arguments) => boolean)) => {
-            if (typeof key === "function") {
-                for (const original of keys) key(original);
-                return Promise.resolve([]);
-            }
-            if (key === keys[0]) {
-                cache.set(unstable_serialize(key), { data: "old data", error: fetchError });
-                return Promise.resolve("old data");
-            }
-            if (key === keys[1]) throw directError;
-            return related.then(() => {
-                cache.set(unstable_serialize(key), { data: "new data" });
-                return "new data";
-            });
-        });
+        const mutate = vi.fn(
+            (
+                key: Arguments | ((key: Arguments) => boolean),
+                _data?: unknown,
+                options?: { revalidate: boolean },
+            ) => {
+                if (typeof key === "function") {
+                    for (const original of keys) key(original);
+                    return Promise.resolve([]);
+                }
+                if (options?.revalidate === false) {
+                    cache.set(unstable_serialize(key), { data: undefined, error: undefined });
+                    return Promise.resolve(undefined);
+                }
+                if (key === keys[0]) {
+                    cache.set(unstable_serialize(key), { data: "old data", error: fetchError });
+                    return Promise.resolve("old data");
+                }
+                if (key === keys[1]) throw directError;
+                return related.then(() => {
+                    cache.set(unstable_serialize(key), { data: "new data" });
+                    return "new data";
+                });
+            },
+        );
         let terminal = false;
         const operation = refreshDatabaseGameQueries(file, cache, mutate as ScopedMutator).then(
             (results) => {
@@ -82,7 +104,7 @@ describe("database game query refresh", () => {
                 return results;
             },
         );
-        await vi.waitFor(() => expect(mutate).toHaveBeenCalledTimes(4));
+        await vi.waitFor(() => expect(mutate).toHaveBeenCalledTimes(7));
         expect(terminal).toBe(false);
         completeRelated();
         expect(await operation).toEqual([

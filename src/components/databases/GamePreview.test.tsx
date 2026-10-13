@@ -516,6 +516,30 @@ describe("GamePreview board sizing", () => {
     expect(mocks.lexPgn).toHaveBeenCalledOnce();
   });
 
+  test("header-only changes reset navigation and replace metadata with id, PGN, FEN and Start unchanged", async () => {
+    const original = { ...recordA, start: [] };
+    await renderRecord(original);
+    await wheelNext();
+    expect(selectedBoard().dataset.fen).not.toBe(original.fen);
+    const updated = {
+      ...original,
+      white: "Updated player",
+      black: "Updated opponent",
+      event: "Corrected event",
+      orientation: "black" as const,
+    };
+    expect(updated.id).toBe(original.id);
+    expect(updated.fen).toBe(original.fen);
+    expect(updated.start).toEqual(original.start);
+    await renderRecord(updated);
+    expect(selectedBoard().dataset.fen).toBe(original.fen);
+    expect(selectedBoard().dataset.orientation).toBe("black");
+    expect(selectedHeaders()).toMatchObject(updated);
+    await wheelNext();
+    expect(selectedBoard().dataset.fen).toContain("4P3");
+    expect(mocks.lexPgn).toHaveBeenCalledOnce();
+  });
+
   test("equivalent reordered headers and adaptive reflow retain selected move and chooser", async () => {
     mocks.lexPgn.mockResolvedValue([
       { type: "San", value: "e4" },

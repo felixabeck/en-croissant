@@ -1,9 +1,9 @@
 import type { DatabaseHandle, FileWorkspaceHandle } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
-import { databaseHandleKey, sameDatabaseHandle } from "@/utils/db";
+import { collectSWRKeys, databaseHandleKey, sameDatabaseHandle } from "@/utils/db";
 import { runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
-import { type Arguments, type Cache, type ScopedMutator, unstable_serialize } from "swr";
+import { type Cache, type ScopedMutator, unstable_serialize } from "swr";
 
 /** Refresh the admitted database's game, player and tournament queries after a game mutation.
  * Results are bounded by the original keys collected from this cache for this operation. */
@@ -12,22 +12,19 @@ export async function refreshDatabaseGameQueries(
     cache: Cache,
     mutate: ScopedMutator,
 ): Promise<PromiseSettledResult<unknown>[]> {
-    const keys: Arguments[] = [];
-    // The public matcher exposes original keys. Returning false only observes the cache.
-    await mutate((key) => {
-        if (
+    const keys = await collectSWRKeys(
+        mutate,
+        (key) =>
             Array.isArray(key) &&
             (key[0] === "games" || key[0] === "players" || key[0] === "tournaments") &&
-            sameDatabaseHandle(key[1] as DatabaseHandle, file)
-        ) {
-            keys.push(key);
-        }
-        return false;
-    });
+            sameDatabaseHandle(key[1] as DatabaseHandle, file),
+    );
     return Promise.allSettled(
         keys.map(async (key) => {
-            // With no data argument, mutate awaits revalidation. Fetch errors live in cache
-            // state even when mutate resolves with the previous data.
+            // Committed deletion invalidates old rows and historical errors even for inactive
+            // keys. This does not start a refresh, so the next call owns active revalidation.
+            await mutate(key, undefined, { revalidate: false });
+            // Fetch failures live in cache state even when revalidation resolves normally.
             const data = await mutate(key);
             const error = cache.get(unstable_serialize(key))?.error;
             if (error !== undefined) throw error;

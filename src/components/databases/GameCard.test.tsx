@@ -46,6 +46,9 @@ describe("database game deletion with real SWR revalidation", () => {
   let root: Root;
   let cache: Map<string, State>;
   let fetchers: Map<string, ReturnType<typeof vi.fn<() => Promise<unknown>>>>;
+  let initialLoaded: boolean;
+  let showHistoricalPlayers: boolean;
+  let revalidateHistoricalPlayers: () => Promise<unknown>;
   const file: DatabaseHandle = { id: { id: "database" }, kind: "database" };
   const otherFile: DatabaseHandle = { id: { id: "other-database" }, kind: "database" };
   const views = ["games", "players", "tournaments"] as const;
@@ -53,6 +56,7 @@ describe("database game deletion with real SWR revalidation", () => {
     views.map((view) => [view, database, { limit: 10 }] as const),
   );
   const keys = [...queryKeys, "databases", ["engines", file]];
+  const historicalPlayersKey = ["players", file, { limit: 10, search: "old filter" }] as const;
   const game = { id: 42, white: "Alice", black: "Bob", moves: "1. e4 *" } as NormalizedGame;
   const refreshTitle = "The game was deleted, but the database view could not be refreshed.";
 
@@ -63,7 +67,8 @@ describe("database game deletion with real SWR revalidation", () => {
 
   function Subscriber({ queryKey }: { queryKey: (typeof keys)[number] }) {
     const id = unstable_serialize(queryKey);
-    const { data, error, isValidating } = useSWR(queryKey, fetchers.get(id)!);
+    const { data, error, isValidating, mutate } = useSWR(queryKey, fetchers.get(id)!);
+    if (id === unstable_serialize(historicalPlayersKey)) revalidateHistoricalPlayers = mutate;
     return (
       <output data-key={id} data-error={error?.message} data-validating={isValidating}>
         {JSON.stringify(data)}
@@ -75,8 +80,10 @@ describe("database game deletion with real SWR revalidation", () => {
     mocks.deleteDbGame.mockReset().mockResolvedValue(undefined);
     mocks.notification.mockReset();
     cache = new Map();
+    initialLoaded = false;
+    showHistoricalPlayers = false;
     fetchers = new Map(
-      keys.map((key) => {
+      [...keys, historicalPlayersKey].map((key) => {
         const id = unstable_serialize(key);
         return [
           id,
@@ -118,6 +125,7 @@ describe("database game deletion with real SWR revalidation", () => {
             {keys.map((key) => (
               <Subscriber key={unstable_serialize(key)} queryKey={key} />
             ))}
+            {showHistoricalPlayers && <Subscriber queryKey={historicalPlayersKey} />}
             {showCard && (
               <GameCard
                 game={selected ?? undefined}
@@ -130,9 +138,15 @@ describe("database game deletion with real SWR revalidation", () => {
         </MantineProvider>,
       ),
     );
+    await waitForInitialData();
+  }
+
+  async function waitForInitialData() {
+    if (initialLoaded) return;
     await vi.waitFor(() => {
       for (const key of keys) expect(cache.get(unstable_serialize(key))?.data).toBeDefined();
     });
+    initialLoaded = true;
   }
 
   function deleteButton() {
@@ -266,7 +280,7 @@ describe("database game deletion with real SWR revalidation", () => {
           const key = queryKeys.find((key) => key[0] === view && key[1] === file)!;
           const state = cache.get(unstable_serialize(key));
           expect(state?.error).toBe(errors[index]);
-          expect(state?.data).toMatchObject({ phase: "initial" });
+          expect(state?.data).toBeUndefined();
         }
         const pendingThroughFetch = deleteButton().disabled;
         await act(async () => related.resolve({ phase: "refreshed" }));
@@ -289,6 +303,40 @@ describe("database game deletion with real SWR revalidation", () => {
       }
     },
   );
+
+  test("historical failure of an inactive players query is invalidated without a false deletion-refresh notification and remount loads fresh data", async () => {
+    showHistoricalPlayers = true;
+    await render();
+    const id = unstable_serialize(historicalPlayersKey);
+    const historicalFetch = fetchers.get(id)!;
+    expect(cache.get(id)?.data).toMatchObject({ phase: "initial" });
+    const historicalFailure = new Error("Old players filter failed");
+    historicalFetch.mockRejectedValueOnce(historicalFailure);
+    await act(async () => revalidateHistoricalPlayers());
+    expect(historicalFetch).toHaveBeenCalledTimes(2);
+    expect(cache.get(id)?.error).toBe(historicalFailure);
+    expect(cache.get(id)?.data).toMatchObject({ phase: "initial" });
+    showHistoricalPlayers = false;
+    await render();
+    // Retiring the real subscriber leaves its historical data and error in SWR's cache.
+    expect(cache.get(id)?.error).toBe(historicalFailure);
+    expect(cache.get(id)?.data).toMatchObject({ phase: "initial" });
+    await clickDelete();
+    expectRefreshes();
+    expectOtherQueriesUntouched();
+    expect(historicalFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.notification).not.toHaveBeenCalled();
+    expect(cache.get(id)?.error).toBeUndefined();
+    expect(cache.get(id)?.data).toBeUndefined();
+    expect(deleteButton().disabled).toBe(false);
+    expect(mocks.deleteDbGame).toHaveBeenCalledExactlyOnceWith(file, game.id);
+    showHistoricalPlayers = true;
+    await render();
+    expect(historicalFetch).toHaveBeenCalledTimes(3);
+    expect(cache.get(id)?.data).toMatchObject({ phase: "refreshed" });
+    expect(cache.get(id)?.error).toBeUndefined();
+    expect(mocks.notification).not.toHaveBeenCalled();
+  });
 
   test("cancellation from real revalidation stays silent through real normalization", async () => {
     await render();

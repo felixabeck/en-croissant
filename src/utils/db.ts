@@ -4,7 +4,7 @@ import databaseCatalogSignature from "@/catalogs/databases.json.minisig?raw";
 import puzzleCatalogDocument from "@/catalogs/puzzles.json?raw";
 import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
 import { z } from "zod";
-import useSWR from "swr";
+import useSWR, { type Arguments, type ScopedMutator } from "swr";
 import {
     type DatabaseInfo,
     type DatabaseHandle,
@@ -24,6 +24,19 @@ import i18n from "i18next";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
+
+/** Collect original cache keys through SWR's public matcher without changing or revalidating them. */
+export async function collectSWRKeys(
+    mutate: ScopedMutator,
+    matches: (key: Arguments) => boolean,
+): Promise<Arguments[]> {
+    const keys: Arguments[] = [];
+    await mutate((key) => {
+        if (matches(key)) keys.push(key);
+        return false;
+    });
+    return keys;
+}
 
 /** Error::InvalidInput from src-tauri/src/db/migrations.rs validate_existing_database. */
 export const DATABASE_NOT_INITIALIZED = "Invalid input: Database has not been initialized yet";
