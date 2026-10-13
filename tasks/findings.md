@@ -12395,6 +12395,8 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 * **Why deferred:** outside `f-20260829-04`'s mandate (the writer guard, the exclusion, the re-record); changing the ratchet's comparison is a separate change with its own shrink-allowance interplay (`f-20260829-15`).
 * **Fix shape:** make `assertBaseline`'s ratio clause treat `total = 0` as ratio 1 on both sides (consistent with `assertAreaFloors` and the writer), check the interaction with the shrink-adjusted baseline, and add the `0/0 → 0/1` case to `scripts/coverage-report-tests.mjs` plus a failure-matrix row.
 * **Related:** `f-20260829-04` (writer guard with the 100 % rule), `f-20260829-15` (shrink allowance).
+* **Why rejected:** Coverage-ratchet 0/0 to 0/n edge case, never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4598f8de8e6ad79b1588661f43611adb9cb23fba83d4024adc6d6903b6eaee7e","input_sha256":"3d40dcd5300c2a3bdd89db346ac228a1da6378c581dd15f0b51c405e6beb9185","kind":"mutation-receipt","operation":"5efa52742e60a6b233e03a57a1a26e62aa32a95881fb36967fbaf69a59a05e91","options":{"section":null},"request_id_sha256":null,"results":["f-20260928-03"],"target":"f-20260928-03","v":1} -->
 
 ---
 
