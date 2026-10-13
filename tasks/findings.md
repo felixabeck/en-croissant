@@ -13845,6 +13845,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Fix direction:** treat an absent (ENOENT) registry as "not yet" inside the predicate (return `false`), keep every other read error fatal; prove by delaying the registry write or by starting the predicate before the app writes it.
 * **Related:** `f-20260920-16` (other `verify:app` assertions that are too weak — a different defect class), `f-20261005-07` (the three `$8` board-hint checks, also red in the same run).
 * **Found by:** Claude Code orchestrator, warm-engine build, final `pnpm verify:app`, 2026-10-05.
+* **Why rejected:** Racy verify:app predicate; single flake. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2ee0d32e7eaf8892df38959ae1aab02a453ea5a25158e2e4086d69cdb0c2b941","input_sha256":"905917b45658d3c04b069e5d1d5108f8b814b691deca8d9677c92922eb114670","kind":"mutation-receipt","operation":"4ecb02e703932fcbc5b333779fff955c49e53c95866733b93213de6cbac951bb","options":{"section":null},"request_id_sha256":null,"results":["f-20261005-10"],"target":"f-20261005-10","v":1} -->
 
 ---
 
