@@ -12384,6 +12384,8 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 * **Why deferred:** `f-20260829-04`'s plan review (round 1, `review-minimalism`) found the duplicate masker, which that run extracted; routing the region walker through the new scanner changes another gate's verdicts and its shrink-only counts, which is outside that finding's mandate (the plan-review adoption gate).
 * **Related:** `f-20260829-04` (introduced the second scanner), `f-20260830-23` (the release-surface R3/R4 fs surface this walker feeds).
 * **Open question:** does `walkGatedLines` become a consumer of `rust-test-only.mjs`'s ranges (one predicate, one extent rule for both gates, with the fs surface counts re-measured), or is a line-granular walker kept deliberately for the release surface — and if kept, which of the two predicates is the authority?
+* **Why rejected:** Duplicate cfg(test) scanner in gate tooling. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7471a5d63e3a3981ed2d2c130680518cf6302271c4d8127f81e1e87934167213","input_sha256":"5d4b0bea06b4cabd377787aa35afc52bbcc1622a87ee315c95372f69dbfe1b40","kind":"mutation-receipt","operation":"dfbe2b57d26f68ac318ad85509f0ce278c466b3a334e2e660be89a6e8fb3e2eb","options":{"section":null},"request_id_sha256":null,"results":["f-20260928-02"],"target":"f-20260928-02","v":1} -->
 
 ### The coverage ratchet accepts a 0/0 → 0/n drop, which the floors read as 100 % → 0 %
 
