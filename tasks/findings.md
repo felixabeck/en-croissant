@@ -14497,7 +14497,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### IPC review lens still describes the retired search_progress exception as live
 
-* **ID:** f-20261009-06 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261009-06 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 477eec91-af67-4fe3-9bac-5c66560ee1d9 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-477eec91-af67-4fe3-9bac-5c66560ee1d9-1.jsonl
 * **Where:** `.claude/agents/review-ipc-contract.md:42-47` and `:64-66`.
 * **Defect:** The lens says `search_progress` is live at HEAD, emitted in `db/search.rs`, consumed by a handwritten listener in `DatabaseLoader.tsx`, and absent from the Specta registry. Current `db/search.rs` reports through `update_progress_with_state` and the registered `ProgressEvent`. The canonical `ipc-events.md` rule already records the retired exception and its repair.
