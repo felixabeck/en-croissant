@@ -15177,13 +15177,16 @@ Obsolete (setup-findings triage 2026-10-13): write_game is modelled and asserted
 
 ### Preview browser tests duplicate the same rendered white-pawn square reader
 
-* **ID:** f-20261010-38 · **Status:** open · **Area:** e2e-gate · **Root:** game-preview-pawn-reader · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261010-38 · **Status:** handled · **Area:** e2e-gate · **Root:** game-preview-pawn-reader · **Entry:** inline · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** e2e/font-scaled-breakpoints.spec.ts:72 and e2e/files-preview.spec.ts:167.
 * **Defect:** The new compact database preview regression repeats the existing Files variation chooser's piece.white.pawn selector, KeyedNode.cgKey extraction and sorting. Both implement the same Chessground inspection contract and must remain in sync.
 * **Fix shape:** Export whitePawnSquares(board: Locator) from the existing e2e/fixtures.ts and route both scenarios through it. Keep their separate expected positions, real clicks, geometry assertions and snapshot filenames unchanged.
 * **Proof:** Static checks and the pinned files-preview, database-files and font-scaled-breakpoints scenarios. Retain the actual stacked=false production fault and exact-restoration discrimination for the compact preview with the extracted helper.
 * **Found by:** Canonical read-only minimalism closure at /tmp/build-game-opening-3b67c3b9/lens-minimalism-compact-closure.txt, confidence 94. Root read both implementations and adopted Fix. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+Obsolete (setup-findings triage 2026-10-13): whitePawnSquares is shared in fixtures (e95a864d).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"a4b0017306782918ed26cb6c1f08d43cb1bff487884bb6c5dd6f1f3e2c33a897","header_sha256":"92acb188d0f90f418670d1e8a35077126243f79a4d126bc561e6297f038ffa9d","header_status":"handled","input_sha256":"b81d2d3ef33584f96b0d0dc2dab92d5286c0aa86b25766118dd6a1d014929a49","kind":"mutation-receipt","operation":"64959afb674e08003572ce2ef5c5d9e2d771f37487ab9ccd1e97f24556094f9c","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-38"],"target":"f-20261010-38","v":1} -->
 
 ---
 
