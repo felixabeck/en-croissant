@@ -14164,6 +14164,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Evidence:** the B1 transcript is in the Codex leaf thread `01a11844-671e-70d0-8bb2-cc54a66030ee` (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a, `/tmp/build-fa6786ed/phase-2.jsonl`); the staged-failure record in the `verify-app.mjs` header (single-instance block) notes the two extra FAIL lines.
 * **Related:** f-20261005-07 (the three `$8` board-hint checks, red on every run — a different, deterministic failure).
 * **Found by:** Codex write leaf during `f-20260922-07` Phase 2 staging, reported to the Claude Code orchestrator, drain session fa6786ed-3e23-4701-b1a3-05a243d9a80b.
+* **Why rejected:** Single unreproduced verify:app failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cd1f63599d17253d7367837b49ee6b0025167e39287ca3fba217397ef34cc8eb","input_sha256":"a6a81d351c317342874253a425e96ed50fa264a5204986674050fd506b7f40dc","kind":"mutation-receipt","operation":"bf327b71c0fac58053e7d07a63bd9b6c42362b09731e72d7726d0ed564c46bfb","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-01"],"target":"f-20261008-01","v":1} -->
 
 ### The Overview month chart drops or mislabels months for users west of UTC
 
