@@ -13117,6 +13117,9 @@ Recovery update 2026-10-08: this supersedes the recurrence annotation's pending-
 * **Correction (2026-10-02, records lens of the Stockfish 19 upgrade push, measured by the orchestrator):** the path-authority test module (from `mod tests {` at `src-tauri/src/infra/path_authority/mod.rs:9010`) has **25** `promote_dialog(` calls, not 28, and about 8 of them follow a `SingleDialogGrant` grant (e.g. `:9954`, `:10103`) rather than the `BoundedDialogGrant` sequence described above. Those are not copies of this fixture; the extraction covers only the `BoundedDialogGrant` → `promote_dialog` sites.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e51deb9e630ca31b3ef258094c011c2f904ac64ee89e41b044fd41c1af81314f","input_sha256":"6fea708b37abfdc290b79e615f8c25c6687b5ca617746b5c320dfa6855391d6e","kind":"mutation-receipt","operation":"95cd7771e21eb0a59219569837b1719b4c300535cc6c2acf60ce3e833cc8111d","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-03"],"target":"f-20261002-03","v":1} -->
 
+* **Why rejected:** Duplicated test fixture; test hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0c9ad67861d04764ca713f975b783b4be3f228efaebbfe446d6913e66080ad07","input_sha256":"a9de5135805c7ca64556c943921c019554e3038ea822f398c7ec2582dddc9004","kind":"mutation-receipt","operation":"6bfffe2216faa360c89854ba0ae3e26f73e449ab4d58017b810c75d79eaa72e6","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-03"],"target":"f-20261002-03","v":1} -->
+
 ---
 
 ## 2026-10-02 — filed through the inbox spool
