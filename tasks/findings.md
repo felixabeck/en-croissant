@@ -1845,6 +1845,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 * **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns every file the app touches; never observed, and Linux offers no unlink-by-descriptor. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7c482d2a1bd22ae0725b6cc6b0eb80b6ffe84a8503c668e6c39bf77834efff78","input_sha256":"442fa8d5cda5e22080c2dcc81213e342ff19b3f2c5c37cc59e7915a276bbd091","kind":"mutation-receipt","operation":"8a6251c98eecd1679b33155013f115d5e5628af35168281376ab28c3f1ea2b0f","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-09"],"target":"f-20260830-09","v":1} -->
 
+* **Correction to the rejection rationale:** the entry describes a leaf-name substitution that needs write access to the containing directory, not ownership of every file. That directory is the user's own, so the attacker is still a same-user local process; the rejection stands, and it supersedes this entry's older "remains open" disposition.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8763c13bcf685e48d14a7242f1e66e80044b4e9200e127be9b4cd63daa222b43","input_sha256":"55995674cead6670b8a6bb0d5ee321880cafd5f0af72fe1d817e0ed9617945cb","kind":"mutation-receipt","operation":"9da2c1422cb87bb2c1324180e03916d07df24d20d01961207ab4739387742a1f","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-09"],"target":"f-20260830-09","v":1} -->
+
 ### Below Linux 5.8 the recursive delete cannot see a same-filesystem bind mount
 
 * **ID:** f-20260830-10 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
