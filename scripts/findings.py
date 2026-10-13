@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: ee1f09276a239f6443ec75227098431cc5a958f6695e6d3579adc258b0dececd
+# agent-kit-sha256: 8e695d0b8fac0a51eca1a718d739a3f5b81b02ed0a042b409a95ae8f26f5fdea
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -95,8 +95,7 @@ SUPERVISOR_CONTRACT_BASELINE = 1
 # First level whose callers get impact-ranked cells and the new filing rules. Lower declared levels keep c57b00c behaviour.
 IMPACT_QUEUE_CONTRACT_LEVEL = 2
 # First level whose callers get the 2026-10-13 refusals and reports: repeated
-# single-valued entry fields refused at admission, apply-answers' nonzero status
-# after refusing a verifier answer, the out-of-diff admission bar in annotate and
+# single-valued entry fields refused at admission, the out-of-diff admission bar in annotate and
 # check, and writer success lines naming the ledger they wrote. Lower declared
 # levels, including the supervisor's IMPACT_QUEUE_CONTRACT_LEVEL, keep the previous behaviour.
 STRICT_REPORTING_CONTRACT_LEVEL = 3
@@ -424,7 +423,6 @@ INTAKE_STAGING_ATTEMPTS = 2
 _GENERATED_SCRATCH_RE = re.compile(r"^(?P<target>.+)\.(?:tmp|candidate)-\d+-\d+-\d+$")
 _GENERATED_INBOX_PART_RE = re.compile(r"^\.\d{8}-\d{6}-\d+-\d+-\d+\.part$")
 MERGE_INTENT_NAME = ".merge-intent.json"
-ANSWER_RETURNING_FIELD = "returning_to_spool"
 
 STATUSES = frozenset({"open", "handled", "rejected"})
 ENTRIES = frozenset({"inline", "lens", "build"})
@@ -558,27 +556,10 @@ REJECTED_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Why rejected:\*\*[ \t]*(?P<reason>\S.*)",
     re.MULTILINE,
 )
-APPROVED_RE = re.compile(
-    rf"^[ \t]*{_BULLET}[ \t]+\*\*Approved:\*\*[ \t]*", re.MULTILINE
-)
 SENTRY_RE = re.compile(rf"^[ \t]*{_BULLET}[ \t]+\*\*Sentry:\*\*[ \t]*", re.MULTILINE)
 SENTRY_ORIGIN_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Origin:\*\*[ \t]+sentry-intake[ \t]*$",
     re.MULTILINE,
-)
-SENTRY_CONTEXT_RE = re.compile(
-    rf"^[ \t]*{_BULLET}[ \t]+\*\*(?:Where|Defect):\*\*[ \t]*", re.MULTILINE
-)
-_VERIFIER_ACTOR_PATTERN = (
-    r"automated Sentry-origin verifier \(codex, run [A-Za-z0-9._-]+, "
-    r"body (?P<body>[0-9a-f]{64})\)"
-)
-VERIFIER_ACTOR_FULL_RE = re.compile(_VERIFIER_ACTOR_PATTERN)
-VERIFIER_EVIDENCE_RE = re.compile(
-    rf"^(?P<actor>{_VERIFIER_ACTOR_PATTERN}):[ \t]*(?P<reason>\S.*)$"
-)
-VERIFIER_DECISION_RE = re.compile(
-    rf"^(?P<kind>approve|reject) — (?P<actor>{_VERIFIER_ACTOR_PATTERN}):[ \t]*\S"
 )
 
 
@@ -703,16 +684,6 @@ VACUOUS_IMPACT_RE = re.compile(
 # Slugs naming the waits that depend on Felix. Answerable blockers carry a
 # question; other `felix-*` values name preconditions he must clear.
 FELIX_DECISION = "felix-decision"
-# The old spelling remains a read alias for already filed entries. New writes use
-# SENTRY_UNVERIFIED so this trust boundary is not mistaken for a Felix decision.
-SENTRY_UNVERIFIED = "sentry-unverified"
-FELIX_SENTRY_ORIGIN = "felix-sentry-origin"
-SENTRY_VERIFIER_BLOCKERS = frozenset({SENTRY_UNVERIFIED, FELIX_SENTRY_ORIGIN})
-# The derived verification states that make a finding automated-verification
-# work rather than Felix's. It is its own set because the state is derived from
-# the body, not from the `Blocked` slug, and both the summary classifier and the
-# drain read the same two names.
-SENTRY_VERIFICATION_STATES = frozenset({"unverified", "drifted"})
 ANSWERABLE_BLOCKERS = frozenset({FELIX_DECISION})
 # The `summary --json` contract. Versioned because the drain's preflight and
 # the cross-repository view both read it from another process; a shape change
@@ -721,35 +692,6 @@ ANSWERABLE_BLOCKERS = frozenset({FELIX_DECISION})
 FINDINGS_SUMMARY_SCHEMA = "findings-summary/1"
 DECIDED_MARKER = "**Decision made:**"
 
-
-# Every marker only the answer route may write. `**Why rejected:**` is legal
-# body text on an ordinary finding and answer-route-only on a Sentry-origin one,
-# so the helper below scopes it; claim recovery reads the whole tuple, because a
-# Sentry approval or rejection is landed evidence exactly as a decision is.
-ANSWER_EVIDENCE_MARKERS = (
-    (
-        re.compile(rf"^[ \t]*{_BULLET}[ \t]+\*\*Approved:\*\*[ \t]*", re.MULTILINE),
-        "**Approved:**",
-    ),
-    (
-        re.compile(
-            rf"^[ \t]*{_BULLET}[ \t]+{re.escape(DECIDED_MARKER)}[ \t]*",
-            re.MULTILINE,
-        ),
-        DECIDED_MARKER,
-    ),
-    (
-        re.compile(
-            rf"^[ \t]*{_BULLET}[ \t]+\*\*Why rejected:\*\*[ \t]*",
-            re.MULTILINE,
-        ),
-        "**Why rejected:**",
-    ),
-)
-ANSWER_EVIDENCE_MARKER_LINE_RE = re.compile(
-    rf"^[ \t]*{_BULLET}[ \t]+\*\*(?:Approved|Why rejected|Decision made):\*\*"
-)
-SENTRY_ONLY_ANSWER_EVIDENCE = "**Why rejected:**"
 
 # The answer spool has a smaller header than the findings ledger. Reusing
 # HEADER_RE would silently reject the actual answer shape; anchoring this grammar
@@ -761,17 +703,15 @@ ANSWER_ID_RE = re.compile(
 )
 DECISION_BULLET_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+"
-    rf"(?P<decision>{re.escape(DECIDED_MARKER)}.*)$"
+    rf"(?P<decision>{re.escape(DECIDED_MARKER)}.*)$",
+    re.MULTILINE,
 )
 
 
-def _answer_evidence_marker(body: str, *, sentry_origin: bool) -> str | None:
+def _answer_evidence_marker(body: str) -> str | None:
     """Name answer-route-only evidence in ``body``, if it carries any."""
-    for pattern, marker in ANSWER_EVIDENCE_MARKERS:
-        if marker == SENTRY_ONLY_ANSWER_EVIDENCE and not sentry_origin:
-            continue
-        if pattern.search(body) is not None:
-            return marker
+    if DECISION_BULLET_RE.search(body) is not None:
+        return DECIDED_MARKER
     return None
 
 
@@ -781,14 +721,12 @@ BLOCKER_NONE = "none"
 BLOCKER_ANSWERABLE = "answerable"
 BLOCKER_PRECONDITION = "precondition"
 BLOCKER_EXTERNAL = "external"
-BLOCKER_VERIFIER = "verifier"
 BLOCKER_CLASSES = frozenset(
     {
         BLOCKER_NONE,
         BLOCKER_ANSWERABLE,
         BLOCKER_PRECONDITION,
         BLOCKER_EXTERNAL,
-        BLOCKER_VERIFIER,
     }
 )
 
@@ -797,8 +735,6 @@ def classify_blocker(blocked: str) -> str:
     """Classify a blocker without enumerating future Felix-only preconditions."""
     if blocked == BLOCKER_NONE:
         blocker_class = BLOCKER_NONE
-    elif blocked in SENTRY_VERIFIER_BLOCKERS:
-        blocker_class = BLOCKER_VERIFIER
     elif blocked in ANSWERABLE_BLOCKERS:
         blocker_class = BLOCKER_ANSWERABLE
     elif blocked.startswith("felix-"):
@@ -1437,41 +1373,7 @@ class Finding:
         return (
             self.status == "open"
             and classify_blocker(self.blocked) == BLOCKER_NONE
-            and self.sentry_verification is None
         )
-
-    @property
-    def sentry_origin_clearance(self) -> str | None:
-        """Return why a Sentry origin is not cleared, or None once it is.
-
-        Status-independent, so a header change is judged on the approval
-        evidence the body actually carries rather than on the entry's current
-        status.  `None` means either "not Sentry-origin at all" or "origin
-        approved and the approval still covers this body".
-        """
-        if not _body_is_sentry_origin(_unfenced_body(self)):
-            return None
-        if classify_blocker(self.blocked) == BLOCKER_VERIFIER:
-            return "unverified"
-        body = _unfenced_body(self)
-        if APPROVED_RE.search(body) is None:
-            return "unverified"
-        verifier_digest = _last_approved_verifier_digest(body)
-        # Legacy/manual approval evidence has no verifier digest and remains a
-        # completed approval.  Only the latest verifier-authenticated approval
-        # can drift when the covered body changes.
-        if verifier_digest is None:
-            return None
-        if verified_body_sha256(self) != verifier_digest:
-            return "drifted"
-        return None
-
-    @property
-    def sentry_verification(self) -> str | None:
-        """Return derived Sentry verification state for queue-facing surfaces."""
-        if self.status != "open":
-            return None
-        return self.sentry_origin_clearance
 
     @property
     def cluster_key(self) -> tuple[str, str]:
@@ -1519,9 +1421,6 @@ class SummaryBuckets:
     instead of re-deriving them, so the overview, the drain's start screen and
     ``decisions`` cannot disagree about which finding waits on what.
 
-    ``answerable`` is derived from its two stored, slug-partitioned halves
-    rather than stored beside them: a third field could disagree with its own
-    partition.
     """
 
     total: int
@@ -1530,33 +1429,25 @@ class SummaryBuckets:
     open_: int
     pickable: tuple[Finding, ...]
     product: tuple[Finding, ...]
-    approvals: tuple[Finding, ...]
     preconditions: tuple[Finding, ...]
     external: tuple[Finding, ...]
 
     @property
     def answerable(self) -> tuple[Finding, ...]:
-        return self.product + self.approvals
+        return self.product
 
     @property
     def blocked(self) -> int:
-        """Every open finding whose blocker is not ``none``, verifier included."""
+        """Every open finding whose blocker is not ``none``."""
         return (
             len(self.product)
-            + len(self.approvals)
             + len(self.preconditions)
             + len(self.external)
         )
 
 
 def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
-    """Classify parsed findings into the four blocker classes exactly once.
-
-    The verifier class takes precedence over the ``Blocked`` slug, exactly as
-    the drain's row classifier does: a Sentry-origin finding whose body drifted
-    is automated-verification work, never a pickable one, even when its slug is
-    ``none``. That precedence is what keeps every consumer's counts identical.
-    """
+    """Classify parsed findings into the four blocker classes exactly once."""
     handled = 0
     rejected = 0
     open_findings: list[Finding] = []
@@ -1567,29 +1458,20 @@ def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
             rejected += 1
         elif finding.status == "open":
             open_findings.append(finding)
-    approvals = tuple(
-        finding
-        for finding in open_findings
-        if classify_blocker(finding.blocked) == BLOCKER_VERIFIER
-        or finding.sentry_verification in SENTRY_VERIFICATION_STATES
-    )
-    approval_ids = {finding.id for finding in approvals}
     product = tuple(
         finding
         for finding in open_findings
-        if finding.blocked == FELIX_DECISION and finding.id not in approval_ids
+        if finding.blocked == FELIX_DECISION
     )
     preconditions = tuple(
         finding
         for finding in open_findings
         if classify_blocker(finding.blocked) == BLOCKER_PRECONDITION
-        and finding.id not in approval_ids
     )
     external = tuple(
         finding
         for finding in open_findings
         if classify_blocker(finding.blocked) == BLOCKER_EXTERNAL
-        and finding.id not in approval_ids
     )
     return SummaryBuckets(
         total=len(findings),
@@ -1598,7 +1480,6 @@ def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
         open_=len(open_findings),
         pickable=tuple(finding for finding in open_findings if finding.pickable),
         product=product,
-        approvals=approvals,
         preconditions=preconditions,
         external=external,
     )
@@ -1610,7 +1491,7 @@ def _summary_counts_line(buckets: SummaryBuckets) -> str:
     def amount(count, singular, plural):
         return "%d %s" % (count, singular if count == 1 else plural)
 
-    return "%s (%s, %s, %s); %s; %s (%s, %s, %s, %s)" % (
+    return "%s (%s, %s, %s); %s; %s (%s, %s, %s)" % (
         amount(buckets.total, "finding", "findings"),
         amount(buckets.handled, "handled", "handled"),
         amount(buckets.rejected, "rejected", "rejected"),
@@ -1618,11 +1499,6 @@ def _summary_counts_line(buckets: SummaryBuckets) -> str:
         amount(len(buckets.pickable), "pickable finding", "pickable findings"),
         amount(buckets.blocked, "blocked finding", "blocked findings"),
         amount(len(buckets.product), "decision", "decisions"),
-        amount(
-            len(buckets.approvals),
-            "finding awaiting automated verification",
-            "findings awaiting automated verification",
-        ),
         amount(
             len(buckets.preconditions), "Felix precondition", "Felix preconditions"
         ),
@@ -1955,14 +1831,6 @@ class LedgerCommitResult:
 
 
 @dataclass(frozen=True)
-class AnswerSpoolReturn:
-    """A crash-recoverable answer-file move back to its published spool."""
-
-    identifier: str | None
-    sha256: str
-
-
-@dataclass(frozen=True)
 class ClaimIntent:
     """The validated durable state describing one inbox or answers claim."""
 
@@ -1976,7 +1844,6 @@ class ClaimIntent:
     files: dict[str, dict[str, object]] | None = None
     quarantined: dict[str, str] = field(default_factory=dict)
     manual_repair: bool = False
-    returning_to_spool: dict[str, AnswerSpoolReturn] = field(default_factory=dict)
     refused: bool = False
     provisional_ids: dict[str, set[str]] | None = None
 
@@ -2587,11 +2454,9 @@ def _answer_effect_state(
     header_index, end, header_match = target
     status = cast(str, record["status"])
     blocked = cast(str, record["blocked"])
-    kind = cast(str, record["kind"])
     current_status = header_match.group("status")
     current_blocked = header_match.group("blocked")
-    done_status = "rejected" if kind == "reject" else status
-    header_done = current_blocked == BLOCKER_NONE and current_status == done_status
+    header_done = current_blocked == BLOCKER_NONE and current_status == status
     header_untouched = current_blocked == blocked and current_status == status
 
     evidence = tuple(cast(list[str], record["evidence"]))
@@ -3261,22 +3126,6 @@ def validate(
                 )
 
         joined = _unfenced_body(f)
-        sentry_origin = _body_is_sentry_origin(joined)
-        if f.blocked in SENTRY_VERIFIER_BLOCKERS and not sentry_origin:
-            issues.append(
-                f"{where}: entry {f.id} is not Sentry-origin but carries verifier "
-                f"blocker {f.blocked}; it must carry {FELIX_DECISION}"
-            )
-        if (
-            f.status == "open"
-            and sentry_origin
-            and APPROVED_RE.search(joined) is None
-            and f.blocked not in SENTRY_VERIFIER_BLOCKERS
-        ):
-            issues.append(
-                f"{where}: Sentry-origin open finding without an '**Approved:**' "
-                f"bullet must be blocked on {SENTRY_UNVERIFIED}"
-            )
         if f.status == "handled" and "Still open" in joined:
             issues.append(
                 f"{where}: status is 'handled' but the body still says 'Still open' — "
@@ -4305,23 +4154,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
-def _summary_blocker_slug(finding: Finding) -> str:
-    """The slug queue-facing surfaces print, including derived verifier drift.
-
-    A drifted Sentry-origin finding keeps ``Blocked: none`` on the ledger after
-    approval cleared the slug; ``list``/``next`` already substitute
-    ``sentry-unverified`` so the row still names the wait. Summary must emit
-    the same slug: otherwise ``kit findings`` groups the row under product
-    decisions because ``waiting[].class`` is only ``answerable|precondition``.
-    """
-    if finding.sentry_verification == "drifted":
-        return SENTRY_UNVERIFIED
-    return finding.blocked
-
-
 def _summary_waiting_row(finding: Finding) -> str:
     """One waiting row: id, the slug it waits on, and its heading."""
-    return f"  {finding.id}  {_summary_blocker_slug(finding)}  {finding.title}"
+    return f"  {finding.id}  {finding.blocked}  {finding.title}"
 
 
 def _render_summary_text(
@@ -4331,12 +4166,10 @@ def _render_summary_text(
     print(counts_line)
     print()
     print("WAITING ON YOU")
-    # Three labelled groups in the order Felix reads them: what needs a product
-    # answer, what the machine verifies, then what only he can make true. An
-    # empty group is omitted rather than shown as a bare zero.
+    # Product answers and preconditions are the two Felix-facing groups.
+    # Omit empty groups.
     for label, rows in (
         ("product decisions", buckets.product),
-        ("Sentry approvals", buckets.approvals),
         ("preconditions", buckets.preconditions),
     ):
         if not rows:
@@ -4382,7 +4215,7 @@ def _summary_json_payload(
         return [
             {
                 "id": finding.id,
-                "blocked": _summary_blocker_slug(finding),
+                "blocked": finding.blocked,
                 "heading": finding.title,
                 "class": row_class,
             }
@@ -4398,7 +4231,6 @@ def _summary_json_payload(
             "open": buckets.open_,
             "pickable": len(buckets.pickable),
             "decisions": len(buckets.product),
-            "sentry": len(buckets.approvals),
             "preconditions": len(buckets.preconditions),
             "external": len(buckets.external),
             "blocked": buckets.blocked,
@@ -4407,7 +4239,6 @@ def _summary_json_payload(
         "summary_line": counts_line,
         "waiting": (
             waiting_rows(buckets.product, "answerable")
-            + waiting_rows(buckets.approvals, "answerable")
             + waiting_rows(buckets.preconditions, "precondition")
         ),
         "pickable": [
@@ -4526,13 +4357,11 @@ def _list_json_records(
             "blocked": f.blocked,
             "heading": f.title,
             "tooling": f.area in tooling_areas,
-            "sentry_verification": f.sentry_verification,
         }
         if include_body:
             record.update(
                 {
                     "body": _unfenced_body(f),
-                    "body_sha256": verified_body_sha256(f),
                 }
             )
         if raw_records is not None:
@@ -4603,54 +4432,6 @@ def _unfenced_body(entry: Finding) -> str:
         for index, line in enumerate(entry.body)
         if not (index < len(entry.body_fenced) and entry.body_fenced[index])
     )
-
-
-def _verified_body_lines(entry: Finding) -> list[str]:
-    """Return body lines covered by a verifier approval.
-
-    Answer evidence is an effect of the answer route, rather than source text
-    the verifier judged. Wrapped answer bullets are skipped as one block.
-    """
-    lines = _unfenced_body(entry).splitlines()
-    result: list[str] = []
-    skip_continuation = False
-    for line in lines:
-        if ANSWER_EVIDENCE_MARKER_LINE_RE.match(line):
-            skip_continuation = True
-            continue
-        if skip_continuation and line[:1].isspace():
-            continue
-        skip_continuation = False
-        result.append(line)
-    return result
-
-
-def verified_body_sha256(entry: Finding) -> str:
-    """Hash one entry's unfenced, non-answer body with its exact line joins."""
-    return _sha256_bytes("\n".join(_verified_body_lines(entry)).encode("utf-8"))
-
-
-def _last_approved_verifier_digest(body: str) -> str | None:
-    """Return the digest from the latest verifier-authenticated approval."""
-    latest: str | None = None
-    lines = body.splitlines()
-    for index, line in enumerate(lines):
-        marker = ANSWER_EVIDENCE_MARKER_LINE_RE.match(line)
-        if marker is None or re.match(
-            rf"^[ \t]*{_BULLET}[ \t]+\*\*Approved:\*\*[ \t]*", line
-        ) is None:
-            continue
-        continuation = index + 1
-        while continuation < len(lines) and lines[continuation][:1].isspace():
-            continuation += 1
-        candidate = " ".join(
-            [line[marker.end() :].strip()]
-            + [value.strip() for value in lines[index + 1 : continuation]]
-        )
-        match = VERIFIER_EVIDENCE_RE.fullmatch(candidate)
-        if match is not None:
-            latest = match.group("body")
-    return latest
 
 
 def _unfenced_text(text: str) -> str:
@@ -4752,19 +4533,11 @@ def _print_related_decisions(
 
 
 def _waiting_rows(findings: list[Finding]) -> list[tuple[str, str, str]]:
-    """Leftover blocked or drifted rows: (id, slug, title)."""
+    """Leftover blocked rows: (id, slug, title)."""
     return [
-        (
-            f.id,
-            SENTRY_UNVERIFIED if f.sentry_verification == "drifted" else f.blocked,
-            f.title,
-        )
+        (f.id, f.blocked, f.title)
         for f in findings
-        if f.status == "open"
-        and (
-            classify_blocker(f.blocked) != BLOCKER_NONE
-            or f.sentry_verification == "drifted"
-        )
+        if f.status == "open" and classify_blocker(f.blocked) != BLOCKER_NONE
     ]
 
 
@@ -5324,14 +5097,8 @@ def _cmd_next_selection(
                 if answers_claim_kept
                 else "finding is held by a standing answers claim"
             )
-            sentry_detail = (
-                f", sentry_verification={chosen.sentry_verification}"
-                if chosen.sentry_verification is not None
-                else ""
-            )
             print(
-                f"{args.pin} is not pickable ({claim_reason}: {answers_claim}"
-                f"{sentry_detail})",
+                f"{args.pin} is not pickable ({claim_reason}: {answers_claim})",
                 file=sys.stderr,
             )
             return NextSelection(1, [])
@@ -5345,15 +5112,9 @@ def _cmd_next_selection(
             return NextSelection(1, [])
         key = key_by_id.get(args.pin)
         if key is None:
-            sentry_state = chosen.sentry_verification
-            sentry_detail = (
-                f", sentry_verification={sentry_state}"
-                if sentry_state is not None
-                else ""
-            )
             print(
                 f"{args.pin} is not pickable (status={chosen.status}, "
-                f"blocked={chosen.blocked}{sentry_detail})",
+                f"blocked={chosen.blocked})",
                 file=sys.stderr,
             )
             return NextSelection(1, [])
@@ -6095,57 +5856,6 @@ def _entry_candidate_text(entry: str, ledger_text: str) -> str:
     return "\n".join(prefix) + "\n\n## filed entry\n\n" + entry
 
 
-def _normalise_sentry_origin_entry(
-    entry: str, ledger: Path, *, ledger_text: str | None = None
-) -> str:
-    """Canonicalise the verification blocker on a Sentry-origin entry.
-
-    Filing and merging both use this content-driven, idempotent normalisation
-    before validation. The validator remains the authority: this only makes the
-    conventional ``Blocked: none`` form conform before the first validation pass.
-    """
-    try:
-        if ledger_text is None:
-            ledger_text = _read_ledger_text(ledger)
-        candidate = _entry_candidate_text(entry, ledger_text)
-        findings, problems, _vocabulary = _parse_text(candidate, ledger)
-    except LedgerReadRefused:
-        raise
-    except _READ_ERRORS_LEDGER:
-        return entry
-    if len(findings) != 1 or problems:
-        return entry
-
-    finding = findings[0]
-    body = _unfenced_body(finding)
-    if not _body_is_sentry_origin(body):
-        return entry
-    if finding.blocked == SENTRY_UNVERIFIED:
-        return entry
-    if finding.blocked == FELIX_SENTRY_ORIGIN or (
-        finding.status == "open" and APPROVED_RE.search(body) is None
-    ):
-        replacement = SENTRY_UNVERIFIED
-    else:
-        return entry
-
-    lines = entry.splitlines()
-    fence_states = _fence_mask(lines)
-    for index, (line, fence_state) in enumerate(zip(lines, fence_states, strict=True)):
-        if fence_state is not FenceState.OUTSIDE:
-            continue
-        if HEADER_RE.match(line) is None:
-            continue
-        lines[index] = re.sub(
-            r"(\*\*Blocked:\*\* )\S+",
-            rf"\g<1>{replacement}",
-            line,
-            count=1,
-        )
-        break
-    return "\n".join(lines) + ("\n" if entry.endswith("\n") else "")
-
-
 def _stamp_filing_entry(entry: str) -> str:
     session_id = os.environ.get("DRAIN_SESSION_ID")
     if not session_id:
@@ -6198,8 +5908,7 @@ def _read_and_validate_entry(
 ) -> tuple[str | None, list[str]]:
     """Read and stamp an external path for `cmd_file_status`, then validate its entry.
 
-    Content normalisation precedes validation so conventional Sentry-origin headers
-    resolve to the same filing identity as publication.
+    Stamping precedes validation so the filing identity matches publication.
     """
     try:
         entry = entry_path.read_text(encoding="utf-8")
@@ -6207,16 +5916,15 @@ def _read_and_validate_entry(
         return _validate_entry_text(entry, ledger, entry_path)
     except LedgerReadRefused:
         raise
-    except (OSError, UnicodeError, LedgerError) as exc:
+    except _READ_ERRORS_LEDGER as exc:
         return None, [f"could not read or parse {entry_path}: {exc}"]
 
 
 def _validate_entry_text(
     entry: str, ledger: Path, entry_path: Path, *, ledger_text: str | None = None
 ) -> tuple[str | None, list[str]]:
-    """Normalise staged text without attributing it to the sweeper."""
+    """Validate staged text without attributing it to the sweeper."""
     try:
-        entry = _normalise_sentry_origin_entry(entry, ledger, ledger_text=ledger_text)
         if ledger_text is None:
             ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
@@ -6243,29 +5951,14 @@ def _validate_entry_text(
     if len(findings) == 1:
         issues += _impact_admission_issues(findings[0], entry_path)
         issues += _repeated_field_issues(findings[0], entry_path)
-        if (
-            _body_is_sentry_origin(_unfenced_body(findings[0]))
-            and findings[0].status != "open"
-        ):
-            issues.append(
-                f"{entry_path} is Sentry-origin but carries status "
-                f"{findings[0].status!r}; new Sentry-origin entries must be filed open"
-            )
         body = _unfenced_body(findings[0])
         if findings[0].entry == "build" and not OPEN_QUESTION_RE.search(body):
             issues.append(OPEN_QUESTION_REFUSAL.format(where=entry_path))
-        marker = _answer_evidence_marker(
-            body, sentry_origin=_body_is_sentry_origin(body)
-        )
-        if marker == "**Why rejected:**":
-            issues.append(
-                f"{entry_path} carries **Why rejected:** on a Sentry-origin entry; "
-                "only the answer route may write that evidence"
-            )
-        elif marker is not None:
+        marker = _answer_evidence_marker(body)
+        if marker is not None:
             issues.append(
                 f"{entry_path} carries answer evidence; only the answer route may "
-                "write **Approved:** or **Decision made:**"
+                "write **Decision made:**"
             )
     return entry, issues
 
@@ -7365,7 +7058,6 @@ def claim_spool(
     legacy: Path | None = None,
     *,
     into_existing: bool = False,
-    exclude_names: Collection[str] = (),
 ) -> list[Path] | None:
     """Take exclusive ownership of a spool's published files, by rename.
 
@@ -7393,10 +7085,7 @@ def claim_spool(
     if claim.exists() and not into_existing:
         return None
 
-    excluded = set(exclude_names)
-    published = [
-        path for path in sorted(spool.glob("*.md")) if path.name not in excluded
-    ]
+    published = sorted(spool.glob("*.md"))
     if legacy is not None and legacy.exists():
         published.append(legacy)
     if not published:
@@ -7469,7 +7158,6 @@ def _write_claim_intent(
     files: dict[str, dict[str, object]] | None = None,
     quarantined: dict[str, str] | None = None,
     manual_repair: bool = False,
-    returning_to_spool: dict[str, AnswerSpoolReturn] | None = None,
     refused: bool = False,
     provisional_ids: dict[str, set[str]] | None = None,
 ) -> None:
@@ -7492,14 +7180,6 @@ def _write_claim_intent(
         payload["provisional_ids"] = {
             name: sorted(identifiers)
             for name, identifiers in sorted(provisional_ids.items())
-        }
-    if returning_to_spool:
-        payload[ANSWER_RETURNING_FIELD] = {
-            name: {
-                "id": value.identifier,
-                "sha256": value.sha256,
-            }
-            for name, value in sorted(returning_to_spool.items())
         }
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
@@ -7536,28 +7216,6 @@ def _kept_claim_provisional_ids(
     }
 
 
-def _write_answers_claim_state(
-    claim: Path,
-    intent: ClaimIntent,
-    *,
-    ids: Collection[str],
-    files: dict[str, dict[str, object]] | None,
-    returning_to_spool: dict[str, AnswerSpoolReturn] | None,
-) -> None:
-    """Rewrite an answers intent while preserving its legacy optional fields."""
-    _write_claim_intent(
-        claim,
-        intent.phase,
-        set(ids),
-        intent.receipt_ids if intent.has_receipt_ids else None,
-        fixed=intent.fixed if intent.has_fixed else None,
-        files=files,
-        quarantined=intent.quarantined or None,
-        manual_repair=intent.manual_repair,
-        returning_to_spool=returning_to_spool,
-    )
-
-
 def _relocate_claim_file_durably(
     claim: Path,
     destination_dir: Path,
@@ -7565,7 +7223,6 @@ def _relocate_claim_file_durably(
     *,
     conflict_message: str,
     missing_message: str,
-    expected_sha256: str | None = None,
     on_move: Callable[[], None] | None = None,
 ) -> None:
     """Move one claimed file and make either side of a replay durable."""
@@ -7578,16 +7235,6 @@ def _relocate_claim_file_durably(
     if not source_exists and not destination_exists:
         raise LedgerError(missing_message)
 
-    current = source if source_exists else destination
-    if (
-        expected_sha256 is not None
-        and _sha256_bytes(current.read_bytes()) != expected_sha256
-    ):
-        raise LedgerError(
-            f"answer return {current} changed after its intent was recorded; "
-            "restore the recorded bytes before retrying"
-        )
-
     moved = source_exists
     if moved:
         os.rename(source, destination)
@@ -7595,163 +7242,6 @@ def _relocate_claim_file_durably(
             on_move()
     _fsync_directory(claim)
     _fsync_directory(destination_dir)
-
-
-def _finish_answers_claim_returns(
-    claim: Path,
-    spool: Path,
-    intent: ClaimIntent,
-    *,
-    strict: bool,
-) -> ClaimIntent:
-    """Finish an intent-recorded return, accepting either side of each rename."""
-    if not intent.returning_to_spool:
-        return intent
-    if intent.manual_repair:
-        raise LedgerError(
-            f"answers claim {claim} has a pending return and manual-repair state"
-        )
-
-    spool.mkdir(parents=True, exist_ok=True)
-    for name, returning in sorted(intent.returning_to_spool.items()):
-        source = claim / name
-        try:
-            _relocate_claim_file_durably(
-                claim,
-                spool,
-                name,
-                conflict_message=(
-                    f"cannot recover answer return {name}: it exists in both "
-                    f"{claim} and {spool}; inspect both copies by hand"
-                ),
-                missing_message=(
-                    f"cannot recover answer return {name}: it is missing from both "
-                    f"{claim} and {spool}; restore it before retrying"
-                ),
-                expected_sha256=returning.sha256,
-            )
-        except LedgerError:
-            raise
-        except OSError as exc:
-            raise LedgerError(
-                f"could not return verifier answer {source} to {spool}: {exc}"
-            ) from exc
-
-    files = dict(intent.files) if intent.files is not None else None
-    ids = set(intent.ids)
-    for name, returning in intent.returning_to_spool.items():
-        if files is not None:
-            value = files.pop(name, None)
-            recorded_id = value.get("id") if value is not None else None
-            if isinstance(recorded_id, str):
-                ids.discard(recorded_id)
-        if returning.identifier is not None:
-            ids.discard(returning.identifier)
-    if files is not None:
-        ids = {
-            cast(str, value["id"])
-            for value in files.values()
-            if isinstance(value.get("id"), str)
-        }
-    _write_answers_claim_state(
-        claim,
-        intent,
-        ids=ids,
-        files=files,
-        returning_to_spool=None,
-    )
-    updated = _read_claim_intent(claim, strict=strict)
-    if updated is None:
-        raise LedgerError(
-            f"answers claim {claim} disappeared while finishing answer returns"
-        )
-    return updated
-
-
-def _recover_answers_claim_return_intent(
-    claim: Path, spool: Path, *, strict: bool
-) -> ClaimIntent | None:
-    """Resume any intent-first return before normal claim reconciliation."""
-    intent = _read_claim_intent(claim, strict=strict)
-    if intent is not None and intent.returning_to_spool:
-        return _finish_answers_claim_returns(
-            claim, spool, intent, strict=strict
-        )
-    return intent
-
-
-def _return_answers_claim_files_to_spool(
-    claim: Path,
-    spool: Path,
-    files_to_return: dict[str, str | None],
-    *,
-    strict: bool,
-) -> ClaimIntent:
-    """Journal verifier files before atomically returning them to the spool."""
-    intent = _read_claim_intent(claim, strict=strict)
-    if intent is None:
-        raise LedgerError(f"answers claim {claim} has no intent to update")
-    if intent.manual_repair:
-        raise LedgerError(
-            f"answers claim {claim} is kept for manual repair and cannot return files"
-        )
-    if intent.returning_to_spool:
-        intent = _finish_answers_claim_returns(
-            claim, spool, intent, strict=strict
-        )
-
-    returning = dict(intent.returning_to_spool)
-    for name, identifier in sorted(files_to_return.items()):
-        if name in intent.quarantined:
-            raise LedgerError(
-                f"cannot return quarantined answer {name} from {claim}"
-            )
-        source = claim / name
-        destination = spool / name
-        if not source.exists():
-            raise LedgerError(
-                f"cannot return answer {name}: it is not present in {claim}"
-            )
-        if os.path.lexists(destination):
-            raise LedgerError(
-                f"cannot return answer {name}: destination {destination} already "
-                "exists; the claim and spool are unchanged"
-            )
-        recorded_id = identifier
-        if intent.files is not None:
-            record = intent.files.get(name)
-            if record is None:
-                raise LedgerError(
-                    f"cannot return answer {name}: it is absent from the claim intent"
-                )
-            intent_id = record.get("id")
-            if isinstance(intent_id, str):
-                if identifier is not None and identifier != intent_id:
-                    raise LedgerError(
-                        f"cannot return answer {name}: its id differs from the intent"
-                    )
-                recorded_id = intent_id
-        try:
-            digest = _sha256_bytes(source.read_bytes())
-        except OSError as exc:
-            raise LedgerError(f"could not read answer file {source}: {exc}") from exc
-        returning[name] = AnswerSpoolReturn(recorded_id, digest)
-
-    if not returning:
-        return intent
-    _write_answers_claim_state(
-        claim,
-        intent,
-        ids=intent.ids,
-        files=intent.files,
-        returning_to_spool=returning,
-    )
-    marked = _read_claim_intent(claim, strict=strict)
-    if marked is None:
-        raise LedgerError(
-            f"answers claim {claim} disappeared after recording answer returns"
-        )
-    return _finish_answers_claim_returns(claim, spool, marked, strict=strict)
 
 
 def _mark_answers_claim_manual_repair(claim: Path, ids: Collection[str]) -> None:
@@ -7779,7 +7269,6 @@ def _mark_answers_claim_manual_repair(claim: Path, ids: Collection[str]) -> None
         files=intent.files,
         quarantined=intent.quarantined,
         manual_repair=True,
-        returning_to_spool=intent.returning_to_spool or None,
     )
 
 
@@ -8173,7 +7662,7 @@ def _claimed_file_content_proven(
                 return False
     except LedgerReadRefused:
         raise
-    except (OSError, UnicodeError, LedgerError):
+    except _READ_ERRORS_LEDGER:
         return False
     return True
 
@@ -8374,17 +7863,12 @@ def _validate_answers_files(
         previous_line_occurrences = value.get("previous_line_occurrences")
         if not isinstance(identifier, str) or ID_RE.fullmatch(identifier) is None:
             raise ValueError("invalid answers file id")
-        if not isinstance(blocked, str) or classify_blocker(blocked) not in {
-            BLOCKER_ANSWERABLE,
-            BLOCKER_VERIFIER,
-        }:
+        if not isinstance(blocked, str) or classify_blocker(blocked) != BLOCKER_ANSWERABLE:
             raise ValueError("answers file blocker is not answerable")
         if not isinstance(status, str) or status not in STATUSES:
             raise ValueError("invalid answers file status")
-        if kind not in {"decision", "approve", "reject"}:
+        if kind != "decision":
             raise ValueError("invalid answers file kind")
-        if (kind == "decision") != (classify_blocker(blocked) == BLOCKER_ANSWERABLE):
-            raise ValueError("answers file kind does not match blocker")
         if (
             not isinstance(evidence, list)
             or not evidence
@@ -8442,32 +7926,7 @@ def _validate_answers_files(
                 f"could not read {path}: answer id {identifier} does not match "
                 f"recorded id {value['id']}"
             )
-        kind = cast(str, value["kind"])
-        legacy_evidence: list[str] | None = None
-        if kind != "decision":
-            try:
-                # A prepared intent can predate the P2 verifier actor gate.  Its
-                # recorded evidence is the durable source of truth for recovery;
-                # newly claimed spool answers are still parsed strictly below.
-                parsed_kind = _sentry_answer_kind(bullet, allow_legacy=True)
-            except LedgerError as exc:
-                raise LedgerError(f"could not read {path}: {exc}") from exc
-            if parsed_kind != kind:
-                raise LedgerError(
-                    f"could not read {path}: answer kind {parsed_kind} does not "
-                    f"match recorded kind {kind}"
-                )
-            derived = bullet + _sentry_answer_evidence(bullet, kind)
-            # Claims prepared by the pre-P2 answer consumer recorded the same
-            # verifier effect without the actor prefix.  Keep those durable
-            # claims recoverable while every newly applied answer uses the
-            # authenticated, actor-prefixed evidence below.
-            legacy_evidence = bullet + _sentry_answer_evidence(
-                bullet, kind, actor_prefixed=False
-            )
-        else:
-            derived = bullet
-        if derived != value["evidence"] and legacy_evidence != value["evidence"]:
+        if bullet != value["evidence"]:
             raise LedgerError(
                 f"could not read {path}: recorded evidence does not match the "
                 "answer file"
@@ -8525,33 +7984,6 @@ def _read_claim_intent(
                 ):
                     raise ValueError("invalid provisional_ids record")
                 provisional_ids[name] = set(identifiers)
-        raw_returning = record.get(ANSWER_RETURNING_FIELD)
-        returning_to_spool: dict[str, AnswerSpoolReturn] = {}
-        if raw_returning is not None:
-            if not isinstance(raw_returning, dict):
-                raise TypeError(f"{ANSWER_RETURNING_FIELD} must be an object")
-            for name, raw_return in raw_returning.items():
-                if (
-                    not isinstance(name, str)
-                    or not name.endswith(".md")
-                    or Path(name).name != name
-                    or name in {".", ".."}
-                    or not isinstance(raw_return, dict)
-                    or set(raw_return) != {"id", "sha256"}
-                ):
-                    raise ValueError(f"invalid {ANSWER_RETURNING_FIELD} record")
-                identifier = raw_return.get("id")
-                digest = raw_return.get("sha256")
-                if (
-                    identifier is not None
-                    and (
-                        not isinstance(identifier, str)
-                        or ID_RE.fullmatch(identifier) is None
-                    )
-                ) or not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None:
-                    raise ValueError(f"invalid {ANSWER_RETURNING_FIELD} record")
-                returning_to_spool[name] = AnswerSpoolReturn(identifier, digest)
-
         raw_receipts = record.get("receipt_ids")
         receipt_ids: dict[str, str | dict[str, str]] = {}
         if raw_receipts is not None:
@@ -8657,16 +8089,6 @@ def _read_claim_intent(
             # quarantine-only intent is the one explicit empty-files case.
             if any(name not in files for name in quarantined):
                 raise ValueError("quarantined file is absent from files")
-            if any(name not in files for name in returning_to_spool):
-                raise ValueError("returning answer file is absent from files")
-            for name, returning in returning_to_spool.items():
-                if (
-                    returning.identifier is not None
-                    and files[name].get("id") != returning.identifier
-                ):
-                    raise ValueError("returning answer id does not match files")
-            if set(returning_to_spool) & set(quarantined):
-                raise ValueError("returning answer file is quarantined")
             # Persist unreadable-file discoveries before a recovery caller can
             # move or replay any member of this claim.
             if quarantined and raw_quarantined != quarantined:
@@ -8679,7 +8101,6 @@ def _read_claim_intent(
                     files=files,
                     quarantined=quarantined,
                     **({"manual_repair": True} if manual_repair else {}),
-                    returning_to_spool=(returning_to_spool or None),
                 )
         elif quarantined:
             raise ValueError("quarantined requires files")
@@ -8694,7 +8115,6 @@ def _read_claim_intent(
             files,
             quarantined,
             manual_repair,
-            returning_to_spool,
             refused,
             provisional_ids,
         )
@@ -8720,15 +8140,6 @@ def _recover_claim(
         _remove_claim_intent(claim)
         claim.rmdir()
         return
-    if answers and intent.returning_to_spool:
-        if not publish_locked:
-            raise LedgerError(
-                f"cannot recover pending answer returns in {claim} without its "
-                "publish lock"
-            )
-        intent = _finish_answers_claim_returns(
-            claim, spool, intent, strict=False
-        )
     if not answers:
         intent = _recover_inbox_quarantines(claim, spool, intent)
     else:
@@ -8909,18 +8320,15 @@ def _merge_sources(claimed: list[Path], ledger: Path) -> list[str]:
         except (OSError, UnicodeError) as exc:
             raise LedgerError(f"could not read claimed filing {path}: {exc}") from exc
         unfenced = _unfenced_text(text)
-        marker = _answer_evidence_marker(
-            unfenced, sentry_origin=_body_is_sentry_origin(unfenced)
-        )
+        marker = _answer_evidence_marker(unfenced)
         if marker is not None:
             raise LedgerError(
                 f"{path} carries '{marker}' answer evidence; only the answer route "
                 "may write it"
             )
-        normalized = _normalise_sentry_origin_entry(text, ledger)
         try:
             findings, problems, _vocabulary = _parse_text(
-                _entry_candidate_text(normalized, _read_ledger_text(ledger)), ledger
+                _entry_candidate_text(text, _read_ledger_text(ledger)), ledger
             )
         except LedgerReadRefused:
             raise
@@ -8928,16 +8336,7 @@ def _merge_sources(claimed: list[Path], ledger: Path) -> list[str]:
             raise LedgerError(f"could not parse claimed filing {path}: {exc}") from exc
         if len(findings) == 1 and problems:
             raise LedgerError(f"claimed filing {path} is invalid: {'; '.join(problems)}")
-        if (
-            len(findings) == 1
-            and _body_is_sentry_origin(_unfenced_body(findings[0]))
-            and findings[0].status != "open"
-        ):
-            raise LedgerError(
-                f"{path} is Sentry-origin but carries status "
-                f"{findings[0].status!r}; new Sentry-origin entries must be filed open"
-            )
-        sources.append(normalized)
+        sources.append(text)
     return sources
 
 
@@ -9886,9 +9285,8 @@ def _answers_legacy_intent_message(
         "effects were recorded, so no answer in it can be judged automatically; "
         f"for each answer file in {claim} compare its entry {basis} with the complete "
         "effect the answer grammar in references/findings-ledger-contract.md "
-        "prescribes (the header transition — Status: rejected for a Sentry reject — "
-        "and every evidence line: the Decision made bullet, plus Approved: or Why "
-        "rejected: for a Sentry answer): delete the file only if the entry holds that "
+        "prescribes (the blocker transition and every evidence line of the Decision "
+        "made bullet): delete the file only if the entry holds that "
         "complete effect exactly once; move it back to "
         f"{answers} only if the entry holds none of it (still parked on its blocker, "
         "no copy of any evidence line); repair every other state by hand first; every "
@@ -9909,11 +9307,6 @@ def _reconcile_answers_claim(
     intent = _read_claim_intent(claim)
     if intent is None:
         return Reconciliation([], {}, set(), False)
-    if intent.returning_to_spool:
-        raise LedgerError(
-            f"answers claim {claim} has a pending return; finish it under the "
-            "answers publish lock before reconciliation"
-        )
     if intent.files is None:
         raise LedgerError(_answers_legacy_intent_message(claim, answers, ledger, mode))
     _quarantine_claim_files(claim, answers, intent)
@@ -10249,10 +9642,6 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         ):
             try:
                 with _publish_lock(publish_lock_path(spool)):
-                    if claim == answers_claim:
-                        _recover_answers_claim_return_intent(
-                            claim, spool, strict=mode == "deferred"
-                        )
                     outcome = finalizer(
                         claim, spool, args.ledger, decisions, mode
                     )
@@ -10611,30 +10000,11 @@ def _merge_inbox_publish_locked(
     except LedgerReadRefused:
         raise
     except (OSError, UnicodeDecodeError, LedgerError) as exc:
-        # Admission failures are about the filed source's status, so leave the
-        # published file in the inbox for correction/retry. Other parse and
-        # candidate failures retain the prepared claim for crash recovery.
-        if "new Sentry-origin entries must be filed open" in str(exc):
-            try:
-                inbox.mkdir(parents=True, exist_ok=True)
-                for claimed_path in claimed:
-                    _return_claimed_file(claimed_path, inbox, legacy)
-                _remove_claim_intent(claim)
-                claim.rmdir()
-            except LedgerReadRefused:
-                raise
-            except (OSError, LedgerError) as restore_exc:
-                print(
-                    f"FAIL could not restore refused filing claim {claim}: {restore_exc}",
-                    file=sys.stderr,
-                )
         print(
             f"FAIL could not read {claim} while merging: {exc}. The ledger is "
             f"unchanged and the batch is preserved at {claim}.",
             file=sys.stderr,
         )
-        if "new Sentry-origin entries must be filed open" in str(exc):
-            return MergeResult(1)
         return refuse()
     # Seeded from the whole batch before a single id is handed out, not just
     # from the ledger: a file that picked its own id is still a claim on that
@@ -12115,7 +11485,7 @@ def cmd_file(args: argparse.Namespace) -> int:
 
 
 def cmd_decisions(args: argparse.Namespace) -> int:
-    """Print Felix-facing blockers and automated verification.
+    """Print Felix-facing blockers.
 
     Optionally restricted to ``args.ids``.
 
@@ -12138,29 +11508,16 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     buckets = summary_buckets(findings)
     waiting = list(buckets.product)
     preconditions = list(buckets.preconditions)
-    verification = list(buckets.approvals)
     if args.ids:
         # Apply one requested id set consistently to each printed class.
         wanted = set(args.ids)
         waiting = [f for f in waiting if f.id in wanted]
         preconditions = [f for f in preconditions if f.id in wanted]
-        verification = [f for f in verification if f.id in wanted]
     if not waiting and not preconditions:
-        if verification:
-            print(
-                f"{len(verification)} Sentry finding(s) awaiting automated "
-                "verification — nothing for you to do."
-            )
-            return 0
         if not issues:
             print("No decisions are waiting on you.")
         return 0
 
-    if verification:
-        print(
-            f"{len(verification)} Sentry finding(s) awaiting automated "
-            "verification — nothing for you to do.\n"
-        )
     # `waiting` is exactly the stored product bucket, so the brief list is it.
     product = waiting
     if product:
@@ -12373,30 +11730,6 @@ def _answerable_header_change_refusal(
     target = next((finding for finding in findings if finding.id == finding_id), None)
     if target is None:
         return None
-    if target.blocked in SENTRY_VERIFIER_BLOCKERS:
-        if status in {"handled", "rejected"}:
-            return (
-                f"cannot clear verifier blocker {target.blocked} with set-header; "
-                "answer it through the verifier answer route"
-            )
-        if blocked is not None and blocked != SENTRY_UNVERIFIED:
-            return (
-                f"cannot clear verifier blocker {target.blocked} with set-header; "
-                "only sentry-unverified is accepted"
-            )
-        return None
-    if blocked is not None and blocked != SENTRY_UNVERIFIED:
-        # The gate exists so attacker-authored Sentry event text cannot reach
-        # Felix's queue unverified.  Once the origin is approved that risk is
-        # discharged, and an approved entry has to be parkable like any other --
-        # otherwise its question must be split into a second entry, away from
-        # the evidence the brief contract exists to keep with it.
-        clearance = target.sentry_origin_clearance
-        if clearance is not None:
-            return (
-                f"cannot set a {clearance} Sentry-origin finding to blocker "
-                f"{blocked}; only {SENTRY_UNVERIFIED} is accepted"
-            )
     if target.blocked not in ANSWERABLE_BLOCKERS:
         return None
     blocked_change = blocked is not None and blocked not in ANSWERABLE_BLOCKERS
@@ -12518,10 +11851,6 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
     """Describe an unfenced annotation line that must not enter the ledger."""
     lines = annotation.splitlines()
     fence_states = _fence_mask(lines)
-    target_is_sentry = _body_is_sentry_origin(
-        _unfenced_body(target)
-    ) or _body_is_sentry_origin(_unfenced_text(annotation))
-
     for line, fence_state in zip(lines, fence_states, strict=True):
         if fence_state is not FenceState.OUTSIDE:
             continue
@@ -12549,17 +11878,7 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
                 "block instead."
             )
 
-        marker = _answer_evidence_marker(line, sentry_origin=target_is_sentry)
-        if marker == "**Why rejected:**":
-            # Named separately because this marker is refused only on a
-            # Sentry-origin entry and is legal everywhere else: a message that
-            # did not say so would leave the operator unable to tell why the
-            # same annotation is accepted on the next finding.
-            return (
-                f"{source} contains unfenced '**Why rejected:**' evidence for a "
-                "Sentry-origin entry; refusing it because annotate cannot forge "
-                "Felix's rejection. Only apply-answers may write it."
-            )
+        marker = _answer_evidence_marker(line)
         if marker is not None:
             return (
                 f"{source} contains unfenced '{marker}' answer evidence; refusing it "
@@ -13104,85 +12423,6 @@ def _parse_answer_file(path: Path) -> tuple[str, list[str]] | None:
     return _parse_answer_contents(answer, answer_lines, answer_fence_states)
 
 
-def _is_verifier_actor_answer(bullet: list[str]) -> bool:
-    """Identify the automated verifier actor independently of target state."""
-    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-    match = re.match(r"^(?:approve|reject) — (?P<actor>[^:]+):", decision)
-    return (
-        match is not None
-        and VERIFIER_ACTOR_FULL_RE.fullmatch(match.group("actor")) is not None
-    )
-
-
-def _inspect_answer_file(path: Path) -> tuple[tuple[str, list[str]] | None, bool]:
-    """Parse one published answer and detect verifier authorship in one fence pass."""
-    answer = path.read_text(encoding="utf-8")
-    lines = answer.splitlines()
-    states = _fence_mask(lines)
-    record = _parse_answer_contents(answer, lines, states)
-    has_verifier_actor = any(
-        _is_verifier_actor_answer(bullet) for bullet in _decision_bullets(lines, states)
-    )
-    return record, has_verifier_actor
-
-
-def _sentry_answer_kind(
-    bullet: list[str], *, allow_legacy: bool = False
-) -> str:
-    """Return the explicit approval decision from a Sentry answer bullet."""
-    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-    match = VERIFIER_DECISION_RE.match(decision)
-    if match is None:
-        if allow_legacy:
-            legacy = re.match(r"^(?P<kind>approve|reject)(?:[ \t]+|$)", decision)
-            if legacy is not None:
-                return legacy.group("kind")
-        raise LedgerError(
-            "a Sentry-origin answer must use the verifier actor and current body "
-            "digest"
-        )
-    return match.group("kind")
-
-
-def _validate_verifier_actor(
-    actor: str, expected_digest: str
-) -> tuple[re.Match[str] | None, str | None]:
-    """Validate one verifier actor and its body digest at an answer boundary."""
-    actor_match = VERIFIER_ACTOR_FULL_RE.fullmatch(actor)
-    if actor_match is None:
-        return None, "invalid verifier actor"
-    if actor_match.group("body") != expected_digest:
-        return actor_match, "verifier body digest does not match"
-    return actor_match, None
-
-
-def _sentry_answer_evidence(
-    bullet: list[str], kind: str, *, actor_prefixed: bool = True
-) -> list[str]:
-    """Turn a Sentry answer into validator evidence for approval or rejection."""
-    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-    verifier = VERIFIER_DECISION_RE.match(decision)
-    if verifier is not None:
-        actor = verifier.group("actor")
-        reason = decision[verifier.end("actor") + 1 :].lstrip()
-    else:
-        actor_match = re.match(r"^(?P<actor>[^:—]+):[ \t]*(?P<reason>.*)$", decision)
-        actor = actor_match.group("actor").strip() if actor_match else "answer route"
-        reason = actor_match.group("reason").strip() if actor_match else decision[len(kind) :].lstrip(" \t—:,-")
-    continuation = " ".join(line.strip() for line in bullet[1:] if line.strip())
-    reason = " ".join(part for part in (reason, continuation) if part)
-    if not reason:
-        reason = (
-            "Approved through the answer route."
-            if kind == "approve"
-            else "Rejected through the answer route."
-        )
-    if actor != "answer route" and actor_prefixed:
-        reason = f"{actor}: {reason}"
-    marker = "Approved" if kind == "approve" else "Why rejected"
-    return [f"* **{marker}:** {reason}"]
-
-
 def _errno_name(exc: OSError) -> str:
     """Return a stable errno label for filesystem diagnostics."""
     return (
@@ -13269,37 +12509,10 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     blocker_class = classify_blocker(target.blocked)
     actor = str(getattr(args, "actor", "")).strip()
     reason = str(getattr(args, "reason", "")).strip()
-    verdict = getattr(args, "verdict", None)
     decision = getattr(args, "decision", None)
     if not actor:
         raise LedgerError("--actor is required")
-    if blocker_class == BLOCKER_VERIFIER:
-        if decision is not None:
-            raise LedgerError(
-                "--decision is only valid for felix-decision findings; verifier "
-                "answers require --verdict"
-            )
-        if verdict not in {"approve", "reject"}:
-            raise LedgerError("verifier answers require --verdict approve or reject")
-        expected_digest = verified_body_sha256(target)
-        actor_match, validation_error = _validate_verifier_actor(
-            actor, expected_digest
-        )
-        if validation_error == "invalid verifier actor":
-            raise LedgerError(
-                "Sentry verifier answers require actor "
-                "'automated Sentry-origin verifier (codex, run <id>, body <sha256>)'"
-            )
-        if validation_error is not None:
-            actual_digest = actor_match.group("body") if actor_match else ""
-            raise LedgerError(
-                f"verifier actor body digest {actual_digest} does not "
-                f"match the current body digest {expected_digest}"
-            )
-        choice = verdict
-    elif blocker_class == BLOCKER_ANSWERABLE:
-        if verdict is not None:
-            raise LedgerError("--verdict is only valid for Sentry verifier findings")
+    if blocker_class == BLOCKER_ANSWERABLE:
         if not isinstance(decision, str) or not decision.strip():
             raise LedgerError("felix-decision answers require --decision")
         choice = decision.strip()
@@ -13328,7 +12541,7 @@ def _cmd_answer(args: argparse.Namespace) -> int:
             if target.id in _answer_ids_in_path(path):
                 raise LedgerError(
                     f"finding {target.id} already has an answer in {path}; "
-                    "refusing a duplicate verifier or decision answer"
+                    "refusing a duplicate decision answer"
                 )
         part = spool / f".{_publish_stamp()}-{_unique_suffix()}.part"
         candidate = spool / f"{_publish_stamp()}-{_unique_suffix()}.md"
@@ -13413,12 +12626,10 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     applied: list[str] = []
     skipped: list[str] = []
     quarantined: list[Path] = []
-    verifier_refused = False
     unreadable_current: dict[str, str] = {}
-    skip_verifier_answers = bool(getattr(args, "skip_verifier_answers", False))
 
     def build(text: str) -> str:
-        nonlocal claimed, verifier_refused
+        nonlocal claimed
         kept_ids = _manual_repair_answers_claim_ids(spool)
         if kept_ids:
             raise ManualRepairAnswersClaimError(kept_ids)
@@ -13450,35 +12661,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             )
         with _publish_lock(publish_lock_path(spool)):
             _refuse_unapplied_answers(spool)
-            if claim.exists():
-                _recover_answers_claim_return_intent(
-                    claim, spool, strict=mode == "deferred"
-                )
-            if skip_verifier_answers and claim.exists():
-                verifier_files: dict[str, str | None] = {}
-                for answer_path in sorted(claim.glob("*.md")):
-                    try:
-                        answer_record, has_verifier_actor = _inspect_answer_file(
-                            answer_path
-                        )
-                    except (OSError, UnicodeError, LedgerError):
-                        continue
-                    if has_verifier_actor:
-                        answer_ids = _answer_ids_in_path(answer_path)
-                        if answer_record is not None:
-                            identifier = answer_record[0]
-                        elif len(answer_ids) == 1:
-                            identifier = next(iter(answer_ids))
-                        else:
-                            identifier = None
-                        verifier_files[answer_path.name] = identifier
-                if verifier_files:
-                    _return_answers_claim_files_to_spool(
-                        claim,
-                        spool,
-                        verifier_files,
-                        strict=mode == "deferred",
-                    )
             if not _adopt_orphan_parts(spool):
                 raise LedgerError(
                     f"could not adopt every orphan in answers spool {spool}"
@@ -13487,13 +12669,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 existing_intent = _read_claim_intent(
                     claim, strict=mode == "deferred"
                 )
-                if existing_intent is not None:
-                    # Retain verifier refusals before reconciliation can release
-                    # the claim. Unreadable and stale answers keep their status.
-                    verifier_refused = verifier_refused or any(
-                        reason not in {"unreadable", "stale"}
-                        for reason in existing_intent.quarantined.values()
-                    )
                 if (
                     existing_intent is not None
                     and existing_intent.phase == "prepared"
@@ -13529,25 +12704,10 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             existing_claimed = (
                 sorted(claim.glob("*.md")) if claim.exists() else []
             )
-            excluded_names: set[str] = set()
-            inspected_answers: dict[str, tuple[str, list[str]] | None] = {}
-            if skip_verifier_answers:
-                for answer_path in sorted(spool.glob("*.md")):
-                    try:
-                        answer_record, has_verifier_actor = _inspect_answer_file(
-                            answer_path
-                        )
-                    except (OSError, UnicodeError, LedgerError):
-                        continue
-                    if has_verifier_actor:
-                        excluded_names.add(answer_path.name)
-                    else:
-                        inspected_answers[answer_path.name] = answer_record
             newly_claimed = claim_spool(
                 spool,
                 claim,
                 into_existing=claim.exists(),
-                exclude_names=excluded_names,
             )
             claimed = (
                 sorted(existing_claimed + newly_claimed)
@@ -13579,14 +12739,11 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         answer_records: list[tuple[Path, str, list[str]]] = []
         paths_by_id: dict[str, list[Path]] = {}
         for answer_path in claimed:
-            if answer_path.name in inspected_answers:
-                record = inspected_answers[answer_path.name]
-            else:
-                try:
-                    record = _parse_answer_file(answer_path)
-                except (OSError, UnicodeError):
-                    unreadable_current[answer_path.name] = "unreadable"
-                    continue
+            try:
+                record = _parse_answer_file(answer_path)
+            except (OSError, UnicodeError):
+                unreadable_current[answer_path.name] = "unreadable"
+                continue
             if record is None:
                 raise LedgerError(
                     f"{answer_path.name} needs exactly one finding id and one "
@@ -13608,56 +12765,18 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             for finding_id, paths in paths_by_id.items()
             if len(paths) > 1
         }
-        verifier_duplicate_ids = {
-            finding_id: paths
-            for finding_id, paths in duplicate_ids.items()
-            if (
-                finding_id in target_spans
-                and classify_blocker(target_spans[finding_id][2].group("blocked"))
-                == BLOCKER_VERIFIER
-            )
-        }
-        ordinary_duplicate_ids = {
-            finding_id: paths
-            for finding_id, paths in duplicate_ids.items()
-            if finding_id not in verifier_duplicate_ids
-        }
-        if ordinary_duplicate_ids:
+        if duplicate_ids:
             details = "; ".join(
                 f"{finding_id}: {', '.join(path.name for path in paths)}"
-                for finding_id, paths in ordinary_duplicate_ids.items()
+                for finding_id, paths in duplicate_ids.items()
             )
             raise LedgerError(f"duplicate answer id(s) in batch: {details}")
-        verifier_to_quarantine: list[tuple[Path, str, Path]] = []
-        duplicate_verifier_paths = {
-            path
-            for paths in verifier_duplicate_ids.values()
-            for path in paths
-        }
-        for answer_path in duplicate_verifier_paths:
-            destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
-            if destination.exists():
-                raise LedgerError(
-                    f"cannot quarantine {answer_path.name}: destination "
-                    f"{destination} already exists"
-                )
-            verifier_to_quarantine.append(
-                (answer_path, "duplicate verifier answer", destination)
-            )
-        answer_records = [
-            record for record in answer_records if record[0] not in duplicate_verifier_paths
-        ]
-        answer_by_id = {
-            finding_id: (answer_path, bullet)
-            for answer_path, finding_id, bullet in answer_records
-        }
 
         header_updates: dict[int, str] = {}
         insertions: dict[int, list[str]] = {}
         waiting_records: list[dict[str, object]] = []
         already_applied: list[tuple[Path, str]] = []
         to_quarantine: list[tuple[Path, str, Path]] = []
-        verifier_quarantine: list[tuple[Path, str, Path]] = verifier_to_quarantine
         for answer_path, finding_id, bullet in answer_records:
             target = target_spans.get(finding_id)
             if target is None:
@@ -13667,48 +12786,9 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             header_index, end, header_match = target
             blocked = header_match.group("blocked")
             blocker_class = classify_blocker(blocked)
-            if blocker_class in {BLOCKER_ANSWERABLE, BLOCKER_VERIFIER}:
+            if blocker_class == BLOCKER_ANSWERABLE:
                 kind = "decision"
                 evidence = list(bullet)
-                if blocker_class == BLOCKER_VERIFIER:
-                    try:
-                        kind = _sentry_answer_kind(bullet)
-                    except LedgerError as exc:
-                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
-                        verifier_quarantine.append((answer_path, str(exc), destination))
-                        continue
-                    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-                    verifier_match = VERIFIER_DECISION_RE.match(decision)
-                    target_body, target_body_fenced = _entry_body(
-                        lines, ledger_fence_states, header_index + 1, end
-                    )
-                    target_finding = Finding(
-                        id=finding_id,
-                        status=header_match.group("status"),
-                        area=header_match.group("area"),
-                        root=header_match.group("root"),
-                        entry=header_match.group("entry"),
-                        blocked=blocked,
-                        title="",
-                        section="",
-                        line=header_index + 1,
-                        body=target_body,
-                        body_fenced=target_body_fenced,
-                    )
-                    expected_digest = verified_body_sha256(target_finding)
-                    if verifier_match is None:
-                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
-                        verifier_quarantine.append((answer_path, "invalid verifier actor", destination))
-                        continue
-                    actual_actor = verifier_match.group("actor")
-                    _actual_match, validation_error = _validate_verifier_actor(
-                        actual_actor, expected_digest
-                    )
-                    if validation_error is not None:
-                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
-                        verifier_quarantine.append((answer_path, validation_error, destination))
-                        continue
-                    evidence += _sentry_answer_evidence(bullet, kind)
                 body = tuple(
                     lines[index]
                     for index in range(header_index + 1, end)
@@ -13766,17 +12846,9 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             finding_id = cast(str, record["id"])
             bullet = cast(list[str], record["bullet"])
             blocked = cast(str, record["blocked"])
-            kind = cast(str, record["kind"])
             target = target_spans[finding_id]
             header_index, end, header_match = target
             updated_header = lines[header_index]
-            if classify_blocker(blocked) == BLOCKER_VERIFIER and kind == "reject":
-                updated_header = re.sub(
-                    r"(\*\*Status:\*\* )\S+",
-                    r"\g<1>rejected",
-                    updated_header,
-                    count=1,
-                )
             updated_header = updated_header.replace(
                 f"**Blocked:** {blocked}", "**Blocked:** none"
             )
@@ -13861,8 +12933,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                     )
                 )
 
-        if waiting_records or unreadable_current or verifier_quarantine:
-            verifier_refused = verifier_refused or bool(verifier_quarantine)
+        if waiting_records or unreadable_current:
             existing_intent = _read_claim_intent(claim, strict=mode == "deferred")
             if existing_intent is not None and existing_intent.files is not None:
                 existing_files = dict(existing_intent.files)
@@ -13874,8 +12945,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 else {}
             )
             existing_quarantined.update(unreadable_current)
-            for answer_path, reason, _destination in verifier_quarantine:
-                existing_quarantined[answer_path.name] = reason
             for name in existing_quarantined:
                 # The unreadable file has no trustworthy bytes from which to
                 # recover an id.  Keep a schema-marked tombstone in ``files``;
@@ -13946,7 +13015,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         print(f"applied {len(applied)} decision(s): {', '.join(applied)}")
     for note in skipped:
         print(f"skipped {note}")
-    return 1 if quarantined or (verifier_refused and _strict_reporting_enabled()) else 0
+    return 1 if quarantined else 0
 
 
 def _bind_repo_root(root: Path) -> None:
@@ -15211,11 +14280,6 @@ def build_parser() -> argparse.ArgumentParser:
         "apply-answers", help="fold answered decisions in and unblock them"
     )
     p_answers.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
-    p_answers.add_argument(
-        "--skip-verifier-answers",
-        action="store_true",
-        help="leave automated Sentry verifier answers in the spool",
-    )
     p_answers.add_argument("--hold-consumer-lock", action="store_true", help=argparse.SUPPRESS)
     p_answers.set_defaults(func=cmd_apply_answers)
 
@@ -15224,7 +14288,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_answer.add_argument("id")
     p_answer.add_argument("--actor", required=True)
-    p_answer.add_argument("--verdict", choices=("approve", "reject"))
     p_answer.add_argument("--reason", default="")
     p_answer.add_argument("--decision")
     p_answer.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
