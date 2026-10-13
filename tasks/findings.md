@@ -14508,6 +14508,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Source-reference correction (2026-10-10):** At commit `8bccb79c`, the stale live-exception claim is in `.claude/agents/review-ipc-contract.md:34-39`, and its reference paragraph is at `:54-56`. These replace the earlier `Where` ranges `:42-47` and `:64-66`. The defect and proposed correction remain unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5d64b8c30722f7dafecfcd7b571e714dcd5190f60065effd85149018367eacad","input_sha256":"a7a4d3a893977a53ee4a2f039682dd25d8557287d83c1944befb4fce5e9a32ae","kind":"mutation-receipt","operation":"60541b08f93865d0cc3f5ef6287b9af52cf3fd39fc0cc669d7e920023a64f2ad","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-06"],"target":"f-20261009-06","v":1} -->
 
+* **Why rejected:** Stale review-lens text; internal doc drift. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"808bfbce2d26577bd99ff3b2b09b3893020645932ac7a9980641305939031c41","input_sha256":"5a3a9d3019ab09e9808b86b6133c22d94e7fb143064059a1bd78ef90ea48f4f8","kind":"mutation-receipt","operation":"2790e0c6b1865d36c8d32d6301b10b6eb7b1d8d139d775084f2d044136a68f13","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-06"],"target":"f-20261009-06","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
