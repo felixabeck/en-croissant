@@ -9714,6 +9714,9 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 * **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd980111656bed1498a9f475f6af7971c0370189d0efeb05a1e7a5f5e2a26c6a","input_sha256":"5fc440d0c88ea266521f95299d503f12e07c4f1cebc3edeed3021872b9ee573c","kind":"mutation-receipt","operation":"a5db8868019ff62aae225b56ac1ed036d9c4853b51e854302377a48e4159775f","options":{"section":null},"request_id_sha256":null,"results":["f-20260915-03"],"target":"f-20260915-03","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the missing parent binding was already implemented in 5953bafd (`StoredEntry.parent_identity`, checked in Unix/Windows resolution, `database_file_target` and `retained_workspace_target`). Status set to handled by that commit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1956c0e061a5c1e4a269c416cc911defc391d12a691dec04a9b821bf97235f34","input_sha256":"91e48d148ee6b3f9909ad798e593a32a06c2cb65b1ec73ebfa10363e10ff5393","kind":"mutation-receipt","operation":"ea57270e68717bf1cc0751cd5c91da010de31a801022472af02a0944d3fef951","options":{"section":null},"request_id_sha256":null,"results":["f-20260915-03"],"target":"f-20260915-03","v":1} -->
+
 ---
 
 ## 2026-09-15 — filed through the inbox spool
