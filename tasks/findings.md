@@ -15601,6 +15601,8 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Evidence:** gate transcript copy `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/heap-peak-flake.log` (may be cleaned); original `artifacts/gates/20261012T141810693Z-466927/receipt-backend-test.log`.
 * **Proof:** cause measured (log the OS errno behind SQLite's open failure), then green across 50 consecutive full backend-test runs under parallel load.
 * **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, final push gate.
+* **Why rejected:** Test failed once during a loaded full run; file again at a second independent witness. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"724cb1f8f86dfde238a7eeea261522114b5febe31f80fcc94b5954da4d7f8f55","input_sha256":"b927893932925707d280210dd9a287b71f6e79ac3deef344e99835d7c39fa325","kind":"mutation-receipt","operation":"d359468c60ed652b1f20ef105742f5c5394a458896235fb619a537d67affa9f6","options":{"section":null},"request_id_sha256":null,"results":["f-20261012-07"],"target":"f-20261012-07","v":1} -->
 
 ### `spawn_child_observers_are_isolated_by_command_target` misses its 1 s observer deadline under coverage instrumentation and machine load
 
