@@ -11069,6 +11069,8 @@ deny stays in place for the next one.
 * **Why it matters:** the bound and the drain semantics are shared between two operation classes, and nothing in the names says so. A later change that tunes `MAX_NATIVE_READS` for reads silently retunes download concurrency.
 * **Fix shape:** rename the pool and its types to the operation scope they now have, and replace the boolean with the reservation-kind enum the registry already tracks internally, so a call site names its kind.
 * **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-code-quality, blocker, confidence 98; the boolean at should-fix, 95). Origin commit `459b649f` (`f-20260906-07`), a different area from the run that found it.
+* **Why rejected:** Naming/typing of a pool; hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7bea61f689f6f4b3e65d9f42038fb048e4a6e12ba93a89329daff47359c911a7","input_sha256":"45f9eda240b5772c8ea27f8ec609909a0b9e9a9ac6652c833c628e1cde0d4500","kind":"mutation-receipt","operation":"3040d817e79b9361796c4d6a272051610e311f23a865e8c3b3b1f6ffbf1e6aa3","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-07"],"target":"f-20260920-07","v":1} -->
 
 ---
 
