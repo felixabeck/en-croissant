@@ -12934,7 +12934,7 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). `in
 
 ### Engine archive staging reopens the destination parent by pathname
 
-* **ID:** f-20261001-15 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261001-15 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:1319-1329` (`download_engine_archive_core`: `destination_parent = resolved.target().parent().to_path_buf()`, then `private_tempdir_in(".archive", &destination_parent)`).
 * **Defect:** the staging directory is created under a pathname derived from the resolved destination rather than through the verified directory descriptor. If the engine root is renamed and its path replaced by a symlink between resolution and `private_tempdir_in`, download and extraction write staging data under the symlink target; the later atomic install refuses publication, but only after those out-of-authority writes happened.
 * **Why it matters:** every other path-authority write door binds to a verified inode; this one is a pathname re-open in the same class the path-authority work closed elsewhere. Reaching it needs a local actor racing the rename, so it is outside accidental-input threat models.
