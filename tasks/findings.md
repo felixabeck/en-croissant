@@ -13108,7 +13108,7 @@ Recovery update 2026-10-08: this supersedes the recurrence annotation's pending-
 
 ### The dialog grant-then-promote test fixture is still copied in pgn.rs, file_workspace.rs and the path-authority tests
 
-* **ID:** f-20261002-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261002-03 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 83be2012-20c1-4d5e-ae1d-97d4eba12728
 * **Where:** `src-tauri/src/pgn.rs` (~1530 `promote_pgn_file`, ~1555 `promote_pgn_workspace`), `src-tauri/src/file_workspace.rs` (~2005 `promoted_workspace_state`), and the 28 `promote_dialog(` call sites in the tests of `src-tauri/src/infra/path_authority/mod.rs`.
 * **Defect:** each site spells out the two-step `grant_dialog_operations(path, name, PathClass::BoundedDialogGrant, operations.clone(), <ttl>, <uses>)` then `promote_dialog(&grant, <persistent class>, name, operations)` sequence by hand. The f-20261002-01 push extracted `PathAuthority::grant_persistent_file_for_test` (`#[cfg(test)]`, path-authority `impl`) and routed all seven `db/mod.rs` copies through it, but these files belong to other areas of the run and were left. Each copy is one more place a change to the grant contract (TTL, use count, persistent class) must be repeated, which is the rule-11 update surface.
