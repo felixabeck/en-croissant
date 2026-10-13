@@ -9944,6 +9944,9 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 * **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd980111656bed1498a9f475f6af7971c0370189d0efeb05a1e7a5f5e2a26c6a","input_sha256":"5fc440d0c88ea266521f95299d503f12e07c4f1cebc3edeed3021872b9ee573c","kind":"mutation-receipt","operation":"9c9f55b9f4f0af80a7d6842cf810fdfa76eb8d5b6e4a02f28b48854c074064c0","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-06"],"target":"f-20260916-06","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the parent binding this entry asks for was implemented in 5953bafd (`StoredEntry.parent_identity`, checked in Windows resolution). Status set to handled by that commit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e85cf4a2509b024ff616ccabe81603f54415450e856c9ec6a86b9c2de8a367cf","input_sha256":"6df258ac091166905e9c547b67f438f2bcaf7ad2f73f0de64f70c3d0a5be8264","kind":"mutation-receipt","operation":"1fbc8515c4226249c37f6356b5006c1d4db2c86b8f3112ffe03a14d99d7a12a8","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-06"],"target":"f-20260916-06","v":1} -->
+
 ---
 
 ## 2026-09-16 — filed through the inbox spool
