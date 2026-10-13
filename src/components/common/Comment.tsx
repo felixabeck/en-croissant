@@ -36,55 +36,82 @@ function remarkInlineOnly(this: { data: (key: string, value?: unknown) => unknow
     const source = String(file.value);
     const visit = (node: MarkdownNode) => {
       if (!node.children) return;
-      node.children = node.children.map((child) => {
-        // GFM tables and footnotes have anonymous constructs, so keep their source after parsing.
-        if (["table", "footnoteDefinition", "footnoteReference"].includes(child.type)) {
-          const start = child.position?.start.offset;
-          const end = child.position?.end.offset;
-          if (start !== undefined && end !== undefined) {
-            return { type: "text", value: source.slice(start, end) };
+      node.children = underlineChildren(
+        node.children.map((child) => {
+          // GFM tables and footnotes have anonymous constructs, so keep their source after parsing.
+          if (["table", "footnoteDefinition", "footnoteReference"].includes(child.type)) {
+            const start = child.position?.start.offset;
+            const end = child.position?.end.offset;
+            if (start !== undefined && end !== undefined) {
+              return { type: "text", value: source.slice(start, end) };
+            }
           }
-        }
-        visit(child);
-        return child;
-      });
+          visit(child);
+          return child;
+        }),
+      );
     };
     visit(tree);
   };
 }
 
-function underlineText(value: string): MarkdownNode[] {
+function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
+  // Keep formatted siblings intact while locating delimiter pairs in their surrounding text.
+  const value = children
+    .map((child) =>
+      child.type === "text"
+        ? (child.value ?? "")
+        : child.type === "paragraph" || child.type === "break"
+          ? "\n"
+          : "\0",
+    )
+    .join("");
+  const matches = [...value.matchAll(/\+\+([^+\n](?:[^+\n]|\+(?!\+))*?)\+\+/g)];
+  if (matches.length === 0) return children;
+
+  let childIndex = 0;
+  let textOffset = 0;
+  const take = (length: number): MarkdownNode[] => {
+    const nodes: MarkdownNode[] = [];
+    while (length > 0 && childIndex < children.length) {
+      const child = children[childIndex];
+      if (child.type === "text") {
+        const text = child.value ?? "";
+        const count = Math.min(length, text.length - textOffset);
+        if (count > 0)
+          nodes.push({ type: "text", value: text.slice(textOffset, textOffset + count) });
+        textOffset += count;
+        length -= count;
+        if (textOffset === text.length) {
+          childIndex++;
+          textOffset = 0;
+        }
+      } else {
+        nodes.push(child);
+        childIndex++;
+        length--;
+      }
+    }
+    return nodes;
+  };
+
   const nodes: MarkdownNode[] = [];
-  const pattern = /\+\+([^+\n](?:[^+\n]|\+(?!\+))*?)\+\+/g;
   let offset = 0;
-  for (const match of value.matchAll(pattern)) {
+  for (const match of matches) {
     const index = match.index;
-    if (index > offset) nodes.push({ type: "text", value: value.slice(offset, index) });
+    nodes.push(...take(index - offset));
+    take(2);
+    const underlined = take(match[0].length - 4);
+    take(2);
     nodes.push({
       type: "underline",
       data: { hName: "u" },
-      children: [{ type: "text", value: match[1] }],
+      children: underlined,
     });
     offset = index + match[0].length;
   }
-  if (offset < value.length) nodes.push({ type: "text", value: value.slice(offset) });
-  return nodes.length > 0 ? nodes : [{ type: "text", value }];
-}
-
-function remarkUnderline() {
-  return (tree: MarkdownNode) => {
-    const visit = (node: MarkdownNode) => {
-      if (!node.children) return;
-      node.children = node.children.flatMap((child) => {
-        if (child.type === "text" && child.value?.includes("++")) {
-          return underlineText(child.value);
-        }
-        visit(child);
-        return child;
-      });
-    };
-    visit(tree);
-  };
+  nodes.push(...take(value.length - offset));
+  return nodes;
 }
 
 function Comment({ comment }: { comment: string }) {
@@ -103,7 +130,7 @@ function Comment({ comment }: { comment: string }) {
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
           p: ({ node: _node, ...props }) => (multipleLine ? <p {...props} /> : <span {...props} />),
         }}
-        remarkPlugins={[remarkGfm, remarkInlineOnly, remarkUnderline]}
+        remarkPlugins={[remarkGfm, remarkInlineOnly]}
       >
         {comment}
       </Markdown>

@@ -21,6 +21,31 @@ export const commentDialectCases = [
     { name: "soft break", input: "a\nb" },
     { name: "unpaired emphasis", input: "plain *star text" },
     {
+        name: "bold with underline",
+        input: "++**x**++",
+        text: "x",
+        formatting: [{ selector: "u strong", text: "x" }],
+    },
+    {
+        name: "italic with underline",
+        input: "++*x*++",
+        text: "x",
+        formatting: [{ selector: "u em", text: "x" }],
+    },
+    {
+        name: "link with underline",
+        input: "++[x](https://x.y)++",
+        text: "x",
+        formatting: [{ selector: 'u a[href="https://x.y"]', text: "x" }],
+    },
+    {
+        name: "unmatched underline before strong",
+        input: "++a **b**",
+        text: "++a b",
+        formatting: [{ selector: "strong", text: "b" }],
+        absent: ["u"],
+    },
+    {
         name: "inline formatting",
         input: "**b** *i* ++u++ ~~s~~ [l](https://x.y) https://lichess.org",
         text: "b i u s l https://lichess.org",
