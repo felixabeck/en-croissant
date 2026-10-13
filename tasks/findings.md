@@ -10425,7 +10425,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### The vendored `scripts/findings.py` has fallen behind agent-kit, so `kit sync --check` is red on every push
 
-* **ID:** f-20260917-10 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260917-10 · **Status:** handled · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/findings.py` in this repository, last synced at `0d364b5d`
   ("chore(findings): sync the ledger tool from agent-kit c92f2c1"), against
   `~/Projekte/agent-kit/scripts/findings.py`. The gate is `pnpm findings:kit:check`, which wraps
@@ -10454,6 +10454,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, running the full push
   gate set. Not caused by that run's diff: it touches no file under `scripts/`, and
   `scripts/findings.py` is clean in the working tree.
+
+Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by later re-vendors (latest 82331502, agent-kit f477abb1).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"2a0fa0e4785ba511708915be7beeb05048ab62db16f2ff9058325bfc11ccdfcc","header_sha256":"901be1902cabe8fc453abc017b091ba23b5d007fb8f0f59ba28213acfecb27f0","header_status":"handled","input_sha256":"709cc7d08cf71d2e11ca810c45b2fd4a1351965a51fd7bedf5cb6e05809438d5","kind":"mutation-receipt","operation":"9b931d134b362bd9bd046bed162e8040a32beae10225f33a46a2ae1d9430f846","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-10"],"target":"f-20260917-10","v":1} -->
 
 ---
 
