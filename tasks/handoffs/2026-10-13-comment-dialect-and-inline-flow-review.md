@@ -3106,7 +3106,7 @@ write leaves that authored the code (same-model review for normal and sensitive 
 | 3 — pixel and navigation proof (O4, O5) | `7d018df7` | normal | test:e2e:container 124 passed, one new snapshot `files-inline-comment-prose-files-preview.png` inspected; checks:pre-review green |
 | 4 — one shared comment lexer (added by the D3 lineage escalation) | `e56b16e2` (+ `c944289e` coverage mapping) | sensitive | install --frozen-lockfile; vitest 745 passed; tsgo; lint:ci; test:e2e:container 125 passed, no snapshot moved; checks:pre-review green |
 
-CR-1 (carried from plan review) closed in round D1 by every lens (`CR-1 CLOSED` lines below).
+CR-1 (carried from plan review) closed in round D1 by all seven code lenses (`CR-1 CLOSED` lines below; the records lens reviews ledger prose only).
 
 ### Diff-review issues and dispositions
 
@@ -3149,7 +3149,13 @@ contract and a separate design) → deferred as one `build`-tier successor.
 **Successor:** filed through the inbox spool as
 `tasks/findings-inbox/20261013-095358-2561660-1791878038456800562-6.md` ("The Annotate editor's
 Markdown save can still change a comment …", Entry `build`). It owns D5-1 and D5-2 and must load
-this file before plan review.
+this file before plan review. Its filed entry carries no `**Proof:**` bullet (records lens, round
+D6); the proof it owes, red at `2fd8711f` and green after its fix:
+`pnpm vitest run src/components/panels/annotation` with mounted save → reload cases for (a) literal
+`a++bc` with only `c` underlined — the reload shows the text `a++bc` with `c` underlined, or the
+save is refused with the draft kept; (b) `[a](https://a.test)[b](https://b.test)` plus a typed `!`
+— both links keep their own `href` after reload; (c) an unmarked literal `**x**` typed in the
+editor — it reloads as the text `**x**`, not bold.
 
 Capacity: five lens leaves hit provider capacity and were retried once on the same route
 (`leaf-quota-retry.py --capacity`, attempt 1/3 each); the retried reports are the ones quoted.
