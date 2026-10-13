@@ -9984,7 +9984,7 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 
 ### Two argument-forwarding wrappers in the atomic-replace driver carry no contract
 
-* **ID:** f-20260916-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260916-08 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 
 `review-minimalism` raised this during the `$push` review of the f-20260914-10 Windows
 atomic-replacement port (confidence 95). Both functions forward their arguments unchanged and add
