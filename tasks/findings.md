@@ -14721,6 +14721,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Remaining:** Fresh cumulative source closure and root pixel/native verification remain pending. This finding stays open until those required stages complete. Plan authorship and arbitration shared one context. Detection ran on the code model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"b88885db0192606b33325ef3b10e36737d46e364878ad69cb673329ec7b8793d","input_sha256":"e62db749328ad823c47c7ee1eef4ab77f6e61d2da68c945bc46c09c8ad0d0935","kind":"mutation-receipt","operation":"48d701d5a7d28823fe7c5a15f34f5dbec0015651950e03e0e4b8c2318dbbbefc","options":{"section":null},"request_id_sha256":"da196511d02b8790443bb2757f99be7d216ae589e3360fefa5c9c66055a07013","results":["f-20261010-11"],"target":"f-20261010-11","v":1} -->
 
+* **Why rejected:** Test distinguishes too little; no product failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"42a87874ab72a8d7d47c75b6dc6ad97d99caa1ad507773cd982663fe3d8a2c1c","input_sha256":"b94b97edbc18524de0be4e0e75394b55aa37cd87581252628b0cbc9b8fd893a8","kind":"mutation-receipt","operation":"1c19e38aa9c4608e3ae98bdf4778c143f4580ea51c5a88f401648fdb82cea7e0","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-11"],"target":"f-20261010-11","v":1} -->
+
 ### Consecutive PGN comments overwrite earlier prose and lose annotations on save
 
 * **ID:** f-20261010-12 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
