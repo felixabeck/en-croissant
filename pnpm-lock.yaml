@@ -142,6 +142,9 @@ importers:
       mantine-flagpack:
         specifier: ^4.1.1
         version: 4.1.1(@mantine/core@8.3.14(@mantine/hooks@8.3.14(react@19.2.4))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(@mantine/hooks@8.3.14(react@19.2.4))(clsx@2.1.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      marked:
+        specifier: 17.0.3
+        version: 17.0.3
       posthog-js:
         specifier: ^1.342.1
         version: 1.342.1

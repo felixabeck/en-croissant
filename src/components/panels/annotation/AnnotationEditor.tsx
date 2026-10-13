@@ -4,6 +4,7 @@ import { Markdown } from "@tiptap/markdown";
 import { useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useAtomValue } from "jotai";
+import { Marked, type marked, type Tokens } from "marked";
 import { useContext, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -12,6 +13,8 @@ import { spellCheckAtom } from "@/state/atoms";
 import { getNodeAtPath } from "@/utils/treeReducer";
 
 function AnnotationEditor() {
+  "use no memo";
+  // The React compiler would retain the mutable Marked instance across editor recreations.
   const { t } = useTranslation();
 
   const store = useContext(TreeStateContext)!;
@@ -26,12 +29,49 @@ function AnnotationEditor() {
       autofocus: false,
       extensions: [
         StarterKit.configure({
+          heading: false,
+          blockquote: false,
+          horizontalRule: false,
+          bulletList: false,
+          orderedList: false,
+          listItem: false,
+          listKeymap: false,
+          codeBlock: false,
+          code: false,
           link: {
             autolink: true,
             openOnClick: false,
           },
         }),
-        Markdown,
+        Markdown.configure({
+          marked: new Marked({
+            tokenizer: {
+              heading: () => undefined,
+              lheading: () => undefined,
+              blockquote: () => undefined,
+              hr: () => undefined,
+              list: () => undefined,
+              code: () => undefined,
+              fences: () => undefined,
+              html: () => undefined,
+              def: () => undefined,
+              table: () => undefined,
+              codespan: () => undefined,
+              escape: (source) => {
+                const match = /^\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.exec(source);
+                // Marked accepts a text token here, though its escape override type is narrower.
+                if (match)
+                  return {
+                    type: "text",
+                    raw: match[0],
+                    text: match[0],
+                  } as unknown as Tokens.Escape;
+                return undefined;
+              },
+            },
+            // Tiptap types this as the singleton, but uses only the instance's lexer/use API.
+          }) as unknown as typeof marked,
+        }),
         Placeholder.configure({ placeholder: t("Board.Annotate.WriteHere") }),
       ],
       content: currentNode.comment || null,
@@ -69,14 +109,6 @@ function AnnotationEditor() {
         underlineControlLabel: t("RichText.Underline"),
         strikeControlLabel: t("RichText.Strike"),
         clearFormattingControlLabel: t("RichText.ClearFormatting"),
-        h1ControlLabel: t("RichText.H1"),
-        h2ControlLabel: t("RichText.H2"),
-        h3ControlLabel: t("RichText.H3"),
-        h4ControlLabel: t("RichText.H4"),
-        blockquoteControlLabel: t("RichText.Quote"),
-        hrControlLabel: t("RichText.HLine"),
-        bulletListControlLabel: t("RichText.BulletList"),
-        orderedListControlLabel: t("RichText.NumberedList"),
         linkControlLabel: t("RichText.Link"),
         unlinkControlLabel: t("RichText.RemoveLink"),
       }}
@@ -90,19 +122,6 @@ function AnnotationEditor() {
           <RichTextEditor.ClearFormatting />
         </RichTextEditor.ControlsGroup>
 
-        <RichTextEditor.ControlsGroup>
-          <RichTextEditor.H1 />
-          <RichTextEditor.H2 />
-          <RichTextEditor.H3 />
-          <RichTextEditor.H4 />
-        </RichTextEditor.ControlsGroup>
-
-        <RichTextEditor.ControlsGroup>
-          <RichTextEditor.Blockquote />
-          <RichTextEditor.Hr />
-          <RichTextEditor.BulletList />
-          <RichTextEditor.OrderedList />
-        </RichTextEditor.ControlsGroup>
         <RichTextEditor.ControlsGroup>
           <RichTextEditor.Link />
           <RichTextEditor.Unlink />

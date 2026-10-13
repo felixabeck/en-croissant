@@ -9,11 +9,53 @@ type MarkdownNode = {
   value?: string;
   children?: MarkdownNode[];
   data?: { hName: string };
+  position?: { start: { offset?: number }; end: { offset?: number } };
 };
+
+function remarkInlineOnly(this: { data: (key: string, value?: unknown) => unknown }) {
+  const extensions = (this.data("micromarkExtensions") || []) as unknown[];
+  extensions.push({
+    disable: {
+      null: [
+        "blockQuote",
+        "codeFenced",
+        "codeIndented",
+        "codeText",
+        "headingAtx",
+        "htmlFlow",
+        "list",
+        "setextUnderline",
+        "thematicBreak",
+        "definition",
+      ],
+    },
+  });
+  this.data("micromarkExtensions", extensions);
+
+  return (tree: MarkdownNode, file: { value: unknown }) => {
+    const source = String(file.value);
+    const visit = (node: MarkdownNode) => {
+      if (!node.children) return;
+      node.children = node.children.map((child) => {
+        // GFM tables and footnotes have anonymous constructs, so keep their source after parsing.
+        if (["table", "footnoteDefinition", "footnoteReference"].includes(child.type)) {
+          const start = child.position?.start.offset;
+          const end = child.position?.end.offset;
+          if (start !== undefined && end !== undefined) {
+            return { type: "text", value: source.slice(start, end) };
+          }
+        }
+        visit(child);
+        return child;
+      });
+    };
+    visit(tree);
+  };
+}
 
 function underlineText(value: string): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
-  const pattern = /\+\+([^+\n](?:[^+\n]|\+(?!\+))+?)\+\+/g;
+  const pattern = /\+\+([^+\n](?:[^+\n]|\+(?!\+))*?)\+\+/g;
   let offset = 0;
   for (const match of value.matchAll(pattern)) {
     const index = match.index;
@@ -32,7 +74,7 @@ function underlineText(value: string): MarkdownNode[] {
 function remarkUnderline() {
   return (tree: MarkdownNode) => {
     const visit = (node: MarkdownNode) => {
-      if (!node.children || node.type === "code" || node.type === "inlineCode") return;
+      if (!node.children) return;
       node.children = node.children.flatMap((child) => {
         if (child.type === "text" && child.value?.includes("++")) {
           return underlineText(child.value);
@@ -61,7 +103,7 @@ function Comment({ comment }: { comment: string }) {
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
           p: ({ node: _node, ...props }) => (multipleLine ? <p {...props} /> : <span {...props} />),
         }}
-        remarkPlugins={[remarkGfm, remarkUnderline]}
+        remarkPlugins={[remarkGfm, remarkInlineOnly, remarkUnderline]}
       >
         {comment}
       </Markdown>

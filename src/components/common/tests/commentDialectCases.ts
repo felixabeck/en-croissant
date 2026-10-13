@@ -1,0 +1,56 @@
+// Shared reader/editor fixtures. Production code must not import this module.
+export const commentDialectCases = [
+    { name: "move-like prose", input: "59. Olvidé mi preparación." },
+    { name: "bullet", input: "- a" },
+    { name: "heading", input: "# a" },
+    { name: "quote", input: "> a" },
+    { name: "rule", input: "---" },
+    { name: "setext heading", input: "a\n---", edited: "a\n\n---!" },
+    { name: "indented code", input: "    indented" },
+    { name: "fenced code", input: "```\nfenced text\n```" },
+    { name: "inline code", input: "`x`" },
+    { name: "table", input: "| a | b |\n| --- | --- |\n| c | d |" },
+    { name: "footnote", input: "call[^1]\n\n[^1]: x" },
+    {
+        name: "reference definition",
+        input: "[a]: https://x.y",
+        edited: "[a]: [https://x.y](https://x.y)!",
+    },
+    { name: "escaped marker", input: "1\\. escaped", text: "1. escaped" },
+    { name: "paragraphs", input: "a\n\nb" },
+    { name: "soft break", input: "a\nb" },
+    { name: "unpaired emphasis", input: "plain *star text" },
+    {
+        name: "inline formatting",
+        input: "**b** *i* ++u++ ~~s~~ [l](https://x.y) https://lichess.org",
+        text: "b i u s l https://lichess.org",
+        edited: "**b** *i* ++u++ ~~s~~ [l](https://x.y) [https://lichess.org](https://lichess.org)!",
+        formatting: [
+            { selector: "strong", text: "b" },
+            { selector: "em", text: "i" },
+            { selector: "u", text: "u" },
+            { selector: "del", text: "s" },
+            { selector: 'a[href="https://x.y"]', text: "l" },
+            { selector: 'a[href="https://lichess.org"]', text: "https://lichess.org" },
+        ],
+    },
+    {
+        name: "formatting in block-looking prose",
+        input: "59. **x**",
+        text: "59. x",
+        formatting: [{ selector: "strong", text: "x" }],
+    },
+    {
+        name: "underline between backticks",
+        input: "`++literal++` and ++underlined++",
+        text: "`literal` and underlined",
+        formatting: [
+            { selector: "u:first-of-type", text: "literal" },
+            { selector: "u:last-of-type", text: "underlined" },
+        ],
+    },
+    { name: "raw HTML", input: "<b>x</b>", edited: "**x**!" },
+];
+
+export const forbiddenCommentElements =
+    "ol, ul, li, h1, h2, h3, h4, h5, h6, blockquote, hr, pre, code, table, sup, section, [data-footnotes]";
