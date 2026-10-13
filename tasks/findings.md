@@ -14155,7 +14155,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### `verify:app` Files-metadata Repertoire checks failed once in an otherwise unrelated run
 
-* **ID:** f-20261008-01 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261008-01 · **Status:** rejected · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** fa6786ed-3e23-4701-b1a3-05a243d9a80b
 * **Where:** `scripts/verify-app.mjs`, the Files metadata-edit block — checks "the Repertoire filter lists the metadata-edited workspace file" and "the metadata-edited workspace sidecar records repertoire on disk".
 * **Defect:** during the `f-20260922-07` staged-failure run B1 (2026-10-07/08, release binary with the instance lock bypassed — a change that cannot reach these checks, which run in the single primary session before any second process is launched), both checks printed FAIL; the original Phase 2 run, B2, B3 and the final run on `cd058c1a` passed them. One observation, so either a timing-dependent verifier wait (a flake that makes `verify:app` green non-reproducible) or a real intermittent defect in the metadata edit → sidecar write → Repertoire filter path.
