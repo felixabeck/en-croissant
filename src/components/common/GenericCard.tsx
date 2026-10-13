@@ -14,6 +14,7 @@ type Props<T> = {
   }[];
   Header: ReactNode;
   onDoubleClick?: () => void;
+  tabIndex?: number;
 };
 
 export default function GenericCard<T>({
@@ -24,10 +25,12 @@ export default function GenericCard<T>({
   stats,
   Header,
   onDoubleClick,
+  tabIndex,
 }: Props<T>) {
   return (
     <UnstyledButton
       type="button"
+      tabIndex={tabIndex}
       aria-pressed={isSelected}
       className={cx(classes.card, {
         [classes.selected]: isSelected,

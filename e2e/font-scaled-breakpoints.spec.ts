@@ -26,7 +26,7 @@ test("font-scaled-breakpoints: visible library open controls wrap at 320px and 2
     await mockScenario({
         commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     const databaseOpen = page.getByRole("button", { name: "Open database", exact: true });
     await expect(databaseOpen).toBeEnabled();
     await databaseOpen.scrollIntoViewIfNeeded();
@@ -97,7 +97,7 @@ test("font-scaled-breakpoints: visible library open controls wrap at 320px and 2
     await expect(page.locator("[data-database-view] .mosaic-split")).toHaveCount(0);
     await assertNoHorizontalOverflow();
     await expect(page).toHaveScreenshot("database-game-open-320-200.png", { fullPage: true });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: "Choose collection", exact: true }).click();
     await selectFilesTreeRow(page, gameOpeningFixture.file.name);
     const gameOpen = page.getByRole("button", { name: "Open game", exact: true });
@@ -172,7 +172,7 @@ async function assertSettingRow(control: Locator, compact: boolean) {
 }
 
 async function selectDatabase(page: Page) {
-    await expect(page.getByRole("heading", { name: "Databases", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
     await page.getByRole("button").filter({ hasText: databaseTitle }).click();
     await expect(page.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
         databaseTitle,
@@ -217,7 +217,7 @@ for (const scale of [200, 100] as const) {
         if (scale === 100) await seedFontScale(page, scale);
         await page.setViewportSize({ width: 800, height: 720 });
         await mockScenario({ commands: filesWorkspaceCommands([[]]) });
-        await page.goto("/files");
+        await page.goto("/library");
         await page.getByRole("button", { name: "Choose collection", exact: true }).click();
         await page.getByRole("button", { name: "Create folder", exact: true }).click();
         const dialog = page.getByRole("dialog", { name: "Create folder", exact: true });
@@ -296,7 +296,7 @@ for (const scale of [200, 100] as const) {
     }) => {
         if (scale === 100) await seedFontScale(page, scale);
         await mockScenario(databaseScenario);
-        await page.goto("/databases");
+        await page.goto("/library");
         await selectDatabase(page);
         await assertDatabasePanes(page, compact);
         await assertPageNotClipped(page);
@@ -357,9 +357,9 @@ test("font-scaled-breakpoints: live slider change stacks Settings and database p
 
     await page
         .locator("nav.mantine-AppShell-navbar")
-        .getByRole("link", { name: "Databases", exact: true })
+        .getByRole("link", { name: "Library", exact: true })
         .click();
-    await expect(page).toHaveURL("/databases");
+    await expect(page).toHaveURL("/library");
     await selectDatabase(page);
     await assertDatabasePanes(page, true);
     await assertPageNotClipped(page);

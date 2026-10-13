@@ -137,7 +137,7 @@ test.each([
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain(message);
     expect(alert?.querySelector("button")?.textContent).toBe("Retry");
-    expect(alert?.querySelector("a")?.getAttribute("href")).toBe("/databases");
+    expect(alert?.querySelector("a")?.getAttribute("href")).toBe("/library");
     expect(container.textContent).not.toContain("loading");
   },
 );

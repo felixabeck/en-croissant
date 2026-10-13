@@ -10,7 +10,7 @@ function NoDatabaseWarning() {
       <Text>{t("Board.Database.NoReference1")}</Text>
       <Text>
         {t("Board.Database.NoReference2")}{" "}
-        <Link to="/databases">{t("Board.Database.SelectReference")}</Link>{" "}
+        <Link to="/library">{t("Board.Database.SelectReference")}</Link>{" "}
         {t("Board.Database.NoReference3")}
       </Text>
     </>

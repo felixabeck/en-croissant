@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as LibraryRouteImport } from './routes/library'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as EnginesRouteImport } from './routes/engines'
 import { Route as AccountsRouteImport } from './routes/accounts'
@@ -22,11 +23,16 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any).lazy(() => import('./routes/settings.lazy').then((d) => d.Route))
+const LibraryRoute = LibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => rootRouteImport,
+} as any).lazy(() => import('./routes/library.lazy').then((d) => d.Route))
 const FilesRoute = FilesRouteImport.update({
   id: '/files',
   path: '/files',
   getParentRoute: () => rootRouteImport,
-} as any).lazy(() => import('./routes/files.lazy').then((d) => d.Route))
+} as any)
 const EnginesRoute = EnginesRouteImport.update({
   id: '/engines',
   path: '/engines',
@@ -46,9 +52,7 @@ const DatabasesIndexRoute = DatabasesIndexRouteImport.update({
   id: '/databases/',
   path: '/databases/',
   getParentRoute: () => rootRouteImport,
-} as any).lazy(() =>
-  import('./routes/databases/index.lazy').then((d) => d.Route),
-)
+} as any)
 const DatabasesDatabaseIdRoute = DatabasesDatabaseIdRouteImport.update({
   id: '/databases/$databaseId',
   path: '/databases/$databaseId',
@@ -62,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof AccountsRoute
   '/engines': typeof EnginesRoute
   '/files': typeof FilesRoute
+  '/library': typeof LibraryRoute
   '/settings': typeof SettingsRoute
   '/databases/$databaseId': typeof DatabasesDatabaseIdRoute
   '/databases/': typeof DatabasesIndexRoute
@@ -71,6 +76,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof AccountsRoute
   '/engines': typeof EnginesRoute
   '/files': typeof FilesRoute
+  '/library': typeof LibraryRoute
   '/settings': typeof SettingsRoute
   '/databases/$databaseId': typeof DatabasesDatabaseIdRoute
   '/databases': typeof DatabasesIndexRoute
@@ -81,6 +87,7 @@ export interface FileRoutesById {
   '/accounts': typeof AccountsRoute
   '/engines': typeof EnginesRoute
   '/files': typeof FilesRoute
+  '/library': typeof LibraryRoute
   '/settings': typeof SettingsRoute
   '/databases/$databaseId': typeof DatabasesDatabaseIdRoute
   '/databases/': typeof DatabasesIndexRoute
@@ -92,6 +99,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/engines'
     | '/files'
+    | '/library'
     | '/settings'
     | '/databases/$databaseId'
     | '/databases/'
@@ -101,6 +109,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/engines'
     | '/files'
+    | '/library'
     | '/settings'
     | '/databases/$databaseId'
     | '/databases'
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/engines'
     | '/files'
+    | '/library'
     | '/settings'
     | '/databases/$databaseId'
     | '/databases/'
@@ -120,6 +130,7 @@ export interface RootRouteChildren {
   AccountsRoute: typeof AccountsRoute
   EnginesRoute: typeof EnginesRoute
   FilesRoute: typeof FilesRoute
+  LibraryRoute: typeof LibraryRoute
   SettingsRoute: typeof SettingsRoute
   DatabasesDatabaseIdRoute: typeof DatabasesDatabaseIdRoute
   DatabasesIndexRoute: typeof DatabasesIndexRoute
@@ -132,6 +143,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/files': {
@@ -184,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountsRoute: AccountsRoute,
   EnginesRoute: EnginesRoute,
   FilesRoute: FilesRoute,
+  LibraryRoute: LibraryRoute,
   SettingsRoute: SettingsRoute,
   DatabasesDatabaseIdRoute: DatabasesDatabaseIdRoute,
   DatabasesIndexRoute: DatabasesIndexRoute,

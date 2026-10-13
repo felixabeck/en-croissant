@@ -67,7 +67,7 @@
 // app-driver 727687d7b7a93b1544ecee582f73c8e903b4a8ae50b68f6f78b6bfb42a0cbd69.
 // This is a later comments-only update. Staging used the unchanged verifier and driver above.
 //
-// It asserts one hundred and two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts one hundred and four independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -87,6 +87,7 @@
 //              metadata-dialog-no-error, metadata-repertoire-filter, metadata-sidecar-type,
 //              metadata-filename-preserved
 //   Databases | 2: default-root-unusable, selected-root-missing
+//   Library | 2: single destination and mixed tree, source-specific selection and actions
 //   game opening | 14: native fixtures, labelled database opener, handle route/synchronization,
 //                      database selection without admission, database button/double-click/Enter,
 //                      labelled Files opener, stationary PGN selection without admission,
@@ -905,18 +906,30 @@ async function closeApplicationThroughTitlebar(session, label) {
   };
 }
 
+async function showLibraryOverview(session) {
+  await waitFor(
+    "Library overview navigation",
+    () =>
+      session.execute(`
+    if (location.pathname === "/library") return true;
+    const back = location.pathname.startsWith("/databases/") && document.querySelector('button[aria-label="Back"]');
+    const link = document.querySelector('nav a[aria-label="Library"]');
+    if (back) back.click();
+    else if (link) link.click();
+    return false;
+  `),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+}
+
 async function databaseAlert(session, label) {
   const alert = await waitFor(
     label,
     async () => {
-      await session.execute(
-        `const link = document.querySelector('a[href="/databases"]');
-         if (link && location.pathname !== "/databases") link.click();
-         return true`,
-      );
+      await showLibraryOverview(session);
       return session.execute(
-        `const alert = document.querySelector('[role="alert"]');
-         if (location.pathname !== "/databases" || !alert) return false;
+        `const alert = document.querySelector('[data-library-source="databases"] [role="alert"]');
+         if (location.pathname !== "/library" || !alert) return false;
          return { message: alert.querySelector('p')?.textContent ?? null,
                   button: alert.querySelector('button')?.textContent?.trim() ?? null };`,
       );
@@ -927,7 +940,7 @@ async function databaseAlert(session, label) {
   if (alert.button === "Choose database folder") {
     const button = await session.call("POST", "/element", {
       using: "css selector",
-      value: '[role="alert"] button',
+      value: '[data-library-source="databases"] [role="alert"] button',
     });
     buttonDisplayed = await session.call(
       "GET",
@@ -1160,10 +1173,10 @@ async function verifyProgressCancellation(session, invoke) {
     await readFile(new URL("../src/catalogs/databases.json", import.meta.url), "utf8"),
   )[0];
   const id = `db:${catalog.downloadLink}`;
-  await session.execute(`document.querySelector('a[href="/databases"]').click(); return true;`);
+  await showLibraryOverview(session);
   await waitFor("progress database catalog opener", () =>
     session.execute(
-      `const button = document.querySelector('button[aria-label="Add New"]'); if (!button) return false; button.click(); return true;`,
+      `const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === "Import or download database"); if (!button) return false; button.click(); return true;`,
     ),
   );
   await waitFor("progress database catalog card", () =>
@@ -1392,13 +1405,7 @@ async function filesRowCoordinates(session, name, timeoutMs = FILES_PROBE_TIMEOU
   return waitFor(
     `${name} Files row`,
     async () => {
-      await session
-        .execute(
-          `const link = document.querySelector('a[href="/files"]');
-           if (link && location.pathname !== "/files") link.click();
-           return true`,
-        )
-        .catch(() => false);
+      await showLibraryOverview(session).catch(() => false);
       return session
         .execute(
           `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
@@ -1500,7 +1507,14 @@ async function verifyGameOpening(session) {
       check(true, message);
       return true;
     } catch (error) {
-      check(false, message, error.message);
+      const state = await session
+        .execute(`return {
+        path: location.pathname,
+        selected: [...document.querySelectorAll('tbody tr[aria-selected="true"]')].map(row => row.textContent),
+        controls: [...document.querySelectorAll('button')].filter(button => button.textContent.trim() === 'Open game').map(button => ({ disabled: button.disabled, text: button.textContent })),
+      }`)
+        .catch(() => ({ unavailable: true }));
+      check(false, message, `${error.message}, renderer state: ${JSON.stringify(state)}`);
       return false;
     }
   };
@@ -1522,19 +1536,51 @@ async function verifyGameOpening(session) {
       );
     return result.value;
   };
-  const coordinates = async (script, args = []) =>
-    wait(
+  const coordinates = async (script, args = []) => {
+    let previous;
+    return waitFor(
       "game-opening pointer target",
-      `
+      async () => {
+        const point = await session.execute(
+          `
     const element = (${script});
     if (!element) return false;
     element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const box = element.getBoundingClientRect();
     if (!box.width || !box.height) return false;
-    return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2), disabled: element.disabled, selected: element.getAttribute('aria-selected') };
+    let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right);
+    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    // A table row can be wider than its scrolling viewport. Its unbounded centre can land in
+    // the preview pane, so pointer actions must use the part the user can actually reach.
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      const bounds = parent.getBoundingClientRect();
+      const style = getComputedStyle(parent);
+      if (style.overflowX !== 'visible') {
+        left = Math.max(left, bounds.left + parent.clientLeft);
+        right = Math.min(right, bounds.left + parent.clientLeft + parent.clientWidth);
+      }
+      if (style.overflowY !== 'visible') {
+        top = Math.max(top, bounds.top + parent.clientTop);
+        bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight);
+      }
+    }
+    if (right <= left || bottom <= top) return false;
+    const x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || (hit !== element && !element.contains(hit))) return false;
+    return { x, y, disabled: element.disabled, selected: element.getAttribute('aria-selected') };
   `,
-      args,
+          args,
+        );
+        // The resizable pane settles after its element measurement. A hit-test in a single
+        // frame can precede that reflow, so require the reachable point to stay put.
+        const stable = point && previous && point.x === previous.x && point.y === previous.y;
+        previous = point;
+        return stable ? point : false;
+      },
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
     );
+  };
   const button = (text) =>
     coordinates(
       `[...document.querySelectorAll('button')].find(node => node.textContent.trim() === arguments[0])`,
@@ -1629,16 +1675,49 @@ async function verifyGameOpening(session) {
   };
   const overview = async () => {
     requireSeed();
-    await session.execute(
-      `const link = [...document.querySelectorAll('nav a')].find(node => node.getAttribute('href')?.startsWith('/databases')); if (!link) throw new Error('database navigation absent'); link.click(); return true;`,
+    await showLibraryOverview(session);
+    // The fixture uses native IPC directly, so it does not publish the renderer's usual cache
+    // refresh after conversion. Wake the existing focus revalidation until both seeded sources
+    // have appeared, keeping the document and its read reservations alive.
+    await wait(
+      "seeded Library collections",
+      `window.dispatchEvent(new Event('focus')); return document.querySelector('[role="treeitem"][aria-label="verify-game-opening"]') && document.querySelector('[role="treeitem"][aria-label="verify opening database"]')`,
     );
-    await wait("database source route", "return location.pathname.startsWith('/databases')");
-    if (await session.execute("return location.pathname !== '/databases'")) {
-      const back = await coordinates(`document.querySelector('button[aria-label="Back"]')`);
-      await clickAt(session, back.x, back.y);
-    }
-    await wait("database overview", "return location.pathname === '/databases'");
   };
+  await assertion(
+    "LU1 Library has one sidebar destination and one tree containing both native source kinds",
+    async () => {
+      await overview();
+      await wait(
+        "mixed Library entries",
+        `return document.querySelector('[role="treeitem"][aria-label="verify-game-opening"]') && document.querySelector('[role="treeitem"][aria-label="verify opening database"]')`,
+      );
+      const structure = await session.execute(`return {
+      links: document.querySelectorAll('nav a[aria-label="Library"]').length,
+      oldLinks: document.querySelectorAll('nav a[aria-label="Files"], nav a[aria-label="Databases"]').length,
+      trees: document.querySelectorAll('[role="tree"]').length,
+    }`);
+      if (structure.links !== 1 || structure.oldLinks !== 0 || structure.trees !== 1)
+        throw new Error(`mixed Library structure mismatch: ${JSON.stringify(structure)}`);
+    },
+  );
+  await assertion(
+    "LU2 Library selection switches from file preview to database Explore and actions",
+    async () => {
+      await overview();
+      const fileRow = await filesRowCoordinates(session, openingRowName);
+      await clickAt(session, fileRow.x, fileRow.y);
+      await button("Open game");
+      const row = await coordinates(
+        `document.querySelector('[role="treeitem"][aria-label="verify opening database"]')`,
+      );
+      await clickAt(session, row.x, row.y);
+      await wait(
+        "database detail after file selection",
+        `return [...document.querySelectorAll('a')].some(node => node.textContent.trim() === "Explore") && [...document.querySelectorAll('button')].some(node => node.textContent.trim() === "Add Games") && ![...document.querySelectorAll('button')].some(node => node.textContent.trim() === "Open game")`,
+      );
+    },
+  );
   const databaseSurface = async () => {
     await overview();
     const open = await button("Open database");
@@ -1690,7 +1769,7 @@ async function verifyGameOpening(session) {
       await overview();
       await wait(
         "associated database opener",
-        `const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Open database'); return button && !button.disabled && button.parentElement.textContent.includes(arguments[0]) && !button.parentElement.closest('button') && button.getBoundingClientRect().height > 0;`,
+        `const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Open database'); return button && !button.disabled && button.closest('[role="treeitem"]')?.textContent.includes(arguments[0]) && !button.parentElement.closest('button') && button.getBoundingClientRect().height > 0;`,
         [openingDatabaseTitle],
       );
       await saveSource("database-card");
@@ -1732,6 +1811,10 @@ async function verifyGameOpening(session) {
       await databaseSurface();
       const row = await databaseRow(openingGames[1]);
       await clickAt(session, row.x, row.y);
+      await wait(
+        "selected database game opening control",
+        `return [...document.querySelectorAll('button')].some(node => node.textContent.trim() === "Open game" && !node.disabled)`,
+      );
       const open = await button("Open game");
       if (open.disabled) throw new Error("database game button is disabled");
       await saveSource("database-game");
@@ -1824,7 +1907,7 @@ async function verifyGameOpening(session) {
         const after = await fileRow(openingGames[1]);
         if (
           JSON.stringify(await snapshot()) !== JSON.stringify(before) ||
-          !(await session.execute("return location.pathname === '/files'")) ||
+          !(await session.execute("return location.pathname === '/library'")) ||
           row.x !== after.x ||
           row.y !== after.y
         )
@@ -4232,13 +4315,16 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     await waitFor(
       "the Databases page to activate the default database root",
       async () => {
-        const onDatabases = await session.execute(
-          `const link = document.querySelector('a[href="/databases"]');
-           if (link && location.pathname !== "/databases") link.click();
-           return location.pathname === "/databases";`,
-        );
+        await showLibraryOverview(session);
+        const onDatabases = await session.execute('return location.pathname === "/library"');
         if (!onDatabases || !existsSync(selectedDatabaseRoot)) return false;
-        const registry = await readFile(registryFile, "utf8").then(JSON.parse);
+        const registry = await readFile(registryFile, "utf8")
+          .then(JSON.parse)
+          .catch((error) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+        if (!registry) return false;
         const active = registry.entries.find(
           ({ id }) => id.id === registry.active_database_root?.id,
         );

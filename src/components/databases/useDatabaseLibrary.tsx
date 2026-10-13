@@ -1,0 +1,685 @@
+import { LibraryTypeBadge, libraryButtonProps } from "@/components/library/presentation";
+import { tauri } from "@/platform/tauri";
+import { listingFailure } from "@/components/files/listingFailure";
+import { useNativePicker } from "@/hooks/useNativePicker";
+import {
+  Box,
+  Button,
+  Checkbox,
+  Divider,
+  Group,
+  Loader,
+  Rating,
+  Stack,
+  Text,
+  Textarea,
+  TextInput,
+  Tooltip,
+} from "@mantine/core";
+import { useDebouncedValue, useToggle } from "@mantine/hooks";
+import { IconArrowRight, IconDatabase, IconPlus } from "@tabler/icons-react";
+import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router";
+import { useAtom } from "jotai";
+import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useTranslation } from "react-i18next";
+import useSWR, { useSWRConfig } from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
+import { databaseConversionStateAtom, referenceDbAtom, runDatabaseConversion } from "@/state/atoms";
+import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
+import {
+  databaseHandleKey,
+  getDatabases,
+  sameDatabaseHandle,
+  type SuccessDatabaseInfo,
+} from "@/utils/db";
+import { pickPgnFile } from "@/utils/files";
+import { formatBytes, formatNumber } from "@/utils/format";
+import ConfirmModal from "../common/ConfirmModal";
+import GenericCard from "../common/GenericCard";
+import AddDatabase from "./AddDatabase";
+import {
+  deleteDatabaseAndInvalidate,
+  invalidateDeletedDatabase,
+  runAddGamesToDatabase,
+  runPgnExport,
+} from "./databaseMutation";
+import { PlayerSearchInput } from "./PlayerSearchInput";
+import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
+import { databaseLoadFailureMessage } from "./databaseLoadFailure";
+
+export function useDatabaseLibrary(
+  selected: string | null,
+  setSelected: Dispatch<SetStateAction<string | null>>,
+) {
+  const { t } = useTranslation();
+  const picker = useNativePicker();
+
+  // Opening the overview ends the active session; mount-only lets double-click and Explore restore the sidebar's database target.
+  useEffect(() => {
+    if (activeDatabaseViewStore.getState().database) {
+      activeDatabaseViewStore.getState().clearDatabase();
+    }
+  }, []);
+
+  const databaseOwner = useNativeRequestOwner("databases");
+  const {
+    data: databases,
+    error,
+    mutate,
+  } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
+  const failure = listingFailure(error);
+  const loadFailureMessage = databaseLoadFailureMessage(error, t);
+  const needsFolder = failure !== "silent" && failure !== "retry";
+  function chooseWorkspace() {
+    return picker.run(async () => {
+      const result = await runUnlessCancelled(
+        t("Common.Error"),
+        () => tauri.issueDatabaseWorkspace(),
+        "database",
+      );
+      if (!result) return;
+      await databaseOwner!.supersede();
+      await mutate();
+    });
+  }
+  const { mutate: mutateCache } = useSWRConfig();
+
+  const [open, setOpen] = useState(false);
+  const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
+  const [conversionState, setConversionState] = useAtom(databaseConversionStateAtom);
+  const conversionInProgress = conversionState.length > 0;
+  const visibleDatabases = useMemo(() => {
+    return (databases ?? []).filter(
+      (item) =>
+        !conversionState.some(
+          (entry) =>
+            entry.targetDatabase !== null && sameDatabaseHandle(item.file, entry.targetDatabase),
+        ),
+    );
+  }, [databases, conversionState]);
+  const selectedDatabase = useMemo(
+    () => visibleDatabases.find((db) => databaseHandleKey(db.file) === selected) ?? null,
+    [visibleDatabases, selected],
+  );
+  const setActiveDatabase = useActiveDatabaseViewStore((store) => store.setDatabase);
+
+  const isReference = sameDatabaseHandle(referenceDatabase, selectedDatabase?.file);
+
+  const [deleteModal, setDeleteModal] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+
+  function invalidateDeletedDatabaseState(deleted: DatabaseHandle) {
+    setSelected(
+      (currentSelected) =>
+        invalidateDeletedDatabase(deleted, {
+          selected: currentSelected,
+          reference: referenceDatabase,
+          active: activeDatabaseViewStore.getState().database,
+        }).selected,
+    );
+    if (sameDatabaseHandle(referenceDatabase, deleted)) {
+      setReferenceDatabase(null);
+      void tauri.clearGames();
+    }
+    if (sameDatabaseHandle(activeDatabaseViewStore.getState().database?.file, deleted)) {
+      activeDatabaseViewStore.getState().clearDatabase();
+    }
+    // Clear every result-set cache bound to this exact opaque handle. A later
+    // revalidation must never resurrect data belonging to the deleted database.
+    void mutateCache(
+      (key) =>
+        Array.isArray(key) &&
+        key.length > 1 &&
+        typeof key[1] === "object" &&
+        key[1] !== null &&
+        "id" in key[1] &&
+        "kind" in key[1] &&
+        key[1].kind === "database" &&
+        sameDatabaseHandle(key[1] as DatabaseHandle, deleted),
+      undefined,
+      { revalidate: false },
+    );
+    void mutate();
+  }
+
+  function changeReferenceDatabase(file: DatabaseHandle) {
+    void tauri.clearGames();
+    if (sameDatabaseHandle(file, referenceDatabase)) {
+      setReferenceDatabase(null);
+    } else {
+      setReferenceDatabase(file);
+    }
+  }
+  const navigate = useNavigate();
+
+  function openDatabase(database: SuccessDatabaseInfo) {
+    setActiveDatabase(database);
+    void navigate(databaseRouteTarget(database));
+  }
+
+  return {
+    databases,
+    visibleDatabases,
+    selectedDatabase,
+    failure,
+    conversionInProgress,
+    convertingSelected: conversionState.some(
+      (entry) => entry.targetDatabase && databaseHandleKey(entry.targetDatabase) === selected,
+    ),
+    openDatabase: (item: NonNullable<typeof databases>[number]) => {
+      if (item.type === "success") openDatabase(item);
+    },
+    add: () => setOpen(true),
+    renderRow: (item: NonNullable<typeof databases>[number]) => (
+      <Stack key={databaseHandleKey(item.file)} gap="xs" miw={0}>
+        <GenericCard
+          tabIndex={-1}
+          id={databaseHandleKey(item.file)}
+          key={databaseHandleKey(item.file)}
+          isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
+          setSelected={setSelected}
+          error={item.type === "error" ? item.error : ""}
+          onDoubleClick={() => {
+            if (item.type === "error") return;
+            openDatabase(item);
+          }}
+          Header={
+            // Both rows wrap: a narrow card (a large font scale) puts the star and then
+            // the title under the icon rather than squeezing the title to nothing.
+            <Group justify="space-between">
+              <Group miw={0}>
+                <IconDatabase size="1.5rem" />
+                <Box miw={0}>
+                  <Text fw={500} fz="sm" className="wrap-anywhere">
+                    {item.type === "success" ? item.title : item.error}
+                  </Text>
+                  <Text size="xs" c="dimmed" className="wrap-anywhere">
+                    {item.type === "error" ? item.filename : item.description}
+                  </Text>
+                </Box>
+              </Group>
+              <LibraryTypeBadge>
+                {t("Library.GamesDatabase", { defaultValue: "Games database" })}
+              </LibraryTypeBadge>
+            </Group>
+          }
+          stats={[
+            {
+              label: t("Databases.Card.Games"),
+              value: item.type === "success" ? formatNumber(item.game_count) : "???",
+            },
+            {
+              label: t("Databases.Card.Storage"),
+              value: item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
+            },
+          ]}
+        />
+        <Group justify="space-between" wrap="wrap">
+          {item.type === "success" && (
+            <Rating
+              value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
+              count={1}
+              onChange={() => {
+                changeReferenceDatabase(item.file);
+              }}
+            />
+          )}
+          {item.type === "success" && (
+            <Button
+              variant="default"
+              miw={0}
+              {...libraryButtonProps}
+              onClick={() => openDatabase(item)}
+            >
+              {t("Databases.OpenDatabase", { defaultValue: "Open database" })}
+            </Button>
+          )}
+        </Group>
+      </Stack>
+    ),
+    status: (
+      <Stack
+        className="wrap-anywhere"
+        role="region"
+        aria-label={t("Databases.Title")}
+        data-library-source="databases"
+      >
+        {failure !== "silent" && (
+          <Stack role="alert" c="red" p={{ base: "xs", sm: "md" }} miw={0}>
+            <Text className="wrap-anywhere">{loadFailureMessage}</Text>
+            {needsFolder ? (
+              <Button
+                miw={0}
+                px="xs"
+                disabled={picker.pending}
+                onClick={() => void chooseWorkspace()}
+                {...libraryButtonProps}
+              >
+                {t("Databases.ChooseFolder", { defaultValue: "Choose database folder" })}
+              </Button>
+            ) : (
+              <Button {...libraryButtonProps} onClick={() => void mutate()}>
+                {t("Databases.LoadRetry", { defaultValue: "Retry" })}
+              </Button>
+            )}
+          </Stack>
+        )}
+
+        {!databases && failure === "silent" && (
+          <Text role="status">
+            {t("Library.DatabasesLoading", { defaultValue: "Loading games databases…" })}
+          </Text>
+        )}
+      </Stack>
+    ),
+    progress: (
+      <>
+        {conversionState.map((entry) => (
+          <Fragment key={entry.id}>
+            <Group px="xs" py={6} gap="xs" justify="space-between">
+              <Group gap={6}>
+                <Loader size="xs" />
+                <Text size="sm" className="wrap-anywhere">
+                  {entry.sourceFileName || entry.targetDatabaseTitle
+                    ? `${t("Databases.Add.Convert")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle}`
+                    : t("Databases.Add.Convert")}
+                </Text>
+              </Group>
+              {entry.totalGames > 0 && (
+                <Text size="xs" c="dimmed" className="wrap-anywhere">
+                  {t("Files.GameCountSuffix", { number: entry.totalGames })}
+                  {entry.elapsedSeconds > 0
+                    ? ` • ${(entry.totalGames / entry.elapsedSeconds).toFixed(1)} games/s`
+                    : ""}
+                </Text>
+              )}
+            </Group>
+            <Divider />
+          </Fragment>
+        ))}
+      </>
+    ),
+    detail: selectedDatabase ? (
+      <Stack>
+        {selectedDatabase.type === "error" ? (
+          <>
+            <Text fz="lg" fw="bold">
+              {t("Databases.LoadError.Title")}
+            </Text>
+
+            <Text>
+              <Text td="underline" span>
+                {t("Common.Reason")}:
+              </Text>
+              {` ${selectedDatabase.error}`}
+            </Text>
+
+            <Text>{t("Databases.LoadError.Description")}</Text>
+          </>
+        ) : (
+          <>
+            <Divider variant="dashed" label={t("Common.GeneralSettings")} />
+            <GeneralSettings
+              key={databaseHandleKey(selectedDatabase.file)}
+              selectedDatabase={selectedDatabase}
+              mutate={mutate}
+            />
+            <Checkbox
+              label={t("Databases.Settings.ReferenceDatabase")}
+              checked={isReference}
+              onChange={() => {
+                changeReferenceDatabase(selectedDatabase.file);
+              }}
+            />
+            <IndexInput
+              indexed={selectedDatabase.indexed}
+              file={selectedDatabase.file}
+              reload={mutate}
+            />
+
+            <Divider variant="dashed" label={t("Common.Data")} />
+            <Group grow>
+              <Stack gap={0} justify="center" ta="center">
+                <Text size="md" tt="uppercase" fw="bold" c="dimmed">
+                  {t("Databases.Card.Games")}
+                </Text>
+                <Text fw={700} size="lg">
+                  {formatNumber(selectedDatabase.game_count)}
+                </Text>
+              </Stack>
+              <Stack gap={0} justify="center" ta="center">
+                <Text size="md" tt="uppercase" fw="bold" c="dimmed">
+                  {t("Databases.Card.Players")}
+                </Text>
+                <Text fw={700} size="lg">
+                  {formatNumber(selectedDatabase.player_count - 1)}
+                </Text>
+              </Stack>
+              <Stack gap={0} justify="center" ta="center">
+                <Text size="md" tt="uppercase" fw="bold" c="dimmed">
+                  {t("Databases.Settings.Events")}
+                </Text>
+                <Text fw={700} size="lg">
+                  {formatNumber(selectedDatabase.event_count - 1)}
+                </Text>
+              </Stack>
+            </Group>
+
+            <div>
+              {selectedDatabase.type === "success" && (
+                <Button
+                  {...libraryButtonProps}
+                  component={Link<RegisteredRouter, string, DatabaseRouteTarget["to"]>}
+                  {...databaseRouteTarget(selectedDatabase)}
+                  onClick={() => setActiveDatabase(selectedDatabase)}
+                  fullWidth
+                  variant="default"
+                  size="lg"
+                  rightSection={<IconArrowRight size="1rem" />}
+                >
+                  {t("Databases.Settings.Explore")}
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+
+        <Divider variant="dashed" label={t("Databases.Settings.AdvancedTools")} />
+
+        {selectedDatabase.type === "success" && (
+          <AdvancedSettings selectedDatabase={selectedDatabase} reload={mutate} />
+        )}
+
+        <Divider variant="dashed" label={t("Databases.Settings.Actions")} />
+        <Group justify="space-between">
+          {selectedDatabase.type === "success" && (
+            <Group>
+              <Button
+                {...libraryButtonProps}
+                variant="default"
+                rightSection={<IconPlus size="1rem" />}
+                onClick={() => {
+                  const dest = selectedDatabase.file;
+                  void runAddGamesToDatabase({
+                    pickPgnFile,
+                    convertPgn: async (progressId, files, destination) => {
+                      await tauri.convertPgn(progressId, files, destination, null, "", null);
+                      await mutate();
+                    },
+                    dest,
+                    notifyTitle: t("Common.Error"),
+                    runConversion: (sourceFileName, convert) =>
+                      runDatabaseConversion(
+                        setConversionState,
+                        {
+                          targetDatabase: dest,
+                          targetDatabaseTitle: selectedDatabase.title,
+                          sourceFileName,
+                        },
+                        ({ id }) => convert(id),
+                      ),
+                  });
+                }}
+              >
+                {t("Databases.Settings.AddGames")}
+              </Button>
+              <Button
+                {...libraryButtonProps}
+                rightSection={<IconArrowRight size="1rem" />}
+                variant="default"
+                loading={exportLoading}
+                onClick={() => {
+                  void runPgnExport({
+                    issueDestination: () => tauri.issuePgnExportDestination(),
+                    exportToPgn: (file, handle) => tauri.exportToPgn(file, handle),
+                    file: selectedDatabase.file,
+                    notifyTitle: t("Common.Error"),
+                    setLoading: setExportLoading,
+                  });
+                }}
+              >
+                {t("Databases.Settings.ExportPGN")}
+              </Button>
+            </Group>
+          )}
+          <Button {...libraryButtonProps} onClick={() => setDeleteModal(true)} color="red.8">
+            {t("Common.Delete")}
+          </Button>
+        </Group>
+      </Stack>
+    ) : null,
+    dialogs: (
+      <>
+        <ConfirmModal
+          title={t("Databases.Delete.Title")}
+          description={t("Databases.Delete.Message")}
+          opened={deleteModal}
+          onClose={() => setDeleteModal(false)}
+          onConfirm={async () => {
+            if (!selectedDatabase) return;
+            await deleteDatabaseAndInvalidate(
+              selectedDatabase.file,
+              tauri.deleteDatabase,
+              invalidateDeletedDatabaseState,
+            );
+          }}
+        />
+
+        <AddDatabase
+          databases={databases ?? []}
+          opened={open}
+          setOpened={setOpen}
+          disableLocalConversion={conversionInProgress}
+          setDatabases={mutate}
+        />
+      </>
+    ),
+  };
+}
+
+function GeneralSettings({
+  selectedDatabase,
+  mutate,
+}: {
+  selectedDatabase: SuccessDatabaseInfo;
+  mutate: () => void;
+}) {
+  const { t } = useTranslation();
+
+  const [title, setTitle] = useState(selectedDatabase.title);
+  const [description, setDescription] = useState(selectedDatabase.description);
+
+  const [debouncedTitle] = useDebouncedValue(title, 300);
+  const [debouncedDescription] = useDebouncedValue(description, 300);
+
+  useEffect(() => {
+    if (
+      debouncedTitle === "" ||
+      (debouncedTitle === selectedDatabase.title &&
+        debouncedDescription === selectedDatabase.description)
+    ) {
+      return;
+    }
+    tauri
+      .editDbInfo(selectedDatabase.file, debouncedTitle ?? null, debouncedDescription ?? null)
+      .then(() => mutate())
+      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
+  }, [
+    debouncedTitle,
+    debouncedDescription,
+    mutate,
+    selectedDatabase.file,
+    selectedDatabase.title,
+    selectedDatabase.description,
+    t,
+  ]);
+
+  return (
+    <>
+      <TextInput
+        label={t("Common.Name")}
+        value={title}
+        onChange={(e) => setTitle(e.currentTarget.value)}
+        error={title === "" && t("Common.RequireName")}
+      />
+      <Textarea
+        label={t("Common.Description")}
+        value={description}
+        onChange={(e) => setDescription(e.currentTarget.value)}
+      />
+    </>
+  );
+}
+
+function AdvancedSettings({
+  selectedDatabase,
+  reload,
+}: {
+  selectedDatabase: DatabaseInfo;
+  reload: () => void;
+}) {
+  return (
+    <Stack>
+      <PlayerMerger selectedDatabase={selectedDatabase} />
+      <DuplicateRemover selectedDatabase={selectedDatabase} reload={reload} />
+    </Stack>
+  );
+}
+
+function PlayerMerger({ selectedDatabase }: { selectedDatabase: DatabaseInfo }) {
+  const { t } = useTranslation();
+
+  const [player1, setPlayer1] = useState<number | undefined>(undefined);
+  const [player2, setPlayer2] = useState<number | undefined>(undefined);
+  const [loading, setLoading] = useState(false);
+
+  async function mergePlayers() {
+    if (player1 === undefined || player2 === undefined) {
+      return;
+    }
+    setLoading(true);
+    try {
+      await tauri.mergePlayers(selectedDatabase.file, player1, player2);
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Stack>
+      <Text fz="lg" fw="bold">
+        {t("Databases.Settings.MergePlayers")}
+      </Text>
+      <Text fz="sm">{t("Databases.Settings.MergePlayers.Desc")}</Text>
+      <Group grow>
+        <PlayerSearchInput
+          label={t("Databases.Player.One")}
+          file={selectedDatabase.file}
+          setValue={setPlayer1}
+        />
+        <Button
+          {...libraryButtonProps}
+          loading={loading}
+          onClick={mergePlayers}
+          rightSection={<IconArrowRight size="1rem" />}
+        >
+          {t("Databases.Settings.Merge")}
+        </Button>
+        <PlayerSearchInput
+          label={t("Databases.Player.Two")}
+          file={selectedDatabase.file}
+          setValue={setPlayer2}
+        />
+      </Group>
+    </Stack>
+  );
+}
+
+function DuplicateRemover({
+  selectedDatabase,
+  reload,
+}: {
+  selectedDatabase: DatabaseInfo;
+  reload: () => void;
+}) {
+  const { t } = useTranslation();
+
+  const [loading, setLoading] = useState(false);
+  function runCleanup(action: (file: DatabaseHandle) => Promise<unknown>) {
+    setLoading(true);
+    void action(selectedDatabase.file)
+      .then(() => {
+        setLoading(false);
+        reload();
+      })
+      .catch((error) => {
+        setLoading(false);
+        reload();
+        notifyUnlessCancelled(t("Common.Error"), error);
+      });
+  }
+
+  return (
+    <Stack>
+      <Text fz="lg" fw="bold">
+        {t("Databases.Settings.BatchDelete")}
+      </Text>
+      <Text fz="sm">{t("Databases.Settings.BatchDelete.Desc")}</Text>
+      <Group>
+        <Button
+          {...libraryButtonProps}
+          loading={loading}
+          onClick={() => runCleanup(tauri.deleteDuplicatedGames)}
+        >
+          {t("Databases.Settings.RemoveDup")}
+        </Button>
+
+        <Button
+          {...libraryButtonProps}
+          loading={loading}
+          onClick={() => runCleanup(tauri.deleteEmptyGames)}
+        >
+          {t("Databases.Settings.RemoveEmpty")}
+        </Button>
+      </Group>
+    </Stack>
+  );
+}
+
+function IndexInput({
+  indexed,
+  file,
+  reload,
+}: {
+  indexed: boolean;
+  file: DatabaseHandle;
+  reload: () => Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+
+  const [loading, setLoading] = useToggle();
+  return (
+    <Group>
+      <Tooltip label={t("Databases.Settings.Indexed.Desc")}>
+        <Checkbox
+          label={t("Databases.Settings.Indexed")}
+          disabled={loading}
+          checked={indexed}
+          onChange={(e) => {
+            setLoading(true);
+            const fn = e.currentTarget.checked ? tauri.createIndexes : tauri.deleteIndexes;
+            void fn(file)
+              .then(() => reload())
+              .catch((error) => notifyUnlessCancelled(t("Common.Error"), error))
+              .finally(() => setLoading(false));
+          }}
+        />
+      </Tooltip>
+      {loading && <Loader size="sm" />}
+    </Group>
+  );
+}

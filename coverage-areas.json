@@ -90,6 +90,7 @@
         "src/components/common/gameOpen.tsx",
         "src/components/databases/**",
         "src/components/files/**",
+        "src/components/library/**",
         "src/components/panels/database/**",
         "src/utils/db.ts",
         "src/utils/directories.ts",

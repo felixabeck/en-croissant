@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi, type MockInstance } from "vitest";
@@ -234,7 +234,28 @@ vi.mock("@tabler/icons-react", () => ({
   IconTrash: () => null,
 }));
 
-import DatabasesPage from "./DatabasesPage";
+import { useDatabaseLibrary } from "./useDatabaseLibrary";
+function DatabasesPage() {
+  const [selected, setSelected] = useState<string | null>(null);
+  const source = useDatabaseLibrary(selected, setSelected);
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Common.AddNew"
+        onClick={source.add}
+        disabled={source.conversionInProgress}
+      >
+        Add New
+      </button>
+      {source.status}
+      {source.progress}
+      {source.dialogs}
+      {source.visibleDatabases.map(source.renderRow)}
+      {source.detail}
+    </>
+  );
+}
 import { AccountCard } from "@/components/home/AccountCard";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -473,17 +494,18 @@ test("DatabasesPage error cards have Delete but no reference toggle; successful 
   )!;
   expect(errorCard.textContent).toContain("Import unfinished");
   expect(errorCard.textContent).toContain("unfinished.db3");
-  expect(errorCard.querySelector("[data-reference-toggle]")).toBeNull();
-  const toggle = successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!;
+  expect(errorCard.parentElement!.querySelector("[data-reference-toggle]")).toBeNull();
+  const toggle =
+    successCard.parentElement!.querySelector<HTMLInputElement>("[data-reference-toggle]")!;
   expect(toggle.getAttribute("data-count")).toBe("1");
   expect(toggle.checked).toBe(false);
   await act(async () => toggle.click());
   expect(store.get(referenceDbAtom)).toEqual(handleB);
-  expect(successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!.checked).toBe(
-    true,
-  );
+  expect(
+    successCard.parentElement!.querySelector<HTMLInputElement>("[data-reference-toggle]")!.checked,
+  ).toBe(true);
   await act(async () =>
-    successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!.click(),
+    successCard.parentElement!.querySelector<HTMLInputElement>("[data-reference-toggle]")!.click(),
   );
   expect(store.get(referenceDbAtom)).toBeNull();
   await act(async () => errorCard.click());
@@ -645,10 +667,16 @@ test("AccountCard convert() throw clears the conversion it owns", async () => {
 test("two Add games runs into the same target retain independent ids, frames and rows", async () => {
   await renderRoute();
   await selectExistingDatabase();
-  await startAddGames();
+  // Two picker admissions before the target becomes conversion-ineligible still own separate jobs.
+  await act(async () => {
+    const add = buttonByText("Databases.Settings.AddGames")!;
+    add.click();
+    add.click();
+  });
+  await vi.waitFor(() => expect(mocks.convertPgn).toHaveBeenCalledTimes(2));
   assertConversionCall(0);
   const first = activeOperation(0);
-  await startAddGames();
+  expect(buttonByText("Databases.Settings.AddGames")).toBeUndefined();
   assertConversionCall(1);
   const second = activeOperation(1);
   expect(first.id).not.toBe(second.id);

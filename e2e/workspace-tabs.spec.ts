@@ -18,7 +18,7 @@ test("workspace-tabs: analysis row and nested column drags resize panes and rest
     await mockScenario({
         commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: "Choose collection", exact: true }).click();
     await selectFilesTreeRow(page, gameOpeningFixture.file.name);
     await page.getByRole("button", { name: "Open game", exact: true }).click();
@@ -79,7 +79,7 @@ test("workspace-tabs: closing the last tab of an opened repertoire file leaves a
     await mockScenario({
         commands: filesWorkspaceCommands([[repertoireFile]], { ...pgnFileCommands }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, repertoireFile.name);
     await page.getByRole("button", { name: "Open game", exact: true }).click();

@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
-import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
+import { Box, Divider, Group, Stack, Text } from "@mantine/core";
+import { LibraryTypeBadge } from "@/components/library/presentation";
 import { IconEdit } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
@@ -95,7 +96,9 @@ function FileCard({
         <Text ta="center" fz="xl" fw="bold" miw={0} style={{ overflowWrap: "anywhere" }}>
           {selected?.name}
         </Text>
-        <Badge>{t(`Files.FileType.${capitalize(selected.metadata.type)}`)}</Badge>
+        <LibraryTypeBadge size="md">
+          {t(`Files.FileType.${capitalize(selected.metadata.type)}`)}
+        </LibraryTypeBadge>
       </Stack>
       <Divider />
 

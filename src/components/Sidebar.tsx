@@ -4,7 +4,6 @@ import {
   IconChess,
   IconCpu,
   IconDatabase,
-  IconFiles,
   IconSettings,
   IconUser,
 } from "@tabler/icons-react";
@@ -18,7 +17,7 @@ import {
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import classes from "./Sidebar.module.css";
 
-type SidebarPath = "/" | "/accounts" | "/files" | "/databases" | "/engines" | "/settings";
+type SidebarPath = "/" | "/accounts" | "/library" | "/databases" | "/engines" | "/settings";
 
 interface NavbarLinkProps {
   icon: Icon;
@@ -34,7 +33,9 @@ function matchesSidebarPath(pathname: string, matchPath: SidebarPath): boolean {
 
 function NavbarLink({ matchPath, target = { to: matchPath }, icon: Icon, label }: NavbarLinkProps) {
   const active = useRouterState({
-    select: (state) => matchesSidebarPath(state.location.pathname, matchPath),
+    select: (state) =>
+      matchesSidebarPath(state.location.pathname, matchPath) ||
+      (matchPath === "/library" && matchesSidebarPath(state.location.pathname, "/databases")),
   });
   return (
     <Tooltip label={label} position="right">
@@ -54,11 +55,10 @@ function NavbarLink({ matchPath, target = { to: matchPath }, icon: Icon, label }
 const linksdata = [
   { icon: IconChess, labelKey: "SideBar.Board", matchPath: "/" },
   { icon: IconUser, labelKey: "SideBar.User", matchPath: "/accounts" },
-  { icon: IconFiles, labelKey: "SideBar.Files", matchPath: "/files" },
   {
     icon: IconDatabase,
-    labelKey: "SideBar.Databases",
-    matchPath: "/databases",
+    labelKey: "SideBar.Library",
+    matchPath: "/library",
   },
   { icon: IconCpu, labelKey: "SideBar.Engines", matchPath: "/engines" },
 ] as const;
@@ -70,7 +70,7 @@ export function SideBar() {
   const links = linksdata.map((link) => (
     <NavbarLink
       {...link}
-      {...(link.matchPath === "/databases" ? { target: databaseRouteTarget(database) } : {})}
+      {...(link.matchPath === "/library" ? { target: databaseRouteTarget(database) } : {})}
       label={t(link.labelKey)}
       key={link.labelKey}
     />

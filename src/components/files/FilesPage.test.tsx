@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
@@ -249,7 +249,43 @@ const destination = {
 };
 
 import { TauriCommandError } from "@/platform/tauri";
-import FilesPage from "./FilesPage";
+import { useFileWorkspace } from "./useFileWorkspace";
+import DirectoryTree from "./DirectoryTree";
+import type { Entry } from "./file";
+import { Input, Select } from "@mantine/core";
+function FilesPage() {
+  const [selected, setSelected] = useState<Entry | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("");
+  const source = useFileWorkspace(selected, setSelected);
+  return (
+    <>
+      {source.chooser}
+      {source.creation}
+      <Input
+        aria-label="Common.Search"
+        value={search}
+        onChange={(e) => setSearch(e.currentTarget.value)}
+      />
+      <Select
+        label="Files.FileType"
+        value={filter}
+        onChange={(v) => setFilter(v ?? "")}
+        data={["game", "repertoire", "tournament", "puzzle", "other"].map((value) => ({
+          value,
+          label: value,
+        }))}
+      />
+      {source.trash}
+      {source.status}
+      {source.data && source.failure === "silent" && (
+        <DirectoryTree {...source.listProps} search={search} filter={filter} />
+      )}
+      {source.detail}
+      {source.dialogs}
+    </>
+  );
+}
 
 function commandError(category: "durability" | "partial-removal", message: string) {
   return new TauriCommandError({
@@ -734,7 +770,7 @@ describe("listing failures", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.textContent).not.toContain("Files could not be loaded");
     expect(container.querySelector('[data-testid="tree"]') !== null).toBe(cached);
-    expect(container.textContent?.includes("Common.Loading")).toBe(!cached);
+    expect(container.textContent?.includes("Loading PGN files…")).toBe(!cached);
   });
   test("changed picker refusal notifies the changed sentence and does not mutate", async () => {
     mocks.issueFileWorkspace.mockRejectedValueOnce({
@@ -981,6 +1017,14 @@ describe("selection column", () => {
   test("a vanished entry clears the selection", async () => {
     click("Select sample file");
     mocks.data = [destination];
+    await rerender();
+    expect(card()).toBeNull();
+    expect(container.textContent).toContain("No file selected");
+  });
+
+  test("a different entry kind with the same native key clears the file selection", async () => {
+    click("Select sample file");
+    mocks.data = [{ ...destination, handle: entry.handle }, destination];
     await rerender();
     expect(card()).toBeNull();
     expect(container.textContent).toContain("No file selected");

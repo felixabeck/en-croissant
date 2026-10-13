@@ -1,10 +1,29 @@
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RootFailure } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
-import DatabasesPage from "./DatabasesPage";
+import { useDatabaseLibrary } from "./useDatabaseLibrary";
+function DatabasesPage() {
+  const [selected, setSelected] = useState<string | null>(null);
+  const source = useDatabaseLibrary(selected, setSelected);
+  return (
+    <>
+      {source.status}
+      {!source.databases && source.failure === "silent" && <span data-testid="loading" />}
+      {source.visibleDatabases.map(source.renderRow)}
+      {source.databases?.length === 0 && source.failure === "silent" && (
+        <>
+          <span>No databases installed</span>
+          <span>Add a database to get started</span>
+        </>
+      )}
+      {source.detail}
+      {source.dialogs}
+    </>
+  );
+}
 
 const mocks = vi.hoisted(() => ({
   getDatabaseWorkspace: vi.fn(),
@@ -61,6 +80,7 @@ vi.mock("@mantine/core", () => {
   );
   return {
     Box: box,
+    Badge: box,
     Center: box,
     Divider: () => null,
     Group: box,
@@ -193,7 +213,7 @@ test.each(["sibling opener", "card double-click"])(
     );
     expect(buttons).toHaveLength(1);
     expect(buttons[0].closest("[data-card]")).toBeNull();
-    expect(buttons[0].parentElement?.textContent).toContain("Available");
+    expect(buttons[0].parentElement?.parentElement?.textContent).toContain("Available");
     const cards = [...host.querySelectorAll<HTMLButtonElement>("[data-card]")];
     const successCard = cards.find((card) => card.textContent?.includes("Available"))!;
     const errorCard = cards.find((card) => card.textContent?.includes("broken.db3"))!;
@@ -292,7 +312,7 @@ describe("listing failure copy and state", () => {
         category === "plain" ? new Error("failure") : failure(undefined, category),
       );
       await render();
-      expect(alert()?.textContent).toBe("Could not load databases. Please try again.");
+      expect(alert()?.textContent).toBe("Could not load databases. Please try again.Retry");
       expect(choose()).toBeUndefined();
       expect(host.textContent).not.toContain("No databases installed");
       expect(host.textContent).not.toContain("Add a database to get started");

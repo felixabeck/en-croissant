@@ -468,7 +468,7 @@ test("accounts-puzzles-engines: moves the active sidebar marker with navigation"
     await page.goto("/");
 
     const navbar = page.locator("nav.mantine-AppShell-navbar");
-    const linkNames = ["User", "Files", "Databases", "Engines", "Settings", "Board"];
+    const linkNames = ["User", "Library", "Engines", "Settings", "Board"];
     const transparent = "rgba(0, 0, 0, 0)";
     await expect(navbar.getByRole("link")).toHaveCount(linkNames.length);
 

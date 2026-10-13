@@ -17,7 +17,7 @@ describe("database route target", () => {
             const target = () =>
                 databaseRouteTarget(value as SuccessDatabaseInfo | null | undefined);
             expect(target).not.toThrow();
-            expect(target()).toEqual({ to: "/databases" });
+            expect(target()).toEqual({ to: "/library" });
         },
     );
 });

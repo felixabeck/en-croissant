@@ -1,3 +1,4 @@
+import { LibraryTypeBadge } from "@/components/library/presentation";
 import { Badge, Box, Group, Text } from "@mantine/core";
 import {
   IconFileDescription,
@@ -16,11 +17,25 @@ import { expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
 import { openFile } from "@/utils/files";
 import { runTabCreation } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import type { Entry, FileMetadata } from "./file";
+import { FILE_TYPES, type Entry, type FileMetadata } from "./file";
 
-type VisibleEntry = { entry: Entry; depth: number };
+export type CollectionPeer = {
+  type: "database";
+  key: string;
+  name: string;
+  selected: boolean;
+  content: React.ReactNode;
+  onSelect: () => void;
+  onOpen: () => void;
+};
+type VisibleEntry = { entry: Entry | CollectionPeer; depth: number };
+function entryKey(entry: Entry | CollectionPeer) {
+  return entry.type === "database"
+    ? `database:${entry.key}`
+    : `${entry.type}:${fileWorkspaceKey(entry.handle)}`;
+}
 
-function filteredTree(files: Entry[], search: string, filter: string): Entry[] {
+export function filteredTree(files: Entry[], search: string, filter: string): Entry[] {
   const normalizedSearch = search.trim().toLowerCase();
   const visit = (nodes: Entry[]): Entry[] =>
     nodes.reduce<Entry[]>((result, node) => {
@@ -33,7 +48,7 @@ function filteredTree(files: Entry[], search: string, filter: string): Entry[] {
       }
       const children = visit(node.children);
       const matchesSearch = !normalizedSearch || node.name.toLowerCase().includes(normalizedSearch);
-      if (matchesSearch || children.length) result.push({ ...node, children });
+      if ((!filter && matchesSearch) || children.length) result.push({ ...node, children });
       return result;
     }, []);
   return visit(files);
@@ -47,6 +62,9 @@ export default function DirectoryTree({
   onRequestMove,
   search,
   filter,
+  peers = [],
+  label,
+  onVisibleCount,
 }: {
   files: Entry[];
   selectedFile: Entry | null;
@@ -56,6 +74,9 @@ export default function DirectoryTree({
   onRequestMove?: (entry: Entry) => void;
   search: string;
   filter: string;
+  peers?: CollectionPeer[];
+  label?: string;
+  onVisibleCount?: (count: number) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useAtom(expandedDirectoriesAtom);
@@ -73,18 +94,21 @@ export default function DirectoryTree({
           visit(node.children, depth + 1);
       });
     visit(filtered, 0);
+    result.push(...peers.map((entry) => ({ entry, depth: 0 })));
     return result;
-  }, [expanded, filtered]);
+  }, [expanded, filtered, peers]);
+  useEffect(() => {
+    onVisibleCount?.(visible.length);
+  }, [visible.length, onVisibleCount]);
   useEffect(() => {
     if (!focusedHandle) return;
-    if (!visible.some((item) => fileWorkspaceKey(item.entry.handle) === focusedHandle)) {
+    if (!visible.some((item) => entryKey(item.entry) === focusedHandle)) {
       setFocusedHandle(null);
       return;
     }
-    refs.current.get(focusedHandle)?.focus();
   }, [focusedHandle, visible]);
   const focusEntry = (entry: VisibleEntry) => {
-    const handle = fileWorkspaceKey(entry.entry.handle);
+    const handle = entryKey(entry.entry);
     setFocusedHandle(handle);
     refs.current.get(handle)?.focus();
   };
@@ -97,19 +121,26 @@ export default function DirectoryTree({
   };
   const render = ({ entry: node, depth }: VisibleEntry): React.ReactNode => {
     const isDirectory = node.type === "directory";
-    const handleKey = fileWorkspaceKey(node.handle);
-    const open = expanded.includes(handleKey);
+    const handleKey = entryKey(node);
+    const expansionKey = node.type === "database" ? "" : fileWorkspaceKey(node.handle);
+    const open = expanded.includes(expansionKey);
     return (
       <Box
         key={handleKey}
         role="treeitem"
         aria-label={node.name}
         aria-level={depth + 1}
-        aria-selected={selectedFile ? fileWorkspaceKey(selectedFile.handle) === handleKey : false}
+        aria-selected={
+          node.type === "database"
+            ? node.selected
+            : selectedFile
+              ? entryKey(selectedFile) === handleKey
+              : false
+        }
         aria-expanded={isDirectory ? open : undefined}
         tabIndex={
           focusedHandle === null
-            ? visible[0] && fileWorkspaceKey(visible[0].entry.handle) === handleKey
+            ? visible[0] && entryKey(visible[0].entry) === handleKey
               ? 0
               : -1
             : focusedHandle === handleKey
@@ -122,14 +153,18 @@ export default function DirectoryTree({
         }}
         pl={depth * 16}
         onFocus={(event) => {
+          if (
+            node.type === "database" &&
+            event.target instanceof HTMLElement &&
+            event.target.matches("button[aria-pressed]")
+          )
+            event.currentTarget.focus();
           if (event.currentTarget === event.target) setFocusedHandle(handleKey);
         }}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target) return;
           event.stopPropagation();
-          const index = visible.findIndex(
-            (item) => fileWorkspaceKey(item.entry.handle) === handleKey,
-          );
+          const index = visible.findIndex((item) => entryKey(item.entry) === handleKey);
           const target =
             event.key === "ArrowDown"
               ? visible[index + 1]
@@ -152,99 +187,130 @@ export default function DirectoryTree({
           }
           if (event.key === "ArrowRight" && isDirectory && !open) {
             event.preventDefault();
-            setExpanded((old) => [...old, handleKey]);
+            setExpanded((old) => [...old, expansionKey]);
           }
           if (event.key === "ArrowLeft" && isDirectory && open) {
             event.preventDefault();
-            setExpanded((old) => old.filter((id) => id !== handleKey));
+            setExpanded((old) => old.filter((id) => id !== expansionKey));
           }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            setSelectedFile(node);
+            if (node.type === "database") node.onSelect();
+            else setSelectedFile(node);
             if (isDirectory)
               setExpanded((old) =>
-                open ? old.filter((id) => id !== handleKey) : [...old, handleKey],
+                open ? old.filter((id) => id !== expansionKey) : [...old, expansionKey],
               );
-            else if (event.key === "Enter") openEntry(node);
+            else if (event.key === "Enter") {
+              if (node.type === "database") node.onOpen();
+              else if (node.type === "file") openEntry(node);
+            }
           }
-          if (event.key.toLowerCase() === "m") {
+          if (event.key.toLowerCase() === "m" && node.type !== "database") {
             event.preventDefault();
             onRequestMove?.(node);
           }
         }}
         onClick={() => {
-          setSelectedFile(node);
+          if (node.type === "database") node.onSelect();
+          else setSelectedFile(node);
           if (isDirectory)
             setExpanded((old) =>
-              open ? old.filter((id) => id !== handleKey) : [...old, handleKey],
+              open ? old.filter((id) => id !== expansionKey) : [...old, expansionKey],
             );
         }}
         onDoubleClick={() => {
-          if (!isDirectory) openEntry(node);
+          if (node.type === "file") openEntry(node);
         }}
-        draggable
-        onDragStart={(event) =>
-          event.dataTransfer.setData("application/x-en-croissant-handle", handleKey)
-        }
+        draggable={node.type !== "database"}
+        onDragStart={(event) => {
+          if (node.type !== "database")
+            event.dataTransfer.setData(
+              "application/x-en-croissant-handle",
+              fileWorkspaceKey(node.handle),
+            );
+        }}
         onDragOver={(event) => {
           if (isDirectory) event.preventDefault();
         }}
         onDrop={(event) => {
           event.preventDefault();
-          if (!isDirectory || !onMove) return;
+          if (node.type !== "directory" || !onMove) return;
           const source = visible.find(
             (item) =>
+              item.entry.type !== "database" &&
               fileWorkspaceKey(item.entry.handle) ===
-              event.dataTransfer.getData("application/x-en-croissant-handle"),
+                event.dataTransfer.getData("application/x-en-croissant-handle"),
           )?.entry;
-          if (source && source.handle !== node.handle) void onMove(source, node);
+          if (
+            source &&
+            source.type !== "database" &&
+            fileWorkspaceKey(source.handle) !== fileWorkspaceKey(node.handle)
+          )
+            void onMove(source, node);
         }}
       >
-        <Group gap="xs" py={4} style={{ cursor: "pointer" }}>
-          <>
-            {isDirectory ? (
-              open ? (
-                <IconFolderOpen size={16} />
+        {node.type === "database" ? (
+          node.content
+        ) : (
+          <Group gap="xs" py={4} style={{ cursor: "pointer" }}>
+            <>
+              {isDirectory ? (
+                open ? (
+                  <IconFolderOpen size={16} />
+                ) : (
+                  <IconFolder size={16} />
+                )
               ) : (
-                <IconFolder size={16} />
-              )
-            ) : (
-              <IconFileDescription size={16} />
+                <IconFileDescription size={16} />
+              )}
+            </>
+            <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
+              {node.name}
+            </Text>
+            {!isDirectory && (
+              <>
+                <Badge size="xs" color="blue.9">
+                  {node.numGames}
+                </Badge>
+                <LibraryTypeBadge>
+                  {t(FILE_TYPES.find((type) => type.value === node.metadata.type)!.translationKey)}
+                </LibraryTypeBadge>
+              </>
             )}
-          </>
-          <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
-            {node.name}
-          </Text>
-          {!isDirectory && <Badge size="xs">{node.numGames}</Badge>}
-          <IconAction
-            label={t("Common.Delete")}
-            color="red"
-            variant="subtle"
-            size="sm"
-            onClick={(event: MouseEvent<HTMLButtonElement>) => {
-              event.stopPropagation();
-              void onRequestDelete(node);
-            }}
-          >
-            <IconTrash size={16} aria-hidden />
-          </IconAction>
-          <IconAction
-            label={t("Files.Move")}
-            variant="subtle"
-            size="sm"
-            onClick={(event: MouseEvent<HTMLButtonElement>) => {
-              event.stopPropagation();
-              onRequestMove?.(node);
-            }}
-          >
-            <IconFolderSymlink size={16} aria-hidden />
-          </IconAction>
-        </Group>
+            {isDirectory && (
+              <LibraryTypeBadge>{t("Library.Folder", { defaultValue: "Folder" })}</LibraryTypeBadge>
+            )}
+            <IconAction
+              label={t("Common.Delete")}
+              color="red"
+              variant="subtle"
+              size="sm"
+              onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                event.stopPropagation();
+                void onRequestDelete(node);
+              }}
+            >
+              <IconTrash size={16} aria-hidden />
+            </IconAction>
+            <IconAction
+              label={t("Files.Move")}
+              variant="subtle"
+              size="sm"
+              onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                event.stopPropagation();
+                onRequestMove?.(node);
+              }}
+            >
+              <IconFolderSymlink size={16} aria-hidden />
+            </IconAction>
+          </Group>
+        )}
       </Box>
     );
   };
   return (
-    <Box role="tree" aria-label={t("Files.Title")}>
+    <Box role="tree" aria-label={label ?? t("Files.Title")}>
       {visible.map(render)}
     </Box>
   );

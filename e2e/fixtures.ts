@@ -536,7 +536,7 @@ export function databaseCommands(
                 },
             ],
         },
-        get_db_info: { result: info },
+        get_db_info: { result: { filename, ...info } },
     };
 }
 

@@ -28,7 +28,7 @@ for (const gesture of ["button", "double-click", "Enter"] as const) {
         await mockScenario({
             commands: filesWorkspaceCommands([[gameOpeningFixture.file]], gameOpeningCommands),
         });
-        await page.goto("/files");
+        await page.goto("/library");
         await page.getByRole("button", { name: "Choose collection", exact: true }).click();
         await selectFilesTreeRow(page, gameOpeningFixture.file.name);
         const second = page.getByRole("option", { name: /Second White - Second Black/ });
@@ -43,7 +43,7 @@ for (const gesture of ["button", "double-click", "Enter"] as const) {
             const before = await second.boundingBox();
             await second.click();
             await expect(second).toHaveAttribute("aria-selected", "true");
-            await expect(page).toHaveURL("/files");
+            await expect(page).toHaveURL("/library");
             expect(await second.boundingBox()).toEqual(before);
             await openGame.click();
         } else if (gesture === "double-click") {
@@ -84,7 +84,7 @@ test("files-preview: the card fills the window and shows the whole board and its
             lex_pgn: { result: withCommand },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, repertoireFile.name);
     await expect(page.getByText("Weiss - Schwarz").first()).toBeVisible();
@@ -145,7 +145,7 @@ test("files-preview: variation chooser lies inside the preview board at its top 
             },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, repertoireFile.name);
     const board = page.locator("cg-board");

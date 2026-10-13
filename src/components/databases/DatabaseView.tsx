@@ -69,7 +69,7 @@ function DatabaseView() {
               <Button onClick={() => void mutate()}>
                 {t("Databases.LoadRetry", { defaultValue: "Retry" })}
               </Button>
-              <Link to="/databases">{t("Databases.Title")}</Link>
+              <Link to="/library">{t("Library.Title", { defaultValue: "Library" })}</Link>
             </Stack>
           ) : (
             <Loader aria-label={t("Common.Loading")} />
@@ -85,7 +85,7 @@ function DatabaseView() {
         <Center ref={ref} h="100%">
           <Stack align="center">
             <Text c="dimmed">{t("Databases.NoSelection")}</Text>
-            <Link to="/databases">{t("Databases.Title")}</Link>
+            <Link to="/library">{t("Library.Title", { defaultValue: "Library" })}</Link>
           </Stack>
         </Center>
       </Box>
@@ -106,7 +106,7 @@ function DatabaseView() {
         <DatabaseViewStateContext.Provider value={activeDatabaseViewStore}>
           <Stack ref={ref} className={classes.viewStack}>
             <Group align="center" style={{ flexShrink: 0 }}>
-              <Link to="/databases">
+              <Link to="/library">
                 <IconAction label={t("Common.Back")} variant="default">
                   <IconArrowBackUp size="1rem" />
                 </IconAction>

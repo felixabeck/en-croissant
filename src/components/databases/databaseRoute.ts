@@ -8,7 +8,7 @@ import { databaseHandleSchema } from "@/utils/pathCapabilities";
 
 export type DatabaseRouteTarget =
     | { to: "/databases/$databaseId"; params: { databaseId: string } }
-    | { to: "/databases" };
+    | { to: "/library" };
 
 export function databaseRouteTarget(
     database: SuccessDatabaseInfo | null | undefined,
@@ -16,7 +16,7 @@ export function databaseRouteTarget(
     const parsed = databaseHandleSchema.safeParse(database?.file);
     return parsed.success
         ? { to: "/databases/$databaseId", params: { databaseId: databaseHandleKey(parsed.data) } }
-        : { to: "/databases" };
+        : { to: "/library" };
 }
 
 export type DatabaseRouteResolution =

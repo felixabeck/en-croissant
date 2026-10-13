@@ -109,7 +109,7 @@ test("compact title-bar: mouse actions and German popup geometry at 320px / 200%
             "plugin:window|set_fullscreen": { result: null },
         },
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     const target = await assertCompactTitleBar(page);
     await target.click();
     await assertCompactGroups(page);
@@ -160,7 +160,7 @@ test("compact title-bar: all groups and actions by keyboard", async ({
             "plugin:window|set_fullscreen": { result: null },
         },
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     const target = await assertCompactTitleBar(page);
     for (const [index, group] of ["Datei", "Ansicht", "Hilfe"].entries()) {
         await target.focus();
@@ -365,7 +365,7 @@ for (const [rootFailure, filesKey, databasesKey] of listingReasons) {
                 list_file_workspace: { error },
             }),
         });
-        await page.goto("/files");
+        await page.goto("/library");
         await page.getByRole("button", { name: "Sammlung auswählen", exact: true }).click();
         const alert = page.getByRole("alert");
         await expect(alert).toBeVisible();
@@ -389,7 +389,7 @@ for (const [rootFailure, filesKey, databasesKey] of listingReasons) {
         capture,
     }) => {
         await mockScenario({ commands: { list_workspace_databases: { error } } });
-        await page.goto("/databases");
+        await page.goto("/library");
         const alert = page.getByRole("alert");
         await expect(alert).toBeVisible();
         await expect(alert).toContainText(germanListingCopy[databasesKey]);
@@ -404,10 +404,7 @@ for (const [rootFailure, filesKey, databasesKey] of listingReasons) {
             await assertNothingClipped(alert, { mode: "reachable" });
         } else await expect(choose).toHaveCount(0);
         await expect(
-            page.getByText(germanListingCopy["Databases.Empty.NoInstalled"], { exact: true }),
-        ).toHaveCount(0);
-        await expect(
-            page.getByText(germanListingCopy["Databases.Empty.AddHint"], { exact: true }),
+            page.getByText(germanListingCopy["Library.Empty"], { exact: true }),
         ).toHaveCount(0);
         await assertNoHorizontalOverflow();
         await assertPageNotClipped(page);
@@ -445,7 +442,7 @@ async function submitPurgeAndOpenFailureDialog(
             permanently_delete_workspace_entry: { error: purgeError },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: "Sammlung auswählen" }).click();
     const deleteEntry = page
         .getByRole("treeitem", { name: "Openings", exact: true })
@@ -513,7 +510,7 @@ test("async-errors: localizes directory-trash failures in the confirmation dialo
             trash_workspace_entry: { error: "private native diagnostic at /private/file.pgn" },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: "Sammlung auswählen" }).click();
     await page
         .getByRole("treeitem", { name: "Openings", exact: true })
@@ -543,7 +540,7 @@ test("async-errors: fits a selected PGN file and its card at 320px", async ({
     await mockScenario({
         commands: filesWorkspaceCommands([[openingDirectory, pgnFile]], pgnFileCommands),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: "Sammlung auswählen" }).click();
     const fileRow = await selectFilesTreeRow(page, pgnFile.name);
     // Nothing before this line depends on the card, so an overflowing page fails here.
@@ -720,14 +717,14 @@ test("async-errors: verifies German navigation and a delayed native rejection at
         await assertNoHorizontalOverflow();
         await assertPageNotClipped(page);
     }
-    await page.getByRole("link", { name: "Datenbanken" }).click();
+    await page.getByRole("link", { name: "Bibliothek" }).click();
 
     await expect(page.getByRole("alert")).toContainText(
         /database workspace unavailable|Datenbanken konnten nicht geladen werden/i,
     );
     // Visible, not only present: the list holding it used to be squeezed to 0px.
     await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Deine Datenbanken" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Bibliothek" })).toBeVisible();
     await assertNoHorizontalOverflow();
     await assertPageNotClipped(page);
     await assertAccessible();
@@ -822,7 +819,7 @@ test("async-errors: wraps a long database title in the list at 320px", async ({
             indexed: false,
         }),
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     // One unbroken word, wider than the stacked panel at 200%: it has to wrap, not be cut.
     await expect(page.getByText(title)).toBeVisible();
     await assertNoHorizontalOverflow();

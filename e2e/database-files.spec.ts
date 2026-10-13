@@ -19,6 +19,97 @@ import {
     dragMosaicDivider,
 } from "./fixtures";
 
+for (const oldRoute of ["/files", "/databases"] as const) {
+    test(`database-files: ${oldRoute} redirects to Library`, async ({ page }) => {
+        await page.goto(oldRoute);
+        await expect(page).toHaveURL("/library");
+        await expect(page.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
+        const nav = page.locator("nav");
+        await expect(nav.getByRole("link", { name: "Library", exact: true })).toHaveCount(1);
+        await expect(nav.getByRole("link", { name: /^(Files|Databases)$/ })).toHaveCount(0);
+    });
+}
+
+test("database-files: mixed Library retains hierarchy, selection, type filters and cross-kind keyboard opening", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "100"));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const sameName = gameOpeningFixture.file.name;
+    const needle = {
+        ...filesWorkspaceFixture.pgnFile,
+        handle: { ...filesWorkspaceFixture.pgnFile.handle, id: { id: "needle-file" } },
+        name: "Needle repertoire",
+        metadata: { type: "repertoire", tags: [] },
+    };
+    const hidden = {
+        ...needle,
+        handle: { ...needle.handle, id: { id: "hidden" } },
+        name: "Unmatched sibling",
+    };
+    const folder = { ...filesWorkspaceFixture.openingDirectory, children: [needle, hidden] };
+    await mockScenario({
+        commands: {
+            ...filesWorkspaceCommands([[folder, gameOpeningFixture.file]], gameOpeningCommands),
+            ...databaseCommands(gameOpeningFixture.databaseId, "opening.db3", {
+                title: sameName,
+                description: "Searchable database description",
+                player_count: 2,
+                event_count: 2,
+                game_count: 2,
+                storage_size: 1024,
+                indexed: false,
+            }),
+        },
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    const tree = page.getByRole("tree", { name: "Library", exact: true });
+    await expect(tree).toHaveCount(1);
+    const collision = tree.getByRole("treeitem", { name: sameName, exact: true });
+    await expect(collision).toHaveCount(2);
+    await collision.first().getByText(sameName, { exact: true }).click();
+    const openGame = page.getByRole("button", { name: "Open game", exact: true });
+    await expect(openGame).toBeVisible();
+    await page.getByRole("textbox", { name: "Search", exact: true }).fill("Searchable database");
+    await expect(collision).toHaveCount(1);
+    await expect(openGame).toBeVisible();
+    await page.getByRole("textbox", { name: "Search", exact: true }).fill("");
+    await collision.last().getByText(sameName, { exact: true }).click();
+    await expect(openGame).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Explore", exact: true })).toBeVisible();
+    await page.getByRole("textbox", { name: "File type", exact: true }).click();
+    await page.getByRole("option", { name: "Repertoire", exact: true }).click();
+    await expect(collision).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Explore", exact: true })).toBeVisible();
+    await page.getByRole("textbox", { name: "Search", exact: true }).fill("Needle");
+    const folderRow = tree.getByRole("treeitem", { name: folder.name, exact: true });
+    await folderRow.getByText(folder.name, { exact: true }).click();
+    await expect(tree.getByRole("treeitem", { name: needle.name, exact: true })).toBeVisible();
+    await expect(tree.getByRole("treeitem", { name: hidden.name, exact: true })).toHaveCount(0);
+    await page.getByRole("textbox", { name: "Search", exact: true }).fill("");
+    await page.getByRole("textbox", { name: "File type", exact: true }).click();
+    await page.getByRole("option", { name: "Games database", exact: true }).click();
+    await expect(tree.getByRole("treeitem")).toHaveCount(1);
+    await tree.getByRole("treeitem").getByText(sameName, { exact: true }).click();
+    await assertAccessible();
+    await assertNoHorizontalOverflow();
+    await capture("library-database-selected");
+    await expect(page).toHaveScreenshot("library-database-selected.png", { fullPage: true });
+    // Clear the type filter and navigate across the final file row and database peer.
+    await page.getByRole("button", { name: "Clear type filter", exact: true }).click();
+    await expect(collision).toHaveCount(2);
+    await collision.first().focus();
+    await collision.first().press("ArrowDown");
+    await expect(collision.last()).toBeFocused();
+    await collision.last().press("Enter");
+    await expect(page).toHaveURL(`/databases/${gameOpeningFixture.databaseId}`);
+});
+
 test("database-files: database view load failure stays reachable at 320px and 200% and Retry recovers", async ({
     page,
     mockScenario,
@@ -57,11 +148,11 @@ test("database-files: database view load failure stays reachable at 320px and 20
         exact: true,
     });
     const retry = alert.getByRole("button", { name: "Retry", exact: true });
-    const overview = alert.getByRole("link", { name: "Databases", exact: true });
+    const overview = alert.getByRole("link", { name: "Library", exact: true });
     for (const element of [message, retry, overview]) {
         await expect(element).toBeInViewport({ ratio: 1 });
     }
-    await expect(overview).toHaveAttribute("href", "/databases");
+    await expect(overview).toHaveAttribute("href", "/library");
     await assertNothingClipped(alert, { mode: "reachable" });
     await assertNoHorizontalOverflow();
     const listingAttempts = () =>
@@ -383,10 +474,10 @@ for (const gesture of ["button", "double-click", "Enter"] as const) {
     }) => {
         await page.setViewportSize({ width: 1400, height: 900 });
         await mockScenario({ commands: gameOpeningCommands });
-        await page.goto("/databases");
+        await page.goto("/library");
         const opener = page.getByRole("button", { name: "Open database", exact: true });
         await expect(opener).toHaveText("Open database");
-        await expect(opener.locator("..")).toContainText(gameOpeningFixture.databaseTitle);
+        await expect(opener.locator("../..")).toContainText(gameOpeningFixture.databaseTitle);
         await expect(opener.locator("button")).toHaveCount(0);
         await capture("database-labelled-opener");
         await expect(page).toHaveScreenshot("database-labelled-opener.png", { fullPage: true });
@@ -438,7 +529,7 @@ test("database-files: metadata-only editing fits 320px and relists the chosen ty
             write_workspace_file_metadata: { result: null },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, initial.name);
     await page.getByRole("button", { name: "Edit metadata", exact: true }).click();
@@ -454,7 +545,7 @@ test("database-files: metadata-only editing fits 320px and relists the chosen ty
     await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
     await expect(dialog).toBeHidden();
     await expect(
-        page.locator(".mantine-Badge-root").filter({ hasText: "Repertoire" }),
+        page.getByRole("treeitem").locator(".mantine-Badge-root").filter({ hasText: "Repertoire" }),
     ).toBeVisible();
     const mutations = await page.evaluate(() =>
         window.__E2E_TAURI__
@@ -487,7 +578,7 @@ test("database-files: grants a workspace and creates a folder through typed IPC"
             create_workspace_directory: { result: openingDirectory },
         }),
     });
-    await page.goto("/files");
+    await page.goto("/library");
 
     await page.getByRole("button", { name: /choose collection/i }).click();
     await expect(page.getByRole("button", { name: /create folder/i })).toBeVisible();
@@ -555,13 +646,16 @@ test("database-files: concurrent conversions render their own live progress coun
             convert_pgn: { delay: 60_000, result: null },
         },
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     await page.getByRole("button").filter({ hasText: databaseTitle }).click();
     const addGames = page.getByRole("button", { name: /^add games$/i });
-    await addGames.click();
+    // Admit both native pickers before conversion makes the selected target unavailable.
+    await addGames.evaluate((button: HTMLButtonElement) => {
+        button.click();
+        button.click();
+    });
     await expect(page.getByText("Convert: first", { exact: true })).toBeVisible();
-    await expect(addGames).toBeEnabled();
-    await addGames.click();
+    await expect(addGames).toHaveCount(0);
     await expect(page.getByText("Convert: second", { exact: true })).toBeVisible();
 
     const ids = await page.evaluate(() =>
@@ -598,7 +692,14 @@ test("database-files: concurrent conversions render their own live progress coun
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
     await secondRow.scrollIntoViewIfNeeded();
     await expect(secondRow).toBeInViewport();
-    await expect(page.getByRole("button", { name: /^add new$/i })).toBeDisabled();
+    // Client navigation preserves the fixture session and the app-owned conversion registry.
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await page.getByRole("link", { name: "Library", exact: true }).click();
+    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/s");
+    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
+    await expect(
+        page.getByRole("button", { name: "Import or download database", exact: true }),
+    ).toBeDisabled();
 });
 
 test("database-files: an unfinished import stays visible with Delete and no reference star", async ({
@@ -620,7 +721,7 @@ test("database-files: an unfinished import stays visible with Delete and no refe
             },
         },
     });
-    await page.goto("/databases");
+    await page.goto("/library");
     const card = page
         .getByRole("button")
         .filter({ hasText: "Import did not finish — delete it and import again" });
@@ -629,7 +730,7 @@ test("database-files: an unfinished import stays visible with Delete and no refe
     await expect(card.locator(".mantine-Rating-root")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open database", exact: true })).toHaveCount(0);
     await card.dblclick();
-    await expect(page).toHaveURL("/databases");
+    await expect(page).toHaveURL("/library");
     await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Explore", exact: true })).toHaveCount(0);
     await assertNoHorizontalOverflow();
@@ -643,22 +744,22 @@ test("database-files: Back opens the overview and ends the active database sessi
     mockScenario,
 }) => {
     await mockScenario(databaseScenario);
-    await page.goto("/databases");
+    await page.goto("/library");
     await page.getByRole("button").filter({ hasText: databaseTitle }).dblclick();
     await expect(page).toHaveURL(`/databases/${databaseKey}`);
     await expect(page.getByRole("heading", { name: databaseTitle, exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Back", exact: true }).click();
-    await expect(page).toHaveURL("/databases");
-    await expect(page.getByRole("heading", { name: "Databases", exact: true })).toBeVisible();
+    await expect(page).toHaveURL("/library");
+    await expect(page.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: databaseTitle, exact: true })).toBeHidden();
 
     const navbar = page.locator("nav.mantine-AppShell-navbar");
-    await navbar.getByRole("link", { name: "Files", exact: true }).click();
-    await expect(page).toHaveURL("/files");
-    await navbar.getByRole("link", { name: "Databases", exact: true }).click();
-    await expect(page).toHaveURL("/databases");
-    await expect(page.getByRole("heading", { name: "Databases", exact: true })).toBeVisible();
+    await navbar.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await navbar.getByRole("link", { name: "Library", exact: true }).click();
+    await expect(page).toHaveURL("/library");
+    await expect(page.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
 });
 
 test("database-files: the sidebar resumes the active database view", async ({
@@ -666,16 +767,16 @@ test("database-files: the sidebar resumes the active database view", async ({
     mockScenario,
 }) => {
     await mockScenario(databaseScenario);
-    await page.goto("/databases");
+    await page.goto("/library");
     await page.getByRole("button").filter({ hasText: databaseTitle }).click();
     await page.getByRole("link", { name: "Explore", exact: true }).click();
     await expect(page).toHaveURL(`/databases/${databaseKey}`);
     await expect(page.getByRole("heading", { name: databaseTitle, exact: true })).toBeVisible();
 
     const navbar = page.locator("nav.mantine-AppShell-navbar");
-    await navbar.getByRole("link", { name: "Files", exact: true }).click();
-    await expect(page).toHaveURL("/files");
-    const databasesLink = navbar.getByRole("link", { name: "Databases", exact: true });
+    await navbar.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    const databasesLink = navbar.getByRole("link", { name: "Library", exact: true });
     await expect(databasesLink).not.toHaveAttribute("aria-current", "page");
     await databasesLink.click();
     await expect(page).toHaveURL(`/databases/${databaseKey}`);

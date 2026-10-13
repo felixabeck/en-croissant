@@ -51,7 +51,7 @@ async function renderSidebar(initialPath = "/") {
   const routePaths = [
     "/",
     "/accounts",
-    "/files",
+    "/library",
     "/databases",
     "/databases/$databaseId",
     "/databasesX",
@@ -97,7 +97,7 @@ const database: SuccessDatabaseInfo = {
 };
 
 function databasesLink() {
-  return host!.querySelector<HTMLAnchorElement>('a[aria-label="SideBar.Databases"]')!;
+  return host!.querySelector<HTMLAnchorElement>('a[aria-label="SideBar.Library"]')!;
 }
 
 test("keeps the active sidebar marker aligned with client navigation", async () => {
@@ -133,16 +133,16 @@ test("keeps the active sidebar marker aligned with client navigation", async () 
 
   await navigateAndExpect("/accounts", "SideBar.User");
   await navigateAndExpect("/engines?selected=2", "SideBar.Engines");
-  await navigateAndExpect("/files", "SideBar.Files");
-  await navigateAndExpect("/databases", "SideBar.Databases");
-  await navigateAndExpect("/databases/abc", "SideBar.Databases");
+  await navigateAndExpect("/library", "SideBar.Library");
+  await navigateAndExpect("/databases", "SideBar.Library");
+  await navigateAndExpect("/databases/abc", "SideBar.Library");
   await navigateAndExpect("/settings", "SideBar.Settings");
   await navigateAndExpect("/", "SideBar.Board");
 });
 
 test("reactively resumes the active database in the sidebar", async () => {
-  await renderSidebar("/files");
-  expect(databasesLink().getAttribute("href")).toBe("/databases");
+  await renderSidebar("/library");
+  expect(databasesLink().getAttribute("href")).toBe("/library");
   await act(async () => activeDatabaseViewStore.getState().setDatabase(database));
   expect(databasesLink().getAttribute("href")).toBe("/databases/database-A");
 });
@@ -152,7 +152,7 @@ test.each([undefined, null, {}, { file: {} }, { file: { id: { id: "" }, kind: "d
   async (value) => {
     activeDatabaseViewStore.setState({ database: value as never });
     await expect(renderSidebar()).resolves.toBeDefined();
-    expect(databasesLink().getAttribute("href")).toBe("/databases");
+    expect(databasesLink().getAttribute("href")).toBe("/library");
   },
 );
 
@@ -164,7 +164,7 @@ test("marks all database routes active independently of the resume target", asyn
     ["/databases/", true],
     ["/databases/database-A", true],
     ["/databases/database-B", true],
-    ["/files", false],
+    ["/settings", false],
     ["/databasesX", false],
   ] as const) {
     await act(async () => {
