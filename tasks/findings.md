@@ -15256,13 +15256,16 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 
 ### Native discard verifier aborts on a retired tree key between its two storage reads
 
-* **ID:** f-20261010-42 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-42 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs verifyGameOpening GO14 readTree and confirmed replacement polling.
 * **Defect:** The full native typed baseline completes the exact PGN edit, real Update, dirty publication, unsaved confirmation and discard click, then GO14 fails with discard owner's persisted tree is unreadable. Its immediately repeated diagnostic read shows the correct clean first game at a new physical treeKey under the same logical owner and unchanged admitted IDs. readTree awaits workspace then a separate WebDriver tree read. The app can publish the successor physical key and retire the previous logical tree between these calls. Absence aborts waitFor instead of retrying the changed snapshot.
 * **Fix shape:** Read a captured workspace, then obtain that same raw workspace and the selected physical tree bytes together in one browser script. Retry when the workspace changed, preserving strict unreadable-tree failure for a stable owner and every identity/content/dirty/admission assertion. Do not treat stable corruption as success or inject renderer state.
 * **Proof:** Ordinary full unchanged current-verifier native run must observe the coherent clean replacement and exit0. The actual old InfoPanel dirty-guard application fault must still fail GO14 and exact restoration must pass. Preserve the failing native log as the original observer-race witness.
 * **Found by:** Actual gate-native-typed-baseline.JjVJ7B, exit1, only GO14 fails. Root source tracing confirms separate awaited storage calls and physical-generation publication/retirement. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed (8a591760).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"3056467ebdee1f9b9541b81fab9730944ab2b194efabd3f9f1a5bda077546183","header_sha256":"cf64bcf0b5b9123737bbf976639aad131b07b25a71f9b1b608abc13cce182ad2","header_status":"handled","input_sha256":"5a5b9317362729b8d3f212fd947d5dada15c7ffe297f1d4a447dc481c6d8bab4","kind":"mutation-receipt","operation":"728beda031a51e021aab2f52da28b687f6324564f66dbd92dbf2e8d8e8582c5b","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-42"],"target":"f-20261010-42","v":1} -->
 
 ---
 
