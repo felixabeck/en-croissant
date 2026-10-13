@@ -407,6 +407,7 @@
     "Databases.FIDE.Standard": "Класічныя",
     "Databases.FIDE.Title": "Звесткі пра гульца FIDE",
     "Databases.Game.Delete": "Выдаліць гульню",
+    "Databases.Game.DeletedRefreshFailed": "Партыя выдалена, але не ўдалося абнавіць выгляд базы даных.",
     "Databases.Game.NoSelection": "Гульня не выбрана",
     "Databases.Game.Plies": "Паўхады",
     "Databases.ImportUnfinished": "Імпарт не завершаны — выдаліце базу даных і імпартуйце зноў",

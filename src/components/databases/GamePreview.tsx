@@ -16,7 +16,7 @@ import {
   DatabaseLayoutContext,
   fitPreviewSquare,
 } from "@/state/databaseLayout";
-import { parsePGN } from "@/utils/chess";
+import { parsePGN, parseStartHeader } from "@/utils/chess";
 import { type GameHeaders, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
@@ -57,7 +57,34 @@ function GamePreviewWrapper({
     });
   });
 
-  return <>{parsedGame && <GamePreview key={pgn} game={parsedGame} {...layout} />}</>;
+  // Record identity includes metadata, while the parser cache only needs movetext and FEN.
+  // Sort object keys at every level so replacing equivalent headers preserves navigation.
+  const gameKey = JSON.stringify([pgn, headers ?? null], (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, value[key]]),
+        )
+      : value,
+  );
+  const start = parsedGame
+    ? headers?.start === undefined
+      ? parsedGame.position
+      : parseStartHeader(headers.start, parsedGame.root)
+    : [];
+  const game = parsedGame && {
+    ...parsedGame,
+    headers: {
+      ...parsedGame.headers,
+      ...headers,
+      fen: parsedGame.root.fen,
+      start,
+    },
+    position: start,
+  };
+
+  return <>{game && <GamePreview key={gameKey} game={game} {...layout} />}</>;
 }
 
 function GamePreview({

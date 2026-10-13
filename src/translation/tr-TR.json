@@ -397,6 +397,7 @@
     "Databases.FIDE.Standard": "Klasik",
     "Databases.FIDE.Title": "FIDE oyuncu bilgileri",
     "Databases.Game.Delete": "Oyunu sil",
+    "Databases.Game.DeletedRefreshFailed": "Oyun silindi, ancak veritabanı görünümü yenilenemedi.",
     "Databases.Game.NoSelection": "Oyun seçilmedi",
     "Databases.Game.Plies": "Yarım hamle",
     "Databases.ImportUnfinished": "İçe aktarma tamamlanmadı — veritabanını silip yeniden içe aktarın",

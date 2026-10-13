@@ -402,6 +402,7 @@
     "Databases.FIDE.Standard": "Clásicas",
     "Databases.FIDE.Title": "Información del jugador FIDE",
     "Databases.Game.Delete": "Eliminar partida",
+    "Databases.Game.DeletedRefreshFailed": "La partida se ha eliminado, pero no se ha podido actualizar la vista de la base de datos.",
     "Databases.Game.NoSelection": "No hay partida seleccionada",
     "Databases.Game.Plies": "Medias jugadas",
     "Databases.ImportUnfinished": "La importación no terminó — elimina la base de datos e impórtala de nuevo",

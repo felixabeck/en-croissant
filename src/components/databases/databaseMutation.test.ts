@@ -3,11 +3,13 @@ import type { DatabaseHandle } from "@/bindings";
 import { createStore } from "jotai";
 import { databaseConversionStateAtom, runDatabaseConversion } from "@/state/atoms";
 import { TauriCommandError } from "@/platform/tauri";
+import { type Arguments, type ScopedMutator, type State, unstable_serialize } from "swr";
 import {
     deleteDatabaseAndInvalidate,
     invalidateDeletedDatabase,
     runAddGamesToDatabase,
     runPgnExport,
+    refreshDatabaseGameQueries,
     type DatabaseRemovalState,
 } from "./databaseMutation";
 
@@ -15,6 +17,81 @@ const notify = vi.hoisted(() => vi.fn());
 vi.mock("@mantine/notifications", () => ({ notifications: { show: notify } }));
 
 const database = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
+
+describe("database game query refresh", () => {
+    it("observes original same-database view keys without mutating during collection", async () => {
+        const file = database("selected");
+        const keys: Arguments[] = [
+            ["games", { ...file }, { page: 1 }],
+            ["games", file, { page: 2 }],
+            ["players", file, {}],
+            ["tournaments", file, {}],
+            ["games", database("other"), {}],
+            ["players", database("other"), {}],
+            ["tournaments", database("other"), {}],
+            ["engines", file],
+            "databases",
+        ];
+        const cache = new Map<string, State>();
+        const matches: boolean[] = [];
+        const mutate = vi.fn(async (key: Arguments | ((key: Arguments) => boolean)) => {
+            if (typeof key === "function") {
+                for (const original of keys) matches.push(key(original));
+                return [];
+            }
+            cache.set(unstable_serialize(key), { data: "refreshed" });
+            return "refreshed";
+        });
+        expect(await refreshDatabaseGameQueries(file, cache, mutate as ScopedMutator)).toEqual(
+            Array.from({ length: 4 }, () => ({ status: "fulfilled", value: "refreshed" })),
+        );
+        expect(matches).toEqual(keys.map(() => false));
+        expect(mutate.mock.calls.slice(1)).toEqual(keys.slice(0, 4).map((key) => [key]));
+        for (const call of mutate.mock.calls) expect(call).toHaveLength(1);
+    });
+
+    it("reads fetch errors from cache after revalidation and settles delayed siblings and direct exceptions", async () => {
+        const file = database("selected");
+        const keys = ["games", "players", "tournaments"].map((view) => [view, file] as const);
+        const cache = new Map<string, State>();
+        const fetchError = new Error("Games fetch refused");
+        const directError = new Error("Players refresh refused");
+        let completeRelated!: () => void;
+        const related = new Promise<void>((resolve) => {
+            completeRelated = resolve;
+        });
+        const mutate = vi.fn((key: Arguments | ((key: Arguments) => boolean)) => {
+            if (typeof key === "function") {
+                for (const original of keys) key(original);
+                return Promise.resolve([]);
+            }
+            if (key === keys[0]) {
+                cache.set(unstable_serialize(key), { data: "old data", error: fetchError });
+                return Promise.resolve("old data");
+            }
+            if (key === keys[1]) throw directError;
+            return related.then(() => {
+                cache.set(unstable_serialize(key), { data: "new data" });
+                return "new data";
+            });
+        });
+        let terminal = false;
+        const operation = refreshDatabaseGameQueries(file, cache, mutate as ScopedMutator).then(
+            (results) => {
+                terminal = true;
+                return results;
+            },
+        );
+        await vi.waitFor(() => expect(mutate).toHaveBeenCalledTimes(4));
+        expect(terminal).toBe(false);
+        completeRelated();
+        expect(await operation).toEqual([
+            { status: "rejected", reason: fetchError },
+            { status: "rejected", reason: directError },
+            { status: "fulfilled", value: "new data" },
+        ]);
+    });
+});
 
 describe("database deletion transaction", () => {
     it("keeps every renderer target intact when native deletion rejects", async () => {

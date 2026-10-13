@@ -397,6 +397,7 @@
     "Databases.FIDE.Standard": "Klassisk",
     "Databases.FIDE.Title": "FIDE-spillerinformasjon",
     "Databases.Game.Delete": "Slett parti",
+    "Databases.Game.DeletedRefreshFailed": "Partiet ble slettet, men databasevisningen kunne ikke oppdateres.",
     "Databases.Game.NoSelection": "Ingen partier valgt",
     "Databases.Game.Plies": "Halvtrekk",
     "Databases.ImportUnfinished": "Importen ble ikke fullført — slett databasen og importer den på nytt",

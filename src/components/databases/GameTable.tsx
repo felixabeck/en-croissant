@@ -55,7 +55,7 @@ function GameTable() {
 
   const requestKey = ["games", file, query] as const;
   const requestOwner = useNativeRequestOwner(requestKey);
-  const { data, error, isLoading, mutate } = useSWR(requestKey, () =>
+  const { data, error, isLoading } = useSWR(requestKey, () =>
     requestOwner!.run((signal) => query_games(file, query, { signal })),
   );
 
@@ -324,7 +324,6 @@ function GameTable() {
         <GameCard
           game={selectedGame == null ? undefined : games[selectedGame]}
           file={file}
-          mutate={mutate}
           onOpen={gameOpen.activate}
           pending={gameOpen.pending}
         />

@@ -402,6 +402,7 @@
     "Databases.FIDE.Standard": "Standard",
     "Databases.FIDE.Title": "Informations FIDE sur le joueur",
     "Databases.Game.Delete": "Supprimer la partie",
+    "Databases.Game.DeletedRefreshFailed": "La partie a été supprimée, mais la vue de la base de données n’a pas pu être actualisée.",
     "Databases.Game.NoSelection": "Aucune partie sélectionnée",
     "Databases.Game.Plies": "Demi-coups",
     "Databases.ImportUnfinished": "L’importation n’est pas terminée — supprimez la base de données et importez-la à nouveau",

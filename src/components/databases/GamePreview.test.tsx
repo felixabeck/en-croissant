@@ -9,6 +9,8 @@ import type { StampedGame } from "@/bindings";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { DatabaseLayoutContext } from "@/state/databaseLayout";
+import type { GameHeaders } from "@/utils/treeReducer";
+import { INITIAL_FEN } from "chessops/fen";
 
 const mocks = vi.hoisted(() => ({
   lexPgn: vi.fn(),
@@ -49,10 +51,15 @@ vi.mock("@tanstack/react-virtual", () => ({
 }));
 
 vi.mock("@/chessground/Chessground", () => ({
-  Chessground: (props: { fen?: string; drawable?: { autoShapes?: unknown[] } }) => (
+  Chessground: (props: {
+    fen?: string;
+    orientation?: string;
+    drawable?: { autoShapes?: unknown[] };
+  }) => (
     <div
       data-testid="chessground"
       data-fen={props.fen}
+      data-orientation={props.orientation}
       data-shapes={JSON.stringify(props.drawable?.autoShapes)}
     />
   ),
@@ -60,8 +67,23 @@ vi.mock("@/chessground/Chessground", () => ({
 
 vi.mock("../common/GameNotation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../common/GameNotation")>();
+  const { useContext } = await import("react");
+  const { useStore } = await import("zustand");
+  const { TreeStateContext } = await import("../common/TreeStateContext");
   return {
-    default: () => (mocks.realNotation ? <actual.default /> : <div data-testid="game-notation" />),
+    default: () => {
+      const tree = useStore(useContext(TreeStateContext)!);
+      return mocks.realNotation ? (
+        <actual.default />
+      ) : (
+        <div
+          data-testid="game-notation"
+          data-headers={JSON.stringify(tree.headers)}
+          data-root-fen={tree.root.fen}
+          data-position={JSON.stringify(tree.position)}
+        />
+      );
+    },
   };
 });
 
@@ -399,6 +421,168 @@ describe("GamePreview board sizing", () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
   }
+
+  const recordA: GameHeaders = {
+    id: 1,
+    fen: INITIAL_FEN,
+    white: "Alice",
+    black: "Bob",
+    event: "First",
+    site: "Here",
+    result: "1-0",
+    orientation: "white",
+  };
+  const recordB: GameHeaders = {
+    ...recordA,
+    id: 2,
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 7",
+    white: "Carol",
+    orientation: "black",
+  };
+
+  async function renderRecord(headers?: GameHeaders, warm = false, adaptive = true) {
+    await act(async () =>
+      root.render(
+        <MantineProvider>
+          <SWRConfig value={{ provider: () => new Map() }}>
+            <div data-testid="selected-preview">
+              <GamePreviewWrapper pgn="same movetext" headers={headers} adaptive={adaptive} />
+            </div>
+            <div hidden>{warm && <GamePreviewWrapper pgn="same movetext" headers={recordB} />}</div>
+          </SWRConfig>
+        </MantineProvider>,
+      ),
+    );
+    await vi.waitFor(() => expect(selectedBoard()).not.toBeNull());
+  }
+
+  function selectedBoard() {
+    return container.querySelector(
+      '[data-testid="selected-preview"] [data-testid="chessground"]',
+    ) as HTMLElement;
+  }
+
+  function selectedHeaders() {
+    return JSON.parse(
+      container
+        .querySelector('[data-testid="selected-preview"] [data-testid="game-notation"]')!
+        .getAttribute("data-headers")!,
+    ) as GameHeaders;
+  }
+
+  async function wheelNext() {
+    await act(async () =>
+      selectedBoard().parentElement!.dispatchEvent(
+        new WheelEvent("wheel", { bubbles: true, deltaY: 1 }),
+      ),
+    );
+  }
+
+  test("warm FEN cache switches A-B-A with the selected root and navigable tree each time", async () => {
+    await renderRecord(recordA, true);
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll('[data-testid="chessground"]')).toHaveLength(2),
+    );
+    expect(mocks.lexPgn).toHaveBeenCalledTimes(2);
+    for (const record of [recordA, recordB, recordA]) {
+      await renderRecord(record);
+      expect(selectedBoard().dataset.fen).toBe(record.fen);
+      await wheelNext();
+      expect(selectedBoard().dataset.fen).toBe(
+        record.id === 1
+          ? "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+          : "rnbqkbnr/pppppppp/8/8/4P3/8/1PPP1PPP/RNBQKBNR b KQkq - 0 7",
+      );
+    }
+    expect(mocks.lexPgn).toHaveBeenCalledTimes(2);
+  });
+
+  test("equal FEN records replace metadata, orientation and selected move without reparsing", async () => {
+    await renderRecord(recordA);
+    await wheelNext();
+    const other = {
+      ...recordA,
+      id: 9,
+      white: "Other player",
+      event: "Other event",
+      orientation: "black" as const,
+    };
+    await renderRecord(other);
+    expect(selectedBoard().dataset.fen).toBe(INITIAL_FEN);
+    expect(selectedBoard().dataset.orientation).toBe("black");
+    expect(selectedHeaders()).toMatchObject(other);
+    await wheelNext();
+    expect(selectedBoard().dataset.fen).toContain("4P3");
+    expect(mocks.lexPgn).toHaveBeenCalledOnce();
+  });
+
+  test("equivalent reordered headers and adaptive reflow retain selected move and chooser", async () => {
+    mocks.lexPgn.mockResolvedValue([
+      { type: "San", value: "e4" },
+      { type: "San", value: "e5" },
+      { type: "ParenOpen" },
+      { type: "San", value: "c5" },
+      { type: "ParenClose" },
+    ]);
+    const headers = { ...recordA, other: { Custom: "kept", Another: "tag" } };
+    await renderRecord(headers);
+    await wheelNext();
+    await act(async () =>
+      (
+        container.querySelector(
+          '[data-testid="selected-preview"] [data-testid="move-controls"]',
+        ) as HTMLElement
+      ).click(),
+    );
+    const board = selectedBoard();
+    const chooser = container.querySelector('[role="listbox"]');
+    expect(chooser).not.toBeNull();
+    const selectedFen = board.dataset.fen;
+    const replacement = Object.fromEntries(
+      Object.entries(headers).reverse(),
+    ) as unknown as GameHeaders;
+    replacement.other = { Another: "tag", Custom: "kept" };
+    await renderRecord(replacement);
+    expect(selectedBoard()).toBe(board);
+    expect(board.dataset.fen).toBe(selectedFen);
+    expect(container.querySelector('[role="listbox"]')).toBe(chooser);
+    const frame = board.parentElement!.parentElement!.parentElement!.parentElement!;
+    await reportSize(frame, 900, 700);
+    expect(frame.dataset.previewArrangement).toBe("beside");
+    await reportSize(frame, 500, 850);
+    expect(frame.dataset.previewArrangement).toBe("below");
+    await renderRecord(replacement, false, false);
+    expect(selectedBoard()).toBe(board);
+    expect(board.dataset.fen).toBe(selectedFen);
+    expect(container.querySelector('[role="listbox"]')).toBe(chooser);
+    await act(async () => (chooser!.querySelectorAll('[role="option"]')[1] as HTMLElement).click());
+    expect(board.dataset.fen).toContain("2p5");
+  });
+
+  test("retains parsed Start and file metadata, validates supplied Start and aligns header FEN with root", async () => {
+    mocks.lexPgn.mockResolvedValue([
+      { type: "Header", value: { tag: "White", value: "PGN player" } },
+      { type: "Header", value: { tag: "Start", value: "[0]" } },
+      { type: "Header", value: { tag: "Orientation", value: "black" } },
+      { type: "San", value: "e4" },
+    ]);
+    await renderRecord();
+    expect(selectedHeaders()).toMatchObject({
+      white: "PGN player",
+      orientation: "black",
+      start: [0],
+    });
+    expect(selectedBoard().dataset.fen).toContain("4P3");
+    await renderRecord({ ...recordB, fen: `  ${recordB.fen}  ` });
+    expect(selectedHeaders()).toMatchObject({ white: "Carol", start: [0], fen: recordB.fen });
+    expect(selectedBoard().dataset.fen).toContain("4P3");
+    await renderRecord({ ...recordB, start: [8] });
+    expect(selectedHeaders().start).toEqual([]);
+    expect(selectedBoard().dataset.fen).toBe(recordB.fen);
+    await renderRecord({ ...recordB, start: [0] });
+    expect(selectedHeaders().start).toEqual([0]);
+    expect(selectedBoard().dataset.fen).toContain("4P3");
+  });
 
   test("a short, wide frame limits the board by its height", async () => {
     const { boardBox, frame } = await renderPreview({ fitHeight: true });

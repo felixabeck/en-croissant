@@ -392,6 +392,7 @@
     "Databases.FIDE.Standard": "标准",
     "Databases.FIDE.Title": "FIDE 棋手信息",
     "Databases.Game.Delete": "删除对局",
+    "Databases.Game.DeletedRefreshFailed": "對局已刪除，但無法重新整理資料庫檢視。",
     "Databases.Game.NoSelection": "未选择对局",
     "Databases.Game.Plies": "半步",
     "Databases.ImportUnfinished": "匯入未完成 — 請刪除資料庫並重新匯入",
