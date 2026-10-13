@@ -15592,7 +15592,7 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### `production_index_generation_and_open_have_bounded_rust_heap_peaks` failed once with "unable to open database file" during a full backend-test run under load
 
-* **ID:** f-20261012-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261012-07 · **Status:** rejected · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
 * **Impact class:** tooling
 * **Where:** test `db::tests::production_index_generation_and_open_have_bounded_rust_heap_peaks`, panic at `src-tauri/src/db/mod.rs:6896` (`database_repository.connection(...).unwrap()` → `Diesel(DatabaseError(Unknown, "unable to open database file"))`).
