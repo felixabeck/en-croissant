@@ -14311,6 +14311,9 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Correction (2026-10-08, records lens on the push of this entry, verified by the orchestrator):** the **Change** bullet's "(currently blocked on a first-run profile by `f-20261002-05`)" is superseded: since `870da73b` startup runs `admit_instance` (`src-tauri/src/main.rs:2213`), which creates the configuration root before the path registry opens (`src-tauri/src/infra/path_authority/mod.rs:2593-2604`, `:2776-2779`), so `f-20261002-05` is probably resolved and awaits remeasurement (its 2026-10-08 annotation). Restate the passages without naming it as a current blocker unless that remeasurement still fails.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4cd0dc6b2821c3a77a32f8f3507e8e8d0550cc149196b58831449bcb920c25af","input_sha256":"360f8abd3af045f539a3d87804b57bfe9740a1fba7c0a30370d790510ecc471b","kind":"mutation-receipt","operation":"b1102e91d14956210a57f85fe7f2c294db8c29f8e6288fc8de9c377f1dace2ff","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-11"],"target":"f-20261008-11","v":1} -->
 
+* **Why rejected:** Agent-doc drift in CLAUDE.md and a script header; no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"428bf911fe97cede51931fe0aee39594506eec9394106e7b8efe1b2120db90dc","input_sha256":"f711fcc34f6678edc4293be710b9b6120f688dcd842db973d8123c33bb5e5949","kind":"mutation-receipt","operation":"9730e246a559e955928138d4f413efb4ac2e6e3dd13e627bc120ed5366520346","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-11"],"target":"f-20261008-11","v":1} -->
+
 ---
 
 ## 2026-10-08 — filed through the inbox spool
