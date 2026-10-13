@@ -10926,6 +10926,8 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 * **Fix shape:** the same repair `f-20260917-13` applied to its two doors — `acquire_target` plus an `acquired.path == stored.path` check — carried into the directory-install path; a test that swaps the parent between validation and install must fail the install.
 * **Related:** `f-20260918-02` (same class, sibling doors; Root `-`, so the relation is named here).
 * **Found by:** review-tauri-security (Codex) over the `f-20260906-07` cumulative diff, 2026-09-20; outside that mandate, filed by Claude Code.
+* **Why rejected:** Reopen-by-path matters only against a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"303c8cd742d84bed7c24fb4b3c683506a1129b118ddb2d3afdb717fb5a608484","input_sha256":"c204fa18c39dccc61a0346dd996068927f4e426c85eefdf4cf8f94ec86610b73","kind":"mutation-receipt","operation":"3f96066915421a719574cc7af39d11c678f8072dda85147655c7e69da3662ffa","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-01"],"target":"f-20260920-01","v":1} -->
 
 ### A cancelled Chess.com download keeps parsing and staging the archive it already fetched
 
