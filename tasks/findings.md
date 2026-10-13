@@ -14822,6 +14822,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Why rejected:** Unnamed bound; naming hygiene with no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b6109692ae4d074c954ab3b173e5de81fa0314a71716a077a1126f5e1adb5533","input_sha256":"8d2a5c23fed34ee81fbad1ed6ea682cbb7fd4690cf34ca73f7ac56e18d7f80e0","kind":"mutation-receipt","operation":"9f94ebd94cd22467895e143f2f63c19827f7665a59ed4b8522e038765f6957ac","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-15"],"target":"f-20261010-15","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the bound was named `MAX_GENERATED_ANALYSIS_VARIATION_PLIES` in 099bfa21, as this entry's checkpoint states. Status set to handled; the older "remaining open" sentence is superseded.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"29877d3ba84a82a06c6f1409e6584e8482a50d47291a3c2bcf5181a822622f44","input_sha256":"6e37ac6d1aa941722a67d477889195fd7d65c155109ecc07dcc6fa9fabaad58b","kind":"mutation-receipt","operation":"9a809d4f92624f6c80d7169ba179b8c0de8a5d7dd34e0b9f102a36102b541925","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-15"],"target":"f-20261010-15","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
