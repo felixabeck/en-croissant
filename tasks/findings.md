@@ -13287,6 +13287,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Open question:** how a local run can tell a slow kill from a hidden survivor. Options: treat `Timeout` as a failure in the gate for static mutants, raise the timeout so static mutants finish, or run static mutants with fewer concurrent runners. The choice affects gate time and the `d-20261002-01` memory schedule.
 * **Found by:** Claude Code, f-20261001-12 build run, 2026-10-03, after the remote Test job failed on `ceafc21f`. Related: f-20261001-12.
 * **Proof:** a staged static mutant no test kills (for example the enum literal mutation above, with the f-20261001-12 repair test removed) must make the local `frontend-mutation` gate red, as it does on CI.
+* **Why rejected:** Mutation timeout false-green; the CI backstop already catches survivors. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"29d6c1d1ba6722f571999313df87c106cf77fc74b2ba670b8b5c2a8242e74e1c","input_sha256":"5232e30414e659bc5049f40a55d905570e0348f5f217c3a4ca1f984990b59bdb","kind":"mutation-receipt","operation":"f1a3b8c9ba860aa342f8d358fd2cca8b1586992907662b2e6fbe3731e87321ff","options":{"section":null},"request_id_sha256":null,"results":["f-20261003-04"],"target":"f-20261003-04","v":1} -->
 
 ---
 
