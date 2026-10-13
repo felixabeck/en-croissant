@@ -102,7 +102,7 @@ From `CLAUDE.md` → Repository state → ratchet guard mechanisms, these settin
 
 From `CLAUDE.md` → Repository state → snapshot and secret-file guards, container snapshot re-recording remains governed by the canonical verify-ui skill. “These” names the settings deny forms, coverage baseline writer and secret-file hook, whose defenses do not replace the rules.
 
-> Re-recording inside the pinned container is open to every agent under the rule in `.claude/skills/verify-ui/SKILL.md` (`d-20260919-13`). `.claude/hooks/block-env-files.sh` adds semantic protection for secret-file access. These are defense-in-depth guards: the rule is what binds, and a determined invocation can phrase a command differently.
+> Re-recording inside the pinned container is open to every agent under the rule in `.claude/skills/verify-ui/SKILL.md` (`d-20260919-13`). The user-wide guards `~/.claude/hooks/block-secret-file-access.py` (Bash, Claude and Codex) and `~/.claude/hooks/restrict-file-access.py` (file tools) protect secret-file access in every repository (`agent-kit` decision `d-20261013-14`). These are defense-in-depth guards: the rule is what binds, and a determined invocation can phrase a command differently.
 
 From `CLAUDE.md` → Repository state → mutation evidence, “this tree” is the checkout measured on the listed dates. The green scores and first-red-package behavior describe that dated tooling snapshot.
 

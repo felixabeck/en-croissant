@@ -401,9 +401,7 @@ test("production constants and hooks wiring stay pinned", async () => {
   assert.equal(PRODUCTION_OPTIONS.timeoutMs, DOWNLOAD_TIMEOUT_MS);
 
   const packageJson = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
-  assert.match(packageJson.scripts["hooks:check"], /node scripts\/ensure-shellcheck\.mjs/);
-  assert.doesNotMatch(packageJson.scripts["hooks:check"], /dlx shellcheck/);
-  assert.match(packageJson.scripts["hooks:check"], /&& pnpm hooks:shellcheck:test$/);
+  assert.equal(packageJson.scripts["hooks:check"], "pnpm hooks:shellcheck:test");
   assert.equal(
     packageJson.scripts["hooks:shellcheck:test"],
     "node --test scripts/ensure-shellcheck-tests.mjs",
