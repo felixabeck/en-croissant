@@ -12915,6 +12915,8 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). `in
 * **Defect:** the staging directory is created under a pathname derived from the resolved destination rather than through the verified directory descriptor. If the engine root is renamed and its path replaced by a symlink between resolution and `private_tempdir_in`, download and extraction write staging data under the symlink target; the later atomic install refuses publication, but only after those out-of-authority writes happened.
 * **Why it matters:** every other path-authority write door binds to a verified inode; this one is a pathname re-open in the same class the path-authority work closed elsewhere. Reaching it needs a local actor racing the rename, so it is outside accidental-input threat models.
 * **Found by:** Codex `review-tauri-security` lens, round 2 of the Stockfish 19 upgrade plan review, 2026-10-01; confirmed by the orchestrator reading `fs.rs:1319-1329`.
+* **Why rejected:** Reopen-by-path matters only against a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"303c8cd742d84bed7c24fb4b3c683506a1129b118ddb2d3afdb717fb5a608484","input_sha256":"c204fa18c39dccc61a0346dd996068927f4e426c85eefdf4cf8f94ec86610b73","kind":"mutation-receipt","operation":"e6bb663e24771d54a49ccb7166847f983ebdad20dd271bb4cf849bcbca81ce45","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-15"],"target":"f-20261001-15","v":1} -->
 
 ---
 
