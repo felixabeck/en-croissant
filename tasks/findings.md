@@ -12389,7 +12389,7 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 
 ### The coverage ratchet accepts a 0/0 → 0/n drop, which the floors read as 100 % → 0 %
 
-* **ID:** f-20260928-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260928-03 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `scripts/coverage-report.mjs` `assertBaseline` (the ratio clause, ~line 478) and `assertAreaFloors` (~line 511).
 * **Defect:** `assertAreaFloors` reads a metric with `total = 0` as 100 %, but `assertBaseline` compares ratios by cross-multiplication, so a prior `0/0` against a report `0/1` gives `0*0 < 0*1` = false — no regression. An area metric that had no records and gains an uncovered one passes the ratchet, and with a floor of 0 it passes the floor too, although under the floors' own reading it fell from 100 % to 0 %. Found by `review-correctness` during `f-20260829-04`'s plan review (round 10, confidence 97); that run's writer guard (`--write-baseline`) defines `total = 0` as 100 % and refuses the same drop, so the two paths now disagree.
 * **Why deferred:** outside `f-20260829-04`'s mandate (the writer guard, the exclusion, the re-record); changing the ratchet's comparison is a separate change with its own shrink-allowance interplay (`f-20260829-15`).
