@@ -14036,6 +14036,9 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
   section; it is local to that machine and not a durable record, so read it if present but do not rely on it.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"88d68915fa3b9186f6897c9598648e24fba4191f5e3c4db23786fc11ffae459e","input_sha256":"bce8e75d84a8308e85830f7402960d15cdd56e4483dfcaebb5089fff4c924e45","kind":"mutation-receipt","operation":"f8a25e02ce32122c804bcc9d1ecb6fa117d5ee16068803ad55c6831689859055","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-02"],"target":"f-20261007-02","v":1} -->
 
+* **Why rejected:** Its only cost is a gate rerun, which committing records before gates already avoids; the fix would port a scoped-receipt system (more machinery). Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0cfd0bea9b4030505aeb06008532d8c77bf6fc10252869bfb2fce26d3c4c0cea","input_sha256":"3a7856025c4686f53292662aa8b16e116632cfd1a2f863b8779bb1930f4606ba","kind":"mutation-receipt","operation":"6a062695d35764598f5a2d114190274e7bb2a7316e1b98772c3c24015632517d","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-02"],"target":"f-20261007-02","v":1} -->
+
 ---
 
 ## 2026-10-07 — filed through the inbox spool
