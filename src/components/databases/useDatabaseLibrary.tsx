@@ -176,8 +176,8 @@ export function useDatabaseLibrary(
             openDatabase(item);
           }}
           Header={
-            // Both rows wrap: a narrow card (a large font scale) puts the star and then
-            // the title under the icon rather than squeezing the title to nothing.
+            // On a narrow card, the icon/title group and Games database type badge
+            // wrap onto separate rows instead of squeezing the title.
             <Group justify="space-between">
               <Group miw={0}>
                 <IconDatabase size="1.5rem" />

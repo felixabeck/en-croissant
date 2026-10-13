@@ -33,8 +33,8 @@ function Accounts() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useAtom(sessionsAtom);
   const { data } = useDatabaseList();
-  // Account management remains usable without an import destination. The database page
-  // owns the visible retry/error state for the shared workspace.
+  // Account management remains usable without an import destination. The Library page's
+  // database source region owns the visible retry/error state for the shared database workspace.
   const databases = data ?? [];
   const [open, setOpen] = useState(false);
 

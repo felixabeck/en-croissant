@@ -228,7 +228,7 @@ test.each(["files", "databases"])(
     await render();
     expect(host.querySelector(`[data-library-source="${source}"] [role="alert"]`)).not.toBeNull();
     expect(host.textContent).not.toContain("Your library is empty");
-    await click(rows()[source === "files" ? 0 : 0]);
+    await click(rows()[0]);
     expect(
       source === "files"
         ? host.querySelector('input[value="Same name"]')

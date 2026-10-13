@@ -249,6 +249,55 @@ test("filters the visible navigation model and opens a filtered file with Enter"
   expect(mocks.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
 });
 
+test("a matching folder name under a type filter requires a matching descendant", async () => {
+  const store = createStore();
+  store.set(fileWorkspaceAtom, handle("tree-workspace-filter"));
+  store.set(expandedDirectoriesAtom, []);
+  store.set(tabsAtom, []);
+  store.set(activeTabAtom, null);
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+
+  const child: Entry = {
+    ...rootFile,
+    name: "Caro line",
+    metadata: { type: "repertoire", tags: [] },
+  };
+  const folder: Entry = { ...directory, name: "Caro prep", children: [child] };
+  function Harness({ files }: { files: Entry[] }) {
+    const [selected, setSelected] = useState<Entry | null>(null);
+    return (
+      <Provider store={store}>
+        <DirectoryTree
+          files={files}
+          selectedFile={selected}
+          setSelectedFile={setSelected}
+          onRequestDelete={vi.fn()}
+          search="caro"
+          filter="game"
+        />
+      </Provider>
+    );
+  }
+  await act(async () => root.render(<Harness files={[folder]} />));
+
+  expect(item("Caro prep")).toBeUndefined();
+  expect(treeitems()).toHaveLength(0);
+
+  const matchingFolder: Entry = {
+    ...folder,
+    children: [{ ...child, metadata: { type: "game", tags: [] } }],
+  };
+  await act(async () => root.render(<Harness files={[matchingFolder]} />));
+  expect(treeitems().map((element) => element.getAttribute("aria-label"))).toEqual(["Caro prep"]);
+  await key(item("Caro prep"), "ArrowRight");
+  expect(treeitems().map((element) => element.getAttribute("aria-label"))).toEqual([
+    "Caro prep",
+    "Caro line",
+  ]);
+});
+
 test("routes context, M, and drag move intents with opaque entry handles", async () => {
   const store = createStore();
   store.set(expandedDirectoriesAtom, []);
