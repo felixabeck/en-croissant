@@ -9770,6 +9770,8 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 * **Why it matters:** every gate the repository documents as running "on every push" silently does not for slash-named branches; `d-20260830-20` forbids a gate that reports success without checking, and here the gate does not report at all.
 * **Fix shape:** use `"**"` for both filters (or drop the filters), and add a clause to an existing workflow-contract checker (`check-gate-routing.mjs` or `check-tool-version-parity.mjs`) that pins the trigger, with its staged failure recorded; decide whether pull requests from every branch are wanted.
 * **Found by:** `review-plan` and `review-root-cause` plan lenses (Codex), 2026-09-15, rounds 3-4 of the `f-20260914-07` plan review; cut from that plan as outside its mandate (review-plan 90, review-tauri-security 96).
+* **Why rejected:** No slash-named branch is ever pushed; only master. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b81f95ff6b246c51bf834f3e9bafc6d0924ab19cce4d000b635302c5e339d31c","input_sha256":"85d23072fd2dab94b4e2a22d13d5e32fea99051451ea90a0933b26286f658473","kind":"mutation-receipt","operation":"e3b6d0e792414cba33a37e168054c755dabca7b0091991eda69ce22b266e9c1e","options":{"section":null},"request_id_sha256":null,"results":["f-20260915-08"],"target":"f-20260915-08","v":1} -->
 
 ---
 
