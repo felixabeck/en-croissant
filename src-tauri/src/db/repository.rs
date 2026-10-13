@@ -256,10 +256,7 @@ impl DrainGate {
         let mut state = self.state.lock();
         while state.waiting == 0 {
             let now = Instant::now();
-            assert!(
-                now < deadline,
-                "worker never entered the predecessor drain wait"
-            );
+            assert!(now < deadline, "predecessor drain wait was not entered");
             self.changed
                 .wait_for(&mut state, deadline.saturating_duration_since(now));
         }
@@ -2712,7 +2709,7 @@ mod retirement_tests {
         panic!("real LRU selection did not remove the eligible predecessor");
     }
 
-    fn assert_retained(repository: &DatabaseRepository, key: &EntryKey) {
+    fn assert_retained(repository: &DatabaseRepository, key: &EntryKey) -> Retirement {
         let state = repository.state.lock().unwrap();
         let retired = state
             .retired
@@ -2725,6 +2722,7 @@ mod retirement_tests {
             "retirement must close connection admission"
         );
         assert!(state.retired.len() + state.retirement_reservations <= MAX_OPEN_DATABASES);
+        retired.clone()
     }
 
     #[test]
@@ -3127,16 +3125,7 @@ mod retirement_tests {
         drop(pool);
         assert_eq!(gate.snapshot().outstanding, usize::from(admitted));
         force_lru(&repository, &key, root.path(), "churn");
-        assert_retained(&repository, &key);
-        let retirement = repository
-            .state
-            .lock()
-            .unwrap()
-            .retired
-            .iter()
-            .find(|retired| retired.key == key)
-            .unwrap()
-            .clone();
+        let retirement = assert_retained(&repository, &key);
         let (done, result) = mpsc::channel();
         std::thread::scope(|scope| {
             let repository = &repository;
@@ -3246,16 +3235,7 @@ mod retirement_tests {
         drop(a_pool);
         drop(b_pool);
         force_lru(&repository, &b_key, root.path(), "churn-b");
-        assert_retained(&repository, &b_key);
-        let b_retirement = repository
-            .state
-            .lock()
-            .unwrap()
-            .retired
-            .iter()
-            .find(|retirement| retirement.key == b_key)
-            .unwrap()
-            .clone();
+        let b_retirement = assert_retained(&repository, &b_key);
         if already_waiting {
             a_resume.send(()).unwrap();
             reached(&waited);
