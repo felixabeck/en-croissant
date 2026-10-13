@@ -14750,6 +14750,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Why rejected:** Test distinguishes too little; no product failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"42a87874ab72a8d7d47c75b6dc6ad97d99caa1ad507773cd982663fe3d8a2c1c","input_sha256":"b94b97edbc18524de0be4e0e75394b55aa37cd87581252628b0cbc9b8fd893a8","kind":"mutation-receipt","operation":"1c19e38aa9c4608e3ae98bdf4778c143f4580ea51c5a88f401648fdb82cea7e0","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-11"],"target":"f-20261010-11","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the earlier checkpoint in this entry records the repair; `FileFreshnessGate.test.tsx:920` now holds a reload pending and changes only the physical generation. Status set to handled; the older "stays open" sentence is superseded.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7571d7860ca044a3b59b137d2783ba20dc05a3b8f76b07ec5aa0d8b2dc94a82f","input_sha256":"c69244ce53ae3ad4c0fe1ef0b81d66ed862747f3e033daf47a769cbcd242545d","kind":"mutation-receipt","operation":"2fab6948900e6a10bdef99be877d624e36adc7ba369142d36d679d723fca2f02","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-11"],"target":"f-20261010-11","v":1} -->
+
 ### Consecutive PGN comments overwrite earlier prose and lose annotations on save
 
 * **ID:** f-20261010-12 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
