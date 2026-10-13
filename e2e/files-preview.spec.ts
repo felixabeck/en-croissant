@@ -19,6 +19,28 @@ const repertoireFile = { ...filesWorkspaceFixture.pgnFile, gameCount: 21 };
 const MIN_VISIBLE_GAME_ROWS = 4;
 const GAME_ROW_HEIGHT_PX = 30;
 
+const mandateComments = {
+    Nf3: "62",
+    Be3: "59. Olvidé mi preparación. Tengo Ld3 en mi prep.",
+    Be2: "59",
+};
+
+function inlineCommentTokens(comments = mandateComments) {
+    return [
+        { type: "Header", value: { tag: "White", value: "Weiss" } },
+        { type: "Header", value: { tag: "Black", value: "Schwarz" } },
+        { type: "Header", value: { tag: "Result", value: "*" } },
+        ..."d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e4 O-O Nf3 h6 Be3 Bd6 Be2"
+            .split(" ")
+            .flatMap((move) => [
+                { type: "San", value: move },
+                ...(move in comments
+                    ? [{ type: "Comment", value: comments[move as keyof typeof comments] }]
+                    : []),
+            ]),
+    ];
+}
+
 for (const gesture of ["button", "double-click", "Enter"] as const) {
     test(`files-preview: non-first game ${gesture} opens its content and file index`, async ({
         page,
@@ -165,4 +187,95 @@ test("files-preview: variation chooser lies inside the preview board at its top 
     await expect
         .poll(() => whitePawnSquares(board))
         .toEqual(["a2", "b2", "c2", "d4", "e2", "f2", "g2", "h2"]);
+});
+
+test("files-preview: numbered comment prose stays inline with its moves", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: { result: inlineCommentTokens() },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+
+    const notation = page
+        .locator(".mantine-ScrollArea-viewport")
+        .filter({ has: page.getByRole("button", { name: "♘f3", exact: true }) });
+    await expect(notation.getByText(mandateComments.Be3, { exact: true })).toBeVisible();
+    await expect(notation.locator("ol, li")).toHaveCount(0);
+    const nf3 = notation.getByRole("button", { name: "♘f3", exact: true });
+    const h6 = notation.getByRole("button", { name: "h6", exact: true });
+    await expect(nf3).toBeInViewport({ ratio: 1 });
+    await expect(h6).toBeInViewport({ ratio: 1 });
+    const nf3Box = (await nf3.boundingBox())!;
+    const h6Box = (await h6.boundingBox())!;
+    expect(nf3Box.y).toBe(h6Box.y);
+    await expect(page).toHaveScreenshot("files-inline-comment-prose.png");
+});
+
+test("files-preview: navigation reveals both ends of a notation row taller than its viewport", async ({
+    page,
+    mockScenario,
+}) => {
+    const longComment = Array.from(
+        { length: 24 },
+        (_, index) => `Preparation note ${index + 1}: develop the pieces and keep the king safe.`,
+    ).join("\n\n");
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: {
+                result: inlineCommentTokens({
+                    ...mandateComments,
+                    Nf3: `${mandateComments.Nf3}\n\n${longComment}`,
+                    Be3: `${mandateComments.Be3}\n\n${longComment}`,
+                }),
+            },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+
+    const notation = page
+        .locator(".mantine-ScrollArea-viewport")
+        .filter({ has: page.getByRole("button", { name: "d4", exact: true }) });
+    const tallRow = notation.locator("[data-index]").filter({
+        has: page.getByRole("button", { name: "d4", exact: true }),
+    });
+    await expect(tallRow.getByRole("button", { name: "♗e2", exact: true })).toHaveCount(1);
+    await expect
+        .poll(async () => {
+            const rowHeight = (await tallRow.boundingBox())?.height ?? 0;
+            const viewportHeight = await notation.evaluate((element) => element.clientHeight);
+            return rowHeight > viewportHeight && viewportHeight > 0;
+        })
+        .toBe(true);
+
+    // Toolbar navigation must reveal the cell itself, without a move click scrolling it first.
+    for (const move of ["d4", "♗e2", "d4"]) {
+        if (move === "d4") {
+            await page.getByRole("button", { name: "Go to start", exact: true }).click();
+            await page.getByRole("button", { name: "Next move", exact: true }).click();
+        } else {
+            await page.getByRole("button", { name: "Go to end", exact: true }).click();
+        }
+        const currentCell = notation.locator('[data-notation-current="true"]');
+        await expect(currentCell.getByRole("button", { name: move, exact: true })).toHaveCount(1);
+        await expect
+            .poll(() =>
+                currentCell.evaluate((cell) => {
+                    const viewport = cell.closest(".mantine-ScrollArea-viewport")!;
+                    const bounds = cell.getBoundingClientRect();
+                    const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+                    return bounds.top >= top && bounds.bottom <= top + viewport.clientHeight;
+                }),
+            )
+            .toBe(true);
+    }
 });
