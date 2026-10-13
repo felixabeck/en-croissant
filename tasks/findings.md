@@ -1804,7 +1804,7 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 ### Every removal in `infra/fs.rs` unlinks by name, and Linux offers no way to unlink by descriptor
 
-* **ID:** f-20260830-09 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** inode-conditional-unlink-unavailable
+* **ID:** f-20260830-09 · **Status:** rejected · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** inode-conditional-unlink-unavailable
 * **Where:** `src-tauri/src/infra/fs.rs` — every `unlinkat` call site: the two arms of
   `remove_tree_at` (`fs.rs:394`, `fs.rs:416`), `remove_entry_at` (`fs.rs:840`),
   `remove_optional_regular_at` (`fs.rs:859`) and `remove_regular_at`.
