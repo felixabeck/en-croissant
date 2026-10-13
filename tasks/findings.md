@@ -10844,7 +10844,7 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 
 ### Position-search test injectors are thread-local and would go silent behind the blocking gateway
 
-* **ID:** f-20260919-09 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260919-09 · **Status:** rejected · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs`: `SEARCH_POSITION_INSTRUMENT` and `EXCLUDE_FAST_LOAD_HOOK`
   (both `thread_local!`), read inside `search_position_blocking` and `load_excluded_fast_game_ids`.
 * **Defect:** `7f7a61a5` made the instrument flag thread-local to stop parallel search tests counting
