@@ -15573,6 +15573,8 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Proof:** the test waits on a deterministic completion signal and stays green across 50 consecutive full runs under parallel load.
 * **Related:** the Windows download-core test notes on this test name are a different defect (missing write leaf resolution), not this timeout.
 * **Found by:** Claude Code (Opus 5.5) orchestrating the f-20261001-07 build run; first observed by its Codex repair leaf.
+* **Why rejected:** Test timed out under machine load; file again at a second independent witness. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3862dbe1afe05572c7bda854a305bccfc7df8baf569ded7db08d2d614c901a1b","input_sha256":"4dc84aa844d2b3b6e5d4da66e6cc1160f9883a77e4b9413bc6d71d512130a02e","kind":"mutation-receipt","operation":"2a234417e5f01fb4d8111209b2a76abee60885aabbea84c140a20a50dcf55fdf","options":{"section":null},"request_id_sha256":null,"results":["f-20261012-05"],"target":"f-20261012-05","v":1} -->
 
 ### `zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal` failed once with a false SQLite-binding conflict during a full backend-test run
 
