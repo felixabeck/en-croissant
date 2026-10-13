@@ -15336,6 +15336,8 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 * **Evidence:** `/tmp/build-ef7373e4-a4fe-4625-a7cf-069cad2e98fe/verify-app.log` (failing run) and `verify-app-2.log` (passing rerun) on tuxedo-atlas, 2026-10-11.
 * **Related:** f-20261008-01 (a different verify:app stage that failed once in an unrelated run; same flake class, no shared cause evidenced), f-20260923-02 (practice sync check, handled).
 * **Found by:** Claude Code orchestrator, drain build run for f-20260930-01, 2026-10-11.
+* **Why rejected:** Single load flake at rating 25; the rerun was green. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0beca7302669310b8911978c6f053b8bd1e2449541e11bf33333ebe103ffec2b","input_sha256":"5cfa16f66bb118d7bf784dabbe930e7fe0ab8b44db43d5120fc719a86057297d","kind":"mutation-receipt","operation":"60f91a50e16fe8e4b9952fc97195c9c62d7538af2196a28a21391bb3c0f5f91d","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-05"],"target":"f-20261011-05","v":1} -->
 
 ### Engine process tests that write and then exec a fixture script fail intermittently with ETXTBSY under parallel test threads
 
