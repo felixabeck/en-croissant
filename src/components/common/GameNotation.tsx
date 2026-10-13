@@ -45,6 +45,7 @@ import { getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import CompleteMoveCell from "./CompleteMoveCell";
 import {
   buildNotationRows,
+  type NotationMove,
   type NotationNodeIndex,
   type NotationRow,
   type NotationRows,
@@ -97,7 +98,56 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
       node = link?.parent ?? null;
     }
     if (rowIndex !== undefined) {
-      rowVirtualizer.scrollToIndex(rowIndex, { align: "center" });
+      const scrollViewport = viewport.current;
+      if (node !== currentNode || !scrollViewport || scrollViewport.clientHeight === 0) {
+        rowVirtualizer.scrollToIndex(rowIndex, { align: "center" });
+        return;
+      }
+
+      const rowSelector = `[data-index="${rowIndex}"]`;
+      const mountedRow = scrollViewport.querySelector<HTMLElement>(rowSelector);
+      if (mountedRow && mountedRow.getBoundingClientRect().height <= scrollViewport.clientHeight) {
+        rowVirtualizer.scrollToIndex(rowIndex, { align: "center" });
+        return;
+      }
+
+      // Mount the row without an index-scroll retry that could later recenter a tall row.
+      if (!mountedRow) {
+        const offset = rowVirtualizer.getOffsetForIndex(rowIndex, "start");
+        if (!offset) return;
+        rowVirtualizer.scrollToOffset(offset[0]);
+      }
+
+      let frame: number;
+      let attempts = 0;
+      const revealMove = () => {
+        const row = scrollViewport.querySelector<HTMLElement>(rowSelector);
+        if (!row) {
+          if (++attempts < 10) frame = requestAnimationFrame(revealMove);
+          return;
+        }
+        if (row.getBoundingClientRect().height <= scrollViewport.clientHeight) {
+          rowVirtualizer.scrollToIndex(rowIndex, { align: "center" });
+          return;
+        }
+        const cell = row.querySelector<HTMLElement>('[data-notation-current="true"]');
+        if (!cell) return;
+        const cellBounds = cell.getBoundingClientRect();
+        const viewportTop = scrollViewport.getBoundingClientRect().top + scrollViewport.clientTop;
+        const viewportBottom = viewportTop + scrollViewport.clientHeight;
+        const delta =
+          cellBounds.top < viewportTop
+            ? cellBounds.top - viewportTop
+            : cellBounds.bottom > viewportBottom
+              ? cellBounds.bottom - viewportBottom
+              : 0;
+        if (delta) rowVirtualizer.scrollToOffset(scrollViewport.scrollTop + delta);
+      };
+      // Give the mounted row and ResizeObserver a frame to settle before reading geometry.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(revealMove);
+      });
+      return () => cancelAnimationFrame(frame);
     } else if (model.rows.length > 0) {
       rowVirtualizer.scrollToIndex(0, { align: "start" });
     }
@@ -293,7 +343,7 @@ function NotationVirtualRow({
 }
 
 function moveProps(
-  move: { node: TreeNode; first: boolean },
+  move: NotationMove,
   index: NotationNodeIndex,
   root: TreeNode,
   currentNode: TreeNode,
@@ -310,6 +360,7 @@ function moveProps(
     move: move.node.san,
     fen: move.node.fen,
     comment: move.node.comment,
+    startingComment: move.startingComment,
     annotations: nagGlyphs(move.node.nags),
     showComments,
     first: move.first,

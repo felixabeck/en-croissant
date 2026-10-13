@@ -71,6 +71,7 @@ function getTranspositions(
 type CompleteMoveCellProps = {
   halfMoves: number;
   comment: string;
+  startingComment?: string;
   annotations: Annotation[];
   showComments: boolean;
   move?: string | null;
@@ -88,6 +89,7 @@ type CompleteMoveCellProps = {
 function CompleteMoveCell({
   halfMoves,
   comment,
+  startingComment,
   annotations,
   showComments,
   move,
@@ -142,8 +144,10 @@ function CompleteMoveCell({
 
   return (
     <>
+      {showComments && !tableLayout && startingComment && <Comment comment={startingComment} />}
       <Box
         component="span"
+        data-notation-current={isCurrentVariation ? "true" : undefined}
         style={{
           display: tableLayout ? "block" : "inline-block",
           marginLeft: hasNumber ? 6 : 0,
@@ -296,6 +300,7 @@ export default memo(CompleteMoveCell, (prev, next) => {
     prev.move === next.move &&
     prev.fen === next.fen &&
     prev.comment === next.comment &&
+    prev.startingComment === next.startingComment &&
     equal(prev.annotations, next.annotations) &&
     prev.showComments === next.showComments &&
     prev.first === next.first &&

@@ -109,6 +109,101 @@ describe("buildNotationRows", () => {
         ]);
     });
 
+    test("keeps every commented move in one inline run and preserves table comment rows", () => {
+        const tree = variedTree();
+        const mainline = [tree.e4, tree.e5, tree.nf3, tree.nc6, tree.bb5, tree.a6];
+        for (const node of mainline) node.comment = `After ${node.san}`;
+        tree.nc6.comment = "After Nc6\n\nA second paragraph";
+        const options = { showVariations: false, showComments: true, tableView: false };
+        const inline = buildNotationRows(tree.root, options);
+        expect(inline.rows).toHaveLength(1);
+        expect(inline.rows[0]).toMatchObject({
+            type: "moves",
+            moves: mainline.map((node, index) => ({ node, first: index === 0 })),
+        });
+        for (const node of mainline) expect(inline.rowForNode.get(node)).toBe(0);
+
+        const table = buildNotationRows(tree.root, { ...options, tableView: true });
+        expect(table.rows.map((row) => row.type)).toEqual(
+            mainline.flatMap(() => ["table", "comment"]),
+        );
+        expect(
+            table.rows.filter((row) => row.type === "comment").map((row) => row.comment),
+        ).toEqual(mainline.map((node) => node.comment));
+        expect(moveNames(table.rows)).toEqual(mainline.map((node) => node.san));
+    });
+
+    test("table variations keep starting and move comments in one inline run", () => {
+        const tree = variedTree();
+        tree.root.children = [tree.e4];
+        tree.c5.startingComment = "Before c5 [%evp 0,34]";
+        tree.c5.comment = "After c5";
+        const nc3 = fixtureNode("Nc3", { halfMoves: 3 });
+        nc3.comment = "After Nc3";
+        tree.c5.children = [nc3];
+        const result = buildNotationRows(tree.root, {
+            showVariations: true,
+            showComments: true,
+            tableView: true,
+        });
+
+        const variationRows = result.rows.filter((row) => row.type === "moves");
+        expect(variationRows).toHaveLength(1);
+        expect(variationRows[0]).toMatchObject({
+            variationParent: tree.e4,
+            moves: [
+                { node: tree.c5, first: true, startingComment: "Before c5" },
+                { node: nc3, first: false },
+            ],
+        });
+        expect(result.rows.some((row) => row.type === "comment")).toBe(false);
+    });
+
+    test.each([false, true])(
+        "table black variations appear once after their move with next-white alternatives %s",
+        (withWhiteAlternative) => {
+            const tree = variedTree();
+            tree.root.children = [tree.e4];
+            tree.nf3.children = [];
+            const nc3 = fixtureNode("Nc3", { halfMoves: 3 });
+            if (withWhiteAlternative) tree.e5.children.push(nc3);
+            const result = buildNotationRows(tree.root, {
+                showVariations: true,
+                showComments: true,
+                tableView: true,
+            });
+
+            const blackRow = result.rowForNode.get(tree.e5)!;
+            expect(result.rows[blackRow + 1]).toMatchObject({
+                type: "variation",
+                parent: tree.e4,
+            });
+            expect(result.rows[blackRow + 2]).toMatchObject({
+                type: "moves",
+                moves: [{ node: tree.c5 }],
+            });
+            expect(moveNames(result.rows)).toEqual(
+                withWhiteAlternative ? ["e4", "e5", "c5", "Nf3", "Nc3"] : ["e4", "e5", "c5", "Nf3"],
+            );
+            const variations = result.rows.filter((row) => row.type === "variation");
+            expect(variations.map((row) => row.parent)).toEqual(
+                withWhiteAlternative ? [tree.e4, tree.e5] : [tree.e4],
+            );
+            expect(result.rows.every((row) => row.type !== "moves" || row.moves.length > 0)).toBe(
+                true,
+            );
+            const whiteRow = result.rowForNode.get(tree.nf3)!;
+            expect(result.rows.slice(whiteRow + 1)).toMatchObject(
+                withWhiteAlternative
+                    ? [
+                          { type: "variation", parent: tree.e5 },
+                          { type: "moves", moves: [{ node: nc3 }] },
+                      ]
+                    : [],
+            );
+        },
+    );
+
     test("table rows preserve split rows and ellipses around comments and variations", () => {
         const tree = variedTree();
         tree.e4.comment = "white comment";
@@ -193,26 +288,28 @@ describe("variation starting comments", () => {
             tableView: false,
         });
 
-        const commentIndex = result.rows.findIndex((row) => row.type === "comment");
-        expect(result.rows[commentIndex]).toMatchObject({ comment: "Also good:" });
-        const next = result.rows[commentIndex + 1];
-        expect(next.type === "moves" && next.moves[0].node).toBe(tree.d4);
+        expect(result.rows.some((row) => row.type === "comment")).toBe(false);
+        const row = result.rows[result.rowForNode.get(tree.d4)!];
+        expect(row).toMatchObject({
+            type: "moves",
+            moves: [{ node: tree.d4, first: true, startingComment: "Also good:" }],
+        });
     });
 
     test("add no row when the starting comment is only commands or comments are hidden", () => {
         const tree = variedTree();
         tree.d4.startingComment = "[%evp 0,34]";
         const options = { showVariations: true, showComments: true, tableView: false };
-        expect(buildNotationRows(tree.root, options).rows.some((r) => r.type === "comment")).toBe(
-            false,
-        );
+        const commandsOnly = buildNotationRows(tree.root, options);
+        expect(commandsOnly.rows.some((r) => r.type === "comment")).toBe(false);
+        const commandRow = commandsOnly.rows[commandsOnly.rowForNode.get(tree.d4)!];
+        expect(commandRow).toMatchObject({ type: "moves", moves: [{ startingComment: "" }] });
 
         tree.d4.startingComment = "Also good:";
-        expect(
-            buildNotationRows(tree.root, { ...options, showComments: false }).rows.some(
-                (r) => r.type === "comment",
-            ),
-        ).toBe(false);
+        const hidden = buildNotationRows(tree.root, { ...options, showComments: false });
+        expect(hidden.rows.some((r) => r.type === "comment")).toBe(false);
+        const hiddenRow = hidden.rows[hidden.rowForNode.get(tree.d4)!];
+        expect(hiddenRow).toMatchObject({ type: "moves", moves: [{ startingComment: "" }] });
     });
 });
 
@@ -235,16 +332,20 @@ describe("starting comments off a variation's first move", () => {
             tableView: false,
         });
 
-        expect(commentBefore(result.rows, tree.nc6)).toMatchObject({
-            type: "comment",
-            comment: "Kept after promotion",
-        });
+        expect(result.rows.some((row) => row.type === "comment")).toBe(false);
         const row = result.rows.find(
             (r) => r.type === "moves" && r.moves.some((move) => move.node === tree.nc6),
         );
-        expect(row?.type === "moves" && row.moves[0]).toMatchObject({
+        expect(row?.type === "moves" && row.moves.map((move) => move.node)).toEqual([
+            tree.nf3,
+            tree.nc6,
+            tree.bb5,
+            tree.a6,
+        ]);
+        expect(row?.type === "moves" && row.moves[1]).toMatchObject({
             node: tree.nc6,
             first: true,
+            startingComment: "Kept after promotion",
         });
     });
 

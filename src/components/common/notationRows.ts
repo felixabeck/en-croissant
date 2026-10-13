@@ -7,6 +7,7 @@ export const NOTATION_ROW_MAX_MOVES = 32;
 export type NotationMove = {
     node: TreeNode;
     first: boolean;
+    startingComment?: string;
 };
 
 export type InlineNotationRow = {
@@ -205,29 +206,15 @@ function appendInlineTasks(
         while (parent.children[childIndex]) {
             const node = parent.children[childIndex];
             const starting = startingCommentText(node, options);
-            if (starting) {
-                // It precedes this move wherever the move is drawn, so the run breaks before it.
-                if (moves.length > 0) {
-                    addRow(rows, rowForNode, {
-                        type: "moves",
-                        depth: task.depth,
-                        moves: moves.splice(0),
-                        variationParent: task.variationParent,
-                    });
-                }
-                addComment(rows, rowForNode, task.depth, starting);
-                first = true;
-            }
-            moves.push({ node, first });
+            moves.push({ node, first: first || !!starting, startingComment: starting });
             first = false;
 
-            const hasComment = options.showComments && node.comment.length > 0;
             const variationParent = parent;
             const hasVariations =
                 options.showVariations && childIndex === 0 && variationParent.children.length > 1;
             const reachedLimit = moves.length >= NOTATION_ROW_MAX_MOVES;
 
-            if (hasComment || hasVariations || reachedLimit) {
+            if (hasVariations || reachedLimit) {
                 addRow(rows, rowForNode, {
                     type: "moves",
                     depth: task.depth,
@@ -251,14 +238,6 @@ function appendInlineTasks(
                             variationParent: task.variationParent,
                         },
                     );
-                } else if (!hasComment && reachedLimit) {
-                    stack.push({
-                        parent: node,
-                        childIndex: 0,
-                        depth: task.depth,
-                        first: false,
-                        variationParent: task.variationParent,
-                    });
                 } else if (node.children.length > 0) {
                     stack.push({
                         parent: node,
@@ -346,7 +325,7 @@ function appendTableRows(
         }
 
         const black = child.children[0]?.halfMoves % 2 === 0 ? child.children[0] : null;
-        const blackVariations = black ? black.children.slice(1) : [];
+        const blackVariations = black ? child.children.slice(1) : [];
         const whiteHasComment = options.showComments && child.comment.length > 0;
         const whiteHasVariations = options.showVariations && variations.length > 0;
         const blackHasComment = !!black && options.showComments && black.comment.length > 0;

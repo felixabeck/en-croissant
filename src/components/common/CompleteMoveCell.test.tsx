@@ -31,7 +31,9 @@ vi.mock("@tabler/icons-react", () => {
     IconX: Icon,
   };
 });
-vi.mock("@/components/common/Comment", () => ({ default: () => null }));
+vi.mock("@/components/common/Comment", () => ({
+  default: ({ comment }: { comment: string }) => <span data-comment="true">{comment}</span>,
+}));
 vi.mock("@/components/common/IconAction", () => ({
   default: ({ children, label, onClick }: any) => (
     <button type="button" aria-label={label} onClick={onClick}>
@@ -79,6 +81,58 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+});
+
+test("renders the starting comment before the move and updates it without changing the node", async () => {
+  const tree = defaultTree();
+  const node = createNode({
+    fen: "first w - - 0 1",
+    move: parseUci("e2e4")!,
+    san: "e4",
+    halfMoves: 1,
+  });
+  tree.root.children = [node];
+  const store = createTreeStore();
+  store.setState({ ...store.getState(), root: tree.root });
+  const index = createNotationNodeIndex(tree.root);
+  const annotations: [] = [];
+  const render = async (startingComment: string, showComments = true, tableLayout = false) => {
+    await act(async () => {
+      root.render(
+        <TreeStateContext.Provider value={store}>
+          <WorkspaceTabScope tabId="tab">
+            <CompleteMoveCell
+              node={node}
+              nodeIndex={index}
+              root={tree.root}
+              halfMoves={node.halfMoves}
+              move={node.san}
+              fen={node.fen}
+              comment="After the move"
+              startingComment={startingComment}
+              annotations={annotations}
+              first
+              showComments={showComments}
+              tableLayout={tableLayout}
+              isStart={false}
+              isCurrentVariation={false}
+            />
+          </WorkspaceTabScope>
+        </TreeStateContext.Provider>,
+      );
+    });
+  };
+
+  await render("Before the move");
+  expect(host.textContent).toBe("Before the move1.e4After the move");
+  await render("Updated starting comment");
+  expect(host.textContent).toBe("Updated starting comment1.e4After the move");
+  await render("Updated starting comment", false);
+  expect(host.querySelector("[data-comment]")).toBeNull();
+  expect(host.textContent).toBe("1.e4");
+  await render("Updated starting comment", true, true);
+  expect(host.querySelector("[data-comment]")).toBeNull();
+  expect(host.textContent).toBe("e4");
 });
 
 test.each(["workspace", "preview"])(

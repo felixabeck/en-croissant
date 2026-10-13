@@ -19,6 +19,7 @@ const virtualizerMock = vi.hoisted(() => ({
   current: null as null | { count: number },
   scrollCalls: [] as { index: number; options: unknown }[],
 }));
+const notationSettings = vi.hoisted(() => ({ showComments: false }));
 
 vi.mock("@/state/atoms", () => ({
   invisibleFamily: () => atoms.invisible,
@@ -34,6 +35,7 @@ vi.mock("jotai", () => ({
   },
   useAtomValue: (atom: symbol) => {
     if (atom === atoms.variations) return true;
+    if (atom === atoms.comments) return notationSettings.showComments;
     if (atom === atoms.keyMap) {
       return { TOGGLE_BLUR: { keys: "ctrl+b" }, COPY_PGN: { keys: "ctrl+k" } };
     }
@@ -76,6 +78,7 @@ vi.mock("./CompleteMoveCell", () => ({
         data-move-cell="true"
         data-node={props.node.san}
         data-current={props.isCurrentVariation ? "true" : "false"}
+        data-starting-comment={props.startingComment}
         onClick={() => store.getState().goToMove(path)}
       >
         {props.move}
@@ -136,11 +139,46 @@ beforeEach(() => {
   root = createRoot(host);
   store = createTreeStore();
   virtualizerMock.scrollCalls.length = 0;
+  notationSettings.showComments = false;
 });
 
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+});
+
+test("forwards a variation's starting comment prose to its mounted move cell", async () => {
+  notationSettings.showComments = true;
+  const state = defaultTree();
+  const mainline = createNode({
+    fen: "mainline b - - 0 1",
+    move: parseUci("e2e4")!,
+    san: "e4",
+    halfMoves: 1,
+  });
+  const variation = createNode({
+    fen: "variation b - - 0 1",
+    move: parseUci("d2d4")!,
+    san: "d4",
+    halfMoves: 1,
+  });
+  variation.startingComment = "Another opening [%evp 0,34]";
+  state.root.children = [mainline, variation];
+  store.getState().setState(state);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <WorkspaceTabScope tabId="notation-test">
+          <GameNotation />
+        </WorkspaceTabScope>
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  expect(host.querySelector('[data-node="d4"]')?.getAttribute("data-starting-comment")).toBe(
+    "Another opening",
+  );
 });
 
 test("virtualizes a 20,000-node line and navigates/highlights mounted moves", async () => {
