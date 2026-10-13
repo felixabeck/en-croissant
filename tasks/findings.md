@@ -14570,7 +14570,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### Tauri security review lens directs reviewers to the retired path_authority.rs file
 
-* **ID:** f-20261010-05 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261010-05 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** f622f6f4-dc6f-4f74-91c1-091d4cde09cc · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-f622f6f4-dc6f-4f74-91c1-091d4cde09cc-1.jsonl
 * **Where:** `.claude/agents/review-tauri-security.md:54-55,98`.
 * **Defect:** The security lens's grounding and containment hunt direct reviewers to `src-tauri/src/infra/path_authority.rs`, which no longer exists. Path authority is now the module under `src-tauri/src/infra/path_authority/`, with `mod.rs`, `resolved.rs`, `verified.rs` and `shared.rs`. The old file and line anchors cannot lead a reviewer to the current implementation.
