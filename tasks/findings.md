@@ -9704,7 +9704,7 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 
 ### Resolution proves a persisted entry's leaf identity but not its parent's, so a replaced parent holding a hard link passes
 
-* **ID:** f-20260915-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260915-03 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority/mod.rs` `retained_workspace_target` (and the other use-time resolutions built on `open_verified_parent` / `open_verified_directory`: `workspace_mutation_target`, `database_file_target`, `resolve`), which walk the stored spelling no-follow and compare only the leaf `(dev, ino)` with `StoredEntry.identity`; the registry stores no parent identity.
 * **Defect:** after an entry for `dir/ws/game.pgn` is persisted, replacing `dir/ws` with a different real directory that contains a hard link to the same `game.pgn` inode passes every use-time check (no symlink is met, the leaf identity matches). Descriptor-relative writes that create siblings — the `.info` sidecar, atomic-replacement temporaries, SQLite `-wal`/`-journal` files — then land in the replacement directory, not the one the user selected.
 * **Why it matters:** the no-follow walk exists so a persisted capability names the selected location; a parent swap with a hard link keeps the leaf object but redirects every sibling write. Requires write access to the parent's parent, so it is a same-user or shared-directory attacker, not a remote one.
