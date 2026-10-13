@@ -14014,7 +14014,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### Gate receipts bind the whole working tree, so a records-only commit after green gates voids every receipt
 
-* **ID:** f-20261007-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261007-02 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** a460de3d-fb11-4f92-a7e9-c10e00ddf14e
 * **Where:** `scripts/gate-receipt.mjs` `treeFingerprint` / `treeState` (`:131-160`): the receipt key is `git write-tree` over a temporary index after `git add -A`, i.e. the whole tree.
 * **Defect:** any committed or uncommitted change anywhere — a one-line `tasks/findings.md`, `tasks/decisions.md` or `tasks/build-ledger.md` commit — changes the tree id and voids every gate receipt, so `ensure` re-runs every heavy gate although nothing the gate reads changed. ChessRiddle measured this on 2026-10-06 (build run `24f4158e`): a one-line findings commit forced a full nine-gate re-run of about 13 minutes, roughly 18 of that run's 40 gate minutes wasted. Felix, 2026-10-06: "Is it really necessary to run all the gates again just for one single documents commit? I think this is exaggerated." ChessRiddle fixed it in commits `583beaa7c`..`868dd1aac` (scripts `gate_input_scope.py`, `gate_receipt.py`, `gate_input_guard/`); ChessFable shares the command-cache receipt family (`~/.claude/references/coordination-file-commits.md`) and still has the defect.
