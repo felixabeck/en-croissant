@@ -14004,6 +14004,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Defect:** the f-20260914-34 diff review (closure round 2, `review-minimalism`, confidence 94) found the engine-test authority construction copied across tests; `df56aad8` extracted `PathAuthority::open_for_engine_test` and routed the three exact copies in `engine/process.rs`. The copies in `game.rs` and `chess.rs` were not routed, because that run had not loaded those files (rule 4b). Variants that reuse a separately built launch root (`game.rs` ~4119, `main.rs` ~3263/~3309) keep their own construction.
 * **Fix:** route every copy of exactly that shape in `game.rs` and `chess.rs` tests through `PathAuthority::open_for_engine_test(directory.path()).unwrap()`, keeping variants whose launch root is used later; prove with `cargo clippy --all-targets -D warnings`, `cargo test` and `pnpm rust:windows:check`.
 * **Found by:** Codex `review-minimalism` diff lens, f-20260914-34 drain build (closure round 2), 2026-10-06; source verified by the orchestrator.
+* **Why rejected:** Duplicated test construction; test hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f31f0db987f14f5780d345ea717ea014f3e3099d4f0370a93db8780bb6691bc6","input_sha256":"e2a086b78de3e462dfe453b5e96df364bec7301fec07ccb22e884b98d5af0b57","kind":"mutation-receipt","operation":"1f955e9dee7edb841cbd35a5f85e0b0761ee594cc14415a9aae019a9c68111a9","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-06"],"target":"f-20261006-06","v":1} -->
 
 ---
 
