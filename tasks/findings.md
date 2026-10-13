@@ -11997,6 +11997,8 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Scope:** Fix the shared planner/leaf evidence contract and its validation tests; do not relax required lens coverage, terminal, profile, prompt, or write-once integrity checks.
 * **Related:** f-20260907-07 also concerns workflow ordering, f-20260917-01 concerns Grok write-leaf profiling, and f-20260917-10 concerns vendored kit parity; none has this failed-source/retry evidence collision as its cause, so no shared Root is assigned.
 * **Proof sought:** A fixture with a quota-failed agy source and successful Codex retry publishes a plan with both provenance records retained; missing, malformed, or writable retries still refuse publication.
+* **Why rejected:** Planner evidence-mirror edge on a Gemini quota retry; agent machinery. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3492009017d0cff24ab5cec307fc31a7595e4038f29bf7af703371be5d4705e4","input_sha256":"270eb62d936b11cbeb65c07ba46096e7574705db8bf184472fb86a2489784c09","kind":"mutation-receipt","operation":"2e17879b50f6a52255ddafd98f7d1aeee8472ae87b420ba192d590c119b7dba5","options":{"section":null},"request_id_sha256":null,"results":["f-20260925-01"],"target":"f-20260925-01","v":1} -->
 
 ### Progress generations use incompatible JSON and TypeScript types
 
