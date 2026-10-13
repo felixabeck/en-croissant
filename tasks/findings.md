@@ -15255,6 +15255,9 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 * **Why rejected:** Freshness budget exceeded once; unreproduced. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7a12b8df008d578b864ba15c96e9cee8bba1accaf36c4ecd3dbafada26d57622","input_sha256":"6cf12f0857d636d947a21ef3ad54b9ed03c0e9e53c26c0f5fb13c0c80a54e223","kind":"mutation-receipt","operation":"d9dd03b69021fc1fc9d57d829ac5ae91da37c08dcf042e828525c54767dc3e55","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
 
+Reopened (records lens on the setup-findings triage, 2026-10-13): The entry records a second independent observation under load, which meets rule 4d's second-witness bar. It passes rule 4d, so the rejection above is void.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"ee64160f82c303d65906f98f318214d433b1ddc7534eed6b94731331ebc60f05","input_sha256":"64e878488e8c543fc3033f1ef5e1779706e510c58ab6e4541314503b8d6c5725","kind":"mutation-receipt","operation":"8a2b121c94a770b4d699be4da5abe813f2c46eaf9b4e9294f46b0411a9bbc751","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
