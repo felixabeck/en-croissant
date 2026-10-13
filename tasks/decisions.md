@@ -7512,3 +7512,17 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13, after the push review's fourth closure round · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"10892cd7f0d31977b3cf684866cd4ad523080fd3085b744a5294f7b16e29d7ae","input_sha256":"f48240fc399b41efb006a4bad3057c59d3338463b3756caea11c3388c541ec4a","kind":"mutation-receipt","operation":"bb400d3fc0fec3e190cf278173aaed402215b05ba10b7bb318fecab13708b15b","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-17"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-14 — recorded through the decisions lock
+
+### d-20261014-01 — Bind preview tree lifetime to the full game record
+
+* **Question:** Which identity should reset the game preview tree without resetting navigation when its layout or an equivalent header object changes?
+* **Governs:** f-20261012-09
+* **Chosen:** A value-stable serialization of PGN and supplied headers keys the mounted preview. The parser cache remains keyed by PGN and initial FEN. Supplied record headers populate the initial tree, with FEN normalized to its parsed root and Start validated through the existing parseStartHeader helper. Files retains parsed PGN metadata when no headers are supplied.
+* **Rejected:** Movetext-only mount identity, changing TreeStateProvider to replace every changed initial object, and layout-derived keys. They either retain the wrong game or discard navigation and variation choice during rendering or resizing.
+* **Reason:** The existing provider intentionally consumes initial only once. Cached equal-movetext games require a new provider at record changes, while d-20261012-12 and d-20261012-17 preserve layout-only state and Files geometry.
+* **Reversal path:** Replace the key at GamePreviewWrapper only when another identity preserves FEN/header record changes, equal-value header replacement, and layout-only navigation and chooser state under the component regression tests.
+* **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Decided by:** Codex drain 0b609d43-eba0-478d-bcde-9a0035e526a9 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"818f4fb7e4e40776d825ec2c20e9164b131d16e68a604056d9e90b87d4a49a75","input_sha256":"719c97e83b1dad439091ece46695a023faa2b4fcedce51a2b2efe096bc0caa94","kind":"mutation-receipt","operation":"a2d10924cb56f01e00bfbb740f0fbfa4a15e82a11dd7d02617ef10aef696f202","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-01"],"target":"decisions-ledger","v":1} -->
