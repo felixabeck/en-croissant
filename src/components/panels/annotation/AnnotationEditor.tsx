@@ -11,7 +11,10 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { spellCheckAtom } from "@/state/atoms";
+import { COMMENT_UNDERLINE } from "@/utils/pgnComment";
 import { getNodeAtPath } from "@/utils/treeReducer";
+
+const UNDERLINE_AT_START = new RegExp(`^${COMMENT_UNDERLINE.source}`);
 
 function AnnotationEditor() {
   "use no memo";
@@ -51,7 +54,7 @@ function AnnotationEditor() {
             level: "inline",
             start: (source) => source.indexOf("++"),
             tokenize: (source, _tokens, lexer) => {
-              const match = /^\+\+((?!\s)(?:(?!\+\+)[^\n])*?[^\s\n])\+\+/.exec(source);
+              const match = UNDERLINE_AT_START.exec(source);
               if (!match) return undefined;
               return {
                 type: "underline",

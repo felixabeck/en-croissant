@@ -3,6 +3,12 @@ import { type CommentShape, type Evaluation, parseComment } from "chessops/pgn";
 /** The embedded commands the tree models itself; chessops parses exactly these into fields. */
 const MODELED_COMMANDS = new Set(["eval", "clk", "csl", "cal"]);
 const COMMAND = /\s?\[%([A-Za-z0-9_]+)(?:\s[^\]]*)?\]\s?/g;
+/**
+ * `++underline++` in comment Markdown: non-empty, on one line, without a nested `++`, and with
+ * no whitespace just inside either delimiter, so chess prose such as `Qh7++ Kh8 Qg8++` stays
+ * text. The notation reader and the Annotate editor both parse with it.
+ */
+export const COMMENT_UNDERLINE = /\+\+((?!\s)(?:(?!\+\+)[^\n])*?[^\s\n])\+\+/;
 
 export type SplitComment = {
     /** What a reader sees: the comment without any `[%…]` command. */

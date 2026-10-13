@@ -4,6 +4,10 @@ import { memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { COMMENT_UNDERLINE } from "@/utils/pgnComment";
+
+const UNDERLINE_ALL = new RegExp(COMMENT_UNDERLINE.source, "g");
+
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -68,7 +72,7 @@ function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
           : "\0",
     )
     .join("");
-  const matches = [...syntheticText.matchAll(/\+\+((?!\s)(?:(?!\+\+)[^\n])*?[^\s\n])\+\+/g)];
+  const matches = [...syntheticText.matchAll(UNDERLINE_ALL)];
   if (matches.length === 0) return children;
 
   let childIndex = 0;
