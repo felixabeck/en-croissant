@@ -127,6 +127,7 @@
           "src/components/common/LocalImage.tsx",
           "src/components/common/ProgressButton.tsx",
           "src/components/common/ToggleButtonGroup.tsx",
+          "src/components/common/wrappingButton.ts",
           "src/components/icons/**",
           "src/utils/format.ts",
           "src/utils/unwrap.tsx"
