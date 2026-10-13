@@ -12245,7 +12245,7 @@ Decisions d-20261009-01 through d-20261009-03 reject a second cleanup registry o
 
 ### The native e2e launcher's Windows start path has no Windows test
 
-* **ID:** f-20260927-05 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260927-05 · **Status:** rejected · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `scripts/run-e2e-native.mjs` (Playwright CLI started through `process.execPath`), `scripts/run-e2e-launchers-tests.mjs`, `.github/workflows/test.yml` (contract gate runs on Ubuntu only).
 * **Defect:** the f-20260910-07 push changed the native launcher to run `@playwright/test/cli` through Node because the `node_modules/.bin` shim is a `.cmd` file on Windows that `spawnSync` cannot start without a shell. The launcher tests run only in the Ubuntu contract job, so reverting to the shim stays green in CI while breaking `pnpm test:e2e` on Windows.
 * **Evidence:** review-tests round 3 of that push (`/tmp/push-f0710/lens3-tests.txt`, confidence 91). The only Windows jobs in `test.yml` are `rust-windows-test` and the MSVC `rust-platform` leg; no Node script test runs on Windows.
