@@ -15129,13 +15129,16 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### The file-freshness conflict scenario omits the autosave write command contract
 
-* **ID:** f-20261010-35 · **Status:** open · **Area:** e2e-gate · **Root:** file-freshness-autosave-fixture · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261010-35 · **Status:** handled · **Area:** e2e-gate · **Root:** file-freshness-autosave-fixture · **Entry:** inline · **Blocked:** none
 * **Where:** `e2e/file-freshness.spec.ts:52`, `e2e/fixtures.ts:337`, production path `src/components/boards/BoardAnalysis.tsx:105` and `src/utils/tabs.ts:636`.
 * **Defect:** The scenario edits a file-backed game with default autosave enabled, but pgnFileCommands and the mock defaults omit write_game. The app correctly reports Unexpected Tauri IPC command: write_game. That notification changes the existing conflict screenshot by 854 pixels in the root pinned-container first pass.
 * **Why it matters:** The screenshot currently tests an accidental mock failure alongside the intended changed-on-disk conflict. Accepting that notification into a baseline would hide a missing scenario command contract.
 * **Fix shape:** Model the native write outcome required by the concurrent external-change scenario, assert the write targets the opened game with its original expected stamp, and preserve conflict detection, diagnostics, autosave and the existing screenshot.
 * **Proof:** `pnpm test:e2e:container --project=file-freshness`, plus existing autosave and freshness unit tests. Never update snapshots.
 * **Found by:** Root first-pass log `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-first-pass.PiECIf/log`, traced by the bounded repair leaf on 2026-10-10.
+
+Obsolete (setup-findings triage 2026-10-13): write_game is modelled and asserted absent (e95a864d).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"eb0e8339196bc8941fc93745efb188f1b19c1d4dc8bee709200a3d59b7a75140","header_sha256":"778d3dd04132a28e6fb5d23230139fca3558b66d16f33479f68a70e19ecd2701","header_status":"handled","input_sha256":"1cd42c279df1522455ecbd7fe3a687a4c1e028dded6f4d5b3ce1087835aba275","kind":"mutation-receipt","operation":"15033759e9568959fddfa19472d3e08e20e816a1e37264f3efa11b5df4ec5540","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-35"],"target":"f-20261010-35","v":1} -->
 
 ---
 
