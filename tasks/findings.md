@@ -14883,7 +14883,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### PGN Start path acceptance uses an unnamed repeated bound
 
-* **ID:** f-20261010-21 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-21 · **Status:** rejected · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
 * **Where:** src/utils/chess.ts:520 and590.
 * **Defect:** Both parsed and raw Start acceptance use the same bare512 policy value.
