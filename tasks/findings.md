@@ -15464,7 +15464,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### Push skill still prescribes a manual `~/.cargo/bin` PATH prefix that tuxedo-atlas no longer needs
 
-* **ID:** f-20261012-03 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261012-03 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 0f9fb9f3-3d65-445f-a72d-18e23c1542b7
 
 * **Where:** `.claude/skills/push/SKILL.md:113` ("`spawn cargo ENOENT` from any of these means `~/.cargo/bin` is missing from that shell's `PATH` … prefix the call with `PATH="$HOME/.cargo/bin:$PATH"`"), and the Codex push skill if it carries the same sentence.
