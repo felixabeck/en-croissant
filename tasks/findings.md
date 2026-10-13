@@ -14897,6 +14897,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Review disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"f704023f2f98fc690134fd2021846027339f52832f275a445d814a5ffdc7a49c","input_sha256":"57ac78351ad89d319aab8a9c8ec14495e89fdef0398debc042803df609145917","kind":"mutation-receipt","operation":"b99f3f71a791dcc2b0adbd963b480c790776ab5560fd2606e6869aa5dfcd029b","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-21"],"target":"f-20261010-21","v":1} -->
 
+* **Why rejected:** Unnamed repeated bound; naming hygiene with no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"db18717f4a53f4a6efcf54aa27e051e460dae759566ac3c0f26cfec8cd668a0b","input_sha256":"015f209d2534bfbe7a2dfdc530c1b296bd1c29643d88105eb3b7c7f90802996e","kind":"mutation-receipt","operation":"a7c1ccd3ca210f893c322f59edc29323c191959c24c643447eac3239de04f313","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-21"],"target":"f-20261010-21","v":1} -->
+
 ### Autosave silently discards typed write failures
 
 * **ID:** f-20261010-22 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
