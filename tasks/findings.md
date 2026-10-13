@@ -10950,6 +10950,9 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 * **Why rejected:** Reopen-by-path matters only against a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"303c8cd742d84bed7c24fb4b3c683506a1129b118ddb2d3afdb717fb5a608484","input_sha256":"c204fa18c39dccc61a0346dd996068927f4e426c85eefdf4cf8f94ec86610b73","kind":"mutation-receipt","operation":"3f96066915421a719574cc7af39d11c678f8072dda85147655c7e69da3662ffa","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-01"],"target":"f-20260920-01","v":1} -->
 
+* **Reopened (records lens, 2026-10-13):** the 2026-10-13 rule-4d rejection and its correction above are void. This is product security hardening in a shipped desktop app, not agent machinery: the precondition is write access to a containing directory, which a shared-directory writer has, and `validate_target` checks type and identity without ownership. Rule 4d's own-box clause covers agent, hook, gate and drain machinery only. The finding stays open as it was before the triage.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4c2175d5168731852eecb3f9b7ae392674c79c2bc8bdae9035ba41f55e8a9144","input_sha256":"b2709c0e5979b7be13f55b09f5bc22158cf7c455b7ec6d5ae50ec378a8e49dc4","kind":"mutation-receipt","operation":"905ba259eb1d921ef219d921001600090ed09ab23717fb2f5d00308c33c276bd","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-01"],"target":"f-20260920-01","v":1} -->
+
 ### A cancelled Chess.com download keeps parsing and staging the archive it already fetched
 
 * **ID:** f-20260920-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
