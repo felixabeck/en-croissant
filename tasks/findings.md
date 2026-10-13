@@ -14300,7 +14300,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### The app-driver header and CLAUDE.md still say no engine can be registered without the native picker
 
-* **ID:** f-20261008-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261008-11 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 316cfcb2-f270-4c92-b083-cfe5aa290e0f
 * **Where:** `scripts/app-driver.mjs:12-15` ("`issue_engine_binary` in particular always opens a native picker, so no engine can be registered from here — a check that needs a live engine child is still Felix's"); repo-root `CLAUDE.md`, section "Verifying UI changes", last paragraph ("`issue_engine_binary` always opens a native picker, so registering an engine (and therefore any check needing a live engine child) cannot be automated this way").
 * **Defect:** both texts state that the real-window driver cannot register an engine. Catalog engines register without any picker (`installCatalogEngine`, `src/utils/engines.ts:355-374`), and a scratch script on `scripts/app-driver.mjs` has driven catalog install in a throwaway HOME (the `f-20261002-05` investigation, which also found the first-run-profile workspace failure). An agent reading either text concludes a live-engine product check is impossible and hands it to Felix or skips it — this push's own closing note repeated the claim and needed a correction annotation.
