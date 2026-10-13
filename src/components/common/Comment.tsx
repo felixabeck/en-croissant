@@ -1,123 +1,54 @@
 import { Typography } from "@mantine/core";
-import { memo } from "react";
+import { Fragment, memo, type ReactNode } from "react";
+import { createCommentMarkdown, type CommentMarkdownToken } from "@/utils/commentMarkdown";
 
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+// This reader owns the instance and never registers anything after creation.
+const markdown = createCommentMarkdown();
 
-import { COMMENT_UNDERLINE } from "@/utils/pgnComment";
-
-const UNDERLINE_ALL = new RegExp(COMMENT_UNDERLINE.source, "g");
-
-type MarkdownNode = {
-  type: string;
-  value?: string;
-  children?: MarkdownNode[];
-  data?: { hName: string };
-  position?: { start: { offset?: number }; end: { offset?: number } };
-};
-
-function remarkInlineOnly(this: { data: (key: string, value?: unknown) => unknown }) {
-  const extensions = (this.data("micromarkExtensions") || []) as unknown[];
-  extensions.push({
-    disable: {
-      null: [
-        "blockQuote",
-        "codeFenced",
-        "codeIndented",
-        "codeText",
-        "headingAtx",
-        "htmlFlow",
-        "list",
-        "setextUnderline",
-        "thematicBreak",
-        "definition",
-      ],
-    },
-  });
-  this.data("micromarkExtensions", extensions);
-
-  return (tree: MarkdownNode, file: { value: unknown }) => {
-    const source = String(file.value);
-    const visit = (node: MarkdownNode) => {
-      if (!node.children) return;
-      node.children = underlineChildren(
-        node.children.map((child) => {
-          // GFM tables and footnotes have anonymous constructs, so keep their source after parsing.
-          if (["table", "footnoteDefinition", "footnoteReference"].includes(child.type)) {
-            const start = child.position?.start.offset;
-            const end = child.position?.end.offset;
-            if (start !== undefined && end !== undefined) {
-              return { type: "text", value: source.slice(start, end) };
-            }
-          }
-          visit(child);
-          return child;
-        }),
-      );
-    };
-    visit(tree);
-  };
-}
-
-function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
-  // Synthetic coordinates: text keeps its length, formatted siblings occupy one \0,
-  // and paragraphs/breaks one \n. take() consumes those lengths with shared cursors,
-  // preserving formatted nodes while splitting only text around delimiter pairs.
-  const syntheticText = children
-    .map((child) =>
-      child.type === "text"
-        ? (child.value ?? "")
-        : child.type === "paragraph" || child.type === "break"
-          ? "\n"
-          : "\0",
-    )
-    .join("");
-  const matches = [...syntheticText.matchAll(UNDERLINE_ALL)];
-  if (matches.length === 0) return children;
-
-  let childIndex = 0;
-  let textOffset = 0;
-  const take = (length: number): MarkdownNode[] => {
-    const nodes: MarkdownNode[] = [];
-    while (length > 0 && childIndex < children.length) {
-      const child = children[childIndex];
-      if (child.type === "text") {
-        const text = child.value ?? "";
-        const count = Math.min(length, text.length - textOffset);
-        if (count > 0)
-          nodes.push({ type: "text", value: text.slice(textOffset, textOffset + count) });
-        textOffset += count;
-        length -= count;
-        if (textOffset === text.length) {
-          childIndex++;
-          textOffset = 0;
-        }
-      } else {
-        nodes.push(child);
-        childIndex++;
-        length--;
-      }
+function renderTokens(tokens: CommentMarkdownToken[], multipleLine: boolean): ReactNode {
+  return tokens.map((token, index) => {
+    const children = token.tokens ? renderTokens(token.tokens, multipleLine) : token.text;
+    let rendered: ReactNode;
+    switch (token.type) {
+      case "paragraph":
+        rendered = multipleLine ? <p>{children}</p> : <span>{children}</span>;
+        break;
+      case "strong":
+        rendered = <strong>{children}</strong>;
+        break;
+      case "em":
+        rendered = <em>{children}</em>;
+        break;
+      case "del":
+        rendered = <del>{children}</del>;
+        break;
+      case "underline":
+        rendered = <u>{children}</u>;
+        break;
+      case "link":
+        rendered = /^(?:https?:|mailto:)/i.test(token.href ?? "") ? (
+          <a href={token.href} title={token.title ?? undefined} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ) : (
+          token.raw
+        );
+        break;
+      case "br":
+        rendered = <br />;
+        break;
+      case "space":
+        rendered = "\n";
+        break;
+      case "text":
+      case "escape":
+        rendered = children;
+        break;
+      default:
+        rendered = token.raw;
     }
-    return nodes;
-  };
-
-  const nodes: MarkdownNode[] = [];
-  let offset = 0;
-  for (const match of matches) {
-    const index = match.index;
-    nodes.push(...take(index - offset));
-    take(2);
-    const underlined = take(match[0].length - 4);
-    take(2);
-    nodes.push({
-      type: "underline",
-      data: { hName: "u" },
-      children: underlined,
-    });
-    offset = index + match[0].length;
-  }
-  nodes.push(...take(syntheticText.length - offset));
-  return nodes;
+    return <Fragment key={index}>{rendered}</Fragment>;
+  });
 }
 
 function Comment({ comment }: { comment: string }) {
@@ -131,15 +62,7 @@ function Comment({ comment }: { comment: string }) {
         display: multipleLine ? "block" : "inline",
       }}
     >
-      <Markdown
-        components={{
-          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
-          p: ({ node: _node, ...props }) => (multipleLine ? <p {...props} /> : <span {...props} />),
-        }}
-        remarkPlugins={[remarkGfm, remarkInlineOnly]}
-      >
-        {comment}
-      </Markdown>
+      {renderTokens(markdown.lexer(comment), multipleLine)}
     </Typography>
   );
 }

@@ -1,11 +1,24 @@
 // Shared reader/editor fixtures. Production code must not import this module.
-export const commentDialectCases = [
+export type CommentDialectCase = {
+    name: string;
+    input: string;
+    text: string;
+    editorText?: string;
+    edited?: string;
+    formatting: { selector: string; text: string }[];
+    absent: string[];
+};
+
+type CaseInput = Omit<CommentDialectCase, "text" | "formatting" | "absent"> &
+    Partial<Pick<CommentDialectCase, "text" | "formatting" | "absent">>;
+
+const cases: CaseInput[] = [
     { name: "move-like prose", input: "59. Olvidé mi preparación." },
     { name: "bullet", input: "- a" },
     { name: "heading", input: "# a" },
     { name: "quote", input: "> a" },
     { name: "rule", input: "---" },
-    { name: "setext heading", input: "a\n---", edited: "a\n\n---!" },
+    { name: "setext heading", input: "a\n---", text: "a\n\n---", edited: "a\n\n---!" },
     { name: "indented code", input: "    indented" },
     { name: "fenced code", input: "```\nfenced text\n```" },
     { name: "inline code", input: "`x`" },
@@ -15,8 +28,14 @@ export const commentDialectCases = [
         name: "reference definition",
         input: "[a]: https://x.y",
         edited: "[a]: [https://x.y](https://x.y)!",
+        formatting: [{ selector: 'a[href="https://x.y"]', text: "https://x.y" }],
     },
-    { name: "escaped marker", input: "1\\. escaped", text: "1. escaped" },
+    {
+        name: "escaped marker",
+        input: "1\\. escaped",
+        text: "1. escaped",
+        editorText: "1\\. escaped",
+    },
     { name: "paragraphs", input: "a\n\nb" },
     { name: "soft break", input: "a\nb" },
     { name: "unpaired emphasis", input: "plain *star text" },
@@ -129,8 +148,201 @@ export const commentDialectCases = [
             { selector: "u:last-of-type", text: "underlined" },
         ],
     },
-    { name: "raw HTML", input: "<b>x</b>", edited: "**x**!" },
+    { name: "raw HTML", input: "<b>x</b>" },
+    {
+        name: "strike with underline",
+        input: "++~~x~~++",
+        text: "x",
+        formatting: [{ selector: "u del", text: "x" }],
+    },
+    {
+        name: "mixed underline siblings",
+        input: "before ++a **b** *c* ~~d~~ [e](https://x.y) f++ after",
+        text: "before a b c d e f after",
+        formatting: [
+            { selector: "u", text: "a b c d e f" },
+            { selector: "u strong", text: "b" },
+            { selector: "u em", text: "c" },
+            { selector: "u del", text: "d" },
+            { selector: 'u a[href="https://x.y"]', text: "e" },
+        ],
+    },
+    ...["\n", "\n\n"].flatMap((separator) => [
+        {
+            name: `D3-1 strong across ${JSON.stringify(separator)}`,
+            input: `++**a${separator}b**++`,
+            text: separator === "\n" ? `++a${separator}b++` : `++**a${separator}b**++`,
+            formatting: separator === "\n" ? [{ selector: "strong", text: `a${separator}b` }] : [],
+            absent: ["u"],
+        },
+        {
+            name: `D3-1 emphasis across ${JSON.stringify(separator)}`,
+            input: `++*a${separator}b*++`,
+            text: separator === "\n" ? `++a${separator}b++` : `++*a${separator}b*++`,
+            formatting: separator === "\n" ? [{ selector: "em", text: `a${separator}b` }] : [],
+            absent: ["u"],
+        },
+        {
+            name: `D3-1 strike across ${JSON.stringify(separator)}`,
+            input: `++~~a${separator}b~~++`,
+            text: separator === "\n" ? `++a${separator}b++` : `++~~a${separator}b~~++`,
+            formatting: separator === "\n" ? [{ selector: "del", text: `a${separator}b` }] : [],
+            absent: ["u"],
+        },
+        {
+            name: `D3-1 link label across ${JSON.stringify(separator)}`,
+            input: `++[a${separator}b](https://x.y)++`,
+            text: separator === "\n" ? `++a${separator}b++` : `++[a${separator}b](https://x.y)++`,
+            edited:
+                separator === "\n" ? undefined : "++[a\n\nb]([https://x.y)++](<https://x.y)++>)!",
+            formatting:
+                separator === "\n"
+                    ? [{ selector: 'a[href="https://x.y"]', text: `a${separator}b` }]
+                    : [{ selector: 'a[href="https://x.y)++"]', text: "https://x.y)++" }],
+            absent: ["u"],
+        },
+    ]),
+    {
+        name: "underline autolink boundary",
+        input: "++https://x.y/p++",
+        text: "https://x.y/p",
+        edited: "++[https://x.y/p](https://x.y/p)++!",
+        formatting: [{ selector: 'u a[href="https://x.y/p"]', text: "https://x.y/p" }],
+    },
+    {
+        name: "underline inside strong",
+        input: "**++x++**",
+        text: "x",
+        edited: "++**x**++!",
+        formatting: [{ selector: "strong u", text: "x" }],
+    },
+    {
+        name: "crossing strong boundary",
+        input: "++**x++**",
+        text: "**x**",
+        formatting: [{ selector: "u", text: "**x" }],
+        absent: ["strong"],
+    },
+    {
+        name: "repeated underline pairs",
+        input: "++a++++b++",
+        text: "ab",
+        edited: "++ab++!",
+        formatting: [{ selector: "u", text: "ab" }],
+    },
+    { name: "unmatched underline", input: "++x" },
+    {
+        name: "backticks inside underline",
+        input: "++`x`++",
+        text: "`x`",
+        formatting: [{ selector: "u", text: "`x`" }],
+    },
+    {
+        name: "escape inside underline",
+        input: "++1\\.++",
+        text: "1.",
+        editorText: "1\\.",
+        formatting: [{ selector: "u", text: "1." }],
+    },
+    {
+        name: "escaped underline delimiters",
+        input: "\\+\\+x\\+\\+",
+        text: "++x++",
+        editorText: "\\+\\+x\\+\\+",
+    },
+    { name: "Markdown image", input: "![a](https://x.y/i)" },
+    { name: "formatted image label stays literal", input: "![**a**](u)" },
+    { name: "literal entity", input: "&nbsp;" },
+    { name: "literal entities in paragraphs", input: "&nbsp;\n\n&nbsp;" },
+    { name: "entity among text", input: "a &nbsp; &amp; b" },
+    {
+        name: "formatting inside table-looking prose",
+        input: "| **a** | b |\n| --- | --- |\n| c | d |",
+        text: "| a | b |\n| --- | --- |\n| c | d |",
+        formatting: [{ selector: "strong", text: "a" }],
+    },
+    {
+        name: "HTML tags do not change nested configuration",
+        input: "++<script>**x**</script>++",
+        text: "<script>x</script>",
+        formatting: [
+            { selector: "u", text: "<script>x</script>" },
+            { selector: "u strong", text: "x" },
+        ],
+    },
+    {
+        name: "emphasis delimiter normalization",
+        input: "_x_ __y__",
+        text: "x y",
+        edited: "*x* **y**!",
+        formatting: [
+            { selector: "em", text: "x" },
+            { selector: "strong", text: "y" },
+        ],
+    },
+    {
+        name: "link title normalization",
+        input: "[x](https://x.y 'title')",
+        text: "x",
+        edited: '[x](https://x.y "title")!',
+        formatting: [{ selector: 'a[href="https://x.y"]', text: "x" }],
+    },
+    { name: "blank line normalization", input: "a\n\n\n\nb", text: "a\n\nb", edited: "a\n\nb!" },
+    {
+        name: "hard break",
+        input: "a  \nb",
+        text: "a\nb",
+    },
 ];
+
+export const commentDialectCases: CommentDialectCase[] = cases.map((fixture) => ({
+    ...fixture,
+    text: fixture.text ?? fixture.input,
+    formatting: fixture.formatting ?? [],
+    absent:
+        fixture.absent ??
+        ["strong", "em", "del", "u", "a"].filter(
+            (selector) =>
+                !(fixture.formatting ?? []).some((mark) => mark.selector.includes(selector)),
+        ),
+}));
+
+/** Include breaks and paragraph boundaries, independent of each adapter's DOM nesting. */
+export function commentDomText(element: Element): string {
+    const inlineText = (node: Node): string => {
+        if (node instanceof Element && node.tagName === "BR") return "\n";
+        if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+        return [...node.childNodes].map(inlineText).join("");
+    };
+    const paragraphs = [...element.querySelectorAll("p")];
+    return paragraphs.length ? paragraphs.map(inlineText).join("\n\n") : inlineText(element);
+}
+
+/** Mark coverage is independent of whether Tiptap nests strong inside u or u inside strong. */
+export function commentMarkedText(element: Element, selector: string): string {
+    const selectors = commentMarkSelector(selector).split(" ");
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let text = "";
+    while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (
+            selectors.every((part) => {
+                const ancestor = node.parentElement?.closest(part);
+                return ancestor && element.contains(ancestor);
+            })
+        )
+            text += node.textContent;
+    }
+    return text;
+}
+
+export function commentMarkSelector(selector: string): string {
+    // Tiptap's strike mark uses s, while the reader uses del.
+    return selector
+        .split(" ")
+        .map((part) => (part === "del" ? ":is(del,s)" : part))
+        .join(" ");
+}
 
 export const forbiddenCommentElements =
     "ol, ul, li, h1, h2, h3, h4, h5, h6, blockquote, hr, pre, code, table, sup, section, [data-footnotes]";

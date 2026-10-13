@@ -2,19 +2,57 @@ import { RichTextEditor } from "@mantine/tiptap";
 import Placeholder from "@tiptap/extension-placeholder";
 import Underline from "@tiptap/extension-underline";
 import { Markdown } from "@tiptap/markdown";
-import { useEditor } from "@tiptap/react";
+import { type Editor, Extension, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useAtomValue } from "jotai";
-import { Marked, type marked, type Tokens } from "marked";
+import type { marked } from "marked";
 import { useContext, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { spellCheckAtom } from "@/state/atoms";
-import { COMMENT_UNDERLINE } from "@/utils/pgnComment";
+import { createCommentMarkdown } from "@/utils/commentMarkdown";
 import { getNodeAtPath } from "@/utils/treeReducer";
 
-const UNDERLINE_AT_START = new RegExp(`^${COMMENT_UNDERLINE.source}`);
+const CommentEscape = Extension.create({
+  name: "commentEscape",
+  markdownTokenName: "escape",
+  parseMarkdown: (token, helpers) => helpers.createTextNode(token.raw ?? ""),
+});
+
+const CommentStarterKit = StarterKit.extend({
+  addExtensions() {
+    return (this.parent?.() ?? []).map((extension) => {
+      if (extension.name === "paragraph") {
+        return extension.extend({
+          // A literal &nbsp; is comment text, not Tiptap's empty-paragraph sentinel.
+          parseMarkdown: (token, helpers) =>
+            helpers.createNode("paragraph", undefined, helpers.parseInline(token.tokens ?? [])),
+        });
+      }
+      if (extension.name === "link") {
+        return extension.extend({
+          renderMarkdown: (node, helpers) => {
+            const href = node.attrs?.href ?? "";
+            // Autolinks may contain unmatched parentheses. Delimit the destination so
+            // reparsing cannot move its closing characters into the comment text.
+            const destination = /[()]/.test(href) ? `<${href}>` : href;
+            const title = node.attrs?.title ? ` "${node.attrs.title}"` : "";
+            return `[${helpers.renderChildren(node)}](${destination}${title})`;
+          },
+        });
+      }
+      return extension;
+    });
+  },
+});
+
+function commentMarkdown(editor: Editor) {
+  // MarkdownManager treats literal &nbsp; text as an empty serialization, too.
+  return (
+    editor.getMarkdown() || editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n\n")
+  );
+}
 
 function AnnotationEditor() {
   "use no memo";
@@ -32,7 +70,7 @@ function AnnotationEditor() {
     {
       autofocus: false,
       extensions: [
-        StarterKit.configure({
+        CommentStarterKit.configure({
           heading: false,
           blockquote: false,
           horizontalRule: false,
@@ -52,54 +90,22 @@ function AnnotationEditor() {
           markdownTokenizer: {
             name: "underline",
             level: "inline",
-            start: (source) => source.indexOf("++"),
-            tokenize: (source, _tokens, lexer) => {
-              const match = UNDERLINE_AT_START.exec(source);
-              if (!match) return undefined;
-              return {
-                type: "underline",
-                raw: match[0],
-                text: match[1],
-                tokens: lexer.inlineTokens(match[1]),
-              };
-            },
+            // Undefined inherits the parent's tokenizer. This defined no-op suppresses it.
+            start: () => -1,
+            tokenize: () => undefined,
           },
         }),
         Markdown.configure({
-          marked: new Marked({
-            tokenizer: {
-              heading: () => undefined,
-              lheading: () => undefined,
-              blockquote: () => undefined,
-              hr: () => undefined,
-              list: () => undefined,
-              code: () => undefined,
-              fences: () => undefined,
-              html: () => undefined,
-              def: () => undefined,
-              table: () => undefined,
-              codespan: () => undefined,
-              escape: (source) => {
-                const match = /^\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.exec(source);
-                // Marked accepts a text token here, though its escape override type is narrower.
-                if (match)
-                  return {
-                    type: "text",
-                    raw: match[0],
-                    text: match[0],
-                  } as unknown as Tokens.Escape;
-                return undefined;
-              },
-            },
-            // Tiptap types this as the singleton, but uses only the instance's lexer/use API.
-          }) as unknown as typeof marked,
+          // Tiptap types this as the singleton, but uses only the instance's lexer/use API.
+          marked: createCommentMarkdown() as unknown as typeof marked,
         }),
+        CommentEscape,
         Placeholder.configure({ placeholder: t("Board.Annotate.WriteHere") }),
       ],
       content: currentNode.comment || null,
       contentType: "markdown",
       onUpdate: ({ editor }) => {
-        setComment(editor.getMarkdown());
+        setComment(commentMarkdown(editor));
       },
     },
     [position.join(",")],
@@ -115,8 +121,8 @@ function AnnotationEditor() {
     // Do not feed the editor's own update back into ProseMirror: that resets
     // its selection on every keystroke.  A node switch or external mutation is
     // the only time renderer content must be replaced.
-    if (previous?.identity === nodeIdentity && editor.getMarkdown() === comment) return;
-    if (editor.getMarkdown() !== comment) {
+    if (previous?.identity === nodeIdentity && commentMarkdown(editor) === comment) return;
+    if (commentMarkdown(editor) !== comment) {
       editor.commands.setContent(comment, { emitUpdate: false, contentType: "markdown" });
     }
   }, [currentNode.comment, editor, nodeIdentity]);

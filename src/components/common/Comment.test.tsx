@@ -7,7 +7,12 @@ vi.mock("@mantine/core", () => ({
 }));
 
 import Comment from "./Comment";
-import { commentDialectCases, forbiddenCommentElements } from "./tests/commentDialectCases";
+import {
+  commentDialectCases,
+  commentDomText,
+  commentMarkedText,
+  forbiddenCommentElements,
+} from "./tests/commentDialectCases";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -51,16 +56,38 @@ test.each(commentDialectCases)(
   async ({ input, text, formatting, absent }) => {
     await act(async () => root.render(<Comment comment={input} />));
 
-    expect(
-      text === undefined ? container.textContent?.replace(/\s/g, "") : container.textContent,
-    ).toBe(text ?? input.replace(/\s/g, ""));
+    expect(commentDomText(container)).toBe(text);
     expect(container.querySelector(forbiddenCommentElements)).toBeNull();
     for (const selector of absent ?? []) {
       expect(container.querySelector(selector)).toBeNull();
     }
     for (const expected of formatting ?? []) {
-      expect(container.querySelector(expected.selector)?.textContent).toBe(expected.text);
+      expect(commentMarkedText(container, expected.selector).replace(/\s/g, "")).toBe(
+        expected.text.replace(/\s/g, ""),
+      );
     }
+    for (const link of container.querySelectorAll("a")) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noreferrer");
+    }
+  },
+);
+
+test.each(["javascript:alert(1)", "data:text/plain,x", "/relative", "ftp://x.y"])(
+  "shows the source of a disallowed link %j",
+  async (href) => {
+    const input = `[x](${href})`;
+    await act(async () => root.render(<Comment comment={input} />));
+    expect(container.textContent).toBe(input);
+    expect(container.querySelector("a")).toBeNull();
+  },
+);
+
+test.each(["http://x.y", "HTTPS://x.y", "mailto:x@y.test"])(
+  "renders an allowed link %j",
+  async (href) => {
+    await act(async () => root.render(<Comment comment={`[x](${href})`} />));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(href);
   },
 );
 
