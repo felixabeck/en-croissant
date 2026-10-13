@@ -3078,6 +3078,12 @@ mod retirement_tests {
     }
 
     fn predecessor_worker_case(admitted: bool, alias: bool) {
+        #[derive(Debug, PartialEq, Eq)]
+        enum PredecessorEvent {
+            WorkerPredecessorWait,
+            CallerDrained,
+        }
+
         let root = tempfile::tempdir().unwrap();
         let path = path_in(root.path(), "old", "worker.db3");
         let repository = DatabaseRepository::with_retire_wait(SIGNAL_TIMEOUT);
@@ -3096,6 +3102,8 @@ mod retirement_tests {
         let (entered, entry_signal) = signal();
         let (resume, resumed) = signal();
         let (waiting, waited) = signal();
+        let (event, events) = mpsc::channel();
+        let worker_wait = event.clone();
         let _hooks = configure_test_hooks(path.parent().unwrap(), |hooks| {
             if admitted {
                 hooks.worker_after_admission = Some(pause(entered, resumed));
@@ -3105,6 +3113,14 @@ mod retirement_tests {
             hooks.predecessor_wait = Some(Box::new(move || {
                 waiting.send(()).unwrap();
             }));
+            hooks.worker_predecessor_wait = Some(Box::new(move || {
+                worker_wait
+                    .send(PredecessorEvent::WorkerPredecessorWait)
+                    .unwrap();
+            }));
+            hooks.predecessor_drained = Some(Box::new(move || {
+                event.send(PredecessorEvent::CallerDrained).unwrap();
+            }));
         });
         assert!(pool.get_timeout(Duration::ZERO).is_err());
         reached(&entry_signal);
@@ -3112,10 +3128,17 @@ mod retirement_tests {
         assert_eq!(gate.snapshot().outstanding, usize::from(admitted));
         force_lru(&repository, &key, root.path(), "churn");
         assert_retained(&repository, &key);
+        let retirement = repository
+            .state
+            .lock()
+            .unwrap()
+            .retired
+            .iter()
+            .find(|retired| retired.key == key)
+            .unwrap()
+            .clone();
+        let (done, result) = mpsc::channel();
         std::thread::scope(|scope| {
-            let (done, result) = mpsc::channel();
-            // Capture the origin before the child starts, as required by d-20261008-29.
-            let started = Instant::now();
             let repository = &repository;
             let successor = &successor;
             scope.spawn(move || {
@@ -3127,21 +3150,32 @@ mod retirement_tests {
                 .unwrap();
             });
             reached(&waited);
+            let drain = if admitted {
+                &retirement.connections
+            } else {
+                &retirement.owners
+            };
+            drain.wait_until_waiting(Instant::now() + SIGNAL_TIMEOUT);
             assert!(
                 result.try_recv().is_err(),
                 "worker ownership must fence the successor even before ticket admission"
             );
             resume.send(()).unwrap();
+            assert_eq!(
+                events.recv_timeout(SIGNAL_TIMEOUT).unwrap(),
+                PredecessorEvent::CallerDrained,
+                "retired worker entered WorkerPredecessorWait before caller drainage"
+            );
+            assert!(
+                retirement.complete(),
+                "caller drainage must complete the old retirement"
+            );
             result
-                .recv_timeout(COMPLETION_BOUND)
-                .expect("predecessor worker waited on its own retirement")
+                .recv_timeout(SIGNAL_TIMEOUT)
+                .expect("successor acquisition did not complete")
                 .expect(
                     "alias reopen must wait and succeed, never return alias admission conflict",
                 );
-            assert!(
-                started.elapsed() < COMPLETION_BOUND,
-                "admitted predecessor worker must finish without its retirement deadline"
-            );
         });
         assert_eq!(gate.snapshot().outstanding, 0);
     }
