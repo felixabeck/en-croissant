@@ -15578,7 +15578,7 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### `zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal` failed once with a false SQLite-binding conflict during a full backend-test run
 
-* **ID:** f-20261012-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261012-06 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
 * **Where:** test `db::deletion_tests::zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal`, panic at `src-tauri/src/infra/path_authority/mod.rs:5274` (`test grant promotion: Conflict("file is open through a SQLite binding")`); the process-wide inode admission introduced for f-20261001-02 (`d-20261012-01`, `src-tauri/src/infra/`).
 * **Defect:** the final `pnpm gates:push` backend-test lane of the f-20261001-07 drain run (HEAD 23c09c77, 2026-10-12, load average ~22–25) failed this one test; 2205 others passed. The test passed 5/5 alone and three consecutive full `cargo test --bins` runs were green (2206 passed). The f-20261001-07 diff touches no `db/` or path-authority code. A plausible but unverified cause: the inode admission registry is process-wide, and a concurrently running test's live SQLite binding (or an inode reused after another test's unlink) makes this test's grant promotion see a conflicting live inode.
