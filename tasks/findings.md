@@ -14708,7 +14708,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### FileFreshnessGate pending action tests do not distinguish physical replacement
 
-* **ID:** f-20261010-11 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-11 · **Status:** rejected · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
 * **Where:** src/components/tabs/FileFreshnessGate.test.tsx pending action ownership.
 * **Defect:** No pending-action test changes only the physical generation while retaining logical owner, file/page and cached store. The tree-key action ownership guard can be removed without failing these tests, allowing an obsolete reload to overwrite the new generation. The existing physical-key append marker test covers a different branch.
