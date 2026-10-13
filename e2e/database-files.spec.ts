@@ -98,6 +98,13 @@ test("database-files: mixed Library retains hierarchy, selection, type filters a
     await tree.getByRole("treeitem").getByText(sameName, { exact: true }).click();
     await assertAccessible();
     await assertNoHorizontalOverflow();
+    const explore = page.getByRole("link", { name: "Explore", exact: true });
+    const buttonBox = (await explore.boundingBox())!;
+    const labelBox = (await explore.locator(".mantine-Button-label").boundingBox())!;
+    const centreOffset = Math.abs(
+        labelBox.y + labelBox.height / 2 - (buttonBox.y + buttonBox.height / 2),
+    );
+    expect(centreOffset, "Explore label must be vertically centred").toBeLessThanOrEqual(2);
     await capture("library-database-selected");
     await expect(page).toHaveScreenshot("library-database-selected.png", { fullPage: true });
     // Clear the type filter and navigate across the final file row and database peer.

@@ -1,3 +1,4 @@
+import { wrappingButton } from "@/components/common/wrappingButton";
 import { Button } from "@mantine/core";
 import { IconZoomCheck } from "@tabler/icons-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
@@ -73,8 +74,8 @@ export function OpenGameButton({
       miw={0}
       maw="100%"
       styles={{
-        root: { height: "auto", minHeight: "var(--button-height)", flexShrink: 0 },
-        label: { whiteSpace: "normal", overflowWrap: "anywhere" },
+        ...wrappingButton,
+        root: { ...wrappingButton.root, flexShrink: 0 },
       }}
     >
       {t("Common.OpenGame", { defaultValue: "Open game" })}
