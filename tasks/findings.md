@@ -15559,6 +15559,8 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Evidence:** full suite log retained at `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/flake-full-suite.log` (may be cleaned); reproduce with repeated full-suite runs under load.
 * **Proof:** a deterministic test (or a fix) that stays green across 50 consecutive full `cargo test --all-targets` runs under parallel load.
 * **Found by:** Claude Code (Opus 5.5) orchestrating the f-20261001-07 build run; first observed by its Codex repair leaf.
+* **Why rejected:** Test failed once under machine load; file again at a second independent witness. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"97f6a3091bca0422c5780c41567af37d117d3a5e9c198dcd5280cc348a152dbd","input_sha256":"53780b8897f57f487d2f20ad2c28230f7c540b161f793756b9447d56d80e8196","kind":"mutation-receipt","operation":"65611492dc8f19662c9d31fb670043802af787c67fd736fbd9420a043abddde4","options":{"section":null},"request_id_sha256":null,"results":["f-20261012-04"],"target":"f-20261012-04","v":1} -->
 
 ### `production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop` times out under machine load
 
