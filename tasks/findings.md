@@ -15316,6 +15316,9 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 * **Why rejected:** Rust tests' wall-clock timeouts under host I/O load; load flake. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"006db3a4035966c214413d02c7c0d39e7bcee8391145ca4bead3e11b5dde2b8d","input_sha256":"079a6070b509fb3bc4ce5e85a6b4417fd0a5f9ec0746b40156709f763dfb387c","kind":"mutation-receipt","operation":"7974c9ffe2171ef704236a97921a321a57ba91e81cc1262e6a131ed1a9ef71db","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-03"],"target":"f-20261011-03","v":1} -->
 
+Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage failed in ordinary push gates on four recorded attempts, not once. It passes rule 4d, so the rejection above is void.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"46f55bf2111961c816d699bcea4e477f582e392a758367a5ef74ed53b47ce93d","input_sha256":"b1ee4ae98feacd445996896a07e66ae83ced69b03876dfe0a8b6210179c6710b","kind":"mutation-receipt","operation":"1806e2eede0a38abbeae06a2597d99fd712902b0d0cbcabf7bf2e6886e779d0c","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-03"],"target":"f-20261011-03","v":1} -->
+
 ---
 
 ## 2026-10-11 — filed through the inbox spool
