@@ -15211,7 +15211,7 @@ Obsolete (setup-findings triage 2026-10-13): GO9 window resize fixed (8a591760).
 
 ### Native discard proof cannot enter the intended Event edit through WebKit WebDriver
 
-* **ID:** f-20261010-40 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-40 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs GO14 editor clear/value sequence, src/components/panels/info/PGNEditor.tsx and scripts/app-driver.mjs.
 * **Defect:** On clean source HEAD 6c12ccc4, the actual release build succeeds but the unchanged full verifier reports FAIL GO14 with timed out waiting for real PGN editor Event edit. The clean second game's persisted owner and original editor value are read before the failure. The Update gesture, dirty publication, confirmation and discard replacement are not reached. No cause is yet established.
@@ -15225,6 +15225,9 @@ Obsolete (setup-findings triage 2026-10-13): GO9 window resize fixed (8a591760).
 * **Measured GO14 input defect:** WebKit element/value delivered175 characters from an184-character edited PGN by omitting allnineLF characters. Ordinary characters produced trusted native insertText events. The exact-value wait correctly failed before Update or discard. Root retained full diagnostic log and screenshot. The correction will use actual keyboard Enter keys between lines without changing expected data or downstream assertions.
 * **Diagnostic run outcome:** Full native-diagnostics exit1 with the GO14 exact-value failure and an independent1186ms freshness apply-budget miss. GO9 passed. The latter observation is separately spooled for a performance/measurement design run and its existing1000ms limit remains unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"beab3166c60ee975fe7d8b51eb30869f679666e2590a869c306f66fa9151a4a1","input_sha256":"a6b43bc6067eb13c3782b69481c23fe844b32213414151e15feb4f04748202a0","kind":"mutation-receipt","operation":"cdffc40c2be7e1aab167eed309df3b8041162bebf52762dbe3fdd213abd5e803","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-40"],"target":"f-20261010-40","v":1} -->
+
+Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a591760).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"69af1d30e02595ea7583c2c90ff8ff582fd6961a33f2df3001e52f7ca0628b34","header_sha256":"d209e1a384a64abf2c50970f1358505ec150d0085c16f96a8a4f0b3bea2ad034","header_status":"handled","input_sha256":"94e55b60269f9c039576837d83532fbf5a6838a5babc8e5895278b0062bf5c25","kind":"mutation-receipt","operation":"ddd4b800322fa51e6a492832018cdd9b23bb76d46927daf284c50debc42e44e8","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-40"],"target":"f-20261010-40","v":1} -->
 
 ---
 
