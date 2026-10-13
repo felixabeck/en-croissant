@@ -11063,7 +11063,7 @@ deny stays in place for the next one.
 
 ### The native operation registry holds downloads in a pool still named, typed and documented as reads
 
-* **ID:** f-20260920-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260920-07 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/operations.rs:15-16` (`reads`), `:26-43` (`ReadState`, `ReadEntry`), `:132` (`MAX_NATIVE_READS`), `:270` (`requested_analysis: bool`), `:601-602` (the drain path), and the comments around each.
 * **Defect:** `459b649f` gave downloads their own reservation kind and admitted them into the same pool the native reads use, reusing `reads`, `ReadState`, `ReadEntry`, `MAX_NATIVE_READS` and the read drain path without renaming any of them. The type names and the comments now describe a scope the code no longer has, so the next reader has to infer from call sites that `MAX_NATIVE_READS` also bounds concurrent downloads. The kind is additionally dispatched through an opaque `requested_analysis: bool` whose callers pass bare `true`/`false`, which now has to be read as "not a download, not a read" rather than as a question about analysis.
 * **Why it matters:** the bound and the drain semantics are shared between two operation classes, and nothing in the names says so. A later change that tunes `MAX_NATIVE_READS` for reads silently retunes download concurrency.
