@@ -11196,6 +11196,9 @@ deny stays in place for the next one.
 * **Why rejected:** Upstream kit annotate edge with a known recovery; the kit sibling f-20261008-07 is handled. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d52794027141b5461355dc63a4a2eab564355ad3fac485f228ecfadc59bf5ee8","input_sha256":"2beb7c0bf975603d9fc6b8dd13ec03a4a5a0fe17e08eedcd5a90abab88032e7b","kind":"mutation-receipt","operation":"596c6da74db4c8b52776669d9f2309c9b63d59d263faddcbf5f4ae0a9d8cce17","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-14"],"target":"f-20260920-14","v":1} -->
 
+Reopened (records lens on the setup-findings triage, 2026-10-13): An unresolvable citation reaching HEAD turns the gate red for every agent and push; annotate still publishes without citation validation. It passes rule 4d, so the rejection above is void.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5563a1408b936a62e1d7f90c28ff70922a05e4fc3678aaf9c23aceb8a7da4589","input_sha256":"73aa9feceadb957b864c394c51ea5e21f42a7ade210aea6902487a4ffe596bfc","kind":"mutation-receipt","operation":"8bd931d33a607cee652751efa426e3649bb6be111b753e06aa5fe26ae952d309","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-14"],"target":"f-20260920-14","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
