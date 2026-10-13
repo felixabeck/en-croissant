@@ -11989,7 +11989,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### Planner evidence mirror cannot validate a Gemini quota retry on Codex
 
-* **ID:** f-20260925-01 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260925-01 · **Status:** rejected · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `/home/felixb/.claude/scripts/drain_planner.py` `mirror_evidence`; `/home/felixb/.claude/scripts/drain_supervisor_plans.py` `EvidenceMirror.copy`, `derive_review_manifest`, `_profile_check`.
 * **Defect:** A plan-only Gemini lens that reaches a provider-quota terminal is retried through the prescribed ordinary Codex leaf. Both launcher registrations have the same `lens-...-rN.jsonl` basename. `mirror_evidence` copies every terminal child under that basename; the failed source is first, and the successful retry has different bytes, so the write-once mirror refuses the collision. Even if only the retry were mirrored, `_profile_check` uses the assignment's `executor=gemini` for every row and runs the agy profile checker on Codex JSONL. Thus a valid quota recovery cannot satisfy plan evidence validation.
 * **Evidence:** In this plan-only run, all eleven round-one agy lenses returned `status: ERROR` with `Individual quota reached`; all eleven ordinary Codex retries completed with review reports. `leaf_terminal.terminal_verdict` returns `failed` for the agy source and `completed` for the retry; `mirror_evidence` does not skip the failed terminal. The corresponding artifact paths are under `/tmp/drain-plan-chessfable-0a459a4f-slot0/build/`.
