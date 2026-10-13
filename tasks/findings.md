@@ -13309,7 +13309,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### ChessFable's push skill does not name the install end detail at its installer step, so a queued drain can withhold the checkout-available card
 
-* **ID:** f-20261003-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261003-06 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `.claude/skills/push/SKILL.md:387-393` (the `master`-only `bash scripts/install-local.sh` step) and its stage-emission section at `:19-30`.
 * **Defect:** Since agent-kit 5327fa6..25cfdce (pushed and released 2026-10-03), a drain under `--queue-plans` sends the persistent "Implementation finished — checkout available" card only when the latest `push` stage ended with exactly `install verified` (the installer ran for this push and succeeded) or `install not applicable` (the skill does not install for this push — here: any branch other than `master`), and shows `Waiting for CI` only when the stage detail is `waiting for required CI`. The shared contract is `~/.claude/references/push-review-policy.md` → "Caller contract for explicit stage emissions", which this skill already reads first (`:9`), so a session that follows it emits the details; this skill's own installer step and CI wait do not name them, so a session that follows only the local text ends `push` without either detail and the drain withholds the card (fail-safe, never a false announcement).
 * **Why it matters:** ChessFable is where the missing checkout-available notice was observed (2026-10-01); without the detail at the installer step, Felix waits on a checkout that is already free.
