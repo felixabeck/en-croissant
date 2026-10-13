@@ -15564,7 +15564,7 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### `production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop` times out under machine load
 
-* **ID:** f-20261012-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261012-05 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
 * **Where:** `src-tauri/src/fs.rs:6058` (test `fs::tests::production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop`).
 * **Defect:** in a full `cargo test --all-targets --locked` run on 2026-10-12 (load average ~30, the f-20261001-07 build run; the diff touched no `fs.rs` code) the test panicked with `called Result::unwrap() on an Err value: Elapsed(())` — a fixed wall-clock timeout expired. It passed 3/3 in isolation and in the next full run. A wall-clock bound in a test that waits on detached work turns machine load into red gates.
