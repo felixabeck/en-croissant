@@ -15587,6 +15587,8 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Proof:** the cause measured (e.g. logging the conflicting registration's owner when the test fails), then a fix that stays green across 50 consecutive full backend-test runs under parallel load.
 * **Related:** f-20261001-02 (handled; introduced the inode admission), the two load-sensitive db/fs test failures filed by the same run.
 * **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, final push gate.
+* **Why rejected:** Test failed once under load; file again at a second independent witness. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f0a4d91f9d4d38cccf5fdca1e5d9833f176bd490873d13c42a71580dc18063e0","input_sha256":"ff1d82b1606ed8b092b75e161928bdc2e6f6f036948f1c98c147d8d51104c08d","kind":"mutation-receipt","operation":"7e9d399afa46b4e61925762ec0721cdf07f0162c9ce1675a945b4532d39fe3b6","options":{"section":null},"request_id_sha256":null,"results":["f-20261012-06"],"target":"f-20261012-06","v":1} -->
 
 ### `production_index_generation_and_open_have_bounded_rust_heap_peaks` failed once with "unable to open database file" during a full backend-test run under load
 
