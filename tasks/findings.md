@@ -12251,6 +12251,8 @@ Decisions d-20261009-01 through d-20261009-03 reject a second cleanup registry o
 * **Evidence:** review-tests round 3 of that push (`/tmp/push-f0710/lens3-tests.txt`, confidence 91). The only Windows jobs in `test.yml` are `rust-windows-test` and the MSVC `rust-platform` leg; no Node script test runs on Windows.
 * **Fix:** run `pnpm e2e:launchers:test` (at least the native package-script case) on a Windows runner, or decide explicitly that native e2e on Windows is unsupported and make the launcher refuse there, as `run-e2e-container.mjs` already does for its POSIX-only uid mapping. Related: f-20260910-07.
 * **Proof:** reverting the native launcher to the `.bin` shim turns a CI job red.
+* **Why rejected:** Hypothetical Windows-only launcher regression. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c5336352932da029bb1a12b3b3fd8f20aa571dd3a4c5ff59995c8613973bc9cb","input_sha256":"51ef0cc9633d507eec7f42f5f6c037aabae869a4aa213887978de9dd1175ccc4","kind":"mutation-receipt","operation":"5c156b40c5c79a8180631853a4de33ae8c9df0fa9dd5b791a2e9edcbf0fba1a5","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-05"],"target":"f-20260927-05","v":1} -->
 
 ### A termination request waits behind an in-flight engine exchange, so a silent `readyok` wait plus teardown exceeds the 15 s shutdown budget
 
