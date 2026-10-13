@@ -15551,7 +15551,7 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### `unlinked_before_pool_build_is_a_prompt_conflict_and_clears_building` failed once under machine load with a non-Conflict result
 
-* **ID:** f-20261012-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261012-04 · **Status:** rejected · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
 * **Where:** `src-tauri/src/db/repository.rs:4987` (test `db::repository::tests::unlinked_before_pool_build_is_a_prompt_conflict_and_clears_building`).
 * **Defect:** in a full `cargo test --all-targets --locked` run on 2026-10-12 (load average ~30, the f-20261001-07 build run; the diff touched no `db/` code) the assertion `matches!(result, Err(Error::Conflict(message)) if message == "database changed after capability resolution")` failed. The same test passed 3/3 in isolation and in the next full run (2205 passed). Either the test relies on scheduling between the unlink and the pool build, or the production path can return another outcome for an unlink racing the build — the run did not determine which.
