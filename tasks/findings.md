@@ -14805,7 +14805,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### Generated analysis variation bound has no named policy constant
 
-* **ID:** f-20261010-15 · **Status:** rejected · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261010-15 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
 * **Where:** src/state/store/tree.ts generated variation loop.
 * **Defect:** The loop truncates generated analysis variations at a bare 10 rather than naming the existing maximum plies policy.
