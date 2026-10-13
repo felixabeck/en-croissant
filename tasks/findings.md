@@ -14790,6 +14790,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Remaining:** Fresh cumulative source closure and root pixel/native verification remain pending. This finding stays open until those required stages complete. Plan authorship and arbitration shared one context. Detection ran on the code model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"1fbfc795dda170489854791b4dee77adf5dc47871a3708740e7ff9df8bd60a57","input_sha256":"49c6d803625f89a2c17cb1c64826e11ee2dbe30a8ac539f34743ad62fbbde6e7","kind":"mutation-receipt","operation":"8b53637b7cf618ba955d0cbe841014b66165b871551370890382891731e8df43","options":{"section":null},"request_id_sha256":"b6d1159ab79f262e9271423223f8cc708645df2c87896cc6a0d3905683cfb3b2","results":["f-20261010-15"],"target":"f-20261010-15","v":1} -->
 
+* **Why rejected:** Unnamed bound; naming hygiene with no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b6109692ae4d074c954ab3b173e5de81fa0314a71716a077a1126f5e1adb5533","input_sha256":"8d2a5c23fed34ee81fbad1ed6ea682cbb7fd4690cf34ca73f7ac56e18d7f80e0","kind":"mutation-receipt","operation":"9f94ebd94cd22467895e143f2f63c19827f7665a59ed4b8522e038765f6957ac","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-15"],"target":"f-20261010-15","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
