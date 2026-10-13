@@ -19,6 +19,8 @@ import {
 const repertoireFile = { ...filesWorkspaceFixture.pgnFile, gameCount: 21 };
 const MIN_VISIBLE_GAME_ROWS = 4;
 const GAME_ROW_HEIGHT_PX = 30;
+// Covers 10 attempts × 3 animation frames each, plus a 2-frame margin for queued callbacks.
+const SCROLL_SETTLE_FRAMES = 32;
 
 const mandateComments = {
     Nf3: "62",
@@ -71,11 +73,11 @@ async function expectCurrentNotationCellVisible(notation: Locator, move: string)
         });
     await expect.poll(isInsideViewport).toBe(true);
     // Let queued virtualizer retries run before checking that the selected cell stays visible.
-    await notation.page().evaluate(async () => {
-        for (let frame = 0; frame < 15; frame += 1) {
+    await notation.page().evaluate(async (settleFrames) => {
+        for (let frame = 0; frame < settleFrames; frame += 1) {
             await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         }
-    });
+    }, SCROLL_SETTLE_FRAMES);
     expect(await isInsideViewport()).toBe(true);
 }
 
