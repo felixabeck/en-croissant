@@ -9711,6 +9711,8 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 * **Open question:** should the registry persist the parent directory identity at acquisition (a `StoredEntry` schema change with a migration for existing entries, which cannot be recovered for entries persisted before it) and have every use-time resolution compare it, or is the leaf identity plus the no-follow walk the accepted boundary, documented as such?
 * **Related:** `f-20260914-33` (acquisition-time canonical binding; review record `tasks/handoffs/2026-09-14-f-20260914-33-review.md`, diff-review issue D1-01), `f-20260914-36` (use-time validations of persisted entries that compare identity only — R3-05 is the same identity-only comparison in `database_file_target`), `f-20260830-09` (unlink by name).
 * **Found by:** Codex `review-tauri-security` diff lens (confidence 98) during the `f-20260914-33` build run, 2026-09-15. Source read by the orchestrator; not reproduced by a test.
+* **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd980111656bed1498a9f475f6af7971c0370189d0efeb05a1e7a5f5e2a26c6a","input_sha256":"5fc440d0c88ea266521f95299d503f12e07c4f1cebc3edeed3021872b9ee573c","kind":"mutation-receipt","operation":"a5db8868019ff62aae225b56ac1ed036d9c4853b51e854302377a48e4159775f","options":{"section":null},"request_id_sha256":null,"results":["f-20260915-03"],"target":"f-20260915-03","v":1} -->
 
 ---
 
