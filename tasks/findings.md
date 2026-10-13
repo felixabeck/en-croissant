@@ -15055,7 +15055,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### The database overview card overflows at 320px and 200% before its visible opener is used
 
-* **ID:** f-20261010-34 · **Status:** open · **Area:** frontend-ui · **Root:** database-overview-card-wrapping · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-34 · **Status:** handled · **Area:** frontend-ui · **Root:** database-overview-card-wrapping · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/databases/DatabasesPage.tsx`, `src/components/common/GenericCard.module.css`, `e2e/font-scaled-breakpoints.spec.ts:31`.
 * **Defect:** The pinned-container first pass at HEAD `19da6a938795e4083d0c6557d8234c9e80652f8a` reports a database overview Stack at 237px against 116px and its SimpleGrid and ScrollArea at 257px against 156px. This assertion runs before opening a database, so GameCard and DatabaseView cannot repair it. GenericCard statistics use a non-wrapping flex row and the database description lacks arbitrary word breaking.
 * **Why it matters:** The visible database opener shares a card column with content that escapes its narrow layout, violating the 320px and 200% control contract.
@@ -15063,6 +15063,8 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** `pnpm test:e2e:container --project=font-scaled-breakpoints`, retaining all screenshots and distinguishing missing opening snapshots from clipping failures.
 * **Related:** `f-20261001-08` adds the visible opener. This is a measured wrapping failure in its surrounding existing card, not a new interaction requirement. `f-20260829-02` records the earlier narrow-layout class.
 * **Found by:** Root first-pass log `/home/felixb/.claude/drain-state/chessfable-0a459a4f.d/gates-e838b3a7-7402-4e53-a614-eb2da79f3765/gate-ui-first-pass.PiECIf/log`, traced by the bounded repair leaf on 2026-10-10.
+* **Closed (fixed, verified 2026-10-13):** commit `e95a864d` ("keep compact game previews and controls reachable", after this finding's filing HEAD `19da6a93`) made the GenericCard statistics row wrap (`.info { flex-wrap: wrap }`, children `min-width: 0; max-width: 100%; overflow-wrap: anywhere` in `src/components/common/GenericCard.module.css`), and the database description already carries `className="wrap-anywhere"`. The f-20261001-11 Library build (`e96de980`, session fab6795c-3780-4adc-8356-6d9441cd768f) replaced the database overview with the Library page, whose database rows reuse that card; `pnpm test:e2e:container --project=font-scaled-breakpoints` passed on that tree with the 320px/200% opening cases (`database-open-320-200`, `database-preview-320-200`, `database-game-open-320-200`) re-recorded in the pinned container. No separate code change.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"a153edb7870eb0626a92af3782a474e8a8d49c97ea5c38de23f71782c03ab480","header_sha256":"877ba17d963d70bdd9d7e179c38eff09e3a63cd9c398da7b0b0c3626df49646d","header_status":"handled","input_sha256":"b78465f2381f9a892106fdcc4edfcd78cb55bda9cb007541bc3c9d7c1bca763b","kind":"mutation-receipt","operation":"e65bfbadb32467ba7a38b8c6d2b97261b5d31585c7e9cd7f33990fef9d5b4ffc","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-34"],"target":"f-20261010-34","v":1} -->
 
 ### The file-freshness conflict scenario omits the autosave write command contract
 
