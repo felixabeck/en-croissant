@@ -13819,7 +13819,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### Frontend push mutation does not select the Phase 3 analysis display files
 
-* **ID:** f-20261005-09 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261005-09 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Found in:** Phase 3 of `tasks/plans/2026-10-05-warm-engine-analysis.md`, 2026-10-05.
 * **Evidence:** `scripts/frontend-mutation-packages.mjs` lists six fixed production paths in three packages; none is `BestMoves.tsx`, `AnalysisRow.tsx`, `DetachedEval.tsx`, `AnalysisPanel.tsx` or the new `useDisplayedEngineLines.ts`. `scripts/run-frontend-mutation.mjs` selects only those package records, and `stryker.config.mjs` refuses a `STRYKER_FILES` path outside them. The Phase 3 assignment expressly requires 100% mutation on changed files, so its prescribed `pnpm gates:push -- --frontend` cannot establish that requirement. A supplemental Stryker run using the same configuration with those five paths produced 622 mutants, 175 killed, 272 survived and 175 uncovered (28.14%) before further hook tests; the report is `artifacts/mutation/frontend/phase3/`, and the run log is `/tmp/chessfable-phase3-mutation-2.log`.
 * **Consequence:** A green frontend push mutation lane is evidence for the six configured files only; it must not be reported as 100% mutation coverage of these changed analysis readers.
