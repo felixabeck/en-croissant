@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: d53fc154f8fa882152139afbbdd8a9fecfbfa36a2f7322fccc677361311e14ec
+# agent-kit-sha256: ee1f09276a239f6443ec75227098431cc5a958f6695e6d3579adc258b0dececd
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -42,7 +42,7 @@ Subcommands
 ``apply-answers`` fold answers back in and unblock what was decided
 ``answer``       publish one answer atomically through the answers spool
 ``commit-ledger`` commit an expected ledger snapshot by its exact bytes
-``drain-status`` exit 0 if a drain holds this repo's lock, 1 otherwise
+``drain-status`` exit 0 if this repo's consumer lock is held, 1 otherwise
 ``set-header``  mutate selected fields of one finding header
 ``annotate``    append file contents to one finding entry
 ``close``       mark a finding handled and append its closing note atomically
@@ -75,7 +75,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import (
     ExitStack,
     contextmanager,
@@ -94,6 +94,12 @@ SUPERVISOR_CONTRACT_ENV = "FINDINGS_SUPERVISOR_CONTRACT"
 SUPERVISOR_CONTRACT_BASELINE = 1
 # First level whose callers get impact-ranked cells and the new filing rules. Lower declared levels keep c57b00c behaviour.
 IMPACT_QUEUE_CONTRACT_LEVEL = 2
+# First level whose callers get the 2026-10-13 refusals and reports: repeated
+# single-valued entry fields refused at admission, apply-answers' nonzero status
+# after refusing a verifier answer, the out-of-diff admission bar in annotate and
+# check, and writer success lines naming the ledger they wrote. Lower declared
+# levels, including the supervisor's IMPACT_QUEUE_CONTRACT_LEVEL, keep the previous behaviour.
+STRICT_REPORTING_CONTRACT_LEVEL = 3
 
 
 def _parse_supervisor_contract_level(value: str | None) -> int | None:
@@ -131,6 +137,12 @@ def _impact_queue_enabled() -> bool:
     return level is None or level >= IMPACT_QUEUE_CONTRACT_LEVEL
 
 
+def _strict_reporting_enabled() -> bool:
+    """Keep lower-level writer behaviour while enabling strict reporting for new callers."""
+    level = supervisor_contract_level()
+    return level is None or level >= STRICT_REPORTING_CONTRACT_LEVEL
+
+
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
 # strips redundant parentheses from an explicit `except (A, B):` tuple literal, and
 # the parenthesized form is what a pre-3.14 interpreter needs to parse this file
@@ -156,8 +168,8 @@ DRAIN_BREADCRUMB_TRUNCATION_MARKER = "... [truncated]"
 _DRAIN_BREADCRUMB_ERRORS = (OSError, subprocess.SubprocessError)
 
 
-def _probe_git_toplevel() -> tuple[Path | None, str]:
-    """Read-only `git rev-parse --show-toplevel` of the current working directory.
+def _probe_git_toplevel(*, cwd: Path | None = None) -> tuple[Path | None, str]:
+    """Read-only `git rev-parse --show-toplevel` of the supplied directory or cwd.
 
     Never writes. Never falls back to ``__file__`` or cwd. The stderr string is
     what a verb prints inside ``REFUSING: not inside a git checkout (...)``.
@@ -166,6 +178,7 @@ def _probe_git_toplevel() -> tuple[Path | None, str]:
     try:
         completed = subprocess.run(
             [git, "rev-parse", "--show-toplevel"],
+            cwd=cwd,
             capture_output=True,
             text=True,
             check=False,
@@ -249,14 +262,19 @@ CONTROLLER_EXPORT_MARKERS = (
     "Generated from the authoritative SQLite ledger",
     "findings-generation:",
 )
-# The markers are only honoured in the file's head, so a markdown finding that
-# quotes one of them further down cannot switch the parser.
+# Impact-queue-level and undeclared callers honour markers only in the bounded
+# preamble before the first ``## `` or ``### `` heading, so quoted markers cannot
+# switch the parser. Level 1 retains whole-head detection byte-identically.
 CONTROLLER_EXPORT_HEAD_CHARS = 4096
+CONTROLLER_EXPORT_HEADING_RE = re.compile(r"^#{2,3} ", re.MULTILINE)
 # The section every Controller finding reports: the export has no ``## `` headings.
 CONTROLLER_EXPORT_SECTION = "controller-export"
 CONTROLLER_JSON_FENCE_RE = re.compile(r"```json[ \t]*\n(?P<body>.*?)```", re.S)
-# A filer publishes first and only then checks this lock. The environment override
-# keeps that branch testable without ever consulting the real drain lock.
+# Before publishing, a filer checks whether the drain holds the ledger to decide
+# whether deferred-claim preconditions apply. After publishing, it takes a shared
+# non-blocking flock to choose between drain-owned merging and merging itself. The
+# environment override keeps that branch testable without ever consulting the
+# real drain lock.
 DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
 
 
@@ -366,16 +384,21 @@ _ACTIVE_ID_RESERVATIONS: Path | None = None
 _ACTIVE_CLONE_ID_SCOPES: dict[str, tuple[Path, int]] = {}
 _EXPLICIT_ID_ALLOCATION_PATHS = False
 CLONE_WIDE_WRITER_PATH = "scripts/findings.py"
-# The merge-driver config lock fences only the short `git config` repair in a
-# shared Git common directory; it is never held across a hook, so contention is
-# reported promptly instead of delaying a cheap read command.
-MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS = 1.0
+# The lock fences only a short `git config` repair, never a hook. Measured here:
+# four-call repair median 2.17 ms idle, max 2.46 ms with 12 concurrent holders.
+# Allow 11 four-call holders at 0.3 s per Git call (13.2 s), plus margin.
+MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS = 15.0
 LEDGER_LOCK_RETRY_INTERVAL_SECONDS = 0.05
 DRAIN_LOCK_READ_BYTES = 4096
 # What `drain-findings.sh` writes into the consumer lock once it has released the
 # flock. With the flock already free, a decimal marker would read as a stale drain
 # rather than a finished one, so the marker distinguishes "finished" from "died".
 DRAIN_LOCK_RELEASED_MARKER = "released"
+# scripts/with-drain-locks.sh records its maintenance fence in the consumer lock.
+DRAIN_LOCK_FENCE_MARKER_PREFIX = "with-drain-locks "
+VENDORED_STAMP_PREFIX = "# agent-kit-sha256:"
+VENDORED_STAMP_LINE_BYTES = 4096
+GIT_ENTRY_NAME = ".git"
 # `_unique_suffix` cannot repeat within a process, so a second attempt is not this
 # process colliding with itself. It recovers from a name another process already
 # took, or from a filesystem that refused the link. Bounded rather than `while
@@ -518,6 +541,11 @@ PLAN_INBOX_ENV = "DRAIN_PLAN_INBOX"
 # must agree on the accepted bullet class or a gated entry can be reported as
 # having no Sentry short-ID.
 _BULLET = r"[*+-]"
+TOP_LEVEL_FIELD_RE = re.compile(
+    rf"^{_BULLET}[ \t]+\*\*(?P<name>[^*\n]+?):\*\*", re.MULTILINE
+)
+# These name one Sentry issue per bullet, so an entry may carry several.
+REPEATABLE_ENTRY_FIELDS = frozenset({"Sentry", "Sentry-ref"})
 FILED_FROM_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Filed from:\*\*[ \t]*\S.*$", re.MULTILINE
 )
@@ -1296,8 +1324,9 @@ def scan_paths(body: list[str], body_fenced: list[bool]) -> set[str]:
 # Filenames that the App Router assigns by convention, so dozens of unrelated files
 # share each one. A basename match on these carries no information -- it says both
 # entries touch *a* route, not the same route -- and the decisions it surfaced in
-# testing were uniformly wrong. Excluded rather than denylisted case by case,
-# because the ambiguity is a property of the framework, not of this repo.
+# testing were uniformly wrong. Bare basenames are excluded rather than denylisted
+# case by case, because the ambiguity is a property of the framework, not of this repo.
+# Full paths still identify one source file under the impact-queue contract.
 AMBIGUOUS_BASENAMES = frozenset(
     f"{stem}{suffix}"
     for stem in (
@@ -1345,12 +1374,17 @@ def source_file_keys(paths: set[str]) -> tuple[set[str], set[str]]:
     `backend/app/api/routes/auth.py` are two different files, and collapsing both to
     ``auth.py`` surfaced `d-20260822-14` for `f-20260821-28`, which it does not
     govern. So a basename is used only where a basename is all one side supplied.
+    Bare framework-convention basenames never match. Under the impact-queue
+    contract, full paths ending in one match only the identical full path.
     """
     full: set[str] = set()
     bare: set[str] = set()
     for path in paths:
         name = PurePosixPath(path).name
-        if not _is_source_name(name):
+        convention_path = (
+            _impact_queue_enabled() and "/" in path and name in AMBIGUOUS_BASENAMES
+        )
+        if not convention_path and not _is_source_name(name):
             continue
         if "/" in path:
             full.add(path)
@@ -2773,12 +2807,6 @@ def load_tooling_areas(
     return found if found is not None else frozenset()
 
 
-def load_tooling_areas_from_path(path: Path) -> frozenset[str]:
-    """Load tooling areas from a ledger path already proven readable by ``parse``."""
-    text = _read_ledger_text(path)
-    return load_tooling_areas_from_text(text)
-
-
 def load_tooling_areas_from_text(text: str) -> frozenset[str]:
     """Load tooling areas from already-read ledger text."""
     lines = text.splitlines()
@@ -2836,8 +2864,18 @@ def _controller_export_head(data: bytes) -> str:
 
 
 def is_controller_export(text: str) -> bool:
-    """True when the file's head carries a Controller generated-ledger marker."""
+    """True when a Controller marker occurs in the contract level's bounded head.
+
+    Impact-queue-level and undeclared callers check only the preamble before the
+    first ``## `` or ``### `` heading. Level 1 checks the whole bounded head,
+    preserving its previous detection byte-identically.
+    """
     head = text[:CONTROLLER_EXPORT_HEAD_CHARS]
+    # Level 1 retains whole-head detection for byte-identical supervisor refusals.
+    if _impact_queue_enabled():
+        heading = CONTROLLER_EXPORT_HEADING_RE.search(head)
+        if heading is not None:
+            head = head[:heading.start()]
     return any(marker in head for marker in CONTROLLER_EXPORT_MARKERS)
 
 
@@ -3286,6 +3324,22 @@ def _impact_admission_issues(finding: Finding, where: object) -> list[str]:
     return []
 
 
+def _repeated_field_issues(finding: Finding, where: object) -> list[str]:
+    """Refuse repeated single-valued top-level fields on pending entry admission."""
+    if not _strict_reporting_enabled():
+        return []
+    counts: dict[str, int] = {}
+    for match in TOP_LEVEL_FIELD_RE.finditer(_unfenced_body(finding)):
+        name = match.group("name")
+        counts[name] = counts.get(name, 0) + 1
+    return [
+        f"{where}: field '**{name}:**' appears {count} times; "
+        "an entry carries each field once — merge the bullets"
+        for name, count in sorted(counts.items())
+        if count > 1 and name not in REPEATABLE_ENTRY_FIELDS
+    ]
+
+
 def _park_brief_issues(where: str, joined: str) -> list[str]:
     """Check a `felix-decision` park's brief, reporting every missing part.
 
@@ -3570,7 +3624,6 @@ def _follow_up_escalations(findings: list[Finding]) -> dict[str, tuple[str, list
     by_id = {finding.id: finding for finding in findings}
     links: dict[str, set[str]] = {fid: set() for fid in by_id}
     follow_ups: set[str] = set()
-    full_paths = {finding.id: source_file_keys(finding.paths())[0] for finding in findings}
     for finding in findings:
         matches = list(FOLLOW_UP_RE.finditer(_unfenced_body(finding)))
         if matches:
@@ -3580,6 +3633,7 @@ def _follow_up_escalations(findings: list[Finding]) -> dict[str, tuple[str, list
                 if parent in by_id:
                     links[finding.id].add(parent)
                     links[parent].add(finding.id)
+    full_paths: dict[str, set[str]] = {}
     escalations: dict[str, tuple[str, list[str]]] = {}
     visited: set[str] = set()
     for fid in sorted(follow_ups):
@@ -3596,6 +3650,7 @@ def _follow_up_escalations(findings: list[Finding]) -> dict[str, tuple[str, list
         visited.update(lineage)
         path_members: dict[str, list[str]] = {}
         for member in sorted(lineage & follow_ups):
+            full_paths[member] = source_file_keys(by_id[member].paths())[0]
             for path in sorted(full_paths[member]):
                 path_members.setdefault(path, []).append(member)
         for member in sorted(lineage & follow_ups):
@@ -4184,6 +4239,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
     issues += _impact_class_issues(findings)
+    if _strict_reporting_enabled():
+        for finding in findings:
+            issues += _impact_admission_issues(
+                finding, f"{finding.id} (line {finding.line})"
+            )
     ledger_text = _read_ledger_text(args.ledger)
     ledger_metadata, ledger_meta_issues = _scan_ledger_metadata(
         ledger_text, args.ledger
@@ -5139,21 +5199,20 @@ def _next_with_pick_claims(
     *, claim: bool,
 ) -> int:
     records, diagnostics = _pick_claim_records(directory, prune=claim)
-    args._pick_claims = {
+    pick_claims = {
         fid: _pick_claim_reason(directory, fid, record)
         for fid, record in records.items() if not _pick_claim_is_own(record, owner)
     }
-    args._pick_ids = []
     output = io.StringIO()
     if claim:
         with redirect_stdout(output):
-            result = _cmd_next_selection(args)
+            result = _cmd_next_selection(args, pick_claims)
     else:
-        result = _cmd_next_selection(args)
+        result = _cmd_next_selection(args, pick_claims)
     for diagnostic in diagnostics:
         print(diagnostic, file=sys.stderr)
-    if claim and result == 0:
-        ids = args._pick_ids
+    if claim and result.status == 0:
+        ids = result.ids
         if ids:
             assert owner is not None
             label = (os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -5161,7 +5220,7 @@ def _next_with_pick_claims(
             _write_pick_claims(directory, ids, owner, records, label)
             print(f"claimed {' '.join(ids)} for {label} pid {owner[0]}", file=sys.stderr)
         print(output.getvalue(), end="")
-    return result
+    return result.status
 
 
 def cmd_next(args: argparse.Namespace) -> int:
@@ -5200,13 +5259,21 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     return 1 if refused else 0
 
 
-def _cmd_next_selection(args: argparse.Namespace) -> int:
-    findings, problems, vocabulary = parse(args.ledger)
+class NextSelection(NamedTuple):
+    status: int
+    ids: list[str]
+
+
+def _cmd_next_selection(
+    args: argparse.Namespace, pick_claims: Mapping[str, str]
+) -> NextSelection:
+    text = _read_ledger_text(args.ledger)
+    findings, problems, vocabulary = parse(args.ledger, text=text)
     issues = validate(findings, problems, vocabulary)
     issues += _impact_class_issues(findings)
     if issues:
         print("refusing to pick from an invalid ledger; run `check`", file=sys.stderr)
-        return 1
+        return NextSelection(1, [])
 
     try:
         answers_claim, answers_claim_ids, answers_claim_kept = _standing_answers_claim(
@@ -5216,16 +5283,16 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         raise
     except LedgerError as exc:
         print(f"refusing to pick while {exc}", file=sys.stderr)
-        return 1
+        return NextSelection(1, [])
     waiting_rows = _waiting_rows(findings)
     cells = None
     tooling_areas: Collection[str] = ()
     excluded: set[tuple[str, str]] = set()
     if _impact_queue_enabled():
-        tooling_areas = load_tooling_areas_from_path(args.ledger)
+        tooling_areas = load_tooling_areas_from_text(text)
         cells = _impact_cells(
             findings,
-            excluded_ids=set(answers_claim_ids) | set(args._pick_claims),
+            excluded_ids=set(answers_claim_ids) | set(pick_claims),
             tooling_areas=tooling_areas,
         )
         clusters, pickable, grouped, key_by_id = (
@@ -5233,7 +5300,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         )
     else:
         clusters, pickable, grouped, key_by_id = _ranked_clusters(
-            findings, excluded_ids=set(answers_claim_ids) | set(args._pick_claims)
+            findings, excluded_ids=set(answers_claim_ids) | set(pick_claims)
         )
 
     if cells is not None or not args.pin:
@@ -5241,16 +5308,16 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
             excluded = _next_exclusion_keys(list(getattr(args, "exclude", None) or []))
         except ValueError as exc:
             print(f"invalid next filter: {exc}", file=sys.stderr)
-            return 1
+            return NextSelection(1, [])
 
     if args.pin:
         chosen = next((f for f in findings if f.id == args.pin), None)
         if chosen is None:
             print(f"no finding with id {args.pin}", file=sys.stderr)
-            return 1
-        if args.pin in args._pick_claims:
-            print(f"{args.pin} is not pickable ({args._pick_claims[args.pin]})", file=sys.stderr)
-            return 1
+            return NextSelection(1, [])
+        if args.pin in pick_claims:
+            print(f"{args.pin} is not pickable ({pick_claims[args.pin]})", file=sys.stderr)
+            return NextSelection(1, [])
         if args.pin in answers_claim_ids:
             claim_reason = (
                 "answers claim kept for manual repair"
@@ -5267,7 +5334,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                 f"{sentry_detail})",
                 file=sys.stderr,
             )
-            return 1
+            return NextSelection(1, [])
         if cells is not None and args.pin in cells.waiting_builds:
             build_member = cells.waiting_builds[args.pin]
             print(
@@ -5275,7 +5342,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                 f"{build_member.id} in root {chosen.root})",
                 file=sys.stderr,
             )
-            return 1
+            return NextSelection(1, [])
         key = key_by_id.get(args.pin)
         if key is None:
             sentry_state = chosen.sentry_verification
@@ -5289,7 +5356,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                 f"blocked={chosen.blocked}{sentry_detail})",
                 file=sys.stderr,
             )
-            return 1
+            return NextSelection(1, [])
         members = grouped[key]
         reason = f"pinned: {args.pin}"
     else:
@@ -5308,7 +5375,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
             remaining.append((candidate_key, candidate_members))
         if not remaining:
             if _json_requested(args):
-                return _print_json(
+                return NextSelection(_print_json(
                     _next_json_payload(
                         outcome=(
                             NEXT_OUTCOME_BLOCKED_ONLY
@@ -5320,11 +5387,11 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                         ids=[],
                         waiting=[(fid, slug) for fid, slug, _title in waiting_rows],
                     )
-                )
+                ), [])
             print("QUEUE EMPTY")
             for fid, slug, title in waiting_rows:
                 print(f"  blocked: {fid} on {slug} — {title}")
-            return 0
+            return NextSelection(0, [])
         key, members = remaining[0]
         kind, name = key
         reason = (
@@ -5352,9 +5419,9 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         co_located = _co_located_singletons(
             key, entry, members, pickable, key_by_id
         )
-    args._pick_ids = list(dict.fromkeys(ids + (co_located or [])))
+    selected_ids = list(dict.fromkeys(ids + (co_located or [])))
     if _json_requested(args):
-        return _print_json(
+        return NextSelection(_print_json(
             _next_json_payload(
                 outcome=NEXT_OUTCOME_CLUSTER,
                 cluster_key=key,
@@ -5363,7 +5430,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
                 waiting=[],
                 co_located=co_located,
             )
-        )
+        ), selected_ids)
     print(f"CLUSTER {key[1]}  entry={entry}")
     print(f"WHY     {reason}")
     print(f"IDS     {' '.join(ids)}")
@@ -5374,7 +5441,7 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         print(f.summary())
         print(f"    section: {f.section}")
     _print_related_decisions(members, args.decisions, args.ledger)
-    return 0
+    return NextSelection(0, selected_ids)
 
 
 def cmd_related(args: argparse.Namespace) -> int:
@@ -6175,6 +6242,7 @@ def _validate_entry_text(
         )
     if len(findings) == 1:
         issues += _impact_admission_issues(findings[0], entry_path)
+        issues += _repeated_field_issues(findings[0], entry_path)
         if (
             _body_is_sentry_origin(_unfenced_body(findings[0]))
             and findings[0].status != "open"
@@ -6255,16 +6323,24 @@ def _warn_filing_entry(entry: str, ledger: Path, decisions: Path) -> None:
             )
 
 
-def drain_lock_path() -> Path:
+def drain_lock_path(ledger: Path | None = None) -> Path:
     """Return the configured drain lock path.
 
-    The default hashes the cwd's git toplevel at call time so the same bytes
-    running from a kit path with cwd inside another checkout key that checkout,
-    not ``__file__``.
+    A supplied ledger keys the checkout containing the directory of the path
+    given. This function makes the path absolute for the probe but does not
+    resolve symlinks. The CLI passes a canonical explicit ledger, so a symlinked
+    tasks/findings.md belongs to the checkout holding the real file. Level 1
+    skips the ledger probe, and failed probes fall back to cwd and then the
+    import-time paths.
     """
     configured = os.environ.get(DRAIN_LOCK_ENV)
     if configured:
         return Path(configured)
+    if ledger is not None and _impact_queue_enabled():
+        # Level 1 preserves the supervisor's existing filing contract.
+        root, _err = _probe_git_toplevel(cwd=Path(os.path.abspath(ledger)).parent)
+        if root is not None:
+            return _lock_for_root(root)
     root, _err = _probe_git_toplevel()
     if root is not None:
         return _lock_for_root(root)
@@ -6273,18 +6349,42 @@ def drain_lock_path() -> Path:
     return DEFAULT_DRAIN_LOCK
 
 
+def _drain_lock_ledger(args: argparse.Namespace) -> Path | None:
+    """Use ledger ownership only for an explicitly selected ledger."""
+    return args.ledger if getattr(args, "_explicit_ledger", False) else None
+
+
 def cmd_drain_status(args: argparse.Namespace) -> int:
-    """Answer "is a drain running here" with a probe-and-release query.
+    """Report whether a drain or maintenance fence holds the ledger's consumer lock.
 
     `file` and `/decide` agree that the consumer lock's kernel flock is the
     answer. Only `file` makes that answer durable by retaining its shared lock
     through a merge; this pure status query releases its probe immediately. The
-    recorded PID is only a human diagnostic, and an unreadable diagnostic fails
-    open with an explicit warning.
+    recorded PID is only a human diagnostic. An uncertain ownership probe fails
+    open with exit 1 and an explicit warning. A lock proven held whose marker
+    cannot be read reports an unidentified holder and returns 0.
     """
-    lock = drain_lock_path()
+    lock = drain_lock_path(_drain_lock_ledger(args))
     held, reason, unreadable = _drain_lock_state(lock)
     if held:
+        try:
+            with lock.open("rb") as stream:
+                marker = stream.read(DRAIN_LOCK_READ_BYTES).decode(
+                    "utf-8", errors="replace"
+                ).strip()
+        except OSError as exc:
+            print(
+                "consumer lock held by an unidentified holder "
+                f"(could not read {lock}: {exc})"
+            )
+            return 0
+        if marker.startswith(DRAIN_LOCK_FENCE_MARKER_PREFIX):
+            pid = marker[len(DRAIN_LOCK_FENCE_MARKER_PREFIX):]
+            print(
+                f"drain locks held by with-drain-locks.sh (pid {pid}), "
+                f"not a drain (lock {lock})"
+            )
+            return 0
         print(f"drain running (lock {lock})")
         return 0
     if unreadable:
@@ -6542,7 +6642,7 @@ def _id_allocation_test_point(stage: str) -> None:
     path.with_suffix(f".{stage}").touch()
     if os.environ.get("FINDINGS_TEST_ID_ALLOC_PAUSE") == stage:
         while not path.with_suffix(".release").exists():
-            time.sleep(0.01)
+            time.sleep(TEST_BARRIER_POLL_SECONDS)
 
 
 def _allocation_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -8920,7 +9020,7 @@ _ENTRY_BROKEN = "broken"
 _ENTRY_LOOKUP_ERRORS = (OSError, ValueError)
 
 
-def _entry_state(path) -> str:
+def _entry_state(path: Path) -> str:
     """Return presence, proven absence or broken lookup for a filesystem entry."""
     try:
         try:
@@ -10597,18 +10697,18 @@ def _merge_inbox_publish_locked(
         )
 
     # **Persist the allocation into the spool files before anything else.**
-    # An id is handed out here and nowhere else, so it has to survive every
-    # later step failing. Two of them can:
+    # An id is handed out here and nowhere else. The right rule depends on the
+    # outcome:
     #   * a refusal below leaves the batch in the claim to be corrected and
-    #     adopted. Deferred refusals preserve per-filing provisional provenance
-    #     so an interrupted rewrite still resets an earlier allocation;
-    #   * the ledger write and the spool release are two filesystem steps, and
-    #     a crash between them leaves the findings merged but still claimed.
-    #     Replaying `f-PENDING` would then append every one of them a SECOND
-    #     time, silently, because a fresh id is not a duplicate.
-    # Refused deferred adoption resets provisional ids per filing and allocates
-    # them again. Recovery of a possibly written batch re-proposes its on-disk
-    # ids and hits the duplicate check — a loud stop instead of a double entry.
+    #     adopted. Deferred refusals keep per-filing provisional provenance
+    #     across an interrupted rewrite. Adoption resets those provisional ids
+    #     per filing and allocates them again;
+    #   * once the ledger write may have happened, the ids must survive. The
+    #     ledger write and spool release are two filesystem steps. A crash
+    #     between them leaves the findings merged but still claimed. Replaying
+    #     `f-PENDING` would append them a second time, so recovery re-proposes the
+    #     on-disk ids and hits the duplicate check — a loud stop instead of a
+    #     double entry.
     receipt_records: list[tuple[str, str, str]] = []
     receipt_ids: dict[str, dict[str, str]] = {}
     allocated_receipt_names: set[str] = set()
@@ -10732,6 +10832,7 @@ def _merge_inbox_publish_locked(
                 )
                 for finding in findings:
                     found += _impact_admission_issues(finding, path)
+                    found += _repeated_field_issues(finding, path)
         if not found and mode == "deferred":
             valid_pair, pair_detail = _validate_candidate_pair(
                 candidate_text, ledger, decisions
@@ -10956,6 +11057,9 @@ def _drain_lock_marker_reason(contents: bytes) -> str | None:
     marker = contents.decode("utf-8").strip()
     if not marker or marker == DRAIN_LOCK_RELEASED_MARKER:
         return None
+    if _impact_queue_enabled() and marker.startswith(DRAIN_LOCK_FENCE_MARKER_PREFIX):
+        pid = marker[len(DRAIN_LOCK_FENCE_MARKER_PREFIX):]
+        return f"no process holds it; the last with-drain-locks.sh holder recorded pid {pid}"
     if marker.isdecimal():
         return f"no process holds it; the last owner recorded pid {marker}"
     return f"no process holds it and its contents are not a pid: {marker!r}"
@@ -11009,7 +11113,7 @@ def _drain_lock_state(lock: Path) -> tuple[bool, str | None, bool]:
     return False, reason, False
 
 
-def _try_consumer_lock() -> tuple[int | None, Path, str | None]:
+def _try_consumer_lock(ledger: Path | None = None) -> tuple[int | None, Path, str | None]:
     """Take the drain's shared consumer lock without waiting.
 
     The returned descriptor is kept by ``main`` until the exact ledger commit
@@ -11017,7 +11121,7 @@ def _try_consumer_lock() -> tuple[int | None, Path, str | None]:
     filesystem failures are reported separately so callers do not mistake a
     broken lock path for a live drain.
     """
-    lock = drain_lock_path()
+    lock = drain_lock_path(ledger)
     try:
         fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
     except OSError as exc:
@@ -11091,20 +11195,15 @@ def cmd_file_status(args: argparse.Namespace) -> int:
     if state == "publishing":
         published = args.inbox / receipt["published"]
         try:
-            actual_digest = _sha256_bytes(published.read_bytes())
-        except FileNotFoundError as exc:
-            if _entry_state(published) != _ENTRY_BROKEN:
-                print("none")
-                return 0
+            match = _published_filing_matches(published, entry)
+        except LedgerError as exc:
             raise LedgerError(
                 f"could not verify publishing receipt {receipt_path}: {exc}"
             ) from exc
-        except OSError as exc:
-            raise LedgerError(
-                f"could not verify publishing receipt {receipt_path}: {exc}"
-            ) from exc
-        expected_digest = _sha256_text(entry)
-        if actual_digest != expected_digest:
+        if match is None:
+            print("none")
+            return 0
+        if match is False:
             raise LedgerError(
                 f"publishing receipt {receipt_path} names {published}, "
                 "but the linked inbox bytes do not match the entry digest"
@@ -11250,6 +11349,22 @@ def _filing_citation_issues(
     return _candidate_citation_issues(candidate, ledger, decisions)
 
 
+def _published_filing_matches(published: Path, entry: str) -> bool | None:
+    """The one verifier of a published filing against its entry digest.
+
+    Return None for an absent path, True or False for a digest match or mismatch,
+    and refuse a dangling link or any other read error.
+    """
+    try:
+        return _sha256_bytes(published.read_bytes()) == _sha256_text(entry)
+    except FileNotFoundError as exc:
+        if _entry_state(published) != _ENTRY_BROKEN:
+            return None
+        raise LedgerError(f"could not read published filing {published}: {exc}") from exc
+    except OSError as exc:
+        raise LedgerError(f"could not read published filing {published}: {exc}") from exc
+
+
 def _publish_filing(inbox: Path, entry: str, *, filing_token: str | None = None) -> Path:
     """Publish under the caller's publish lock through the durable receipt protocol."""
     receipt_path = _receipt_path(inbox, entry, filing_token=filing_token)
@@ -11268,17 +11383,14 @@ def _publish_filing(inbox: Path, entry: str, *, filing_token: str | None = None)
     published_name = receipt["published"]
     published = inbox / published_name
     claimed = inbox.with_name(f"{inbox.name}.claim") / published_name
-    in_inbox, in_claim = published.exists(), claimed.exists()
+    match = _published_filing_matches(published, entry)
+    in_inbox, in_claim = match is not None, claimed.exists()
     if not new_receipt and in_inbox and in_claim:
         raise LedgerError(
             f"filing receipt {receipt_path} names {published_name}, "
             "which exists in both the inbox and claim. Use --again to file deliberately."
         )
-    if (
-        not new_receipt
-        and in_inbox
-        and _sha256_bytes(published.read_bytes()) != _sha256_text(entry)
-    ):
+    if not new_receipt and match is False:
         raise LedgerError(
             f"filing receipt {receipt_path} names {published_name}, "
             "but the inbox content does not match this entry. "
@@ -11387,21 +11499,21 @@ def _intake_covered(inbox: Path, entry: str, token: str | None = None) -> bool:
     if receipt["state"] in {"merged", "quarantined"}:
         return True
     published = inbox / receipt["published"]
-    try:
-        return _sha256_bytes(published.read_bytes()) == _sha256_text(entry)
-    except FileNotFoundError as exc:
-        if _entry_state(published) == _ENTRY_BROKEN:
-            raise LedgerError(
-                f"could not read published filing {published}: {exc}"
-            ) from exc
-        # A prepared claim has substituted its allocated id; its receipt is
-        # still published until the ledger commit, and the claim owns the bytes.
-        member = inbox.with_name(f"{inbox.name}.claim") / receipt["published"]
-        if _entry_state(member) == _ENTRY_BROKEN:
+    match = _published_filing_matches(published, entry)
+    if match is not None:
+        return match
+    # A prepared claim has substituted its allocated id; its receipt is
+    # still published until the ledger commit, and the claim owns the bytes.
+    member = inbox.with_name(f"{inbox.name}.claim") / receipt["published"]
+    if _entry_state(member) == _ENTRY_BROKEN:
+        try:
+            member.stat()
+        except OSError as exc:
+            # The OSError cause is what the intake sweep classifies as a read failure.
             raise LedgerError(
                 f"could not read claimed filing {member}: {exc}"
             ) from exc
-        return member.is_file()
+    return member.is_file()
 
 
 def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
@@ -11523,7 +11635,12 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
     directory = intake_directory(inbox)
     try:
         paths = sorted(directory.iterdir())
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if (
+            _impact_queue_enabled()
+            and _entry_state(directory) == _ENTRY_BROKEN
+        ):
+            print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
         return
     except OSError as exc:
         print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
@@ -11845,7 +11962,9 @@ def cmd_file(args: argparse.Namespace) -> int:
                     + "; ".join(citation_issues)
                 )
             if not bool(getattr(args, "spool_only", False)):
-                drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
+                drain_held, _reason, _unreadable = _drain_lock_state(
+                    drain_lock_path(_drain_lock_ledger(args))
+                )
                 if not drain_held:
                     mode = _claim_finalisation_mode(
                         args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
@@ -11888,7 +12007,7 @@ def cmd_file(args: argparse.Namespace) -> int:
         print(f"published finding entry: {published}; entry awaits a merge")
         return 0
 
-    lock = drain_lock_path()
+    lock = drain_lock_path(_drain_lock_ledger(args))
     lock_fd: int | None = None
     mutex_error: OSError | None = None
     try:
@@ -11964,7 +12083,7 @@ def cmd_file(args: argparse.Namespace) -> int:
 
     allocated = result.assigned_by_file.get(published, [])
     if allocated:
-        print(f"filed finding as {allocated[0]}")
+        print(f"filed finding as {allocated[0]}{_written_ledger_suffix(args.ledger)}")
     else:
         try:
             merged_receipt = _read_receipt(receipt_path)
@@ -11983,7 +12102,10 @@ def cmd_file(args: argparse.Namespace) -> int:
             )
             return 1
         if merged_receipt is not None and merged_receipt["state"] == "merged":
-            print(f"filed finding as {merged_receipt['id']} (concurrent merge)")
+            print(
+                f"filed finding as {merged_receipt['id']}"
+                f"{_written_ledger_suffix(args.ledger)} (concurrent merge)"
+            )
         else:
             print(
                 "entry was merged by a concurrent writer; the id could not be "
@@ -12388,7 +12510,7 @@ def cmd_set_header(args: argparse.Namespace) -> int:
     _locked_ledger_mutation(args.ledger, build)
     if args.status in {"handled", "rejected"}:
         append_drain_breadcrumb(f"step 10 finding closed {args.id}", args.status)
-    print(f"updated header for {args.id}")
+    print(f"updated header for {args.id}{_written_ledger_suffix(args.ledger)}")
     return 0
 
 
@@ -12478,6 +12600,11 @@ def _needs_blank_before_block(
     return not BULLET_LINE_RE.match(lines[index])
 
 
+def _written_ledger_suffix(path: Path) -> str:
+    """Name the written ledger for callers receiving strict reporting."""
+    return f" in {os.path.abspath(path)}" if _strict_reporting_enabled() else ""
+
+
 def _mutate_finding_note(
     args: argparse.Namespace,
     *,
@@ -12545,6 +12672,19 @@ def _mutate_finding_note(
             block.insert(0, "")
         block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
+        candidate = _with_final_newline(text, lines)
+        if _strict_reporting_enabled():
+            candidate_findings, _problems, _vocabulary = _parse_text(
+                candidate, args.ledger
+            )
+            candidate_target = next(
+                finding for finding in candidate_findings if finding.id == args.id
+            )
+            admission_issues = _impact_admission_issues(
+                candidate_target, f"{args.id} (line {candidate_target.line})"
+            )
+            if admission_issues:
+                raise LedgerError("\n".join(admission_issues))
 
         receipt_postcondition = _receipt_postcondition(
             command=command,
@@ -12572,7 +12712,6 @@ def _mutate_finding_note(
             [args.id],
             postcondition,
         )
-        candidate = _with_final_newline(text, lines)
         if header_line is None:
             return candidate, [args.id], effect
         return (
@@ -12588,9 +12727,15 @@ def _mutate_finding_note(
     _locked_receipted_mutation(args.ledger, request, build)
     if command == "close":
         append_drain_breadcrumb(f"step 10 finding closed {args.id}", "handled")
-        print(f"closed {args.id} with note from {note_path}")
+        print(
+            f"closed {args.id} with note from {note_path}"
+            f"{_written_ledger_suffix(args.ledger)}"
+        )
     else:
-        print(f"annotated {args.id} from {note_path}")
+        print(
+            f"annotated {args.id} from {note_path}"
+            f"{_written_ledger_suffix(args.ledger)}"
+        )
     return 0
 
 
@@ -12695,9 +12840,17 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
         if PENDING_DECISION_ID in rewritten:
             raise LedgerError(f"{PENDING_DECISION_ID} survived decision id allocation")
         effect = rewritten.strip().splitlines()
-        candidate = _append_decision_entry(
-            text, rewritten.strip() + "\n" + RECEIPT_PLACEHOLDER, args.section
-        )
+        candidate = _append_decision_entry(text, rewritten, args.section)
+        with _candidate_scratch(candidate, args.decisions) as scratch:
+            _resolved, citation_issues = _citation_resolution(args.ledger, scratch)
+        if citation_issues:
+            raise LedgerError(
+                "\nFAIL ".join(
+                    issue.replace(str(scratch), str(args.decisions))
+                    for issue in citation_issues
+                )
+            )
+        candidate = candidate.rstrip() + "\n" + RECEIPT_PLACEHOLDER + "\n"
         _register_ledger_commit(
             f"docs(decisions): record {' '.join(minted)}",
             minted,
@@ -12714,7 +12867,10 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
         args.decisions, explicit=_explicit_allocation_paths(args),
     ) as allocation_root:
         allocated = _locked_receipted_mutation(args.decisions, request, build)
-    print(f"recorded decision(s) as {' '.join(allocated)}")
+    print(
+        f"recorded decision(s) as {' '.join(allocated)}"
+        f"{_written_ledger_suffix(args.decisions)}"
+    )
     return 0
 
 
@@ -12856,7 +13012,10 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
                 _decision_trailer_postcondition(args.id, references),
             )
             _write_if_unchanged(args.decisions, original, candidate, durable_directory=True)
-    print(f"set {args.id} Superseded-by: {written}")
+    print(
+        f"set {args.id} Superseded-by: {written}"
+        f"{_written_ledger_suffix(args.decisions)}"
+    )
     return 0
 
 
@@ -13216,7 +13375,9 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
 
     hold_consumer_lock = bool(getattr(args, "hold_consumer_lock", False))
     if hold_consumer_lock:
-        consumer_fd, consumer_lock, consumer_error = _try_consumer_lock()
+        consumer_fd, consumer_lock, consumer_error = _try_consumer_lock(
+            _drain_lock_ledger(args)
+        )
         if consumer_error is not None:
             print(f"FAIL {consumer_error}", file=sys.stderr)
             return 2
@@ -13252,11 +13413,12 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     applied: list[str] = []
     skipped: list[str] = []
     quarantined: list[Path] = []
+    verifier_refused = False
     unreadable_current: dict[str, str] = {}
     skip_verifier_answers = bool(getattr(args, "skip_verifier_answers", False))
 
     def build(text: str) -> str:
-        nonlocal claimed
+        nonlocal claimed, verifier_refused
         kept_ids = _manual_repair_answers_claim_ids(spool)
         if kept_ids:
             raise ManualRepairAnswersClaimError(kept_ids)
@@ -13325,6 +13487,13 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 existing_intent = _read_claim_intent(
                     claim, strict=mode == "deferred"
                 )
+                if existing_intent is not None:
+                    # Retain verifier refusals before reconciliation can release
+                    # the claim. Unreadable and stale answers keep their status.
+                    verifier_refused = verifier_refused or any(
+                        reason not in {"unreadable", "stale"}
+                        for reason in existing_intent.quarantined.values()
+                    )
                 if (
                     existing_intent is not None
                     and existing_intent.phase == "prepared"
@@ -13693,6 +13862,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 )
 
         if waiting_records or unreadable_current or verifier_quarantine:
+            verifier_refused = verifier_refused or bool(verifier_quarantine)
             existing_intent = _read_claim_intent(claim, strict=mode == "deferred")
             if existing_intent is not None and existing_intent.files is not None:
                 existing_files = dict(existing_intent.files)
@@ -13776,7 +13946,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         print(f"applied {len(applied)} decision(s): {', '.join(applied)}")
     for note in skipped:
         print(f"skipped {note}")
-    return 1 if quarantined else 0
+    return 1 if quarantined or (verifier_refused and _strict_reporting_enabled()) else 0
 
 
 def _bind_repo_root(root: Path) -> None:
@@ -13832,6 +14002,77 @@ def _invocation_persists(args: argparse.Namespace) -> bool:
     )
 
 
+def _has_git_ancestor(directory: Path) -> bool:
+    """Distinguish a directory outside Git from a failed repository probe."""
+    return any(
+        os.path.lexists(ancestor / GIT_ENTRY_NAME)
+        for ancestor in (directory, *directory.parents)
+    )
+
+
+def _vendored_writer_refusal(args: argparse.Namespace) -> str | None:
+    """A stamped vendored copy confines cwd-derived writes to its own repository.
+
+    Explicit ledger paths express caller intent and remain exempt for consumer
+    writer tests and deliberate cross-repository use. The unstamped kit copy
+    serves any checkout. Copies outside a checkout are runtime snapshots and
+    remain exempt. Failed probes inside a checkout refuse.
+    """
+    if not _invocation_persists(args) or args.command == "merge-driver":
+        return None
+    writes_decisions = args.command in {"record-decision", "set-trailer"}
+    if getattr(args, "_explicit_ledger", False) or (
+        writes_decisions and getattr(args, "_explicit_decisions", False)
+    ):
+        return None
+    # Protected level-1 verbs retain their byte-identical supervisor contract.
+    if not _impact_queue_enabled() and args.command in {"next", "check", "file", "merge-inbox"}:
+        return None
+    script = Path(os.path.abspath(__file__))
+    try:
+        with script.open("rb") as stream:
+            first_line = stream.readline(VENDORED_STAMP_LINE_BYTES)
+            stamped = first_line.endswith(b"\n") and stream.readline(
+                VENDORED_STAMP_LINE_BYTES
+            ).startswith(VENDORED_STAMP_PREFIX.encode())
+    except OSError:
+        return None
+    if not stamped:
+        return None
+    if not _has_git_ancestor(script.parent):
+        return None
+    copy_refusal = (
+        "REFUSING: cannot establish which repository the vendored findings.py "
+        f"at {script} belongs to: "
+    )
+    copy_root, error = _probe_git_toplevel(cwd=script.parent)
+    if copy_root is None:
+        return copy_refusal + f"git rev-parse --show-toplevel: {error}"
+    try:
+        copy_common = _git_common_directory(
+            script.parent, "git rev-parse --git-common-dir"
+        )
+    except LedgerError as exc:
+        return copy_refusal + str(exc)
+    target = args.decisions if writes_decisions else args.ledger
+    try:
+        cwd_common = _git_common_directory(
+            cast(Path, REPO_ROOT), "git rev-parse --git-common-dir"
+        )
+    except LedgerError as exc:
+        return (
+            f"REFUSING: cannot establish which repository the cwd-derived ledger "
+            f"at {target} belongs to: {exc}"
+        )
+    if cwd_common != copy_common:
+        return (
+            f"REFUSING: {script} is the vendored findings.py of {copy_root}; "
+            f"it writes only that repository's ledgers, not {target}. "
+            "Run that repository's own scripts/findings.py, or the agent-kit copy."
+        )
+    return None
+
+
 LEDGER_COMMIT_ENV = "FINDINGS_LEDGER_COMMIT"
 LEDGER_COMMIT_COMMANDS = frozenset(
     {
@@ -13847,9 +14088,13 @@ LEDGER_COMMIT_COMMANDS = frozenset(
 )
 INDEX_LOCK_WAIT_SECONDS = 300.0
 INDEX_LOCK_POLL_SECONDS = 0.1
+# Poll interval for inert test-only barriers.
+TEST_BARRIER_POLL_SECONDS = 0.01
 LEDGER_HOOK_TIMEOUT_SECONDS = 600.0
 LEDGER_HOOK_TERM_GRACE_SECONDS = 30.0
 LEDGER_INDEX_FILE_MODE = 0o600
+# Git's tree mode for a symbolic link.
+GIT_SYMLINK_MODE = "120000"
 LEDGER_INDEX_NAME_PREFIX = "findings-ledger-index-"
 LEDGER_BLOB_READ_FAILURE_CAUSE = "stored-blob-read-failed"
 LEDGER_BLOB_BYTES_MISMATCH_CAUSE = "exact-byte-mismatch"
@@ -14241,7 +14486,15 @@ def _head_file_mode(root: Path, commit: str, relative: str) -> str:
 def _head_file_blob(
     root: Path, commit: str, relative: str, *, strict: bool = False,
 ) -> str | None:
-    """Share path-to-blob lookup, preserving the commit helper's tolerant parser."""
+    """Share path-to-blob lookup, preserving the commit helper's tolerant parser.
+
+    By default, return the blob of the tree entry at ``relative`` itself, so a
+    symlink returns its own blob. With ``strict=True``, follow ``120000`` symlink
+    entries for at most ``TREE_LEDGER_SYMLINK_LIMIT`` links and return the target
+    file's blob. Raise ``LedgerError`` for a dangling link, a target that leaves
+    the tree, or a chain exceeding the limit. Return ``None`` when ``relative``
+    is absent.
+    """
     followed = 0
     while True:
         entry = _head_file_blob_entry(root, commit, relative, strict=strict)
@@ -14250,7 +14503,7 @@ def _head_file_blob(
                 raise LedgerError(f"dangling ledger symlink in {root} {commit}:{relative}")
             return None
         mode, blob = entry
-        if not strict or mode != "120000":
+        if not strict or mode != GIT_SYMLINK_MODE:
             return blob
         if followed >= TREE_LEDGER_SYMLINK_LIMIT:
             raise LedgerError(
@@ -14835,7 +15088,7 @@ def build_parser() -> argparse.ArgumentParser:
     ).set_defaults(func=cmd_check)
     sub.add_parser(
         "drain-status",
-        help="exit 0 if a drain holds this repo's lock, 1 otherwise",
+        help="exit 0 if this repo's consumer lock is held, 1 otherwise",
     ).set_defaults(func=cmd_drain_status)
 
     p_list = sub.add_parser("list", help="print findings")
@@ -15059,18 +15312,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args.ledger = _canonical_ledger_path(args.ledger)
         if args.decisions is None:
-            # The two ledgers are a pair: an explicit ``--ledger`` pairs with the
-            # decisions file beside it, never with the repository's own. Mixing a
-            # fixture findings ledger with the real decisions ledger made every
-            # cross-ledger citation check report the real ledger's ids as missing.
+            # An explicit ledger pairs decisions, the default inbox and the drain
+            # lock with the checkout holding its canonical file, matching every
+            # ledger lock and write target since f-20260915-09. A symlinked
+            # tasks/findings.md belongs to the checkout holding the real file.
+            # Mixing a fixture findings ledger with the real decisions ledger made
+            # every cross-ledger citation check report the real ledger's ids as missing.
             args.decisions = args.ledger.parent / "decisions.md"
         args.decisions = _canonical_ledger_path(args.decisions)
     except (LedgerError, OSError, UnicodeDecodeError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
+    refusal = _vendored_writer_refusal(args)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 3
     args._explicit_inbox = getattr(args, "inbox", None) is not None
     if getattr(args, "inbox", None) is None and hasattr(args, "inbox"):
-        args.inbox = INBOX
+        args.inbox = (
+            args.ledger.parent / INBOX.name
+            if args._explicit_ledger and _impact_queue_enabled()
+            else INBOX
+        )
     if getattr(args, "answers", None) is None and hasattr(args, "answers"):
         args.answers = ANSWERS
     if args.command == "file" and bool(getattr(args, "status", False)):
@@ -15167,10 +15430,20 @@ def main(argv: list[str] | None = None) -> int:
                     # This is the final status-transparency boundary: arbitrary
                     # consumer hooks and diagnostics must never replace the command's
                     # return value, SystemExit, or unexpected exception.
+                    # The one mode that owns a durability contract reports its failure.
                     with suppress(OSError, UnicodeError):
                         _warn_ledger_commit(
                             intent, f"unexpected commit helper failure: {exc}", None
                         )
+                    if (
+                        args.command == "apply-answers"
+                        and bool(getattr(args, "hold_consumer_lock", False))
+                        and intent.replaced
+                        and os.environ.get(LEDGER_COMMIT_ENV) != "0"
+                        and command_result == 0
+                    ):
+                        print("ledger applied, commit failed", file=sys.stderr)
+                        command_result = 3
         finally:
             try:
                 if intent is not None:
