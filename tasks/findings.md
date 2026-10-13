@@ -13837,7 +13837,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### `verify:app` check `selected-root-missing` fails when the path-authority registry is not yet written
 
-* **ID:** f-20261005-10 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261005-10 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/verify-app.mjs` ~2683-2703, the `waitFor("the Databases page to activate the default database root", …)` predicate of the `selected-root-missing` scenario.
 * **Defect:** the predicate returns `false` while the selected database root does not exist, but once the folder exists it calls `readFile(registryFile, "utf8")` unguarded. If the app has created the folder but not yet written `.config/com.chessriddle.encroissant/path-authority.json` (the profile directory is recreated empty just before `Session.open`), `readFile` rejects with ENOENT; `waitFor` propagates the rejection instead of polling again, and the scenario fails with `ENOENT: no such file or directory, open '…/path-authority.json'; db exists: true`.
 * **Evidence:** 2026-10-05, warm-engine build session a2b7ad99-4750-4430-b26c-f280fe05e9e3, second `pnpm verify:app` run on `78cfb64d` (load average ~16): `FAIL  selected-root-missing: the Databases alert offers a visible folder chooser without recreating db` with exactly that message; the change under test touched no database-root, path-authority or verify-app code. The scenario was added in `2171a5ac` (f-20260917-12).
