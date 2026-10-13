@@ -11125,6 +11125,8 @@ deny stays in place for the next one.
 * **Why it matters:** neither breaks a test. Both make the next reader reconstruct a contract from a fixture that is describing the previous one, which is the specific way test files stop being documentation.
 * **Fix shape:** drop the unreachable mock value and the duplicate assertion; no behaviour or coverage changes, so the existing suites are the proof.
 * **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-code-quality should-fix 99; review-minimalism nit 99). Origin commits `459b649f` and `018df655` (`f-20260906-07`), a different area from the run that found it.
+* **Why rejected:** Stale test fixture descriptions; test hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8403a3a1197c7fa1529c063a5220e01cdd85b90b52a992ed1ce65a8176a9e4bb","input_sha256":"10c444ba570bf4f2e791a4d98a85a4ae69d2249458c1bf5b21eb12f863bef94d","kind":"mutation-receipt","operation":"8021f2f7ad3d6f68d73ca085d32c9968538c07dc7074b3babc5f9da06a2904c1","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-11"],"target":"f-20260920-11","v":1} -->
 
 ---
 
