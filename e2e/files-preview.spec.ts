@@ -42,19 +42,41 @@ function inlineCommentTokens(comments = mandateComments) {
     ];
 }
 
+function tallCommentTokens(prefixMoves: string[] = []) {
+    const longComment = Array.from(
+        { length: 24 },
+        (_, index) => `Preparation note ${index + 1}: develop the pieces and keep the king safe.`,
+    ).join("\n\n");
+    const tokens = inlineCommentTokens({
+        ...mandateComments,
+        Nf3: `${mandateComments.Nf3}\n\n${longComment}`,
+        Be3: `${mandateComments.Be3}\n\n${longComment}`,
+    });
+    return [
+        ...tokens.slice(0, 3),
+        ...prefixMoves.map((move) => ({ type: "San", value: move })),
+        ...tokens.slice(3),
+    ];
+}
+
 async function expectCurrentNotationCellVisible(notation: Locator, move: string) {
     const currentCell = notation.locator('[data-notation-current="true"]');
     await expect(currentCell.getByRole("button", { name: move, exact: true })).toHaveCount(1);
-    await expect
-        .poll(() =>
-            currentCell.evaluate((cell) => {
-                const viewport = cell.closest(".mantine-ScrollArea-viewport")!;
-                const bounds = cell.getBoundingClientRect();
-                const top = viewport.getBoundingClientRect().top + viewport.clientTop;
-                return bounds.top >= top && bounds.bottom <= top + viewport.clientHeight;
-            }),
-        )
-        .toBe(true);
+    const isInsideViewport = () =>
+        currentCell.evaluate((cell) => {
+            const viewport = cell.closest(".mantine-ScrollArea-viewport")!;
+            const bounds = cell.getBoundingClientRect();
+            const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+            return bounds.top >= top && bounds.bottom <= top + viewport.clientHeight;
+        });
+    await expect.poll(isInsideViewport).toBe(true);
+    // Let queued virtualizer retries run before checking that the selected cell stays visible.
+    await notation.page().evaluate(async () => {
+        for (let frame = 0; frame < 15; frame += 1) {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+    });
+    expect(await isInsideViewport()).toBe(true);
 }
 
 for (const gesture of ["button", "double-click", "Enter"] as const) {
@@ -238,19 +260,11 @@ test("files-preview: navigation reveals both ends of a notation row taller than 
     page,
     mockScenario,
 }) => {
-    const longComment = Array.from(
-        { length: 24 },
-        (_, index) => `Preparation note ${index + 1}: develop the pieces and keep the king safe.`,
-    ).join("\n\n");
     await mockScenario({
         commands: filesWorkspaceCommands([[repertoireFile]], {
             ...pgnFileCommands,
             lex_pgn: {
-                result: inlineCommentTokens({
-                    ...mandateComments,
-                    Nf3: `${mandateComments.Nf3}\n\n${longComment}`,
-                    Be3: `${mandateComments.Be3}\n\n${longComment}`,
-                }),
+                result: tallCommentTokens(),
             },
         }),
     });
@@ -291,23 +305,11 @@ test("files-preview: navigation mounts a distant tall row and reveals its select
 }) => {
     // Forty full rows leave the final commented row outside the viewport and its overscan.
     const earlierMoves = Array.from({ length: 320 }, () => ["Nf3", "Nf6", "Ng1", "Ng8"]).flat();
-    const longComment = Array.from(
-        { length: 24 },
-        (_, index) => `Preparation note ${index + 1}: develop the pieces and keep the king safe.`,
-    ).join("\n\n");
     await mockScenario({
         commands: filesWorkspaceCommands([[repertoireFile]], {
             ...pgnFileCommands,
             lex_pgn: {
-                result: [
-                    ...inlineCommentTokens().slice(0, 3),
-                    ...earlierMoves.map((move) => ({ type: "San", value: move })),
-                    ...inlineCommentTokens({
-                        ...mandateComments,
-                        Nf3: `${mandateComments.Nf3}\n\n${longComment}`,
-                        Be3: `${mandateComments.Be3}\n\n${longComment}`,
-                    }).slice(3),
-                ],
+                result: tallCommentTokens(earlierMoves),
             },
         }),
     });

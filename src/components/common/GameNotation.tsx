@@ -79,25 +79,26 @@ export function scrollNotationElement(
   }
 }
 
-export function cancelNotationIndexScroll(
-  virtualizer: Virtualizer<HTMLDivElement, Element>,
-  offset?: number,
-) {
+export function cancelNotationIndexScroll(virtualizer: Virtualizer<HTMLDivElement, Element>) {
   // virtual-core 3.13.18's verify loop checks this private field, which scrollToOffset leaves set.
   const pending = virtualizer as unknown as { currentScrollToIndex: number | null };
   pending.currentScrollToIndex = null;
-  let scroll = notationOffsetScrolls.get(virtualizer);
-  if (!scroll) {
-    scroll = { direct: false };
-    notationOffsetScrolls.set(virtualizer, scroll);
+  if (!notationOffsetScrolls.has(virtualizer)) {
+    notationOffsetScrolls.set(virtualizer, { direct: false });
   }
-  if (offset !== undefined) {
-    scroll.direct = true;
-    try {
-      virtualizer.scrollToOffset(offset);
-    } finally {
-      scroll.direct = false;
-    }
+}
+
+export function scrollNotationToOffset(
+  virtualizer: Virtualizer<HTMLDivElement, Element>,
+  offset: number,
+) {
+  cancelNotationIndexScroll(virtualizer);
+  const scroll = notationOffsetScrolls.get(virtualizer)!;
+  scroll.direct = true;
+  try {
+    virtualizer.scrollToOffset(offset);
+  } finally {
+    scroll.direct = false;
   }
 }
 
@@ -166,7 +167,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
       if (!mountedRow) {
         const offset = rowVirtualizer.getOffsetForIndex(rowIndex, "start");
         if (!offset) return;
-        cancelNotationIndexScroll(rowVirtualizer, offset[0]);
+        scrollNotationToOffset(rowVirtualizer, offset[0]);
       }
 
       let frame: number;
@@ -193,7 +194,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
               ? cellBounds.bottom - viewportBottom
               : 0;
         if (delta) {
-          cancelNotationIndexScroll(rowVirtualizer, scrollViewport.scrollTop + delta);
+          scrollNotationToOffset(rowVirtualizer, scrollViewport.scrollTop + delta);
         }
       };
       // Give the mounted row and ResizeObserver a frame to settle before reading geometry.

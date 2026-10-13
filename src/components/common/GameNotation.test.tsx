@@ -16,7 +16,7 @@ const atoms = vi.hoisted(() => ({
   keyMap: Symbol("key-map"),
 }));
 const virtualizerMock = vi.hoisted(() => ({
-  current: null as null | { count: number },
+  current: null as null | { count: number; scrollToFn?: unknown },
   scrollCalls: [] as { index: number; options: unknown }[],
 }));
 const notationSettings = vi.hoisted(() => ({ showComments: false }));
@@ -107,8 +107,8 @@ vi.mock("@mantine/core", () => {
 });
 vi.mock("@tanstack/react-virtual", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-virtual")>()),
-  useVirtualizer: (options: { count: number }) => {
-    virtualizerMock.current = { count: options.count };
+  useVirtualizer: (options: { count: number; scrollToFn?: unknown }) => {
+    virtualizerMock.current = options;
     return {
       getTotalSize: () => options.count * 30,
       getVirtualItems: () =>
@@ -127,7 +127,11 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => ({
 
 import React from "react";
 import { Virtualizer } from "@tanstack/react-virtual";
-import GameNotation, { cancelNotationIndexScroll, scrollNotationElement } from "./GameNotation";
+import GameNotation, {
+  cancelNotationIndexScroll,
+  scrollNotationElement,
+  scrollNotationToOffset,
+} from "./GameNotation";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -140,6 +144,7 @@ beforeEach(() => {
   document.body.append(host);
   root = createRoot(host);
   store = createTreeStore();
+  virtualizerMock.current = null;
   virtualizerMock.scrollCalls.length = 0;
   notationSettings.showComments = false;
 });
@@ -194,8 +199,13 @@ test.each([false, true])(
         frames.shift()!(0);
       }
       expect(frames).toHaveLength(1);
-      cancelNotationIndexScroll(virtualizer, 2000);
+      const previousOffset = virtualizer.scrollOffset;
+      const previousScrollCount = offsets.length;
+      cancelNotationIndexScroll(virtualizer);
       expect(virtualizer).toHaveProperty("currentScrollToIndex", null);
+      expect(virtualizer.scrollOffset).toBe(previousOffset);
+      expect(offsets).toHaveLength(previousScrollCount);
+      scrollNotationToOffset(virtualizer, 2000);
       expect(virtualizer.scrollOffset).toBe(2000);
       offsets.length = 0;
       while (frames.length) frames.shift()!(0);
@@ -214,6 +224,20 @@ test.each([false, true])(
     }
   },
 );
+
+test("wires the guarded scroll function into the mounted notation virtualizer", async () => {
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <WorkspaceTabScope tabId="notation-test">
+          <GameNotation />
+        </WorkspaceTabScope>
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  expect(virtualizerMock.current?.scrollToFn).toBe(scrollNotationElement);
+});
 
 test("forwards a variation's starting comment prose to its mounted move cell", async () => {
   notationSettings.showComments = true;
