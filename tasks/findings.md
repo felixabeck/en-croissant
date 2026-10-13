@@ -15194,7 +15194,7 @@ Obsolete (setup-findings triage 2026-10-13): whitePawnSquares is shared in fixtu
 
 ### Native game-opening proof times out waiting for the second selected PGN preview
 
-* **ID:** f-20261010-39 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-39 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs GO9, src/components/files/FileCard.tsx and src/components/databases/GamePreview.tsx.
 * **Defect:** On clean source HEAD 6c12ccc4, the actual release build succeeds but the unchanged full native verifier reports FAIL GO9 with timed out waiting for second PGN preview. The selected-row assertion succeeds before the timeout. The later labelled button, double-click and Enter assertions open the second file game successfully. Coordinate stationarity remains unreached. No cause is yet established.
@@ -15205,6 +15205,9 @@ Obsolete (setup-findings triage 2026-10-13): whitePawnSquares is shared in fixtu
 * **Measured GO14 input defect:** WebKit element/value delivered175 characters from an184-character edited PGN by omitting allnineLF characters. Ordinary characters produced trusted native insertText events. The exact-value wait correctly failed before Update or discard. Root retained full diagnostic log and screenshot. The correction will use actual keyboard Enter keys between lines without changing expected data or downstream assertions.
 * **Diagnostic run outcome:** Full native-diagnostics exit1 with the GO14 exact-value failure and an independent1186ms freshness apply-budget miss. GO9 passed. The latter observation is separately spooled for a performance/measurement design run and its existing1000ms limit remains unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"beab3166c60ee975fe7d8b51eb30869f679666e2590a869c306f66fa9151a4a1","input_sha256":"a6b43bc6067eb13c3782b69481c23fe844b32213414151e15feb4f04748202a0","kind":"mutation-receipt","operation":"55a82240489726bc7ad98af7af26c289be82c2f3d50322ec67fd380a186bee9f","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-39"],"target":"f-20261010-39","v":1} -->
+
+Obsolete (setup-findings triage 2026-10-13): GO9 window resize fixed (8a591760).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"4a851d79fffdcfea883e759443012841ea0d1dda3a02eda3a93a6bf228792b3e","header_sha256":"8c0d28ac22f55f71c5465f686a4ed5da1ded65cd48cd09696eb0f441e68087f1","header_status":"handled","input_sha256":"437646c8c853ca56606f4f3e842c34150777ef325329cb7cd66102d7286f1171","kind":"mutation-receipt","operation":"12bfef8803bdc70d8c019dabd3d8ddf293a5af31b97060532eff6bf7d320a8d9","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-39"],"target":"f-20261010-39","v":1} -->
 
 ### Native discard proof cannot enter the intended Event edit through WebKit WebDriver
 
