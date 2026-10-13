@@ -9931,7 +9931,7 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 
 ### Windows path resolution authenticates only the leaf, so a swapped parent directory passes
 
-* **ID:** f-20260916-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260916-06 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `resolve_windows` (`src-tauri/src/infra/path_authority/resolved.rs:779-839`); `StoredEntry` persists no parent identity (`src-tauri/src/infra/path_authority/mod.rs:2963-2969`).
 * **Defect:** resolution authenticates the identity of the final component but not of its parent. An attacker who replaces the parent directory with another real directory containing a hard link to the original file passes resolution, because pathname revalidation merely confirms the replacement directory exists. A descriptor-relative replacement then writes into the attacker-controlled directory.
 * **Why it matters:** this is the containment guarantee `d-20260915-03` exists to provide — canonical binding at acquisition. Leaving the parent unauthenticated keeps that defect reachable. It is latent on Windows today only because the write paths refuse first; the `f-20260914-10` port removes that refusal.
