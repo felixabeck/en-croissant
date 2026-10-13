@@ -9917,6 +9917,8 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 * **Why it matters:** this is the only operator-visible trace that a write may not have reached disk, and it is unattributable, so it cannot be acted on.
 * **Related:** the renderer-side finding filed alongside it in this round, where the same uncertainty is dropped before reaching the user; both concern the reporting half of `d-20260906-03`.
 * **Found by:** `review-error-handling` (confidence 90) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+* **Why rejected:** Log/warning wording. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3dbc5626045929f7f2d4c46f71145ba1086707602ed597fe6fb50c0e1091dc02","input_sha256":"a785d94204b7b693d42813e5094624637f935db9e0472b837579b63e40e506e0","kind":"mutation-receipt","operation":"9b6582dbdeeea85265af6095ed29892513b1bd21cc6feffc6fe422348af4d5de","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-05"],"target":"f-20260916-05","v":1} -->
 
 ---
 
