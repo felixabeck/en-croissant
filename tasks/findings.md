@@ -14488,6 +14488,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Adoption record (2026-10-09, Codex):** This finding owns inherited review issue I1 only. The complete tracked history is [tasks/handoffs/2026-10-09-f-20260929-03-review.md](handoffs/2026-10-09-f-20260929-03-review.md). Load that file before reviewing the workflow correction. This durable path supersedes the historical ignored `tasks/plans/reviews-handoff.md` preservation instruction above. The SQLite parent remains independently governed by O1–O3.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"add120d6dadd3cfc4e8e30994c744df97a26ec2fc13b46d94df5dfe7b2a019bb","input_sha256":"70716177cd7257e585b7b7205547b968244163c834998d99e1207891576cbc2e","kind":"mutation-receipt","operation":"5ff980490ff8b05c22f5e1f6274b184adc4b14fafadf0b6f12ee7822240c8cf1","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-05"],"target":"f-20261009-05","v":1} -->
 
+* **Why rejected:** Contradictory plan-review packet clauses; agent-doc wording. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d3d3b91b6c5ac291b849863b34a8ab605134d1e6b360144d39b8f0515ea228ff","input_sha256":"8c011083d9ccbc73fa3c9dcbd8793f53d670c4233ec935744be0d91a2b9285d2","kind":"mutation-receipt","operation":"2ee888a6b52291e967d3601489230b0f24e47e9ed19c17aacbd7a40e682d4e69","options":{"section":null},"request_id_sha256":null,"results":["f-20261009-05"],"target":"f-20261009-05","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
