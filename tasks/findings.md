@@ -10631,6 +10631,9 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 * **Why rejected:** Identity-only comparison matters only against a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"781a96508ed9303e7b753e4bca371efcb2d005b782bacdc65cd3639a041f6b9e","input_sha256":"44618a7a5786a6ea21d2743643d833dc8d989e46a814925054e3d84d7fe6b547","kind":"mutation-receipt","operation":"a13cda4c376b3739c2e0753160f785976340cafcfb80c47d320c9b71eabcf8a2","options":{"section":null},"request_id_sha256":null,"results":["f-20260918-02"],"target":"f-20260918-02","v":1} -->
 
+* **Reopened (records lens, 2026-10-13):** the 2026-10-13 rule-4d rejection and its correction above are void. This is product security hardening in a shipped desktop app, not agent machinery: the precondition is write access to a containing directory, which a shared-directory writer has, and `validate_target` checks type and identity without ownership. Rule 4d's own-box clause covers agent, hook, gate and drain machinery only. The finding stays open as it was before the triage.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4c2175d5168731852eecb3f9b7ae392674c79c2bc8bdae9035ba41f55e8a9144","input_sha256":"b2709c0e5979b7be13f55b09f5bc22158cf7c455b7ec6d5ae50ec378a8e49dc4","kind":"mutation-receipt","operation":"251e148019129088b7cddf2b91a2b8bf587d7579f9229d50b5d0cb774473fe7e","options":{"section":null},"request_id_sha256":null,"results":["f-20260918-02"],"target":"f-20260918-02","v":1} -->
+
 ---
 
 ## 2026-09-19 — filed through the inbox spool
