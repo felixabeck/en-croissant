@@ -51,7 +51,9 @@ test.each(commentDialectCases)(
   async ({ input, text, formatting, absent }) => {
     await act(async () => root.render(<Comment comment={input} />));
 
-    expect(container.textContent?.replace(/\s/g, "")).toBe((text ?? input).replace(/\s/g, ""));
+    expect(
+      text === undefined ? container.textContent?.replace(/\s/g, "") : container.textContent,
+    ).toBe(text ?? input.replace(/\s/g, ""));
     expect(container.querySelector(forbiddenCommentElements)).toBeNull();
     for (const selector of absent ?? []) {
       expect(container.querySelector(selector)).toBeNull();

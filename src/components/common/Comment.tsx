@@ -56,8 +56,10 @@ function remarkInlineOnly(this: { data: (key: string, value?: unknown) => unknow
 }
 
 function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
-  // Keep formatted siblings intact while locating delimiter pairs in their surrounding text.
-  const value = children
+  // Synthetic coordinates: text keeps its length, formatted siblings occupy one \0,
+  // and paragraphs/breaks one \n. take() consumes those lengths with shared cursors,
+  // preserving formatted nodes while splitting only text around delimiter pairs.
+  const syntheticText = children
     .map((child) =>
       child.type === "text"
         ? (child.value ?? "")
@@ -66,7 +68,7 @@ function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
           : "\0",
     )
     .join("");
-  const matches = [...value.matchAll(/\+\+([^+\n](?:[^+\n]|\+(?!\+))*?)\+\+/g)];
+  const matches = [...syntheticText.matchAll(/\+\+((?!\s)(?:(?!\+\+)[^\n])*?[^\s\n])\+\+/g)];
   if (matches.length === 0) return children;
 
   let childIndex = 0;
@@ -110,7 +112,7 @@ function underlineChildren(children: MarkdownNode[]): MarkdownNode[] {
     });
     offset = index + match[0].length;
   }
-  nodes.push(...take(value.length - offset));
+  nodes.push(...take(syntheticText.length - offset));
   return nodes;
 }
 

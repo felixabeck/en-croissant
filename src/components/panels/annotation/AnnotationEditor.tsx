@@ -1,5 +1,6 @@
 import { RichTextEditor } from "@mantine/tiptap";
 import Placeholder from "@tiptap/extension-placeholder";
+import Underline from "@tiptap/extension-underline";
 import { Markdown } from "@tiptap/markdown";
 import { useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -38,9 +39,27 @@ function AnnotationEditor() {
           listKeymap: false,
           codeBlock: false,
           code: false,
+          underline: false,
           link: {
             autolink: true,
             openOnClick: false,
+          },
+        }),
+        Underline.extend({
+          markdownTokenizer: {
+            name: "underline",
+            level: "inline",
+            start: (source) => source.indexOf("++"),
+            tokenize: (source, _tokens, lexer) => {
+              const match = /^\+\+((?!\s)(?:(?!\+\+)[^\n])*?[^\s\n])\+\+/.exec(source);
+              if (!match) return undefined;
+              return {
+                type: "underline",
+                raw: match[0],
+                text: match[1],
+                tokens: lexer.inlineTokens(match[1]),
+              };
+            },
           },
         }),
         Markdown.configure({
