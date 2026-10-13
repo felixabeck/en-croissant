@@ -7442,3 +7442,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"73ac110e3aea777d1c49d9aa3173e582ad0b1cd290ed1f4de572dd0e55a653b8","input_sha256":"1e03272acd7897b3e29e093985a1c60c9691c19cf24d11594bc0efca65252313","kind":"mutation-receipt","operation":"57da87eae0469fd672bce9cd23a314a9397275b0032b4aef5b1a4e555c4f1c25","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-12 — Does the table notation view change with the inline comment flow?
+
+* **Question:** When move comments stop ending rows, does the two-column table notation view change too?
+* **Governs:** f-20261001-10
+* **Chosen:** its two-column mainline keeps its comment rows and starting-comment rows exactly as before; its variation runs, which are built by the same inline run builder, follow the inline flow. A black move's variations are read from the white move's other children, so they reach the builder whether or not the next white move has alternatives (fixes a `88ad35ef` defect where `1. e4 e5 (1... c5) 2. Nf3` never showed `c5`).
+* **Rejected:** comments inside table cells (a two-column move table has no move flow; comment rows in the table predate `88ad35ef`); a table-view flag keeping the old breaks in variation runs (two behaviours for one kind of run).
+* **Reason:** the finding's flow is the move flow wherever moves flow as text. Full-auto recommendation from the reviewed plan. Reversal path: route the table view's variation runs through a separate builder.
+* **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"497bbc0f54ec0254a106c0058b104f90196a0d08defdc5210ca92e4c30fc00a3","input_sha256":"6a08b8cdeff9f905e5bf3777361748d77f41740ab3aadfc8c2c2861e08f8df33","kind":"mutation-receipt","operation":"46331a0c84b4b3637cc89195a2a42493177a9c740b5c76ed6a7fae8616286c05","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-12"],"target":"decisions-ledger","v":1} -->
