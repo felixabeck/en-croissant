@@ -10068,7 +10068,7 @@ f-20260914-10 handoff).
 
 ### `ctime_nanos` names a unit and a timestamp that two of its three producers do not use
 
-* **ID:** f-20260916-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260916-10 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 
 `review-code-quality` raised this during the `$push` review of the f-20260914-10 Windows
 atomic-replacement port (confidence 98). The field `ctime_nanos: i128` is filled by three
