@@ -23,7 +23,7 @@ import {
   IconMinus,
   IconPlus,
 } from "@tabler/icons-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { elementScroll, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -52,6 +52,54 @@ import {
 } from "./notationRows";
 import styles from "./GameNotation.module.css";
 import OpeningName from "./OpeningName";
+
+// Bound the frames spent waiting for React to mount a row after its offset scroll.
+const NOTATION_REVEAL_MAX_ATTEMPTS = 10;
+const notationOffsetScrolls = new WeakMap<
+  Virtualizer<HTMLDivElement, Element>,
+  { direct: boolean }
+>();
+
+export function scrollNotationElement(
+  offset: number,
+  options: Parameters<typeof elementScroll>[1],
+  virtualizer: Virtualizer<HTMLDivElement, Element>,
+) {
+  const scroll = notationOffsetScrolls.get(virtualizer);
+  const pending = virtualizer as unknown as { currentScrollToIndex: number | null };
+  // A retry already queued by scheduleRetry calls tryScroll without checking the field first.
+  // Guard index writes at the scroll boundary, keeping direct reveals and size adjustments.
+  if (
+    !scroll ||
+    pending.currentScrollToIndex !== null ||
+    scroll.direct ||
+    options.adjustments !== undefined
+  ) {
+    elementScroll(offset, options, virtualizer);
+  }
+}
+
+export function cancelNotationIndexScroll(
+  virtualizer: Virtualizer<HTMLDivElement, Element>,
+  offset?: number,
+) {
+  // virtual-core 3.13.18's verify loop checks this private field, which scrollToOffset leaves set.
+  const pending = virtualizer as unknown as { currentScrollToIndex: number | null };
+  pending.currentScrollToIndex = null;
+  let scroll = notationOffsetScrolls.get(virtualizer);
+  if (!scroll) {
+    scroll = { direct: false };
+    notationOffsetScrolls.set(virtualizer, scroll);
+  }
+  if (offset !== undefined) {
+    scroll.direct = true;
+    try {
+      virtualizer.scrollToOffset(offset);
+    } finally {
+      scroll.direct = false;
+    }
+  }
+}
 
 function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React.ReactNode }) {
   const { t } = useTranslation();
@@ -86,6 +134,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
     estimateSize: () => 32,
     overscan: 8,
     getScrollElement: () => viewport.current,
+    scrollToFn: scrollNotationElement,
   });
 
   useEffect(() => {
@@ -111,11 +160,13 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
         return;
       }
 
+      // Cancel an earlier selection's verification even when this cell already needs no scroll.
+      cancelNotationIndexScroll(rowVirtualizer);
       // Mount the row without an index-scroll retry that could later recenter a tall row.
       if (!mountedRow) {
         const offset = rowVirtualizer.getOffsetForIndex(rowIndex, "start");
         if (!offset) return;
-        rowVirtualizer.scrollToOffset(offset[0]);
+        cancelNotationIndexScroll(rowVirtualizer, offset[0]);
       }
 
       let frame: number;
@@ -123,7 +174,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
       const revealMove = () => {
         const row = scrollViewport.querySelector<HTMLElement>(rowSelector);
         if (!row) {
-          if (++attempts < 10) frame = requestAnimationFrame(revealMove);
+          if (++attempts < NOTATION_REVEAL_MAX_ATTEMPTS) frame = requestAnimationFrame(revealMove);
           return;
         }
         if (row.getBoundingClientRect().height <= scrollViewport.clientHeight) {
@@ -141,7 +192,9 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
             : cellBounds.bottom > viewportBottom
               ? cellBounds.bottom - viewportBottom
               : 0;
-        if (delta) rowVirtualizer.scrollToOffset(scrollViewport.scrollTop + delta);
+        if (delta) {
+          cancelNotationIndexScroll(rowVirtualizer, scrollViewport.scrollTop + delta);
+        }
       };
       // Give the mounted row and ResizeObserver a frame to settle before reading geometry.
       frame = requestAnimationFrame(() => {

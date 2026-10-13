@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import type { Locator } from "@playwright/test";
 import {
     assertChooserInsideBoard,
     expect,
@@ -39,6 +40,21 @@ function inlineCommentTokens(comments = mandateComments) {
                     : []),
             ]),
     ];
+}
+
+async function expectCurrentNotationCellVisible(notation: Locator, move: string) {
+    const currentCell = notation.locator('[data-notation-current="true"]');
+    await expect(currentCell.getByRole("button", { name: move, exact: true })).toHaveCount(1);
+    await expect
+        .poll(() =>
+            currentCell.evaluate((cell) => {
+                const viewport = cell.closest(".mantine-ScrollArea-viewport")!;
+                const bounds = cell.getBoundingClientRect();
+                const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+                return bounds.top >= top && bounds.bottom <= top + viewport.clientHeight;
+            }),
+        )
+        .toBe(true);
 }
 
 for (const gesture of ["button", "double-click", "Enter"] as const) {
@@ -265,17 +281,70 @@ test("files-preview: navigation reveals both ends of a notation row taller than 
         } else {
             await page.getByRole("button", { name: "Go to end", exact: true }).click();
         }
-        const currentCell = notation.locator('[data-notation-current="true"]');
-        await expect(currentCell.getByRole("button", { name: move, exact: true })).toHaveCount(1);
-        await expect
-            .poll(() =>
-                currentCell.evaluate((cell) => {
-                    const viewport = cell.closest(".mantine-ScrollArea-viewport")!;
-                    const bounds = cell.getBoundingClientRect();
-                    const top = viewport.getBoundingClientRect().top + viewport.clientTop;
-                    return bounds.top >= top && bounds.bottom <= top + viewport.clientHeight;
-                }),
-            )
-            .toBe(true);
+        await expectCurrentNotationCellVisible(notation, move);
     }
+});
+
+test("files-preview: navigation mounts a distant tall row and reveals its selected cell", async ({
+    page,
+    mockScenario,
+}) => {
+    // Forty full rows leave the final commented row outside the viewport and its overscan.
+    const earlierMoves = Array.from({ length: 320 }, () => ["Nf3", "Nf6", "Ng1", "Ng8"]).flat();
+    const longComment = Array.from(
+        { length: 24 },
+        (_, index) => `Preparation note ${index + 1}: develop the pieces and keep the king safe.`,
+    ).join("\n\n");
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: {
+                result: [
+                    ...inlineCommentTokens().slice(0, 3),
+                    ...earlierMoves.map((move) => ({ type: "San", value: move })),
+                    ...inlineCommentTokens({
+                        ...mandateComments,
+                        Nf3: `${mandateComments.Nf3}\n\n${longComment}`,
+                        Be3: `${mandateComments.Be3}\n\n${longComment}`,
+                    }).slice(3),
+                ],
+            },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+
+    // Keep the viewport locator stable while virtual rows mount and unmount.
+    const notation = page.locator(".mantine-ScrollArea-viewport").filter({
+        has: page.locator("[data-index]"),
+    });
+    const tallRow = notation.locator('[data-index="40"]');
+    await expect(tallRow).toHaveCount(0);
+    await page.getByRole("button", { name: "Go to end", exact: true }).click();
+    await expectCurrentNotationCellVisible(notation, "♗e2");
+    expect((await tallRow.boundingBox())!.height).toBeGreaterThan(
+        await notation.evaluate((element) => element.clientHeight),
+    );
+
+    // Returning to the first short row makes the tall row unmounted again.
+    await page.getByRole("button", { name: "Go to start", exact: true }).click();
+    await expect(tallRow).toHaveCount(0);
+    // Separate events let the short selection commit, without actionability or visibility waits.
+    await page
+        .getByRole("button", { name: "Next move", exact: true })
+        .evaluate((button: HTMLButtonElement) => button.click());
+    await page
+        .getByRole("button", { name: "Go to end", exact: true })
+        .evaluate((button: HTMLButtonElement) => button.click());
+    await expectCurrentNotationCellVisible(notation, "♗e2");
+
+    // The fifteen-move final row starts at d4, fourteen plies before its end.
+    await page.evaluate(() => {
+        const previous = document.querySelector<HTMLButtonElement>(
+            'button[aria-label="Previous move"]',
+        )!;
+        for (let index = 0; index < 14; index += 1) previous.click();
+    });
+    await expectCurrentNotationCellVisible(notation, "d4");
 });
