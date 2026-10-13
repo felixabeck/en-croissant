@@ -14578,6 +14578,8 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261009-06 records a different stale instruction in the IPC lens. No shared causal root is established.
 * **Proof required:** Every named local source file exists, each cited definition supports its statement, and the project instruction/contract checks pass. This proves instruction accuracy, not model obedience.
 * **Found by:** Codex orchestrator while loading the mandatory security lens for the snapshot-locator repair in f-20260914-04, 2026-10-10. Deferred to the separate reviewer-instruction area. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Why rejected:** Stale file path in a review lens; the module is trivially found. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"92011440ba5c8fc7d777ee003ca828f330b411bf5f63d2491711ad56e77740b0","input_sha256":"b480c5d377dd681afc6c4ebaf7d4e50e114751d787b70791a34ab3c81372582b","kind":"mutation-receipt","operation":"e0ce6809a4f6dafffac33df93059389a635632536ff79f561d6ccf2cd69b49ca","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-05"],"target":"f-20261010-05","v":1} -->
 
 ---
 
