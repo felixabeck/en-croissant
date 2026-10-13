@@ -14932,6 +14932,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Why rejected:** Unnamed repeated bound; naming hygiene with no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"db18717f4a53f4a6efcf54aa27e051e460dae759566ac3c0f26cfec8cd668a0b","input_sha256":"015f209d2534bfbe7a2dfdc530c1b296bd1c29643d88105eb3b7c7f90802996e","kind":"mutation-receipt","operation":"a7c1ccd3ca210f893c322f59edc29323c191959c24c643447eac3239de04f313","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-21"],"target":"f-20261010-21","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the bound is named `MAX_START_PATH_LENGTH` (`src/utils/chess.ts:23`) and used at both acceptance sites. Status set to handled; the older open-status checkpoint is superseded.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c90a726bb6113a00a16ba9ca52226d7c4c9abb5176ee559369fe51c37883a2b7","input_sha256":"c5c1a5b0c5c7a38e657b243a29c18ee08a9de70a3b07f9ba653089677317ee6e","kind":"mutation-receipt","operation":"1c3b131e3ee7de3a3f309219618044abddfbc0a8ccc65978218bea6cc56e880c","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-21"],"target":"f-20261010-21","v":1} -->
+
 ### Autosave silently discards typed write failures
 
 * **ID:** f-20261010-22 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
