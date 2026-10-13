@@ -9911,7 +9911,7 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 
 ### The download durability warning names neither the job nor the destination
 
-* **ID:** f-20260916-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260916-05 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:58`.
 * **Defect:** the warning emitted when a download's durability cannot be proven carries no job id and no destination identifier. Because reserved downloads otherwise report success, two concurrent downloads produce warning records that cannot be told apart or attributed.
 * **Why it matters:** this is the only operator-visible trace that a write may not have reached disk, and it is unattributable, so it cannot be acted on.
