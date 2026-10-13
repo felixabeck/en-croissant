@@ -9938,6 +9938,8 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 * **Related:** `f-20260914-10` (the port that makes it reachable; cut from that slice under its A6 mandate boundary), `d-20260915-03` (the binding contract this weakens).
 * **Open question:** where does parent identity get captured and enforced - does `StoredEntry` gain a persisted parent `(volume, file-id)` captured at acquisition and re-checked on every use, or does resolution re-walk and authenticate each ancestor no-follow at use time? The first costs a schema change and a migration for existing entries but makes the check O(1); the second needs no persisted state but repeats a full walk per operation and must define what happens when an ancestor legitimately moves. Both must hold on Unix and Windows without weakening `d-20260915-03`'s no-follow discipline.
 * **Found by:** `review-tauri-security` (confidence 98) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+* **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd980111656bed1498a9f475f6af7971c0370189d0efeb05a1e7a5f5e2a26c6a","input_sha256":"5fc440d0c88ea266521f95299d503f12e07c4f1cebc3edeed3021872b9ee573c","kind":"mutation-receipt","operation":"9c9f55b9f4f0af80a7d6842cf810fdfa76eb8d5b6e4a02f28b48854c074064c0","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-06"],"target":"f-20260916-06","v":1} -->
 
 ---
 
