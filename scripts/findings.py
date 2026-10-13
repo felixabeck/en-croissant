@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 8e695d0b8fac0a51eca1a718d739a3f5b81b02ed0a042b409a95ae8f26f5fdea
+# agent-kit-sha256: 22b243fc69379636237a8b4e872394a1c2dbc813333310eeb88f5f19e84f613d
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -899,7 +899,7 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
             "input_sha256", "options", "results", "effect_lines",
             "effect_sha256",
         }
-        if command == "close":
+        if command in ("close", "set-header"):
             expected |= {"header_sha256", "header_status"}
         issues: list[str] = []
         if set(data) != expected:
@@ -908,7 +908,7 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
                 f"{sorted(set(data) ^ expected)}"
             )
         if not isinstance(command, str) or command not in (
-            "annotate", "record-decision", "close"
+            "annotate", "record-decision", "close", "set-header"
         ):
             issues.append(f"{where}: invalid field 'command'")
         for field_name in ("operation", "input_sha256", "effect_sha256"):
@@ -923,7 +923,7 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
             issues.append(f"{where}: invalid field 'request_id_sha256'")
         if not isinstance(data.get("target"), str):
             issues.append(f"{where}: invalid field 'target'")
-        if command == "close":
+        if command in ("close", "set-header"):
             header_hash = data.get("header_sha256")
             if not isinstance(header_hash, str) or SHA256_RE.fullmatch(header_hash) is None:
                 issues.append(f"{where}: invalid field 'header_sha256'")
@@ -931,10 +931,28 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
             if not isinstance(header_status, str) or header_status not in STATUSES:
                 issues.append(f"{where}: invalid field 'header_status'")
         options = data.get("options")
-        if not isinstance(options, dict) or set(options) != {"section"}:
+        option_fields = {"section", "headers"} if command == "set-header" else {"section"}
+        if not isinstance(options, dict) or set(options) != option_fields:
             issues.append(f"{where}: invalid field 'options'")
         elif options["section"] is not None and not isinstance(options["section"], str):
             issues.append(f"{where}: invalid field 'options.section'")
+        if command == "set-header" and isinstance(options, dict):
+            headers = options.get("headers")
+            if (
+                options.get("section") is not None
+                or not isinstance(headers, dict)
+                or not headers
+                or not set(headers) <= {"Status", "Blocked", "Root", "Entry"}
+            ):
+                issues.append(f"{where}: invalid field 'options.headers'")
+            else:
+                for field, value in headers.items():
+                    try:
+                        if not isinstance(value, str):
+                            raise LedgerError("invalid header value")
+                        _checked_header_value(field, value)
+                    except LedgerError:
+                        issues.append(f"{where}: invalid field 'options.headers.{field}'")
         results = data.get("results")
         results_invalid = (
             not isinstance(results, list)
@@ -963,7 +981,7 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
         ):
             issues.append(f"{where}: invalid field 'effect_lines'")
         if not issues:
-            options = cast(dict[str, str | None], data["options"])
+            options = cast(dict[str, object], data["options"])
             operation_source = (
                 {
                     "command": data["command"],
@@ -977,6 +995,8 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
                     "section": options["section"],
                 }
             )
+            if command == "set-header" and data["request_id_sha256"] is None:
+                operation_source["headers"] = options["headers"]
             expected_operation = _sha256_text(
                 json.dumps(operation_source, sort_keys=True, separators=(",", ":"))
             )
@@ -1132,7 +1152,7 @@ def _receipt_effect_issues(
             continue
         results = cast(list[str], data["results"])
         target = str(data["target"])
-        if command in {"annotate", "close"}:
+        if command in {"annotate", "close", "set-header"}:
             if results != [target] or ID_RE.fullmatch(target) is None:
                 issues.append(
                     f"{path}:{meta.line}: {command} receipt has inconsistent "
@@ -1144,7 +1164,7 @@ def _receipt_effect_issues(
                     f"{path}:{meta.line}: {command} receipt/effect is outside "
                     f"target finding {target}"
                 )
-            if command == "close":
+            if command in {"close", "set-header"}:
                 target_headers = [
                     (index, match)
                     for _heading, index, match in _unfenced_header_matches(
@@ -1154,7 +1174,7 @@ def _receipt_effect_issues(
                 ]
                 if len(target_headers) != 1:
                     issues.append(
-                        f"{path}:{meta.line}: close receipt target {target} has "
+                        f"{path}:{meta.line}: {command} receipt target {target} has "
                         "no unique finding header"
                     )
                 else:
@@ -1164,7 +1184,7 @@ def _receipt_effect_issues(
                         or header_match.group("status") != data.get("header_status")
                     ):
                         issues.append(
-                            f"{path}:{meta.line}: close receipt header effect does "
+                            f"{path}:{meta.line}: {command} receipt header effect does "
                             f"not match finding {target}"
                         )
         else:
@@ -1431,6 +1451,7 @@ class SummaryBuckets:
     product: tuple[Finding, ...]
     preconditions: tuple[Finding, ...]
     external: tuple[Finding, ...]
+    skipped_tooling: tuple[Finding, ...] = ()
 
     @property
     def answerable(self) -> tuple[Finding, ...]:
@@ -1446,7 +1467,10 @@ class SummaryBuckets:
         )
 
 
-def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
+def summary_buckets(
+    findings: list[Finding], *, exclude_tooling: bool = False,
+    tooling_areas: Collection[str] = (),
+) -> SummaryBuckets:
     """Classify parsed findings into the four blocker classes exactly once."""
     handled = 0
     rejected = 0
@@ -1473,15 +1497,29 @@ def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
         for finding in open_findings
         if classify_blocker(finding.blocked) == BLOCKER_EXTERNAL
     )
+    keys = _effective_queue_cluster_keys(
+        findings, exclude_tooling=exclude_tooling, tooling_areas=tooling_areas
+    )
+    eligible = {
+        finding.id for finding, key in zip(findings, keys, strict=True)
+        if key is not None
+    }
     return SummaryBuckets(
         total=len(findings),
         handled=handled,
         rejected=rejected,
         open_=len(open_findings),
-        pickable=tuple(finding for finding in open_findings if finding.pickable),
+        pickable=tuple(
+            finding for finding in open_findings
+            if finding.pickable and finding.id in eligible
+        ),
         product=product,
         preconditions=preconditions,
         external=external,
+        skipped_tooling=tuple(
+            finding for finding in open_findings
+            if finding.pickable and finding.id not in eligible
+        ),
     )
 
 
@@ -3387,14 +3425,16 @@ def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
 
 def _effective_queue_cluster_keys(
     findings: list[Finding],
-) -> list[tuple[str, str]]:
+    *, exclude_tooling: bool = False, tooling_areas: Collection[str] = (),
+    tooling_pin: str | None = None,
+) -> list[tuple[str, str] | None]:
     """Apply the two-carrier Root rule once to every finding for queue grouping."""
     root_counts: dict[str, int] = {}
     for finding in findings:
         if finding.root != "-":
             root_counts[finding.root] = root_counts.get(finding.root, 0) + 1
 
-    return [
+    keys = [
         (
             ("root", finding.root)
             if finding.root != "-"
@@ -3403,6 +3443,36 @@ def _effective_queue_cluster_keys(
         )
         for finding in findings
     ]
+    if exclude_tooling:
+        tooling_keys = {
+            key for finding, key in zip(findings, keys, strict=True)
+            if finding.status == "open"
+            and finding.impact_class(tooling_areas)[0] == "tooling"
+        }
+        tooling_keys.difference_update(
+            key for finding, key in zip(findings, keys, strict=True)
+            if finding.status == "open"
+            and finding.impact_class(tooling_areas)[0] != "tooling"
+        )
+        pinned_key = next(
+            (key for finding, key in zip(findings, keys, strict=True)
+             if finding.id == tooling_pin), None
+        )
+        if pinned_key is not None:
+            tooling_keys.discard(pinned_key)
+        for key in sorted(tooling_keys):
+            skipped = [
+                finding for finding, member_key in zip(findings, keys, strict=True)
+                if member_key == key and finding.pickable
+            ]
+            if skipped:
+                print(
+                    f"skipped tooling {key[0]}:{key[1]} "
+                    f"({len(skipped)} pickable finding(s))",
+                    file=sys.stderr,
+                )
+        return [None if key in tooling_keys else key for key in keys]
+    return keys
 
 
 def cluster_members(findings: list[Finding], key: tuple[str, str]) -> list[Finding]:
@@ -3414,6 +3484,8 @@ def _ranked_clusters(
     *,
     excluded_ids: Collection[str] = (),
     tooling_areas: Collection[str] = (),
+    exclude_tooling: bool = False,
+    tooling_pin: str | None = None,
 ) -> tuple[
     list[tuple[tuple[str, str], list[Finding]]],
     list[Finding],
@@ -3423,10 +3495,14 @@ def _ranked_clusters(
     """Evaluate pickability once and group evidenced roots in one queue pass."""
     if _impact_queue_enabled():
         cells = _impact_cells(
-            findings, excluded_ids=excluded_ids, tooling_areas=tooling_areas
+            findings, excluded_ids=excluded_ids, tooling_areas=tooling_areas,
+            exclude_tooling=exclude_tooling, tooling_pin=tooling_pin,
         )
         return cells.clusters, cells.pickable, cells.grouped, cells.key_by_id
-    queue_keys = _effective_queue_cluster_keys(findings)
+    queue_keys = _effective_queue_cluster_keys(
+        findings, exclude_tooling=exclude_tooling, tooling_areas=tooling_areas,
+        tooling_pin=tooling_pin,
+    )
 
     grouped: dict[tuple[str, str], list[Finding]] = {}
     pickable: list[Finding] = []
@@ -3434,7 +3510,7 @@ def _ranked_clusters(
     excluded = set(excluded_ids)
     for finding, key in zip(findings, queue_keys, strict=True):
         is_pickable = finding.pickable
-        if not is_pickable or finding.id in excluded:
+        if key is None or not is_pickable or finding.id in excluded:
             continue
         pickable.append(finding)
         key_by_id[finding.id] = key
@@ -3515,6 +3591,8 @@ def _impact_cells(
     *,
     excluded_ids: Collection[str] = (),
     tooling_areas: Collection[str] = (),
+    exclude_tooling: bool = False,
+    tooling_pin: str | None = None,
 ) -> ImpactCells:
     """Keep one cell per evidenced Root, holding at most one effective build carrier."""
     escalations = _follow_up_escalations(findings)
@@ -3524,8 +3602,12 @@ def _impact_cells(
     }
     excluded = set(excluded_ids)
     grouped: dict[tuple[str, str], list[Finding]] = {}
-    for finding, key in zip(findings, _effective_queue_cluster_keys(findings), strict=True):
-        if finding.pickable and finding.id not in excluded:
+    keys = _effective_queue_cluster_keys(
+        findings, exclude_tooling=exclude_tooling, tooling_areas=tooling_areas,
+        tooling_pin=tooling_pin,
+    )
+    for finding, key in zip(findings, keys, strict=True):
+        if key is not None and finding.pickable and finding.id not in excluded:
             grouped.setdefault(key, []).append(finding)
 
     def member_order(finding: Finding) -> tuple[int, str]:
@@ -4235,6 +4317,7 @@ def _summary_json_payload(
             "external": len(buckets.external),
             "blocked": buckets.blocked,
             "pending_inbox": pending,
+            "skipped_tooling": len(buckets.skipped_tooling),
         },
         "summary_line": counts_line,
         "waiting": (
@@ -4266,12 +4349,18 @@ def cmd_summary(args: argparse.Namespace) -> int:
     still answers with counts and warns on stderr, so one damaged entry does not
     hide the rest of the queue; only an unparseable ledger fails.
     """
-    findings, problems, vocabulary = parse(args.ledger)
+    text = _read_ledger_text(args.ledger)
+    findings, problems, vocabulary = parse(args.ledger, text=text)
     issues = validate(findings, problems, vocabulary)
     _warn_problems(issues, "summary")
-    buckets = summary_buckets(findings)
+    buckets = summary_buckets(
+        findings, exclude_tooling=getattr(args, "exclude_tooling", False),
+        tooling_areas=load_tooling_areas_from_text(text),
+    )
     pending, inbox_complete, _sources = _count_pending_inbox(args.inbox)
     counts_line = _summary_counts_line(buckets)
+    if getattr(args, "exclude_tooling", False):
+        counts_line += f" · skipped tooling: {len(buckets.skipped_tooling)}"
     if _json_requested(args):
         return _print_json(
             _summary_json_payload(
@@ -4279,6 +4368,8 @@ def cmd_summary(args: argparse.Namespace) -> int:
             )
         )
     _render_summary_text(buckets, counts_line, pending, inbox_complete)
+    if getattr(args, "exclude_tooling", False):
+        print(f"skipped tooling: {len(buckets.skipped_tooling)} pickable finding(s)")
     return 0
 
 
@@ -5059,21 +5150,25 @@ def _cmd_next_selection(
         return NextSelection(1, [])
     waiting_rows = _waiting_rows(findings)
     cells = None
-    tooling_areas: Collection[str] = ()
+    tooling_areas = load_tooling_areas_from_text(text)
+    exclude_tooling = getattr(args, "exclude_tooling", False)
+    tooling_pin = args.pin if not getattr(args, "automatic_pin", False) else None
     excluded: set[tuple[str, str]] = set()
     if _impact_queue_enabled():
-        tooling_areas = load_tooling_areas_from_text(text)
         cells = _impact_cells(
             findings,
             excluded_ids=set(answers_claim_ids) | set(pick_claims),
             tooling_areas=tooling_areas,
+            exclude_tooling=exclude_tooling, tooling_pin=tooling_pin,
         )
         clusters, pickable, grouped, key_by_id = (
             cells.clusters, cells.pickable, cells.grouped, cells.key_by_id
         )
     else:
         clusters, pickable, grouped, key_by_id = _ranked_clusters(
-            findings, excluded_ids=set(answers_claim_ids) | set(pick_claims)
+            findings, excluded_ids=set(answers_claim_ids) | set(pick_claims),
+            tooling_areas=tooling_areas, exclude_tooling=exclude_tooling,
+            tooling_pin=tooling_pin,
         )
 
     if cells is not None or not args.pin:
@@ -5112,6 +5207,9 @@ def _cmd_next_selection(
             return NextSelection(1, [])
         key = key_by_id.get(args.pin)
         if key is None:
+            if exclude_tooling and getattr(args, "automatic_pin", False) and chosen.pickable:
+                print(f"{args.pin} is not pickable (excluded tooling)", file=sys.stderr)
+                return NextSelection(1, [])
             print(
                 f"{args.pin} is not pickable (status={chosen.status}, "
                 f"blocked={chosen.blocked})",
@@ -6857,7 +6955,7 @@ class MutationRequest:
     command: str
     target: str
     input_sha256: str
-    section: str | None
+    options: dict[str, object]
     request_id_sha256: str | None
     operation: str
 
@@ -6868,6 +6966,8 @@ def _mutation_request(
     raw_input: bytes,
     section: str | None,
     request_id: str | None,
+    *,
+    header_changes: dict[str, str] | None = None,
 ) -> MutationRequest:
     if request_id is not None and REQUEST_ID_RE.fullmatch(request_id) is None:
         raise LedgerError(
@@ -6882,6 +6982,10 @@ def _mutation_request(
         "input_sha256": input_sha256,
         "section": section,
     }
+    options: dict[str, object] = {"section": section}
+    if header_changes is not None:
+        options["headers"] = header_changes
+        identity["headers"] = header_changes
     operation_source = (
         {"command": command, "request_id_sha256": request_hash}
         if request_hash is not None
@@ -6894,7 +6998,7 @@ def _mutation_request(
         command,
         target,
         input_sha256,
-        section,
+        options,
         request_hash,
         operation,
     )
@@ -6911,7 +7015,7 @@ def _receipt_for(
         "request_id_sha256": request.request_id_sha256,
         "target": request.target,
         "input_sha256": request.input_sha256,
-        "options": {"section": request.section},
+        "options": request.options,
         "results": results,
         "effect_lines": len(effect),
         "effect_sha256": _sha256_text("\n".join(effect)),
@@ -6923,7 +7027,7 @@ def _receipt_matches_request(data: dict[str, object], request: MutationRequest) 
         data.get("command") == request.command
         and data.get("target") == request.target
         and data.get("input_sha256") == request.input_sha256
-        and data.get("options") == {"section": request.section}
+        and data.get("options") == request.options
         and data.get("request_id_sha256") == request.request_id_sha256
     )
 
@@ -6936,7 +7040,7 @@ def _close_receipt_updates(
     *,
     close_receipts: Collection[LedgerMeta] | None = None,
 ) -> dict[int, str]:
-    """Keep close receipts coupled when a later locked write changes a header."""
+    """Keep note/header receipts coupled when a later locked write changes a header."""
     match = HEADER_RE.match(header_line)
     if match is None or match.group("id") != finding_id:
         raise LedgerError(f"could not refresh close receipts for {finding_id}")
@@ -6949,7 +7053,7 @@ def _close_receipt_updates(
     for meta in metadata:
         if (
             meta.data.get("kind") != MUTATION_RECEIPT_KIND
-            or meta.data.get("command") != "close"
+            or meta.data.get("command") not in {"close", "set-header"}
             or meta.data.get("target") != finding_id
         ):
             continue
@@ -11747,10 +11851,9 @@ def _raise_to_build_refusal(
 ) -> str | None:
     """Refuse a pickup raise to `build` on an entry that names no open question.
 
-    The same gate as filing, at the other door. `set_header` rewrites header
-    fields and cannot write a body bullet, so the working order at pickup is
-    `annotate` with a note carrying the `**Open question:**` bullet, then
-    `set-header --entry build`. Lowering a tier is never gated by this.
+    The same gate as filing, at the other door. Use `set-header --entry build
+    --note-file FILE` to supply the `**Open question:**` bullet with the raise.
+    Lowering a tier is never gated by this.
     """
     if entry != "build":
         return None
@@ -11763,7 +11866,7 @@ def _raise_to_build_refusal(
             return None
         return (
             OPEN_QUESTION_REFUSAL.format(where=finding_id)
-            + " Annotate the entry with that bullet first, then set the header."
+            + " Supply that bullet with --note-file when setting the header."
         )
     return None
 
@@ -11781,7 +11884,11 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         print(refusal, file=sys.stderr)
         return 1
 
-    raise_refusal = _raise_to_build_refusal(findings, args.id, entry=args.entry)
+    note_path = getattr(args, "note_file", None)
+    raise_refusal = (
+        _raise_to_build_refusal(findings, args.id, entry=args.entry)
+        if note_path is None else None
+    )
     if raise_refusal is not None:
         print(raise_refusal, file=sys.stderr)
         return 1
@@ -11840,6 +11947,14 @@ def cmd_set_header(args: argparse.Namespace) -> int:
             lines[receipt_line] = refreshed
         return _with_final_newline(text, lines)
 
+    if note_path is not None:
+        return _mutate_finding_note(
+            args, command="set-header", note_path=note_path,
+            header_mutation=build,
+            header_changes={
+                field: value for field, value in changes.items() if value is not None
+            },
+        )
     _locked_ledger_mutation(args.ledger, build)
     if args.status in {"handled", "rejected"}:
         append_drain_breadcrumb(f"step 10 finding closed {args.id}", args.status)
@@ -11927,11 +12042,13 @@ def _written_ledger_suffix(path: Path) -> str:
 def _mutate_finding_note(
     args: argparse.Namespace,
     *,
-    command: Literal["annotate", "close"],
+    command: Literal["annotate", "close", "set-header"],
     note_path: Path,
     status: str | None = None,
+    header_mutation: Callable[[str], str] | None = None,
+    header_changes: dict[str, str] | None = None,
 ) -> int:
-    """Append a validated note, optionally transitioning the same entry's status."""
+    """Append a validated note, optionally changing the same entry's header."""
     if status is not None:
         findings, _problems, _vocabulary = parse(args.ledger)
         refusal = _answerable_header_change_refusal(
@@ -11945,7 +12062,8 @@ def _mutate_finding_note(
     if not any(line.strip() for line in note.splitlines()):
         raise LedgerError(f"{note_path} contains no content to annotate")
     request = _mutation_request(
-        command, args.id, raw_note, None, getattr(args, "request_id", None)
+        command, args.id, raw_note, None, getattr(args, "request_id", None),
+        header_changes=header_changes,
     )
 
     def build(
@@ -11983,15 +12101,27 @@ def _mutate_finding_note(
                 + header_line[status_match.end() :]
             )
             lines[index] = header_line
+            for receipt_line, refreshed in _close_receipt_updates(
+                text, args.id, header_line, args.ledger
+            ).items():
+                lines[receipt_line] = refreshed
 
         effect = note.splitlines()
         end = _find_entry_span(lines, _fence_mask(lines), index)
         block = list(effect)
         if _needs_blank_before_block(lines, end, block):
             block.insert(0, "")
-        block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
         candidate = _with_final_newline(text, lines)
+        if header_mutation is not None:
+            candidate = header_mutation(candidate)
+            lines, index = _locate_finding_header(candidate, args.id)
+            header_line = lines[index]
+            end = _find_entry_span(lines, _fence_mask(lines), index)
+        else:
+            end += len(block)
+        lines[end:end] = [RECEIPT_PLACEHOLDER]
+        candidate = _with_final_newline(candidate, lines)
         if _strict_reporting_enabled():
             candidate_findings, _problems, _vocabulary = _parse_text(
                 candidate, args.ledger
@@ -12011,9 +12141,11 @@ def _mutate_finding_note(
             results=[args.id],
             decisions=False,
         )
-        if status is not None:
+        if header_line is not None:
             status_postcondition = _finding_header_postcondition(
-                args.id, {"status": status}
+                args.id,
+                {field.lower(): value for field, value in header_changes.items()}
+                if header_changes is not None else {"status": status},
             )
 
             def close_postcondition(
@@ -12039,7 +12171,7 @@ def _mutate_finding_note(
             effect,
             {
                 "header_sha256": _sha256_text(header_line),
-                "header_status": status,
+                "header_status": HEADER_RE.match(header_line).group("status"),
             },
         )
 
@@ -12048,6 +12180,13 @@ def _mutate_finding_note(
         append_drain_breadcrumb(f"step 10 finding closed {args.id}", "handled")
         print(
             f"closed {args.id} with note from {note_path}"
+            f"{_written_ledger_suffix(args.ledger)}"
+        )
+    elif command == "set-header":
+        if args.status in {"handled", "rejected"}:
+            append_drain_breadcrumb(f"step 10 finding closed {args.id}", args.status)
+        print(
+            f"updated header for {args.id} with note from {note_path}"
             f"{_written_ledger_suffix(args.ledger)}"
         )
     else:
@@ -12900,7 +13039,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             for meta in validated_metadata:
                 if (
                     meta.data.get("kind") == MUTATION_RECEIPT_KIND
-                    and meta.data.get("command") == "close"
+                    and meta.data.get("command") in {"close", "set-header"}
                     and isinstance(meta.data.get("target"), str)
                 ):
                     close_receipts_by_id.setdefault(
@@ -14196,9 +14335,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_summary.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_summary.set_defaults(func=cmd_summary)
+    p_summary.add_argument("--exclude-tooling", action="store_true",
+                           help="skip clusters whose open members all have tooling impact in drainable counts")
 
     p_next = sub.add_parser("next", help="print the highest-ranked pickable cluster")
     p_next.add_argument("--pin", help="force this finding's cluster")
+    p_next.add_argument("--exclude-tooling", action="store_true",
+                        help="skip clusters whose open members all have tooling impact unless explicitly pinned")
+    p_next.add_argument("--automatic-pin", action="store_true", help=argparse.SUPPRESS)
     p_next.add_argument("--claim", action="store_true", help="atomically claim the selected findings for this session")
     p_next.add_argument(
         "--json",
@@ -14309,6 +14453,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_header.add_argument("--blocked")
     p_header.add_argument("--root")
     p_header.add_argument("--entry", choices=sorted(ENTRIES))
+    p_header.add_argument("--note-file", type=Path, help="append a note in the same mutation")
     p_header.set_defaults(func=cmd_set_header)
 
     p_annotate = sub.add_parser("annotate", help="append file contents to a finding")
