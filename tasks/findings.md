@@ -10009,6 +10009,9 @@ incoherent. It is not blocked on anything.
 functions are platform-neutral, so the host toolchain proves the change; no Windows target is
 required.
 
+* **Why rejected:** Missing contract docs on two wrappers; hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a1900ea7d59fafb628c34f6283f6b232e7dd39721096caef463b04722228c917","input_sha256":"edce3329550be27c957a83214b3a68e7d29af8fdf713cf217de2591919d67f96","kind":"mutation-receipt","operation":"9a2fdb1ebd822ceb67c2f002c8a59c3e96a3f51c41952b3972ffed735607af07","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-08"],"target":"f-20260916-08","v":1} -->
+
 ---
 
 ## 2026-09-16 — filed through the inbox spool
