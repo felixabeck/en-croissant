@@ -10970,6 +10970,9 @@ Obsolete (setup-findings triage 2026-10-13): The cap is now raised per reviewed 
 * **Precondition cleared (2026-09-27):** Felix chose a fix through configuration instead of the checker (`d-20260927-22`): add `no-restricted-imports` for `mantine-flagpack` (`allowTypeImports: true`) in `.oxlintrc.json`, enforced by `pnpm lint`. The candidate fix above, a manifest-graph assertion, is rejected. It is new code under rule 6d, and it is unsound, because a static import from one route inlines the pack into that route's chunk and leaves no manifest record naming the package. Proof required: a temporary static import makes `pnpm lint` red, then gets reverted. Also update `docs/bundle-budgets.md` to name the guard that owns placement.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8d5b2644750f06c287dbec85aa5498a342dbe2d8cc0cb554930c98c5eee00594","input_sha256":"32597ce0bb444ca2cb9f6255451d478b6ad19bbe6e931faeea6020015da64770","kind":"mutation-receipt","operation":"c56d610a4609d2d4cf3eb3ef8df8a4b30bb1f948bfeb6b109213011e0d7cd7e6","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-05"],"target":"f-20260920-05","v":1} -->
 
+* **Why rejected:** Second guard on flagpack placement. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"164dbf6650377104923cedd446f56fe4799d2bac1e9c691434009d0320371d2b","input_sha256":"35bab9f66ab9e07db6052c6ecb004bb501494db15fb320799b2df0ae6aab6005","kind":"mutation-receipt","operation":"701e5d95fb1c50f83d1e25cf4e6208da8724aa71c18b49cc56ca71f37d61f657","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-05"],"target":"f-20260920-05","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
