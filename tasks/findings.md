@@ -9764,7 +9764,7 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 
 ### The test workflow's branch filter `"*"` skips every branch whose name contains a slash
 
-* **ID:** f-20260915-08 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260915-08 · **Status:** rejected · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `.github/workflows/test.yml:3-8` — `push: branches: ["*"]` and `pull_request: branches: ["*"]`.
 * **Defect:** GitHub's `*` branch pattern does not match `/`, so a push or pull request on a branch such as `feature/foo` runs no job of the test workflow at all — no linter, no boundary checks, no coverage ratchets, no Rust platform jobs. Measured indirectly on 2026-09-15: the throwaway branch `probe/windows-rust-test` ran only because its own copy of the workflow named it explicitly (GitHub run 34995837526); the `f-20260914-07` plan-review lenses (review-plan 99, review-root-cause 99, review-tests 99) confirmed the pattern semantics. No checker in `scripts/` reads the value, so a change to it is unguarded either way.
 * **Why it matters:** every gate the repository documents as running "on every push" silently does not for slash-named branches; `d-20260830-20` forbids a gate that reports success without checking, and here the gate does not report at all.
