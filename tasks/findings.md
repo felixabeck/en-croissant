@@ -15214,6 +15214,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Repeat occurrence, 2026-10-12:** the f-20261001-07 build run's `pnpm build && pnpm verify:app` (release binary at 70e31ac5, machine load average about 24–30 from parallel drains and gates) passed 101 assertions and failed only "the freshness transition applies within 1000 ms of the measured read": apply 1495 ms, native read 40 ms. That diff changes no file-freshness, tree-publication or verify-app code (engine termination, analysis terminal state, interrupted games). Second observation of the same miss, now under heavy machine load; the 1000 ms bound was left unchanged. Session 789f2f5a-cecf-48c9-be14-da27602ae6e9; log copy `/tmp/build-789f2f5a-cecf-48c9-be14-da27602ae6e9/verify-app-freshness.log` (may be cleaned).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"49fcc962b494e25a532c9cba979ebfc5f13a6e28ba44e7866cec6a9c2eeaf3cb","input_sha256":"b9226b475bd11aadfd758d1da96993621e5ba6a41e071c097a9d3430038baf42","kind":"mutation-receipt","operation":"9beddfc22cb2bca6cd1ff4718dee7b5c37984c2959761ec793c6de8d80d39518","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
 
+* **Why rejected:** Freshness budget exceeded once; unreproduced. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7a12b8df008d578b864ba15c96e9cee8bba1accaf36c4ecd3dbafada26d57622","input_sha256":"6cf12f0857d636d947a21ef3ad54b9ed03c0e9e53c26c0f5fb13c0c80a54e223","kind":"mutation-receipt","operation":"d9dd03b69021fc1fc9d57d829ac5ae91da37c08dcf042e828525c54767dc3e55","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
