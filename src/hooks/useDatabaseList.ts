@@ -5,7 +5,6 @@ import { getDatabases } from "@/utils/db";
 
 export const DATABASE_LIST_KEY = "databases" as const;
 export const DATABASE_LIST_MAX_RETRIES = 3;
-export const DATABASE_LIST_RETRY_BASE_MS = 1000;
 
 export function fetchDatabaseList(owner: NativeRequestOwner) {
     return owner.run((signal) => getDatabases({ signal }));
@@ -14,13 +13,15 @@ export function fetchDatabaseList(owner: NativeRequestOwner) {
 export const databaseListRetry: NonNullable<SWRConfiguration["onErrorRetry"]> = (
     error,
     _key,
-    _config,
+    config,
     revalidate,
     { retryCount },
 ) => {
-    // Only transient failures retry, at most three times per failed listing.
+    // Keep SWR's backoff for transient failures and bound it to three retries.
     if (listingFailure(error) !== "retry" || retryCount > DATABASE_LIST_MAX_RETRIES) return;
-    const delay = DATABASE_LIST_RETRY_BASE_MS * 2 ** retryCount;
+    const delay =
+        ~~((Math.random() + 0.5) * (1 << (retryCount < 8 ? retryCount : 8))) *
+        config.errorRetryInterval;
     setTimeout(() => void revalidate({ retryCount }), delay);
 };
 

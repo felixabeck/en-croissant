@@ -5,13 +5,11 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { listingFailure } from "@/components/files/listingFailure";
 import type { NativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
-import {
-  DATABASE_LIST_MAX_RETRIES,
-  DATABASE_LIST_RETRY_BASE_MS,
-  useDatabaseList,
-} from "./useDatabaseList";
+import { DATABASE_LIST_MAX_RETRIES, useDatabaseList } from "./useDatabaseList";
 
 vi.mock("@/utils/db", () => ({ getDatabases: vi.fn() }));
+
+const ERROR_RETRY_INTERVAL_MS = 5000;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -40,7 +38,7 @@ async function render(ui: ReactNode) {
         value={{
           provider: () => new Map(),
           dedupingInterval: 0,
-          errorRetryInterval: DATABASE_LIST_RETRY_BASE_MS,
+          errorRetryInterval: ERROR_RETRY_INTERVAL_MS,
           revalidateOnFocus: false,
           revalidateOnReconnect: false,
         }}
@@ -60,24 +58,35 @@ function Consumer({ enabled = true }: { enabled?: boolean }) {
   return <output>{error ? "failed" : data ? "loaded" : "pending"}</output>;
 }
 
-test("transient failures retry with exponential backoff and stop after three retries", async () => {
-  const failure = new Error("Temporary database failure");
-  expect(listingFailure(failure)).toBe("retry");
-  vi.mocked(getDatabases).mockRejectedValue(failure);
-  await render(<Consumer />);
-  expect(getDatabases).toHaveBeenCalledTimes(1);
+test.each([
+  { random: 0, multipliers: [1, 2, 4] },
+  { random: 0.5, multipliers: [2, 4, 8] },
+  { random: 0.999, multipliers: [2, 5, 11] },
+])(
+  "transient failures keep SWR's backoff and stop after three retries ($random)",
+  async ({ random, multipliers }) => {
+    vi.mocked(Math.random).mockReturnValue(random);
+    const failure = new Error("Temporary database failure");
+    expect(listingFailure(failure)).toBe("retry");
+    vi.mocked(getDatabases).mockRejectedValue(failure);
+    await render(<Consumer />);
+    expect(getDatabases).toHaveBeenCalledTimes(1);
+    await advance(2000);
+    expect(getDatabases).toHaveBeenCalledTimes(1);
 
-  for (let retryCount = 1; retryCount <= DATABASE_LIST_MAX_RETRIES; retryCount += 1) {
-    await advance(DATABASE_LIST_RETRY_BASE_MS * 2 ** retryCount - 1);
-    expect(getDatabases).toHaveBeenCalledTimes(retryCount);
-    await advance(1);
-    expect(getDatabases).toHaveBeenCalledTimes(1 + retryCount);
-  }
+    for (let retryCount = 1; retryCount <= DATABASE_LIST_MAX_RETRIES; retryCount += 1) {
+      const elapsed = retryCount === 1 ? 2000 : 0;
+      await advance(ERROR_RETRY_INTERVAL_MS * multipliers[retryCount - 1] - elapsed - 1);
+      expect(getDatabases).toHaveBeenCalledTimes(retryCount);
+      await advance(1);
+      expect(getDatabases).toHaveBeenCalledTimes(1 + retryCount);
+    }
 
-  await advance(60_000);
-  expect(getDatabases).toHaveBeenCalledTimes(1 + DATABASE_LIST_MAX_RETRIES);
-  expect(container.textContent).toBe("failed");
-});
+    await advance(600_000);
+    expect(getDatabases).toHaveBeenCalledTimes(1 + DATABASE_LIST_MAX_RETRIES);
+    expect(container.textContent).toBe("failed");
+  },
+);
 
 test.each(["changed", "missing", "unusable", "permission", "too-large"] as const)(
   "a %s root failure is never retried",
