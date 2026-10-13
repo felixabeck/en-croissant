@@ -10944,12 +10944,15 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### The `total` bundle cap has 0.25% headroom and no chunk split can help it
 
-* **ID:** f-20260920-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260920-04 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `bundle-budgets.json` (`limits.total: 1550000`), `scripts/check-bundle-budget.mjs:80-90` (`total` counts every emitted JS/CSS asset exactly once), `src/components/databases/flagpack.ts`.
 * **Defect:** after `f-20260920-03` was resolved by `4d025de9`, `total` measures **1,546,205** of 1,550,000 gzip bytes — 3,795 bytes, 0.25%. Unlike `largestLazy`, `total` cannot be relieved by splitting a chunk: it counts each asset once wherever it sits, so deferring something moves bytes between metrics and usually costs `total` a little through duplication. This was measured while resolving `f-20260920-03`: lazy `EvalChart` pushes `total` to 1,550,268 (red), lazy `AddPuzzle` to 1,550,613 (red), a shared `progress-ui` chunk to 1,552,455 (red).
 * **Why it matters:** `pnpm bundle:check` is a push gate. The next frontend addition of any size fails on `total`, and the only lever is genuinely removing code rather than rearranging it — the same class of arrival-blocking gate that `f-20260920-03` was.
 * **Candidate, not a decision:** `mantine-flagpack` is 955,312 raw bytes for a component that renders one flag. It is now behind a dynamic import, so it no longer burdens any route, but it is still shipped and still counted by `total`. Replacing it — a Unicode regional-indicator flag, or a single inline SVG per country actually used — would delete most of it. That changes what a user sees (and on WebKitGTK under Linux regional-indicator sequences frequently have no glyph and render as two letters), so it is a product decision for Felix, not a technical one. Do not treat this entry as authorising it.
 * **Found by:** Claude Code, 2026-09-20, measuring the five bundle variants for `f-20260920-03`.
+
+Obsolete (setup-findings triage 2026-10-13): The cap is now raised per reviewed growth (44f53272, d-20261012-09).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"49febc36235fee771eae7c20f8733bf810704920d50c7ab87729700f912149b6","header_sha256":"332e057abfd8e0a85311145b60768c60f3439b32d1fb583cae3ae91f6bcdc35d","header_status":"handled","input_sha256":"af279889c9e7160693b6eef9b22b006efd7eee788178acf13219cf37a45c62e3","kind":"mutation-receipt","operation":"01f8471dd0efb004842b8c25b345ef86a723c32158ab2bc0b0e811cabe4d42cb","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-04"],"target":"f-20260920-04","v":1} -->
 
 ---
 
