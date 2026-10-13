@@ -17,6 +17,7 @@ import { memo, useContext, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { type DatabaseHandle } from "@/bindings";
@@ -30,13 +31,7 @@ import {
   referenceDbAtom,
   sessionsAtom,
 } from "@/state/atoms";
-import {
-  databaseHandleFromKey,
-  databaseHandleKey,
-  getDatabases,
-  type Opening,
-  searchPosition,
-} from "@/utils/db";
+import { databaseHandleFromKey, databaseHandleKey, type Opening, searchPosition } from "@/utils/db";
 import { formatNumber } from "@/utils/format";
 import {
   convertToNormalized,
@@ -143,10 +138,7 @@ function DatabasePanel() {
   const explorerHandle = sessions.find((session) => session.lichess?.handle)?.lichess?.handle;
   const missingExplorerAuthentication = db !== "local" && !explorerHandle;
 
-  const databaseOwner = useNativeRequestOwner(db === "local" ? "databases" : null);
-  const { data: databases } = useSWR(db === "local" ? "databases" : null, () =>
-    databaseOwner!.run((signal) => getDatabases({ signal })),
-  );
+  const { data: databases } = useDatabaseList(db === "local");
 
   const dbSelectData = (databases ?? [])
     .filter((d) => d.type === "success")

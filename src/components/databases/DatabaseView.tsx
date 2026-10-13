@@ -13,9 +13,7 @@ import {
 } from "@/state/store/database";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import TournamentTable from "./TournamentTable";
-import useSWR from "swr";
-import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { getDatabases } from "@/utils/db";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
 import { resolveDatabaseRoute } from "./databaseRoute";
 import { listingFailure } from "@/components/files/listingFailure";
 import { databaseLoadFailureMessage } from "./databaseLoadFailure";
@@ -37,12 +35,7 @@ function DatabaseView() {
   const mode = useActiveDatabaseViewStore((s) => s.activeTab);
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
   const { databaseId } = useParams({ from: "/databases/$databaseId" });
-  const databaseOwner = useNativeRequestOwner("databases");
-  const {
-    data: databases,
-    error,
-    mutate,
-  } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
+  const { data: databases, error, mutate } = useDatabaseList();
 
   const resolution = useMemo(
     () => resolveDatabaseRoute(databases, databaseId, database),

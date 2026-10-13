@@ -22,18 +22,13 @@ import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router
 import { useAtom } from "jotai";
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
-import useSWR, { useSWRConfig } from "swr";
-import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { useSWRConfig } from "swr";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { databaseConversionStateAtom, referenceDbAtom, runDatabaseConversion } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
-import {
-  databaseHandleKey,
-  getDatabases,
-  sameDatabaseHandle,
-  type SuccessDatabaseInfo,
-} from "@/utils/db";
+import { databaseHandleKey, sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
 import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
 import ConfirmModal from "../common/ConfirmModal";
@@ -63,12 +58,7 @@ export function useDatabaseLibrary(
     }
   }, []);
 
-  const databaseOwner = useNativeRequestOwner("databases");
-  const {
-    data: databases,
-    error,
-    mutate,
-  } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
+  const { data: databases, error, mutate, owner: databaseOwner } = useDatabaseList();
   const failure = listingFailure(error);
   const loadFailureMessage = databaseLoadFailureMessage(error, t);
   const needsFolder = failure !== "silent" && failure !== "retry";

@@ -12,12 +12,10 @@ import { useAtom, useAtomValue } from "jotai";
 import { notifications } from "@mantine/notifications";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import useSWR from "swr";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount } from "@/utils/chess.com/api";
-import { getDatabases } from "@/utils/db";
 import { getLichessAccount } from "@/utils/lichess/api";
 import { authenticateLichess } from "@/utils/lichess/authentication";
 import {
@@ -34,10 +32,7 @@ import LichessLogo from "./LichessLogo";
 function Accounts() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useAtom(sessionsAtom);
-  const databaseOwner = useNativeRequestOwner("databases");
-  const { data } = useSWR("databases", () =>
-    databaseOwner!.run((signal) => getDatabases({ signal })),
-  );
+  const { data } = useDatabaseList();
   // Account management remains usable without an import destination. The database page
   // owns the visible retry/error state for the shared workspace.
   const databases = data ?? [];

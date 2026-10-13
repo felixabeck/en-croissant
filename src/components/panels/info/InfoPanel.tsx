@@ -30,9 +30,8 @@ import GameSelector, { type DeleteGameSnapshot, type GameSelectorRow } from "./G
 import classes from "./InfoPanel.module.css";
 import PgnInput from "./PgnInput";
 import { getStats } from "@/utils/repertoire";
-import useSWR from "swr";
-import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { getDatabases, sameDatabaseHandle } from "@/utils/db";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
+import { sameDatabaseHandle } from "@/utils/db";
 import { databaseRouteTarget } from "@/components/databases/databaseRoute";
 import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
@@ -113,10 +112,7 @@ function InfoPanel({ addGame }: { addGame?: () => void }) {
 
 function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
   const { t } = useTranslation();
-  const databaseOwner = useNativeRequestOwner("databases");
-  const { data: databases, isLoading } = useSWR("databases", () =>
-    databaseOwner!.run((signal) => getDatabases({ signal })),
-  );
+  const { data: databases, isLoading } = useDatabaseList();
 
   const dbInfo = databases?.find((db) => sameDatabaseHandle(db.file, path));
   const navigate = useNavigate();

@@ -16,6 +16,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { DATABASE_LIST_KEY, fetchDatabaseList } from "@/hooks/useDatabaseList";
 import type { ArtifactPublication, DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
@@ -30,7 +31,7 @@ import {
   runDatabaseConversion,
 } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
-import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
+import { type ManagedDatabaseInfo } from "@/utils/db";
 import { accountDatabaseFilename } from "./accountDatabase";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
@@ -120,7 +121,7 @@ export function AccountCard({
 }: AccountCardProps) {
   const { t } = useTranslation();
   const { mutate } = useSWRConfig();
-  const databaseOwner = useNativeRequestOwner("databases");
+  const databaseOwner = useNativeRequestOwner(DATABASE_LIST_KEY);
   const accountKey = `${type}_${title}`;
   const store = useStore();
   const items = stats.map((stat) => {
@@ -249,10 +250,7 @@ export function AccountCard({
       // Supersede older listings, publish an owned fresh read, then let SWR revalidate mounted
       // consumers after mutation settles, including a remount that retired the refresh read.
       await databaseOwner!.supersede();
-      await mutate(
-        "databases",
-        databaseOwner!.run((signal) => getDatabases({ signal })),
-      );
+      await mutate(DATABASE_LIST_KEY, fetchDatabaseList(databaseOwner!));
     } catch (refreshCause) {
       if (!importFailed) throw refreshCause;
       const primaryFailure = safeFailureContext(refreshCause);
