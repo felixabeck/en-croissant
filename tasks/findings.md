@@ -15240,7 +15240,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 
 ### Native large-file freshness apply check exceeded its budget once during opening proof
 
-* **ID:** f-20261010-41 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261010-41 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs large-practice external-rewrite timing measurement, FILE_FRESHNESS_APPLY_BUDGET_MS, and the real file freshness renderer path.
 * **Defect:** The unchanged full native diagnostic run for f-20261001-08 reported FAIL for the freshness transition applies within 1000 ms of the measured read. Observed apply1186.0ms, native read47.0ms, total freshness2807.0ms, stateverified. The independent one-poll-interval-plus-measured-read-and-apply assertion passed. The immediately preceding baseline passed this1000ms check. No cause or repeatability is established. The only current verifier edits concern later GO9 geometry and GO14 diagnostics, which were not reached when this failure occurred.
