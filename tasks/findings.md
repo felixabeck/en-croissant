@@ -13316,6 +13316,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Proof:** after the fix, the skill text contains, at the CI wait, `drain_stage start push "waiting for required CI"` and a fresh `push` start once the result is known, and at the installer step `drain_stage end push "install verified"` after `scripts/install-local.sh` succeeds on `master`, `drain_stage end push "install not applicable"` on any other branch, and a failure-naming end detail when the installer fails; `grep -F 'install verified' .claude/skills/push/SKILL.md` and `grep -F 'install not applicable' .claude/skills/push/SKILL.md` both match.
 * **Related:** agent-kit plan `tasks/plans/2026-10-02-checkout-available-notification.md` (issues I11, I16, I18) and decision `d-20261003-20` in agent-kit's `tasks/decisions.md`.
 * **Found by:** Claude Code, agent-kit build session 8ad6026e-e969-46a2-bdf8-dbb0ae99964f (kit-consumers lens, plan-review rounds 5-7), 2026-10-03.
+* **Why rejected:** Drain stage-detail wording. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a80f94b891ce2f19f0d2fa30b461b3edaea8e1d1d6ce84fd67d1ed20d06590e3","input_sha256":"e92da00ac60478ae6080b0bbb290de083ace60a2d772cef88030b52bc7ab9749","kind":"mutation-receipt","operation":"d83576bef5af060143730db856022de8fcf3e20d158d628b33c11db2c2760d27","options":{"section":null},"request_id_sha256":null,"results":["f-20261003-06"],"target":"f-20261003-06","v":1} -->
 
 ### Creating a workspace file under an existing name silently replaces the existing PGN and its sidecar
 
