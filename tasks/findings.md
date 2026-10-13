@@ -10621,7 +10621,7 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 
 ### Download reservation, activation and workspace_entry_path still compare identity only
 
-* **ID:** f-20260918-02 · **Status:** rejected · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260918-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `reserve_download_artifact` (`src-tauri/src/infra/path_authority/mod.rs:6811`, identity-only `validate_target` at `:6841-6846` then `root_path.join(&filename)` at `:6847`); `activate_download_artifact` (`:7040`); `workspace_entry_path` (`:7160-7179`, identity-only `validate_target` then returns the stored pathname).
 * **Defect:** after `f-20260917-13` closed path equality at `database_file_target` and `workspace_root`, these sibling doors still compare only inode identity. A same-inode ancestor swap (`real` → `moved`, `real -> moved`) therefore still reserves or reports a path under `moved/` while the stored spelling names `real/`.
 * **Why it matters:** a download artifact baseline or a workspace pathname handed to a caller can land outside the directory the user authorised, the same containment class R3-05 named for databases.
