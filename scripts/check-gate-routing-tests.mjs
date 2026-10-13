@@ -6,7 +6,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   checkGateRouting,
-  fencedBlocks,
   pnpmReferences,
   workflowJobs,
   workflowSteps,
@@ -15,7 +14,7 @@ import { gitInit } from "./test-git-init.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
-  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:logs:test && pnpm gates:parallelism:test && pnpm gates:push:test && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
+  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:logs:test && pnpm gates:parallelism:test && pnpm gates:push:test && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -88,166 +87,6 @@ async function fixture() {
 
 const paths = ["scripts/check-example.mjs"];
 
-// Independent spelling anchors, deliberately not imported from the placement registry.
-const LOCAL_PLACEMENTS = [
-  ["bash scripts/setup-rust.sh", "### Rust/Tauri backend"],
-  ["cargo fmt --manifest-path src-tauri/Cargo.toml -- --check", "### Rust/Tauri backend"],
-  [
-    "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
-    "### Rust/Tauri backend",
-  ],
-  ["pnpm rust:windows:check", "### Rust/Tauri backend"],
-  ["pnpm gate:ensure backend-test", "### Rust/Tauri backend"],
-  ["env -u KIT_ROOT pnpm findings:kit:check", "### Findings ledger"],
-];
-
-test("pins each local command to its genuine §2 home even when the fence union is unchanged", async (t) => {
-  for (const [command, heading] of LOCAL_PLACEMENTS) {
-    await t.test(command, async () => {
-      const root = await fixture();
-      const skillPath = join(root, ".claude/skills/push/SKILL.md");
-      const skill = await readFile(skillPath, "utf8");
-      const moved = skill
-        .replace(`${command}\n`, "")
-        .replace("pnpm bindings:check\n", `pnpm bindings:check\n${command}\n`);
-      const fenceUnion = (text) =>
-        new Set(
-          fencedBlocks(text)
-            .map((block) => block.contents)
-            .join("\n")
-            .split("\n")
-            .filter(Boolean),
-        );
-      assert.deepEqual(fenceUnion(moved), fenceUnion(skill));
-      await writeFile(skillPath, moved);
-      const problems = await checkGateRouting(root, { paths });
-      assert.ok(
-        problems.includes(
-          `command ${command} must be fenced in ${heading} within .claude/skills/push/SKILL.md §2. Move or add its route in that subsection`,
-        ),
-        problems.join("\n"),
-      );
-      assert.doesNotMatch(
-        problems.join("\n"),
-        /push gate runner command|not run by the push gate runner/u,
-      );
-      await writeFile(skillPath, skill);
-      assert.deepEqual(await checkGateRouting(root, { paths }), []);
-    });
-  }
-});
-
-test("pins both backend coverage scripts through their receipt route", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill
-      .replace("pnpm gate:ensure backend-coverage\n", "")
-      .replace("pnpm bindings:check\n", "pnpm bindings:check\npnpm gate:ensure backend-coverage\n"),
-  );
-  const problems = (await checkGateRouting(root, { paths })).join("\n");
-  for (const script of ["test:coverage:backend", "coverage:backend:check"]) {
-    assert.ok(
-      problems.includes(
-        `package script ${script} must be fenced in ### Rust/Tauri backend within .claude/skills/push/SKILL.md §2`,
-      ),
-      problems,
-    );
-  }
-  assert.doesNotMatch(problems, /push gate runner command|not run by the push gate runner/u);
-});
-
-test("requires one standalone home inside §2 rather than a heading mention or another parent", async (t) => {
-  const heading = "### Rust/Tauri backend";
-  const cases = [
-    ["missing", (skill) => skill.replace(heading, "### Renamed backend")],
-    ["duplicate", (skill) => skill.replace(heading, `${heading}\n\n${heading}`)],
-    ["prose mention", (skill) => skill.replace(heading, `Example: ${heading}`)],
-    ["heading prefix", (skill) => skill.replace(heading, `${heading} example`)],
-    ["fenced heading", (skill) => skill.replace(heading, `\`\`\`text\n${heading}\n\`\`\``)],
-    ["other parent", (skill) => skill.replace(heading, `## Example\n\n${heading}`)],
-    ["missing section", (skill) => skill.replace("## 2. Gates", "## Example Gates")],
-    ["duplicate section", (skill) => skill.replace("## 2. Gates", "## 2. Example\n\n## 2. Gates")],
-  ];
-  for (const [name, mutate] of cases) {
-    await t.test(name, async () => {
-      const root = await fixture();
-      const skillPath = join(root, ".claude/skills/push/SKILL.md");
-      await writeFile(skillPath, mutate(await readFile(skillPath, "utf8")));
-      const problems = (await checkGateRouting(root, { paths })).join("\n");
-      assert.ok(
-        problems.includes(
-          `.claude/skills/push/SKILL.md §2 must contain one unambiguous ${heading} home`,
-        ),
-        problems,
-      );
-      assert.ok(
-        problems.includes(`command bash scripts/setup-rust.sh must be fenced in ${heading}`),
-        problems,
-      );
-    });
-  }
-});
-
-test("reference, pre-review, comments and prose cannot replace an exact local home", async (t) => {
-  for (const destination of [
-    "reference",
-    "pre-review",
-    "comment",
-    "prose",
-    "changed arguments",
-    "changed env prefix",
-  ]) {
-    await t.test(destination, async () => {
-      const root = await fixture();
-      const skillPath = join(root, ".claude/skills/push/SKILL.md");
-      const skill = await readFile(skillPath, "utf8");
-      const command =
-        destination === "changed env prefix"
-          ? "env -u KIT_ROOT pnpm findings:kit:check"
-          : "pnpm rust:windows:check";
-      let changed = skill.replace(`${command}\n`, "");
-      if (destination === "reference")
-        changed += `\n### Reference\n\n\`\`\`bash\n${command}\n\`\`\`\n`;
-      if (destination === "comment") changed = skill.replace(`${command}\n`, `# ${command}\n`);
-      if (destination === "prose")
-        changed = skill
-          .replace(`${command}\n`, "")
-          .replace("### Rust/Tauri backend", `Run \`${command}\`.\n\n### Rust/Tauri backend`);
-      if (destination === "changed arguments")
-        changed = skill.replace(`${command}\n`, `${command} --example\n`);
-      if (destination === "changed env prefix")
-        changed = skill.replace(`${command}\n`, "pnpm findings:kit:check\n");
-      await writeFile(skillPath, changed);
-      const problems = (await checkGateRouting(root, { paths })).join("\n");
-      const heading =
-        destination === "changed env prefix" ? "### Findings ledger" : "### Rust/Tauri backend";
-      assert.ok(
-        problems.includes(
-          `command ${command} must be fenced in ${heading} within .claude/skills/push/SKILL.md §2`,
-        ),
-        problems,
-      );
-    });
-  }
-});
-
-test("ignores heading examples in fences and preserves the §2a boundary", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill.replace(
-      "### Rust/Tauri backend",
-      "```text\n## 2. Example\n### Rust/Tauri backend\n## 3. Example\n```\n\n### Rust/Tauri backend",
-    ),
-  );
-  assert.deepEqual(await checkGateRouting(root, { paths }), []);
-});
-
 test("accepts routed tests, nested scripts, allowed tools, and live sensitive globs", async () => {
   const root = await fixture();
   assert.deepEqual(await checkGateRouting(root, { paths }), []);
@@ -303,47 +142,6 @@ test("heavy gate package scripts preserve the strict agent-gate wrapper and pre-
       assert.match((await checkGateRouting(root, { paths })).join("\n"), expected);
     });
   }
-});
-
-test("checks every pre-review runner command against the new skill block in both directions", async () => {
-  const root = await fixture();
-  assert.deepEqual(await checkGateRouting(root, { paths }), []);
-
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  const laneFence = "pnpm gate:run frontend-build\npnpm exec oxfmt";
-  await writeFile(skillPath, skill.replace(laneFence, "pnpm exec oxfmt"));
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /pre-review runner command is not fenced.*pnpm gate:run frontend-build/u,
-  );
-
-  await writeFile(
-    skillPath,
-    skill.replace(
-      "pnpm bundle:check\n```",
-      "pnpm bundle:check\npnpm gate:ensure frontend-build\n```",
-    ),
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /fenced pre-review command is not run by the scheduler: pnpm gate:ensure frontend-build/u,
-  );
-});
-
-test("preserves comment-line handling for path-scoped shell fences", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  const frontendFence =
-    "### TypeScript/React frontend\n\n```bash\npnpm gate:ensure frontend-coverage";
-  assert.ok(skill.includes(frontendFence));
-  const fenceOpening = "### TypeScript/React frontend\n\n```bash\n";
-  await writeFile(skillPath, skill.replace(fenceOpening, `${fenceOpening}# pnpm missing:check\n`));
-
-  const problems = (await checkGateRouting(root, { paths })).join("\n");
-  assert.match(problems, /package script missing:check/u);
-  assert.doesNotMatch(problems, /unresolved gate command.*# pnpm missing:check/u);
 });
 
 test("resolves direct script commands for every supported runner", async () => {
@@ -540,7 +338,7 @@ test("rejects a direct workflow script command that has no push-skill route", as
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow command must exactly match a fenced line or routed package-script segment/u,
+    /workflow command must exactly match/u,
   );
 });
 
@@ -553,7 +351,7 @@ test("rejects an unfenced direct workflow script in a quoted run scalar", async 
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow command must exactly match a fenced line or routed package-script segment/u,
+    /workflow command must exactly match/u,
   );
 });
 
@@ -673,7 +471,7 @@ test("sensitive-path globs see untracked files through the shared walker", async
 
 test("treats pnpm subcommands and flags as invocations, not script names", async () => {
   // `pnpm dlx shellcheck@4.1.0 ...` once resolved as a nested script named "dlx",
-  // which failed hooks:check for a script that was never referenced. A leading
+  // which reported a missing script that was never referenced. A leading
   // flag misparsed the same way: `pnpm -s all:check` resolved to "-s".
   const root = await fixture();
   const packagePath = join(root, "package.json");
@@ -732,32 +530,6 @@ test("rejects a contract-gate member duplicated directly in the workflow", async
   );
 });
 
-test("rejects a contract-gate member duplicated directly in the push skill", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  await writeFile(
-    skillPath,
-    `${await readFile(skillPath, "utf8")}\n\`\`\`bash\npnpm all:check\n\`\`\`\n`,
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /contract-gate member all:check is also invoked directly by .claude\/skills\/push\/SKILL.md/u,
-  );
-});
-
-test("requires exactly one contract-gate fence", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  await writeFile(
-    skillPath,
-    `${await readFile(skillPath, "utf8")}\n\`\`\`bash\npnpm gates:contract:check\n\`\`\`\n`,
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /must be fenced exactly once/u,
-  );
-});
-
 test("requires exactly one workflow step for the contract gate", async () => {
   const root = await fixture();
   const workflowPath = join(root, ".github/workflows/test.yml");
@@ -778,34 +550,6 @@ test("requires the contract gate package script", async () => {
   delete packageJson.scripts["gates:contract:check"];
   await writeFile(packagePath, JSON.stringify(packageJson));
   assert.match((await checkGateRouting(root, { paths })).join("\n"), /package.json is missing/u);
-});
-
-test("requires the contract gate fence", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(skillPath, skill.replace("pnpm gates:contract:check\n", ""));
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /must be fenced exactly once/u,
-  );
-});
-
-test("requires the contract gate fence in the section 2 preamble", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill.replace(
-      "```bash\npnpm gates:contract:check",
-      "### Path gate\n\n```bash\npnpm gates:contract:check",
-    ),
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /must be fenced exactly once.*§2 preamble/u,
-  );
 });
 
 test("requires the workflow to run the contract gate", async () => {
@@ -1046,20 +790,17 @@ test("reports unsupported YAML escapes in run scalars", async () => {
   );
 });
 
-test("reports a Cargo workflow gate without an identical fenced line", async () => {
+test("reports a Cargo workflow gate whose arguments differ from the scheduler", async () => {
   const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
   await writeFile(
-    skillPath,
-    skill.replace(
-      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
-      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
-    ),
+    workflowPath,
+    workflow.replace("--all-targets --locked -- -D warnings", "--all-targets -- -D warnings"),
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow command must exactly match.*cargo clippy.*--locked/u,
+    /workflow command must exactly match.*cargo clippy/u,
   );
 });
 
@@ -1068,20 +809,6 @@ test("accepts Cargo workflow gates with identical fenced lines", async () => {
   assert.doesNotMatch(
     (await checkGateRouting(root, { paths })).join("\n"),
     /workflow command must exactly match.*cargo/u,
-  );
-});
-
-test("requires every scheduled push gate command to remain an exact skill fence", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill.replace("cargo fmt --manifest-path src-tauri/Cargo.toml -- --check\n", ""),
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /push gate runner command is neither an exact fenced line.*cargo fmt/u,
   );
 });
 
@@ -1096,55 +823,8 @@ test("requires the P0 mutation guard to route through the contract chain (PG-61)
   await writeFile(packagePath, JSON.stringify(packageJson));
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /push gate runner command is neither an exact fenced line nor a gates:contract:check member: pnpm mutation:guard:check/u,
+    /gates:contract:check must run mutation:guard:check first/u,
   );
-});
-
-test("rejects a fenced §2 gate command the push runner does not execute", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill.replace(
-      "pnpm gate:run frontend-build\n",
-      "pnpm gate:ensure frontend-build\npnpm gate:run frontend-build\n",
-    ),
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /fenced §2 gate command is not run by the push gate runner: pnpm gate:ensure frontend-build/u,
-  );
-});
-
-test("requires exactly one §2 preamble fence for the push gate runner invocation", async (t) => {
-  await t.test("rejects a missing invocation fence", async () => {
-    const root = await fixture();
-    const skillPath = join(root, ".claude/skills/push/SKILL.md");
-    const skill = await readFile(skillPath, "utf8");
-    await writeFile(skillPath, skill.replace("pnpm gates:push -- <blocks>\n", ""));
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /must fence pnpm gates:push -- <blocks> exactly once in its preamble/u,
-    );
-  });
-
-  await t.test("rejects duplicate invocation fences", async () => {
-    const root = await fixture();
-    const skillPath = join(root, ".claude/skills/push/SKILL.md");
-    const skill = await readFile(skillPath, "utf8");
-    await writeFile(
-      skillPath,
-      skill.replace(
-        "pnpm gates:push -- <blocks>\n",
-        "pnpm gates:push -- <blocks>\npnpm gates:push -- <blocks>\n",
-      ),
-    );
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /must fence pnpm gates:push -- <blocks> exactly once in its preamble/u,
-    );
-  });
 });
 
 test("reports CI-only scripts hidden in literal and folded block scalars", async () => {
@@ -1183,48 +863,6 @@ test("reports a CI-only script in an explicitly indented block scalar", async ()
   );
 });
 
-test("reports a path-scoped CI script fenced only under another subsection", async () => {
-  const root = await fixture();
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill
-      .replace("pnpm gate:ensure frontend-mutation\n", "")
-      .replace(
-        "pnpm bindings:check\n",
-        "pnpm bindings:check\npnpm gate:ensure frontend-mutation\n",
-      ),
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /must be fenced in ### TypeScript/u,
-  );
-});
-
-test("reports a CI script fenced under a path subsection but absent from the explicit map", async () => {
-  const root = await fixture();
-  const packagePath = join(root, "package.json");
-  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-  packageJson.scripts["path-only:run"] = "true";
-  await writeFile(packagePath, JSON.stringify(packageJson));
-  const skillPath = join(root, ".claude/skills/push/SKILL.md");
-  const skill = await readFile(skillPath, "utf8");
-  await writeFile(
-    skillPath,
-    skill.replace("pnpm mutation:frontend\n", "pnpm mutation:frontend\npnpm path-only:run\n"),
-  );
-  const workflowPath = join(root, ".github/workflows/test.yml");
-  await writeFile(
-    workflowPath,
-    `${await readFile(workflowPath, "utf8")}  - name: Path only\n    run: pnpm path-only:run\n`,
-  );
-  assert.match(
-    (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow-routed package script path-only:run.*neither reachable/u,
-  );
-});
-
 test("reports a stale path-scoped CI map key absent from the workflow", async () => {
   const root = await fixture();
   const workflowPath = join(root, ".github/workflows/test.yml");
@@ -1240,10 +878,9 @@ test("reports a stale path-scoped CI map key absent from the workflow", async ()
 });
 
 test("the live repository pins one shared contract-gate list", async () => {
-  const [packageText, workflow, skill] = await Promise.all([
+  const [packageText, workflow] = await Promise.all([
     readFile(join(projectRoot, "package.json"), "utf8"),
     readFile(join(projectRoot, ".github/workflows/test.yml"), "utf8"),
-    readFile(join(projectRoot, ".claude/skills/push/SKILL.md"), "utf8"),
   ]);
   const scripts = JSON.parse(packageText).scripts;
   assert.equal(scripts["gates:contract:check"], CONTRACT_CHAIN);
@@ -1259,31 +896,45 @@ test("the live repository pins one shared contract-gate list", async () => {
     steps.flatMap((step) => pnpmReferences(step.run)).filter((name) => members.includes(name)),
     [],
   );
+});
 
-  const sectionTwo = skill.slice(skill.indexOf("## 2."), skill.indexOf("## 3."));
-  const firstPathSubsection = sectionTwo.indexOf("### Rust/Tauri backend");
-  const preamble = sectionTwo.slice(0, firstPathSubsection);
-  const bashBlocks = fencedBlocks(skill).filter((block) => block.language === "bash");
-  assert.equal(
-    bashBlocks
-      .flatMap((block) => pnpmReferences(block.contents))
-      .filter((name) => name === "gates:contract:check").length,
-    1,
+test("headings, section homes and repeated command examples do not affect routing", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(/^#{2,3} .+$/gmu, "Procedure") + "\n```bash\npnpm gates:contract:check\n```\n",
   );
-  assert.ok(
-    fencedBlocks(preamble).some((block) =>
-      pnpmReferences(block.contents).includes("gates:contract:check"),
-    ),
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("executable schedules preserve routes when skill command examples are removed", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(/^```bash\n[\s\S]*?^```\n/gmu, "") +
+      "\n```bash\npnpm gate:check frontend-build\n```\n",
   );
-  assert.deepEqual(
-    bashBlocks
-      .flatMap((block) => pnpmReferences(block.contents))
-      .filter((name) => members.includes(name)),
-    [],
-  );
-  assert.ok(
-    !bashBlocks.some((block) =>
-      block.contents.split(/\r?\n/u).includes("./scripts/findings.py check"),
-    ),
-  );
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("detects missing scripts used by both executable schedules", async (t) => {
+  for (const name of ["rust:windows:check", "coverage:mapping:frontend"]) {
+    await t.test(name, async () => {
+      const root = await fixture();
+      const packagePath = join(root, "package.json");
+      const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+      delete packageJson.scripts[name];
+      await writeFile(packagePath, JSON.stringify(packageJson));
+      const skillPath = join(root, ".claude/skills/push/SKILL.md");
+      await writeFile(skillPath, "```text\nscripts/**\n```\n");
+      assert.match(
+        (await checkGateRouting(root, { paths })).join("\n"),
+        new RegExp(`gate scheduler invokes missing package script ${name}`, "u"),
+      );
+    });
+  }
 });

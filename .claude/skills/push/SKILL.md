@@ -388,3 +388,135 @@ bash scripts/install-local.sh
 - On any persistent red gate, follow the shared policy: do not push and report the exact blocker.
 
 ChessFable override to shared policy §7: this workflow never performs a force push. A message containing `force push` requires a separate stop for the exact refspec and force-with-lease decision; it is not treated as an automatic gate-skip-and-push marker here.
+
+## Project review lenses
+
+
+Adversarial review runs in two tiers, and names never collide between them. Project-independent
+lenses live in `~/.claude/agents/`, ChessFable-specific ones in `.claude/agents/`.
+
+| Lens | Owns | Triggered by a diff touching |
+| --- | --- | --- |
+| `review-chess-semantics` | position identity from FEN fields, ply/colour parity off a non-standard start FEN, `number[]` move paths after tree mutation, mainline-vs-variation assumptions | `src/utils/treeReducer.ts`, `src/state/store/tree.ts`, `src/utils/chess*.ts`, `src/utils/repertoire.ts`, `src/components/common/GameNotation.tsx`, `src/components/panels/practice/**`, `src-tauri/src/chess.rs`, `src-tauri/src/game.rs` |
+| `review-engine-protocol` | UCI process lifecycle, multipv aggregation, cached option state, binding an async result to the position/tab/engine that asked | `src-tauri/src/engine/**`, `src-tauri/src/chess.rs`, `src/components/engines/**`, `src/components/panels/analysis/**`, `src/components/boards/EvalListener.tsx`, `src/utils/engines.ts` |
+| `review-ipc-contract` | bare-string events vs. the Specta registry, correlation ids on broadcasts, stale generated bindings, listener lifetimes, capability scope | `src-tauri/src/main.rs`, any `#[tauri::command]`, any emit/listen call, `src/bindings/**`, `src/platform/**`, `src-tauri/capabilities/**`, `src-tauri/tauri.conf.json` |
+| `review-persisted-state` | `sessionStorage`/`localStorage` size and quota, write/read symmetry, keys shared across tabs, hydration of corrupt or absent data | `src/state/**`, `src/hooks/**`, `src/utils/tabs.ts`, `src/components/tabs/**`, any direct web-storage access |
+| `review-pgn-index` | game-boundary detection, the cached byte-offset index, reader position, `CastlingMode` symmetry across encode/decode, whole-file materialisation | `src-tauri/src/pgn.rs`, `src-tauri/src/lexer.rs`, `src-tauri/src/db/**`, `src-tauri/src/opening.rs`, `src-tauri/src/puzzle.rs`, `src/components/tabs/ImportModal.tsx`, `src/utils/db.ts` |
+| `review-tauri-security` | OAuth token acquisition, credential storage and refresh, renderer-session sanitization, path containment and recursive deletion, signed download manifest verification, bearer-token and raw-diagnostic egress | `src-tauri/src/oauth.rs`, `src-tauri/src/credentials.rs`, `src/utils/session.ts`, `src-tauri/src/fs.rs`, `src-tauri/src/infra/**`, `docs/signed-download-manifests.md` |
+| `review-platform-semantics` | OS behavior of filesystem, handle, process and FFI code; platform-gated test parity across Linux, macOS and Windows | `src-tauri/src/**` with `cfg` on `target_os`, `windows` or `unix`, or filesystem/process/handle/FFI code; tests with platform-specific fixtures or cfg-gated helpers |
+
+Which lenses run for a push is decided by `~/.claude/references/push-review-policy.md`; this table
+says what each one knows, so a plan can be sanity-checked against the right lens before code exists.
+
+
+## Findings ledger
+
+Deferred findings go on disk the moment they are found, per universal rule 4b — never only into a
+session's context, and never only into a handoff message.
+
+- The ledger is `tasks/findings.md`, an **append-only log**; the work queue is derived from it by
+  `./scripts/findings.py`, grouped by `Root` only; findings without a root are singletons,
+  ranked by relation then age. Position in the file carries no meaning.
+- **File every new finding with one command**, whether or not a drain is running. Write the complete
+  `###` entry to a file with `**ID:** f-PENDING`, then run
+  `./scripts/findings.py file <path-to-entry-file>`. It validates, publishes atomically
+  through the inbox spool `tasks/findings-inbox/`, and reports the allocated id — or, if a drain
+  holds the lock, that the drain will merge it. **Never pick an id yourself and never edit
+  `tasks/findings.md` by hand while a drain is running.**
+- `./scripts/findings.py next` picks the next cluster, `related` finds siblings before you
+  file, `decisions` lists what is parked on Felix, `drain-status` answers whether a drain is
+  running (exit 0 = yes). `check` validates every header and the area vocabulary.
+- `tasks/decisions.md` records the technical calls made while working findings, so a later session
+  reads them instead of re-deriving the question.
+- The area vocabulary is a **closed set**, listed in the ledger header; `check` rejects any other
+  value. Adding an area is a deliberate edit to that list.
+- The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
+  `~/.claude/references/findings-ledger-contract.md`. `scripts/findings.py` is the vendored copy
+  of `~/Projekte/agent-kit/scripts/findings.py`, written by `kit sync` and verified byte-exact by
+  `kit sync --check` apart from the `agent-kit-sha256` stamp line that `kit sync` itself inserts
+  after the shebang; nothing
+  project-specific may be added to it — project specifics live in the ledger header.
+
+CI runs `./scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
+a diff touches `tasks/`.
+
+
+## Multi-agent coordination
+
+Shared contract: `/home/felixb/Projekte/agent-kit/references/multi-agent-coordination.md`.
+This repository is worked on by Claude Code, Codex, and Grok.
+
+**Division of labour.** The selected orchestrator uses the user-wide `build` skill
+(`~/.claude/skills/build/SKILL.md`) when its proportionality rule calls for it, and reads project
+gates from `.claude/skills/push/SKILL.md`. Executor selection and leaf launch belong to
+`~/.claude/references/executor-profiles.md`; Codex orchestration uses
+`~/.codex/skills/build/SKILL.md`. An interactive Codex session
+follows `~/.claude/references/codex-interactive-workflow.md`, including its scoped commit
+authorization.
+
+* Claude Code reads `.claude/skills/push/SKILL.md` directly; Codex reaches it through
+  `.agents/skills/push/SKILL.md`, whose Codex delta names its own committer; and
+  `.grok/rules/grok-chessfable.md` points at the canonical file.
+* Gate scope is split. Per commit and after every repair batch, run `pnpm checks:pre-review` from
+  `.claude/skills/push/SKILL.md`. Once per task, after the last commit, run the full affected set.
+  Never commit on red.
+
+### Worktree builds
+
+* **DO:** run `build` in its own worktree via `kit worktree create`. Outreach, records and small edits stay in the main checkout on `master`.
+* **DO:** start drains with the usual `drain-findings.sh` command from the main checkout. It automatically creates or reuses its own drain worktree. `--stop`/`--resume`/`--queue-plans` from the main checkout reach it. Run `findings.py` with the worktree as cwd.
+* **DO NOT:** push a `build/*` or `drain/*` branch or open it as a PR. Only its rebased commits reach `master` through `git push origin HEAD:refs/heads/master`, with upstream `origin/master`.
+* Dev-server ports stay shared across checkouts. Coordinate `pnpm dev` with any existing dev server before starting another checkout.
+* All Rust checkouts share the sccache compile cache through machine wiring in tuxedo-config's `rust-toolchain` module, with no repository Cargo configuration.
+
+
+## Other-agent coordination
+
+
+* Set `GIT_COMMITTER_NAME` to the acting agent (`Claude Code`, `Codex`, or `Grok`); author stays
+  Felix Beck, with no co-author or AI trailer. Claude Code reads `.claude/skills/push/SKILL.md`,
+  Codex reaches it through `.agents/skills/push/SKILL.md`, whose delta names `Codex`, and
+  `.grok/rules/grok-chessfable.md` points at the canonical file.
+* Per commit, run the narrowest affected checks from the canonical push mapping; once per task,
+  after the last commit, run the full affected set. Never commit on red.
+* Handoffs longer than a few lines go in `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never through Felix;
+  pass the receiving agent the file path.
+
+### Worktree builds
+
+* **DO:** run `build` in its own worktree via `kit worktree create`. Outreach, records and small edits stay in the main checkout on `master`.
+* **DO:** start drains with the usual `drain-findings.sh` command from the main checkout. It automatically creates or reuses its own drain worktree. `--stop`/`--resume`/`--queue-plans` from the main checkout reach it. Run `findings.py` with the worktree as cwd.
+* **DO NOT:** push a `build/*` or `drain/*` branch or open it as a PR. Only its rebased commits reach `master` through `git push origin HEAD:refs/heads/master`, with upstream `origin/master`.
+* Dev-server ports stay shared across checkouts. Coordinate `pnpm dev` with any existing dev server before starting another checkout.
+* All Rust checkouts share the sccache compile cache through machine wiring in tuxedo-config's `rust-toolchain` module, with no repository Cargo configuration.
+
+
+## Findings you cannot fix here
+
+A defect you find outside your assignment is not a question for Felix and not a chat note — it goes
+on disk immediately. Write the complete `###` entry to a file with `**ID:** f-PENDING`, then run
+`./scripts/findings.py file <path-to-entry-file>`. Never pick an id yourself, never edit
+`tasks/findings.md` by hand. `./scripts/findings.py related --area <a> --file <p>` first, so
+you extend an existing finding instead of filing a duplicate. The area vocabulary is a closed set in
+the ledger header. Full contract: the "Findings ledger" section of `CLAUDE.md`.
+
+## Additional gate cautions
+
+Never add another `flock` on `heavy-gate.lock`: it deadlocks against the launcher's own lock.
+Never start `pnpm mutation:backend` as part of a push. Never `git checkout -- src-tauri` wholesale,
+which destroys a concurrent editor's work along with a legacy mutant.
+
+Gate scripts live in `package.json`. The path mapping and any direct tool invocations live in the
+canonical push contract.
+
+- Generated bindings are proven by `pnpm bindings:check`. Regenerate with `pnpm bindings:generate`, never hand-edit `src/bindings/generated.ts`.
+- Coverage and bundle size are ratcheted. Never lower a floor or rewrite a baseline to accept a regression — see `docs/coverage.md`.
+
+Mechanical classes already covered by a checker, so review effort belongs elsewhere:
+untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), direct
+`@tauri-apps/*` imports and raw `listen()` outside the platform facade
+(`pnpm tauri:boundary:check`), exported IPC commands without a production renderer consumer
+(`pnpm ipc:consumers:check`), and direct `ActionIcon`/`Modal` imports plus unsafe focus resets
+(`pnpm ui:boundary:check`).
+
+Executable gate schedules live in `scripts/run-push-gates.mjs`.

@@ -112,3 +112,43 @@ repo has no `scripts/dev-up.sh`.
 Name the commands and results, which snapshots moved, and whether a native GTK
 check is still needed. Do not claim Chrome MCP verified the app, and do not
 claim `pnpm verify:app` verified a menu, a dialog or a window decoration.
+
+## Project UI prerequisites
+
+
+`.claude/skills/verify-ui/SKILL.md` is the canonical contract (`.agents/skills/verify-ui/SKILL.md`
+is its Codex bridge). **Read it before verifying any visible change.** Chrome MCP cannot attach to
+the Tauri webview — the window is WebKitGTK and speaks no CDP — and `pnpm start-vite` plus a browser is not evidence,
+because `TopBar.tsx` calls `getCurrentWebviewWindow()` at module scope and the page crashes without
+a Tauri backend.
+
+There are two automated proofs, answering different questions. `pnpm test:e2e:container` pins
+renderer **pixels** in Chromium against a mocked IPC surface. `pnpm verify:app` pins **behaviour**
+in the actual product: it drives the real window off-screen through `kwin_wayland --virtual` →
+`tauri-driver` → `WebKitWebDriver` → the release binary, with the real Rust backend and real IPC
+(`scripts/app-driver.mjs`). Use it for lifecycle, IPC and process-teardown claims. It needs
+`webkit2gtk-driver` and `gstreamer1.0-plugins-bad` (apt) and `tauri-driver` (cargo), plus a
+`pnpm build`, and is not a push gate.
+
+What remains Felix's is now only **native GTK chrome** — menus, file dialogs, window decorations.
+WebDriver sees the page, not the GTK widgets around it, and `issue_engine_binary` always opens a
+native picker, so registering an engine (and therefore any check needing a live engine child)
+cannot be automated this way.
+
+
+## Other-agent UI verification
+
+
+`.claude/skills/verify-ui/SKILL.md` is the canonical contract; `.agents/skills/verify-ui/SKILL.md`
+is its bridge for you. **Read it before verifying any UI change.** Chrome MCP cannot attach to the
+Tauri webview, and `pnpm start-vite` plus a browser is not evidence — `TopBar.tsx` calls
+`getCurrentWebviewWindow()` at module scope and the page crashes without a Tauri backend. Automated
+proof for pixels is `pnpm test:e2e:container`, which runs the suite inside the pinned Playwright
+image so the committed screenshots do not depend on which machine recorded them. Never re-record
+snapshots natively.
+
+For behaviour in the real product, `pnpm verify:app` drives the actual Tauri window off-screen
+through `tauri-driver` and `WebKitWebDriver` — real backend, real IPC, real WebKitGTK. Native GTK
+chrome (menus, dialogs, decorations) is outside both and stays Felix's.
+
+Historical verifier evidence lives in `docs/context/RULE-HISTORY.md`.

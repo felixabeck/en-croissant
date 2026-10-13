@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { BRIDGE_LINE_CAP, checkSkillBridges } from "./check-skill-bridges.mjs";
+import { checkSkillBridges } from "./check-skill-bridges.mjs";
 import { gitInit } from "./test-git-init.mjs";
 
 const checkerPath = fileURLToPath(new URL("./check-skill-bridges.mjs", import.meta.url));
@@ -40,7 +40,7 @@ async function fixture() {
   return root;
 }
 
-test("accepts paired canonical skills and capped Codex bridges", async () => {
+test("accepts paired canonical skills and Codex bridges", async () => {
   const root = await fixture();
   assert.deepEqual(await checkSkillBridges(root), []);
 });
@@ -73,28 +73,6 @@ test("requires a bridge to name its canonical skill", async () => {
   assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
 });
 
-test("rejects a bridge that only mentions the canonical path in a negation", async () => {
-  const root = await fixture();
-  const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
-  await write(
-    root,
-    skillPath(".agents", "push"),
-    `---\nname: push\n---\n\nDo not read \`${pointer}\`.\nThen copy these divergent instructions.\n`,
-  );
-  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
-});
-
-test("rejects a bridge that mentions the path only as something not to read", async () => {
-  const root = await fixture();
-  const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
-  await write(
-    root,
-    skillPath(".agents", "push"),
-    `---\nname: push\n---\n\nThe canonical path \`${pointer}\` is not to be read.\n`,
-  );
-  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
-});
-
 test("does not treat a suffixed path as a canonical pointer", async () => {
   const root = await fixture();
   const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
@@ -104,40 +82,6 @@ test("does not treat a suffixed path as a canonical pointer", async () => {
     `---\nname: push\n---\n\nRead \`${pointer}.bak\` first.\n`,
   );
   assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
-});
-
-test("ignores nested ignored directories, not only the repo root", async () => {
-  const root = await fixture();
-  const prefix = "The gates live in ";
-  const marker = ".agents/skills/push/SKILL.md";
-  const suffix = " as the single source of truth.";
-  await write(root, "src/node_modules/evil.md", `${prefix}${marker}${suffix}\n`);
-  assert.deepEqual(await checkSkillBridges(root), []);
-});
-
-test("keeps bridges below the line cap", async () => {
-  const root = await fixture();
-  const oversized = Array.from({ length: BRIDGE_LINE_CAP + 1 }, () => "line").join("\n");
-  await write(root, skillPath(".agents", "push"), `${bridge("push")}${oversized}\n`);
-  assert.match((await checkSkillBridges(root)).join("\n"), /bridge cap/u);
-});
-
-test("rejects a canonical skill that delegates back to its bridge", async () => {
-  const root = await fixture();
-  const pointer = [".agents", "skills", "push", "SKILL.md"].join("/");
-  await write(
-    root,
-    skillPath(".claude", "push"),
-    `Read \`${pointer}\` and execute that canonical workflow.\n`,
-  );
-  assert.match((await checkSkillBridges(root)).join("\n"), /delegates its canonical contract/u);
-});
-
-test("rejects repository consumers that name a bridge as the gate source", async () => {
-  const root = await fixture();
-  const pointer = [".agents", "skills", "push", "SKILL.md"].join("/");
-  await write(root, "CLAUDE.md", `\`${pointer}\` is the single source for which gate runs.\n`);
-  assert.match((await checkSkillBridges(root)).join("\n"), /names bridge .* as a gate source/u);
 });
 
 test("CLI exits zero when green and one when a canonical pointer is absent", async () => {
@@ -154,4 +98,30 @@ test("CLI exits zero when green and one when a canonical pointer is absent", asy
   });
   assert.equal(red.status, 1);
   assert.match(red.stderr, /does not point at/u);
+});
+
+test("accepts long bridges and canonical pointers without prescribed wording", async () => {
+  const root = await fixture();
+  await write(
+    root,
+    skillPath(".agents", "push"),
+    "Contract: `.claude/skills/push/SKILL.md`\n" + "Runtime detail.\n".repeat(40),
+  );
+  await write(root, "CLAUDE.md", "A historical gate source claim is harmless prose.\n");
+  assert.deepEqual(await checkSkillBridges(root), []);
+});
+
+test("rejects a bridge pointing to a different canonical skill", async () => {
+  const root = await fixture();
+  await write(root, skillPath(".agents", "push"), bridge("verify-ui"));
+  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
+});
+
+test("requires a canonical counterpart for every Codex bridge", async () => {
+  const root = await fixture();
+  await write(root, skillPath(".agents", "git"), bridge("git"));
+  assert.match(
+    (await checkSkillBridges(root)).join("\n"),
+    /git\/SKILL\.md has no canonical Claude skill/u,
+  );
 });

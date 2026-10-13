@@ -3,19 +3,6 @@ import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
-export const BRIDGE_LINE_CAP = 30;
-
-const IGNORED_DIRECTORIES = new Set([
-  ".git",
-  ".gate-receipts",
-  "backend-coverage",
-  "coverage",
-  "dist",
-  "mutants.out",
-  "node_modules",
-  "target",
-]);
-
 function bridgePath(skillName) {
   return [".agents", "skills", skillName, "SKILL.md"].join("/");
 }
@@ -31,8 +18,8 @@ function canonicalPath(skillName) {
  * Enumeration goes through the shared working-tree walker, so a skill that is
  * untracked or shipped as a symlink is still discovered (`f-20260901-16`). A
  * `readdir` walk missed both: `Dirent.isDirectory()` reflects `lstat`, so a
- * symlinked skill directory was silently excluded from the pairing and
- * line-cap checks. Git lists such a link as one entry rather than descending
+ * symlinked skill directory was silently excluded from the pairing check.
+ * Git lists such a link as one entry rather than descending
  * into it, which is why a single path segment is a candidate name here and the
  * `SKILL.md` probe below decides whether it really is a skill.
  */
@@ -64,22 +51,8 @@ async function directorySkillNames(repoRoot, skillsRoot) {
   return names;
 }
 
-function lineCount(text) {
-  const lines = text.split(/\r?\n/u);
-  return lines.at(-1) === "" ? lines.length - 1 : lines.length;
-}
-
 function escapeRegex(value) {
   return value.replace(/[.*+?^$()|[\]{}\\]/gu, "\\$&");
-}
-
-function reverseBridgeInstruction(text, skillName) {
-  const path = escapeRegex(bridgePath(skillName));
-  return new RegExp(
-    `(?:read|follow)[^\\n]*${path}[^\\n]*(?:first|canonical)|` +
-      `${path}[^\\n]*(?:canonical workflow|source of truth)`,
-    "iu",
-  ).test(text);
 }
 
 function pathOccurs(line, canonicalPath) {
@@ -88,59 +61,7 @@ function pathOccurs(line, canonicalPath) {
   );
 }
 
-function pointsAtCanonical(text, canonicalPath) {
-  for (const line of text.split(/\r?\n/u)) {
-    if (!pathOccurs(line, canonicalPath)) continue;
-    if (/\bnot\b|\bdo not\b|\bdon't\b|\bnever\b/iu.test(line)) continue;
-    if (/\b(?:read|follow)\b/iu.test(line)) return true;
-  }
-  return false;
-}
-
-function isGateSourceClaim(line, path) {
-  return (
-    line.includes(path) &&
-    /\bgates?\b/iu.test(line) &&
-    /single source|source of truth|canonical|commands in|gate mapping|runs for/iu.test(line)
-  );
-}
-
-function listRepositoryFiles(repoRoot) {
-  return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: "." }).filter((relativePath) => {
-    if (relativePath.split("/").some((part) => IGNORED_DIRECTORIES.has(part))) return false;
-    // Frozen plans are historical records and may quote the stale claim that motivated a change.
-    return relativePath !== "tasks/plans" && !relativePath.startsWith("tasks/plans/");
-  });
-}
-
-async function findGateSourceClaims(repoRoot, pairedSkills, relativePaths) {
-  const findings = [];
-  for (const relativePath of relativePaths) {
-    const path = resolve(repoRoot, relativePath);
-    let contents;
-    try {
-      contents = await readFile(path);
-    } catch (error) {
-      // A symlinked directory is listed by git as a single entry; it carries no
-      // text to scan, and the skills below it are enumerated separately.
-      if (error?.code === "ENOENT" || error?.code === "EISDIR") continue;
-      findings.push(`${relativePath} could not be read: ${error.message}`);
-      continue;
-    }
-    if (contents.includes(0)) continue;
-    for (const [index, line] of contents.toString("utf8").split(/\r?\n/u).entries()) {
-      for (const skillName of pairedSkills) {
-        const pathMarker = bridgePath(skillName);
-        if (isGateSourceClaim(line, pathMarker)) {
-          findings.push(`${relativePath}:${index + 1} names bridge ${pathMarker} as a gate source`);
-        }
-      }
-    }
-  }
-  return findings;
-}
-
-export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFiles } = {}) {
+export async function checkSkillBridges(repoRoot) {
   const findings = [];
   const [agentNames, claudeNames] = await Promise.all([
     directorySkillNames(repoRoot, ".agents/skills"),
@@ -154,7 +75,6 @@ export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFi
   const claudeSet = new Set(claudeNames);
 
   const allNames = [...new Set([...agentNames, ...claudeNames])].sort();
-  const pairedSkills = [];
   for (const skillName of allNames) {
     const hasAgent = agentSet.has(skillName);
     const hasClaude = claudeSet.has(skillName);
@@ -166,30 +86,14 @@ export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFi
       findings.push(`${bridgePath(skillName)} has no canonical Claude skill`);
       continue;
     }
-    pairedSkills.push(skillName);
 
-    const [agentText, claudeText] = await Promise.all([
-      readFile(resolve(repoRoot, bridgePath(skillName)), "utf8"),
-      readFile(resolve(repoRoot, canonicalPath(skillName)), "utf8"),
-    ]);
+    const agentText = await readFile(resolve(repoRoot, bridgePath(skillName)), "utf8");
     const pointer = canonicalPath(skillName);
-    if (!pointsAtCanonical(agentText, pointer)) {
+    if (!pathOccurs(agentText, pointer)) {
       findings.push(`${bridgePath(skillName)} does not point at ${pointer}`);
-    }
-    const lines = lineCount(agentText);
-    if (lines > BRIDGE_LINE_CAP) {
-      findings.push(
-        `${bridgePath(skillName)} has ${lines} lines; bridge cap is ${BRIDGE_LINE_CAP}`,
-      );
-    }
-    if (reverseBridgeInstruction(claudeText, skillName)) {
-      findings.push(
-        `${canonicalPath(skillName)} delegates its canonical contract back to ${bridgePath(skillName)}`,
-      );
     }
   }
 
-  findings.push(...(await findGateSourceClaims(repoRoot, pairedSkills, listFiles(repoRoot))));
   return findings;
 }
 

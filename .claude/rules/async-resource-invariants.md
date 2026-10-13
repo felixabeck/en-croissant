@@ -16,27 +16,7 @@ per-resource identity, cleanup on *every* exit path, and a bounded retention pol
 `unwrap`/`expect`/`panic!` on anything that reaches the process from a renderer call, a
 user-selected file, a database, an engine, or the network.**
 
-## Why
-
-These three sentences are the distilled result of the backend and frontend audits of 2026-08-09
-(107 and 98 execution items). They are stated once here because the two plans that produced them,
-`BACKEND_AUDIT_PLAN.md` and `FRONTEND_AUDIT_PLAN.md`, are wave-structured process documents:
-their section 1 is the only normative part and the remaining 600+ lines are completed history.
-Both files are committed, but working from them means reading a plan to find a rule.
-
-Each clause has a repository incident behind it, catalogued in the review lenses:
-
-* **Identity and stale-result guard** — `4e8d10b0`: an engine result guard compared
-  `payload.moves.join(",")`, which silently matches across different move lists. `03826167`:
-  results from unloaded engines were still consumed.
-* **Cancellation before use** — `06c23b6a`: search cancellation was checked *after* the progress
-  emit, dropping in-flight results. A cancel flag checked after the emit is not cancellation.
-* **Cleanup on every exit path** — `e5422566`: no `Drop` on `BaseEngine` and no handling of
-  `RunEvent::ExitRequested`, so engine children outlived the application (issue #723).
-  `aebc490e`: `app.listen_global("stop_engine", …)` never unlistened.
-* **Panic-free on untrusted input** — `4e46ed52`: `btoi(...).expect("WhiteElo")` and
-  `Fen::from_ascii(...).unwrap()` crashed an entire import on one malformed tag; `d12f43cc` is the
-  same class for `Unrated` ratings.
+Incident history: `docs/context/RULE-HISTORY.md` → Async and resource invariants.
 
 ## What this means concretely
 
