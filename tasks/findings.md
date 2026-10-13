@@ -10880,6 +10880,9 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 * **Why rejected:** Test injector shape that would only matter behind a gateway that does not exist; no failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e1157b1c155e9a24f3a8b424894ae207a6ad218aec87b9147717db9d4129d9b3","input_sha256":"b83e2a4c61b73cd488e30fd503e21cec201100233a179d518274b4b069642975","kind":"mutation-receipt","operation":"2a9df8fc6f72b79bc1858d1d2bcd5438a93e2db58d8cc8be546a6a37c6e16eef","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-09"],"target":"f-20260919-09","v":1} -->
 
+* **Correction to the rejection rationale:** the production search does dispatch through `BLOCKING_GATEWAY.spawn_cancellable` (`src-tauri/src/db/search.rs:581`); "a gateway that does not exist" was wrong. The rejection stands on rule 4d as test hygiene: thread-local test injectors weaken those tests, but no product behaviour is wrong.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"34063677d373bd72bc8f98d4c73688100403e5b122e5b2ef0a0593cb12682483","input_sha256":"4e4111fa73aec96490e0655f999e369f90f45b502709ab7e91198965fdce38f0","kind":"mutation-receipt","operation":"88b3f192d318a3b48866680df991d46ed0995f31d89f4930b5828712133c2142","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-09"],"target":"f-20260919-09","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
