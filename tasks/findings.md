@@ -13166,6 +13166,8 @@ Recovery update 2026-10-08: this supersedes the recurrence annotation's pending-
 * **Why it matters:** `~/.claude/references/push-review-policy.md` "Proof selection before custom source verification" requires the behavioural route first; these three are evidence that cannot go red for the class of regression they are named after.
 * **Open question:** which behavioural proof replaces each — the mock app from `engine_test_app()` invoking the command with a recording engine, a supervisor-level assertion on the registered `EngineKey`, or a shared ingest seam observed through a test hook — and whether any of the three pins a property that only source structure can express (then document it with its staged-failure matrix instead).
 * **Found by:** Stockfish 19 upgrade build, cumulative review closure round 3 (`review-tests` on the `retire_engine_binary` command test), 2026-10-02; the remaining three identified by the orchestrator reading `chess.rs` at the cited lines.
+* **Why rejected:** Tests match source text; test hygiene with no product failure. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8898e32a5f8bf1f8d5aa9ce76e89e4357ce529e310206424a037d472fa43321d","input_sha256":"eb848455d4c96a76a1c71907f4a112e8147e67a1085a3ba3097da302529846c9","kind":"mutation-receipt","operation":"b820cbda8f16175243ecbb89ee67bc3f9ef029aeac656b34e98b9a6f7430b65e","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-06"],"target":"f-20261002-06","v":1} -->
 
 ---
 
