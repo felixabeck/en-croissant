@@ -15507,3 +15507,19 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Spotted outside diff:** yes — the f-20261001-09 diff is renderer and e2e only.
 * **Related:** f-20261002-02 (a different shared-state race in the same gate run, Rust binding registry); the stale-profraw work recorded at `tasks/handoffs/2026-10-03-machine-dependent-measurement-review.md`, which introduced this test.
 * **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-09, final gates.
+
+---
+
+## 2026-10-13 — filed through the inbox spool
+
+### Contract-gate file walkers list tracked files that are deleted in the working tree, so any uncommitted deletion reds the gate
+
+* **ID:** f-20261013-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** fab6795c-3780-4adc-8356-6d9441cd768f
+* **Impact class:** tooling
+* **Where:** `scripts/working-tree-files.mjs` (`listWorkingTreeFiles` merges `git ls-files --others` with `git ls-files -- <pathspec>`, which lists index entries whether or not the file still exists on disk); consumers that then read every listed path, e.g. `scripts/check-untranslated-jsx.mjs`, `check-ui-boundaries.mjs`, `check-tauri-command-boundary.mjs`, `check-ipc-command-consumers.mjs`.
+* **Defect:** a tracked file deleted in the working tree but not yet committed is still listed, and the consumer's read fails, so `pnpm gates:contract:check` exits 2 on an otherwise valid tree. Observed 2026-10-13 in the f-20261001-11 Library build: the phase deleted `src/components/databases/DatabasesPage.tsx` and `src/components/files/FilesPage.tsx`, and the contract check failed reading the deleted page before commit. The gate claims to scan "committed and uncommitted content alike" (push skill §2), so a pending deletion must be treated as absent, not as an unreadable file.
+* **Spotted outside diff:** yes — the walker is gate tooling; the triggering diff only deleted product files.
+* **Failure scenario:** any phase that removes a tracked source file under `src/` and runs the contract gate (or a leaf running its proof list) before committing gets exit 2, which a leaf must report as a red proof.
+* **Fix shape:** exclude index entries whose working-tree file is missing (`git ls-files --deleted` subtraction, or an `existsSync` filter limited to deletions), while keeping a hard error for a listed live file that cannot be read; add a regression test in the walker's test with a deleted tracked fixture.
+* **Found by:** the f-20261001-11 phase-1 Codex write leaf's final proof run, confirmed by the orchestrator reading `scripts/working-tree-files.mjs`. Related handled finding sharing the file: f-20260830-17 (different cause).
