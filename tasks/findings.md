@@ -10108,6 +10108,9 @@ actually used; the second makes the name true and the values comparable across p
 `cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu --all-targets`
 for the Windows producers (a cross toolchain is available locally; see the f-20260914-10 handoff).
 
+* **Why rejected:** Naming of a field; hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4538f32d2793264698ff4aef30be6872d3ee839b022077cd5923b1b14c52f834","input_sha256":"18e7cfa00500d4c0ddd49638609a089ec266cb104b378e3af6ef758f0a3b4495","kind":"mutation-receipt","operation":"a20b7d60ac9b1eb73e3b4c34cdd650a00fa2bc9f2b409e611df987899b121af1","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-10"],"target":"f-20260916-10","v":1} -->
+
 ---
 
 ## 2026-09-16 — filed through the inbox spool
