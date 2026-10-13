@@ -11119,7 +11119,7 @@ deny stays in place for the next one.
 
 ### Two download-cancellation test fixtures describe a flow that no longer exists
 
-* **ID:** f-20260920-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260920-11 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/engines.controller.test.ts:193` (second `randomUUID()` mock value), `src/components/common/ProgressButton.test.tsx:331` (duplicated `progress.fence` assertion).
 * **Defect:** `459b649f` replaced renderer-minted job ids with native tickets, so the second queued `randomUUID()` return in the engines controller test is now unreachable — the fixture still narrates a two-id flow the code does not have. Separately, `ProgressButton.test.tsx` asserts `progress.fence` twice in one case; deleting the second assertion loses no coverage.
 * **Why it matters:** neither breaks a test. Both make the next reader reconstruct a contract from a fixture that is describing the previous one, which is the specific way test files stop being documentation.
