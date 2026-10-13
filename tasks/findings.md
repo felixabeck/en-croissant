@@ -10295,6 +10295,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why rejected:** Parent-directory swap needs a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd980111656bed1498a9f475f6af7971c0370189d0efeb05a1e7a5f5e2a26c6a","input_sha256":"5fc440d0c88ea266521f95299d503f12e07c4f1cebc3edeed3021872b9ee573c","kind":"mutation-receipt","operation":"4f046605d9d65991a06b8a12e368622493b15305082f832e3418bebc7bb7e66e","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-03"],"target":"f-20260917-03","v":1} -->
 
+* **Correction, handled:** The "Why rejected" note above is void (records lens on the 2026-10-13 setup cleanup): the stored entry binds its parent identity since 5953bafd (`StoredEntry.parent_identity`). Status set to handled by that commit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8d99ba9ef89f7f303434eac55079ac464f8c32be5b41fc40bf434676b56a2b77","input_sha256":"59e8fa5e1a34ba4bd9738234d257de9387d11fe6649634f362b410e6761f589e","kind":"mutation-receipt","operation":"2488faacb80e61e8956791282d1b690c0ef1497c2b2d7fe79a89f68c16bd369b","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-03"],"target":"f-20260917-03","v":1} -->
+
 ### On Windows a concurrent reader's mapping blocks search-index sidecar replacement
 
 * **ID:** f-20260917-04 · **Status:** handled · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
