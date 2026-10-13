@@ -12399,6 +12399,8 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 * **Defect:** each file defines its own `ResizeObserver` stand-in (`observe/unobserve/disconnect` no-ops, installed through `globalThis` or `Object.defineProperty`), the duplication rule 11 forbids. `f38fa6a5` (f-20260829-02) added the shared `installResizeObserverStub()` in `src/tests/resizeObserver.ts`, beside `installMatchMediaStub()`, for `ThemeButton.test.tsx`; the older copies were left because they sit in other areas.
 * **Fix:** route every inert copy through `installResizeObserverStub()`. Keep `GamePreview.test.tsx`'s reporting observer local (it records callbacks to drive sizes) unless the helper gains that as an option.
 * **Proof:** `grep -rn "class .*ResizeObserver" src --include=*.test.tsx` lists only the reporting observer, and `pnpm test` stays green.
+* **Why rejected:** Duplicated test stubs; test hygiene. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d53bab87e5af9a7fd5f89dda6c5b209141ff565f919a60770f83f6be134ce662","input_sha256":"f709ce5fd3a75af0fd928d532e90fd7cee6d32f5084190099812013f599df3d6","kind":"mutation-receipt","operation":"b30a7c20ee4686fce74025194332bee546f0e3f5f8525dbd7e7df01d4af6dcf5","options":{"section":null},"request_id_sha256":null,"results":["f-20260928-01"],"target":"f-20260928-01","v":1} -->
 
 ---
 
