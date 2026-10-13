@@ -10613,6 +10613,8 @@ Obsolete (setup-findings triage 2026-10-13): Drift from 2026-09-17 was fixed by 
 * **Open question:** none — `f-20260917-13` made the app-owned tree canonical, so the measured dilemma (same-session child vs DatabaseFile exemption) does not apply here. The repair is the same `acquire_target` + `acquired.path == stored.path` check those two doors now use.
 * **Related:** `f-20260917-13` (Root `non-linux-platform-port`, so the relation is named here rather than shared); `d-20260918-03`.
 * **Found by:** Grok `review-root-cause` on the `f-20260917-13` plan, 2026-09-18. Confidence 82. Deferred from that slice by MANDATE boundary (rule 12a).
+* **Why rejected:** Identity-only comparison matters only against a same-user local attacker who already owns the user's files; never observed. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup cleanup 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"781a96508ed9303e7b753e4bca371efcb2d005b782bacdc65cd3639a041f6b9e","input_sha256":"44618a7a5786a6ea21d2743643d833dc8d989e46a814925054e3d84d7fe6b547","kind":"mutation-receipt","operation":"a13cda4c376b3739c2e0753160f785976340cafcfb80c47d320c9b71eabcf8a2","options":{"section":null},"request_id_sha256":null,"results":["f-20260918-02"],"target":"f-20260918-02","v":1} -->
 
 ---
 
