@@ -7453,3 +7453,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"497bbc0f54ec0254a106c0058b104f90196a0d08defdc5210ca92e4c30fc00a3","input_sha256":"6a08b8cdeff9f905e5bf3777361748d77f41740ab3aadfc8c2c2861e08f8df33","kind":"mutation-receipt","operation":"46331a0c84b4b3637cc89195a2a42493177a9c740b5c76ed6a7fae8616286c05","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261013-13 — How does the Annotate editor get its own marked instance?
+
+* **Question:** The per-editor inline-only Markdown parser needs the `Marked` class; how does the renderer depend on it?
+* **Governs:** f-20261001-10
+* **Chosen:** `marked` becomes a direct dependency pinned to `17.0.3`, the exact version `@tiptap/markdown@3.20.0` already resolves, so the lockfile keeps one copy.
+* **Rejected:** importing tiptap's transitive copy (not resolvable under pnpm's strict layout); mutating the global instance through `markedOptions` (keeps the unbounded per-editor tokenizer accumulation and affects every marked user).
+* **Reason:** an isolated per-editor instance needs the class. Full-auto recommendation from the reviewed plan. Reversal path: drop the direct dependency together with the custom instance.
+* **Review:** `tasks/handoffs/2026-10-13-comment-dialect-and-inline-flow-review.md`
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run adopting the reviewed plan for f-20261001-10 (session 92629247-30b0-484a-a451-64fd78836bcb), 2026-10-13 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1cffd6a5dc32727ce4c4c124ee639825645e1031f9f991ccfaf50ec5a657918b","input_sha256":"925602e663d25800c6b38f8b54e413c6a9df4d192ca4d6cce5fec2d2f05bdcd7","kind":"mutation-receipt","operation":"01c6b4ce751b5804dd05306f27b46d1b02d402fa0e363c7922eef255171641aa","options":{"section":null},"request_id_sha256":null,"results":["d-20261013-13"],"target":"decisions-ledger","v":1} -->
