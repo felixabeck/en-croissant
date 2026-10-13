@@ -10228,6 +10228,8 @@ That pin is not taken on trust. Its staged-failure matrix is recorded next to it
 * **Open question:** is the `write` kind missing the profile flags the `read-only` kind passes, or does Grok apply a leaf profile only to sessions it considers read-only — and does the same gap exist for kinds `resume` and `verify-ui`, which no leaf in this run exercised? The answer decides whether the fix is one launcher branch or a `~/.grok` profile definition. Note that `executor-profiles.md` §5a already records the live verification rig as unrepaired under `f-20260913-18`, so the offline tests that pass today never claimed to prove what a real leaf advertises; this finding is the first measurement that it does not.
 * **Related:** `f-20260913-18` (the unrepaired live leaf-profile rig, which is why this went unmeasured). Found while running `f-20260914-08` phase A.
 * **Found by:** orchestrator of the `f-20260914-08` build run, 2026-09-17, from the launcher's own printed `profile-check` command.
+* **Why rejected:** Grok write-leaf profile; executor policy. Not worth fixing under universal rule 4d (only a defect with a cost is a finding; setup-findings triage 2026-10-13).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"56f98151826471882e0e14220f1c5284aee779926f94a81dac423a72d3599acd","input_sha256":"00ea0480ad8519220f4ed1dd5c566a5e863ebf02ec87509272d52dcdc33792a4","kind":"mutation-receipt","operation":"2ae090030ad5d2bd3074be61b55dc88bfbe591cc244c4ecf854e344a229e6f26","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-01"],"target":"f-20260917-01","v":1} -->
 
 ### The Windows test binary dies with STATUS_ACCESS_VIOLATION, so no Windows test result is trustworthy
 
