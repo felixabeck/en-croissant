@@ -289,6 +289,13 @@ const cases: CaseInput[] = [
     },
     { name: "blank line normalization", input: "a\n\n\n\nb", text: "a\n\nb", edited: "a\n\nb!" },
     {
+        name: "quoted link title",
+        input: `[x](https://x.y 'a "b"')`,
+        text: "x",
+        edited: '[x](https://x.y "a \\"b\\"")!',
+        formatting: [{ selector: 'a[href="https://x.y"]', text: "x" }],
+    },
+    {
         name: "hard break",
         input: "a  \nb",
         text: "a\nb",

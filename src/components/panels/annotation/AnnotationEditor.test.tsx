@@ -11,9 +11,9 @@ import {
   commentDialectCases,
   commentDomText,
   commentMarkedText,
-  commentMarkSelector,
   forbiddenCommentElements,
 } from "@/components/common/tests/commentDialectCases";
+import { assertCommentFormatting } from "@/components/common/tests/assertCommentFormatting";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { defaultTree } from "@/utils/treeReducer";
@@ -97,7 +97,7 @@ test("keeps inline controls and removes every block control", async () => {
 });
 
 test.each(commentDialectCases)(
-  "loads without writing and saves only the edit: $name",
+  "loads without writing and preserves text on edit while syntax may normalize: $name",
   async ({ input, edited, text, editorText, formatting, absent }) => {
     await mount(input);
 
@@ -106,15 +106,8 @@ test.each(commentDialectCases)(
     expect(editor().markdown!.instance.lexer(input)).toEqual(createCommentMarkdown().lexer(input));
     expect(editorElement().querySelector(forbiddenCommentElements)).toBeNull();
     expect(commentDomText(editorElement())).toBe(editorText ?? text);
-    for (const selector of absent) {
-      expect(editorElement().querySelector(commentMarkSelector(selector))).toBeNull();
-    }
-    for (const mark of formatting) {
-      const expected = editorText !== undefined && mark.text === text ? editorText : mark.text;
-      expect(commentMarkedText(editorElement(), mark.selector).replace(/\s/g, "")).toBe(
-        expected.replace(/\s/g, ""),
-      );
-    }
+    const fixture = { text, editorText, formatting, absent };
+    assertCommentFormatting(editorElement(), fixture, true);
     await act(async () => {
       const end = editor().state.doc.content.size - 1;
       // Append an unformatted edit, independently of the preceding text's marks.
@@ -127,15 +120,7 @@ test.each(commentDialectCases)(
       editor().commands.setContent(expected, { emitUpdate: false, contentType: "markdown" });
     });
     expect(commentDomText(editorElement())).toBe((editorText ?? text) + "!");
-    for (const selector of absent) {
-      expect(editorElement().querySelector(commentMarkSelector(selector))).toBeNull();
-    }
-    for (const mark of formatting) {
-      const expectedMark = editorText !== undefined && mark.text === text ? editorText : mark.text;
-      expect(commentMarkedText(editorElement(), mark.selector).replace(/\s/g, "")).toBe(
-        expectedMark.replace(/\s/g, ""),
-      );
-    }
+    assertCommentFormatting(editorElement(), fixture, true);
     const readerHost = document.createElement("div");
     const readerRoot = createRoot(readerHost);
     try {
@@ -150,14 +135,7 @@ test.each(commentDialectCases)(
       );
       const readerContent = readerHost.querySelector("[data-comment-reader]")!;
       expect(commentDomText(readerContent)).toBe(text + "!");
-      for (const selector of absent) {
-        expect(readerContent.querySelector(selector)).toBeNull();
-      }
-      for (const mark of formatting) {
-        expect(commentMarkedText(readerContent, mark.selector).replace(/\s/g, "")).toBe(
-          mark.text.replace(/\s/g, ""),
-        );
-      }
+      assertCommentFormatting(readerContent, fixture);
     } finally {
       await act(async () => readerRoot.unmount());
     }
@@ -207,17 +185,158 @@ function registeredCounts(instance: typeof marked) {
   };
 }
 
-test.each(["&nbsp;", "&nbsp;\n\n&nbsp;"])(
-  "keeps literal entity text when deleting the final edit from %j",
+async function reloadSavedComment() {
+  const saved = store.getState().currentNode().comment;
+  await act(async () =>
+    editor().commands.setContent(saved, { emitUpdate: false, contentType: "markdown" }),
+  );
+  return saved;
+}
+
+test("A: Enter authors an empty paragraph without adding visible entity text", async () => {
+  await mount("x");
+  await act(async () => {
+    editor().commands.setTextSelection(2);
+    editor().commands.keyboardShortcut("Enter");
+  });
+  expect(editor().getJSON().content).toHaveLength(2);
+  expect(store.getState().currentNode().comment).toBe("x");
+  await reloadSavedComment();
+  expect(commentDomText(editorElement())).toBe("x");
+});
+
+test("A: consecutive empty paragraphs normalize without writing a sentinel", async () => {
+  await mount("x");
+  await act(async () => {
+    editor().commands.setTextSelection(2);
+    editor().commands.keyboardShortcut("Enter");
+    editor().commands.keyboardShortcut("Enter");
+    editor().commands.insertContent("y");
+  });
+  expect(await reloadSavedComment()).toBe("x\n\ny");
+  expect(commentDomText(editorElement())).toBe("x\n\ny");
+  await act(async () => editor().commands.clearContent());
+  expect(editor().getMarkdown()).toBe("");
+  expect(store.getState().currentNode().comment).toBe("");
+});
+
+test.each(["&nbsp;", "&nbsp;  \n&nbsp;", "&nbsp;\n\n&nbsp;", "&amp;  \n&#160;"])(
+  "B: deleting the final edit preserves entity text and boundaries in %j",
   async (source) => {
     await mount(source + "!");
     await act(async () => {
       const end = editor().state.doc.content.size - 1;
       editor().view.dispatch(editor().state.tr.delete(end - 1, end));
     });
+    expect(editor().getMarkdown()).toBe(source);
     expect(writeComment).toHaveBeenCalledExactlyOnceWith(source);
-    expect(store.getState().currentNode().comment).toBe(source);
-    expect(commentDomText(editorElement())).toBe(source);
+    await reloadSavedComment();
+    expect(commentDomText(editorElement())).toBe(source.replace(/  \n/g, "\n"));
+  },
+);
+
+test.each([`a "b"`, String.raw`a \ "b" 'c' (d)`, "line one\nline two"])(
+  "C: editing a titled link preserves its title %j on reload",
+  async (title) => {
+    const escaped = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    await mount(`[x](https://x.y "${escaped}")`);
+    expect(editorElement().querySelector("a")?.getAttribute("title")).toBe(title);
+    await act(async () => {
+      editor().view.dispatch(editor().state.tr.insert(2, editor().schema.text("!", [])));
+    });
+    expect(await reloadSavedComment()).toBe(`[x](https://x.y "${escaped}")!`);
+    expect(commentDomText(editorElement())).toBe("x!");
+    expect(editorElement().querySelector("a")?.getAttribute("title")).toBe(title);
+  },
+);
+
+test("B: typed entity text survives saving and reloading beside a hard break", async () => {
+  await mount("");
+  await act(async () => {
+    editor().commands.insertContent("&nbsp;");
+    editor().commands.keyboardShortcut("Shift-Enter");
+    editor().commands.insertContent("&amp;");
+  });
+  expect(await reloadSavedComment()).toBe("&nbsp;  \n&amp;");
+  expect(commentDomText(editorElement())).toBe("&nbsp;\n&amp;");
+});
+
+test.each([
+  { mark: "underline", selector: "u", delimiter: "++" },
+  { mark: "bold", selector: "strong", delimiter: "**" },
+  { mark: "italic", selector: "em", delimiter: "*" },
+  { mark: "strike", selector: "s", delimiter: "~~" },
+])(
+  "D: authored $mark keeps text and coverage at whitespace edges",
+  async ({ mark, selector, delimiter }) => {
+    await mount(" x ");
+    await act(async () => {
+      editor().commands.setTextSelection({ from: 1, to: 4 });
+      editor().commands.setMark(mark);
+    });
+    expect(await reloadSavedComment()).toBe(` ${delimiter}x${delimiter} `);
+    expect(commentDomText(editorElement())).toBe(" x ");
+    expect(commentMarkedText(editorElement(), selector)).toBe("x");
+  },
+);
+
+test.each(["hard", "soft"])(
+  "D: authored underline closes and reopens across a %s break",
+  async (kind) => {
+    await mount(kind === "soft" ? "a\nb" : "ab");
+    if (kind === "hard") {
+      await act(async () => {
+        editor().commands.setTextSelection(2);
+        editor().commands.keyboardShortcut("Shift-Enter");
+      });
+    }
+    await act(async () => {
+      editor().commands.selectAll();
+      editor().commands.toggleUnderline();
+    });
+    const saved = await reloadSavedComment();
+    expect(saved).toBe(`++a++${kind === "hard" ? "  " : ""}\n++b++`);
+    expect(commentDomText(editorElement())).toBe("a\nb");
+    expect(commentMarkedText(editorElement(), "u")).toBe("ab");
+  },
+);
+
+test.each([
+  { input: "**a\nb**", expected: "++**a**++\n++**b**++", selector: "u strong" },
+  { input: "*a\nb*", expected: "++*a*++\n++*b*++", selector: "u em" },
+  { input: "~~a\nb~~", expected: "++~~a~~++\n++~~b~~++", selector: "u s" },
+  {
+    input: "[a\nb](https://x.y)",
+    expected: "++[a](https://x.y)++\n++[b](https://x.y)++",
+    selector: "u a",
+  },
+])(
+  "D: authored underline preserves nested formatting across lines in $input",
+  async ({ input, expected, selector }) => {
+    await mount(input);
+    await act(async () => {
+      editor().commands.selectAll();
+      editor().commands.toggleUnderline();
+    });
+    expect(await reloadSavedComment()).toBe(expected);
+    expect(commentDomText(editorElement())).toBe("a\nb");
+    expect(commentMarkedText(editorElement(), selector)).toBe("ab");
+  },
+);
+
+test.each(["a   b", "a++b"])(
+  "D: an unrepresentable authored underline preserves %j without generated delimiters",
+  async (text) => {
+    await mount(text);
+    await act(async () => {
+      editor().commands.setTextSelection(
+        text === "a   b" ? { from: 2, to: 5 } : { from: 1, to: text.length + 1 },
+      );
+      editor().commands.toggleUnderline();
+    });
+    expect(await reloadSavedComment()).toBe(text);
+    expect(commentDomText(editorElement())).toBe(text);
+    expect(editorElement().querySelector("u")).toBeNull();
   },
 );
 

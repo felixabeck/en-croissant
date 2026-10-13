@@ -10,9 +10,9 @@ import Comment from "./Comment";
 import {
   commentDialectCases,
   commentDomText,
-  commentMarkedText,
   forbiddenCommentElements,
 } from "./tests/commentDialectCases";
+import { assertCommentFormatting } from "./tests/assertCommentFormatting";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -58,14 +58,7 @@ test.each(commentDialectCases)(
 
     expect(commentDomText(container)).toBe(text);
     expect(container.querySelector(forbiddenCommentElements)).toBeNull();
-    for (const selector of absent ?? []) {
-      expect(container.querySelector(selector)).toBeNull();
-    }
-    for (const expected of formatting ?? []) {
-      expect(commentMarkedText(container, expected.selector).replace(/\s/g, "")).toBe(
-        expected.text.replace(/\s/g, ""),
-      );
-    }
+    assertCommentFormatting(container, { text, formatting, absent });
     for (const link of container.querySelectorAll("a")) {
       expect(link.getAttribute("target")).toBe("_blank");
       expect(link.getAttribute("rel")).toBe("noreferrer");
