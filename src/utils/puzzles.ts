@@ -53,22 +53,18 @@ export function getPuzzleProgress(
         }
         node = child;
     }
-    const cursor = node;
     const step = position.length;
-    let frontier = step;
-    while (frontier < puzzle.moves.length) {
-        const child = node.children[0];
-        if (!child?.move) break;
-        const [parent] = positionFromFen(node.fen);
-        if (!parent || !puzzleMoveMatches(parent, child.move, puzzle.moves[frontier])) break;
-        node = child;
-        frontier++;
-    }
-    const [pos] = positionFromFen(cursor.fen);
+    const [pos] = positionFromFen(node.fen);
+    const child = node.children[0];
+    const atFrontier = !(
+        pos &&
+        child?.move &&
+        puzzleMoveMatches(pos, child.move, puzzle.moves[step])
+    );
     const move = step > 0 ? parseUci(puzzle.moves[step] ?? "") : undefined;
     const nextMove =
         pos && !pos.isEnd() && move && isNormal(move) && pos.isLegal(move) ? move : null;
-    return { step, atFrontier: step === frontier, nextMove };
+    return { step, atFrontier, nextMove };
 }
 
 export function captureTreePositionOwner(
