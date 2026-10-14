@@ -48,7 +48,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/utils/sound", () => ({ playSound: mocks.playSound }));
-vi.mock("@tauri-apps/plugin-os", () => ({ platform: () => "linux" }));
+vi.mock("@/platform/native", async () => ({
+  ...(await vi.importActual<typeof import("@/platform/native")>("@/platform/native")),
+  platform: () => "linux",
+}));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/i18n", async (original) => ({
