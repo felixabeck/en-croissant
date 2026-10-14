@@ -7753,3 +7753,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The same locked admission created a distinct new journal inode and refused it against live token700 revision.db3, strong count2, proving the registration's metadata outlived its physical inode. Continuous physical ownership prevents inode reuse while preserving genuine alias refusals. macOS vnode closes can release process POSIX locks, so final-pin closure must exclude successor admission. Evidence and two-round native plan reviews are archived in tasks/handoffs/2026-10-14-f-20261001-14-review.md. This complements d-20261001-06 and d-20260929-04, whose metadata probes and protected opens remain unchanged. Reversal requires an equally verified physical owner preserving identity and locks for the full claim lifetime.
 * **Decided by:** Codex, autonomously under Felix's full-auto manual completion request, 2026-10-14 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1e52bda7fb28c984e025b350a8c7bc4c8ab729422cda1dbc1eaba5d8689aa645","input_sha256":"877f8b2b5ac8aa5b24d4cd47ae06c5675f1f163c2615bb019f9fb5a71b4b9c07","kind":"mutation-receipt","operation":"dbdd11dc3134b80bd62952b8b0526177158531b5032f8d321394b7e7be68f812","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-24"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-25 — How should ordinary engine-list writes become authoritative?
+
+* **Question:** How should ordinary engine-list writes become authoritative?
+* **Governs:** f-20261001-17
+* **Chosen:** Choose default staged publication plus shared local editor drafts.
+* **Rejected:** optimistic global publication with rollback.
+* **Reason:** game/analysis consumers can act on unsaved records before rollback, and full-record rollback can overwrite newer writes. Ordinary failed changes should never become liveness authority. Reversal requires proving equivalent visibility, receipt, hydration and queued-intent behavior before switching the atom contract.
+* **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f440f40084c8f1d6c0d679e70f6a3f1f2c71163c22ec1e40191e4cc63e1d4fcf","input_sha256":"66ce8bf187607c5e42ee8230e76a035174d1f52110c5a05b9bc235e20696d210","kind":"mutation-receipt","operation":"660f1182766463a1ca7bb613aebc2a12963e08f994caeb90aab344404b678803","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-25"],"target":"decisions-ledger","v":1} -->
