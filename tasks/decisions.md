@@ -7552,3 +7552,58 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions.
 * **Decided by:** Codex drain 0b609d43-eba0-478d-bcde-9a0035e526a9 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":11,"effect_sha256":"b0b1efd5eb447a0aae78a1cb5a2aac4c188fa680b08c37cd6a6f67ed12fe7411","input_sha256":"5164aedda6789ca8b511070ab9c218e5bd71e3ea3b51098127e7d0587d93dd6c","kind":"mutation-receipt","operation":"6be743e3d9b292157fb7ea7f324ddf999b8b3bef15737714ed810a990aa974b6","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-04 — Where does failed engine cleanup remain owned?
+
+* **Question:** Where does failed engine cleanup remain owned?
+* **Governs:** f-20261001-14
+* **Chosen:** Extend the existing generation-keyed pending registry with retained child cleanup ownership and bounded explicit retries. Concurrent callers share each attempt losslessly and cancellation cannot cancel an owned attempt.
+* **Rejected:** A second registry, unlimited automatic retries, and retaining only a finished actor that dropped its child handle.
+* **Reason:** The supervisor drains already discover pending generations. Retaining the original handle makes an unconfirmed reap retryable without PID identity reuse. Reversal path: replace this owner with a proven implementation of the same O1–O5 contract.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-05 — Does a timed-out child wait discard cleanup authority?
+
+* **Question:** Does a timed-out child wait discard cleanup authority?
+* **Governs:** f-20261001-14
+* **Chosen:** Retain the child handle independently of the closed protocol actor until confirmed reaped. Partially correct d-20260901-18's drop-after-timeout clause while preserving bounded waits and rejecting detached unbounded waits.
+* **Rejected:** Dropping the handle after timeout and depending on best-effort kill-on-drop, or keeping the protocol actor accepting work.
+* **Reason:** New evidence from f-20261001-14 shows lost cleanup authority after failed termination, including the production game loop. Actor exit and independent child recovery ownership are compatible. Reversal path: another proven bounded owner, never unconfirmed cleanup reported as success.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-06 — How do later retries preserve the original termination outcome?
+
+* **Question:** How do later retries preserve the original termination outcome?
+* **Governs:** f-20261001-14
+* **Chosen:** Preserve d-20261006-16 and d-20261006-19's pending owner, cancellation independence and lossless sharing, extending completed failures to explicit retry attempts. Preserve d-20261007-17, d-20261007-19, d-20261008-10 and d-20261008-11. Refine d-20261008-12 by retaining original actor ending and join results separately from later child cleanup results.
+* **Rejected:** Overwriting an original attached caller's failure when a later child retry succeeds, or permitting concurrent independent cleanup of one handle.
+* **Reason:** The failed-generation evidence requires retries while the original teardown outcome remains observable by every attached owner. Reversal path: equivalently prove per-attempt result sharing and original-result preservation with another state representation.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-07 — How is non-evictable cleanup ownership bounded?
+
+* **Question:** How is non-evictable cleanup ownership bounded?
+* **Governs:** f-20261001-14
+* **Chosen:** Reserve 4096 concurrently owned child-generation slots before production child creation. Slots follow spawning, active and unresolved children, releasing only before spawn abandonment or after confirmed reaping.
+* **Rejected:** Evicting failed owners or refusing insertion only after a child exists.
+* **Reason:** Failed cleanup cannot safely expire and repeated failures otherwise accumulate unbounded processes and handles. Reversal path: an equally proven finite ownership bound. No user setting or new tool is added.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-08 — Who retains the production game-loop cleanup result?
+
+* **Question:** Who retains the production game-loop cleanup result?
+* **Governs:** f-20261001-14
+* **Chosen:** The live session retains the real loop's cleanup outcome through natural completion until retirement, replacement or shutdown observes it. Bound unobserved failure ownership at 4096 with reservation before launch, and process each session once per shutdown invocation.
+* **Rejected:** Log-only failures and relying on a later empty supervisor scan.
+* **Reason:** The filed production-loop evidence demonstrates false successful replacement and shutdown after a failed reap. Reversal path: make the actual joined loop result equivalently propagate cleanup failure to every session owner.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-09 — How do task join errors cross the renderer boundary?
+
+* **Question:** How do task join errors cross the renderer boundary?
+* **Governs:** f-20261001-14
+* **Chosen:** One shared stable public task-join conversion at actor and game boundaries, with detailed diagnostics retained only in native logs. Preserve ErrorPayload shape and existing category.
+* **Rejected:** Raw JoinError interpolation, a new public error variant and duplicate join mappers.
+* **Reason:** Tokio JoinError Display includes panic string payloads, and both existing Conflict messages serialize those details. Reversal path: another proven public/native diagnostic separation, never restoring panic details in public messages.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"60cb21b8b07937ec6373a4783acc0b612c5ea8cc3ce15cac8e975fccda22af71","input_sha256":"56292f86572f9736af59e80076e25e1afe0df7ecb4f85b21cd8c0136e7a98490","kind":"mutation-receipt","operation":"ecb0913ea2928e7cc9bcfe310ab6719c74ccfe2ade08164f54074fdbf5499c09","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-04","d-20261014-05","d-20261014-06","d-20261014-07","d-20261014-08","d-20261014-09"],"target":"decisions-ledger","v":1} -->
