@@ -104,12 +104,14 @@ const defaultTournamentState: DatabaseViewStore["tournaments"] = {
 // have no backend ordering/ELO bound, and nullable pagination uses consumer defaults.
 const queryIntegerSchema = z.number().int().min(-2_147_483_648).max(2_147_483_647);
 const queryRangeSchema = z.tuple([queryIntegerSchema, queryIntegerSchema]).nullish();
+// Matches MAX_PAGE_SIZE in src-tauri/src/db/mod.rs.
+const MAX_PAGE_SIZE = 1000;
 
 function createQueryOptionsSchema<Sort extends string>(sorts: [Sort, ...Sort[]]) {
     return z.object({
         skipCount: z.boolean(),
         page: queryIntegerSchema.min(1).nullish(),
-        pageSize: queryIntegerSchema.min(1).max(1000).nullish(),
+        pageSize: queryIntegerSchema.min(1).max(MAX_PAGE_SIZE).nullish(),
         sort: z.enum(sorts),
         direction: z.enum(["asc", "desc"]),
     });
