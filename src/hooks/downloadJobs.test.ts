@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     cancelDownload: vi.fn(),
@@ -45,9 +45,39 @@ beforeEach(() => {
         );
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("download jobs", () => {
+    test("falls back to console with safe logger-failure context when progress clear and logger both reject", async () => {
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const failure = new Error("download failed");
+        mocks.clearProgress.mockRejectedValueOnce(new Error("clear rejected"));
+        mocks.warn.mockRejectedValueOnce(
+            new Error("logger failed at /private/logger.log token=secret"),
+        );
+        const running = runDownloadJob("job", async () => {
+            throw failure;
+        });
+        const cancel = cancelDownloadJob("job");
+
+        await expect(running).rejects.toBe(failure);
+        await expect(cancel).rejects.toBe(failure);
+        const message = "clear progress job: Error: clear rejected";
+        expect(mocks.warn).toHaveBeenCalledExactlyOnceWith(message);
+        expect(consoleWarn).toHaveBeenCalledExactlyOnceWith(message, {
+            loggerFailure: {
+                category: "unexpected",
+                message: "logger failed at [path] token=[redacted]",
+            },
+        });
+        await expect(cancelDownloadJob("job")).rejects.toMatchObject({ reason: "lost" });
+        await expect(runDownloadJob("job", async () => "retry")).resolves.toBe("retry");
+    });
+
     test("returns a null cleanup floor after a rejected clear and permits a retry", async () => {
         mocks.clearProgress.mockRejectedValueOnce(new Error("clear rejected"));
+        mocks.warn.mockRejectedValueOnce(new Error("logger unavailable"));
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         let rejectRun!: (error: unknown) => void;
         const running = runDownloadJob(
             "job",
@@ -62,6 +92,7 @@ describe("download jobs", () => {
         expect(await settled).toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: null });
         expect(mocks.warn).toHaveBeenCalledOnce();
+        expect(consoleWarn).toHaveBeenCalledOnce();
         await expect(runDownloadJob("job", async () => "retry")).resolves.toBe("retry");
     });
     test("passes the prepared ticket to the download and removes the entry", async () => {

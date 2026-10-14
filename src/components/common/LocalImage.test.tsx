@@ -63,6 +63,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
 });
 
 test("renders a resolved PNG as an independently encoded data URL", async () => {
@@ -132,24 +133,27 @@ test("never logs the persisted image id, including a UUID-shaped secret", async 
   }
 });
 
-test("swallows a logger rejection", async () => {
-  mocks.readEngineImage.mockRejectedValue(new Error("read failed"));
-  let catchAttached = false;
-  mocks.warn.mockImplementationOnce(() => {
-    const rejection = Promise.reject(new Error("Tauri logger unavailable"));
-    const originalCatch = rejection.catch.bind(rejection);
-    rejection.catch = ((onRejected) => {
-      catchAttached = true;
-      return originalCatch(onRejected);
-    }) as typeof rejection.catch;
-    return rejection;
+test("falls back to console with safe logger-failure context when image read and logger both reject", async () => {
+  const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const secret = "123e4567-e89b-12d3-a456-426614174000";
+  mocks.readEngineImage
+    .mockResolvedValueOnce({ bytes: [1, 2, 3], mimeType: "image/png" })
+    .mockRejectedValueOnce(new Error("read failed at /private/engine-image.png"));
+  mocks.warn.mockRejectedValueOnce(new Error("logger failed at /private/logger.log token=secret"));
+
+  await act(async () => renderImage("first-image"));
+  expect(renderedSrc()).toContain("data:image/png;base64,");
+  await act(async () => renderImage(secret));
+
+  expect(renderedSrc()).toBeNull();
+  expect(mocks.warn).toHaveBeenCalledExactlyOnceWith("read failed at [path]");
+  expect(consoleWarn).toHaveBeenCalledExactlyOnceWith("read failed at [path]", {
+    loggerFailure: {
+      category: "unexpected",
+      message: "logger failed at [path] token=[redacted]",
+    },
   });
-
-  await act(async () => renderImage("logger-test"));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  expect(catchAttached).toBe(true);
-  expect(mocks.warn).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(secret);
 });
 
 async function settleSecondRead(secondBytes: number[]) {

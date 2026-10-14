@@ -1,8 +1,7 @@
 import { Image, type ImageProps } from "@mantine/core";
 import { useEffect, useState } from "react";
 import type { EngineImageHandle } from "@/bindings";
-import { normalizeError } from "@/platform/errors";
-import { warn } from "@/platform/native";
+import { normalizeError, warnSafely } from "@/platform/errors";
 import { tauri } from "@/platform/tauri";
 
 // 8192 is deliberately not a multiple of 3: a 3-aligned chunk (for example, 8190) makes
@@ -37,7 +36,7 @@ function LocalImage({ image, ...props }: ImageProps & { image: EngineImageHandle
       .catch((error: unknown) => {
         if (!cancelled) {
           setSrc(undefined);
-          void warn(normalizeError(error).message).catch(() => undefined);
+          warnSafely(normalizeError(error).message);
         }
       });
     return () => {

@@ -1,8 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { errorUnlessCancelled, warnSafely } from "@/platform/errors";
 import { cancellationError, tauri, withDownloadTicket } from "@/platform/tauri";
-import { warn } from "@/platform/native";
 
 /**
  * Why a cancellation did not take effect. `lost` means the download settled on its own
@@ -38,13 +37,13 @@ const publish = () => subscribers.forEach((subscriber) => subscriber());
 
 /**
  * Clears a job's progress entry, best effort: the result of a download is never a failure to
- * tidy its bar. `warn` itself rejects without a Tauri backend, so its promise is swallowed too.
+ * tidy its bar. If the native warning logger rejects, the warning falls back to the console.
  */
 async function clearDownloadProgress(progressId: string): Promise<bigint | null> {
     try {
         return await tauri.clearProgress(progressId);
     } catch (error) {
-        void warn(`clear progress ${progressId}: ${String(error)}`).catch(() => undefined);
+        warnSafely(`clear progress ${progressId}: ${String(error)}`);
         return null;
     }
 }
