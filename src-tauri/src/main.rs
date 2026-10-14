@@ -1694,25 +1694,31 @@ async fn open_engine_workspace(
     root: crate::infra::path_authority::EngineRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    use tauri_plugin_opener::OpenerExt;
     let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "open_engine_workspace",
-        move || open_engine_workspace_blocking(&authority, app, root),
+        move || {
+            open_engine_workspace_blocking(&authority, root, |path| {
+                app.opener().open_path(path.to_string_lossy(), None::<&str>)
+            })
+        },
     )
     .await
 }
 
 fn open_engine_workspace_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
-    app: tauri::AppHandle,
     root: crate::infra::path_authority::EngineRootHandle,
+    opener: impl FnOnce(&std::path::Path) -> Result<(), tauri_plugin_opener::Error>,
 ) -> Result<(), Error> {
-    use tauri_plugin_opener::OpenerExt;
     let path = authority.with_mut(|authority| authority.engine_root_path(&root))??;
-    app.opener()
-        .open_path(path.to_string_lossy(), None::<&str>)
-        .map_err(|error| Error::InvalidInput(format!("cannot open engine workspace: {error}")))
+    opener(&path).map_err(|error| {
+        let error = Error::from(error);
+        log::error!("cannot open engine workspace: {}", error.diagnostic());
+        error
+    })
 }
 
 /// Whole-process budget for shutdown cleanup. Independent resources are reaped
@@ -2977,6 +2983,41 @@ mod tests {
             error.diagnostic(),
             "I/O failure: app-owned default root is not a directory"
         );
+    }
+
+    #[test]
+    fn open_engine_workspace_redacts_opener_path_and_logs_native_cause() {
+        use crate::infra::path_authority::{PathAuthority, SharedPathAuthority};
+        let directory = tempfile::tempdir().unwrap();
+        let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
+        let root = authority
+            .get_or_create_engine_root(directory.path(), "Engines", None)
+            .unwrap();
+        let authority = SharedPathAuthority::installed(authority);
+        let capture = crate::error::LogCaptureScope::start();
+        let cause = format!(
+            "opener rejected private path {}",
+            directory.path().display()
+        );
+        let error = open_engine_workspace_blocking(&authority, root, |path| {
+            assert_eq!(path, directory.path());
+            Err(tauri_plugin_opener::Error::Io(std::io::Error::other(
+                cause.clone(),
+            )))
+        })
+        .unwrap_err();
+        let payload = serde_json::to_value(&error).unwrap();
+        assert!(!payload.to_string().contains(&cause));
+        assert!(!payload
+            .to_string()
+            .contains(&directory.path().display().to_string()));
+        assert_eq!(payload["category"], "platform");
+        assert!(matches!(&error, Error::TauriOpener(_)));
+        assert!(error.diagnostic().contains(&cause));
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|message| message.contains(&cause)));
     }
 
     #[test]

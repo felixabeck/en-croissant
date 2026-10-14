@@ -1316,13 +1316,7 @@ async fn finish_analysis_failure<R: tauri::Runtime>(
             terminal.category()
         );
     }
-    match cleanup {
-        Ok(()) => error,
-        Err(cleanup) => Error::OperationAndCleanup {
-            primary: error.to_string(),
-            cleanup: cleanup.to_string(),
-        },
-    }
+    Error::with_cleanup(error, cleanup)
 }
 
 // Keep the command's independently validated engine, report and native-owner fields visible at
@@ -2191,6 +2185,51 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn finish_analysis_failure_retains_both_native_causes_and_safe_payload() {
+        let app = engine_test_app();
+        let supervisor = Arc::new(crate::engine::EngineSupervisor::default());
+        let key = EngineKey::new("analysis-fold".into(), "engine".into()).unwrap();
+        let actor = EngineActor::failing_terminate_test_actor("analysis-fold-cleanup-private-path");
+        let owner = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                key.engine.clone(),
+                crate::infra::path_authority::PathRef {
+                    id: "binary".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let progress_state = crate::progress::ProgressStore::default();
+        let progress = begin_progress(&progress_state, &app, "analysis-fold".into()).unwrap();
+        let error = finish_analysis_failure(
+            Some(RegistrationGuard::new(supervisor, key, owner.generation)),
+            &progress_state,
+            &app,
+            &progress,
+            std::io::Error::other("analysis-fold-primary-private-path").into(),
+        )
+        .await;
+        let diagnostic = error.diagnostic();
+        assert!(
+            diagnostic.contains("analysis-fold-primary-private-path"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("analysis-fold-cleanup-private-path"),
+            "{diagnostic}"
+        );
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert_eq!(
+            payload["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(!payload.to_string().contains("private-path"));
+    }
+
     fn string_option(name: &str, value: &str) -> EngineOption {
         EngineOption::String {
             name: name.into(),
@@ -2839,6 +2878,188 @@ done
             assert_eq!(payloads[1]["progress"], 100.0);
         }
         probe.actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_best_moves_command_releases_exact_owner_and_preserves_successor() {
+        for successor in [false, true] {
+            let app = engine_test_app();
+            let state = app.state::<AppState>().inner().clone();
+            let supervisor = state.engine_supervisor.clone();
+            let key =
+                EngineKey::new(format!("command-abort-{successor}"), "engine".into()).unwrap();
+            let engine = EngineHandle {
+                id: crate::infra::path_authority::PathRef {
+                    id: "binary".into(),
+                },
+                kind: crate::infra::path_authority::EngineHandleKind::Engine,
+            };
+            let (actor, _) = EngineActor::recording_test_actor(&[
+                "uciok",
+                "readyok",
+                "readyok",
+                INTERACTIVE_SEARCH_LINES[0],
+                "bestmove e2e4",
+                "readyok",
+                INTERACTIVE_SEARCH_LINES[0],
+                "bestmove e2e4",
+            ]);
+            let warm = WarmEngine::new(actor.clone(), Vec::new(), &AtomicBool::new(false))
+                .await
+                .unwrap();
+            let original = supervisor
+                .replace_handle(key.clone(), actor, key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            *original.interactive.lock().await = Some(warm);
+            let other_key = EngineKey::new(key.tab.clone(), "unrelated".into()).unwrap();
+            let (other_actor, _) = EngineActor::recording_test_actor(&[]);
+            let other = supervisor
+                .replace_handle(
+                    other_key.clone(),
+                    other_actor.clone(),
+                    other_key.engine.clone(),
+                    engine.id.clone(),
+                )
+                .await
+                .unwrap();
+            let (entered, pending) = tokio::sync::oneshot::channel();
+            INTERACTIVE_LINE_DEQUEUED_HOOK.with(|slot| {
+                assert!(slot
+                    .replace(Some(Box::new(move || Box::pin(async move {
+                        entered.send(()).unwrap();
+                        std::future::pending::<()>().await;
+                    }))))
+                    .is_none());
+            });
+            let generation = supervisor
+                .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            let command = tokio::spawn({
+                let state = state.clone();
+                let app = app.clone();
+                let engine = engine.clone();
+                let key = key.clone();
+                async move {
+                    get_best_moves_core(
+                        key.engine,
+                        engine,
+                        key.tab,
+                        GoMode::Depth(16),
+                        EngineOptions {
+                            fen: start_fen().to_string(),
+                            ..EngineOptions::default()
+                        },
+                        generation,
+                        app,
+                        state,
+                    )
+                    .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(2), pending)
+                .await
+                .unwrap()
+                .unwrap();
+            let owner = supervisor.get_exact(&key).unwrap();
+            let owned_search = owner.current_search().unwrap();
+            assert_eq!(
+                owner.generation, original.generation,
+                "warm search reuses the published actor"
+            );
+            assert!(owned_search.generation > original.generation);
+            let replacement = if successor {
+                let generation = supervisor
+                    .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                    .await
+                    .unwrap();
+                let admission = supervisor
+                    .consume_engine_search(
+                        key.clone(),
+                        key.engine.clone(),
+                        engine.id.clone(),
+                        &generation,
+                    )
+                    .await
+                    .unwrap();
+                Some(
+                    supervisor
+                        .start_interactive_search(
+                            key.clone(),
+                            engine,
+                            state.pgn_path_authority.clone(),
+                            admission,
+                            EngineOptions {
+                                fen: start_fen().to_string(),
+                                ..EngineOptions::default()
+                            },
+                            &GoMode::Depth(16),
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            command.abort();
+            assert!(command.await.unwrap_err().is_cancelled());
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let completed = crate::engine::REGISTRATION_GUARD_DROPS
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|(dropped_key, generation, completed)| {
+                            dropped_key == &key
+                                && *generation == owned_search.generation
+                                && *completed
+                        });
+                    if completed {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cancelled command's exact guard cleanup completes");
+            assert_eq!(
+                supervisor.get_exact(&other_key).unwrap().generation,
+                other.generation
+            );
+            other_actor.logs().await.unwrap();
+            assert!(owned_search.cancelled.load(Ordering::SeqCst));
+            if let Some((mut process, replacement, search)) = replacement {
+                assert_eq!(
+                    supervisor.get_exact(&key).unwrap().generation,
+                    replacement.generation
+                );
+                assert!(search.generation > owned_search.generation);
+                assert!(!search.cancelled.load(Ordering::SeqCst));
+                process_interactive_search_output(
+                    &mut process,
+                    &key.engine,
+                    &key.tab,
+                    &replacement,
+                    &app,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    supervisor.get_exact(&key).unwrap().generation,
+                    replacement.generation,
+                    "successful successor stays warm"
+                );
+            } else {
+                assert!(supervisor.get_exact(&key).is_none());
+                assert!(
+                    owner.actor.logs().await.is_err(),
+                    "cancelled command's actor is reaped"
+                );
+            }
+            supervisor.terminate_all().await.unwrap();
+        }
     }
 
     #[cfg(unix)]

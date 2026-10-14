@@ -1027,7 +1027,10 @@ async fn force_kill_and_reap<C: ChildCleanup + ?Sized>(
     match reap {
         Ok(Ok(())) => {
             if let Some(kill) = kill_error.as_ref() {
-                error!("engine force-kill reported an error but child reaped: {kill}");
+                error!(
+                    "engine force-kill reported an error but child reaped: {}",
+                    kill.diagnostic()
+                );
             }
             ForceKillAndReap::Reaped
         }
@@ -1055,7 +1058,10 @@ async fn terminate_child<C: ChildControl + ?Sized>(
     let graceful_wait = tokio::time::timeout_at(graceful_deadline, child.wait()).await;
     if matches!(graceful_wait, Ok(Ok(()))) {
         if let Err(error) = quit {
-            error!("engine quit write failed after child exited: {error}");
+            error!(
+                "engine quit write failed after child exited: {}",
+                error.diagnostic()
+            );
         }
         return Ok(());
     }
@@ -1072,7 +1078,10 @@ async fn terminate_child<C: ChildControl + ?Sized>(
         ReapTimeoutPolicy::EngineTimeout,
     ) {
         Ok(()) => {
-            error!("engine graceful shutdown failed but child reaped: {primary}");
+            error!(
+                "engine graceful shutdown failed but child reaped: {}",
+                primary.diagnostic()
+            );
             Ok(())
         }
         Err(error) => Err(error),
@@ -3190,18 +3199,19 @@ impl PinFailure {
             Self::Primary(error) => error,
             #[cfg(target_os = "macos")]
             Self::OperationAndCleanup { primary, cleanup } => {
-                error!(
-                    "engine launch pin failed for key={}:{} engine_id={} primary_category={} cleanup_category={}",
-                    key.tab,
-                    key.engine,
-                    engine_id,
-                    primary.category(),
-                    cleanup.category()
-                );
+                log_pin_cleanup_failure(key, engine_id, &primary, &cleanup);
                 Error::with_cleanup(primary, Err(cleanup))
             }
         }
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn log_pin_cleanup_failure(key: &EngineKey, engine_id: &str, primary: &Error, cleanup: &Error) {
+    error!(
+        "engine launch pin failed for key={}:{} engine_id={} primary_category={} cleanup_category={} primary={} cleanup={}",
+        key.tab, key.engine, engine_id, primary.category(), cleanup.category(), primary.diagnostic(), cleanup.diagnostic()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -5069,10 +5079,19 @@ async fn engine_actor_loop(
         }
     }
     if !terminated {
-        if let Err(error) = runtime.terminate().await {
-            error!("engine actor failed to terminate after command channels closed: {error}");
-        }
+        let _ = terminate_and_log(&mut runtime, &registration_identity).await;
     }
+}
+
+async fn terminate_and_log(
+    runtime: &mut EngineRuntime,
+    registration_identity: &OnceLock<(EngineKey, u64)>,
+) -> Result<(), Error> {
+    let result = runtime.terminate().await;
+    if let Err(error) = &result {
+        log_actor_cleanup_failure(registration_identity, error);
+    }
+    result
 }
 
 async fn terminate_and_reply(
@@ -5080,10 +5099,7 @@ async fn terminate_and_reply(
     registration_identity: &OnceLock<(EngineKey, u64)>,
     reply: oneshot::Sender<Result<(), Error>>,
 ) {
-    let result = runtime.terminate().await;
-    if let Err(error) = &result {
-        log_actor_cleanup_failure(registration_identity, error);
-    }
+    let result = terminate_and_log(runtime, registration_identity).await;
     let _ = reply.send(result);
 }
 
@@ -5233,7 +5249,7 @@ async fn service_search_read(
                     other => reject_command_during_search(other),
                 },
                 None => {
-                    let _ = runtime.terminate().await;
+                    let _ = terminate_and_log(runtime, registration_identity).await;
                     let _ = reply.send(Err(Error::EngineDisconnected));
                     return false;
                 }
@@ -5281,7 +5297,7 @@ async fn service_search_read(
                 }
                 Some(other) => reject_command_during_search(other),
                 None => {
-                    let _ = runtime.terminate().await;
+                    let _ = terminate_and_log(runtime, registration_identity).await;
                     let _ = reply.send(Err(Error::EngineDisconnected));
                     return false;
                 }
@@ -6781,11 +6797,13 @@ mod tests {
     pub(super) enum FakeWait {
         Ready,
         Pending,
+        Failed(&'static str),
     }
 
     pub(super) struct FakeChildControl {
         waits: VecDeque<FakeWait>,
         quit_pending: bool,
+        quit_error: Option<&'static str>,
         kill_error: bool,
         kill_calls: Arc<AtomicUsize>,
         dropped: Arc<AtomicBool>,
@@ -6812,6 +6830,7 @@ mod tests {
             match self.waits.pop_front().unwrap_or(FakeWait::Pending) {
                 FakeWait::Ready => Ok(()),
                 FakeWait::Pending => std::future::pending().await,
+                FakeWait::Failed(cause) => Err(io::Error::other(cause).into()),
             }
         }
     }
@@ -6819,6 +6838,9 @@ mod tests {
     #[async_trait]
     impl ChildControl for FakeChildControl {
         async fn write_quit(&mut self) -> Result<(), Error> {
+            if let Some(cause) = self.quit_error {
+                return Err(io::Error::other(cause).into());
+            }
             if self.quit_pending {
                 std::future::pending().await
             } else {
@@ -6836,6 +6858,7 @@ mod tests {
             FakeChildControl {
                 waits: waits.into_iter().collect(),
                 quit_pending: false,
+                quit_error: None,
                 kill_error: false,
                 kill_calls: kill_calls.clone(),
                 dropped: dropped.clone(),
@@ -6843,6 +6866,51 @@ mod tests {
             kill_calls,
             dropped,
         )
+    }
+
+    #[tokio::test]
+    async fn teardown_success_after_reap_logs_native_causes() {
+        let capture = crate::error::LogCaptureScope::start();
+        let (mut child, _, _) = child_control([FakeWait::Ready]);
+        child.kill_error = true;
+        assert!(matches!(
+            force_kill_and_reap(&mut child, Duration::from_secs(1)).await,
+            ForceKillAndReap::Reaped
+        ));
+        assert!(capture.messages().iter().any(|line| line.contains("engine force-kill reported an error but child reaped: I/O failure: fake force-kill failed")));
+        let (mut child, _, _) = child_control([FakeWait::Ready]);
+        child.quit_error = Some("quit-write-private-cause");
+        terminate_child(&mut child, Duration::from_secs(1), Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(capture.messages().iter().any(|line| line.contains(
+            "engine quit write failed after child exited: I/O failure: quit-write-private-cause"
+        )));
+        let (mut child, _, _) = child_control([
+            FakeWait::Failed("graceful-wait-private-cause"),
+            FakeWait::Ready,
+        ]);
+        terminate_child(&mut child, Duration::from_secs(1), Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(capture.messages().iter().any(|line| line.contains("engine graceful shutdown failed but child reaped: I/O failure: graceful-wait-private-cause")));
+    }
+
+    #[test]
+    fn pin_cleanup_logger_retains_both_native_causes() {
+        let capture = crate::error::LogCaptureScope::start();
+        let key = EngineKey::new("pin-log-tab".into(), "pin-log-engine".into()).unwrap();
+        log_pin_cleanup_failure(
+            &key,
+            "binary",
+            &io::Error::other("pin-primary-private-cause").into(),
+            &io::Error::other("pin-cleanup-private-cause").into(),
+        );
+        assert!(capture.messages().iter().any(|line| line
+            .contains("key=pin-log-tab:pin-log-engine")
+            && line.contains("engine_id=binary")
+            && line.contains("pin-primary-private-cause")
+            && line.contains("pin-cleanup-private-cause")));
     }
 
     #[tokio::test]
@@ -7411,12 +7479,17 @@ mod tests {
     fn pin_failure_preserves_primary_and_cleanup_diagnostics() {
         const PRIMARY: &str = "pin-failure-primary-io-cause";
         const CLEANUP: &str = "pin-failure-cleanup-io-cause";
+        let capture = crate::error::LogCaptureScope::start();
         let key = EngineKey::new("pin-failure-test".into(), "pin-failure-test".into()).unwrap();
         let error = PinFailure::OperationAndCleanup {
             primary: Error::from(io::Error::other(PRIMARY)),
             cleanup: Error::from(io::Error::other(CLEANUP)),
         }
         .into_error(&key, "pin-failure-test");
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|message| message.contains(PRIMARY) && message.contains(CLEANUP)));
 
         match error {
             Error::OperationAndCleanup { primary, cleanup } => {
@@ -10585,6 +10658,106 @@ mod tests {
             Some("info depth 1".into())
         );
         actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sender_exhaustion_logs_idle_and_both_pending_search_failures() {
+        for branch in ["idle", "pending-control", "pending-normal"] {
+            let cause = format!("sender-exhaustion-{branch}-private-cause");
+            let key =
+                EngineKey::new(format!("sender-exhaustion-{branch}"), "engine".into()).unwrap();
+            let started = Arc::new(AtomicBool::new(false));
+            let reading = Arc::new(AtomicBool::new(false));
+            let (actor, calls) = observed_terminate_failure_actor(
+                &cause,
+                started.clone(),
+                None,
+                &[],
+                Some(reading.clone()),
+            );
+            actor.registration_identity.set((key.clone(), 981)).unwrap();
+            let task = actor.task.clone();
+            let outcome = actor.termination_outcome.clone();
+            let control = (branch == "pending-normal").then(|| actor.control_tx.clone());
+            let reply = if branch != "idle" {
+                let id = actor.start_search(&GoMode::Infinite).await.unwrap();
+                let (reply_tx, reply) = oneshot::channel();
+                actor
+                    .tx
+                    .send(EngineCommand::NextSearch {
+                        id,
+                        reply: reply_tx,
+                    })
+                    .await
+                    .unwrap();
+                wait_for_flag(&reading, "pending sender-exhaustion read").await;
+                Some(reply)
+            } else {
+                None
+            };
+            drop(actor);
+            wait_for_flag(&started, "sender-exhaustion teardown").await;
+            drop(control);
+            timeout(Duration::from_secs(2), task.lock().await.take().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Some(reply) = reply {
+                assert!(matches!(reply.await, Ok(Err(Error::EngineDisconnected))));
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(outcome
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .diagnostic()
+                .contains(&cause));
+            let messages = registration_cleanup_messages(&key, 981);
+            assert_eq!(messages.len(), 1, "{branch}: {messages:?}");
+            assert!(messages[0].contains(&cause), "{branch}: {messages:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_join_waiter_retains_panicking_actor_failure() {
+        const CAUSE: &str = "cancelled-join-waiter-private-panic-path";
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let key =
+            EngineKey::new("cancelled-join-tab".into(), "cancelled-join-engine".into()).unwrap();
+        actor.registration_identity.set((key.clone(), 982)).unwrap();
+        let original = actor.task.lock().await.take().unwrap();
+        original.abort();
+        let _ = original.await;
+        let (release, released) = oneshot::channel();
+        *actor.task.lock().await = Some(tokio::spawn(async move {
+            released.await.unwrap();
+            panic!("{CAUSE}");
+        }));
+        {
+            let waiting = actor.reap_task();
+            tokio::pin!(waiting);
+            assert!(futures_util::poll!(&mut waiting).is_pending());
+            assert!(actor.task.lock().await.is_none(), "join handle transferred");
+            assert!(
+                actor.joined.lock().unwrap().is_some(),
+                "shared join retained before cancellation"
+            );
+        }
+        release.send(()).unwrap();
+        let first = actor.terminate().await.unwrap_err();
+        let second = actor.terminate().await.unwrap_err();
+        assert_same_termination_failure(&second, &first);
+        let payload = serde_json::to_value(&first).unwrap();
+        assert!(!payload.to_string().contains(CAUSE));
+        assert!(first.diagnostic().contains("engine actor task failed"));
+        let records = crate::error::TASK_JOIN_DIAGNOSTICS.lock().unwrap();
+        let records = records
+            .iter()
+            .filter(|line| line.contains("cancelled-join-tab:cancelled-join-engine generation=982"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].contains(CAUSE));
     }
 
     #[tokio::test]

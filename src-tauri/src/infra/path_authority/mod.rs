@@ -7180,13 +7180,10 @@ impl PathAuthority {
         identity: VerifiedIdentity,
         primary: Error,
     ) -> Error {
-        match crate::infra::fs::remove_entry_at(parent, leaf, identity.pair(), false) {
-            Ok(()) => primary,
-            Err(cleanup) => Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            },
-        }
+        Error::with_cleanup(
+            primary,
+            crate::infra::fs::remove_entry_at(parent, leaf, identity.pair(), false),
+        )
     }
 
     pub(crate) fn database_file_target(
@@ -13196,6 +13193,20 @@ mod tests {
         set_test_removal_injector(None);
         assert!(matches!(error, Error::OperationAndCleanup { .. }));
         assert!(root_path.join("cleanup-failed.db3").exists());
+        let diagnostic = error.diagnostic();
+        assert!(diagnostic.contains("write failed"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("injected removal failure"),
+            "{diagnostic}"
+        );
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert_eq!(
+            payload["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(!payload.to_string().contains("write failed"));
+        assert!(!payload.to_string().contains("/private/removal"));
     }
 
     #[test]

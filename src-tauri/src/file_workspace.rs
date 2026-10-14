@@ -843,6 +843,11 @@ pub async fn list_file_workspace(
     .await
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static PAIRED_RENAME_POST_PRIMARY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn paired_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -859,6 +864,12 @@ fn paired_rename(
         target_parent,
         target_leaf,
     )?;
+    #[cfg(test)]
+    PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
     if let Err(error) =
         rename_optional_regular_at(&source.parent, &source_info, target_parent, &target_info)
     {
@@ -871,16 +882,14 @@ fn paired_rename(
             &source.parent,
             &source.leaf,
         );
-        return match rollback {
-            Ok(()) => Err(error),
-            Err(rollback) => {
-                log::error!("paired rename failed: {error}; rollback failed: {rollback}");
-                Err(Error::OperationAndCleanup {
-                    primary: error.to_string(),
-                    cleanup: rollback.to_string(),
-                })
-            }
-        };
+        if let Err(rollback) = &rollback {
+            log::error!(
+                "paired rename failed: {}; rollback failed: {}",
+                error.diagnostic(),
+                rollback.diagnostic()
+            );
+        }
+        return Err(Error::with_cleanup(error, rollback));
     }
     Ok(())
 }
@@ -4812,6 +4821,61 @@ mod tests {
         );
         set_test_atomic_file_injector(None);
         (directory, root, result)
+    }
+
+    #[test]
+    fn paired_rename_retains_native_rollback_cause_and_safe_payload() {
+        let (_directory, state, workspace) = workspace_state();
+        let created = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            "before".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Game,
+                tags: vec![],
+            },
+            WorkspaceFileContent::Text { pgn: "*".into() },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &state.pgn_repository,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        fs::write(root.join("after.info"), b"existing sidecar").unwrap();
+        let observed_root = root.clone();
+        PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::write(observed_root.join("before.pgn"), b"unrelated new source").unwrap();
+                })))
+                .is_none());
+        });
+        let capture = crate::error::LogCaptureScope::start();
+        let error = paired_rename(&source, &source.parent, OsStr::new("after.pgn")).unwrap_err();
+        let Error::OperationAndCleanup { primary, cleanup } = &error else {
+            panic!("{error:?}")
+        };
+        assert!(primary.starts_with("I/O failure:"), "{primary}");
+        assert!(cleanup.starts_with("I/O failure:"), "{cleanup}");
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert_eq!(
+            payload["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(!payload.to_string().contains(primary));
+        assert!(!payload.to_string().contains(cleanup));
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|message| message.contains(primary) && message.contains(cleanup)));
+        assert_eq!(
+            fs::read(root.join("before.pgn")).unwrap(),
+            b"unrelated new source"
+        );
+        assert!(root.join("after.pgn").is_file());
     }
 
     #[test]

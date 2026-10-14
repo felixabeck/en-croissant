@@ -647,12 +647,11 @@ fn io(err: std::io::Error) -> Error {
 #[cfg(any(unix, windows))]
 fn operation_and_cleanup_error(temp_name: &OsStr, primary: Error, cleanup: Error) -> Error {
     log::error!(
-        "atomic replacement failed: {primary}; temporary {temp_name:?} cleanup failed: {cleanup}"
+        "atomic replacement failed: {}; temporary {temp_name:?} cleanup failed: {}",
+        primary.diagnostic(),
+        cleanup.diagnostic()
     );
-    Error::OperationAndCleanup {
-        primary: primary.to_string(),
-        cleanup: cleanup.to_string(),
-    }
+    Error::with_cleanup(primary, Err(cleanup))
 }
 
 #[cfg(test)]
@@ -8996,7 +8995,7 @@ mod tests {
                 let Error::OperationAndCleanup { primary, cleanup } = &error else {
                     unreachable!();
                 };
-                assert_eq!(primary, "I/O failure");
+                assert!(primary.contains("I/O failure: primary"), "{primary}");
                 assert!(!cleanup.is_empty());
                 let serialized = serde_json::to_string(&error).expect("serialize cleanup error");
                 let payload: serde_json::Value =
