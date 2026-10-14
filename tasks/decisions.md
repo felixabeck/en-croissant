@@ -7607,3 +7607,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Tokio JoinError Display includes panic string payloads, and both existing Conflict messages serialize those details. Reversal path: another proven public/native diagnostic separation, never restoring panic details in public messages.
 * **Decided by:** Codex, adopting the reviewed full-auto plan, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"60cb21b8b07937ec6373a4783acc0b612c5ea8cc3ce15cac8e975fccda22af71","input_sha256":"56292f86572f9736af59e80076e25e1afe0df7ecb4f85b21cd8c0136e7a98490","kind":"mutation-receipt","operation":"ecb0913ea2928e7cc9bcfe310ab6719c74ccfe2ade08164f54074fdbf5499c09","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-04","d-20261014-05","d-20261014-06","d-20261014-07","d-20261014-08","d-20261014-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-10 — How does confirmed native account absence reconcile a renderer session?
+
+* **Question:** How does confirmed native account absence reconcile a renderer session?
+* **Governs:** f-20261004-03
+* **Chosen:** A successful native listing removes a stale unmatched Lichess handle while retaining public profile, player alias, timestamp and other provider data. A rejected listing preserves the offline handle. A logout result of not_found completes the existing local-session removal. Preserve successful migration and committed-removal warnings.
+* **Rejected:** Treating a failed lookup as confirmed absence, retaining a confirmed stale authentication handle, or deleting the public profile on startup.
+* **Reason:** Native credentials are authoritative. Current source collapses empty-success and failed listing, and not_found is a successful absence result in oauth.rs. Existing startup and logout behavior supplies the presentation precedent. Reversal path: another reconciliation mechanism proving absence and transport failure remain distinct.
+* **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-11 — What happens when image or download warning logging also fails?
+
+* **Question:** What happens when image or download warning logging also fails?
+* **Governs:** f-20261007-08
+* **Chosen:** Route both existing warnings through warnSafely in src/platform/errors.ts. Partially correct d-20260920-07's silent logger-rejection clause, retaining its data URL, encoder, CSP and identity-logging choices.
+* **Rejected:** Silently swallowing the only failure record, another fallback helper, or widening image CSP.
+* **Reason:** The f-20260906-10 console-fallback evidence was not weighed by the prior silent-warning clause. The shared helper already supplies sanitized native/console fallback and is used by sound and tab storage. Reversal path: another proven failure recorder for backend-unavailable cases, retaining normalization and privacy.
+* **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-12 — How does malformed puzzle playback end without a new puzzle policy?
+
+* **Question:** How does malformed puzzle playback end without a new puzzle policy?
+* **Governs:** f-20260922-13
+* **Chosen:** Validate the complete sequence through shared chess-library parsing before mutation. Reject atomically with an actionable result. Current-owned puzzle failures use the existing error notification path, and finally clears playing state only for the matching playback owner. Do not skip, delete or invent a malformed-puzzle completion status.
+* **Rejected:** Partial draft commits, unchecked UCI assertions, stale playback clearing a successor, or a new automatic malformed-puzzle disposition.
+* **Reason:** Existing puzzle request failures are notified and stale failures suppressed. d-20260923-07 preserves tracked-path and cursor rebasing. This repairs batch atomicity and terminal-state promises without introducing a product policy. Reversal path: another proven atomic admission and owner-bound playback implementation.
+* **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"cc4b6a6d8fe2b4078c52367df17d9abd1d42b9fec9391b3bdcba3dd7b3e19cd0","input_sha256":"327974252bb8b184ccf5435ad9f68825b11ffbd0a3c403a8d9ab50e5b49587b2","kind":"mutation-receipt","operation":"09f5912e97ae55b264a3d9c92b5b9ca61652ba266e0a6e1ee5d20540fb66a470","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-10","d-20261014-11","d-20261014-12"],"target":"decisions-ledger","v":1} -->
