@@ -40,11 +40,18 @@ export default function EngineForm({
   return (
     <form
       onSubmit={form.onSubmit(async (values) => {
-        const submittedAttachments = attachmentDraft.current.submission();
-        const receipt = await onSubmit({ ...values, loaded: true });
-        if (receipt) {
-          await attachmentDraft.current.adopt(receipt, submittedAttachments);
-          if (receipt.saved) await onSaved?.(receipt);
+        const draft = attachmentDraft.current;
+        const generation = pickerGeneration.current.value;
+        const submittedAttachments = draft.submission();
+        try {
+          const receipt = await onSubmit({ ...values, loaded: true });
+          if (receipt) {
+            await draft.adopt(receipt, submittedAttachments);
+            if (receipt.saved && generation === pickerGeneration.current.value)
+              await onSaved?.(receipt);
+          }
+        } catch (error) {
+          notifyUnlessCancelled(errorTitle, error);
         }
       })}
     >

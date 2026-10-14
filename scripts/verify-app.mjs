@@ -1,4 +1,13 @@
 // Historical evidence: docs/context/RULE-HISTORY.md → scripts/verify-app.mjs.
+// Engine publication evidence, expected staged failure status: 1.
+// EP1-card / EP1-storage / EP2-error / EP2-card / EP2-input / EP2-storage:
+// staging prepared, observed exit status pending root's authorized real-product run.
+// These assertions are untrusted until their distinguishable FAIL messages and same-run
+// exit statuses are recorded here. Stage each with disposable profile inputs only.
+// After the successful write, change its selected card name text node for EP1-card or its engines
+// stored name for EP1-storage. After the refused write, remove its error notification for
+// EP2-error, change its selected card name text node for EP2-card, its input value for EP2-input, or
+// its engines stored name for EP2-storage. Restore immediately and observe green.
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2812,6 +2821,131 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     "the retained engine LocalImage data URL decodes in WebKitGTK",
     retainedEnginePortrait.error ?? String(retainedEnginePortrait.naturalWidth),
   );
+
+  // Exercise the actual inline editor through WebDriver with real native attachment IPC.
+  // Only this disposable profile's engines-key renderer storage is refused in the second case.
+  await session.execute(`
+    const card = [...document.querySelectorAll('button[aria-pressed]')]
+      .find(node => node.innerText.includes('Fixture retained'));
+    if (!card) throw new Error('engine publication fixture card missing');
+    card.click();
+    return true;
+  `);
+  const nameInputId = await waitFor(
+    "the real engine Name editor",
+    () =>
+      session.execute(`
+      const label = [...document.querySelectorAll('label')].find(node => node.textContent === 'Name');
+      const input = label && document.getElementById(label.htmlFor);
+      return input && input.id;
+    `),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  const nameElement = await session.call("POST", "/element", {
+    using: "css selector",
+    value: `#${nameInputId}`,
+  });
+  const nameElementId = encodeURIComponent(nameElement["element-6066-11e4-a52e-4f735466cecf"]);
+  async function editEngineName(value) {
+    await session.call("POST", `/element/${nameElementId}/clear`, {});
+    await session.call("POST", `/element/${nameElementId}/value`, { text: value });
+  }
+  async function enginePublicationSnapshot() {
+    return session.execute(
+      `
+      const card = document.querySelector('button[aria-pressed="true"]');
+      return {
+        card: card?.querySelector('p')?.firstChild?.textContent.trim(),
+        input: document.getElementById(arguments[0])?.value,
+        raw: localStorage.getItem('engines'),
+        error: document.body.innerText.includes('The engine list could not be saved.'),
+        refusals: window.__verifyEngineStorageRefusals || 0,
+      };
+    `,
+      [nameInputId],
+    );
+  }
+  const publicationStoredName = (snapshot) => {
+    const records = snapshot.raw && deserializeStorageValue(snapshot.raw);
+    return Array.isArray(records)
+      ? records.find((record) => record.id === "retained")?.name
+      : undefined;
+  };
+  const savedEngineName = "Fixture saved publication";
+  await editEngineName(savedEngineName);
+  const savedPublication = await waitFor(
+    "the successful real engine editor write to settle",
+    async () => {
+      const snapshot = await enginePublicationSnapshot();
+      return (
+        publicationStoredName(snapshot) === savedEngineName &&
+        snapshot.input === savedEngineName &&
+        snapshot
+      );
+    },
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  ).catch(async () => enginePublicationSnapshot());
+  check(
+    savedPublication.card === savedEngineName,
+    "EP1-card successful Name edit publishes the saved engine card",
+    JSON.stringify(savedPublication),
+  );
+  check(
+    publicationStoredName(savedPublication) === savedEngineName,
+    "EP1-storage successful Name edit persists the decoded engine name",
+    JSON.stringify(savedPublication),
+  );
+
+  await session.execute(`
+    const original = Storage.prototype.setItem;
+    window.__verifyEngineStorageRefusals = 0;
+    window.__verifyRestoreEngineStorage = () => { Storage.prototype.setItem = original; };
+    Storage.prototype.setItem = function(key, value) {
+      if (this === localStorage && key === 'engines') {
+        window.__verifyEngineStorageRefusals++;
+        throw new DOMException('Disposable engine publication refusal', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+    return true;
+  `);
+  try {
+    await editEngineName("Fixture refused publication");
+    const refusedPublication = await waitFor(
+      "the refused real engine Name draft to settle after its reported save failure",
+      async () => {
+        const snapshot = await enginePublicationSnapshot();
+        return (
+          snapshot.refusals > 0 && snapshot.error && snapshot.input === savedEngineName && snapshot
+        );
+      },
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    ).catch(async () => enginePublicationSnapshot());
+    check(
+      refusedPublication.refusals > 0 && refusedPublication.error,
+      "EP2-error refused engines storage write reports the save error",
+      JSON.stringify(refusedPublication),
+    );
+    check(
+      refusedPublication.card === savedEngineName,
+      "EP2-card refused Name edit retains the saved engine card",
+      JSON.stringify(refusedPublication),
+    );
+    check(
+      refusedPublication.input === savedEngineName,
+      "EP2-input refused Name draft settles to the saved name",
+      JSON.stringify(refusedPublication),
+    );
+    check(
+      publicationStoredName(refusedPublication) === savedEngineName,
+      "EP2-storage refused Name edit retains the decoded saved engine name",
+      JSON.stringify(refusedPublication),
+    );
+  } finally {
+    await session.execute(
+      "window.__verifyRestoreEngineStorage(); delete window.__verifyRestoreEngineStorage; return true;",
+    );
+  }
 
   const blobCspResult = await invokeAndWait(
     session,

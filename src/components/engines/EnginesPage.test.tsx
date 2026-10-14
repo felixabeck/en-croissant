@@ -128,7 +128,8 @@ vi.mock("@/components/common/IconAction", () => ({
 }));
 
 let atomEngines: Engine[] = [];
-const setAtomEngines = vi.fn(async (update: (prev: Engine[]) => Engine[] | Promise<Engine[]>) => {
+type TestUpdate = ((prev: Engine[]) => Engine[] | Promise<Engine[]>) | { removeLocalId: string };
+const setAtomEngines = vi.fn(async (update: TestUpdate) => {
   await publishEngines(update);
   return { operationId: "save", key: "engines", saved: true, synchronized: true };
 });
@@ -168,8 +169,13 @@ function renderSettingsPage() {
   );
 }
 
-async function publishEngines(update: (prev: Engine[]) => Engine[] | Promise<Engine[]>) {
-  atomEngines = await update(atomEngines);
+async function publishEngines(update: TestUpdate) {
+  atomEngines =
+    typeof update === "function"
+      ? await update(atomEngines)
+      : atomEngines.filter(
+          (engine) => engine.type !== "local" || engine.id !== update.removeLocalId,
+        );
   if (settingsMounted) {
     act(() => renderSettingsPage());
   }

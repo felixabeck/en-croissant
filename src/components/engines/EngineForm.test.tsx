@@ -252,6 +252,123 @@ test("adopts a successful image before the saved callback closes the form", asyn
   expect(mocks.reconcileEngineAttachments).not.toHaveBeenCalled();
 });
 
+test("real owner receipts keep a refused form open and adopt its image only on saved retry", async () => {
+  const { getDefaultStore } = await import("jotai");
+  const { enginesAtom } = await import("@/state/atoms");
+  const store = getDefaultStore();
+  const image = { id: { id: "real-form-image" }, kind: "engineImage" as const };
+  const values: LocalEngine = {
+    type: "local",
+    id: "real-form",
+    name: "Real form",
+    version: "1",
+    filename: "engine",
+    handle: { id: { id: "real-binary" }, kind: "engine" },
+    imageHandle: image,
+  };
+  localStorage.clear();
+  await store.set(enginesAtom, []);
+  let submit!: (values: LocalEngine) => Promise<void>;
+  const form = {
+    values,
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: (action: typeof submit) => {
+      submit = action;
+      return () => undefined;
+    },
+  };
+  const saved = vi.fn();
+  mocks.issueEngineImage.mockResolvedValueOnce(image);
+  await act(async () =>
+    root.render(
+      <EngineForm
+        submitLabel="Add"
+        form={form as never}
+        onSubmit={(record) => store.set(enginesAtom, (current) => [...current, record])}
+        onSaved={saved}
+      />,
+    ),
+  );
+  await act(async () => host.querySelectorAll<HTMLButtonElement>("button")[1].click());
+  mocks.reconcileEngineAttachments.mockRejectedValueOnce(new Error("prepare refused"));
+  await act(async () => submit(values));
+  expect(saved).not.toHaveBeenCalled();
+  expect(store.get(enginesAtom)).toEqual([]);
+  expect(host.querySelector("form")).not.toBeNull();
+  await act(async () => submit(values));
+  expect(saved).toHaveBeenCalledOnce();
+  expect(store.get(enginesAtom)?.[0].imageHandle).toEqual(image);
+  mocks.reconcileEngineAttachments.mockClear();
+  await act(async () => root.unmount());
+  expect(mocks.reconcileEngineAttachments).not.toHaveBeenCalled();
+});
+
+test("a pending form receipt after unmount cannot close another editor", async () => {
+  let submit!: (values: LocalEngine) => Promise<void>;
+  const values = {} as LocalEngine;
+  const form = {
+    values,
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: (action: typeof submit) => {
+      submit = action;
+      return () => undefined;
+    },
+  };
+  const onSaved = vi.fn();
+  let finish!: () => void;
+  await act(async () =>
+    root.render(
+      <EngineForm
+        submitLabel="Add"
+        form={form as never}
+        onSaved={onSaved}
+        onSubmit={async () => {
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          return { operationId: "late", key: "engines", saved: true, synchronized: true };
+        }}
+      />,
+    ),
+  );
+  const pending = submit(values);
+  await act(async () => root.unmount());
+  await act(async () => {
+    finish();
+    await pending;
+  });
+  expect(onSaved).not.toHaveBeenCalled();
+});
+
+test("unexpected form submission rejection is contained and reported", async () => {
+  let submit!: (values: LocalEngine) => Promise<void>;
+  const values = {} as LocalEngine;
+  const form = {
+    values,
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: (action: typeof submit) => {
+      submit = action;
+      return () => undefined;
+    },
+  };
+  await act(async () =>
+    root.render(
+      <EngineForm
+        submitLabel="Add"
+        form={form as never}
+        onSubmit={async () => {
+          throw new Error("save rejected");
+        }}
+      />,
+    ),
+  );
+  await expect(submit(values)).resolves.toBeUndefined();
+  expect(mocks.notify).toHaveBeenCalledOnce();
+});
+
 test("does not attach a handle when the native picker is cancelled", async () => {
   mocks.issueEngineBinary.mockRejectedValue(new Error("Cancellation"));
   const form = {

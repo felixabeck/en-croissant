@@ -14,7 +14,7 @@ import {
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
 import { useAtom } from "jotai";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
@@ -158,6 +158,15 @@ function CloudCard({ engine }: { engine: RemoteEngine }) {
   const { t } = useTranslation();
 
   const [engines, setEngines] = useAtom(enginesAtom);
+  const admission = useRef(false);
+  const alive = useRef(true);
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   return (
     <Paper withBorder radius="md" p={0} key={engine.name}>
       <Group wrap="nowrap" gap={0} grow>
@@ -172,26 +181,40 @@ function CloudCard({ engine }: { engine: RemoteEngine }) {
             {engine.url}
           </Text>
           <Button
-            disabled={(engines ?? []).find((e) => e.type === engine.type) !== undefined}
+            disabled={pending || (engines ?? []).find((e) => e.type === engine.type) !== undefined}
             fullWidth
             size="xs"
             onClick={() => {
-              setEngines(async (prev) => [
-                ...(await prev),
-                {
-                  ...engine,
-                  id: crypto.randomUUID(),
-                  type: engine.type,
-                  loaded: true,
-                  settings: [
-                    {
-                      type: "string",
-                      name: "MultiPV",
-                      value: "1",
-                    },
-                  ],
-                },
-              ]);
+              if (admission.current) return;
+              admission.current = true;
+              setPending(true);
+              const added: RemoteEngine = {
+                ...engine,
+                id: crypto.randomUUID(),
+                type: engine.type,
+                loaded: true,
+                settings: [
+                  {
+                    type: "string",
+                    name: "MultiPV",
+                    value: "1",
+                  },
+                ],
+              };
+              void (async () => {
+                try {
+                  await setEngines((current) =>
+                    current.some((item) => item.type === added.type)
+                      ? current
+                      : [...current, added],
+                  );
+                } catch (error) {
+                  notifyUnlessCancelled(t("Common.Error"), error);
+                } finally {
+                  admission.current = false;
+                  if (alive.current) setPending(false);
+                }
+              })();
             }}
           >
             {t("Common.Add")}
@@ -224,7 +247,7 @@ function EngineCard({
       const installed = await runDownloadJob(progressId, (ticket) =>
         installDefaultEngine(engine, progressId, ticket),
       );
-      const receipt = await setEngines((prev) => [...prev, installed], "after-save");
+      const receipt = await setEngines((prev) => [...prev, installed]);
       if (!receipt.saved) throw new Error(t("Engines.SaveError"));
       setInstalledThisSession(true);
     } catch (error) {

@@ -81,9 +81,9 @@ afterEach(async () => {
   host.remove();
 });
 
-test("a rejected stop leaves the engine loaded and notifies", async () => {
-  const failure = new Error("stop failed");
-  mocks.stopEngine.mockRejectedValue(failure);
+test("a rejected save does not stop the engine and notifies", async () => {
+  const failure = new Error("save failed");
+  mocks.setEngines.mockRejectedValue(failure);
 
   await act(async () =>
     root.render(
@@ -97,16 +97,13 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
     await Promise.resolve();
   });
 
-  expect(mocks.stopEngine).toHaveBeenCalledWith(
-    expect.objectContaining({ id: "engine-1" }),
-    "tab-A",
-  );
-  expect(mocks.setEngines).not.toHaveBeenCalled();
+  expect(mocks.stopEngine).not.toHaveBeenCalled();
+  expect(mocks.setEngines).toHaveBeenCalledOnce();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
 });
 
-test("a successful stop flips loaded state", async () => {
-  mocks.stopEngine.mockResolvedValue(undefined);
+test("unload submits a save without issuing a generationless stop", async () => {
+  mocks.setEngines.mockResolvedValue({ saved: true });
 
   await act(async () =>
     root.render(
@@ -121,4 +118,5 @@ test("a successful stop flips loaded state", async () => {
   });
 
   expect(mocks.setEngines).toHaveBeenCalled();
+  expect(mocks.stopEngine).not.toHaveBeenCalled();
 });

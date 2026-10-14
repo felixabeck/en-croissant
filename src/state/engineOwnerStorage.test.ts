@@ -181,55 +181,52 @@ test("the real engines atom hydrates and restarts duplicate identities", async (
     unsubscribe();
 });
 
-test.each(["after-save", undefined] as const)(
-    "real atom append waits for pending storage hydration (%s)",
-    async (publication) => {
-        const duplicate = { ...engine, name: "Twin" };
-        localStorage.setItem("engines", serializeStorageValue([engine, duplicate]));
-        let releaseHydration!: () => void;
-        mocks.reconcile.mockImplementationOnce(
-            () =>
-                new Promise<void>((resolve) => {
-                    releaseHydration = resolve;
-                }),
-        );
-        const { createStore } = await import("jotai");
-        const { enginesAtom } = await import("./atoms");
-        const store = createStore();
-        const unsubscribe = store.sub(enginesAtom, () => undefined);
-        await vi.waitFor(() => expect(releaseHydration).toEqual(expect.any(Function)));
-        expect(store.get(enginesAtom)).toBeUndefined();
+test("real atom append waits for pending storage hydration", async () => {
+    const duplicate = { ...engine, name: "Twin" };
+    localStorage.setItem("engines", serializeStorageValue([engine, duplicate]));
+    let releaseHydration!: () => void;
+    mocks.reconcile.mockImplementationOnce(
+        () =>
+            new Promise<void>((resolve) => {
+                releaseHydration = resolve;
+            }),
+    );
+    const { createStore } = await import("jotai");
+    const { enginesAtom } = await import("./atoms");
+    const store = createStore();
+    const unsubscribe = store.sub(enginesAtom, () => undefined);
+    await vi.waitFor(() => expect(releaseHydration).toEqual(expect.any(Function)));
+    expect(store.get(enginesAtom)).toBeUndefined();
 
-        const added = { type: "chessdb" as const, id: "remote", name: "Cloud", url: "https://x" };
-        const append = vi.fn((current: Engine[]) => [...current, added]);
-        let settled = false;
-        const saving = store.set(enginesAtom, append, publication).then((receipt) => {
-            settled = true;
-            return receipt;
-        });
-        // Let the serialized writer run while the real storage migration remains pending.
-        for (let turn = 0; turn < 10; turn++) await Promise.resolve();
-        const calculatedBeforeHydration = append.mock.calls.length > 0;
-        const settledBeforeHydration = settled;
-        releaseHydration();
-        try {
-            expect((await saving).saved).toBe(true);
-            expect(calculatedBeforeHydration).toBe(false);
-            expect(settledBeforeHydration).toBe(false);
-            const hydrated = append.mock.calls[0][0];
-            expect(hydrated).toHaveLength(2);
-            expect(hydrated.map(({ name }) => name)).toEqual(["Stockfish", "Twin"]);
-            expect(hydrated[1].id).not.toBe(engine.id);
-            expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([
-                ...hydrated,
-                added,
-            ]);
-            expect(store.get(enginesAtom)).toEqual([...hydrated, added]);
-        } finally {
-            unsubscribe();
-        }
-    },
-);
+    const added = { type: "chessdb" as const, id: "remote", name: "Cloud", url: "https://x" };
+    const append = vi.fn((current: Engine[]) => [...current, added]);
+    let settled = false;
+    const saving = store.set(enginesAtom, append).then((receipt) => {
+        settled = true;
+        return receipt;
+    });
+    // Let the serialized writer run while the real storage migration remains pending.
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    const calculatedBeforeHydration = append.mock.calls.length > 0;
+    const settledBeforeHydration = settled;
+    releaseHydration();
+    try {
+        expect((await saving).saved).toBe(true);
+        expect(calculatedBeforeHydration).toBe(false);
+        expect(settledBeforeHydration).toBe(false);
+        const hydrated = append.mock.calls[0][0];
+        expect(hydrated).toHaveLength(2);
+        expect(hydrated.map(({ name }) => name)).toEqual(["Stockfish", "Twin"]);
+        expect(hydrated[1].id).not.toBe(engine.id);
+        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([
+            ...hydrated,
+            added,
+        ]);
+        expect(store.get(enginesAtom)).toEqual([...hydrated, added]);
+    } finally {
+        unsubscribe();
+    }
+});
 
 test("real overlapping atom writes preserve updates and return their own receipts", async () => {
     mocks.reconcile.mockRejectedValueOnce(new Error("ordinary write failed"));
@@ -249,7 +246,77 @@ test("real overlapping atom writes preserve updates and return their own receipt
     expect(correlatedReceipt).toEqual(
         expect.objectContaining({ key: "engines", saved: true, synchronized: true }),
     );
-    expect((store.get(enginesAtom) ?? []).map(({ id }) => id)).toEqual(["remote", "engine-id"]);
+    expect((store.get(enginesAtom) ?? []).map(({ id }) => id)).toEqual(["engine-id"]);
+});
+
+test("ordinary real-store saves publish only durable values and recover after refusal", async () => {
+    const { createStore } = await import("jotai");
+    const { enginesAtom } = await import("./atoms");
+    const store = createStore();
+    expect((await store.set(enginesAtom, [engine])).saved).toBe(true);
+    const before = store.get(enginesAtom);
+    const bytes = localStorage.getItem("engines");
+    let reject!: (error: Error) => void;
+    mocks.reconcile.mockImplementationOnce(
+        () =>
+            new Promise((_resolve, refuse) => {
+                reject = refuse;
+            }),
+    );
+    const saving = store.set(enginesAtom, (current) =>
+        current.map((item) => ({ ...item, name: "Refused" })),
+    );
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    const pendingList = store.get(enginesAtom);
+    const pendingBytes = localStorage.getItem("engines");
+    reject(new Error("prepare refused"));
+    expect((await saving).saved).toBe(false);
+    expect(store.get(enginesAtom)).toEqual(before);
+    expect(localStorage.getItem("engines")).toBe(bytes);
+    expect(pendingList).toEqual(before);
+    expect(pendingBytes).toBe(bytes);
+
+    mocks.reconcile
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("reconcile refused"));
+    const receipt = await store.set(enginesAtom, (current) =>
+        current.map((item) => ({ ...item, name: "Durable" })),
+    );
+    expect(receipt).toMatchObject({ saved: true, synchronized: false });
+    expect(store.get(enginesAtom)?.[0].name).toBe("Durable");
+    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(
+        store.get(enginesAtom),
+    );
+});
+
+test("restricted local removal stays omitted through refused persistence and late field edits", async () => {
+    const { createStore } = await import("jotai");
+    const { enginesAtom } = await import("./atoms");
+    const store = createStore();
+    const remote = { type: "chessdb" as const, id: "remote", name: "Cloud", url: "https://x" };
+    await store.set(enginesAtom, [engine, remote]);
+    const bytes = localStorage.getItem("engines");
+    let reject!: (error: Error) => void;
+    mocks.reconcile.mockImplementationOnce(
+        () =>
+            new Promise((_resolve, refuse) => {
+                reject = refuse;
+            }),
+    );
+    const removal = store.set(enginesAtom, { removeLocalId: engine.id });
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    expect(store.get(enginesAtom)).toEqual([remote]);
+    expect(localStorage.getItem("engines")).toBe(bytes);
+    const late = store.set(enginesAtom, (current) =>
+        current.map((item) => (item.id === engine.id ? { ...item, name: "Late" } : item)),
+    );
+    reject(new Error("prepare refused"));
+    expect((await removal).saved).toBe(false);
+    expect(store.get(enginesAtom)).toEqual([remote]);
+    await late;
+    expect(store.get(enginesAtom)).toEqual([remote]);
+    await store.set(enginesAtom, { removeLocalId: remote.id });
+    expect(store.get(enginesAtom)).toEqual([remote]);
 });
 
 test("catalog atom publication waits for its one durable save and serializes with ordinary writes", async () => {
@@ -265,7 +332,7 @@ test("catalog atom publication waits for its one durable save and serializes wit
                 rejectPrepare = reject;
             }),
     );
-    const refused = store.set(enginesAtom, [engine], "after-save");
+    const refused = store.set(enginesAtom, [engine]);
     await vi.waitFor(() => expect(rejectPrepare).toEqual(expect.any(Function)));
     expect(store.get(enginesAtom)).toEqual([]);
     expect(writes).not.toHaveBeenCalled();
@@ -281,7 +348,7 @@ test("catalog atom publication waits for its one durable save and serializes wit
                 releasePrepare = resolve;
             }),
     );
-    const saved = store.set(enginesAtom, (current) => [...current, engine], "after-save");
+    const saved = store.set(enginesAtom, (current) => [...current, engine]);
     let releaseOrdinary!: () => void;
     const ordinary = store.set(enginesAtom, async (current) => {
         await new Promise<void>((resolve) => {
@@ -768,9 +835,7 @@ test.each(["pre-id", "random", "duplicate-random"])(
             });
         const player = await hydratePlayer(run);
         expect(list.some((item) => item.id === player.id)).toBe(false);
-        expect(
-            (await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save")).saved,
-        ).toBe(true);
+        expect((await run.store.set(run.atoms.enginesAtom, list.slice(1))).saved).toBe(true);
         refused.mockRestore();
         const restarted = await runtime(true);
         const remaining = await hydrateList(restarted, 1);
@@ -784,7 +849,7 @@ test("unique random-era claims resolve before list hydration; a removed selectio
     const run = await runtime();
     expect((await hydratePlayer(run)).id).toBe(engine.id);
     const list = await hydrateList(run, 2);
-    await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save");
+    await run.store.set(run.atoms.enginesAtom, list.slice(1));
     localStorage.setItem("game-player1-settings", serializeStorageValue(legacyPlayer()));
     const restarted = await runtime(true);
     expect((await hydratePlayer(restarted)).id).not.toBe("sibling");
@@ -871,9 +936,7 @@ test.each([
             name: "Upgraded",
             handle: { id: { id: "new-binary" }, kind: "engine" as const },
         };
-        expect((await run.store.set(run.atoms.enginesAtom, [edited], "after-save")).saved).toBe(
-            true,
-        );
+        expect((await run.store.set(run.atoms.enginesAtom, [edited])).saved).toBe(true);
         expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
             { legacyAssessment: assessment },
         ]);
@@ -935,7 +998,7 @@ test("real schema repairs deterministically, reserves raw ids, copies input, and
         expect(item).not.toHaveProperty("legacyAssessment");
     }
     const run = await runtime();
-    const receipt = await run.store.set(run.atoms.enginesAtom, first.slice(-2), "after-save");
+    const receipt = await run.store.set(run.atoms.enginesAtom, first.slice(-2));
     expect(receipt.saved).toBe(true);
     expect(collectAttachmentIds("engines", first)).not.toBeNull();
     expect(enginesSchema.parse({ invalid: true })).toEqual([]);
@@ -985,14 +1048,13 @@ test.each(["pre-id", "random"])(
         const selected = await hydratePlayer(run);
         const source = list[era === "pre-id" ? 0 : 1];
         const duplicate = { ...source, id: "c", name: "Copy" };
-        await run.store.set(run.atoms.enginesAtom, [...list, duplicate], "after-save");
+        await run.store.set(run.atoms.enginesAtom, [...list, duplicate]);
         const copied = run.store.get(run.atoms.enginesAtom)!.at(-1)!;
         expect(copied).toMatchObject({ legacyAssessment: null });
-        await run.store.set(
-            run.atoms.enginesAtom,
-            [...(era === "random" ? [] : list), { ...copied, name: engine.name }],
-            "after-save",
-        );
+        await run.store.set(run.atoms.enginesAtom, [
+            ...(era === "random" ? [] : list),
+            { ...copied, name: engine.name },
+        ]);
         refused.mockRestore();
         const restarted = await runtime(true);
         const current = await hydrateList(restarted, era === "random" ? 1 : 3);
@@ -1029,9 +1091,7 @@ test.each(["engines-write", "player-read"])(
             { legacyAssessment: { ambiguous: true } },
         ]);
         vi.restoreAllMocks();
-        expect(
-            (await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save")).saved,
-        ).toBe(true);
+        expect((await run.store.set(run.atoms.enginesAtom, list.slice(1))).saved).toBe(true);
         expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
             { legacyAssessment: { ambiguous: true } },
         ]);
@@ -1040,67 +1100,64 @@ test.each(["engines-write", "player-read"])(
     },
 );
 
-test.each(["after-save", undefined] as const)(
-    "assessment is engines-owned for edits, JSON replacements, additions and remotes (%s)",
-    async (publication) => {
-        const { enginesSchema } = await import("./atoms");
-        const derived = enginesSchema.parse([{ ...preIdEngine, name: "Mixed" }])[0];
-        const existingClaim = { identity: "older-identity", ambiguous: false };
-        seedLegacyOwners([
-            engine,
-            derived,
-            { ...engine, id: "mixed-random", name: "Mixed" },
-            { ...engine, id: "already", name: "Assessed", legacyAssessment: existingClaim },
-            { ...engine, id: "already-null", name: "Assessed null", legacyAssessment: null },
-        ]);
-        const run = await runtime();
-        const list = await hydrateList(run, 5);
-        expect(list).toMatchObject([
-            { legacyAssessment: { ambiguous: false } },
-            { legacyAssessment: null },
-            { legacyAssessment: { ambiguous: true } },
-            { legacyAssessment: existingClaim },
-            { legacyAssessment: null },
-        ]);
-        expect(list.every((item) => collectAttachmentIds("engines", [item]) !== null)).toBe(true);
-        const changed = list.map((item) => {
-            const { legacyAssessment: _ignored, ...fields } = item as typeof engine & {
-                legacyAssessment?: unknown;
-            };
-            return {
-                ...fields,
-                name: "Edited",
-                settings: [],
-                handle: { id: { id: "edited" }, kind: "engine" as const },
-            };
-        });
-        const remote = {
-            type: "lichess" as const,
-            id: "cloud",
-            name: "Cloud",
-            url: "https://x",
-            legacyAssessment: existingClaim,
+test("assessment is engines-owned for edits, JSON replacements, additions and remotes", async () => {
+    const { enginesSchema } = await import("./atoms");
+    const derived = enginesSchema.parse([{ ...preIdEngine, name: "Mixed" }])[0];
+    const existingClaim = { identity: "older-identity", ambiguous: false };
+    seedLegacyOwners([
+        engine,
+        derived,
+        { ...engine, id: "mixed-random", name: "Mixed" },
+        { ...engine, id: "already", name: "Assessed", legacyAssessment: existingClaim },
+        { ...engine, id: "already-null", name: "Assessed null", legacyAssessment: null },
+    ]);
+    const run = await runtime();
+    const list = await hydrateList(run, 5);
+    expect(list).toMatchObject([
+        { legacyAssessment: { ambiguous: false } },
+        { legacyAssessment: null },
+        { legacyAssessment: { ambiguous: true } },
+        { legacyAssessment: existingClaim },
+        { legacyAssessment: null },
+    ]);
+    expect(list.every((item) => collectAttachmentIds("engines", [item]) !== null)).toBe(true);
+    const changed = list.map((item) => {
+        const { legacyAssessment: _ignored, ...fields } = item as typeof engine & {
+            legacyAssessment?: unknown;
         };
-        const next = [
-            ...changed,
-            { ...engine, id: "added", legacyAssessment: existingClaim },
-            { ...engine, id: "json-other" },
-            remote,
-        ];
-        expect((await run.store.set(run.atoms.enginesAtom, next, publication)).saved).toBe(true);
-        const saved = run.store.get(run.atoms.enginesAtom)!;
-        for (let index = 0; index < list.length; index++) {
-            expect(saved[index]).toMatchObject({
-                legacyAssessment: (list[index] as import("@/utils/engines").LocalEngine)
-                    .legacyAssessment,
-            });
-            expect(saved[index].id).toBe(list[index].id);
-        }
-        expect(saved.slice(5, 7)).toMatchObject([
-            { legacyAssessment: null },
-            { legacyAssessment: null },
-        ]);
-        expect(saved[7]).not.toHaveProperty("legacyAssessment");
-        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(saved);
-    },
-);
+        return {
+            ...fields,
+            name: "Edited",
+            settings: [],
+            handle: { id: { id: "edited" }, kind: "engine" as const },
+        };
+    });
+    const remote = {
+        type: "lichess" as const,
+        id: "cloud",
+        name: "Cloud",
+        url: "https://x",
+        legacyAssessment: existingClaim,
+    };
+    const next = [
+        ...changed,
+        { ...engine, id: "added", legacyAssessment: existingClaim },
+        { ...engine, id: "json-other" },
+        remote,
+    ];
+    expect((await run.store.set(run.atoms.enginesAtom, next)).saved).toBe(true);
+    const saved = run.store.get(run.atoms.enginesAtom)!;
+    for (let index = 0; index < list.length; index++) {
+        expect(saved[index]).toMatchObject({
+            legacyAssessment: (list[index] as import("@/utils/engines").LocalEngine)
+                .legacyAssessment,
+        });
+        expect(saved[index].id).toBe(list[index].id);
+    }
+    expect(saved.slice(5, 7)).toMatchObject([
+        { legacyAssessment: null },
+        { legacyAssessment: null },
+    ]);
+    expect(saved[7]).not.toHaveProperty("legacyAssessment");
+    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(saved);
+});

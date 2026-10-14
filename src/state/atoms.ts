@@ -244,6 +244,7 @@ const asyncStoredEnginesAtom = atomWithStorage<Engine[]>(
 const storedEnginesAtom = unwrap(asyncStoredEnginesAtom);
 
 type EngineUpdate =
+    | { removeLocalId: string }
     | Engine[]
     | Promise<Engine[]>
     | ((current: Engine[]) => Engine[] | Promise<Engine[]>);
@@ -254,28 +255,23 @@ const publishedEnginesAtom = atom<Engine[] | undefined>(undefined);
 /** Serializes functional calculation, renderer persistence and native synchronization together. */
 export const enginesAtom = atom(
     (get) => get(publishedEnginesAtom) ?? get(storedEnginesAtom),
-    (
-        get,
-        set,
-        update: EngineUpdate,
-        publication?: "after-save",
-    ): Promise<EngineOwnerSaveReceipt> => {
+    (get, set, update: EngineUpdate): Promise<EngineOwnerSaveReceipt> => {
         const run = engineOwnerUpdateSequence.then(async () => {
             const current = get(publishedEnginesAtom) ?? (await get(asyncStoredEnginesAtom));
+            const removal =
+                typeof update === "object" && update !== null && "removeLocalId" in update;
             const next = stampLegacyAssessments(
                 current,
-                await (typeof update === "function" ? update(current) : update),
+                removal
+                    ? current.filter(
+                          (engine) => engine.type !== "local" || engine.id !== update.removeLocalId,
+                      )
+                    : await (typeof update === "function" ? update(current) : update),
             );
-            if (publication === "after-save") {
-                const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));
-                if (receipt.saved) set(publishedEnginesAtom, next);
-                return receipt;
-            }
-            const receipt = set(
-                storedEnginesAtom,
-                next,
-            ) as unknown as Promise<EngineOwnerSaveReceipt>;
-            set(publishedEnginesAtom, next);
+            // Permanent local retirement keeps its session-only omission even on refusal.
+            if (removal) set(publishedEnginesAtom, next);
+            const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));
+            if (receipt.saved) set(publishedEnginesAtom, next);
             return receipt;
         });
         engineOwnerUpdateSequence = run.then(

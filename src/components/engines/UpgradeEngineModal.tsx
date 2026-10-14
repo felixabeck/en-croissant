@@ -74,14 +74,12 @@ export default function UpgradeEngineModal({
         committing.current = true;
         setIsCommitting(true);
         let previous: LocalEngine | undefined;
-        const receipt = await saveEngines(
-          (current) =>
-            current.map((item) => {
-              if (item.type !== "local" || item.id !== engine.id) return item;
-              previous = item;
-              return upgradeEngineFromCatalog(item, catalog, installed);
-            }),
-          "after-save",
+        const receipt = await saveEngines((current) =>
+          current.map((item) => {
+            if (item.type !== "local" || item.id !== engine.id) return item;
+            previous = item;
+            return upgradeEngineFromCatalog(item, catalog, installed);
+          }),
         );
         if (!receipt.saved || !previous) throw new Error(t("Engines.SaveError"));
         setUpgradedLink(catalog.downloadLink ?? null);

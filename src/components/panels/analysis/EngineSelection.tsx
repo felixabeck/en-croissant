@@ -1,4 +1,3 @@
-import { useOwnerTabId } from "@/state/tabScope";
 import { Center, Checkbox, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconCloud, IconCpu } from "@tabler/icons-react";
 import { Link } from "@tanstack/react-router";
@@ -8,31 +7,11 @@ import { Trans, useTranslation } from "react-i18next";
 import LocalImage from "@/components/common/LocalImage";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
-import { type Engine, stopEngine } from "@/utils/engines";
+import { type Engine } from "@/utils/engines";
 
 function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () => void }) {
-  const ownerTabId = useOwnerTabId();
-  const { t } = useTranslation();
-
   return (
-    <Paper
-      withBorder
-      p="sm"
-      w="100%"
-      h="3rem"
-      onClick={async () => {
-        if (engine.loaded && engine.type === "local") {
-          try {
-            await stopEngine(engine, ownerTabId);
-          } catch (error) {
-            notifyUnlessCancelled(t("Common.Error"), error);
-            return;
-          }
-        }
-        toggleLoaded();
-      }}
-      style={{ cursor: "pointer" }}
-    >
+    <Paper withBorder p="sm" w="100%" h="3rem" onClick={toggleLoaded} style={{ cursor: "pointer" }}>
       <Group wrap="nowrap">
         <Checkbox checked={!!engine.loaded} onChange={() => {}} />
         {engine.imageHandle ? (
@@ -52,6 +31,7 @@ function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () 
 
 function EngineSelection() {
   const [engines, setEngines] = useAtom(enginesAtom);
+  const { t } = useTranslation();
 
   if (!engines) return null;
 
@@ -77,9 +57,9 @@ function EngineSelection() {
               key={engine.id}
               engine={engine}
               toggleLoaded={() => {
-                setEngines(async (prev) =>
+                void setEngines(async (prev) =>
                   (await prev).map((e) => (e.id === engine.id ? { ...e, loaded: !e.loaded } : e)),
-                );
+                ).catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
               }}
             />
           ))}

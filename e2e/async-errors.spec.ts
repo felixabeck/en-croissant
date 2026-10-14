@@ -18,6 +18,74 @@ import {
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
 const germanListingCopy = germanCatalogue.translation;
 
+test("engine editor: refused cloud draft settles at 320px and 200% German", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.addInitScript(() =>
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "lichess",
+                    id: "narrow-cloud",
+                    name: "Committed cloud",
+                    url: "https://lichess.org",
+                    settings: [{ type: "string", name: "MultiPV", value: "1" }],
+                },
+            ]),
+        ),
+    );
+    await mockScenario({
+        commands: { reconcile_engine_attachments: { result: null, delay: 700 } },
+    });
+    await page.goto("/engines?selected=0");
+    const name = page.getByRole("textbox", { name: "Name", exact: true });
+    await name.scrollIntoViewIfNeeded();
+    await expect(name).toBeVisible();
+    await assertNothingClipped(name, { mode: "reachable" });
+    const bytes = await page.evaluate(() => localStorage.getItem("engines"));
+    await page.evaluate(() => {
+        const original = Storage.prototype.setItem;
+        Object.assign(window, {
+            __restoreNarrowEngineStorage: () => {
+                Storage.prototype.setItem = original;
+            },
+        });
+        Storage.prototype.setItem = function (key, value) {
+            if (key === "engines")
+                throw new DOMException("Refused engine save", "QuotaExceededError");
+            original.call(this, key, value);
+        };
+    });
+    try {
+        await name.fill("Refused cloud");
+        await expect(name).toHaveValue("Refused cloud");
+        await expect(page.getByText("Committed cloud", { exact: true })).toBeVisible();
+        await capture("engine-cloud-draft-pending-320-200-de");
+        await expect(name).toHaveValue("Committed cloud");
+        await expect(
+            page.getByText(/Die Engineliste konnte nicht gespeichert werden/).first(),
+        ).toBeVisible();
+        expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);
+        await capture("engine-cloud-draft-refused-320-200-de");
+        const remove = page.getByRole("button", { name: "Entfernen", exact: true });
+        await remove.scrollIntoViewIfNeeded();
+        await assertNothingClipped(remove, { mode: "reachable" });
+        await remove.click();
+        await expect(page.getByText("Committed cloud", { exact: true })).toBeVisible();
+        expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);
+    } finally {
+        await page.evaluate(() =>
+            (
+                window as typeof window & { __restoreNarrowEngineStorage: () => void }
+            ).__restoreNarrowEngineStorage(),
+        );
+    }
+});
+
 async function setTitleBarFontScale(page: Page, scale: 100 | 200) {
     await page.getByRole("tab", { name: "Erscheinungsbild", exact: true }).click();
     const slider = page.getByRole("slider", { name: "Schriftgröße", exact: true });

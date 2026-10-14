@@ -324,7 +324,7 @@ test("a refused catalog save shows an error and returns the card to its action",
   mocks.saveEngines.mockResolvedValue({ saved: false, synchronized: false });
   await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
   await act(async () => mocks.progressButtonProps!.onClick());
-  expect(mocks.saveEngines).toHaveBeenCalledWith(expect.any(Function), "after-save");
+  expect(mocks.saveEngines).toHaveBeenCalledWith(expect.any(Function));
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
     "Common.Error",
     expect.any(Error),

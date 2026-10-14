@@ -33,7 +33,7 @@ import {
   IconSearch,
 } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
@@ -42,6 +42,8 @@ import { Route } from "@/routes/engines";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
+import type { EngineOwnerSaveReceipt } from "@/state/engineOwnerStorage";
+import { useEngineEditDraft } from "./engineEditDraft";
 import { EngineAttachmentDraft, replaceEngineById } from "./engineAttachments";
 import {
   isEngineResourceFileOptionName,
@@ -67,7 +69,7 @@ import UpgradeEngineModal from "./UpgradeEngineModal";
 export default function EnginesPage() {
   const { t } = useTranslation();
 
-  const [engines, setEngines] = useAtom(enginesAtom);
+  const [engines] = useAtom(enginesAtom);
   const enginesList = useMemo(() => engines ?? [], [engines]);
   const [opened, setOpened] = useState(false);
   const [search, setSearch] = useState("");
@@ -204,75 +206,87 @@ export default function EnginesPage() {
                 setSelected={setSelected}
               />
             ) : (
-              <Stack>
-                <Divider variant="dashed" label={t("Common.GeneralSettings")} />
-
-                <TextInput
-                  w="50%"
-                  label={t("Common.Name")}
-                  value={selectedEngine.name}
-                  onChange={(e) => {
-                    setEngines(async (prev) => {
-                      const copy = [...(await prev)];
-                      copy[selected].name = e.currentTarget.value;
-                      return copy;
-                    });
-                  }}
-                />
-
-                <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
-                <Stack w="50%">
-                  <Text fw="bold">{t("Engines.Settings.NumOfLines")}</Text>
-                  <LinesSlider
-                    value={
-                      Number(
-                        engineOptionValue(
-                          selectedEngine.settings?.find(
-                            (setting) => setting.name === "MultiPV",
-                          ) ?? { type: "string", name: "MultiPV", value: "1" },
-                        ),
-                      ) || 1
-                    }
-                    setValue={(v) => {
-                      setEngines(async (prev) => {
-                        const copy = [...(await prev)];
-                        const setting = copy[selected].settings?.find(
-                          (setting) => setting.name === "MultiPV",
-                        );
-                        if (setting?.type === "string") {
-                          setting.value = String(v);
-                        } else {
-                          copy[selected].settings?.push({
-                            type: "string",
-                            name: "MultiPV",
-                            value: String(v),
-                          });
-                        }
-                        return copy;
-                      });
-                    }}
-                  />
-                </Stack>
-
-                <Group justify="right">
-                  <Button
-                    color="red"
-                    onClick={() => {
-                      setEngines(async (prev) => {
-                        const copy = [...(await prev)];
-                        copy.splice(selected, 1);
-                        return copy;
-                      });
-                      setSelected(null);
-                    }}
-                  >
-                    {t("Common.Remove")}
-                  </Button>
-                </Group>
-              </Stack>
+              <CloudSettings
+                key={selectedEngine.id}
+                engine={selectedEngine}
+                setSelected={setSelected}
+              />
             )}
           </Paper>
         )}
+      </Group>
+    </Stack>
+  );
+}
+
+function CloudSettings({
+  engine,
+  setSelected,
+}: {
+  engine: Engine;
+  setSelected: (v: number | null) => void;
+}) {
+  const { t } = useTranslation();
+  const [, save] = useAtom(enginesAtom);
+  const { displayed, submit } = useEngineEditDraft(engine);
+  const store = useStore();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  return (
+    <Stack>
+      <Divider variant="dashed" label={t("Common.GeneralSettings")} />
+      <TextInput
+        w="50%"
+        label={t("Common.Name")}
+        value={displayed.name}
+        onChange={(e) => submit({ kind: "field", field: "name", value: e.currentTarget.value })}
+      />
+      <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
+      <Stack w="50%">
+        <Text fw="bold">{t("Engines.Settings.NumOfLines")}</Text>
+        <LinesSlider
+          value={
+            Number(
+              engineOptionValue(
+                displayed.settings?.find((setting) => setting.name === "MultiPV") ?? {
+                  type: "string",
+                  name: "MultiPV",
+                  value: "1",
+                },
+              ),
+            ) || 1
+          }
+          setValue={(value) => submit({ kind: "option", name: "MultiPV", value: String(value) })}
+        />
+      </Stack>
+      <Group justify="right">
+        <Button
+          color="red"
+          onClick={() => {
+            void (async () => {
+              try {
+                const receipt = await save((current) =>
+                  current.filter((item) => item.id !== engine.id),
+                );
+                if (
+                  receipt.saved &&
+                  alive.current &&
+                  !store.get(enginesAtom)?.some((item) => item.id === engine.id)
+                )
+                  setSelected(null);
+              } catch (error) {
+                notifyUnlessCancelled(t("Common.Error"), error);
+              }
+            })();
+          }}
+        >
+          {t("Common.Remove")}
+        </Button>
       </Group>
     </Stack>
   );
@@ -291,6 +305,16 @@ function EngineSettings({
 
   const [engines, setEngines] = useAtom(enginesAtom);
   const engine = engines![selected] as LocalEngine;
+  const { displayed, submit } = useEngineEditDraft(engine);
+  const store = useStore();
+  const actionOwner = useRef({ active: true, busy: false });
+  useEffect(() => {
+    const owner = { active: true, busy: false };
+    actionOwner.current = owner;
+    return () => {
+      owner.active = false;
+    };
+  }, [engine.id, selected]);
   const targetId = engine.id;
   const attachmentDraft = useRef(new EngineAttachmentDraft());
   useEffect(() => {
@@ -305,15 +329,6 @@ function EngineSettings({
     async () => {
       return await tauri.getEngineConfig(engine.handle);
     },
-  );
-
-  const setEngine = useCallback(
-    (newEngine: LocalEngine) => {
-      setEngines(async (prev) => {
-        return replaceEngineById(await prev, targetId, newEngine);
-      });
-    },
-    [targetId, setEngines],
   );
 
   const saveAttachment = useCallback(
@@ -338,23 +353,26 @@ function EngineSettings({
     [setEngines, targetId],
   );
 
+  const defaultsAttempt = useRef<unknown>(null);
   useEffect(() => {
+    if (defaultsAttempt.current === options) return;
+    defaultsAttempt.current = options;
     if (options) {
       const settings = [...(engine.settings || [])];
       const defaults = requiredEngineSettingsDefaults(options).filter(
         (setting) => !settings.some((stored) => stored.name === setting.name),
       );
       if (defaults.length > 0) {
-        setEngine({ ...engine, settings: [...settings, ...defaults] });
+        submit({ kind: "defaults", settings: defaults });
       }
     }
-  }, [engine, options, setEngine]);
+  }, [engine, options, submit]);
 
   const completeOptions =
     options?.options
       .filter((option) => option.type !== "button")
       .map((option) => {
-        const setting = engine.settings?.find((setting) => setting.name === option.value.name);
+        const setting = displayed.settings?.find((setting) => setting.name === option.value.name);
         return {
           ...option,
           value: {
@@ -382,25 +400,11 @@ function EngineSettings({
     value: string | number | boolean | null,
     def: string | number | boolean | null,
   ) {
-    const newSettings = [...(engine.settings || [])];
-    const settingIndex = newSettings.findIndex((setting) => setting.name === name);
-    const setting = newSettings[settingIndex];
-    if (setting?.type === "string") {
-      newSettings[settingIndex] = { ...setting, value: String(value ?? "") };
-    } else {
-      newSettings.push({ type: "string", name, value: String(value ?? "") });
-    }
-    if (value !== def || requiredEngineSettings.includes(name)) {
-      setEngine({
-        ...engine,
-        settings: newSettings,
-      });
-    } else {
-      setEngine({
-        ...engine,
-        settings: newSettings.filter((setting) => setting.name !== name),
-      });
-    }
+    submit({
+      kind: "option",
+      name,
+      value: value !== def || requiredEngineSettings.includes(name) ? String(value ?? "") : null,
+    });
   }
 
   function setResourceSetting(
@@ -440,27 +444,32 @@ function EngineSettings({
               <TextInput
                 flex={1}
                 label={t("Common.Name")}
-                value={engine.name}
-                onChange={(e) => setEngine({ ...engine, name: e.currentTarget.value })}
+                value={displayed.name}
+                onChange={(e) =>
+                  submit({ kind: "field", field: "name", value: e.currentTarget.value })
+                }
               />
               <TextInput
                 label={t("Common.Version")}
                 w="5rem"
-                value={engine.version}
+                value={displayed.version}
                 placeholder="?"
-                onChange={(e) => setEngine({ ...engine, version: e.currentTarget.value })}
+                onChange={(e) =>
+                  submit({ kind: "field", field: "version", value: e.currentTarget.value })
+                }
               />
             </Group>
             <Group grow>
               <NumberInput
                 label="ELO"
-                value={engine.elo || undefined}
+                value={displayed.elo || undefined}
                 min={0}
                 placeholder={t("Common.Unknown")}
                 onChange={(v) =>
-                  setEngine({
-                    ...engine,
-                    elo: typeof v === "number" ? v : undefined,
+                  submit({
+                    kind: "field",
+                    field: "elo",
+                    value: typeof v === "number" ? v : undefined,
                   })
                 }
               />
@@ -500,8 +509,8 @@ function EngineSettings({
         </Group>
         <Divider variant="dashed" label={t("Engines.Settings.SearchSettings")} />
         <GoModeInput
-          goMode={engine.go || null}
-          setGoMode={(v) => setEngine({ ...engine, go: v })}
+          goMode={displayed.go || null}
+          setGoMode={(v) => submit({ kind: "field", field: "go", value: v })}
         />
 
         <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
@@ -628,8 +637,8 @@ function EngineSettings({
           <Button
             variant="default"
             onClick={() =>
-              setEngine({
-                ...engine,
+              submit({
+                kind: "reset",
                 settings: options ? requiredEngineSettingsDefaults(options) : undefined,
               })
             }
@@ -640,17 +649,34 @@ function EngineSettings({
             leftSection={<IconCopy size="1rem" />}
             variant="default"
             onClick={() => {
-              const duplicatedEngine: LocalEngine = {
-                ...engine,
-                id: crypto.randomUUID(),
-                name: `${engine.name} (Copy)`,
-              };
-              setEngines(async (prev) => {
-                const copy = [...(await prev)];
-                copy.splice(selected + 1, 0, duplicatedEngine);
-                return copy;
-              });
-              setSelected(selected + 1);
+              const owner = actionOwner.current;
+              if (owner.busy) return;
+              owner.busy = true;
+              const id = crypto.randomUUID();
+              void (async () => {
+                try {
+                  let inserted = false;
+                  const receipt = await setEngines((current) => {
+                    const index = current.findIndex(
+                      (item) => item.id === targetId && item.type === "local",
+                    );
+                    if (index < 0) return current;
+                    const source = current[index];
+                    const copy = [...current];
+                    copy.splice(index + 1, 0, { ...source, id, name: `${source.name} (Copy)` });
+                    inserted = true;
+                    return copy;
+                  });
+                  if (receipt.saved && inserted && owner.active) {
+                    const index = store.get(enginesAtom)?.findIndex((item) => item.id === id) ?? -1;
+                    if (index >= 0) setSelected(index);
+                  }
+                } catch (error) {
+                  notifyUnlessCancelled(t("Common.Error"), error);
+                } finally {
+                  owner.busy = false;
+                }
+              })();
             }}
           >
             {t("Common.Duplicate")}
@@ -667,7 +693,7 @@ function EngineSettings({
           onConfirm={async () => {
             setSelected(null);
             try {
-              await setEngines(async (prev) => (await prev).filter((e) => e.id !== engine.id));
+              await setEngines({ removeLocalId: targetId });
             } catch (error) {
               notifyUnlessCancelled(t("Common.Error"), error);
             } finally {
@@ -686,7 +712,14 @@ function EngineSettings({
         opened={jsonModal}
         toggleOpened={toggleJSONModal}
         engine={engine}
-        setEngine={(v) => setEngines(async (prev) => replaceEngineById(await prev, targetId, v))}
+        setEngine={async (v) => {
+          let present = false;
+          const receipt = await setEngines((current) => {
+            present = current.some((item) => item.id === targetId);
+            return replaceEngineById(current, targetId, v);
+          });
+          return present ? receipt : { ...receipt, saved: false, synchronized: false };
+        }}
       />
       <UpgradeEngineModal
         key={`${engine.id}:upgrade`}
@@ -707,14 +740,25 @@ function JSONModal({
   opened: boolean;
   toggleOpened: () => void;
   engine: Engine;
-  setEngine: (v: Engine) => void;
+  setEngine: (v: Engine) => Promise<EngineOwnerSaveReceipt>;
 }) {
   const { t } = useTranslation();
 
   const [value, setValue] = useState(JSON.stringify(engine, null, 2));
   const [error, setError] = useState<string | null>(null);
+  const submission = useRef({ active: true, busy: false, initialized: false });
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (opened) {
+    const owner = { active: true, busy: false, initialized: false };
+    submission.current = owner;
+    setSaving(false);
+    return () => {
+      owner.active = false;
+    };
+  }, [opened]);
+  useEffect(() => {
+    if (opened && !submission.current.initialized) {
+      submission.current.initialized = true;
       setValue(JSON.stringify(engine, null, 2));
       setError(null);
     }
@@ -737,12 +781,26 @@ function JSONModal({
       />
       <Space h="md" />
       <Button
-        onClick={() => {
+        disabled={saving}
+        onClick={async () => {
+          const owner = submission.current;
+          if (owner.busy) return;
           const parseRes = parsePersistedEngineJson(value);
           if (parseRes.success) {
-            setEngine(parseRes.data);
-            setError(null);
-            toggleOpened();
+            owner.busy = true;
+            setSaving(true);
+            try {
+              const receipt = await setEngine(parseRes.data);
+              if (receipt.saved && owner.active) {
+                setError(null);
+                toggleOpened();
+              }
+            } catch (error) {
+              notifyUnlessCancelled(t("Common.Error"), error);
+            } finally {
+              owner.busy = false;
+              if (owner.active) setSaving(false);
+            }
           } else {
             setError("Invalid Configuration");
           }

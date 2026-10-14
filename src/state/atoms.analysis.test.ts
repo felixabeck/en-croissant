@@ -1,6 +1,16 @@
 import { createStore } from "jotai";
 import { INITIAL_FEN } from "chessops/fen";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+vi.mock("@/platform/tauri", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/platform/tauri")>();
+    return {
+        ...actual,
+        tauri: {
+            ...actual.tauri,
+            reconcileEngineAttachments: vi.fn().mockResolvedValue(undefined),
+        },
+    };
+});
 import type { BestMoves } from "@/bindings";
 import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
 import {

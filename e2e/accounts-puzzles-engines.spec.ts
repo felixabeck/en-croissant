@@ -365,6 +365,88 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
     ).toBeVisible();
     await capture("engine-upgrade-modal");
     await expect(dialog).toHaveScreenshot("engine-upgrade-modal.png");
+    await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+
+    await page.evaluate(() =>
+        window.__E2E_TAURI__.configure({
+            commands: {
+                file_exists: { result: true },
+                reconcile_engine_attachments: { result: null, delay: 700 },
+                retire_engine: { result: null },
+            },
+        }),
+    );
+    const name = page.getByRole("textbox", { name: "Name", exact: true });
+    const card = page.locator('button[aria-pressed="true"]').locator("p").first();
+    const before = await page.evaluate(() => localStorage.getItem("engines"));
+    await name.fill("Saved publication");
+    await expect(name).toHaveValue("Saved publication");
+    await expect(card).toBeVisible();
+    await expect(card).toHaveText("Stockfish 18");
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(before);
+    await capture("engine-publication-pending-draft");
+    await expect(card).toHaveText("Saved publication");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("engines"))).not.toBe(before);
+
+    await page.evaluate(() => {
+        const original = Storage.prototype.setItem;
+        Object.assign(window, {
+            __engineStorageRefusals: 0,
+            __restoreEngineStorage: () => {
+                Storage.prototype.setItem = original;
+            },
+        });
+        Storage.prototype.setItem = function (key, value) {
+            if (key === "engines") {
+                const state = window as typeof window & { __engineStorageRefusals: number };
+                state.__engineStorageRefusals++;
+                throw new DOMException("Engine storage refused", "QuotaExceededError");
+            }
+            original.call(this, key, value);
+        };
+    });
+    const savedBytes = await page.evaluate(() => localStorage.getItem("engines"));
+    await name.fill("Refused publication");
+    await expect(name).toHaveValue("Refused publication");
+    await expect(name).toHaveValue("Saved publication");
+    await expect(card).toHaveText("Saved publication");
+    await expect(page.getByText(/The engine list could not be saved/).first()).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(savedBytes);
+    await page.getByRole("button", { name: "Duplicate", exact: true }).click();
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    (window as typeof window & { __engineStorageRefusals: number })
+                        .__engineStorageRefusals,
+            ),
+        )
+        .toBe(2);
+    await expect(page.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
+        "Saved publication",
+    );
+    await expect(page.getByText("Saved publication (Copy)", { exact: true })).toHaveCount(0);
+    await expect(card).toHaveText("Saved publication");
+    await capture("engine-publication-refused-edit-duplicate");
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    const removal = page.getByRole("dialog");
+    await removal.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect(page.getByText("Saved publication", { exact: true })).toHaveCount(0);
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    window.__E2E_TAURI__
+                        .invocations()
+                        .filter((call) => call.command === "retire_engine").length,
+            ),
+        )
+        .toBe(1);
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(savedBytes);
+    await capture("engine-publication-refused-removal");
+    await page.evaluate(() => {
+        (window as typeof window & { __restoreEngineStorage: () => void }).__restoreEngineStorage();
+    });
 });
 
 test("accounts-puzzles-engines: add engine download catalog", async ({ page, mockScenario }) => {

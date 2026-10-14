@@ -215,7 +215,7 @@ beforeEach(async () => {
     return 1n;
   });
   store = createStore();
-  await store.set(enginesAtom, [old], "after-save");
+  await store.set(enginesAtom, [old]);
   vi.clearAllMocks();
   host = document.createElement("div");
   document.body.append(host);
@@ -230,7 +230,7 @@ afterEach(async () => {
 test("success saves once before retiring the old pair and keeps the same list position", async () => {
   const first: LocalEngine = { ...old, id: "first", name: "First engine" };
   const last: LocalEngine = { ...old, id: "last", name: "Last engine" };
-  await store.set(enginesAtom, [first, old, last], "after-save");
+  await store.set(enginesAtom, [first, old, last]);
   const events: string[] = [];
   const write = Storage.prototype.setItem;
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {

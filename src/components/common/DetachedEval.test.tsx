@@ -10,12 +10,19 @@ import DetachedEval from "./DetachedEval";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
+vi.mock("@/platform/tauri", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/platform/tauri")>();
+  return {
+    ...actual,
+    tauri: { ...actual.tauri, reconcileEngineAttachments: vi.fn().mockResolvedValue(undefined) },
+  };
+});
 let h: ReturnType<typeof engineDisplayHarness>;
 afterEach(async () => h.close());
 test("DetachedEval uses the shared dimmed fallback and replaces it with current lines", async () => {
   h = engineDisplayHarness();
   const tree = createTreeStore();
-  await h.store.set(enginesAtom, [displayEngine]);
+  expect((await h.store.set(enginesAtom, [displayEngine])).saved).toBe(true);
   h.store.set(currentDetachedEngineAtom, displayEngine.id);
   await h.remember();
   await h.render(
@@ -37,7 +44,7 @@ test.each([false, true])(
   async (partial) => {
     h = engineDisplayHarness();
     const tree = createTreeStore();
-    await h.store.set(enginesAtom, [displayEngine]);
+    expect((await h.store.set(enginesAtom, [displayEngine])).saved).toBe(true);
     h.store.set(currentDetachedEngineAtom, displayEngine.id);
     if (partial) await h.remember();
     await h.render(

@@ -3,14 +3,32 @@ import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { displayEngine, engineDisplayHarness } from "@/tests/engineDisplay";
-import { engineTerminalFamily, engineRetryFamily } from "@/state/atoms";
+import { engineTerminalFamily, engineRetryFamily, enginesAtom } from "@/state/atoms";
+import { useAtomValue } from "jotai";
+import type { Settings } from "./EngineSettingsForm";
 import { analysisSearch } from "./analysisSearch";
 import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import BestMoves from "./BestMoves";
 import { errorUnlessCancelled } from "@/platform/errors";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("./EngineSettingsForm", () => ({ default: () => null }));
+const publication = vi.hoisted(() => ({
+  reconcile: vi.fn(),
+  setSettings: undefined as undefined | ((update: (current: Settings) => Settings) => void),
+}));
+vi.mock("@/platform/tauri", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/platform/tauri")>();
+  return {
+    ...actual,
+    tauri: { ...actual.tauri, reconcileEngineAttachments: publication.reconcile },
+  };
+});
+vi.mock("./EngineSettingsForm", () => ({
+  default: ({ setSettings }: { setSettings: typeof publication.setSettings }) => {
+    publication.setSettings = setSettings;
+    return null;
+  },
+}));
 vi.mock("./AnalysisRow", () => ({
   default: ({ moves, inert, fen, halfMoves }: any) => (
     <tr data-inert={inert} data-fen={fen} data-ply={halfMoves}>
@@ -20,8 +38,94 @@ vi.mock("./AnalysisRow", () => ({
 }));
 let h: ReturnType<typeof engineDisplayHarness>;
 beforeEach(() => {
+  publication.reconcile.mockReset().mockResolvedValue(undefined);
   vi.useFakeTimers();
   h = engineDisplayHarness();
+});
+
+function LivePanel() {
+  const engine = useAtomValue(enginesAtom)?.[0];
+  return engine ? (
+    <Accordion value="engine">
+      <Accordion.Item value="engine">
+        <BestMoves
+          id={0}
+          engine={engine}
+          fen={INITIAL_FEN}
+          moves={[]}
+          halfMoves={0}
+          dragHandleProps={{}}
+          orientation="white"
+        />
+      </Accordion.Item>
+    </Accordion>
+  ) : null;
+}
+
+test("synced defaults remain committed while a save is pending or refused and merge other queued options", async () => {
+  await h.store.set(enginesAtom, [
+    { ...displayEngine, settings: [{ type: "string", name: "Threads", value: "1" }] },
+  ]);
+  await act(async () =>
+    h.store.set(h.settingsAtom, {
+      enabled: true,
+      synced: true,
+      go: { t: "Infinite" },
+      settings: [{ type: "string", name: "Threads", value: "1" }],
+    }),
+  );
+  await h.render(<LivePanel />);
+  let reject!: (error: Error) => void;
+  publication.reconcile.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, refuse) => {
+        reject = refuse;
+      }),
+  );
+  await act(async () =>
+    publication.setSettings!((current) => ({
+      ...current,
+      settings: [{ type: "string", name: "Threads", value: "8" }],
+    })),
+  );
+  await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+  expect(h.store.get(h.settingsAtom).settings).toEqual([
+    { type: "string", name: "Threads", value: "1" },
+  ]);
+  expect(h.store.get(enginesAtom)?.[0].settings).toEqual([
+    { type: "string", name: "Threads", value: "1" },
+  ]);
+  await act(async () => {
+    reject(new Error("refused"));
+  });
+  expect(h.store.get(h.settingsAtom).settings).toEqual([
+    { type: "string", name: "Threads", value: "1" },
+  ]);
+  await h.store.set(enginesAtom, (current) =>
+    current.map((item) => ({
+      ...item,
+      settings: [...(item.settings ?? []), { type: "string", name: "Hash", value: "64" }],
+    })),
+  );
+  await act(async () =>
+    publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 12 } })),
+  );
+  await vi.waitFor(() => expect(h.store.get(enginesAtom)?.[0].go).toEqual({ t: "Depth", c: 12 }));
+  expect(h.store.get(enginesAtom)?.[0].settings).toContainEqual({
+    type: "string",
+    name: "Hash",
+    value: "64",
+  });
+});
+
+test("unsynced analysis edits retain their separate per-tab state without saving defaults", async () => {
+  await h.render(panel());
+  publication.reconcile.mockClear();
+  await act(async () =>
+    publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 9 } })),
+  );
+  expect(h.store.get(h.settingsAtom).go).toEqual({ t: "Depth", c: 9 });
+  expect(publication.reconcile).not.toHaveBeenCalled();
 });
 afterEach(async () => {
   await h.close();

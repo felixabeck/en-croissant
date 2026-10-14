@@ -27,6 +27,7 @@ import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
   allEnabledFamily,
   analysisTabFamily,
@@ -66,14 +67,14 @@ function AnalysisPanel() {
   );
 
   const [engines, setEngines] = useAtom(enginesAtom);
-  const [optimisticEngines, setOptimisticEngines] = useOptimistic<Engine[], Engine[]>(
-    engines ?? [],
-    (_, newEngines) => newEngines,
+  const [optimisticOrder, setOptimisticOrder] = useOptimistic<string[], string[]>(
+    (engines ?? []).filter((engine) => engine.loaded).map((engine) => engine.id),
+    (_, order) => order,
   );
 
   const loadedEngines = useMemo(
-    () => optimisticEngines.filter((e) => e.loaded),
-    [optimisticEngines],
+    () => applyEngineOrder(engines ?? [], optimisticOrder).filter((e) => e.loaded),
+    [engines, optimisticOrder],
   );
 
   const [, enable] = useAtom(enableAllFamily(useOwnerTabId()));
@@ -184,12 +185,17 @@ function AnalysisPanel() {
                     if (destination?.index === undefined) return;
                     startTransition(async () => {
                       const reordered = reorderEngines(
-                        optimisticEngines,
+                        loadedEngines,
                         source.index,
                         destination!.index,
                       );
-                      setOptimisticEngines(reordered);
-                      await setEngines(reordered);
+                      const order = reordered.map((engine) => engine.id);
+                      setOptimisticOrder(order);
+                      try {
+                        await setEngines((current) => applyEngineOrder(current, order));
+                      } catch (error) {
+                        notifyUnlessCancelled(t("Common.Error"), error);
+                      }
                     });
                   }}
                 >
@@ -279,6 +285,21 @@ function AnalysisPanel() {
       </Tabs>
     </Stack>
   );
+}
+
+export function applyEngineOrder(engines: Engine[], order: string[]): Engine[] {
+  const byId = new Map(
+    engines.filter((engine) => engine.loaded).map((engine) => [engine.id, engine]),
+  );
+  const ordered = [...new Set(order)].flatMap((id) => {
+    const engine = byId.get(id);
+    if (!engine) return [];
+    byId.delete(id);
+    return [engine];
+  });
+  ordered.push(...byId.values());
+  let index = 0;
+  return engines.map((engine) => (engine.loaded ? ordered[index++] : engine));
 }
 
 function reorderEngines(

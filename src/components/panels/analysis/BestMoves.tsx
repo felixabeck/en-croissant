@@ -30,6 +30,8 @@ import { memo, startTransition, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { BestMoves } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { mergeEngineOptions } from "@/components/engines/engineEditDraft";
 import {
   currentDetachedEngineAtom,
   threatFamily,
@@ -101,16 +103,44 @@ function BestMovesComponent({
   const setSettings = useCallback(
     (fn: (prev: Settings) => Settings) => {
       const newSettings = fn(settings);
-      setSettings2(newSettings);
-      if (newSettings.synced) {
-        setEngines(async (prev) =>
-          (await prev).map((o) =>
-            o.id === engine.id ? { ...o, settings: newSettings.settings, go: newSettings.go } : o,
-          ),
-        );
+      if (!newSettings.synced) {
+        setSettings2(newSettings);
+        return;
       }
+      setSettings2((current) => ({
+        ...current,
+        enabled: newSettings.enabled,
+        synced: newSettings.synced,
+      }));
+      const syncing = !settings.synced;
+      const changedOptions = newSettings.settings.filter(
+        (option) =>
+          syncing ||
+          !equal(
+            option,
+            settings.settings.find((old) => old.name === option.name),
+          ),
+      );
+      const removedOptions = settings.settings
+        .filter((old) => !newSettings.settings.some((option) => option.name === old.name))
+        .map((option) => option.name);
+      const goChanged = syncing || !equal(newSettings.go, settings.go);
+      if (!syncing && !goChanged && changedOptions.length === 0 && removedOptions.length === 0)
+        return;
+      void setEngines((current) =>
+        current.map((item) => {
+          if (item.id !== engine.id) return item;
+          return {
+            ...item,
+            settings: syncing
+              ? newSettings.settings
+              : mergeEngineOptions(item.settings ?? [], changedOptions, removedOptions),
+            ...(goChanged ? { go: newSettings.go } : {}),
+          };
+        }),
+      ).catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
     },
-    [engine, settings, setSettings2, setEngines],
+    [engine, settings, setSettings2, setEngines, t],
   );
 
   const [settingsOn, toggleSettingsOn] = useToggle();
