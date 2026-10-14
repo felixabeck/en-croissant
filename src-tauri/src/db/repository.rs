@@ -543,6 +543,10 @@ struct RepositoryState {
     clock: u64,
 }
 
+fn repository_state_poisoned<T>(_: std::sync::PoisonError<T>) -> Error {
+    Error::Conflict("database repository state poisoned".into())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EntryKey {
     identity: (u64, u64),
@@ -681,9 +685,7 @@ fn predecessor_admission_inner(
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
-        let mut state = state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        let mut state = state.lock().map_err(repository_state_poisoned)?;
         state.prune_retirements();
         if own.is_some_and(|gate| gate.snapshot().closed) {
             return Err(Error::Conflict("database pool is retiring".into()));
@@ -801,7 +803,7 @@ impl DatabaseRepository {
         let requires_validation = entry
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .schema_identity
             .as_ref()
             != Some(&identity);
@@ -812,9 +814,7 @@ impl DatabaseRepository {
                         entry
                             .state
                             .lock()
-                            .map_err(|_| {
-                                Error::Conflict("database repository state poisoned".into())
-                            })?
+                            .map_err(repository_state_poisoned)?
                             .passed_stamp_due = Some(validated_identity)
                     }
                     Err(error) => log::warn!(
@@ -842,7 +842,7 @@ impl DatabaseRepository {
         let entry = self
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .entries
             .get(&entry_key(target)?)
             .cloned();
@@ -852,7 +852,7 @@ impl DatabaseRepository {
         let due = entry
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .passed_stamp_due
             .clone();
         let Some(identity) = due else {
@@ -861,10 +861,7 @@ impl DatabaseRepository {
         if self.database_identity(target)? != identity {
             return Ok(None);
         }
-        let mut state = entry
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        let mut state = entry.state.lock().map_err(repository_state_poisoned)?;
         if state.passed_stamp_due.as_ref() == Some(&identity) {
             state.passed_stamp_due = None;
             Ok(Some(identity))
@@ -1113,7 +1110,7 @@ impl DatabaseRepository {
         if self
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .tombstones
             .contains(target.path())
         {
@@ -1189,7 +1186,7 @@ impl DatabaseRepository {
         let entry = self
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .entries
             .get(&key)
             .cloned();
@@ -1209,7 +1206,7 @@ impl DatabaseRepository {
         let entry = self
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .entries
             .get(&key)
             .cloned();
@@ -1228,7 +1225,7 @@ impl DatabaseRepository {
         Ok(self
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .building
             .contains(&key))
     }
@@ -1282,10 +1279,7 @@ impl DatabaseRepository {
         let key = entry_key(target)?;
         let path = target.path().to_owned();
         let entry = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            let state = self.state.lock().map_err(repository_state_poisoned)?;
             let mut state = self.wait_while_building_until(state, &key, deadline, cancellation)?;
             if !state.tombstones.insert(path.clone()) {
                 return Err(Error::Conflict(
@@ -1329,10 +1323,7 @@ impl DatabaseRepository {
                 "injected database deletion release failure".into(),
             ));
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        let mut state = self.state.lock().map_err(repository_state_poisoned)?;
         state.tombstones.remove(&tombstone.path);
         tombstone.disarm();
         Ok(())
@@ -1369,10 +1360,7 @@ impl DatabaseRepository {
         let key = entry_key(target)?;
         let mut initial_probe = self.entry_probe(target, &key, cancellation)?;
         loop {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            let mut state = self.state.lock().map_err(repository_state_poisoned)?;
             state.prune_retirements();
             if state.tombstones.contains(target.path()) {
                 return Err(Error::Conflict("database is being deleted".into()));
@@ -1389,7 +1377,7 @@ impl DatabaseRepository {
                 entry
                     .state
                     .lock()
-                    .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+                    .map_err(repository_state_poisoned)?
                     .last_used = now;
                 return Ok((key, entry, initial_probe));
             }
@@ -1454,10 +1442,7 @@ impl DatabaseRepository {
             // SQLite open receives a separate admission in the manager.
             drop(admission);
             let mut state = loop {
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+                let mut state = self.state.lock().map_err(repository_state_poisoned)?;
                 state.prune_retirements();
                 if cancellation.is_some_and(CancellationToken::is_cancelled) {
                     return Err(Error::Cancellation);
@@ -1539,7 +1524,7 @@ impl DatabaseRepository {
         entry
             .state
             .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .map_err(repository_state_poisoned)?
             .schema_identity = Some(identity);
         Ok(())
     }
@@ -1581,10 +1566,7 @@ impl DatabaseRepository {
     ) -> Result<(), Error> {
         let mut capacity = self.reserve_retirement_capacity(deadline, cancellation)?;
         let retirement = loop {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            let mut state = self.state.lock().map_err(repository_state_poisoned)?;
             state.prune_retirements();
             if let Some(retired) = state
                 .retired
@@ -1635,10 +1617,7 @@ impl DatabaseRepository {
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
                 return Err(Error::Cancellation);
             }
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            let mut state = self.state.lock().map_err(repository_state_poisoned)?;
             state.prune_retirements();
             if state.retired.len() + state.retirement_reservations < MAX_OPEN_DATABASES {
                 state.retirement_reservations += 1;
@@ -1668,10 +1647,7 @@ impl DatabaseRepository {
                 "database retirement capacity timed out".into(),
             ));
         }
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        let state = self.state.lock().map_err(repository_state_poisoned)?;
         drop(
             self.build_changed
                 .wait_timeout(
@@ -1680,7 +1656,7 @@ impl DatabaseRepository {
                         .saturating_duration_since(now)
                         .min(RETIRE_CANCELLATION_POLL),
                 )
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?,
+                .map_err(repository_state_poisoned)?,
         );
         Ok(())
     }
@@ -1731,7 +1707,7 @@ impl DatabaseRepository {
                     let stale_entry = self
                         .state
                         .lock()
-                        .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+                        .map_err(repository_state_poisoned)?
                         .entries
                         .get(key)
                         .cloned();
@@ -1851,10 +1827,7 @@ impl DatabaseRepository {
         deadline: Instant,
         cancellation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        let state = self.state.lock().map_err(repository_state_poisoned)?;
         drop(self.wait_while_building_until(state, key, deadline, cancellation)?);
         Ok(())
     }
@@ -1884,7 +1857,7 @@ impl DatabaseRepository {
             let (guard, result) = self
                 .build_changed
                 .wait_timeout(state, duration)
-                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+                .map_err(repository_state_poisoned)?;
             state = guard;
             if result.timed_out() && state.building.contains(key) && Instant::now() >= deadline {
                 return Err(Error::Conflict("database construction timed out".into()));
@@ -4255,6 +4228,90 @@ mod tests {
     use super::*;
     use diesel::{connection::SimpleConnection, RunQueryDsl};
     use std::{sync::mpsc, time::Duration};
+
+    fn assert_repository_state_poison(error: Error) {
+        assert!(
+            matches!(&error, Error::Conflict(_)),
+            "poison must return Conflict"
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.to_string(),
+            "Conflict: database repository state poisoned"
+        );
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "conflict");
+        assert_eq!(
+            payload["message"],
+            "Conflict: database repository state poisoned"
+        );
+    }
+
+    #[test]
+    fn repository_state_poison_fails_public_operations_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let state = Arc::clone(&repository.state);
+        assert!(std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            panic!("deliberate repository state poison");
+        })
+        .join()
+        .is_err());
+        assert!(repository.state.is_poisoned());
+
+        assert_repository_state_poison(
+            repository
+                .connection(&target, None)
+                .err()
+                .expect("poisoned repository must refuse a connection"),
+        );
+        let mut called = false;
+        let result =
+            repository.with_write_lock_cancellable(&target, &CancellationToken::new(), || {
+                called = true;
+                Ok(())
+            });
+        assert_repository_state_poison(result.unwrap_err());
+        assert!(
+            !called,
+            "poisoned repository must refuse the write callback"
+        );
+    }
+
+    #[test]
+    fn entry_state_poison_fails_public_operations_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::default();
+        let (target, _key, entry) = initialized_target_entry(&repository, &path);
+        let poisoned_entry = Arc::clone(&entry);
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoned_entry.state.lock().unwrap();
+            panic!("deliberate entry state poison");
+        })
+        .join()
+        .is_err());
+        assert!(entry.state.is_poisoned());
+        assert!(!repository.state.is_poisoned());
+
+        assert_repository_state_poison(
+            repository
+                .connection(&target, None)
+                .err()
+                .expect("poisoned entry must refuse a connection"),
+        );
+        let mut called = false;
+        let result =
+            repository.with_write_lock_cancellable(&target, &CancellationToken::new(), || {
+                called = true;
+                Ok(())
+            });
+        assert_repository_state_poison(result.unwrap_err());
+        assert!(!called, "poisoned entry must refuse the write callback");
+    }
 
     #[derive(diesel::QueryableByName)]
     struct TestText {
