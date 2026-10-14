@@ -7237,12 +7237,28 @@ mod tests {
         assert_eq!(std::fs::read(&destination_path).unwrap(), b"old");
         // The cleanup injection reports failure, but the real unlink still removes the temporary.
         assert_no_atomic_export_residue(dir.path());
-        match result {
-            Err(Error::OperationAndCleanup { primary, cleanup }) => {
+        let error = result.expect_err("export cancellation and cleanup failure must be returned");
+        assert_eq!(
+            error.category(),
+            crate::error::ErrorCategory::OperationAndCleanup
+        );
+        let payload = serde_json::to_value(&error).expect("serialize actual export error");
+        assert_eq!(payload["tag"], "backend-error");
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert_eq!(
+            payload["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(
+            !payload.to_string().contains("injected Cleanup failure"),
+            "native cleanup cause leaked into export payload: {payload}"
+        );
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
                 assert_eq!(primary, Error::Cancellation.to_string());
                 assert_eq!(
-                    cleanup,
-                    Error::from(std::io::Error::other("injected Cleanup failure")).to_string()
+                    cleanup, "I/O failure: injected Cleanup failure",
+                    "cleanup must retain the injected native cause"
                 );
             }
             other => panic!("expected cancellation and cleanup failure, got {other:?}"),
