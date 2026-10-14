@@ -14247,7 +14247,7 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### `db/repository.rs` hand-copies the repository-state poison mapping nineteen times and no test drives it
 
-* **ID:** f-20261007-06 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261007-06 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** a5e2d9b5-81c8-448d-8d69-8d80453d982e
 * **Where:** `src-tauri/src/db/repository.rs` — every `entry.state.lock()` / `.state.lock()` site, e.g. `:409`, `:421`, `:450`, `:697`, `:862`, `:1121`, `:1253` (19 occurrences of `Error::Conflict("database repository state poisoned".into())`, all in this one file).
 * **Defect:** each site maps a poisoned per-database state mutex to `Error::Conflict("database repository state poisoned")` by hand, and no test poisons that mutex (the only poison test in the file, `panicking_hook_configuration_does_not_poison_following_configuration` at `:2145`, concerns the test-hook mutex). A wrong or missing mapping at one of the nineteen copies is invisible to every gate.
@@ -14255,6 +14255,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Candidate fix:** one private accessor on the repository entry (e.g. `fn state(&self) -> Result<MutexGuard<'_, _>, Error>`) that owns the mapping, all nineteen sites routed through it, plus one test that poisons the mutex through a panicking thread and asserts the exact `Conflict` Display from one public repository operation.
 * **Related:** found while planning `f-20260922-01` (PLAN-ONLY drain lane, 2026-10-07); deliberately not folded in, because that finding's mandate is the path-authority mutex and `db/repository.rs` is not one of its files (rule 12a adoption gate).
 * **Found by:** the orchestrator of the `f-20260922-01` planner, by `git grep -n "repository state poisoned" -- src-tauri/src` (19 hits, one file) and reading `:400-425`.
+* **Closed source finding (2026-10-14):** All23 repository-state poison mappings reuse one opaque helper, with121 runtime tests and independently staged category/message faults failing before restoration. Commit b00ab7ae. Behavior-preserving removal of equivalent duplication has no fabricated red against the old duplicates. Source closure is reviewed through6fe737b5 with unchanged code atd2517d41. Complete history, raw lens reports, decisions, source-fault commands/statuses and honest limitations are in tasks/handoffs/2026-10-14-f-20261001-14-review.md. Canonical browser-proof.lCGt4T completes0 atd2517d41:125 container cases and all real Tauri app checks pass, screenshot inspected, no pixel diffs or snapshot changes. Native GTK/engine-picker interaction is not automated. Final clean push gates, remote CI and installation follow this source closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"9dd8ca87202f67117508d10930de7e8a5f315f143316dba080c8315ec34cfeef","header_sha256":"4112ec9449dd925a41f185ccbbcbdddb9dc89990cb696cc5b7dd3a6d83e3fa3f","header_status":"handled","input_sha256":"09f703be411d1fcb81f2efda6fa2e70aae68ebe2820e006413b1297962fe59c8","kind":"mutation-receipt","operation":"81de29455c2cf8c70876ee3efad6aadd2c0cf71006f617f1a3e1e9b923295d28","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-06"],"target":"f-20261007-06","v":1} -->
 
 ---
 
