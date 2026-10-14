@@ -15899,3 +15899,20 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Proof required:** actual persisted history and real tab tree, select B, reload/remount and verify matching controls/playable owner, retain played progress and other tab data, legacy/ambiguous/invalid selection and write-refusal/retry cases. Use actual Puzzles/PuzzleBoard consumers.
 * **Related:** f-20260920-08 tracks unmanaged puzzle history lifetime and size in this component, no shared Root is asserted. f-20260922-13 owns current move/admission safety, this run preserves the saved puzzle-session format and defers this distinct ownership design.
 * **Found by:** Codex review-persisted-state D3 in the full interactive f-20261001-14 drain, confidence96,2026-10-14. Source traced by root, runtime reproduction pending. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-14 — filed through the inbox spool
+
+### Fresh heap-corpus database open fails again in a complete native gate
+
+* **ID:** f-20261014-02 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** src-tauri/src/db/mod.rs:6896, populate_large_valid_comment_corpus called by db::tests::production_export_heap_peak_stays_bounded_by_one_game, and db::repository connection admission.
+* **Defect:** The complete manual final-gate attempt on c97328d0 failed the export heap regression at connection(...).unwrap() with Diesel(DatabaseError(Unknown, "unable to open database file")). Ordinary native tests reported 2233 passed, 1 failed, 2 ignored, exit 101. The same attempt's native coverage passed, as did a prior complete native lane on df237c46. A green sibling or earlier run does not diagnose this failure.
+* **Related finding:** f-20261012-07 was rejected because the index heap test hit the same fresh-corpus helper line and SQLite error only once under load. Its rejection explicitly requires filing again after a second independent witness. This separate 2026-10-14 export-consumer failure supplies that witness. A common underlying cause is not yet established, so Root remains - and the rejected entry is preserved.
+* **Why it matters:** The native gate now blocks completion of the interrupted f-20261001-14 cluster. The existing path- and identity-bound SQLite open must remain correct, with an evidenced diagnosis rather than an arbitrary retry or weakened assertion.
+* **Open question:** Determine the native reason behind SQLite's CANTOPEN at the fresh corpus connection, including repository binding, descriptor ownership, SQLite callback context and any test interference. Repair the measured cause while preserving production authority and the heap-bound assertion. Do not add a retry, timeout increase, gate exclusion or setup program to mask it.
+* **Evidence:** artifacts/gates/20261014T154411653Z-1369681/receipt-backend-test.log. The prior independent witness is retained by f-20261012-07. Root stopped only the owned remaining gate process group before ledger/source work, canonical completion 125 push-gate c97328d0 and mutation SIGTERM143 retained.
+* **Proof:** Reproduce or deterministically stage the evidenced cause through the real open path, show source-only fault red and exact restoration green when applicable, pass affected native suites and all final push gates without weakening the heap or authority assertions.
+* **Found by:** Codex manual continuation of f-20261001-14, 2026-10-14. All fifteen original cluster findings remain handled.
