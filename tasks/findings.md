@@ -15881,3 +15881,21 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Found by:** the f-20261001-11 phase-1 Codex write leaf's final proof run, confirmed by the orchestrator reading `scripts/working-tree-files.mjs`. Related handled finding sharing the file: f-20260830-17 (different cause).
 * **Correction (2026-10-13, records lens of the f-20261001-10 push review, verified by the orchestrator):** the consumer list in **Where** and the "any uncommitted deletion reds the gate" claim are too wide. `scripts/check-ui-boundaries.mjs:39`, `scripts/check-tauri-command-boundary.mjs:510` and `scripts/check-ipc-command-consumers.mjs:402` already skip `ENOENT` for a listed path that an uncommitted deletion removed. The demonstrated failure is `scripts/check-untranslated-jsx.mjs:191`, which reads every listed file without that guard. The fix shape stands (treat a pending deletion as absent once, in `scripts/working-tree-files.mjs`, so every consumer can drop its own `ENOENT` skip), but the failing consumer today is the untranslated-JSX check only.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5ae97a3b8a1ae34ce61f04916632dcf41ea2458e8aef25e1d6100153aba4d712","input_sha256":"0b5be989d609a7063532c9ba3d74e0b31aee5d12d86e83d51ef0d335b17bfbf2","kind":"mutation-receipt","operation":"ae5dfc2095fa454e3a03813b1241499b955ed5d7cc9cc2c95ae3683892aa5a5d","options":{"section":null},"request_id_sha256":null,"results":["f-20261013-01"],"target":"f-20261013-01","v":1} -->
+
+---
+
+## 2026-10-14 — filed through the inbox spool
+
+### Restored puzzle history selects index zero while its independently restored tree belongs to another puzzle
+
+* **ID:** f-20261014-01 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 88354097-6004-4014-a60b-919fe79440ef · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-88354097-6004-4014-a60b-919fe79440ef-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/puzzles/Puzzles.tsx:88-92,907, src/state/atoms.ts:743 currentPuzzleFamily, src/state/store/tree.ts:742 tree hydration.
+* **Defect:** Puzzle history is stored under the tab's puzzles key, its tree persists independently, but currentPuzzleFamily is memory-only and restarts at0. Retain A starting e2e4, select B starting g1f3 and reload after B's opening. History restores both and the tree restores B after Nf3, while controls select A. The board correctly refuses the mismatched solution prefix. Selecting A cannot repair the state because the handler returns for the already-selected index.
+* **Why it matters:** ordinary app/renderer reload changes the displayed owner of saved puzzle progress and leaves a valid restored puzzle unplayable, without corrupt input.
+* **Open question:** establish durable puzzle-session ownership across history, selection and tree, including legacy records, absent/invalid index, ambiguous shared FEN/prefix and refused writes. Reconcile the restored owner before interactive consumers without silently discarding a valid tree or adding another unmanaged per-tab key.
+* **Why build:** the three values have separate persistence/lifetime boundaries, so a new saved index or a local rendering catch alone does not settle write/read agreement and ambiguous legacy ownership. This is separate from the live move/hint/playback consumer fixes in f-20260922-13.
+* **Proof required:** actual persisted history and real tab tree, select B, reload/remount and verify matching controls/playable owner, retain played progress and other tab data, legacy/ambiguous/invalid selection and write-refusal/retry cases. Use actual Puzzles/PuzzleBoard consumers.
+* **Related:** f-20260920-08 tracks unmanaged puzzle history lifetime and size in this component, no shared Root is asserted. f-20260922-13 owns current move/admission safety, this run preserves the saved puzzle-session format and defers this distinct ownership design.
+* **Found by:** Codex review-persisted-state D3 in the full interactive f-20261001-14 drain, confidence96,2026-10-14. Source traced by root, runtime reproduction pending. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
