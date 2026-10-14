@@ -15966,3 +15966,19 @@ This closes the measured ownership defect and its completed local proof contract
 * **Fix shape:** Preserve the real FIFO case on every supported Unix platform. Reuse the established libc::mkfifo path within this same module, extracting one test-only FIFO creation operation for the new case and the two existing bound-SQLite FIFO callers. Preserve their mode bits, nonblocking checks, genuine special-file refusal and ownership assertions. No Linux-only guard, ignored case, new dependency, SDK, workflow, gate or production behavior change.
 * **Proof:** Relevant bound-SQLite runtime suite and local all-targets lint/test proof, pre-review and independent closure before final gates. The existing macOS compile red is the failing-platform witness, Linux passes are not a Mac repair proof. Required pushed-SHA native macOS runtime and both Darwin compilation jobs must pass, with Windows jobs preserved. All fifteen original findings and the measured native ownership closure remain handled.
 * **Found by:** Codex manual completion after explicit fast-forward master push, 2026-10-14. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-14 — filed through the inbox spool
+
+### The paired-rename cleanup proof assumes Unix diagnostic types on Windows
+
+* **ID:** f-20261014-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Follow-up of:** f-20260926-04
+* **Where:** src-tauri/src/file_workspace.rs:4860, paired_rename_retains_native_rollback_cause_and_safe_payload.
+* **Defect:** Required Windows runtime job116094418455 in Test run38634597822 at pushed be320461 fails the primary diagnostic prefix assertion with Conflict: Windows object name collision. The operation already returned OperationAndCleanup, so the actual combined-error contract succeeded. Both collision paths use retained-descriptor no-replace rename. Unix maps collision to Io, while Windows rename_child maps STATUS_OBJECT_NAME_COLLISION to Conflict through native_error. The fixture wrongly requires the Unix diagnostic type on both platforms.
+* **Evidence:** /tmp/chessfable-drain-final-20261014/ci-windows-test.log, panic file_workspace.rs:4860. Source infra/fs.rs Unix rename_entry_at and rename_optional_regular_at map errno to Error::Io, Windows implementations call rename_child and native_error. Error::with_cleanup preserves both diagnostics. No production mapping regression is established.
+* **Fix shape:** Preserve the real filesystem collision and rollback-collision fixture. Assert the precise existing platform diagnostic contract, Unix I/O and Windows object-name conflict, for both causes. Keep combined-error shape, safe serialized payload, native log with both causes and both filesystem postconditions. No production behavior change or cross-platform assertion weakening.
+* **Proof:** Relevant Linux workspace suite, Windows GNU compilation, pre-review, independent closure and required exact-pushed-SHA Windows runtime CI. A wrong cause diagnostic must still fail the assertion. All original handled findings remain handled.
+* **Found by:** Codex manual completion, 2026-10-14. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
