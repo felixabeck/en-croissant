@@ -1083,7 +1083,7 @@ impl DatabaseRepository {
         super::sqlite_cancellation::install()?;
         let _admission = self.predecessor_admission_for(target, cancellation)?;
         self.tombstone_conflict(target)?;
-        let bound = BoundDatabase::acquire(target)?;
+        let bound = self.acquire_bound(target)?;
         let uri = bound.uri(SqliteMode::ReadOnly)?;
         let refusal_count = bound.refusal_count();
         let connection_lifetime = bound.connection_lifetime()?;
@@ -1401,7 +1401,7 @@ impl DatabaseRepository {
             self.probe_current(target)?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PreBuild, target.path());
-            let bound = BoundDatabase::acquire(target)?;
+            let bound = self.acquire_bound(target)?;
             let uri = bound.uri(SqliteMode::ReadWrite)?;
             let connections = Arc::new(DrainGate::default());
             let owners = Arc::new(DrainGate::default());
@@ -1785,6 +1785,17 @@ impl DatabaseRepository {
         Ok((entry, lease, connection, post_get_probe))
     }
 
+    fn acquire_bound(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> Result<BoundDatabase, Error> {
+        let result = BoundDatabase::acquire(target);
+        #[cfg(unix)]
+        return result.map_err(|error| self.classify_bound_failure(target, false, error));
+        #[cfg(windows)]
+        result
+    }
+
     fn classify_bound_open_error(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -1792,14 +1803,29 @@ impl DatabaseRepository {
         refusal_count_before: u64,
         error: Error,
     ) -> Error {
-        let refused_identity = bound.refusal_count() > refusal_count_before;
+        self.classify_bound_failure(target, bound.refusal_count() > refusal_count_before, error)
+    }
+
+    fn classify_bound_failure(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        refused_identity: bool,
+        error: Error,
+    ) -> Error {
         #[cfg(test)]
         if refused_identity {
             run_test_hook(TestHook::BoundRefusal, target.path());
         }
         classify_bound_open_error_result(
             refused_identity,
-            || target.probe_current().map(|_| ()),
+            || {
+                let probe = target.probe_current().map(|_| ());
+                #[cfg(test)]
+                if matches!(&probe, Err(Error::Conflict(_))) {
+                    run_test_hook(TestHook::BoundRefusal, target.path());
+                }
+                probe
+            },
             error,
         )
     }
@@ -6264,17 +6290,149 @@ mod bound_sqlite_witnesses {
                 target.parent(),
                 target.leaf(),
                 crate::infra::fs::RegularFileAccess::ReadOnly,
-            )
-            .unwrap();
+            );
             assert!(
-                matches!(BoundDatabase::acquire(&target), Err(Error::Conflict(_))),
-                "the ordinary owner must exclude a successor binding"
+                matches!(ordinary, Err(Error::Conflict(_))),
+                "a retiring primary must exclude ordinary opens until its pin closes"
             );
             resume.send(()).unwrap();
-            drop(ordinary);
         });
         drop(probe);
         drop(BoundDatabase::acquire(&target).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_final_close_serializes_successor_and_preserves_its_runtime_lock() {
+        let name = "db::repository::bound_sqlite_witnesses::primary_pin_final_close_serializes_successor_and_preserves_its_runtime_lock";
+        crate::db::test_support::run_isolated(name, || {
+            use crate::infra::inode_ownership::{PRIMARY_CLOSE_BARRIERS, REGISTRY};
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("primary-successor.db3");
+            seed_database(&path, 1, "DELETE");
+            let target = test_target(&path);
+            let probe = fs::File::open(&path).unwrap();
+            let predecessor = BoundDatabase::acquire(&target).unwrap();
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let resume = Arc::new(std::sync::Barrier::new(2));
+            let (started, start) = std::sync::mpsc::channel();
+            let (locked, lock) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                let entered_close = Arc::clone(&entered);
+                let resume_close = Arc::clone(&resume);
+                let closer = scope.spawn(move || {
+                    PRIMARY_CLOSE_BARRIERS
+                        .with(|slot| *slot.borrow_mut() = Some((entered_close, resume_close)));
+                    drop(predecessor);
+                });
+                entered.wait();
+                // Exercise both schedules. A faulty unlocked close lets the successor take locks
+                // before we release the predecessor, so the final runtime lock assertion detects it.
+                let serialized = matches!(
+                    REGISTRY.get().unwrap().try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                );
+                let target = &target;
+                scope.spawn(move || {
+                    started.send(()).unwrap();
+                    let successor = BoundDatabase::acquire(target).unwrap();
+                    let reader = bound_wal_reader(&successor).unwrap();
+                    locked.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(10)).unwrap();
+                    drop(reader);
+                    drop(successor);
+                });
+                start.recv_timeout(Duration::from_secs(10)).unwrap();
+                if serialized {
+                    resume.wait();
+                    closer.join().unwrap();
+                    lock.recv_timeout(Duration::from_secs(10)).unwrap();
+                } else {
+                    let result = lock.recv_timeout(Duration::from_secs(10));
+                    resume.wait();
+                    closer.join().unwrap();
+                    result.unwrap();
+                }
+                let held = sqlite_shared_read_lock_is_held(&probe);
+                release.send(()).unwrap();
+                assert!(
+                    held,
+                    "predecessor primary pin close released the successor SQLite lock"
+                );
+                assert!(
+                    serialized,
+                    "primary pin close must exclude successor admission"
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_reuse_and_rejected_candidates_preserve_live_sqlite_locks() {
+        let name = "db::repository::bound_sqlite_witnesses::primary_pin_reuse_and_rejected_candidates_preserve_live_sqlite_locks";
+        crate::db::test_support::run_isolated(name, || {
+            use crate::infra::inode_ownership::{PRIMARY_PIN_TEST_CONTROLS, REGISTRY};
+            let root = tempfile::tempdir().unwrap();
+            let live_path = root.path().join("locked-primary.db3");
+            seed_database(&live_path, 1, "DELETE");
+            let live_target = test_target(&live_path);
+            let probe = fs::File::open(&live_path).unwrap();
+            let bound = BoundDatabase::acquire(&live_target).unwrap();
+            let reader = bound_wal_reader(&bound).unwrap();
+            for _ in 0..3 {
+                let reused = BoundDatabase::acquire(&live_target).unwrap();
+                assert_eq!(bound.token(), reused.token());
+                drop(reused);
+                assert_sqlite_shared_read_lock_is_held(&probe);
+            }
+            let path = root.path().join("candidate.db3");
+            fs::write(&path, b"candidate").unwrap();
+            let candidate = test_target(&path);
+            let swap = path.clone();
+            let live = live_path.clone();
+            PRIMARY_PIN_TEST_CONTROLS.with(|controls| {
+                controls.borrow_mut().after_identify = Some(Box::new(move || {
+                    fs::remove_file(&swap).unwrap();
+                    fs::hard_link(live, swap).unwrap();
+                }))
+            });
+            assert!(matches!(
+                BoundDatabase::acquire(&candidate),
+                Err(Error::Conflict(_))
+            ));
+            assert!(!crate::db::bound_sqlite::has_binding_for_test(&candidate));
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            #[cfg(not(target_os = "linux"))]
+            {
+                let registry = REGISTRY.get().unwrap().lock().unwrap();
+                assert_eq!(
+                    registry.quarantined_descriptors[&live_target.identity()].len(),
+                    1
+                );
+            }
+            fs::remove_file(&path).unwrap();
+            fs::write(&path, b"unclassified candidate").unwrap();
+            let candidate = test_target(&path);
+            PRIMARY_PIN_TEST_CONTROLS
+                .with(|controls| controls.borrow_mut().inspect_error = Some(libc::EIO));
+            assert!(
+                matches!(BoundDatabase::acquire(&candidate), Err(Error::Io(error)) if error.raw_os_error() == Some(libc::EIO))
+            );
+            assert!(!crate::db::bound_sqlite::has_binding_for_test(&candidate));
+            assert_sqlite_shared_read_lock_is_held(&probe);
+            #[cfg(not(target_os = "linux"))]
+            {
+                let registry = REGISTRY.get().unwrap().lock().unwrap();
+                assert_eq!(registry.unclassified_descriptors.len(), 1);
+            }
+            drop(reader);
+            drop(bound);
+            let registry = REGISTRY.get().unwrap().lock().unwrap();
+            assert!(registry.quarantined_descriptors.is_empty());
+            assert!(registry.unclassified_descriptors.is_empty());
+        });
     }
 
     #[cfg(unix)]
@@ -7774,10 +7932,10 @@ mod bound_sqlite_witnesses {
             let path = parent.join("unreadable.db3");
             seed_database(&path, 1, "WAL");
             let target = test_target(&path);
+            let bound = BoundDatabase::acquire(&target).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
             let repository = DatabaseRepository::default();
             let result = repository.initialization_connection(&target, None);
-            let bound = BoundDatabase::acquire(&target).unwrap();
             let refusal_count = bound.refusal_count();
             let permission_error = Error::Io(Box::new(std::io::Error::from(
                 std::io::ErrorKind::PermissionDenied,

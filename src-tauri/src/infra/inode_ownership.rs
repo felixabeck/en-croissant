@@ -25,8 +25,8 @@ use std::{
 #[derive(Default)]
 pub(crate) struct Registry {
     pub(crate) by_token: HashMap<u64, Weak<Registration>>,
-    pub(crate) by_key: HashMap<BindingKey, (u64, Weak<Registration>)>,
-    pub(crate) creating: HashMap<BindingKey, u64>,
+    pub(crate) by_key: HashMap<BindingKey, (PrimaryClaim, Weak<Registration>)>,
+    pub(crate) creating: HashMap<BindingKey, PrimaryClaim>,
     ordinary: HashMap<(u64, u64), usize>,
     #[cfg(unix)]
     sidecar_counts: HashMap<(u64, u64), (u64, usize)>,
@@ -48,6 +48,34 @@ pub(crate) struct Registry {
 
 pub(crate) static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
+/// Moves between the existing creating and registered entries without releasing the inode.
+/// Every removal drops this owner under admission arbitration, including expired weak entries.
+pub(crate) struct PrimaryClaim {
+    pub(crate) token: u64,
+    #[cfg(unix)]
+    _pin: File,
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    pub(crate) static PRIMARY_CLOSE_BARRIERS: std::cell::RefCell<Option<(std::sync::Arc<std::sync::Barrier>, std::sync::Arc<std::sync::Barrier>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static PRIMARY_PIN_TEST_CONTROLS: std::cell::RefCell<OpenTestControls> = std::cell::RefCell::new(OpenTestControls::default());
+}
+
+#[cfg(all(test, unix))]
+impl Drop for PrimaryClaim {
+    fn drop(&mut self) {
+        if let Some((entered, resume)) = PRIMARY_CLOSE_BARRIERS
+            .try_with(|slot| slot.borrow_mut().take())
+            .ok()
+            .flatten()
+        {
+            entered.wait();
+            resume.wait();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum OwnerClass {
     Capability,
@@ -55,9 +83,14 @@ enum OwnerClass {
     SqliteSidecar(u64),
 }
 
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn open_descriptor_count(identity: (u64, u64)) -> usize {
-    std::fs::read_dir("/proc/self/fd")
+#[cfg(all(test, unix))]
+pub(crate) fn open_descriptor_fds(identity: (u64, u64)) -> Vec<libc::c_int> {
+    let directory = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    std::fs::read_dir(directory)
         .expect("read process descriptor directory")
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().to_str()?.parse::<libc::c_int>().ok())
@@ -68,7 +101,12 @@ pub(crate) fn open_descriptor_count(identity: (u64, u64)) -> usize {
             }
             crate::infra::fs::raw_libc_stat_identity(unsafe { &stat.assume_init() }) == identity
         })
-        .count()
+        .collect()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn open_descriptor_count(identity: (u64, u64)) -> usize {
+    open_descriptor_fds(identity).len()
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -176,15 +214,94 @@ impl Registry {
     }
     #[cfg(unix)]
     fn any_sqlite_live(&self) -> bool {
-        self.by_key
-            .values()
-            .any(|(_, registration)| registration.strong_count() != 0)
-            || !self.creating.is_empty()
+        !self.by_key.is_empty() || !self.creating.is_empty()
     }
     pub(crate) fn sqlite_live(&self, identity: (u64, u64)) -> bool {
-        self.by_key.iter().any(|(key, (_, registration))| {
-            key.identity == identity && registration.strong_count() != 0
-        }) || self.creating.keys().any(|key| key.identity == identity)
+        self.by_key.keys().any(|key| key.identity == identity)
+            || self.creating.keys().any(|key| key.identity == identity)
+    }
+
+    /// Opens an ownership reference only after same-key reuse and alias exclusion. This is
+    /// separate from metadata-only authority probes and never substitutes for VFS validation.
+    pub(crate) fn claim_sqlite(
+        &mut self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        token: u64,
+    ) -> Result<PrimaryClaim, Error> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
+            let io_error = |error: rustix::io::Errno| Error::from(io::Error::from(error));
+            if !self.open_admitted() {
+                return Err(Error::from(io::Error::from_raw_os_error(libc::EMFILE)));
+            }
+            let expected = rfs::statat(target.parent(), target.leaf(), AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(io_error)?;
+            if FileType::from_raw_mode(expected.st_mode) != FileType::RegularFile
+                || crate::infra::fs::raw_stat_identity(&expected) != target.identity()
+            {
+                return Err(Error::Conflict(
+                    "database changed after capability resolution".into(),
+                ));
+            }
+            self.check_class(target.identity(), OwnerClass::Capability)?;
+            self.check_sqlite(target.identity())?;
+            #[cfg(test)]
+            if let Some(hook) = PRIMARY_PIN_TEST_CONTROLS
+                .with(|controls| controls.borrow_mut().after_identify.take())
+            {
+                hook();
+            }
+            #[cfg(target_os = "linux")]
+            let flags = OFlags::PATH;
+            #[cfg(not(target_os = "linux"))]
+            let flags = OFlags::RDONLY | OFlags::NONBLOCK;
+            let opened = File::from(
+                rfs::openat(
+                    target.parent(),
+                    target.leaf(),
+                    flags | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(io_error)?,
+            );
+            #[cfg(test)]
+            let inspect_error = PRIMARY_PIN_TEST_CONTROLS
+                .with(|controls| controls.borrow_mut().inspect_error.take());
+            #[cfg(not(test))]
+            let inspect_error: Option<i32> = None;
+            let stat = match inspect_error.map_or_else(
+                || rfs::fstat(&opened),
+                |error| Err(rustix::io::Errno::from_raw_os_error(error)),
+            ) {
+                Ok(stat) => stat,
+                Err(error) => {
+                    // O_PATH cannot release locks. All lockable unknown opens use quarantine.
+                    #[cfg(not(target_os = "linux"))]
+                    self.quarantine(opened, None);
+                    return Err(io_error(error));
+                }
+            };
+            let identity = crate::infra::fs::raw_stat_identity(&stat);
+            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+                || identity != target.identity()
+            {
+                #[cfg(not(target_os = "linux"))]
+                self.quarantine(opened, Some(identity));
+                return Err(Error::Conflict(
+                    "database changed after capability resolution".into(),
+                ));
+            }
+            Ok(PrimaryClaim {
+                token,
+                _pin: opened,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let _ = target;
+            Ok(PrimaryClaim { token })
+        }
     }
 
     pub(crate) fn ordinary_live(&self, identity: (u64, u64)) -> bool {

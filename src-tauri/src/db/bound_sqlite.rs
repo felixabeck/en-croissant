@@ -222,6 +222,7 @@ impl BoundDatabase {
             let mut registry = registry_mutex
                 .lock()
                 .map_err(|_| Error::Conflict("bound SQLite registry was poisoned".into()))?;
+            #[cfg(windows)]
             registry
                 .by_key
                 .retain(|_, (_, weak)| weak.strong_count() != 0);
@@ -231,7 +232,9 @@ impl BoundDatabase {
                     return Ok(Self(registration));
                 }
             }
-            if registry.creating.contains_key(&key) {
+            if registry.creating.contains_key(&key)
+                || (cfg!(unix) && registry.by_key.contains_key(&key))
+            {
                 #[cfg(test)]
                 if let Some(hook) = registry.waiting_hooks.remove(&key) {
                     drop(registry);
@@ -251,7 +254,7 @@ impl BoundDatabase {
             if let Some(existing) = registry
                 .by_key
                 .iter()
-                .filter(|(_, (_, weak))| weak.strong_count() != 0)
+                .filter(|(_, (_, weak))| cfg!(unix) || weak.strong_count() != 0)
                 .map(|(existing, _)| existing)
                 .chain(registry.creating.keys())
                 .find(conflicts)
@@ -268,7 +271,8 @@ impl BoundDatabase {
                     next.checked_add(1)
                 })
                 .map_err(|_| Error::ResourceLimit("bound SQLite token space exhausted".into()))?;
-            registry.creating.insert(key.clone(), token);
+            let claim = registry.claim_sqlite(target, token)?;
+            registry.creating.insert(key.clone(), claim);
             break token;
         };
 
@@ -331,20 +335,27 @@ impl BoundDatabase {
                 return Err(Error::Conflict("bound SQLite registry was poisoned".into()));
             }
         };
-        if registry.creating.get(&key) != Some(&token) {
+        if registry.creating.get(&key).map(|claim| claim.token) != Some(token) {
             drop(registry);
             drop(registration);
             return Err(Error::Conflict(
                 "bound SQLite registry reservation was lost".into(),
             ));
         }
-        registry.creating.remove(&key);
+        // Move the physical owner under the same guard that publishes the registration.
+        let Some(claim) = registry.creating.remove(&key) else {
+            drop(registry);
+            drop(registration);
+            return Err(Error::Conflict(
+                "bound SQLite registry reservation was lost".into(),
+            ));
+        };
         registry
             .by_token
             .insert(token, Arc::downgrade(&registration));
         registry
             .by_key
-            .insert(key, (token, Arc::downgrade(&registration)));
+            .insert(key, (claim, Arc::downgrade(&registration)));
         changed.notify_all();
         Ok(Self(registration))
     }
@@ -598,7 +609,7 @@ fn remove_key_if_token(registry: &mut Registry, key: &BindingKey, token: u64) ->
     if registry
         .by_key
         .get(key)
-        .is_some_and(|(current_token, _)| *current_token == token)
+        .is_some_and(|(claim, _)| claim.token == token)
     {
         registry.by_key.remove(key);
         true
@@ -615,7 +626,7 @@ fn remove_reservation(key: &BindingKey, token: u64) {
         Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if registry.creating.get(key) == Some(&token) {
+    if registry.creating.get(key).map(|claim| claim.token) == Some(token) {
         registry.creating.remove(key);
         #[cfg(unix)]
         registry.remove_sidecars(token);
@@ -658,6 +669,9 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
     registry.remove_sidecars(token);
     #[cfg(unix)]
     registry.drain_quarantine();
+    if let Some(changed) = REGISTRY_CHANGED.get() {
+        changed.notify_all();
+    }
 }
 
 #[cfg(unix)]
@@ -2695,6 +2709,167 @@ mod windows_vfs {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use crate::infra::inode_ownership::open_descriptor_fds as primary_descriptors;
+
+    #[cfg(unix)]
+    fn assert_primary_pin(identity: (u64, u64)) {
+        let descriptors = primary_descriptors(identity);
+        assert_eq!(
+            descriptors.len(),
+            1,
+            "primary claim must retain exactly one physical inode reference"
+        );
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(unsafe { libc::fstat(descriptors[0], stat.as_mut_ptr()) }, 0);
+        assert_eq!(
+            unsafe { stat.assume_init() }.st_nlink,
+            0,
+            "pin must retain the unlinked inode"
+        );
+        #[cfg(target_os = "linux")]
+        assert_ne!(
+            unsafe { libc::fcntl(descriptors[0], libc::F_GETFL) } & libc::O_PATH,
+            0,
+            "Linux primary pin must be non-lockable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_survives_unlinked_creation_transfer_cached_and_connection_ownership() {
+        let name = "db::bound_sqlite::tests::primary_pin_survives_unlinked_creation_transfer_cached_and_connection_ownership";
+        crate::db::test_support::run_isolated(name, || {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("physical-primary.db3");
+            std::fs::write(&path, b"fixture").unwrap();
+            let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+            let identity = target.identity();
+            let key = BindingKey::for_target(&target).unwrap();
+            let unlink = path.clone();
+            REGISTRY
+                .get_or_init(|| Mutex::new(Registry::default()))
+                .lock()
+                .unwrap()
+                .creation_hooks
+                .insert(
+                    key,
+                    Box::new(move || {
+                        std::fs::remove_file(unlink).unwrap();
+                        assert_primary_pin(identity);
+                    }),
+                );
+            let bound = BoundDatabase::acquire(&target).unwrap();
+            assert_primary_pin(identity);
+            let same_key = BoundDatabase::acquire(&target).unwrap();
+            assert_eq!(bound.token(), same_key.token());
+            assert_primary_pin(identity);
+            drop(same_key);
+
+            // A distinct exclusive journal allocation remains admissible beside the unlinked claim.
+            let journal = crate::infra::inode_ownership::create_at(
+                target.parent(),
+                OsStr::new("unrelated-journal"),
+                rustix::fs::OFlags::RDWR,
+            )
+            .unwrap();
+            assert_ne!(opened_file_identity(&journal).unwrap(), identity);
+            drop(journal);
+            let lifetime = bound.connection_lifetime().unwrap();
+            drop(bound);
+            assert_primary_pin(identity);
+            drop(lifetime);
+            assert!(
+                primary_descriptors(identity).is_empty(),
+                "retirement must close the physical pin"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_constructor_error_and_unwind_close_unlinked_reservations() {
+        let name = "db::bound_sqlite::tests::primary_pin_constructor_error_and_unwind_close_unlinked_reservations";
+        crate::db::test_support::run_isolated(name, || {
+            for unwind in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("failed-physical-primary.db3");
+                std::fs::write(&path, b"fixture").unwrap();
+                let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+                let identity = target.identity();
+                let key = BindingKey::for_target(&target).unwrap();
+                {
+                    let mut registry = REGISTRY
+                        .get_or_init(|| Mutex::new(Registry::default()))
+                        .lock()
+                        .unwrap();
+                    if !unwind {
+                        registry.creation_failures.insert(key.clone());
+                    }
+                    registry.creation_hooks.insert(
+                        key.clone(),
+                        Box::new(move || {
+                            std::fs::remove_file(path).unwrap();
+                            assert_primary_pin(identity);
+                            if unwind {
+                                panic!("primary pin unwind witness");
+                            }
+                        }),
+                    );
+                }
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    BoundDatabase::acquire(&target)
+                }));
+                if unwind {
+                    let panic = outcome.expect_err("creation must unwind");
+                    assert_eq!(
+                        panic.downcast_ref::<&str>().copied(),
+                        Some("primary pin unwind witness")
+                    );
+                } else {
+                    assert!(
+                        matches!(outcome.unwrap(), Err(Error::Conflict(message)) if message == "bound SQLite test creation failure")
+                    );
+                }
+                assert!(!has_binding_for_test(&target));
+                assert!(
+                    primary_descriptors(identity).is_empty(),
+                    "failure must close the physical pin"
+                );
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_rejects_changed_and_nonregular_candidates_before_publication() {
+        use crate::infra::inode_ownership::PRIMARY_PIN_TEST_CONTROLS;
+        for kind in ["regular", "fifo", "symlink"] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("candidate.db3");
+            std::fs::write(&path, b"fixture").unwrap();
+            let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+            let backup = root.path().join("original.db3");
+            PRIMARY_PIN_TEST_CONTROLS.with(|controls| {
+                controls.borrow_mut().after_identify = Some(Box::new(move || {
+                    std::fs::rename(&path, &backup).unwrap();
+                    match kind {
+                        "regular" => std::fs::write(path, b"replacement").unwrap(),
+                        "fifo" => {
+                            rustix::fs::mkfifoat(rustix::fs::CWD, path, rustix::fs::Mode::RUSR)
+                                .unwrap()
+                        }
+                        "symlink" => std::os::unix::fs::symlink(backup, path).unwrap(),
+                        _ => unreachable!(),
+                    }
+                }))
+            });
+            assert!(BoundDatabase::acquire(&target).is_err());
+            assert!(!has_binding_for_test(&target));
+            assert!(primary_descriptors(target.identity()).is_empty());
+        }
+    }
+
     #[test]
     fn bundled_sqlite_version_is_pinned_for_the_hook_set() {
         assert_eq!(ffi::SQLITE_VERSION_NUMBER, 3_039_002);
@@ -2782,7 +2957,8 @@ mod tests {
 
         let mut registry = Registry::default();
         let weak = Weak::new();
-        registry.by_key.insert(key.clone(), (token + 1, weak));
+        let claim = registry.claim_sqlite(&target, token + 1).unwrap();
+        registry.by_key.insert(key.clone(), (claim, weak));
         assert!(!remove_key_if_token(&mut registry, &key, token));
         assert!(registry.by_key.contains_key(&key));
     }
