@@ -35,6 +35,7 @@ import {
 } from "../utils/pathCapabilities";
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
+import { FONT_SCALE_DEFAULT, fontScaleSchema } from "./fontScale";
 import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import {
     WORKSPACE_STORAGE_KEY,
@@ -292,8 +293,8 @@ export const tableViewAtom = atomWithStorage<boolean>(
 
 export const fontSizeAtom = atomWithStorage(
     "font-size",
-    Number.parseInt(document.documentElement.style.fontSize) || 100,
-    createPreferenceStorage(Number.parseInt(document.documentElement.style.fontSize) || 100),
+    FONT_SCALE_DEFAULT,
+    createZodStorage(fontScaleSchema, localStorage),
 );
 
 export const moveNotationTypeAtom = atomWithStorage<"letters" | "symbols">(
