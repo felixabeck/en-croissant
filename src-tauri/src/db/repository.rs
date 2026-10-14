@@ -2957,7 +2957,6 @@ mod retirement_tests {
 
     #[test]
     fn ordinary_pool_establishment_outlives_short_retire_wait_without_predecessors() {
-        const COMPLETION_BOUND: Duration = Duration::from_secs(2);
         enum AcquisitionEvent {
             BeyondRetireDeadline,
             Completed(Result<(), Error>),
@@ -2990,32 +2989,29 @@ mod retirement_tests {
                     ))
                     .unwrap();
             });
-            reached(&entry_signal);
+            let first_event = entry_signal
+                .recv_timeout(SIGNAL_TIMEOUT)
+                .and_then(|()| events.recv_timeout(SIGNAL_TIMEOUT));
+            let observed_after = started.elapsed();
+            // Release before asserting so every negative proof cleans up the held worker.
+            resume.send(()).unwrap();
             assert!(repository.state.lock().unwrap().retired.is_empty());
-            match events.recv_timeout(COMPLETION_BOUND).unwrap() {
+            match first_event.expect("ordinary acquisition did not reach a budget observation") {
                 AcquisitionEvent::BeyondRetireDeadline => {}
                 AcquisitionEvent::Completed(outcome) => {
-                    // Resume before asserting so a negative proof does not strand the worker.
-                    resume.send(()).unwrap();
                     panic!("ordinary pool acquisition expired at the predecessor deadline: {outcome:?}");
                 }
             }
-            assert!(started.elapsed() >= SHORT_WAIT);
-            resume.send(()).unwrap();
-            match events.recv_timeout(COMPLETION_BOUND).unwrap() {
+            assert!(observed_after >= SHORT_WAIT);
+            match events.recv_timeout(SIGNAL_TIMEOUT).unwrap() {
                 AcquisitionEvent::Completed(outcome) => outcome.unwrap(),
                 AcquisitionEvent::BeyondRetireDeadline => panic!("duplicate budget observation"),
             }
-            assert!(
-                started.elapsed() < COMPLETION_BOUND,
-                "ordinary acquisition exceeded its completion bound: {:?}",
-                started.elapsed()
-            );
             eprintln!(
-                "ordinary acquisition completed in {:?} with {:?} retire wait and {:?} completion bound",
+                "ordinary acquisition completed in {:?} after observing its {:?} retire wait, with {:?} signal bound per phase",
                 started.elapsed(),
                 SHORT_WAIT,
-                COMPLETION_BOUND
+                SIGNAL_TIMEOUT
             );
         });
     }

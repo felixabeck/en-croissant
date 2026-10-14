@@ -562,6 +562,15 @@ fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
     }
 }
 
+#[cfg(all(test, unix))]
+fn create_fifo_for_test(path: &std::path::Path, mode: libc::mode_t) -> CString {
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), mode) }, 0);
+    name
+}
+
 /// For Windows bindings, approximates the case-insensitive name match with the system up-case
 /// table (`RtlUpcaseUnicodeChar`, one UTF-16 unit at a time, no length-changing mappings), so
 /// case variants of one path share one binding. The locale-based `LCMapStringEx` left `ς`
@@ -1437,8 +1446,7 @@ mod unix_hooks {
                 let target = DatabaseFileTarget::for_test_path(&path).unwrap();
                 let bound = BoundDatabase::acquire(&target).unwrap();
                 let sidecar = root.path().join("cleanup.db3-shm");
-                let name = CString::new(sidecar.as_os_str().as_bytes()).unwrap();
-                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                let name = create_fifo_for_test(&sidecar, 0o600);
                 for directory in [false, true] {
                     if directory {
                         std::fs::remove_file(&sidecar).unwrap();
@@ -2970,8 +2978,7 @@ mod tests {
                     match kind {
                         "regular" => std::fs::write(path, b"replacement").unwrap(),
                         "fifo" => {
-                            rustix::fs::mkfifoat(rustix::fs::CWD, path, rustix::fs::Mode::RUSR)
-                                .unwrap()
+                            create_fifo_for_test(&path, 0o400);
                         }
                         "symlink" => std::os::unix::fs::symlink(backup, path).unwrap(),
                         _ => unreachable!(),
@@ -3690,15 +3697,14 @@ mod tests {
         crate::db::test_support::run_isolated(
             "db::bound_sqlite::tests::bound_sqlite_sidecars_refuse_special_files_and_retain_nonblocking",
             || {
-                use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+                use std::os::fd::FromRawFd;
                 let root = tempfile::tempdir().unwrap();
                 let path = root.path().join("special.db3");
                 std::fs::write(&path, b"database").unwrap();
                 let bound = BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&path).unwrap()).unwrap();
                 for suffix in ["-wal", "-shm", "-journal"] {
                     let sidecar = path.with_file_name(format!("special.db3{suffix}"));
-                    let name = CString::new(sidecar.as_os_str().as_bytes()).unwrap();
-                    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                    create_fifo_for_test(&sidecar, 0o600);
                     let reserved = CString::new(format!("{RESERVED_PREFIX}{}/special.db3{suffix}", bound.token())).unwrap();
                     assert_eq!(call_vfs_access(&bound, &reserved), (ffi::SQLITE_OK, 1), "FIFO remains present to xAccess");
                     for flags in [libc::O_RDONLY, libc::O_RDWR] {

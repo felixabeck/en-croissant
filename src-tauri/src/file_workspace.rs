@@ -4857,8 +4857,16 @@ mod tests {
         let Error::OperationAndCleanup { primary, cleanup } = &error else {
             panic!("{error:?}")
         };
-        assert!(primary.starts_with("I/O failure:"), "{primary}");
-        assert!(cleanup.starts_with("I/O failure:"), "{cleanup}");
+        #[cfg(unix)]
+        {
+            assert!(primary.starts_with("I/O failure:"), "{primary}");
+            assert!(cleanup.starts_with("I/O failure:"), "{cleanup}");
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(primary, "Conflict: Windows object name collision");
+            assert_eq!(cleanup, "Conflict: Windows object name collision");
+        }
         let payload = serde_json::to_value(&error).unwrap();
         assert_eq!(payload["category"], "operation-and-cleanup");
         assert_eq!(
