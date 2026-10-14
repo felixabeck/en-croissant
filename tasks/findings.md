@@ -15497,6 +15497,8 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 * **Evidence:** `gh api repos/felixabeck/en-croissant/actions/jobs/114468444353/logs` (run 38138896410, step "Run Rust tests with coverage").
 * **Related:** none found in the ledger (no entry mentions ETXTBSY or "Text file busy").
 * **Found by:** Claude Code orchestrator, drain build run for f-20260930-01, while reading the required CI of 533e19de, 2026-10-11.
+* **Additional evidence from f-20261001-14 (2026-10-14):** retained_cleanup_partial_io_survives_failed_reap, newly added in this run, failed with ETXTBSY in the engine selector, then passed targeted and full repeats. The source helper retained_child_executable writes retained-child.sh with std::fs::write/set_permissions before exec. It has three new retained-child callers. This run will remove mutable executable production from those specific fixtures using the existing EngineExecutable::test_fixture arguments and an immutable system interpreter. The rest of this finding's inventory and open design question remain open, no whole-class closure is claimed. The earlier partial-IO miss has no preserved causal diagnosis and is not attributed to this class merely because the assertion matches.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7661312d817990eea4cc815ecf6b55f47b15b2553fb49e33ca9781b341fab8eb","input_sha256":"ae351ace2c4e8839debeb71ee21dc3ddef0e6d09be32ca32116ff679abe00116","kind":"mutation-receipt","operation":"9a8cd24bb00c4f0c1785c90b6deaa3683bb9ed31d5f2903ed8e26b330bb83bfc","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-06"],"target":"f-20261011-06","v":1} -->
 
 ---
 
