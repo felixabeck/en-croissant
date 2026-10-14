@@ -115,6 +115,15 @@ function Puzzles({ id }: { id: string }) {
   effectiveSelectedDbRef.current = effectiveSelectedDb;
   const effectiveSelectedDbKey = effectiveSelectedDb ? capabilityKey(effectiveSelectedDb) : null;
 
+  function ownsDatabaseRequest(database: PathRef, signal: AbortSignal): boolean {
+    const currentDatabase = effectiveSelectedDbRef.current;
+    return (
+      !signal.aborted &&
+      currentDatabase !== null &&
+      capabilityKey(currentDatabase) === capabilityKey(database)
+    );
+  }
+
   useEffect(() => {
     requestGeneration.current++;
     puzzleRequest.current?.abort();
@@ -196,7 +205,6 @@ function Puzzles({ id }: { id: string }) {
     selectedTheme && availableThemes.includes(selectedTheme) ? selectedTheme : null;
 
   useEffect(() => {
-    const generation = ++requestGeneration.current;
     let cancelled = false;
     themeController.current?.abort();
     const controller = new AbortController();
@@ -207,15 +215,17 @@ function Puzzles({ id }: { id: string }) {
       setAvailableThemes([]);
       return;
     }
+    const database = effectiveSelectedDb;
+    const isCurrent = () => !cancelled && ownsDatabaseRequest(database, controller.signal);
 
     void tauri
       .getPuzzleThemes(effectiveSelectedDb, { signal: controller.signal })
       .then((themes) => {
-        if (cancelled || generation !== requestGeneration.current) return;
+        if (!isCurrent()) return;
         setAvailableThemes(themes);
       })
       .catch((error: Error) => {
-        if (cancelled || generation !== requestGeneration.current) return;
+        if (!isCurrent()) return;
         const normalized = normalizeError(error);
         setAvailableThemes([]);
         const themesUnavailable = normalized.backendCategory === "puzzle-themes-unavailable";
@@ -265,6 +275,7 @@ function Puzzles({ id }: { id: string }) {
     } = {},
   ) {
     try {
+      if (!isCurrent()) return;
       const result = validateMoveSequence(puzzle.fen, puzzle.moves);
       if (!result.success) throw result.error;
       if (!isCurrent()) return;
@@ -288,14 +299,19 @@ function Puzzles({ id }: { id: string }) {
     }
   }
 
-  async function generatePuzzle(db: PathRef, force: boolean = false) {
+  async function generatePuzzle(
+    db: PathRef,
+    force: boolean = false,
+    isOwned: () => boolean = () => true,
+  ) {
+    if (!isOwned()) return;
     let nextIndex = puzzles.findIndex((p, i) => i > currentPuzzle && p.completion === "incomplete");
     if (nextIndex === -1) {
       nextIndex = puzzles.findIndex((p, i) => i < currentPuzzle && p.completion === "incomplete");
     }
 
     if (nextIndex !== -1 && !force) {
-      admitPuzzle(puzzles[nextIndex], nextIndex, { resumeTimer: trackTime });
+      admitPuzzle(puzzles[nextIndex], nextIndex, { resumeTimer: trackTime, isCurrent: isOwned });
       return;
     }
 
@@ -314,28 +330,21 @@ function Puzzles({ id }: { id: string }) {
     puzzleRequest.current?.abort();
     const request = new AbortController();
     puzzleRequest.current = request;
+    const isCurrent = () =>
+      isOwned() &&
+      generation === requestGeneration.current &&
+      ownsDatabaseRequest(db, request.signal);
     let result;
     try {
       result = await tauri.getPuzzle(db, range[0], range[1], effectiveSelectedTheme, {
         signal: request.signal,
       });
     } catch (error) {
-      const currentDatabase = effectiveSelectedDbRef.current;
-      if (
-        !request.signal.aborted &&
-        generation === requestGeneration.current &&
-        currentDatabase &&
-        capabilityKey(currentDatabase) === capabilityKey(db)
-      ) {
+      if (isCurrent()) {
         notifyUnlessCancelled(commonErrorRef.current, error);
       }
       return;
     }
-    const isCurrent = () =>
-      !request.signal.aborted &&
-      generation === requestGeneration.current &&
-      effectiveSelectedDbRef.current !== null &&
-      capabilityKey(effectiveSelectedDbRef.current) === capabilityKey(db);
     if (!isCurrent()) return;
     const puzzle = result;
     const newPuzzle: Puzzle = {
@@ -346,7 +355,8 @@ function Puzzles({ id }: { id: string }) {
     admitPuzzle(newPuzzle, puzzles.length, { append: true, resumeTimer: trackTime, isCurrent });
   }
 
-  async function changeCompletion(completion: Completion) {
+  async function changeCompletion(completion: Completion, isCurrent: () => boolean = () => true) {
+    if (!isCurrent()) return;
     const timeSpent = timerStart !== null ? Date.now() - timerStart : 0;
     const puzzle = puzzles[currentPuzzle];
     setPuzzles((puzzles) => {
@@ -362,24 +372,22 @@ function Puzzles({ id }: { id: string }) {
       completedThemeController.current?.abort();
       const controller = new AbortController();
       completedThemeController.current = controller;
+      const ownsCompletion = () =>
+        isCurrent() &&
+        generation === requestGeneration.current &&
+        ownsDatabaseRequest(database, controller.signal);
       try {
         const themes = await tauri.getThemesForPuzzle(database, puzzle.id, {
           signal: controller.signal,
         });
-        if (
-          controller.signal.aborted ||
-          generation !== requestGeneration.current ||
-          !effectiveSelectedDbRef.current ||
-          capabilityKey(effectiveSelectedDbRef.current) !== capabilityKey(database)
-        ) {
-          return;
-        }
+        if (!ownsCompletion()) return;
         setPuzzles((puzzles) => {
+          if (!ownsCompletion() || puzzles[currentPuzzle] !== puzzle) return puzzles;
           puzzles[currentPuzzle].themes = themes;
           return [...puzzles];
         });
       } catch (error) {
-        if (!controller.signal.aborted && normalizeError(error).category !== "cancelled") {
+        if (ownsCompletion() && normalizeError(error).category !== "cancelled") {
           notifications.show({
             title: t("Common.Error"),
             message: normalizeError(error).message,
@@ -487,7 +495,7 @@ function Puzzles({ id }: { id: string }) {
           puzzles={puzzles}
           currentPuzzle={currentPuzzle}
           changeCompletion={changeCompletion}
-          generatePuzzle={generatePuzzle}
+          generatePuzzle={(database, isCurrent) => generatePuzzle(database, false, isCurrent)}
           db={effectiveSelectedDb}
         />
       </Portal>

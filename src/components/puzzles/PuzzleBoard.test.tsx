@@ -143,9 +143,9 @@ test.each([false, true])(
   async (jump) => {
     const { store, changeCompletion, generatePuzzle } = await renderBoard(["e2e4"], jump);
     await act(async () => mocks.afterMove!("e2", "e4"));
-    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct");
-    expect(store.getState().position).toEqual(jump ? [] : [0]);
-    expect(mocks.playSound).toHaveBeenCalledTimes(jump ? 0 : 1);
+    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct", expect.any(Function));
+    expect(store.getState().position).toEqual([0]);
+    expect(mocks.playSound).toHaveBeenCalledOnce();
     expect(generatePuzzle).toHaveBeenCalledTimes(jump ? 1 : 0);
     expect(mocks.notify).not.toHaveBeenCalled();
   },
@@ -156,31 +156,28 @@ test("PuzzleBoard records a wrong move without moving the cursor and marks incor
   await act(async () => mocks.afterMove!("d2", "d4"));
   expect(store.getState().position).toEqual([]);
   expect(store.getState().root.children[0].san).toBe("d4");
-  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect");
+  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect", expect.any(Function));
   await act(async () => mocks.afterMove!("d2", "d4"));
   expect(changeCompletion).toHaveBeenCalledOnce();
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
-test("PuzzleBoard consumes store rejection after completion changes the live position", async () => {
+test("PuzzleBoard ignores stale completion after the live position changes", async () => {
   const { store, changeCompletion } = await renderBoard(["e2e4"]);
   let before = store.getState();
   changeCompletion.mockImplementationOnce(async () => {
-    store.getState().makeMove({ payload: "e4" });
+    const committed = store.getState();
+    expect(committed.currentNode().san).toBe("e4");
+    store.getState().makeMove({ payload: "e5" });
     before = store.getState();
+    expect(before).not.toBe(committed);
+    expect(before.position).toEqual([0, 0]);
     mocks.playSound.mockClear();
   });
   await act(async () => mocks.afterMove!("e2", "e4"));
   expect(store.getState()).toBe(before);
   expect(mocks.playSound).not.toHaveBeenCalled();
-  expect(mocks.notify).toHaveBeenCalledWith(
-    expect.objectContaining({
-      color: "red",
-      title: "Common.Error",
-      message: `${enUSCatalogue.translation["MoveInput.InvalidMove"]} (1)`,
-    }),
-  );
-  expect(mocks.notify.mock.calls[0][0].message).not.toContain("e2e4");
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test.each([

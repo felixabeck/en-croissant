@@ -12,10 +12,13 @@ import type {
   PuzzleRootDescriptor,
 } from "@/bindings";
 import { TreeStateContext, TreeStateProvider } from "@/components/common/TreeStateContext";
-import type { TreeStore } from "@/state/store/tree";
+import { validateMoveSequence, type TreeStore } from "@/state/store/tree";
+import { makeUci, parseSquare } from "chessops";
+import type { Key } from "@lichess-org/chessground/types";
+import { positionFromFen } from "@/utils/chessops";
 import { INITIAL_FEN } from "chessops/fen";
 import type { Puzzle } from "@/utils/puzzles";
-import type { TreeState } from "@/utils/treeReducer";
+import { defaultTree, type TreeState } from "@/utils/treeReducer";
 import {
   puzzleTimerFamily,
   currentPuzzleFamily,
@@ -206,6 +209,481 @@ async function newPuzzle() {
     document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')!.click();
   });
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((accept, refuse) => {
+    resolve = accept;
+    reject = refuse;
+  });
+  return { promise, resolve, reject };
+}
+
+async function humanMove(from: Key, to: Key) {
+  await act(async () => mocks.board!.movable!.events!.after!(from, to, { premove: false }));
+}
+
+async function selectIncomplete(index: number) {
+  await act(async () => {
+    document
+      .querySelectorAll<HTMLButtonElement>('[aria-label="ChallengeHistory.Incomplete"]')
+      [index]!.click();
+  });
+}
+
+const puzzleB = () => puzzleRow({ moves: ["g1f3", "d7d5"] });
+
+async function replaceCurrentPuzzle(row: Puzzle) {
+  await act(async () => {
+    const key = "puzzles-test-puzzles";
+    const newValue = JSON.stringify([row]);
+    sessionStorage.setItem(key, newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", { key, newValue, storageArea: sessionStorage }),
+    );
+    treeStore.getState().setFen(row.fen);
+    expect(
+      treeStore.getState().makeMoves({ payload: [row.moves[0]], changeHeaders: false }).success,
+    ).toBe(true);
+  });
+}
+
+test.each(["history", "cached"] as const)(
+  "database themes publish the saved fork filter across %s selection",
+  async (selection) => {
+    const themes = deferred<string[]>();
+    mocks.getPuzzleThemes.mockReturnValue(themes.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
+    await act(async () => {
+      atoms.set(puzzleThemeAtom, "fork");
+      atoms.set(jumpToNextPuzzleAtom, selection === "cached");
+    });
+    if (selection === "history") await selectIncomplete(1);
+    else await humanMove("e7", "e5");
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+    expect(treeStore.getState().currentNode().san).toBe("Nf3");
+    await act(async () => themes.resolve(["fork"]));
+    expect(mocks.getPuzzleThemes).toHaveBeenCalledOnce();
+    expect(atoms.get(puzzleThemeAtom)).toBe("fork");
+    await newPuzzle();
+    expect(mocks.getPuzzle).toHaveBeenCalledWith(
+      selectedDb,
+      expect.any(Number),
+      expect.any(Number),
+      "fork",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["resolve", "cancel", "error"] as const)(
+  "puzzle B survives A completion %s with the same FEN and id",
+  async (outcome) => {
+    const completion = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    await humanMove("e7", "e5");
+    expect(storedPuzzles()[0].completion).toBe("correct");
+    await selectIncomplete(0);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    const timer = atoms.get(puzzleTimerFamily("puzzles-test"));
+    mocks.playSound.mockClear();
+    await act(async () => {
+      if (outcome === "resolve") completion.resolve(["fork"]);
+      else
+        completion.reject(
+          commandError(outcome === "cancel" ? "cancellation" : "database", "old completion failed"),
+        );
+    });
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(timer);
+    expect(storedPuzzles()[1].completion).toBe("incomplete");
+    expect(mocks.board?.movable?.color).toBe("black");
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    await humanMove("e7", "e5");
+    expect(storedPuzzles()[1].completion).toBe("incorrect");
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(2);
+    await humanMove("c7", "c5");
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(2);
+  },
+);
+
+test.each(["position", "tree", "unmount"] as const)(
+  "a final completion cannot continue after %s replacement",
+  async (replacement) => {
+    const completion = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    await humanMove("e7", "e5");
+    await act(async () => {
+      if (replacement === "position")
+        treeStore.getState().goToMove([...treeStore.getState().position]);
+      else if (replacement === "tree") treeStore.getState().reset();
+      else root.unmount();
+    });
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    mocks.playSound.mockClear();
+    await act(async () => completion.resolve(["fork"]));
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    expect(mocks.getPuzzle).not.toHaveBeenCalled();
+  },
+);
+
+test("a stale wrong completion cannot change the replacement board's ended behavior", async () => {
+  const completion = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+  await humanMove("c7", "c5");
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  await act(async () => {
+    treeStore.getState().setFen(INITIAL_FEN);
+    treeStore.getState().makeMove({ payload: "e4" });
+  });
+  const before = treeStore.getState();
+  const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  mocks.playSound.mockClear();
+  await act(async () => completion.resolve(["fork"]));
+  expect(treeStore.getState()).toBe(before);
+  expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  await humanMove("c7", "c5");
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(2);
+});
+
+test.each(["resolve", "cancel"] as const)(
+  "a stale correct continuation cannot restart replacement puzzle timing after %s",
+  async (outcome) => {
+    const completion = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    await humanMove("e7", "e5");
+    expect(treeStore.getState().currentNode().san).toBe("e5");
+    const committed = treeStore.getState();
+    await replaceCurrentPuzzle(puzzleB());
+    expect(treeStore.getState()).not.toBe(committed);
+    expect(treeStore.getState().currentNode().san).toBe("Nf3");
+    await humanMove("e7", "e5");
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    const timeSpent = storedPuzzles()[0].timeSpent;
+    await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 100));
+    const timer = atoms.get(puzzleTimerFamily("puzzles-test"));
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    mocks.playSound.mockClear();
+    await act(async () => {
+      if (outcome === "resolve") completion.resolve(["mate"]);
+      else completion.reject(commandError("cancellation", "old completion cancelled"));
+    });
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    await humanMove("c7", "c5");
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(storedPuzzles()[0].timeSpent).toBe(timeSpent);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(timer);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+  },
+);
+
+test("a captured old-board human callback cannot commit to the replacement puzzle", async () => {
+  const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
+  const after = mocks.board!.movable!.events!.after!;
+  await selectIncomplete(1);
+  const before = treeStore.getState();
+  const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  const timer = atoms.get(puzzleTimerFamily("puzzles-test"));
+  mocks.playSound.mockClear();
+  await act(async () => after("e7", "e5", { premove: false }));
+  expect(treeStore.getState()).toBe(before);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(timer);
+  expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+  expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test.each(["resolve", "error"] as const)(
+  "still-owned final completion %s keeps the move committed while metadata is pending",
+  async (outcome) => {
+    const completion = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    const before = treeStore.getState();
+    await humanMove("e7", "e5");
+    expect(treeStore.getState()).not.toBe(before);
+    expect(treeStore.getState().position).toEqual([0, 0]);
+    expect(treeStore.getState().currentNode().san).toBe("e5");
+    expect(treeStore.getState().headers).toBe(before.headers);
+    expect(storedPuzzles()[0].completion).toBe("correct");
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    expect(mocks.playSound).toHaveBeenCalledOnce();
+    const committed = treeStore.getState();
+    await act(async () => {
+      if (outcome === "resolve") completion.resolve(["fork"]);
+      else completion.reject(commandError("database", "owned metadata failed"));
+    });
+    expect(treeStore.getState().position).toEqual([0, 0]);
+    expect(treeStore.getState()).toBe(committed);
+    expect(treeStore.getState().currentNode().san).toBe("e5");
+    expect(storedPuzzles()[0].completion).toBe("correct");
+    expect(mocks.playSound).toHaveBeenCalledOnce();
+    expect(mocks.notificationShow.mock.calls).toEqual(
+      outcome === "error"
+        ? [[{ title: "Common.Error", message: "owned metadata failed", color: "red" }]]
+        : [],
+    );
+  },
+);
+
+test.each([
+  ["position", "resolve"],
+  ["tree", "resolve"],
+  ["position", "error"],
+  ["tree", "error"],
+] as const)(
+  "stale immediate advance after %s replacement has quiet query %s",
+  async (replacement, outcome) => {
+    const query = deferred<NativePuzzle>();
+    mocks.getPuzzle.mockReturnValueOnce(query.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+    const original = treeStore.getState();
+    await humanMove("e7", "e5");
+    expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+    expect(treeStore.getState()).not.toBe(original);
+    expect(treeStore.getState().currentNode().san).toBe("e5");
+    expect(mocks.playSound).toHaveBeenCalledOnce();
+    mocks.playSound.mockClear();
+    await act(async () => {
+      if (replacement === "position")
+        treeStore.getState().goToMove([...treeStore.getState().position]);
+      else treeStore.getState().setFen(INITIAL_FEN);
+    });
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    const timer = atoms.get(puzzleTimerFamily("puzzles-test"));
+    await act(async () => {
+      if (outcome === "resolve") query.resolve({ ...puzzleB(), moves: "g1f3 d7d5" });
+      else query.reject(commandError("database", "stale advance failed"));
+    });
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(timer);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test("an earlier accepted mate stops timing and immediately advances through the terminal branch", async () => {
+  const moves = ["h7h8", "g5e5", "h8h7", "e5h5"];
+  expect(validateMoveSequence(mateFen, moves).success).toBe(true);
+  sessionStorage.setItem("puzzles-test-puzzles", JSON.stringify([puzzleB()]));
+  mocks.getPuzzle.mockResolvedValue({ ...puzzleRow(), fen: mateFen, moves: moves.join(" ") });
+  const completion = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+  const atoms = await renderPuzzles({ trackTime: true });
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+  await newPuzzle();
+  expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+  mocks.playSound.mockClear();
+  await humanMove("g5", "h5");
+  expect(treeStore.getState().currentNode().san).toBe("Qh5#");
+  expect(treeStore.getState().currentNode().children).toEqual([]);
+  expect(storedPuzzles()[1].completion).toBe("correct");
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+  expect(mocks.playSound).toHaveBeenCalledOnce();
+  await act(async () => completion.resolve(["mate"]));
+  expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles()[1].completion).toBe("correct");
+  expect(storedPuzzles()[1].themes).toEqual(["mate"]);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).not.toBeNull();
+  expect(mocks.playSound).toHaveBeenCalledTimes(2);
+  expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test.each(["resolve", "error"] as const)(
+  "a stale immediate advance query cannot publish or notify after remount %s",
+  async (outcome) => {
+    const query = deferred<NativePuzzle>();
+    mocks.getPuzzle.mockReturnValueOnce(query.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+    await humanMove("e7", "e5");
+    const oldStore = treeStore;
+    const oldCommitted = oldStore.getState();
+    expect(oldCommitted.currentNode().san).toBe("e5");
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    sessionStorage.setItem("puzzles-test-puzzles", JSON.stringify([puzzleB()]));
+    const replacementAtoms = await renderPuzzles();
+    await act(async () => {
+      expect(treeStore.getState().makeMoves({ payload: ["g1f3"] }).success).toBe(true);
+      replacementAtoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000);
+    });
+    expect(treeStore).not.toBe(oldStore);
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    const timer = replacementAtoms.get(puzzleTimerFamily("puzzles-test"));
+    mocks.playSound.mockClear();
+    await act(async () => {
+      if (outcome === "resolve") query.resolve({ ...puzzleRow(), moves: "e2e4 e7e5" });
+      else query.reject(commandError("database", "old advance failed after remount"));
+    });
+    expect(oldStore.getState()).toBe(oldCommitted);
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(replacementAtoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+    expect(replacementAtoms.get(puzzleTimerFamily("puzzles-test"))).toBe(timer);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    await humanMove("e7", "e5");
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(replacementAtoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    expect(storedPuzzles()[0].timeSpent).toBeGreaterThanOrEqual(1000);
+  },
+);
+
+test.each([false, true])(
+  "an earlier accepted mate retains incorrect classification with immediate advance %s",
+  async (advance) => {
+    const moves = ["h7h8", "g5e5", "h8h7", "e5h5"];
+    expect(validateMoveSequence(mateFen, moves).success).toBe(true);
+    const failed = puzzleRow({ fen: mateFen, moves, completion: "incorrect", timeSpent: 4321 });
+    sessionStorage.setItem("puzzles-test-puzzles", JSON.stringify([failed, puzzleB()]));
+    const atoms = await renderPuzzles({ initial: defaultTree(mateFen) });
+    await act(async () => {
+      atoms.set(jumpToNextPuzzleAtom, advance);
+      treeStore.getState().makeMove({ payload: "Kh8", changeHeaders: false });
+    });
+    expect(treeStore.getState().currentNode().san).toBe("Kh8");
+    const headers = treeStore.getState().headers;
+    const changes: string[] = [];
+    const unsubscribe = treeStore.subscribe((state) => changes.push(state.currentNode().san!));
+    mocks.playSound.mockClear();
+    try {
+      await humanMove("g5", "h5");
+    } finally {
+      unsubscribe();
+    }
+    expect(changes[0]).toBe("Qh5#");
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(storedPuzzles()[0].timeSpent).toBe(4321);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(advance ? 1 : 0);
+    expect(treeStore.getState().currentNode().san).toBe(advance ? "Nf3" : "Qh5#");
+    expect(treeStore.getState().headers.result).toBe(headers.result);
+    expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+    expect(mocks.playSound).toHaveBeenCalledTimes(advance ? 2 : 1);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+const mateFen = "8/5K1k/8/6Q1/8/8/8/8 b - - 0 1";
+test("a still-owned human move installs the normal stored reply through the actual parent", async () => {
+  const atoms = await renderPriorPuzzle(
+    [puzzleRow({ moves: ["e2e4", "e7e5", "g1f3", "b8c6"] })],
+    0,
+    ["e4"],
+  );
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+  await humanMove("e7", "e5");
+  expect(treeStore.getState().position).toEqual([0, 0, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles()[0].completion).toBe("incomplete");
+  expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+  expect(mocks.playSound).toHaveBeenCalledOnce();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("still-owned immediate advance keeps the final move visible until admitting a fetched successor", async () => {
+  const query = deferred<NativePuzzle>();
+  mocks.getPuzzle.mockReturnValueOnce(query.promise);
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+  const before = treeStore.getState();
+  await humanMove("e7", "e5");
+  expect(treeStore.getState()).not.toBe(before);
+  expect(treeStore.getState().position).toEqual([0, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("e5");
+  expect(storedPuzzles()[0].completion).toBe("correct");
+  expect(mocks.playSound).toHaveBeenCalledOnce();
+  await act(async () => query.resolve({ ...puzzleB(), moves: "g1f3 d7d5" }));
+  expect(storedPuzzles()).toHaveLength(2);
+  expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(1);
+  expect(treeStore.getState().position).toEqual([0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(treeStore.getState().root.children[0].children).toEqual([]);
+  expect(mocks.playSound).toHaveBeenCalledTimes(2);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test.each([
+  ["final alternative", ["h7h8", "g5g7"], "correct"],
+  ["earlier alternative", ["h7h8", "g5e5", "h8h7", "e5h5"], "correct"],
+] as const)(
+  "accepted %s mate installs Qh5# without a synthetic reply",
+  async (_name, moves, completion) => {
+    expect(validateMoveSequence(mateFen, [...moves]).success).toBe(true);
+    mocks.getPuzzle.mockResolvedValue({ ...puzzleRow(), fen: mateFen, moves: moves.join(" ") });
+    const atoms = await renderPuzzles();
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    await newPuzzle();
+    expect(treeStore.getState().currentNode().san).toBe("Kh8");
+    mocks.playSound.mockClear();
+    const completionQuery = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completionQuery.promise);
+    await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+    await humanMove("g5", "h5");
+    const state = treeStore.getState();
+    expect(state.position).toEqual([0, 0]);
+    expect(state.currentNode().san).toBe("Qh5#");
+    expect(makeUci(state.currentNode().move!)).toBe("g5h5");
+    expect(state.currentNode().children).toEqual([]);
+    const [pos] = positionFromFen(state.currentNode().fen);
+    expect(pos?.board.get(parseSquare("h5")!)).toEqual({
+      role: "queen",
+      color: "white",
+      promoted: false,
+    });
+    expect(pos?.isCheckmate()).toBe(true);
+    expect(storedPuzzles()[0].completion).toBe(completion);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    expect(storedPuzzles()[0].timeSpent).toBeGreaterThanOrEqual(1000);
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(completion === "correct" ? 1 : 0);
+    expect(mocks.playSound).toHaveBeenCalledOnce();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    expect(state.headers.result).toBe("*");
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    expect(mocks.board?.movable?.dests?.size).toBe(0);
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+    expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+    await act(async () => completionQuery.resolve(["mate"]));
+    expect(treeStore.getState()).toBe(state);
+    expect(storedPuzzles()[0].themes).toEqual(["mate"]);
+  },
+);
 
 async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3") {
   mocks.getPuzzle.mockResolvedValue({
@@ -518,22 +996,75 @@ test.each(rejectedCandidates)(
     const atoms = await renderPriorPuzzle([active, cached], 0, ["e4"]);
     await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
     const before = treeStore.getState();
-    await act(async () => mocks.board!.movable!.events!.after!("e7", "e5", { premove: false }));
+    const publications: ReturnType<TreeStore["getState"]>[] = [];
+    const unsubscribe = treeStore.subscribe((state) => publications.push(state));
+    try {
+      await humanMove("e7", "e5");
+    } finally {
+      unsubscribe();
+    }
     expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
     expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
-    expect(treeStore.getState()).toBe(before);
+    expect(publications).toHaveLength(1);
+    expect(treeStore.getState()).toBe(publications[0]);
+    expect(treeStore.getState()).not.toBe(before);
+    expect(treeStore.getState().position).toEqual([0, 0]);
+    expect(treeStore.getState().currentNode().san).toBe("e5");
+    expect(treeStore.getState().headers).toBe(before.headers);
+    expect(treeStore.getState().practicePath).toEqual(before.practicePath);
     expect(storedPuzzles()).toHaveLength(2);
     expect(storedPuzzles()[0].completion).toBe("correct");
     expect(storedPuzzles()[1]).toEqual(cached);
     expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
     expect(mocks.getPuzzle).not.toHaveBeenCalled();
-    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.playSound).toHaveBeenCalledOnce();
     expect(mocks.board?.movable?.color).toBeUndefined();
     expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
       color: "red",
       title: "Common.Error",
       message,
     });
+  },
+);
+
+test.each(rejectedCandidates)(
+  "admission rejects fetched next %s without erasing the committed current move",
+  async (_name, candidate, message) => {
+    const query = deferred<NativePuzzle>();
+    mocks.getPuzzle.mockReturnValueOnce(query.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+    const before = treeStore.getState();
+    await humanMove("e7", "e5");
+    const committed = treeStore.getState();
+    expect(committed).not.toBe(before);
+    expect(committed.position).toEqual([0, 0]);
+    expect(committed.currentNode().san).toBe("e5");
+    expect(committed.headers).toBe(before.headers);
+    expect(mocks.playSound).toHaveBeenCalledOnce();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    const treeChanged = vi.fn();
+    const unsubscribe = treeStore.subscribe(treeChanged);
+    try {
+      await act(async () =>
+        query.resolve({ ...puzzleRow(), ...candidate, moves: candidate.moves.join(" ") }),
+      );
+      expect(treeStore.getState()).toBe(committed);
+      expect(treeChanged).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+      expect(storedPuzzles()).toHaveLength(1);
+      expect(storedPuzzles()[0].completion).toBe("correct");
+      expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+      expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+      expect(mocks.playSound).toHaveBeenCalledOnce();
+      expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message,
+      });
+    } finally {
+      unsubscribe();
+    }
   },
 );
 
@@ -657,7 +1188,7 @@ test("admission installs a valid cached next puzzle through immediate advance", 
   expect(treeStore.getState().currentNode().san).toBe("e5");
   expect(treeStore.getState().position).toEqual([0]);
   expect(mocks.board?.orientation).toBe("white");
-  expect(mocks.playSound).toHaveBeenCalledOnce();
+  expect(mocks.playSound).toHaveBeenCalledTimes(2);
   expect(mocks.getPuzzle).not.toHaveBeenCalled();
   expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
