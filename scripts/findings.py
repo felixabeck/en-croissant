@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 22b243fc69379636237a8b4e872394a1c2dbc813333310eeb88f5f19e84f613d
+# agent-kit-sha256: 2cd9c7c7e33dc3fe86209e9886ab34d251168df22df115d860b31bd96732803d
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -99,6 +99,7 @@ IMPACT_QUEUE_CONTRACT_LEVEL = 2
 # check, and writer success lines naming the ledger they wrote. Lower declared
 # levels, including the supervisor's IMPACT_QUEUE_CONTRACT_LEVEL, keep the previous behaviour.
 STRICT_REPORTING_CONTRACT_LEVEL = 3
+ANSWERED_SPOOL_CONTRACT_LEVEL = 4
 
 
 def _parse_supervisor_contract_level(value: str | None) -> int | None:
@@ -140,6 +141,12 @@ def _strict_reporting_enabled() -> bool:
     """Keep lower-level writer behaviour while enabling strict reporting for new callers."""
     level = supervisor_contract_level()
     return level is None or level >= STRICT_REPORTING_CONTRACT_LEVEL
+
+
+def _answered_spool_enabled() -> bool:
+    """Keep lower-level waiting counts while showing published answers to new callers."""
+    level = supervisor_contract_level()
+    return level is None or level >= ANSWERED_SPOOL_CONTRACT_LEVEL
 
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
@@ -1211,6 +1218,7 @@ def _receipt_effect_issues(
 # harmless between findings and NOT harmless when matching decisions to a cluster:
 # `React.memo` appears in most frontend prose in this repo, so an unfiltered overlap
 # would surface half the decision ledger and the mechanism would be ignored as noise.
+# Rust's `.rs` suffix counts only under the impact-queue contract (level ≥ 2).
 SOURCE_SUFFIXES = frozenset(
     {
         ".cjs",
@@ -1316,7 +1324,8 @@ def _is_source_name(name: str) -> bool:
         return False
     if name in EXTENSIONLESS_SOURCES:
         return True
-    return PurePosixPath(name).suffix.lower() in SOURCE_SUFFIXES
+    suffix = PurePosixPath(name).suffix.lower()
+    return suffix in SOURCE_SUFFIXES or (suffix == ".rs" and _impact_queue_enabled())
 
 
 def source_file_keys(paths: set[str]) -> tuple[set[str], set[str]]:
@@ -3164,11 +3173,6 @@ def validate(
                 )
 
         joined = _unfenced_body(f)
-        if f.status == "handled" and "Still open" in joined:
-            issues.append(
-                f"{where}: status is 'handled' but the body still says 'Still open' — "
-                "split the open part into its own finding"
-            )
         if f.status == "rejected" and not REJECTED_RE.search(joined):
             issues.append(
                 f"{where}: status 'rejected' needs a '**Why rejected:**' bullet with a "
@@ -4241,8 +4245,88 @@ def _summary_waiting_row(finding: Finding) -> str:
     return f"  {finding.id}  {finding.blocked}  {finding.title}"
 
 
+def _answered_summary(
+    buckets: SummaryBuckets,
+) -> tuple[SummaryBuckets, list[dict[str, str]]]:
+    """Read the bound publication spool without locking or applying answers."""
+    if not _answered_spool_enabled():
+        return buckets, []
+    claim = ANSWERS.with_name(ANSWERS.name + ".claim")
+    directories = [ANSWERS]
+    try:
+        if stat.S_ISDIR(claim.stat().st_mode):
+            intent_path = _claim_intent_path(claim)
+            try:
+                intent = json.loads(intent_path.read_text(encoding="utf-8"))
+                if not isinstance(intent, dict):
+                    raise ValueError("answers claim intent is not an object")
+                manual_repair = intent.get("manual_repair", False)
+                if not isinstance(manual_repair, bool):
+                    raise ValueError("manual_repair must be a boolean")
+            except FileNotFoundError:
+                directories.append(claim)
+            except _READ_JSON_ERRORS as exc:
+                print(f"WARNING {intent_path}: {exc}", file=sys.stderr)
+            else:
+                if not manual_repair:
+                    directories.append(claim)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"WARNING {claim}: {exc}", file=sys.stderr)
+        return buckets, []
+    paths = []
+    for directory in directories:
+        try:
+            with os.scandir(directory) as entries:
+                paths.extend(Path(entry.path) for entry in entries if entry.name.endswith(".md"))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"WARNING {directory}: {exc}", file=sys.stderr)
+            return buckets, []
+    answerable = {finding.id: finding for finding in buckets.product}
+    answered: dict[str, dict[str, str]] = {}
+    for path in sorted(paths, key=lambda path: path.as_posix()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except _READ_ERRORS as exc:
+            print(f"WARNING {path}: {exc}", file=sys.stderr)
+            continue
+        lines = text.splitlines()
+        answer = _parse_answer_contents(text, lines, _fence_mask(lines))
+        if answer is None:
+            print(f"WARNING {path}: invalid answer contents", file=sys.stderr)
+            continue
+        fid, _decision = answer
+        if fid not in answerable or fid in answered:
+            continue
+        stamp = re.match(r"^(\d{8}-\d{6})-", path.name)
+        answered_at = stamp.group(1) if stamp else path.name[:-3]
+        if not answered_at:
+            print(f"WARNING {path}: answer filename has no timestamp or name", file=sys.stderr)
+            continue
+        answered[fid] = {
+            "id": fid,
+            "heading": answerable[fid].title,
+            "answered_at": answered_at,
+        }
+    return replace(buckets, product=tuple(
+        finding for finding in buckets.product if finding.id not in answered
+    )), list(answered.values())
+
+
+def _render_answered_text(answered: list[dict[str, str]]) -> None:
+    print("Answered — applied at the next drain step")
+    for row in answered:
+        print(f"  {row['id']}  {row['answered_at']}  {row['heading']}")
+
+
 def _render_summary_text(
-    buckets: SummaryBuckets, counts_line: str, pending: int, inbox_complete: bool
+    buckets: SummaryBuckets, counts_line: str, pending: int, inbox_complete: bool,
+    answered: list[dict[str, str]] | None = None,
 ) -> None:
     """The overview: counts line, then who waits, then what is drainable."""
     print(counts_line)
@@ -4259,6 +4343,10 @@ def _render_summary_text(
         print(f"{label} ({len(rows)})")
         for finding in rows:
             print(_summary_waiting_row(finding))
+    if answered:
+        print()
+        print("ANSWERED")
+        _render_answered_text(answered)
     print()
     print("PICKABLE")
     print(f"  {len(buckets.pickable)} pickable finding(s)")
@@ -4357,17 +4445,19 @@ def cmd_summary(args: argparse.Namespace) -> int:
         findings, exclude_tooling=getattr(args, "exclude_tooling", False),
         tooling_areas=load_tooling_areas_from_text(text),
     )
+    buckets, answered = _answered_summary(buckets)
     pending, inbox_complete, _sources = _count_pending_inbox(args.inbox)
     counts_line = _summary_counts_line(buckets)
     if getattr(args, "exclude_tooling", False):
         counts_line += f" · skipped tooling: {len(buckets.skipped_tooling)}"
     if _json_requested(args):
-        return _print_json(
-            _summary_json_payload(
-                buckets, counts_line, pending, inbox_complete, len(issues)
-            )
+        payload = _summary_json_payload(
+            buckets, counts_line, pending, inbox_complete, len(issues)
         )
-    _render_summary_text(buckets, counts_line, pending, inbox_complete)
+        if _answered_spool_enabled():
+            payload["answered"] = answered
+        return _print_json(payload)
+    _render_summary_text(buckets, counts_line, pending, inbox_complete, answered)
     if getattr(args, "exclude_tooling", False):
         print(f"skipped tooling: {len(buckets.skipped_tooling)} pickable finding(s)")
     return 0
@@ -11610,6 +11700,7 @@ def cmd_decisions(args: argparse.Namespace) -> int:
             f"{parse_detail}. Run `findings.py check`."
         )
     buckets = summary_buckets(findings)
+    buckets, answered = _answered_summary(buckets)
     waiting = list(buckets.product)
     preconditions = list(buckets.preconditions)
     if args.ids:
@@ -11617,7 +11708,8 @@ def cmd_decisions(args: argparse.Namespace) -> int:
         wanted = set(args.ids)
         waiting = [f for f in waiting if f.id in wanted]
         preconditions = [f for f in preconditions if f.id in wanted]
-    if not waiting and not preconditions:
+        answered = [row for row in answered if row["id"] in wanted]
+    if not waiting and not preconditions and not answered:
         if not issues:
             print("No decisions are waiting on you.")
         return 0
@@ -11662,6 +11754,8 @@ def cmd_decisions(args: argparse.Namespace) -> int:
                 print("  * **Where:** (not stated)")
             print("  No answer is requested; clear this precondition.")
             print()
+    if answered:
+        _render_answered_text(answered)
     if waiting:
         print(
             "To answer: run the /decide skill in any terminal, during a drain or not."
@@ -12085,6 +12179,18 @@ def _mutate_finding_note(
         refusal = _annotation_refusal(note, target, note_path)
         if refusal is not None:
             raise LedgerError(refusal)
+        closing_status = (
+            header_changes.get("Status") if header_changes is not None else status
+        )
+        if (
+            closing_status == "handled"
+            and "Still open" in _unfenced_text(note)
+        ):
+            raise LedgerError(
+                f"{args.id} (line {target.line}): status is 'handled' but the "
+                "closing note still says 'Still open' — "
+                "split the open part into its own finding"
+            )
 
         header_line: str | None = None
         if status is not None:
