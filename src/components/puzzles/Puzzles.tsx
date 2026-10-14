@@ -457,14 +457,15 @@ function Puzzles({ id }: { id: string }) {
   }, [trackTime, isPuzzleIncomplete, timerStart]);
 
   useEffect(() => {
+    const puzzle =
+      latestPuzzle.current.index === currentPuzzle ? latestPuzzle.current.puzzle : undefined;
     return () => {
-      if (trackTime && timerStart !== null && isPuzzleIncomplete) {
+      if (trackTime && timerStart !== null && puzzle?.completion === "incomplete") {
         const finalElapsed = Date.now() - timerStart;
         setPuzzles((prev) => {
+          if (prev[currentPuzzle] !== puzzle || puzzle.completion !== "incomplete") return prev;
           const newPuzzles = [...prev];
-          if (newPuzzles[currentPuzzle]) {
-            newPuzzles[currentPuzzle].timeSpent = finalElapsed;
-          }
+          puzzle.timeSpent = finalElapsed;
           return newPuzzles;
         });
       }

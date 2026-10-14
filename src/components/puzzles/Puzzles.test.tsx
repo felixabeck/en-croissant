@@ -18,7 +18,7 @@ import type { Key } from "@lichess-org/chessground/types";
 import { positionFromFen } from "@/utils/chessops";
 import { INITIAL_FEN } from "chessops/fen";
 import type { Puzzle } from "@/utils/puzzles";
-import { defaultTree, type TreeState } from "@/utils/treeReducer";
+import { defaultTree, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import {
   puzzleTimerFamily,
   currentPuzzleFamily,
@@ -241,6 +241,226 @@ async function selectIncomplete(index: number) {
 }
 
 const puzzleB = () => puzzleRow({ moves: ["g1f3", "d7d5"] });
+
+function trackingSwitch() {
+  return [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) =>
+    [...(input.labels ?? [])].some((label) =>
+      label.textContent?.includes("Puzzle.TrackPuzzleTime"),
+    ),
+  )!;
+}
+
+test.each(["correct", "incorrect"] as const)(
+  "timer cleanup cannot overwrite the first %s completion after the clock advances",
+  async (completion) => {
+    const query = deferred<string[]>();
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    await act(async () => {
+      atoms.set(jumpToNextPuzzleAtom, false);
+      atoms.set(trackPuzzleTimeAtom, true);
+      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    });
+    mocks.getThemesForPuzzle.mockImplementationOnce(() => {
+      expect(storedPuzzles()[0].completion).toBe(completion);
+      expect(storedPuzzles()[0].timeSpent).toBe(1000);
+      vi.setSystemTime(10_100);
+      return query.promise;
+    });
+    await humanMove(completion === "correct" ? "e7" : "c7", completion === "correct" ? "e5" : "c5");
+    expect(Date.now()).toBe(10_100);
+    expect(storedPuzzles()[0].completion).toBe(completion);
+    expect(storedPuzzles()[0].timeSpent).toBe(1000);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    vi.setSystemTime(12_000);
+    await act(async () => query.resolve(["fork"]));
+    expect(storedPuzzles()[0].timeSpent).toBe(1000);
+    await act(async () => root.unmount());
+    expect(storedPuzzles()[0].timeSpent).toBe(1000);
+    expect(storedPuzzles()[0].completion).toBe(completion);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["incomplete", "correct", "removed"] as const)(
+  "timer cleanup cannot write over a %s record at its reused index",
+  async (replacement) => {
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    await act(async () => {
+      atoms.set(trackPuzzleTimeAtom, true);
+      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    });
+    vi.setSystemTime(10_100);
+    const rows =
+      replacement === "removed" ? [] : [puzzleRow({ completion: replacement, timeSpent: 4321 })];
+    await act(async () => {
+      const key = "puzzles-test-puzzles";
+      const newValue = JSON.stringify(rows);
+      sessionStorage.setItem(key, newValue);
+      window.dispatchEvent(
+        new StorageEvent("storage", { key, newValue, storageArea: sessionStorage }),
+      );
+      atoms.set(trackPuzzleTimeAtom, false);
+    });
+    expect(storedPuzzles()).toEqual(rows);
+    await act(async () => root.unmount());
+    expect(storedPuzzles()).toEqual(rows);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["tracking", "selection", "unmount"] as const)(
+  "incomplete timer cleanup preserves elapsed time on %s",
+  async (exit) => {
+    const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    await act(async () => {
+      atoms.set(trackPuzzleTimeAtom, true);
+      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    });
+    vi.setSystemTime(10_100);
+    if (exit === "tracking") await act(async () => trackingSwitch().click());
+    else if (exit === "selection") await selectIncomplete(1);
+    else await act(async () => root.unmount());
+    expect(storedPuzzles()[0].completion).toBe("incomplete");
+    expect(storedPuzzles()[0].timeSpent).toBe(1100);
+    expect(storedPuzzles()[1].timeSpent).toBeUndefined();
+    expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test("timer cleanup retains a replacement at its reused index on unmount without restarting the timer", async () => {
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  await act(async () => {
+    atoms.set(trackPuzzleTimeAtom, true);
+    atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+  });
+  const replacement = puzzleRow({ timeSpent: 4321 });
+  await act(async () => {
+    const key = "puzzles-test-puzzles";
+    const newValue = JSON.stringify([replacement]);
+    sessionStorage.setItem(key, newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", { key, newValue, storageArea: sessionStorage }),
+    );
+  });
+  expect(storedPuzzles()[0]).toEqual(replacement);
+  vi.setSystemTime(10_100);
+  await act(async () => root.unmount());
+  expect(storedPuzzles()[0]).toEqual(replacement);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+const castlingFen = "4k3/8/8/8/8/8/8/4K2R b K - 0 1";
+test.each([
+  ["g1", false],
+  ["h1", false],
+  ["g1", true],
+  ["h1", true],
+] as const)(
+  "castling to %s is accepted and retains its move with immediate advance %s",
+  async (destination, advance) => {
+    sessionStorage.setItem("puzzles-test-puzzles", JSON.stringify([puzzleB()]));
+    const atoms = await loadPlaybackPuzzle("e8e7 e1g1", castlingFen);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, advance));
+    expect(validateMoveSequence(castlingFen, ["e8e7", "e1g1"]).success).toBe(true);
+    expect(mocks.board?.orientation).toBe("white");
+    expect(treeStore.getState().currentNode().san).toBe("Ke7");
+    const states: ReturnType<TreeStore["getState"]>[] = [];
+    const unsubscribe = treeStore.subscribe((state) => states.push(state));
+    mocks.playSound.mockClear();
+    try {
+      await humanMove("e1", destination);
+    } finally {
+      unsubscribe();
+    }
+    const castled = states[0];
+    const castledNode = getNodeAtPath(castled.root, castled.position);
+    expect(castled.position).toEqual([0, 0]);
+    expect(castledNode.san).toBe("O-O");
+    expect(makeUci(castledNode.move!)).toBe(`e1${destination}`);
+    const [pos] = positionFromFen(castledNode.fen);
+    expect(pos?.board.get(parseSquare("g1")!)).toMatchObject({ role: "king", color: "white" });
+    expect(pos?.board.get(parseSquare("f1")!)).toMatchObject({ role: "rook", color: "white" });
+    expect(storedPuzzles()[1].completion).toBe("correct");
+    expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(advance ? 0 : 1);
+    expect(treeStore.getState().currentNode().san).toBe(advance ? "Nf3" : "O-O");
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+    expect(mocks.playSound).toHaveBeenCalledTimes(advance ? 2 : 1);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test.each([
+  ["e1g1", "e1h1"],
+  ["e1h1", "e1g1"],
+] as const)(
+  "normalized recorded castling %s matches solution %s for frontier and hints",
+  async (actual, expected) => {
+    const atoms = await loadPlaybackPuzzle(`e8e7 ${expected} e7e6 f1e1`, castlingFen);
+    await act(async () => {
+      atoms.set(jumpToNextPuzzleAtom, false);
+      expect(
+        treeStore.getState().makeMoves({ payload: [actual, "e7e6"], changeHeaders: false }).success,
+      ).toBe(true);
+    });
+    expect(makeUci(treeStore.getState().root.children[0].children[0].move!)).toBe(actual);
+    expect(treeStore.getState().position).toEqual([0, 0, 0]);
+    expect(mocks.board?.movable?.color).toBe("white");
+    expect(hintButton().disabled).toBe(false);
+    await act(async () => hintButton().click());
+    expect(treeStore.getState().currentNode().shapes).toEqual([
+      { orig: "f1", dest: undefined, brush: "green" },
+    ]);
+    await act(async () => hintButton().click());
+    expect(treeStore.getState().currentNode().shapes).toEqual([
+      { orig: "f1", dest: "e1", brush: "green" },
+    ]);
+    await humanMove("f1", "e1");
+    expect(treeStore.getState().position).toEqual([0, 0, 0, 0]);
+    expect(treeStore.getState().currentNode().san).toBe("Re1+");
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test("a legal ordinary king step does not satisfy a castling solution", async () => {
+  await loadPlaybackPuzzle("e8e7 e1g1", castlingFen);
+  await humanMove("e1", "f1");
+  expect(treeStore.getState().position).toEqual([0]);
+  expect(treeStore.getState().root.children[0].children[0].san).toBe("Kf1");
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test.each(["queen", "rook"] as const)(
+  "normalized %s promotion retains its completion against the stored queen promotion",
+  async (role) => {
+    const fen = "7k/P7/8/8/8/8/8/7K b - - 0 1";
+    const atoms = await loadPlaybackPuzzle("h8g8 a7a8q", fen);
+    await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+    await humanMove("a7", "a8");
+    const dialog = document.querySelector<HTMLElement>(
+      '[aria-label="Board.Promotion.DialogLabel"]',
+    )!;
+    expect(dialog).not.toBeNull();
+    await act(async () =>
+      dialog.querySelectorAll<HTMLButtonElement>("button")[role === "queen" ? 0 : 2].click(),
+    );
+    const node = treeStore.getState().root.children[0].children[0];
+    expect(makeUci(node.move!)).toBe(role === "queen" ? "a7a8q" : "a7a8r");
+    expect(treeStore.getState().position).toEqual(role === "queen" ? [0, 0] : [0]);
+    expect(storedPuzzles()[0].completion).toBe(role === "queen" ? "correct" : "incorrect");
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
 
 test.each(["resolve", "cancel", "error"] as const)(
   "first wrong c5 then d5 preserve elapsed time while metadata is pending and after %s",

@@ -17,6 +17,7 @@ import { capabilityKey } from "@/utils/pathCapabilities";
 import {
   captureTreePositionOwner,
   getPuzzleProgress,
+  puzzleMoveMatches,
   type Completion,
   type Puzzle,
 } from "@/utils/puzzles";
@@ -114,7 +115,7 @@ function PuzzleBoard({
     const uci = makeUci(move);
     newPos.play(move);
 
-    if (puzzle.moves[currentMove] === uci || newPos.isCheckmate()) {
+    if (puzzleMoveMatches(pos, move, puzzle.moves[currentMove]) || newPos.isCheckmate()) {
       const newMoves = [
         uci,
         ...(newPos.isCheckmate() ? [] : puzzle.moves.slice(currentMove + 1, currentMove + 2)),

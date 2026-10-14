@@ -1,6 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { type PuzzleDatabaseInfo, type PuzzleRootDescriptor } from "@/bindings";
-import { isNormal, makeUci, parseUci, type NormalMove } from "chessops";
+import { isNormal, makeUci, parseUci, type Move, type NormalMove } from "chessops";
+import { normalizeMove, type Position } from "chessops/chess";
 import type { TreeStore } from "@/state/store/tree";
 import { positionFromFen } from "@/utils/chessops";
 import { getBoardState, type TreeNode, type TreeState } from "@/utils/treeReducer";
@@ -20,6 +21,20 @@ export interface Puzzle {
     themes?: string[];
 }
 
+export function puzzleMoveMatches(
+    pos: Position,
+    move: Move,
+    expectedUci: string | undefined,
+): boolean {
+    const expected = parseUci(expectedUci ?? "");
+    return (
+        !!expected &&
+        pos.isLegal(move) &&
+        pos.isLegal(expected) &&
+        makeUci(normalizeMove(pos, move)) === makeUci(normalizeMove(pos, expected))
+    );
+}
+
 export function getPuzzleProgress(
     puzzle: Pick<Puzzle, "fen" | "moves"> | null | undefined,
     root: TreeNode,
@@ -33,7 +48,9 @@ export function getPuzzleProgress(
     let cursor = position.length === 0 ? root : null;
     while (frontier < puzzle.moves.length) {
         const child = node.children[0];
-        if (!child?.move || makeUci(child.move) !== puzzle.moves[frontier]) break;
+        if (!child?.move) break;
+        const [parent] = positionFromFen(node.fen);
+        if (!parent || !puzzleMoveMatches(parent, child.move, puzzle.moves[frontier])) break;
         node = child;
         frontier++;
         if (frontier === position.length) cursor = node;
