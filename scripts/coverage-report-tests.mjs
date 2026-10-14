@@ -4,6 +4,7 @@ import { existsSync, lstatSync, readdirSync, writeFileSync } from "node:fs";
 import {
   access,
   chmod,
+  copyFile,
   mkdtemp,
   mkdir,
   rm,
@@ -3562,27 +3563,45 @@ test("removal and unreadable pre-Cargo walks record filesystem messages and reje
 });
 
 test("entrypoint tool-resolution failure exits 1 and leaves the planted profile set unchanged", async (t) => {
-  const scratchPath = await mkdtemp(join(tmpdir(), "coverage-no-rustup-"));
-  t.after(() => rm(scratchPath, { recursive: true, force: true }));
-  const coverageTarget = resolve("src-tauri/target/llvm-cov-target");
+  const scratchRoot = await mkdtemp(join(tmpdir(), "coverage-no-rustup-"));
+  t.after(() => rm(scratchRoot, { recursive: true, force: true }));
+  const scriptNames = [
+    "rust-branch-coverage.mjs",
+    "coverage-scope.mjs",
+    "entrypoint.mjs",
+    "files-below.mjs",
+    "rust-host.mjs",
+    "toolchain-versions.mjs",
+  ];
+  const scratchScripts = join(scratchRoot, "scripts");
+  const emptyPath = join(scratchRoot, "empty-path");
+  const coverageTarget = resolve(scratchRoot, "src-tauri/target/llvm-cov-target");
+  await mkdir(scratchScripts, { recursive: true });
+  await mkdir(emptyPath);
   await mkdir(coverageTarget, { recursive: true });
-  const planted = join(coverageTarget, `staged-tool-failure-${process.pid}.profraw`);
-  // Exclusive creation ensures the finally path owns precisely this file.
-  await writeFile(planted, "staged input", { flag: "wx" });
-  try {
-    const before = (await listRawProfiles(coverageTarget)).sort();
-    const result = spawnSync(process.execPath, [resolve("scripts/rust-branch-coverage.mjs")], {
-      encoding: "utf8",
-      env: { ...process.env, PATH: scratchPath },
-    });
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /spawnSync rustup ENOENT/);
-    assert.deepEqual((await listRawProfiles(coverageTarget)).sort(), before);
-    t.diagnostic("staged: exit 1; spawnSync rustup ENOENT; profile path set unchanged");
-  } finally {
-    await unlinkFile(planted);
-  }
+  await Promise.all(
+    scriptNames.map((name) => copyFile(resolve("scripts", name), join(scratchScripts, name))),
+  );
+  const entrypoint = join(scratchScripts, "rust-branch-coverage.mjs");
+  const planted = join(coverageTarget, "staged-tool-failure.profraw");
+  const plantedBytes = Buffer.from("staged input");
+  // Exclusive creation ensures this scratch root owns precisely the planted file.
+  await writeFile(planted, plantedBytes, { flag: "wx" });
+  const before = (await listRawProfiles(coverageTarget)).sort();
+  assert.deepEqual(before, [planted]);
+  const result = spawnSync(process.execPath, [entrypoint], {
+    cwd: scratchRoot,
+    encoding: "utf8",
+    env: { ...process.env, PATH: emptyPath },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /spawnSync rustup ENOENT/);
+  assert.deepEqual((await listRawProfiles(coverageTarget)).sort(), before);
+  assert.deepEqual(await readFile(planted), plantedBytes);
+  t.diagnostic(
+    "staged: copied entrypoint exit 1; spawnSync rustup ENOENT; private profile set and bytes unchanged",
+  );
 });
 
 test("command failures are staged through runBranchCoverage's command runner", async (t) => {

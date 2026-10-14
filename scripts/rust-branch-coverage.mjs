@@ -2,9 +2,10 @@
  * The failure matrix for this artefact (push-review-policy.md section 2).
  *
  * The enumeration follows the throw sites and the filesystem/configuration operations in this
- * file, including the operations awaited by runBranchCoverage. Every row below is staged in
- * scripts/coverage-report-tests.mjs against scratch inputs and fake command results, except the
- * one explicitly marked argued CLI class. A direct exported-function call is a real caller.
+ * file, including the operations awaited by runBranchCoverage. Rows below are staged in
+ * scripts/coverage-report-tests.mjs against scratch inputs and fake command results, except row
+ * 29, which runs the copied entrypoint against a private project root, and the later CLI failures
+ * explicitly marked argued. A direct exported-function call is a real caller.
  * recordBranchRejection records the message AND rejected-promise status of its async call;
  * recordBranchThrow records the message AND synchronous-throw status of its helper call.
  *
@@ -49,14 +50,15 @@
  * 27  output / writeFile            ENOENT: ... open '<root>/absent/lcov.info'      rejected promise
  * 28  missing branch records        Rust coverage export contains no branch data   rejected promise
  * 29  CLI tool-resolution spawn     spawnSync rustup ENOENT                        exit 1
- *     Row 29 plants one exclusively-created profile in the real coverage target, records the
- *     unchanged profile path set after the spawn, and removes only that file in finally. The
- *     normal green test run verifies restoration; the target directory itself is preserved.
+ *     Row 29 copies this entrypoint and its local modules into a private project root, plants one
+ *     exclusively-created profile in that root's coverage target, compares the complete profile
+ *     path set and planted bytes around the missing-rustup spawn, and cleans up the owned root.
  *
- * CLI spawns past tool resolution are argued, not staged: the entrypoint binds the live coverage
- * target and would remove live profiles or start Cargo. Each rejection above, including the new
- * survivor refusal, escapes main's top-level await as Node's uncaught rejection, whose CLI exit
- * is 1. That exit is described from the exported call, not claimed as a second measured spawn.
+ * CLI spawns past tool resolution are argued, not staged: the copied entrypoint binds its private
+ * coverage target and can clear its planted profile before a later CLI failure or start Cargo.
+ * Each rejection above, including the new survivor refusal, escapes main's top-level await as
+ * Node's uncaught rejection, whose CLI exit is 1. That exit is described from the exported call,
+ * not claimed as a second measured spawn.
  * The staged helper calls do not claim to exercise real Cargo/LLVM failures or a second writer
  * that creates a profile after the refusal walk. No lock is added for that existing race.
  */
