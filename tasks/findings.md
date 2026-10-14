@@ -11250,6 +11250,9 @@ deny stays in place for the next one.
 Reopened (records lens on the setup-findings triage, 2026-10-13): An unresolvable citation reaching HEAD turns the gate red for every agent and push; annotate still publishes without citation validation. It passes rule 4d, so the rejection above is void.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5563a1408b936a62e1d7f90c28ff70922a05e4fc3678aaf9c23aceb8a7da4589","input_sha256":"73aa9feceadb957b864c394c51ea5e21f42a7ade210aea6902487a4ffe596bfc","kind":"mutation-receipt","operation":"8bd931d33a607cee652751efa426e3649bb6be111b753e06aa5fe26ae952d309","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-14"],"target":"f-20260920-14","v":1} -->
 
+**Pickup re-check 2026-10-14 (setup simplification):** record-decision already validates citations (agent-kit efc95c47). Smallest fix: add the same candidate-citation validation to the canonical annotate path in agent-kit, reusing the existing resolver, then vendor it. Leave record-decision and the citation scanner unchanged.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"430196899fcaef0d2a927a0dc9e316716eb0cc70c847033cd8367ac78e50403b","input_sha256":"ee40b62fe8afdc1bfd1ff34fc13e90228db93f0731d79ee800a0303de5099426","kind":"mutation-receipt","operation":"88a9000363f913d6560d64aef109ac5e46fa160ed3c019123c7de0182471a503","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-14"],"target":"f-20260920-14","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
