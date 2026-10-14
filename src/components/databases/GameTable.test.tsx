@@ -13,6 +13,7 @@ import type { SuccessDatabaseInfo } from "@/utils/db";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameTable from "./GameTable";
+import { resolveDatabaseRoute } from "./databaseRoute";
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), parsePGN: vi.fn(), notify: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
@@ -139,6 +140,56 @@ async function doubleClick(index: number) {
     row(index).dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
 }
+
+test.each([
+  {},
+  { isFilterExpanded: false },
+  { isFilterExpanded: false, query: null },
+  { isFilterExpanded: false, query: "query" },
+  { isFilterExpanded: false, query: { sides: "Any", options: null } },
+])("renders a ready hydrated database with malformed games %j", async (storedGames) => {
+  const freshDatabase: SuccessDatabaseInfo = {
+    type: "success",
+    file,
+    title: "Fresh listing metadata",
+    description: "",
+    filename: "fixture.db3",
+    player_count: 4,
+    event_count: 2,
+    game_count: 2,
+    storage_size: 0n,
+    indexed: true,
+  };
+  // Exercise the actual store's sessionStorage boundary. A matching active identity
+  // makes the route ready, so route synchronization cannot hide unsafe panel hydration.
+  sessionStorage.setItem(
+    "database-view",
+    JSON.stringify({
+      version: 0,
+      state: {
+        database: { ...freshDatabase, title: "Stored metadata", storage_size: 0 },
+        games: storedGames,
+      },
+    }),
+  );
+  await activeDatabaseViewStore.persist.rehydrate();
+  expect(
+    resolveDatabaseRoute(
+      [freshDatabase],
+      "captured-database",
+      activeDatabaseViewStore.getState().database,
+    ),
+  ).toEqual({
+    status: "ready",
+    database: freshDatabase,
+  });
+  await render();
+  expect(host.querySelectorAll("tr")).toHaveLength(games.length);
+  expect(activeDatabaseViewStore.getState().games).toEqual(
+    activeDatabaseViewStore.getInitialState().games,
+  );
+  expect(openButton().disabled).toBe(true);
+});
 
 test("single click previews, labelled button admits the selected content and database identity", async () => {
   const seed = vi.spyOn(tabStorage, "seed");

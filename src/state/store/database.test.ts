@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { databaseRouteTarget, resolveDatabaseRoute } from "@/components/databases/databaseRoute";
+import { INITIAL_FEN } from "chessops/fen";
 import { activeDatabaseViewStore, type DatabaseViewStore } from "./database";
 
 afterEach(() => {
@@ -99,6 +100,350 @@ describe("database-view sessionStorage hydration", () => {
         expect(store.getState().games.selectedGame).toBeUndefined();
         store.getState().clearDatabase();
         expect(store.getState().database).toBeUndefined();
+    });
+});
+
+const defaults = activeDatabaseViewStore.getInitialState();
+const validGames = {
+    isFilterExpanded: true,
+    selectedGame: 42,
+    query: {
+        ...defaults.games.query,
+        player1: 7,
+        player2: null,
+        tournament_id: -2,
+        range1: [-100, 3500],
+        range2: [2500, 1000],
+        sides: "Any",
+        outcome: "*",
+        start_date: "2020.01.01",
+        end_date: null,
+        position: { fen: INITIAL_FEN, type_: "partial" },
+        wanted_result: "0-1",
+        exclude_fast_events: true,
+        options: {
+            skipCount: true,
+            page: 2_147_483_647,
+            pageSize: 1000,
+            sort: "blackElo",
+            direction: "asc",
+        },
+    },
+};
+const validPlayers = {
+    activeTab: "ratings",
+    selectedPlayer: -7,
+    query: {
+        name: "Carlsen",
+        range: [3500, -100],
+        options: { skipCount: false, page: null, pageSize: null, sort: "elo", direction: "asc" },
+    },
+};
+const validTournaments = {
+    activeTab: "leaderboard",
+    selectedTournament: 9,
+    query: { name: null, options: { skipCount: true, sort: "id", direction: "asc" } },
+};
+
+describe("database-view panel hydration", () => {
+    it.each(["id", "date", "whiteElo", "blackElo", "ply_count"])(
+        "preserves the supported game sort %s",
+        async (sort) => {
+            const games = {
+                ...validGames,
+                selectedGame: 0,
+                query: {
+                    ...validGames.query,
+                    options: { ...validGames.query.options, page: 1, pageSize: 1, sort },
+                },
+            };
+            const store = await hydrate({ games });
+            expect(store.getState().games).toEqual(games);
+        },
+    );
+
+    it.each(["id", "name", "elo"])("preserves the supported player sort %s", async (sort) => {
+        const players = {
+            ...validPlayers,
+            activeTab: "openings",
+            query: { ...validPlayers.query, options: { ...validPlayers.query.options, sort } },
+        };
+        const store = await hydrate({ players });
+        expect(store.getState().players).toEqual(players);
+    });
+
+    it.each(["id", "name"])("preserves the supported tournament sort %s", async (sort) => {
+        const tournaments = {
+            ...validTournaments,
+            query: {
+                ...validTournaments.query,
+                options: { ...validTournaments.query.options, sort },
+            },
+        };
+        const store = await hydrate({ tournaments });
+        expect(store.getState().tournaments).toEqual(tournaments);
+    });
+
+    it.each(["BlackWhite", "WhiteBlack", "Any"])(
+        "preserves the supported side %s",
+        async (sides) => {
+            const games = {
+                ...validGames,
+                query: {
+                    ...validGames.query,
+                    sides,
+                    player1: -2_147_483_648,
+                    player2: 2_147_483_647,
+                },
+            };
+            const store = await hydrate({ games });
+            expect(store.getState().games).toEqual(games);
+        },
+    );
+
+    it.each(["exact", "partial"])("preserves the supported position query %s", async (type_) => {
+        const games = {
+            ...validGames,
+            query: { ...validGames.query, position: { fen: INITIAL_FEN, type_ } },
+        };
+        const store = await hydrate({ games });
+        expect(store.getState().games).toEqual(games);
+    });
+
+    it("preserves supported filters, nulls, selections, backend bounds and the ratings tab", async () => {
+        const store = await hydrate({
+            database: selectedDatabase,
+            activeTab: "tournaments",
+            games: validGames,
+            players: validPlayers,
+            tournaments: validTournaments,
+        });
+        expect(store.getState()).toMatchObject({
+            database: selectedDatabase,
+            activeTab: "tournaments",
+            games: validGames,
+            players: validPlayers,
+            tournaments: validTournaments,
+        });
+        const actions = Object.entries(store.getInitialState()).filter(
+            ([, value]) => typeof value === "function",
+        );
+        for (const [key, action] of actions)
+            expect(store.getState()[key as keyof DatabaseViewStore]).toBe(action);
+    });
+
+    it.each([
+        undefined,
+        null,
+        {},
+        { isFilterExpanded: true },
+        { ...validGames, query: null },
+        { ...validGames, query: 7 },
+        { ...validGames, query: "query" },
+        { ...validGames, query: [] },
+    ])("resets incomplete games %j while the matching route remains ready", async (games) => {
+        const store = await hydrate({
+            database: selectedDatabase,
+            games,
+            players: validPlayers,
+            tournaments: validTournaments,
+        });
+        expect(store.getState().games).toEqual(store.getInitialState().games);
+        expect(store.getState().players).toEqual(validPlayers);
+        expect(store.getState().tournaments).toEqual(validTournaments);
+        expect(
+            resolveDatabaseRoute(
+                [store.getState().database!],
+                "selected",
+                store.getState().database,
+            ),
+        ).toMatchObject({ status: "ready" });
+    });
+
+    it.each([
+        { options: undefined },
+        { options: null },
+        { options: {} },
+        { options: "options" },
+        { options: [] },
+        { options: { ...validGames.query.options, skipCount: "false" } },
+        { options: { ...validGames.query.options, sort: "name" } },
+        { options: { ...validGames.query.options, direction: "ascending" } },
+        { options: { ...validGames.query.options, page: 0 } },
+        { options: { ...validGames.query.options, page: 2_147_483_648 } },
+        { options: { ...validGames.query.options, pageSize: 0 } },
+        { options: { ...validGames.query.options, pageSize: 1001 } },
+        { options: { ...validGames.query.options, pageSize: 1.5 } },
+        { player1: "7" },
+        { player2: 1.5 },
+        { tournament_id: -2_147_483_649 },
+        { range1: [1000] },
+        { range2: [0, 3000, 3500] },
+        { range1: [0, "3000"] },
+        { range1: [0, 2_147_483_648] },
+        { sides: undefined },
+        { sides: null },
+        { sides: "Both" },
+        { outcome: {} },
+        { start_date: 2020 },
+        { end_date: false },
+        { wanted_result: [] },
+        { exclude_fast_events: "true" },
+        { position: "fen" },
+        { position: { fen: INITIAL_FEN } },
+        { position: { fen: 7, type_: "exact" } },
+        { position: { fen: INITIAL_FEN, type_: "unknown" } },
+    ])("rejects malformed game query fields %j", async (fields) => {
+        const store = await hydrate({
+            games: { ...validGames, query: { ...validGames.query, ...fields } },
+            players: validPlayers,
+        });
+        expect(store.getState().games).toEqual(store.getInitialState().games);
+        expect(store.getState().players).toEqual(validPlayers);
+    });
+
+    it.each([
+        { isFilterExpanded: "true" },
+        { selectedGame: "42" },
+        { selectedGame: -1 },
+        { selectedGame: 0.5 },
+    ])("rejects malformed games panel fields %j", async (fields) => {
+        const store = await hydrate({ games: { ...validGames, ...fields } });
+        expect(store.getState().games).toEqual(store.getInitialState().games);
+    });
+
+    it.each([
+        undefined,
+        null,
+        {},
+        { ...validPlayers, activeTab: "games" },
+        { ...validPlayers, selectedPlayer: "7" },
+        { ...validPlayers, query: null },
+        { ...validPlayers, query: {} },
+        { ...validPlayers, query: { ...validPlayers.query, name: 7 } },
+        { ...validPlayers, query: { ...validPlayers.query, range: [0, 1.5] } },
+        { ...validPlayers, query: { ...validPlayers.query, options: null } },
+        {
+            ...validPlayers,
+            query: {
+                ...validPlayers.query,
+                options: { ...validPlayers.query.options, sort: "date" },
+            },
+        },
+        {
+            ...validPlayers,
+            query: {
+                ...validPlayers.query,
+                options: { ...validPlayers.query.options, direction: 7 },
+            },
+        },
+        {
+            ...validPlayers,
+            query: {
+                ...validPlayers.query,
+                options: { ...validPlayers.query.options, pageSize: -1 },
+            },
+        },
+    ])("resets malformed players %j independently", async (players) => {
+        const store = await hydrate({ games: validGames, players, tournaments: validTournaments });
+        expect(store.getState().players).toEqual(store.getInitialState().players);
+        expect(store.getState().games).toEqual(validGames);
+        expect(store.getState().tournaments).toEqual(validTournaments);
+    });
+
+    it.each([
+        undefined,
+        null,
+        {},
+        { ...validTournaments, activeTab: "overview" },
+        { ...validTournaments, selectedTournament: 0.5 },
+        { ...validTournaments, query: 7 },
+        { ...validTournaments, query: null },
+        { ...validTournaments, query: {} },
+        { ...validTournaments, query: { ...validTournaments.query, name: {} } },
+        { ...validTournaments, query: { ...validTournaments.query, options: {} } },
+        {
+            ...validTournaments,
+            query: {
+                ...validTournaments.query,
+                options: { ...validTournaments.query.options, sort: "elo" },
+            },
+        },
+        {
+            ...validTournaments,
+            query: {
+                ...validTournaments.query,
+                options: { ...validTournaments.query.options, skipCount: 1 },
+            },
+        },
+        {
+            ...validTournaments,
+            query: {
+                ...validTournaments.query,
+                options: { ...validTournaments.query.options, page: -1 },
+            },
+        },
+    ])("resets malformed tournaments %j independently", async (tournaments) => {
+        const store = await hydrate({ games: validGames, players: validPlayers, tournaments });
+        expect(store.getState().tournaments).toEqual(store.getInitialState().tournaments);
+        expect(store.getState().games).toEqual(validGames);
+        expect(store.getState().players).toEqual(validPlayers);
+    });
+
+    it.each([undefined, null, "overview", "", 7, {}, []])(
+        "resets invalid activeTab %j independently",
+        async (activeTab) => {
+            const store = await hydrate({
+                activeTab,
+                games: validGames,
+                players: validPlayers,
+                tournaments: validTournaments,
+            });
+            expect(store.getState().activeTab).toBe("games");
+            expect(store.getState().games).toEqual(validGames);
+            expect(store.getState().players).toEqual(validPlayers);
+            expect(store.getState().tournaments).toEqual(validTournaments);
+        },
+    );
+
+    it("preserves nullable filters the UI handles and normalizes absent row selections", async () => {
+        const store = await hydrate({
+            games: {
+                ...validGames,
+                selectedGame: null,
+                query: {
+                    ...validGames.query,
+                    player1: null,
+                    range1: null,
+                    range2: null,
+                    outcome: null,
+                    start_date: null,
+                    position: null,
+                    wanted_result: null,
+                    exclude_fast_events: null,
+                },
+            },
+            players: {
+                ...validPlayers,
+                selectedPlayer: null,
+                query: { ...validPlayers.query, name: null, range: null },
+            },
+            tournaments: { ...validTournaments, selectedTournament: null },
+        });
+        expect(store.getState().games.query).toMatchObject({
+            player1: null,
+            range1: null,
+            range2: null,
+            outcome: null,
+            start_date: null,
+            position: null,
+            wanted_result: null,
+            exclude_fast_events: null,
+        });
+        expect(store.getState().players.query).toMatchObject({ name: null, range: null });
+        expect(store.getState().games.selectedGame).toBeUndefined();
+        expect(store.getState().players.selectedPlayer).toBeUndefined();
+        expect(store.getState().tournaments.selectedTournament).toBeUndefined();
     });
 });
 

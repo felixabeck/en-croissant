@@ -26,7 +26,7 @@ export interface DatabaseViewStore {
     players: {
         query: PlayerQuery;
         selectedPlayer?: number;
-        activeTab: "overview" | "openings";
+        activeTab: "overview" | "ratings" | "openings";
     };
     tournaments: {
         query: TournamentQuery;
@@ -99,6 +99,73 @@ const defaultTournamentState: DatabaseViewStore["tournaments"] = {
         },
     },
 };
+
+// Match Rust's i32 DTOs and pagination_limit_offset in db/mod.rs. Filter ranges
+// have no backend ordering/ELO bound, and nullable pagination uses consumer defaults.
+const queryIntegerSchema = z.number().int().min(-2_147_483_648).max(2_147_483_647);
+const queryRangeSchema = z.tuple([queryIntegerSchema, queryIntegerSchema]).nullish();
+
+function createQueryOptionsSchema<Sort extends string>(sorts: [Sort, ...Sort[]]) {
+    return z.object({
+        skipCount: z.boolean(),
+        page: queryIntegerSchema.min(1).nullish(),
+        pageSize: queryIntegerSchema.min(1).max(1000).nullish(),
+        sort: z.enum(sorts),
+        direction: z.enum(["asc", "desc"]),
+    });
+}
+
+const activeTabSchema = z.enum(["games", "players", "tournaments"]);
+// GameQuery's optional/null options and sides are an API convenience. Persisted UI
+// panels need complete options for table edits and a side value for SideInput.
+const persistedGamesSchema: z.ZodType<DatabaseViewStore["games"], z.ZodTypeDef, unknown> = z.object(
+    {
+        isFilterExpanded: z.boolean(),
+        selectedGame: queryIntegerSchema
+            .min(0)
+            .nullish()
+            .transform((value) => value ?? undefined),
+        query: z.object({
+            options: createQueryOptionsSchema(["id", "date", "whiteElo", "blackElo", "ply_count"]),
+            player1: queryIntegerSchema.nullish(),
+            player2: queryIntegerSchema.nullish(),
+            tournament_id: queryIntegerSchema.nullish(),
+            start_date: z.string().nullish(),
+            end_date: z.string().nullish(),
+            range1: queryRangeSchema,
+            range2: queryRangeSchema,
+            sides: z.enum(["BlackWhite", "WhiteBlack", "Any"]),
+            outcome: z.string().nullish(),
+            position: z.object({ fen: z.string(), type_: z.enum(["exact", "partial"]) }).nullish(),
+            wanted_result: z.string().nullish(),
+            exclude_fast_events: z.boolean().nullish(),
+        }),
+    },
+);
+
+const persistedPlayersSchema: z.ZodType<DatabaseViewStore["players"], z.ZodTypeDef, unknown> =
+    z.object({
+        activeTab: z.enum(["overview", "ratings", "openings"]),
+        selectedPlayer: queryIntegerSchema.nullish().transform((value) => value ?? undefined),
+        query: z.object({
+            options: createQueryOptionsSchema(["id", "name", "elo"]),
+            name: z.string().nullish(),
+            range: queryRangeSchema,
+        }),
+    });
+
+const persistedTournamentsSchema: z.ZodType<
+    DatabaseViewStore["tournaments"],
+    z.ZodTypeDef,
+    unknown
+> = z.object({
+    activeTab: z.enum(["games", "leaderboard"]),
+    selectedTournament: queryIntegerSchema.nullish().transform((value) => value ?? undefined),
+    query: z.object({
+        options: createQueryOptionsSchema(["id", "name"]),
+        name: z.string().nullable(),
+    }),
+});
 
 export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
     persist(
@@ -218,13 +285,17 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                         ? (persistedState as Partial<DatabaseViewStore>)
                         : {};
                 const parsed = persistedDatabaseSchema.safeParse(stored.database);
+                const activeTab = activeTabSchema.safeParse(stored.activeTab);
+                const games = persistedGamesSchema.safeParse(stored.games);
+                const players = persistedPlayersSchema.safeParse(stored.players);
+                const tournaments = persistedTournamentsSchema.safeParse(stored.tournaments);
                 return {
                     ...currentState,
                     database: parsed.success ? (parsed.data as SuccessDatabaseInfo) : undefined,
-                    activeTab: stored.activeTab ?? currentState.activeTab,
-                    games: stored.games ?? currentState.games,
-                    players: stored.players ?? currentState.players,
-                    tournaments: stored.tournaments ?? currentState.tournaments,
+                    activeTab: activeTab.success ? activeTab.data : currentState.activeTab,
+                    games: games.success ? games.data : currentState.games,
+                    players: players.success ? players.data : currentState.players,
+                    tournaments: tournaments.success ? tournaments.data : currentState.tournaments,
                 };
             },
         },
