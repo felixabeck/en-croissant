@@ -1,11 +1,11 @@
 #[cfg(test)]
 use crate::infra::path_authority::PathAuthority;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::{BufRead, BufReader, Cursor, Read},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Instant,
 };
@@ -23,7 +23,7 @@ use specta::Type;
 use tauri::{AppHandle, Runtime};
 use tauri_specta::Event;
 use tokio::{
-    sync::{watch, Mutex, RwLock},
+    sync::{watch, Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
     time::{interval, Duration},
 };
 use tokio_util::sync::CancellationToken;
@@ -985,11 +985,47 @@ impl SessionMetadata {
 /// loop handle together makes replacement and natural cleanup exact-session
 /// operations instead of independent best-effort map mutations.
 struct LiveSession {
+    cleanup: SessionCleanup,
     session: u64,
     controller: Arc<RwLock<GameController>>,
     shutdown: watch::Sender<bool>,
     join: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     engine_supervisor: Arc<EngineSupervisor>,
+}
+
+const MAX_UNOBSERVED_GAME_FAILURES: usize = 4096;
+
+#[derive(Default)]
+struct SessionCleanup {
+    loop_outcome: OnceLock<Result<(), Arc<Error>>>,
+    join_failure: OnceLock<Arc<Error>>,
+    slot: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+impl SessionCleanup {
+    fn record(&self, result: Result<(), Error>) {
+        let success = result.is_ok();
+        let _ = self.loop_outcome.set(result.map_err(Arc::new));
+        if success {
+            self.release_slot();
+        }
+    }
+
+    fn release_slot(&self) {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    fn failed(&self) -> bool {
+        self.loop_outcome.get().is_some_and(Result::is_err)
+    }
+
+    fn outcome(&self) -> Result<(), Error> {
+        self.loop_outcome
+            .get()
+            .cloned()
+            .unwrap_or(Ok(()))
+            .map_err(Error::Shared)
+    }
 }
 
 struct RestoreJoinOnDrop<'a> {
@@ -1178,7 +1214,14 @@ impl LiveSession {
             match tokio::time::timeout(join_budget, &mut *join.handle_mut()).await {
                 Ok(Ok(())) => join.disarm(),
                 Ok(Err(error)) => {
-                    let primary = Error::Conflict(format!("game loop join failed: {error}"));
+                    let primary = Error::task_join(
+                        "game loop join failed",
+                        &error,
+                        &format!("game_id={game_id} session={}", self.session),
+                    );
+                    let primary = Arc::new(primary);
+                    let _ = self.cleanup.join_failure.set(primary.clone());
+                    let primary = Error::Shared(primary);
                     log_game_cleanup_error(&game_id, self.session, "loop join failed", &primary);
                     join.disarm();
                     return Err(Error::with_cleanup(
@@ -1201,20 +1244,31 @@ impl LiveSession {
                 }
             }
         }
-        Ok(())
+        match self.cleanup.join_failure.get() {
+            Some(error) => Err(Error::Shared(error.clone())),
+            None => Ok(()),
+        }
     }
 
     async fn finish_retired(&self, join_budget: Duration) -> Result<(), Error> {
         let join = self.shutdown_and_join(join_budget).await;
         let termination = self.terminate_registered_engines().await;
-        match join {
+        let outcome = self.cleanup.outcome();
+        let result = match join {
             Ok(()) => termination,
             Err(primary) => Err(Error::with_cleanup(primary, termination)),
-        }
+        };
+        let result = match outcome {
+            Ok(()) => result,
+            Err(primary) => Err(Error::with_cleanup(primary, result)),
+        };
+        self.cleanup.release_slot();
+        result
     }
 }
 
 pub struct GameManager {
+    failure_slots: Arc<Semaphore>,
     games: DashMap<GameId, Arc<LiveSession>>,
     next_session: AtomicU64,
     sealed: AtomicBool,
@@ -1461,8 +1515,43 @@ fn aggregate_game_engine_termination_results(
 }
 
 impl GameManager {
+    #[cfg(test)]
+    pub(crate) async fn install_failed_production_cleanup_test_session(
+        self: &Arc<Self>,
+        supervisor: Arc<EngineSupervisor>,
+        game_id: &str,
+    ) {
+        let engine = tests::register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "failed-shutdown",
+            "failed-shutdown-path",
+            EngineActor::recoverable_cleanup_test_actor(),
+        )
+        .await;
+        let (live, controller) = tests::test_live_session_with_supervisor(game_id, 1, supervisor);
+        controller.write().await.white_engine = Some(engine);
+        controller.write().await.end_game(GameResult::Draw {
+            reason: DrawReason::Stalemate,
+        });
+        tests::publish_test_session(self, game_id, live.clone()).await;
+        let app = tauri::test::mock_app();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        game_loop(
+            game_id.into(),
+            live.clone(),
+            live.shutdown.subscribe(),
+            rx,
+            app.handle().clone(),
+            Arc::downgrade(self),
+        )
+        .await;
+    }
     pub fn new() -> Self {
         Self {
+            failure_slots: Arc::new(Semaphore::new(MAX_UNOBSERVED_GAME_FAILURES)),
             games: DashMap::new(),
             next_session: AtomicU64::new(0),
             sealed: AtomicBool::new(false),
@@ -1559,9 +1648,9 @@ impl GameManager {
             session,
             state: snapshot,
         });
-        let _ = self
-            .games
-            .remove_if(game_id, |_, current| current.session == session);
+        let _ = self.games.remove_if(game_id, |_, current| {
+            current.session == session && !current.cleanup.failed()
+        });
         metadata.latest.insert(
             game_id.to_owned(),
             LatestSession {
@@ -1621,6 +1710,13 @@ impl GameManager {
         self.ensure_accepting_starts()?;
         let lifecycle = self.lifecycle_lease(&game_id);
         let _transition = lifecycle.lock().await;
+        let failure_slot = self
+            .failure_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                Error::ResourceLimit("game cleanup observation capacity reached".into())
+            })?;
         let session = self.allocate_session()?;
         let OpeningBookResult {
             config,
@@ -1707,6 +1803,10 @@ impl GameManager {
         let state = controller.get_state();
         let controller = Arc::new(RwLock::new(controller));
         let live = Arc::new(LiveSession {
+            cleanup: SessionCleanup {
+                slot: std::sync::Mutex::new(Some(failure_slot)),
+                ..SessionCleanup::default()
+            },
             session,
             controller: controller.clone(),
             shutdown: shutdown_tx,
@@ -2022,22 +2122,23 @@ impl GameManager {
         self.sealed.store(true, Ordering::SeqCst);
         drop(self.registration.lock().await);
         let mut failures = Vec::new();
+        let mut visited = HashSet::new();
         loop {
             let sessions: Vec<_> = self
                 .games
                 .iter()
+                .filter(|entry| !visited.contains(&entry.session))
                 .map(|entry| (entry.key().clone(), entry.value().clone()))
                 .collect();
             if sessions.is_empty() {
                 break;
             }
+            visited.extend(sessions.iter().map(|(_, session)| session.session));
             let results = futures_util::future::join_all(sessions.into_iter().map(
                 |(game_id, session)| async move {
                     let result = session.finish_retired(join_budget).await;
-                    if result.is_ok() {
-                        let mut metadata = self.session_metadata.lock().await;
-                        self.retire_live_locked(&mut metadata, &game_id, session.session);
-                    }
+                    let mut metadata = self.session_metadata.lock().await;
+                    self.retire_live_locked(&mut metadata, &game_id, session.session);
                     (game_id, result)
                 },
             ))
@@ -2908,12 +3009,14 @@ async fn run_published_loop<R: Runtime>(
         return;
     }
 
-    if let Err(error) = live.terminate_registered_engines().await {
+    let cleanup = live.terminate_registered_engines().await;
+    if let Err(error) = &cleanup {
         error!(
             "Game {game_id} never-started engine cleanup failed: {}",
             error.diagnostic()
         );
     }
+    live.cleanup.record(cleanup);
     if let Some(manager) = manager.upgrade() {
         let mut metadata = manager.session_metadata.lock().await;
         manager.retire_live_locked(&mut metadata, &game_id, live.session);
@@ -3108,9 +3211,11 @@ async fn game_loop<R: Runtime>(
             .flatten()
             .collect::<Vec<_>>()
     };
-    if let Err(error) = terminate_game_engines(&live.engine_supervisor, engines).await {
+    let cleanup = terminate_game_engines(&live.engine_supervisor, engines).await;
+    if let Err(error) = &cleanup {
         error!("Game {game_id} engine cleanup failed: {error}");
     }
+    live.cleanup.record(cleanup);
 
     if let Some(manager) = manager.upgrade() {
         manager
@@ -3930,7 +4035,7 @@ mod tests {
         register_test_actor(supervisor, key, actor, engine_id, executable_id).await
     }
 
-    async fn register_test_game_engine_with_actor(
+    pub(super) async fn register_test_game_engine_with_actor(
         supervisor: &Arc<EngineSupervisor>,
         game_id: &str,
         session: u64,
@@ -4102,7 +4207,11 @@ mod tests {
         controller.black_engine = black;
     }
 
-    async fn publish_test_session(manager: &GameManager, game_id: &str, live: Arc<LiveSession>) {
+    pub(super) async fn publish_test_session(
+        manager: &GameManager,
+        game_id: &str,
+        live: Arc<LiveSession>,
+    ) {
         manager
             .publish_live(game_id.into(), live.session, live, || {})
             .await
@@ -4357,7 +4466,7 @@ mod tests {
         test_live_session_with_supervisor(game_id, session, Arc::new(EngineSupervisor::default()))
     }
 
-    fn test_live_session_with_supervisor(
+    pub(super) fn test_live_session_with_supervisor(
         game_id: &str,
         session: u64,
         engine_supervisor: Arc<EngineSupervisor>,
@@ -4371,6 +4480,7 @@ mod tests {
                 session,
                 controller: controller.clone(),
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(None),
                 engine_supervisor,
             }),
@@ -4895,6 +5005,7 @@ done
                 session: 1,
                 controller,
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(None),
                 engine_supervisor: supervisor.clone(),
             }),
@@ -5023,6 +5134,7 @@ done
                 session: 4,
                 controller,
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(None),
                 engine_supervisor: supervisor.clone(),
             }),
@@ -5865,6 +5977,7 @@ done
                 session: 1,
                 controller: controller.clone(),
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(None),
                 engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
@@ -5890,6 +6003,7 @@ done
                 session: 2,
                 controller: replacement.clone(),
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(None),
                 engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
@@ -6230,6 +6344,7 @@ done
                     session,
                     controller,
                     shutdown,
+                    cleanup: SessionCleanup::default(),
                     join: std::sync::Mutex::new(Some(join)),
                     engine_supervisor: Arc::new(EngineSupervisor::default()),
                 }),
@@ -6256,6 +6371,196 @@ done
         let manager = GameManager::new();
         manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
         assert!(manager.games.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_production_loop_failure_survives_supervisor_retry() {
+        for retirement in ["replacement", "shutdown", "direct"] {
+            let game_id = format!("retained-production-{retirement}");
+            let manager = Arc::new(GameManager::new());
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let white = register_test_game_engine_with_actor(
+                &supervisor,
+                &game_id,
+                1,
+                "white",
+                "white",
+                "white-path",
+                EngineActor::recoverable_cleanup_test_actor(),
+            )
+            .await;
+            let black = register_test_game_engine_with_actor(
+                &supervisor,
+                &game_id,
+                1,
+                "black",
+                "black",
+                "black-path",
+                EngineActor::recoverable_cleanup_test_actor(),
+            )
+            .await;
+            let generations = [white.clone(), black.clone()];
+            let (live, controller) =
+                test_live_session_with_supervisor(&game_id, 1, supervisor.clone());
+            set_session_engines(&controller, Some(white), Some(black)).await;
+            controller.write().await.end_game(GameResult::Draw {
+                reason: DrawReason::Stalemate,
+            });
+            let slot = manager.failure_slots.clone().try_acquire_owned().unwrap();
+            *live.cleanup.slot.lock().unwrap() = Some(slot);
+            publish_test_session(&manager, &game_id, live.clone()).await;
+            let app = tauri::test::mock_app();
+            let (_move_tx, move_rx) = tokio::sync::mpsc::channel(1);
+            tokio::time::timeout(
+                TEST_WAIT,
+                game_loop(
+                    game_id.clone(),
+                    live.clone(),
+                    live.shutdown.subscribe(),
+                    move_rx,
+                    app.handle().clone(),
+                    Arc::downgrade(&manager),
+                ),
+            )
+            .await
+            .unwrap();
+            assert!(
+                live.cleanup.failed(),
+                "real production loop must retain its failed cleanup"
+            );
+            assert!(
+                manager.games.contains_key(&game_id),
+                "natural completion keeps unobserved failed session reachable"
+            );
+            assert_eq!(
+                manager.failure_slots.available_permits(),
+                MAX_UNOBSERVED_GAME_FAILURES - 1
+            );
+            assert_eq!(
+                manager.get_game_state(&game_id, 1).await.unwrap().status,
+                GameStatus::Finished {
+                    result: GameResult::Draw {
+                        reason: DrawReason::Stalemate
+                    }
+                }
+            );
+            for engine in &generations {
+                assert!(supervisor.owns_generation(&engine.key, engine.generation));
+                supervisor
+                    .terminate_exact(&engine.key, engine.generation)
+                    .await
+                    .unwrap();
+            }
+            let result = match retirement {
+                "replacement" => {
+                    manager
+                        .retire_replaced_session(&game_id, live.clone(), Duration::from_secs(1))
+                        .await
+                }
+                "shutdown" => manager.shutdown_all(Duration::from_secs(1)).await,
+                _ => live.finish_retired(Duration::from_secs(1)).await,
+            };
+            assert!(
+                result.is_err(),
+                "owning caller must observe production failure after child recovery"
+            );
+            assert!(
+                live.finish_retired(Duration::from_secs(1)).await.is_err(),
+                "session owners retain the original failure"
+            );
+            assert_eq!(
+                manager.failure_slots.available_permits(),
+                MAX_UNOBSERVED_GAME_FAILURES
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_game_capacity_refuses_before_launch() {
+        let manager = Arc::new(GameManager {
+            failure_slots: Arc::new(Semaphore::new(1)),
+            ..GameManager::new()
+        });
+        let slot = manager.failure_slots.clone().try_acquire_owned().unwrap();
+        let app = tauri::test::mock_app();
+        let directory = tempfile::tempdir().unwrap();
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
+            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
+        );
+        let result = manager
+            .start_game(
+                "capacity".into(),
+                human_config(),
+                app.handle().clone(),
+                authority,
+                Arc::new(EngineSupervisor::default()),
+            )
+            .await;
+        if result.is_ok() {
+            manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
+        }
+        assert!(
+            matches!(result, Err(Error::ResourceLimit(_))),
+            "unobserved session capacity is reserved before launch"
+        );
+        assert_eq!(
+            manager.next_session.load(Ordering::SeqCst),
+            0,
+            "overflow must refuse before allocating a session"
+        );
+        drop(slot);
+        assert_eq!(manager.failure_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_shutdown_visits_failed_session_once() {
+        let manager = Arc::new(GameManager::new());
+        let (live, _) = test_live_session("retained-failed-shutdown", 1);
+        live.cleanup
+            .record(Err(Error::EngineTimeout("unconfirmed reap".into())));
+        publish_test_session(&manager, "retained-failed-shutdown", live.clone()).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.shutdown_all(Duration::from_millis(10)),
+        )
+        .await
+        .expect("failed sessions cannot make shutdown rescan forever");
+        assert!(result.is_err());
+        assert!(manager.games.is_empty());
+        assert!(live.cleanup.outcome().is_err());
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_game_panic_marker_stays_native() {
+        const MARKER: &str = "/private/retained-game-panic-marker";
+        let (live, _) = test_live_session("retained-game-panic", 1);
+        *live.join.lock().unwrap() = Some(tokio::spawn(async { panic!("{MARKER}") }));
+        let error = live
+            .finish_retired(Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        let direct = serde_json::to_string(&error).unwrap();
+        let composite =
+            serde_json::to_string(&Error::with_cleanup(Error::Cancellation, Err(error))).unwrap();
+        assert!(
+            !direct.contains(MARKER),
+            "game join payload cannot leak a panic path"
+        );
+        assert!(!composite.contains(MARKER));
+        assert!(
+            crate::error::TASK_JOIN_DIAGNOSTICS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains(MARKER)),
+            "native join diagnostics retain panic context"
+        );
+        let repeated = live
+            .finish_retired(Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(repeated.category(), crate::error::ErrorCategory::Conflict);
+        assert!(!serde_json::to_string(&repeated).unwrap().contains(MARKER));
     }
 
     #[tokio::test]
@@ -6289,6 +6594,7 @@ done
                 session: 1,
                 controller,
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(Some(initial_join)),
                 engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
@@ -6323,6 +6629,7 @@ done
                 session: 2,
                 controller,
                 shutdown: slipped_shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(Some(slipped_join)),
                 engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
@@ -6351,6 +6658,7 @@ done
                 session: 1,
                 controller,
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(Some(join)),
                 engine_supervisor: supervisor.clone(),
             }),
@@ -6396,6 +6704,7 @@ done
                 session: 1,
                 controller,
                 shutdown,
+                cleanup: SessionCleanup::default(),
                 join: std::sync::Mutex::new(Some(join)),
                 engine_supervisor: supervisor.clone(),
             }),

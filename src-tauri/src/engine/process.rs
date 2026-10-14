@@ -20,7 +20,7 @@ use futures_util::{
 use log::error;
 use serde::Serialize;
 use specta::Type;
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -760,17 +760,86 @@ impl<R: AsyncBufRead + Unpin> ResumableLineReader<R> {
 }
 
 struct ChildUciIo {
-    control: Option<ProcessChildControl>,
+    cleanup: Arc<ChildOwner>,
     line_reader: ResumableLineReader<BufReader<ChildStdout>>,
-    // Keep the validated descriptor open for the complete child lifetime.
-    // Linux executes `/proc/self/fd/N`, so dropping it would invalidate the
-    // sealed command target after process creation.
-    _executable: EngineExecutable,
     observed_exit: Arc<OnceLock<EngineExitStatus>>,
 }
 
+const MAX_OWNED_CHILDREN: usize = 4096;
+
+/// Cleanup authority survives protocol task exit. A lease moves the handle out
+/// of the mutex and restores it on cancellation, without locking across IO.
+#[derive(Default)]
+struct ChildOwner {
+    state: StdMutex<ChildOwnership>,
+}
+
+#[derive(Default)]
+struct ChildOwnership {
+    control: Option<Box<dyn ChildControl>>,
+    // Keep the validated executable and resource descriptors until confirmed
+    // reaping. Linux executes the sealed target through `/proc/self/fd/N`.
+    executable: Option<EngineExecutable>,
+    slot: Option<OwnedSemaphorePermit>,
+    leased: bool,
+}
+
+struct ChildLease<'a> {
+    owner: &'a ChildOwner,
+    control: Option<Box<dyn ChildControl>>,
+    reaped: bool,
+}
+
+impl Drop for ChildLease<'_> {
+    fn drop(&mut self) {
+        let mut state = self.owner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.leased = false;
+        if self.reaped {
+            state.executable.take();
+            state.slot.take();
+        } else {
+            state.control = self.control.take();
+        }
+    }
+}
+
+impl ChildOwner {
+    fn lease(&self) -> Result<ChildLease<'_>, Error> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.leased {
+            return Err(Error::Conflict("engine cleanup is in progress".into()));
+        }
+        state.leased = true;
+        Ok(ChildLease {
+            owner: self,
+            control: state.control.take(),
+            reaped: false,
+        })
+    }
+
+    fn unresolved(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.leased || state.control.is_some()
+    }
+
+    async fn terminate(&self, quit: Duration, reap: Duration, graceful: bool) -> Result<(), Error> {
+        let mut lease = self.lease()?;
+        let result = match lease.control.as_mut() {
+            Some(control) if graceful => terminate_child(control.as_mut(), quit, reap).await,
+            Some(control) => map_force_kill_and_reap(
+                &Error::EngineDisconnected,
+                force_kill_and_reap(control.as_mut(), reap).await,
+                ReapTimeoutPolicy::EngineTimeout,
+            ),
+            None => Ok(()),
+        };
+        lease.reaped = result.is_ok();
+        result
+    }
+}
+
 struct ProcessChildControl {
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     child: Child,
     observed_exit: Arc<OnceLock<EngineExitStatus>>,
     kill_started: bool,
@@ -784,15 +853,24 @@ struct ProcessChildControl {
 trait ChildCleanup: Send {
     fn start_kill(&mut self) -> Result<(), Error>;
     async fn wait(&mut self) -> Result<(), Error>;
+    #[cfg(all(test, unix))]
+    fn clear_failure(&mut self) {}
 }
 
 #[async_trait]
 trait ChildControl: ChildCleanup {
     async fn write_quit(&mut self) -> Result<(), Error>;
+    async fn write_line(&mut self, _line: &str) -> Result<(), Error> {
+        Err(Error::EngineDisconnected)
+    }
 }
 
 #[async_trait]
 impl ChildCleanup for ProcessChildControl {
+    #[cfg(all(test, unix))]
+    fn clear_failure(&mut self) {
+        self.terminate_failure = None;
+    }
     fn start_kill(&mut self) -> Result<(), Error> {
         self.kill_started = true;
         #[cfg(all(test, unix))]
@@ -807,6 +885,11 @@ impl ChildCleanup for ProcessChildControl {
     }
 
     async fn wait(&mut self) -> Result<(), Error> {
+        #[cfg(all(test, unix))]
+        if self.terminate_failure == Some(TerminateFailure::ReapError) {
+            self.child.wait().await?;
+            return Err(Error::Conflict("injected engine reap failure".into()));
+        }
         #[cfg(all(test, unix))]
         if self.terminate_failure == Some(TerminateFailure::ReapTimeout) {
             std::future::pending::<()>().await;
@@ -851,42 +934,18 @@ impl ChildControl for ProcessChildControl {
         if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
             return Err(Error::Conflict("injected engine quit failure".into()));
         }
-        self.stdin.write_all(b"quit\n").await?;
-        self.stdin.flush().await?;
+        let stdin = self.stdin.as_mut().ok_or(Error::NoStdin)?;
+        stdin.write_all(b"quit\n").await?;
+        stdin.flush().await?;
         Ok(())
     }
-}
 
-struct SpawnChildCleanup<'a> {
-    child: &'a mut Child,
-    #[cfg(all(test, unix))]
-    terminate_failure: Option<TerminateFailure>,
-}
-
-#[async_trait]
-impl ChildCleanup for SpawnChildCleanup<'_> {
-    fn start_kill(&mut self) -> Result<(), Error> {
-        #[cfg(all(test, unix))]
-        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
-            return match self.child.start_kill() {
-                Ok(()) => Err(std::io::Error::other("injected engine kill failure").into()),
-                Err(error) => Err(error.into()),
-            };
-        }
-        self.child.start_kill().map_err(Into::into)
-    }
-
-    async fn wait(&mut self) -> Result<(), Error> {
-        #[cfg(all(test, unix))]
-        if self.terminate_failure == Some(TerminateFailure::ReapTimeout) {
-            std::future::pending::<()>().await;
-        }
-        #[cfg(all(test, unix))]
-        if self.terminate_failure == Some(TerminateFailure::ReapError) {
-            self.child.wait().await?;
-            return Err(Error::Conflict("injected engine reap failure".into()));
-        }
-        self.child.wait().await.map(|_| ()).map_err(Into::into)
+    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        let stdin = self.stdin.as_mut().ok_or(Error::NoStdin)?;
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
+        Ok(())
     }
 }
 
@@ -904,6 +963,7 @@ enum ForceKillAndReap {
 
 enum ReapTimeoutPolicy {
     EngineTimeout,
+    #[cfg(test)]
     OperationAndCleanup,
 }
 
@@ -949,6 +1009,7 @@ fn map_force_kill_and_reap(
             ReapTimeoutPolicy::EngineTimeout => Err(Error::EngineTimeout(format!(
                 "waiting for engine reap after force-kill exceeded {timeout:?}"
             ))),
+            #[cfg(test)]
             ReapTimeoutPolicy::OperationAndCleanup => Err(Error::OperationAndCleanup {
                 primary: primary.diagnostic(),
                 cleanup: format!("final reap exceeded {timeout:?}"),
@@ -957,7 +1018,7 @@ fn map_force_kill_and_reap(
     }
 }
 
-async fn force_kill_and_reap<C: ChildCleanup>(
+async fn force_kill_and_reap<C: ChildCleanup + ?Sized>(
     child: &mut C,
     kill_reap_timeout: Duration,
 ) -> ForceKillAndReap {
@@ -981,8 +1042,8 @@ async fn force_kill_and_reap<C: ChildCleanup>(
     }
 }
 
-async fn terminate_child<C: ChildControl>(
-    mut child: C,
+async fn terminate_child<C: ChildControl + ?Sized>(
+    child: &mut C,
     quit_timeout: Duration,
     kill_reap_timeout: Duration,
 ) -> Result<(), Error> {
@@ -1007,7 +1068,7 @@ async fn terminate_child<C: ChildControl>(
     };
     match map_force_kill_and_reap(
         &primary,
-        force_kill_and_reap(&mut child, kill_reap_timeout).await,
+        force_kill_and_reap(child, kill_reap_timeout).await,
         ReapTimeoutPolicy::EngineTimeout,
     ) {
         Ok(()) => {
@@ -1015,26 +1076,6 @@ async fn terminate_child<C: ChildControl>(
             Ok(())
         }
         Err(error) => Err(error),
-    }
-}
-
-async fn cleanup_spawn_io_failure(
-    child: &mut Child,
-    primary: Error,
-    kill_reap_timeout: Duration,
-) -> Error {
-    let mut cleanup = SpawnChildCleanup {
-        child,
-        #[cfg(all(test, unix))]
-        terminate_failure: take_terminate_failure(),
-    };
-    match map_force_kill_and_reap(
-        &primary,
-        force_kill_and_reap(&mut cleanup, kill_reap_timeout).await,
-        ReapTimeoutPolicy::OperationAndCleanup,
-    ) {
-        Ok(()) => primary,
-        Err(error) => error,
     }
 }
 
@@ -1182,11 +1223,13 @@ impl UciIo for ChildUciIo {
         self.observed_exit.get().copied()
     }
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        let control = self.control.as_mut().ok_or(Error::EngineDisconnected)?;
-        control.stdin.write_all(line.as_bytes()).await?;
-        control.stdin.write_all(b"\n").await?;
-        control.stdin.flush().await?;
-        Ok(())
+        let mut lease = self.cleanup.lease()?;
+        lease
+            .control
+            .as_mut()
+            .ok_or(Error::EngineDisconnected)?
+            .write_line(line)
+            .await
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
@@ -1209,8 +1252,9 @@ impl UciIo for ChildUciIo {
         quit_timeout: Duration,
         kill_reap_timeout: Duration,
     ) -> Result<(), Error> {
-        let control = self.control.take().ok_or(Error::EngineDisconnected)?;
-        terminate_child(control, quit_timeout, kill_reap_timeout).await
+        self.cleanup
+            .terminate(quit_timeout, kill_reap_timeout, true)
+            .await
     }
 }
 
@@ -1221,6 +1265,7 @@ impl UciIo for ChildUciIo {
 /// from being attributed to a replacement search.
 struct EngineRuntime {
     io: Box<dyn UciIo>,
+    cleanup: Option<Arc<ChildOwner>>,
     state: EngineState,
     next_request: u64,
     /// Set when a search starts and cleared only by a `readyok` read while
@@ -1247,6 +1292,7 @@ type ActorJoin = Shared<BoxFuture<'static, Result<(), Arc<Error>>>>;
 /// configuration reads select against the termination interrupt via `exchange_io`.
 #[derive(Clone)]
 pub struct EngineActor {
+    cleanup: Option<Arc<ChildOwner>>,
     tx: mpsc::Sender<EngineCommand>,
     control_tx: mpsc::Sender<EngineCommand>,
     // The task owns the runtime (and therefore the child process handles).
@@ -1520,6 +1566,9 @@ fn is_game_engine_key(key: &EngineKey) -> bool {
 /// by an application engine id. `retire_executables` tombstones PathRefs and
 /// terminates matching actors without retiring the application id.
 pub struct EngineSupervisor {
+    #[cfg(test)]
+    spawn_attempts: std::sync::atomic::AtomicUsize,
+    child_slots: Arc<Semaphore>,
     next_generation: AtomicU64,
     sealed: AtomicBool,
     actors: DashMap<EngineKey, SupervisedEngine>,
@@ -1542,6 +1591,9 @@ pub struct EngineSupervisor {
 impl Default for EngineSupervisor {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            spawn_attempts: std::sync::atomic::AtomicUsize::new(0),
+            child_slots: Arc::new(Semaphore::new(MAX_OWNED_CHILDREN)),
             next_generation: AtomicU64::default(),
             sealed: AtomicBool::default(),
             actors: DashMap::default(),
@@ -1949,7 +2001,11 @@ impl EngineSupervisor {
         pending: Arc<PendingActor>,
         mut admission: AdmissionLease,
     ) -> Result<SupervisedEngine, Error> {
-        let actor = pending.actor.clone();
+        let actor = pending
+            .actor
+            .get()
+            .cloned()
+            .ok_or(Error::EngineDisconnected)?;
         let _ = actor
             .registration_identity
             .set((key.clone(), admission.generation()));
@@ -1979,7 +2035,10 @@ impl EngineSupervisor {
                 .and_then(|previous| self.handoff_published_locked(&key, previous.generation))
         };
         if let Some(previous) = previous {
-            let stop = previous.actor.stop_current().await;
+            let stop = match previous.actor.get() {
+                Some(actor) => actor.stop_current().await,
+                None => Ok(()),
+            };
             let terminate = previous.terminate(self.pending_actors.clone()).await;
             if let Err(primary) = combine_shutdown_results(stop, terminate) {
                 return Err(reject_actor(&pending, self.pending_actors.clone(), primary).await);
@@ -2116,8 +2175,7 @@ impl EngineSupervisor {
                 &admission,
             )
             .await?;
-            let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
-            let pending = self.track_pending_actor(key.clone(), actor, &admission);
+            let pending = self.spawn_pending(&key, executable, &admission).await?;
             let mut guard = PendingActorGuard::new(pending.clone(), self.pending_actors.clone());
             let published = self
                 .publish_admitted_locked(key.clone(), pending, admission)
@@ -2196,7 +2254,7 @@ impl EngineSupervisor {
                     self.pending_actors
                         .get(&generation)
                         .filter(|entry| &entry.key == key)
-                        .map(|entry| entry.actor.clone())
+                        .and_then(|entry| entry.actor.get().cloned())
                 })
                 .or(observed);
             if let Some(actor) = &targeted {
@@ -2214,9 +2272,13 @@ impl EngineSupervisor {
         };
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
+        let tracked = self.pending_actors.contains_key(&generation)
+            || self
+                .get_exact(key)
+                .is_some_and(|entry| entry.generation == generation);
         let result = self.reap_published(key, generation).await;
         match (result, observed) {
-            (Ok(()), Some(actor)) => actor.final_termination_outcome().await,
+            (Ok(()), Some(actor)) if !tracked => actor.final_termination_outcome().await,
             (result, _) => result,
         }
     }
@@ -2606,6 +2668,7 @@ impl EngineSupervisor {
         matches: impl Fn(&EngineKey, &str, &PathRef) -> bool,
     ) -> Result<(), Error> {
         let mut failures = Vec::new();
+        let mut visited = HashSet::new();
         loop {
             // Publication moves between the two sets under this same barrier.
             let (targets, pending) = {
@@ -2617,6 +2680,7 @@ impl EngineSupervisor {
                     .actors
                     .iter()
                     .filter(|entry| matches(entry.key(), &entry.engine_id, &entry.executable))
+                    .filter(|entry| !visited.contains(&entry.generation))
                     .map(|entry| {
                         (
                             entry.key().clone(),
@@ -2629,6 +2693,7 @@ impl EngineSupervisor {
                     .pending_actors
                     .iter()
                     .filter(|entry| matches(&entry.key, &entry.engine_id, &entry.executable))
+                    .filter(|entry| !visited.contains(&entry.generation))
                     .map(|entry| entry.value().clone())
                     .collect();
                 (targets, pending)
@@ -2636,6 +2701,8 @@ impl EngineSupervisor {
             if targets.is_empty() && pending.is_empty() {
                 break;
             }
+            visited.extend(targets.iter().map(|(_, generation, _)| *generation));
+            visited.extend(pending.iter().map(|entry| entry.generation));
             #[cfg(test)]
             for (key, generation, _) in &targets {
                 if let Some(gate) = DRAIN_SNAPSHOT_GATES.take(&(key.clone(), *generation)) {
@@ -2684,6 +2751,7 @@ impl EngineSupervisor {
             .collect()
     }
 
+    #[cfg(test)]
     fn track_pending_actor(
         &self,
         key: EngineKey,
@@ -2705,6 +2773,68 @@ impl EngineSupervisor {
         ));
         self.pending_actors.insert(generation, pending.clone());
         pending
+    }
+
+    async fn spawn_pending(
+        &self,
+        key: &EngineKey,
+        executable: EngineExecutable,
+        admission: &AdmissionLease,
+    ) -> Result<Arc<PendingActor>, Error> {
+        if let Some(error) = admission.cancel_error() {
+            return Err(error);
+        }
+        let slot =
+            self.child_slots.clone().try_acquire_owned().map_err(|_| {
+                Error::ResourceLimit("engine child ownership capacity reached".into())
+            })?;
+        let cleanup = Arc::new(ChildOwner::default());
+        cleanup.state.lock().unwrap_or_else(|e| e.into_inner()).slot = Some(slot);
+        let pending = Arc::new(PendingActor {
+            actor: OnceLock::new(),
+            cleanup: Some(cleanup.clone()),
+            spawning: AtomicBool::new(true),
+            ready: Notify::new(),
+            key: key.clone(),
+            generation: admission.generation(),
+            engine_id: admission.admission.engine_id.clone(),
+            executable: admission.admission.executable.clone(),
+            termination: StdMutex::default(),
+        });
+        {
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(error) = admission.cancel_error() {
+                return Err(error);
+            }
+            self.pending_actors
+                .insert(pending.generation, pending.clone());
+        }
+        let mut guard = PendingActorGuard::new(pending.clone(), self.pending_actors.clone());
+        #[cfg(test)]
+        self.spawn_attempts.fetch_add(1, Ordering::SeqCst);
+        let spawned =
+            EngineActor::spawn_owned(executable, EngineDeadlines::default(), cleanup).await;
+        match spawned {
+            Ok(actor) => {
+                let actor = Arc::new(actor);
+                let _ = actor
+                    .registration_identity
+                    .set((key.clone(), pending.generation));
+                let _ = pending.actor.set(actor);
+                pending.finish_spawn();
+                guard.disarm();
+                Ok(pending)
+            }
+            Err(primary) => {
+                pending.finish_spawn();
+                let result = reject_actor(&pending, self.pending_actors.clone(), primary).await;
+                guard.disarm();
+                Err(result)
+            }
+        }
     }
 }
 
@@ -2731,19 +2861,21 @@ pub(crate) struct RegistrationGuard {
 }
 
 struct PendingActor {
-    actor: Arc<EngineActor>,
+    actor: OnceLock<Arc<EngineActor>>,
+    cleanup: Option<Arc<ChildOwner>>,
+    spawning: AtomicBool,
+    ready: Notify,
     key: EngineKey,
     generation: u64,
     engine_id: String,
     executable: PathRef,
-    termination: StdMutex<PendingTermination>,
-    completed: Notify,
+    termination: StdMutex<Option<Arc<PendingTermination>>>,
 }
 
 #[derive(Default)]
 struct PendingTermination {
-    started: bool,
-    result: Option<Result<(), Arc<Error>>>,
+    result: OnceLock<Result<(), Arc<Error>>>,
+    completed: Notify,
 }
 
 impl PendingActor {
@@ -2755,57 +2887,107 @@ impl PendingActor {
         executable: PathRef,
     ) -> Self {
         Self {
-            actor,
+            cleanup: actor.cleanup.clone(),
+            actor: OnceLock::from(actor),
+            spawning: AtomicBool::new(false),
+            ready: Notify::new(),
             key,
             generation,
             engine_id,
             executable,
             termination: StdMutex::default(),
-            completed: Notify::new(),
         }
     }
 
-    fn start_termination(self: &Arc<Self>, entries: Arc<DashMap<u64, Arc<Self>>>) {
+    fn finish_spawn(&self) {
+        self.spawning.store(false, Ordering::SeqCst);
+        self.ready.notify_waiters();
+    }
+
+    async fn await_spawn(&self) {
+        loop {
+            let ready = self.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            if !self.spawning.load(Ordering::SeqCst) {
+                return;
+            }
+            ready.await;
+        }
+    }
+
+    fn start_termination(
+        self: &Arc<Self>,
+        entries: Arc<DashMap<u64, Arc<Self>>>,
+    ) -> Arc<PendingTermination> {
         let mut termination = self
             .termination
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if termination.started {
-            return;
+        if let Some(attempt) = termination.as_ref() {
+            if attempt.result.get().is_none()
+                || !self
+                    .cleanup
+                    .as_ref()
+                    .is_some_and(|owner| owner.unresolved())
+            {
+                return attempt.clone();
+            }
         }
-        termination.started = true;
+        let retry = termination.is_some();
+        let attempt = Arc::new(PendingTermination::default());
+        *termination = Some(attempt.clone());
         let entry = self.clone();
+        let running = attempt.clone();
         tokio::spawn(async move {
-            let result = entry.actor.terminate().await.map_err(Arc::new);
+            entry.await_spawn().await;
+            let result = if retry || entry.actor.get().is_none() {
+                let cleanup = match &entry.cleanup {
+                    Some(owner) => {
+                        owner
+                            .terminate(Duration::ZERO, EngineDeadlines::default().kill_reap, false)
+                            .await
+                    }
+                    None => Ok(()),
+                };
+                let joined = match entry.actor.get() {
+                    Some(actor) => actor.reap_task().await,
+                    None => Ok(()),
+                };
+                combine_shutdown_results(cleanup, joined)
+            } else {
+                match entry.actor.get() {
+                    Some(actor) => actor.terminate().await,
+                    None => Err(Error::EngineDisconnected),
+                }
+            }
+            .map_err(Arc::new);
             if let Err(error) = &result {
                 log_pending_actor_termination_error(&entry.key, entry.generation, error);
             }
-            let mut termination = entry
-                .termination
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            termination.result = Some(result);
-            entries.remove(&entry.generation);
-            drop(termination);
-            entry.completed.notify_waiters();
+            let _ = running.result.set(result);
+            if !entry
+                .cleanup
+                .as_ref()
+                .is_some_and(|owner| owner.unresolved())
+            {
+                entries.remove(&entry.generation);
+            }
+            running.completed.notify_waiters();
         });
+        attempt
     }
 
     async fn terminate(
         self: &Arc<Self>,
         entries: Arc<DashMap<u64, Arc<Self>>>,
     ) -> Result<(), Error> {
-        self.start_termination(entries);
+        let attempt = self.start_termination(entries);
         loop {
-            let completed = self.completed.notified();
+            let completed = attempt.completed.notified();
             tokio::pin!(completed);
             completed.as_mut().enable();
-            let result = self
-                .termination
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .result
-                .clone();
+            let result = attempt.result.get().cloned();
             if let Some(result) = result {
                 return result.map_err(Error::Shared);
             }
@@ -2837,6 +3019,7 @@ impl Drop for PendingActorGuard {
         let Some(entry) = self.entry.take() else {
             return;
         };
+        entry.finish_spawn();
         entry.start_termination(self.entries.clone());
     }
 }
@@ -2856,10 +3039,11 @@ static SHUTDOWN_FAILURE_LOGS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
 
 fn log_pending_actor_termination_error(key: &EngineKey, generation: u64, error: &Error) {
     let message = format!(
-        "engine actor termination failed for {}:{} generation={generation} category={}",
+        "engine actor termination failed for {}:{} generation={generation} category={} diagnostic={}",
         key.tab,
         key.engine,
-        error.category()
+        error.category(),
+        error.diagnostic()
     );
     #[cfg(test)]
     match PENDING_ACTOR_CLEANUP_ERRORS.lock() {
@@ -3231,8 +3415,10 @@ where
     if let Some(error) = admission.cancel_error() {
         return Err(error);
     }
-    let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
-    initialize_admitted_actor(supervisor, key, actor, admission, initialize).await
+    let pending = supervisor
+        .spawn_pending(&key, executable, &admission)
+        .await?;
+    initialize_pending_actor(supervisor, key, pending, admission, initialize).await
 }
 
 #[cfg(test)]
@@ -3254,6 +3440,7 @@ where
     initialize_admitted_actor(supervisor, key, actor, admission, initialize).await
 }
 
+#[cfg(test)]
 async fn initialize_admitted_actor<T, F, Fut>(
     supervisor: Arc<EngineSupervisor>,
     key: EngineKey,
@@ -3265,8 +3452,27 @@ where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
-    let operation_cancellation = admission.operation_cancellation();
     let pending = supervisor.track_pending_actor(key.clone(), actor.clone(), &admission);
+    initialize_pending_actor(supervisor, key, pending, admission, initialize).await
+}
+
+async fn initialize_pending_actor<T, F, Fut>(
+    supervisor: Arc<EngineSupervisor>,
+    key: EngineKey,
+    pending: Arc<PendingActor>,
+    admission: AdmissionLease,
+    initialize: F,
+) -> Result<(SupervisedEngine, RegistrationGuard, T), Error>
+where
+    F: FnOnce(Arc<EngineActor>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    let operation_cancellation = admission.operation_cancellation();
+    let actor = pending
+        .actor
+        .get()
+        .cloned()
+        .ok_or(Error::EngineDisconnected)?;
     let mut actor_guard =
         PendingActorGuard::new(pending.clone(), supervisor.pending_actors.clone());
     let published = supervisor
@@ -3335,6 +3541,7 @@ impl EngineRuntime {
     pub fn new(io: Box<dyn UciIo>, deadlines: EngineDeadlines) -> Self {
         Self {
             io,
+            cleanup: None,
             state: EngineState::Idle,
             next_request: 0,
             search_output_unsynchronized: false,
@@ -3348,9 +3555,27 @@ impl EngineRuntime {
         }
     }
 
+    #[cfg(all(test, unix))]
     pub async fn spawn(
         executable: EngineExecutable,
         deadlines: EngineDeadlines,
+    ) -> Result<Self, Error> {
+        let cleanup = Arc::new(ChildOwner::default());
+        match Self::spawn_owned(executable, deadlines.clone(), cleanup.clone()).await {
+            Ok(runtime) => Ok(runtime),
+            Err(primary) => Err(Error::with_cleanup(
+                primary,
+                cleanup
+                    .terminate(Duration::ZERO, deadlines.kill_reap, false)
+                    .await,
+            )),
+        }
+    }
+
+    async fn spawn_owned(
+        executable: EngineExecutable,
+        deadlines: EngineDeadlines,
+        cleanup: Arc<ChildOwner>,
     ) -> Result<Self, Error> {
         let command_target = executable.command_target();
         #[cfg(all(test, unix))]
@@ -3408,17 +3633,6 @@ impl EngineRuntime {
         };
         #[cfg(any(not(test), all(test, not(unix))))]
         let stdin = child.stdin.take();
-        let stdin = match stdin {
-            Some(stdin) => stdin,
-            None => {
-                return Err(cleanup_spawn_io_failure(
-                    &mut child,
-                    Error::NoStdin,
-                    deadlines.kill_reap,
-                )
-                .await)
-            }
-        };
         #[cfg(all(test, unix))]
         let stdout = if forced_io_failure == Some(SpawnIoFailure::NoStdout) {
             None
@@ -3427,20 +3641,29 @@ impl EngineRuntime {
         };
         #[cfg(any(not(test), all(test, not(unix))))]
         let stdout = child.stdout.take();
-        let stdout = match stdout {
-            Some(stdout) => stdout,
-            None => {
-                return Err(cleanup_spawn_io_failure(
-                    &mut child,
-                    Error::NoStdout,
-                    deadlines.kill_reap,
-                )
-                .await)
-            }
-        };
         let diagnostics = Arc::new(Mutex::new(TerminalDiagnostics::default()));
         let observed_exit = Arc::new(OnceLock::new());
-        let stderr_drain_task = child.stderr.take().map(|stderr| {
+        let missing_stdin = stdin.is_none();
+        let stderr = child.stderr.take();
+        {
+            let mut state = cleanup.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.control = Some(Box::new(ProcessChildControl {
+                stdin,
+                child,
+                observed_exit: observed_exit.clone(),
+                kill_started: false,
+                #[cfg(all(test, unix))]
+                terminate_failure: take_terminate_failure(),
+                #[cfg(all(test, unix))]
+                force_kill_started: false,
+            }));
+            state.executable = Some(executable);
+        }
+        if missing_stdin {
+            return Err(Error::NoStdin);
+        }
+        let stdout = stdout.ok_or(Error::NoStdout)?;
+        let stderr_drain_task = stderr.map(|stderr| {
             let diagnostics = diagnostics.clone();
             tokio::spawn(async move {
                 let mut reader = ResumableLineReader::new(BufReader::new(stderr));
@@ -3449,23 +3672,14 @@ impl EngineRuntime {
         });
         let mut runtime = Self::new(
             Box::new(ChildUciIo {
-                control: Some(ProcessChildControl {
-                    stdin,
-                    child,
-                    observed_exit: observed_exit.clone(),
-                    kill_started: false,
-                    #[cfg(all(test, unix))]
-                    terminate_failure: take_terminate_failure(),
-                    #[cfg(all(test, unix))]
-                    force_kill_started: false,
-                }),
+                cleanup: cleanup.clone(),
                 line_reader: ResumableLineReader::new(BufReader::new(stdout)),
-                _executable: executable,
                 observed_exit,
             }),
             deadlines,
         );
         runtime.stderr_drain_task = stderr_drain_task;
+        runtime.cleanup = Some(cleanup);
         runtime.diagnostics = diagnostics;
         Ok(runtime)
     }
@@ -3878,6 +4092,31 @@ impl UciIo for GameCleanupTestIo {
 }
 
 impl EngineActor {
+    #[cfg(test)]
+    pub(crate) fn recoverable_cleanup_test_actor() -> Arc<Self> {
+        let mut actor = Self::new(
+            Box::new(GameCleanupTestIo {
+                started: Arc::default(),
+                delay: None,
+                error: Some("production-loop-reap-failure".into()),
+            }),
+            EngineDeadlines::default(),
+        );
+        let (child, _, _) = tests::child_control([tests::FakeWait::Ready]);
+        let cleanup = Arc::new(ChildOwner::default());
+        cleanup.state.lock().unwrap().control = Some(Box::new(child));
+        actor.cleanup = Some(cleanup);
+        Arc::new(actor)
+    }
+
+    #[cfg(all(test, unix))]
+    fn clear_cleanup_test_failure(&self) {
+        if let Some(cleanup) = &self.cleanup {
+            if let Some(control) = cleanup.state.lock().unwrap().control.as_mut() {
+                control.clear_failure();
+            }
+        }
+    }
     #[cfg(all(test, unix))]
     pub(crate) fn set_test_option_before_send_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
         set_option_before_send_hook(hook);
@@ -4024,6 +4263,7 @@ impl EngineActor {
         resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
     ) -> Self {
         let resource_verify = runtime.deadlines.resource_verify;
+        let cleanup = runtime.cleanup.clone();
         let (tx, rx) = mpsc::channel(32);
         // Lifecycle and observability controls never sit behind bulk analysis
         // work. A flooded normal queue therefore cannot delay stop, kill or
@@ -4042,6 +4282,7 @@ impl EngineActor {
             registration_identity.clone(),
         ));
         Self {
+            cleanup,
             tx,
             control_tx,
             task: Arc::new(Mutex::new(Some(task))),
@@ -4055,6 +4296,7 @@ impl EngineActor {
         }
     }
 
+    #[cfg(all(test, unix))]
     pub async fn spawn(
         executable: EngineExecutable,
         deadlines: EngineDeadlines,
@@ -4066,6 +4308,23 @@ impl EngineActor {
         let resources = Arc::from(executable.resource_leases().to_vec());
         Ok(Self::from_runtime_with_resources(
             EngineRuntime::spawn(executable, deadlines).await?,
+            resources,
+        ))
+    }
+
+    async fn spawn_owned(
+        executable: EngineExecutable,
+        deadlines: EngineDeadlines,
+        cleanup: Arc<ChildOwner>,
+    ) -> Result<Self, Error> {
+        #[cfg(test)]
+        if let Some(mut actor) = SPAWN_ACTOR_OVERRIDE.with(|slot| slot.borrow_mut().take()) {
+            actor.cleanup = Some(cleanup);
+            return Ok(actor);
+        }
+        let resources = Arc::from(executable.resource_leases().to_vec());
+        Ok(Self::from_runtime_with_resources(
+            EngineRuntime::spawn_owned(executable, deadlines, cleanup).await?,
             resources,
         ))
     }
@@ -4332,12 +4591,21 @@ impl EngineActor {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if joined.is_none() {
                 if let Some(task) = task.take() {
+                    let owner = self
+                        .registration_identity
+                        .get()
+                        .map(|(key, generation)| {
+                            format!("{}:{} generation={generation}", key.tab, key.engine)
+                        })
+                        .unwrap_or_else(|| "unregistered actor".into());
                     *joined = Some(
                         async move {
                             task.await.map_err(|error| {
-                                Arc::new(Error::Conflict(format!(
-                                    "engine actor task failed: {error}"
-                                )))
+                                Arc::new(Error::task_join(
+                                    "engine actor task failed",
+                                    &error,
+                                    &owner,
+                                ))
                             })
                         }
                         .boxed()
@@ -5709,7 +5977,7 @@ mod tests {
         let stdout = child.stdout.take().unwrap();
         let observed_exit = Arc::new(OnceLock::new());
         let mut control = ProcessChildControl {
-            stdin,
+            stdin: Some(stdin),
             child,
             observed_exit: observed_exit.clone(),
             kill_started: false,
@@ -5722,11 +5990,16 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let cleanup = Arc::new(ChildOwner::default());
+        {
+            let mut state = cleanup.state.lock().unwrap();
+            state.control = Some(Box::new(control));
+            state.executable = Some(executable);
+        }
         let actor = EngineActor::new(
             Box::new(ChildUciIo {
-                control: Some(control),
+                cleanup,
                 line_reader: ResumableLineReader::new(BufReader::new(stdout)),
-                _executable: executable,
                 observed_exit,
             }),
             EngineDeadlines::default(),
@@ -6505,12 +6778,12 @@ mod tests {
             .expect("the command write must have completed")
     }
 
-    enum FakeWait {
+    pub(super) enum FakeWait {
         Ready,
         Pending,
     }
 
-    struct FakeChildControl {
+    pub(super) struct FakeChildControl {
         waits: VecDeque<FakeWait>,
         quit_pending: bool,
         kill_error: bool,
@@ -6554,7 +6827,7 @@ mod tests {
         }
     }
 
-    fn child_control(
+    pub(super) fn child_control(
         waits: impl IntoIterator<Item = FakeWait>,
     ) -> (FakeChildControl, Arc<AtomicUsize>, Arc<AtomicBool>) {
         let kill_calls = Arc::new(AtomicUsize::new(0));
@@ -6574,38 +6847,504 @@ mod tests {
 
     #[tokio::test]
     async fn terminate_child_skips_force_kill_when_graceful_wait_succeeds() {
-        let (child, kill_calls, dropped) = child_control([FakeWait::Ready]);
-        terminate_child(child, Duration::from_millis(5), Duration::from_millis(5))
+        let (mut child, kill_calls, dropped) = child_control([FakeWait::Ready]);
+        terminate_child(
+            &mut child,
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(kill_calls.load(AtomicOrdering::SeqCst), 0);
+        assert!(!dropped.load(AtomicOrdering::SeqCst));
+        drop(child);
+        assert!(dropped.load(AtomicOrdering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_deterministic_owner_retries_original_child() {
+        let (child, calls, dropped) =
+            child_control([FakeWait::Pending, FakeWait::Pending, FakeWait::Ready]);
+        let slots = Arc::new(Semaphore::new(1));
+        let owner = ChildOwner::default();
+        {
+            let mut state = owner.state.lock().unwrap();
+            state.control = Some(Box::new(child));
+            state.slot = Some(slots.clone().try_acquire_owned().unwrap());
+        }
+        let first = owner
+            .terminate(Duration::from_millis(1), Duration::from_millis(1), true)
+            .await;
+        assert!(first.is_err(), "first bounded reap must fail");
+        assert!(owner.unresolved(), "unconfirmed child must remain owned");
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "original child handle must survive failure"
+        );
+        assert_eq!(
+            slots.available_permits(),
+            0,
+            "failed owner retains capacity"
+        );
+        owner
+            .terminate(Duration::ZERO, Duration::from_millis(1), false)
             .await
             .unwrap();
-        assert_eq!(kill_calls.load(AtomicOrdering::SeqCst), 0);
-        assert!(dropped.load(AtomicOrdering::SeqCst));
+        assert!(!owner.unresolved(), "confirmed reap releases ownership");
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(slots.available_permits(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_pre_spawn_abandonment_releases_reserved_slot() {
+        let slots = Arc::new(Semaphore::new(1));
+        let owner = ChildOwner::default();
+        owner.state.lock().unwrap().slot = Some(slots.clone().try_acquire_owned().unwrap());
+        assert_eq!(slots.available_permits(), 0);
+        owner
+            .terminate(Duration::ZERO, Duration::from_millis(1), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            slots.available_permits(),
+            1,
+            "pre-spawn terminal cleanup releases its reserved slot while the owner remains alive"
+        );
+        assert!(!owner.unresolved());
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_pending_attempts_survive_cancellation_and_recovery() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("retained-attempt".into(), "engine".into()).unwrap();
+        let expected = Arc::new(Error::RootFailure {
+            error: Box::new(Error::from(io::Error::other(
+                "/private/original-attempt-diagnostic",
+            ))),
+            reason: crate::error::RootFailure::Unusable,
+        });
+        let gate = TerminationReplyGate::new();
+        let mut io = FakeIo::new(Arc::default(), []);
+        io.termination_error = Some(expected.clone());
+        io.termination_gate = Some(gate.clone());
+        let calls = io.terminate_calls.clone();
+        let mut actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+        let owner = Arc::new(ChildOwner::default());
+        let (child, _, dropped) = child_control([FakeWait::Ready]);
+        owner.state.lock().unwrap().control = Some(Box::new(child));
+        actor.cleanup = Some(owner.clone());
+        let admission = supervisor
+            .admit(key.clone(), key.engine.clone(), path_ref("retained"), false)
+            .await
+            .unwrap();
+        let pending = supervisor.track_pending_actor(key.clone(), Arc::new(actor), &admission);
+        let first = pending.start_termination(supervisor.pending_actors.clone());
+        wait_for_pending_termination(&gate).await;
+        let attached = pending.start_termination(supervisor.pending_actors.clone());
+        assert!(
+            Arc::ptr_eq(&first, &attached),
+            "concurrent owners share one attempt"
+        );
+        let waiter = tokio::spawn({
+            let pending = pending.clone();
+            let entries = supervisor.pending_actors.clone();
+            async move { pending.terminate(entries).await }
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await;
+        gate.open();
+        pending_test_wait(async {
+            while first.result.get().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            supervisor.pending_actors.contains_key(&pending.generation),
+            "failed attempt stays discoverable"
+        );
+        let failure = first.result.get().unwrap().as_ref().unwrap_err().clone();
+        assert_same_termination_failure(&failure, &expected);
+        supervisor.terminate_tab(&key.tab).await.unwrap();
+        assert!(supervisor.pending_actors.is_empty());
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_same_termination_failure(
+            first.result.get().unwrap().as_ref().unwrap_err(),
+            &failure,
+        );
+        assert_same_termination_failure(
+            attached.result.get().unwrap().as_ref().unwrap_err(),
+            &failure,
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "retry must not rerun protocol actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_actor_join_panic_survives_recovered_reap() {
+        const MARKER: &str = "/private/retained-actor-panic-marker";
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("retained-panic".into(), "engine".into()).unwrap();
+        let actor = EngineActor::recoverable_cleanup_test_actor();
+        let old = actor.task.lock().await.take().unwrap();
+        old.abort();
+        let _ = old.await;
+        *actor.task.lock().await = Some(tokio::spawn(async { panic!("{MARKER}") }));
+        let admission = supervisor
+            .admit(key.clone(), key.engine.clone(), path_ref("panic"), false)
+            .await
+            .unwrap();
+        let pending = supervisor.track_pending_actor(key, actor, &admission);
+        let first = pending
+            .terminate(supervisor.pending_actors.clone())
+            .await
+            .unwrap_err();
+        assert!(!serde_json::to_string(&first).unwrap().contains(MARKER));
+        let retry = pending
+            .terminate(supervisor.pending_actors.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            retry.category(),
+            crate::error::ErrorCategory::Conflict,
+            "successful child retry cannot erase actor join failure"
+        );
+        assert!(!serde_json::to_string(&retry).unwrap().contains(MARKER));
+        assert!(crate::error::TASK_JOIN_DIAGNOSTICS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains(MARKER)));
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_repeated_failed_shutdown_is_bounded_and_generation_exact() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("retained-shutdown".into(), "engine".into()).unwrap();
+        let actor = EngineActor::recoverable_cleanup_test_actor();
+        let owner = actor.cleanup.as_ref().unwrap();
+        let (child, _, dropped) = child_control([FakeWait::Pending]);
+        owner.state.lock().unwrap().control = Some(Box::new(child));
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                path_ref("shared"),
+            )
+            .await
+            .unwrap();
+        assert!(supervisor
+            .terminate_exact(&key, current.generation)
+            .await
+            .is_err());
+        let newer = supervisor
+            .replace_handle(
+                key.clone(),
+                EngineActor::recording_test_actor(&[]).0,
+                key.engine.clone(),
+                path_ref("shared"),
+            )
+            .await
+            .unwrap();
+        assert_ne!(newer.generation, current.generation);
+        for _ in 0..2 {
+            let result = timeout(Duration::from_secs(3), supervisor.terminate_tab(&key.tab))
+                .await
+                .expect("one drain visits a failed generation only once");
+            assert!(
+                result.is_err(),
+                "unconfirmed reap cannot report successful shutdown"
+            );
+            assert!(supervisor.pending_actors.contains_key(&current.generation));
+            assert!(!dropped.load(Ordering::SeqCst));
+        }
+        assert!(supervisor.get_exact(&key).is_none());
+        owner.state.lock().unwrap().control = Some(Box::new(child_control([FakeWait::Ready]).0));
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    fn retained_child_executable(directory: &tempfile::TempDir) -> EngineExecutable {
+        use std::os::unix::fs::PermissionsExt;
+        let script = directory.path().join("retained-child.sh");
+        if !script.exists() {
+            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        EngineExecutable::test_fixture(
+            std::fs::File::open(script).unwrap(),
+            directory.path().to_owned(),
+            Vec::new(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_cleanup_real_child_capacity_and_retry_before_spawn() {
+        let supervisor = EngineSupervisor {
+            child_slots: Arc::new(Semaphore::new(1)),
+            ..EngineSupervisor::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let key = EngineKey::new("retained-real".into(), "same-engine".into()).unwrap();
+        let admission = supervisor
+            .admit(
+                key.clone(),
+                key.engine.clone(),
+                path_ref("same-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        set_terminate_failure(Some(TerminateFailure::QuitKillReap));
+        let pending = supervisor
+            .spawn_pending(&key, retained_child_executable(&directory), &admission)
+            .await
+            .unwrap();
+        let owner = pending.cleanup.as_ref().unwrap().clone();
+        let current = supervisor
+            .publish_admitted(key.clone(), pending.clone(), admission)
+            .await
+            .unwrap();
+        let original = owner
+            .state
+            .lock()
+            .unwrap()
+            .control
+            .as_ref()
+            .unwrap()
+            .as_ref() as *const dyn ChildControl;
+        let first = supervisor
+            .terminate_exact(&key, current.generation)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            first.category(),
+            crate::error::ErrorCategory::OperationAndCleanup
+        );
+        let retained = supervisor
+            .pending_actors
+            .get(&current.generation)
+            .unwrap()
+            .clone();
+        assert!(
+            Arc::ptr_eq(retained.cleanup.as_ref().unwrap(), &owner),
+            "published handoff retains the original cleanup authority and slot"
+        );
+        {
+            let state = owner.state.lock().unwrap();
+            assert!(
+                std::ptr::eq(state.control.as_ref().unwrap().as_ref(), original),
+                "original child authority is retained"
+            );
+            assert!(
+                state.executable.is_some(),
+                "executable leases survive failed reap"
+            );
+            assert!(state.slot.is_some(), "failed generation keeps its slot");
+        }
+        let other = EngineKey::new("retained-real-other".into(), "same-engine".into()).unwrap();
+        let admission2 = supervisor
+            .admit(
+                other.clone(),
+                other.engine.clone(),
+                path_ref("same-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        let executable = retained_child_executable(&directory);
+        let refused = supervisor
+            .spawn_pending(&other, executable, &admission2)
+            .await;
+        assert!(
+            matches!(refused, Err(Error::ResourceLimit(_))),
+            "capacity refusal precedes child creation"
+        );
+        assert!(
+            supervisor.spawn_attempts.load(Ordering::SeqCst) == 1,
+            "full ownership cannot cross production spawn boundary"
+        );
+        pending.actor.get().unwrap().clear_cleanup_test_failure();
+        supervisor
+            .terminate_exact(&key, pending.generation)
+            .await
+            .unwrap();
+        assert_eq!(supervisor.child_slots.available_permits(), 1);
+        assert!(supervisor.pending_actors.is_empty());
+        let executable = retained_child_executable(&directory);
+        let next = supervisor
+            .spawn_pending(&other, executable, &admission2)
+            .await
+            .unwrap();
+        next.terminate(supervisor.pending_actors.clone())
+            .await
+            .unwrap();
+        assert_eq!(supervisor.spawn_attempts.load(Ordering::SeqCst), 2);
+        let cancelled = supervisor
+            .admit(
+                key.clone(),
+                key.engine.clone(),
+                path_ref("same-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        supervisor.cancel_admission(&key, &cancelled.admission);
+        assert!(matches!(
+            supervisor
+                .spawn_pending(&key, retained_child_executable(&directory), &cancelled)
+                .await,
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(
+            supervisor.child_slots.available_permits(),
+            1,
+            "pre-spawn abandonment returns capacity"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_cleanup_partial_io_survives_failed_reap() {
+        for fault in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
+            let supervisor = EngineSupervisor::default();
+            let directory = tempfile::tempdir().unwrap();
+            let key = EngineKey::new(format!("partial-{fault:?}"), "engine".into()).unwrap();
+            let admission = supervisor
+                .admit(key.clone(), key.engine.clone(), path_ref("partial"), false)
+                .await
+                .unwrap();
+            set_spawn_io_failure(Some(fault));
+            set_terminate_failure(Some(TerminateFailure::ReapError));
+            let result = supervisor
+                .spawn_pending(&key, retained_child_executable(&directory), &admission)
+                .await;
+            assert!(
+                matches!(&result, Err(Error::OperationAndCleanup { .. })),
+                "partial IO reports failed cleanup, got {:?}",
+                result.as_ref().err().map(Error::diagnostic)
+            );
+            let pending = supervisor
+                .pending_actors
+                .get(&admission.generation())
+                .unwrap()
+                .clone();
+            let owner = pending.cleanup.as_ref().unwrap();
+            {
+                let mut state = owner.state.lock().unwrap();
+                assert!(state.executable.is_some());
+                assert!(state.slot.is_some());
+                state.control.as_mut().unwrap().clear_failure();
+            }
+            supervisor.terminate_tab(&key.tab).await.unwrap();
+            assert!(!owner.unresolved());
+            assert!(supervisor.pending_actors.is_empty());
+            assert_eq!(
+                supervisor.child_slots.available_permits(),
+                MAX_OWNED_CHILDREN
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_cleanup_capacity_concurrent_admissions_refuse_before_spawn() {
+        let supervisor = EngineSupervisor {
+            child_slots: Arc::new(Semaphore::new(1)),
+            ..EngineSupervisor::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let key_a = EngineKey::new("capacity-a".into(), "same-name".into()).unwrap();
+        let key_b = EngineKey::new("capacity-b".into(), "same-name".into()).unwrap();
+        let admission_a = supervisor
+            .admit(
+                key_a.clone(),
+                key_a.engine.clone(),
+                path_ref("same-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        let admission_b = supervisor
+            .admit(
+                key_b.clone(),
+                key_b.engine.clone(),
+                path_ref("same-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        let a = retained_child_executable(&directory);
+        let b = retained_child_executable(&directory);
+        let (a, b) = tokio::join!(
+            supervisor.spawn_pending(&key_a, a, &admission_a),
+            supervisor.spawn_pending(&key_b, b, &admission_b)
+        );
+        let mut rejections = Vec::new();
+        for result in [a, b] {
+            match result {
+                Ok(pending) => pending
+                    .terminate(supervisor.pending_actors.clone())
+                    .await
+                    .unwrap(),
+                Err(error) => rejections.push(error),
+            }
+        }
+        assert_eq!(
+            supervisor.spawn_attempts.load(Ordering::SeqCst),
+            1,
+            "only the reserved generation may spawn"
+        );
+        assert!(
+            matches!(rejections.as_slice(), [Error::ResourceLimit(_)]),
+            "overflow rejects before production child creation"
+        );
+        assert_eq!(supervisor.child_slots.available_permits(), 1);
     }
 
     #[tokio::test]
     async fn terminate_child_force_kills_then_reaps_after_graceful_timeout() {
-        let (child, kill_calls, _) = child_control([FakeWait::Pending, FakeWait::Ready]);
-        terminate_child(child, Duration::from_millis(5), Duration::from_millis(5))
-            .await
-            .unwrap();
+        let (mut child, kill_calls, _) = child_control([FakeWait::Pending, FakeWait::Ready]);
+        terminate_child(
+            &mut child,
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap();
         assert_eq!(kill_calls.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn terminate_child_drops_child_after_force_kill_reap_timeout() {
-        let (child, _, dropped) = child_control([FakeWait::Pending, FakeWait::Pending]);
-        let result =
-            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)).await;
+    async fn terminate_child_retains_child_after_force_kill_reap_timeout() {
+        let (mut child, _, dropped) = child_control([FakeWait::Pending, FakeWait::Pending]);
+        let result = terminate_child(
+            &mut child,
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        )
+        .await;
         assert!(matches!(result, Err(Error::EngineTimeout(_))));
-        assert!(dropped.load(AtomicOrdering::SeqCst));
+        assert!(!dropped.load(AtomicOrdering::SeqCst));
     }
 
     #[tokio::test]
-    async fn force_kill_reporter_timeout_retains_kill_cause_and_drops_child() {
+    async fn force_kill_reporter_timeout_retains_kill_cause_and_child() {
         let (mut child, _, dropped) = child_control([FakeWait::Pending, FakeWait::Pending]);
         child.kill_error = true;
-        let result =
-            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)).await;
+        let result = terminate_child(
+            &mut child,
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        )
+        .await;
         match result {
             Err(Error::OperationAndCleanup { primary, cleanup }) => {
                 assert!(primary.contains("waiting for engine exit"));
@@ -6613,7 +7352,7 @@ mod tests {
             }
             other => panic!("expected force-kill cleanup failure, got {other:?}"),
         }
-        assert!(dropped.load(AtomicOrdering::SeqCst));
+        assert!(!dropped.load(AtomicOrdering::SeqCst));
     }
 
     #[test]
@@ -6696,27 +7435,16 @@ mod tests {
         child.quit_pending = true;
         let _ = tokio::time::timeout(
             Duration::from_millis(30),
-            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)),
+            terminate_child(
+                &mut child,
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+            ),
         )
         .await
         .expect("quit write must be bounded");
     }
 
-    #[test]
-    fn production_child_termination_delegates_to_bounded_helper() {
-        let source = include_str!("process.rs");
-        let implementation = source
-            .split_once("impl UciIo for ChildUciIo")
-            .map(|(_, suffix)| suffix)
-            .expect("ChildUciIo implementation must exist")
-            .split_once("/// One-owner UCI actor")
-            .map(|(implementation, _)| implementation)
-            .expect("ChildUciIo implementation must precede EngineRuntime");
-        assert!(
-            implementation.contains("terminate_child(control, quit_timeout, kill_reap_timeout)"),
-            "ChildUciIo::terminate must use the bounded production helper"
-        );
-    }
     fn actor(lines: &[&str]) -> FakeActor {
         actor_with(lines, false, None).0
     }
@@ -13308,7 +14036,11 @@ mod tests {
             assert!(supervisor
                 .pending_actors
                 .get(&current.generation)
-                .is_some_and(|pending| pending.key == key && Arc::ptr_eq(&pending.actor, &actor)));
+                .is_some_and(|pending| pending.key == key
+                    && pending
+                        .actor
+                        .get()
+                        .is_some_and(|pending| Arc::ptr_eq(pending, &actor))));
             assert!(!actor.interrupt.is_cancelled());
             let mut termination = match drain {
                 Some(drain) => {

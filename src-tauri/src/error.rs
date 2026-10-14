@@ -356,6 +356,21 @@ impl Error {
 }
 
 impl Error {
+    /// Task panic payloads belong to native diagnostics, never public messages.
+    pub(crate) fn task_join(
+        context: &'static str,
+        error: &tokio::task::JoinError,
+        owner: &str,
+    ) -> Self {
+        log::error!("{context} owner={owner}: {error}");
+        #[cfg(test)]
+        TASK_JOIN_DIAGNOSTICS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!("{context} owner={owner}: {error}"));
+        Self::Conflict(context.into())
+    }
+
     /// True only for an I/O error reporting absence as defined by [`is_missing_entry_io`].
     pub fn is_missing_entry(&self) -> bool {
         if let Self::Shared(error) = self {
@@ -553,6 +568,10 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) static TASK_JOIN_DIAGNOSTICS: std::sync::Mutex<Vec<String>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Classifies expected search-stop consequences without hiding cleanup failures.
 pub(crate) fn cancelled_search_error(error: Error, cancelled: bool) -> Error {
@@ -1456,6 +1475,24 @@ mod tests {
             payload["message"],
             "Operation failed; temporary cleanup also failed"
         );
+    }
+
+    #[tokio::test]
+    async fn retained_cleanup_shared_join_conversion_omits_private_panic_marker() {
+        const MARKER: &str = "/private/error-join-marker";
+        let join = tokio::spawn(async { panic!("{MARKER}") })
+            .await
+            .unwrap_err();
+        let error = Error::task_join("task join failed", &join, "error serialization test");
+        assert_eq!(error.category(), ErrorCategory::Conflict);
+        assert!(!serde_json::to_string(&error).unwrap().contains(MARKER));
+        let composite = Error::with_cleanup(error, Err(Error::Cancellation));
+        assert!(!serde_json::to_string(&composite).unwrap().contains(MARKER));
+        assert!(TASK_JOIN_DIAGNOSTICS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains(MARKER)));
     }
 
     #[test]

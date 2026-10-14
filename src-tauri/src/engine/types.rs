@@ -109,9 +109,9 @@ pub struct EngineDeadlines {
     pub search: Duration,
     pub stop: Duration,
     pub quit: Duration,
-    /// Final reap budget after force-kill. If it expires, dropping the child
-    /// triggers `kill_on_drop`; an uninterruptible process may remain until
-    /// the operating system can reap it or the application exits.
+    /// Final bounded wait after force-kill. If reaping cannot be confirmed,
+    /// the cleanup owner retains the original child handle and executable/resource
+    /// leases for a later bounded attempt. Timeout does not confirm OS exit.
     pub kill_reap: Duration,
     pub resource_verify: Duration,
 }

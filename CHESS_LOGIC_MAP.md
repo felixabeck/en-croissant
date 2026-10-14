@@ -93,6 +93,21 @@ Two different bounds, easily conflated. **Input is rejected, not trimmed:** a li
 `MAX_LOG_LINES` (2 000) entries and `MAX_LOG_BYTES` (512 KiB), truncating an oversized entry and
 reporting the exact dropped-entry count.
 
+Child cleanup authority lives independently of the protocol task. `ChildOwner` retains the original
+child handle and executable/resource leases after an unconfirmed bounded reap, including partial
+IO creation. The supervisor's existing generation-keyed pending registry owns retries. Concurrent
+terminators attach to an immutable attempt outcome, and later explicit retries preserve earlier
+results and actor join failures. A drain visits each generation once per invocation. Successful OS
+wait confirms cleanup and releases ownership. Capacity is reserved before spawn, with 4096 slots
+shared by active, spawning and unresolved child generations. Failed owners never expire or evict.
+
+`LiveSession` records the actual game loop's cleanup result. Failed natural completion remains
+reachable in `GameManager.games` until retirement, replacement or shutdown observes it, even after
+a successful supervisor retry. Completed snapshots and game events keep their existing meaning.
+The manager reserves one of 4096 unobserved-session slots before launch and releases it on natural
+success or completed retirement. Shutdown visits each captured session once. Actor and game join
+failures use one safe public conversion, with panic diagnostics confined to native logs.
+
 ## 4. Game storage
 
 SQLite via Diesel, `src-tauri/src/db/{models,schema}.rs`.

@@ -3226,6 +3226,38 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn retained_cleanup_native_shutdown_reports_production_game_failure_within_budget() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let games = Arc::new(GameManager::new());
+        games
+            .install_failed_production_cleanup_test_session(
+                supervisor.clone(),
+                "retained-native-shutdown",
+            )
+            .await;
+        let operations = OperationRegistry::default();
+        let result = tokio::time::timeout(
+            SHUTDOWN_BUDGET,
+            shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                &operations,
+                std::future::ready(Ok(())),
+                std::future::ready(Ok(())),
+                SHUTDOWN_BUDGET,
+            ),
+        )
+        .await
+        .expect("retained failed game cannot extend process shutdown budget");
+        assert!(!result, "native shutdown must report the production loop's retained failure after supervisor recovery");
+        let key =
+            game::game_side_engine_key("retained-native-shutdown", 1, "white", "failed-shutdown")
+                .unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test(flavor = "current_thread")]
     async fn shutdown_engine_launch_root_reclaims_released_leaves_and_reports_failure() {

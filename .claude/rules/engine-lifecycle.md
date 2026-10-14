@@ -78,7 +78,20 @@ recomputed on the next read.
   is written and covers both the write and drain. A termination request preempts the in-flight
   exchange through the actor's interrupt, including a warm transition waiting under its lifecycle
   lease. Teardown keeps its own bounds and is never interrupted. Every terminator reports the
-  outcome of the reap that ended the actor, including a generation another owner already reaped.
+  shared cleanup attempt outcome for its exact generation.
+* Keep the original child handle and executable/resource leases until a successful OS wait confirms
+  cleanup, including incomplete IO construction. Protocol service closes permanently on teardown.
+  The existing generation-keyed pending registry retains failed cleanup owners. Each explicit
+  invocation visits a generation once, with concurrent callers sharing one immutable attempt
+  outcome. A later bounded retry cannot overwrite an earlier outcome or an actor join failure.
+* Reserve one of 4096 child ownership slots before production spawn. Active, spawning and
+  unresolved children retain their slot. Only pre-spawn abandonment or confirmed reaping releases
+  it. Refuse overflow with `ResourceLimit` before creating a child, without evicting failed owners.
+* A live game session retains its production loop cleanup result through natural completion until
+  retirement observes it. Reserve one of 4096 unobserved-session slots before launch. Natural
+  success or completed retirement releases the slot. Failed child cleanup remains supervisor-owned.
+  Shutdown visits each captured session once. Task join payloads stay in native diagnostics and
+  use the shared renderer-safe error conversion.
 * Check that stopping one tab's engine cannot kill another tab's.
 
 ## DO NOT
