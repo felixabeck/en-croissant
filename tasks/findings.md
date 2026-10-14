@@ -14642,6 +14642,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Review inheritance:** P2 of game-opening plan review is owned by this finding. Load `tasks/handoffs/2026-10-10-f-20261001-08-review.md` before review. It preserves the full issue, raw witnesses, disposition and merged entry. The opening-controls run keeps the named pre-change persistence limit and introduces no new storage contract.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bd0da9c90351fd1126c90b346b251d90fcc94219358206a0e4527176002691d4","input_sha256":"1b8b38bfa3df23edaa30014ce03c2e53de90f16dc55b9f13f460b4760671224a","kind":"mutation-receipt","operation":"7182f836e0136faa50021f6b956e317c9c119ec1a76b862fba641653a59248d4","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-01"],"target":"f-20261010-01","v":1} -->
 
+* **D2 review evidence from f-20261001-14 (2026-10-14):** review-persisted-state traced the unchanged raw createJSONStorage sessionStorage writer in database.ts. Refused database-view writes publish memory first and then throw from filters, synchronization or overview clearing, leaving reload behind memory. This is the existing independent durable-admission/refusal design question, explicitly excluded from f-20261001-13 hydration. Defer to this open build finding, no catch-only fix, duplicate finding or whole-store persistence claim in the anchor run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"311aa7b00c4d119a529f47c7876defbcc20dd7a3c4fcd885616edce02c34c9c4","input_sha256":"2b5a8f45a0ad37a7db5323ab959fea76dd7c9897e64c5a37f8f826d5ad8886dc","kind":"mutation-receipt","operation":"70bfb3e2241698a714a3bdcaa822238df94d10564ce8f394f9db6041e9a39344","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-01"],"target":"f-20261010-01","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
