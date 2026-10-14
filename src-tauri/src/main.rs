@@ -2989,18 +2989,16 @@ mod tests {
     fn open_engine_workspace_redacts_opener_path_and_logs_native_cause() {
         use crate::infra::path_authority::{PathAuthority, SharedPathAuthority};
         let directory = tempfile::tempdir().unwrap();
-        let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
+        let fixture_path = directory.path().canonicalize().unwrap();
+        let mut authority = PathAuthority::open_for_engine_test(&fixture_path).unwrap();
         let root = authority
-            .get_or_create_engine_root(directory.path(), "Engines", None)
+            .get_or_create_engine_root(&fixture_path, "Engines", None)
             .unwrap();
         let authority = SharedPathAuthority::installed(authority);
         let capture = crate::error::LogCaptureScope::start();
-        let cause = format!(
-            "opener rejected private path {}",
-            directory.path().display()
-        );
+        let cause = format!("opener rejected private path {}", fixture_path.display());
         let error = open_engine_workspace_blocking(&authority, root, |path| {
-            assert_eq!(path, directory.path());
+            assert_eq!(path, fixture_path);
             Err(tauri_plugin_opener::Error::Io(std::io::Error::other(
                 cause.clone(),
             )))
@@ -3010,7 +3008,7 @@ mod tests {
         assert!(!payload.to_string().contains(&cause));
         assert!(!payload
             .to_string()
-            .contains(&directory.path().display().to_string()));
+            .contains(&fixture_path.display().to_string()));
         assert_eq!(payload["category"], "platform");
         assert!(matches!(&error, Error::TauriOpener(_)));
         assert!(error.diagnostic().contains(&cause));
