@@ -7624,7 +7624,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Route both existing warnings through warnSafely in src/platform/errors.ts. Partially correct d-20260920-07's silent logger-rejection clause, retaining its data URL, encoder, CSP and identity-logging choices.
 * **Rejected:** Silently swallowing the only failure record, another fallback helper, or widening image CSP.
 * **Reason:** The f-20260906-10 console-fallback evidence was not weighed by the prior silent-warning clause. The shared helper already supplies sanitized native/console fallback and is used by sound and tab storage. Reversal path: another proven failure recorder for backend-unavailable cases, retaining normalization and privacy.
-* **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+* **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** d-20261014-14
 
 ### d-20261014-12 — How does malformed puzzle playback end without a new puzzle policy?
 
@@ -7634,7 +7634,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Partial draft commits, unchecked UCI assertions, stale playback clearing a successor, or a new automatic malformed-puzzle disposition.
 * **Reason:** Existing puzzle request failures are notified and stale failures suppressed. d-20260923-07 preserves tracked-path and cursor rebasing. This repairs batch atomicity and terminal-state promises without introducing a product policy. Reversal path: another proven atomic admission and owner-bound playback implementation.
 * **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"cc4b6a6d8fe2b4078c52367df17d9abd1d42b9fec9391b3bdcba3dd7b3e19cd0","input_sha256":"327974252bb8b184ccf5435ad9f68825b11ffbd0a3c403a8d9ab50e5b49587b2","kind":"mutation-receipt","operation":"09f5912e97ae55b264a3d9c92b5b9ca61652ba266e0a6e1ee5d20540fb66a470","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-10","d-20261014-11","d-20261014-12"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"23e1d181b1d0fb2ca194d9d1fb5e306e96074958572865a3bf6b7c6f17d4d633","input_sha256":"327974252bb8b184ccf5435ad9f68825b11ffbd0a3c403a8d9ab50e5b49587b2","kind":"mutation-receipt","operation":"09f5912e97ae55b264a3d9c92b5b9ca61652ba266e0a6e1ee5d20540fb66a470","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-10","d-20261014-11","d-20261014-12"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261014-13 — How do deferred tab-storage writes end before every test environment is destroyed?
 
