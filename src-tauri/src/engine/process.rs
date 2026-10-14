@@ -2251,16 +2251,7 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
-        self.terminate_observed(key, generation, None).await
-    }
-
-    async fn terminate_observed(
-        &self,
-        key: &EngineKey,
-        generation: u64,
-        observed: Option<Arc<EngineActor>>,
-    ) -> Result<(), Error> {
-        let (observed, attempt) = {
+        let target = {
             let _registration = self.registration.lock().await;
             let _coordination = self
                 .admission_coordination
@@ -2272,15 +2263,12 @@ impl EngineSupervisor {
             if let Some(current) = &current {
                 current.mark_cancelled();
             }
-            let targeted = current
-                .map(|entry| entry.actor)
-                .or_else(|| {
-                    self.pending_actors
-                        .get(&generation)
-                        .filter(|entry| &entry.key == key)
-                        .and_then(|entry| entry.actor.get().cloned())
-                })
-                .or(observed);
+            let targeted = current.map(|entry| entry.actor).or_else(|| {
+                self.pending_actors
+                    .get(&generation)
+                    .filter(|entry| &entry.key == key)
+                    .and_then(|entry| entry.actor.get().cloned())
+            });
             if let Some(actor) = &targeted {
                 actor.interrupt.cancel();
             }
@@ -2293,11 +2281,20 @@ impl EngineSupervisor {
                 self.cancel_admission(key, &admission);
             }
             let attempt = self.observe_termination_locked(key, generation, false);
-            (targeted, attempt)
+            ObservedTerminationTarget {
+                key: key.clone(),
+                generation,
+                actor: targeted,
+                attempt,
+            }
         };
-        let lifecycle = self.lifecycle_lease(key);
+        self.wait_for_termination(&target).await
+    }
+
+    async fn wait_for_termination(&self, target: &ObservedTerminationTarget) -> Result<(), Error> {
+        let lifecycle = self.lifecycle_lease(&target.key);
         let _transition = lifecycle.lock().await;
-        match (attempt, observed) {
+        match (&target.attempt, &target.actor) {
             (Some(attempt), _) => attempt.wait().await,
             (None, Some(actor)) => actor.final_termination_outcome().await,
             (None, None) => Ok(()),
@@ -2822,7 +2819,7 @@ impl EngineSupervisor {
                         ObservedTerminationTarget {
                             key,
                             generation,
-                            actor,
+                            actor: Some(actor),
                             attempt,
                         }
                     })
@@ -2881,23 +2878,12 @@ impl EngineSupervisor {
         &self,
         targets: Vec<ObservedTerminationTarget>,
     ) -> Vec<ActorShutdownFailure> {
-        let results = futures_util::future::join_all(targets.into_iter().map(
-            |ObservedTerminationTarget {
-                 key,
-                 generation,
-                 actor,
-                 attempt,
-             }| async move {
-                let lifecycle = self.lifecycle_lease(&key);
-                let _transition = lifecycle.lock().await;
-                let result = match attempt {
-                    Some(attempt) => attempt.wait().await,
-                    None => actor.final_termination_outcome().await,
-                };
-                (key, generation, result)
-            },
-        ))
-        .await;
+        let results =
+            futures_util::future::join_all(targets.into_iter().map(|target| async move {
+                let result = self.wait_for_termination(&target).await;
+                (target.key, target.generation, result)
+            }))
+            .await;
         results
             .into_iter()
             .filter_map(|(key, generation, result)| {
@@ -3009,7 +2995,7 @@ async fn reject_actor(
 struct ObservedTerminationTarget {
     key: EngineKey,
     generation: u64,
-    actor: Arc<EngineActor>,
+    actor: Option<Arc<EngineActor>>,
     attempt: Option<Arc<PendingTermination>>,
 }
 
@@ -12490,7 +12476,7 @@ mod tests {
                 ObservedTerminationTarget {
                     key: timeout_key.clone(),
                     generation: timeout.generation,
-                    actor: timeout.actor.clone(),
+                    actor: Some(timeout.actor.clone()),
                     attempt: supervisor.observe_termination_locked(
                         &timeout_key,
                         timeout.generation,
@@ -12500,7 +12486,7 @@ mod tests {
                 ObservedTerminationTarget {
                     key: combined_key.clone(),
                     generation: combined.generation,
-                    actor: combined.actor.clone(),
+                    actor: Some(combined.actor.clone()),
                     attempt: supervisor.observe_termination_locked(
                         &combined_key,
                         combined.generation,
