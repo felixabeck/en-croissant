@@ -17,7 +17,7 @@ import { makeUci, parseSquare } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { positionFromFen } from "@/utils/chessops";
 import { INITIAL_FEN } from "chessops/fen";
-import type { Puzzle } from "@/utils/puzzles";
+import { getPuzzleProgress, type Puzzle } from "@/utils/puzzles";
 import { defaultTree, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import {
   puzzleTimerFamily,
@@ -1045,6 +1045,93 @@ async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3", fen = INITIAL_FEN) {
   );
   return atoms;
 }
+
+test.each([
+  ["promoteToMainline", "replay"],
+  ["promoteVariation", "replay"],
+  ["promoteToMainline", "current branch"],
+  ["promoteVariation", "current branch"],
+] as const)("reordered solution remains usable after %s at %s", async (promotion, navigation) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10000);
+  const atoms = await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+  await act(async () => {
+    atoms.set(jumpToNextPuzzleAtom, false);
+    atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+  });
+  await humanMove("c7", "c5");
+  const firstAttempt = storedPuzzles()[0];
+  expect(firstAttempt.completion).toBe("incorrect");
+  expect(firstAttempt.timeSpent).toBe(1000);
+  const wrongBranch = treeStore.getState().root.children[0].children[0];
+  expect(wrongBranch.san).toBe("c5");
+  await humanMove("e7", "e5");
+  expect(treeStore.getState().position).toEqual([0, 0, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  const headers = treeStore.getState().headers;
+  await act(async () => treeStore.getState()[promotion]([0, 1]));
+  expect(treeStore.getState().position).toEqual([0, 1, 0]);
+  if (navigation === "replay") {
+    await act(async () => treeStore.getState().goToMove([0]));
+  }
+  expect(mocks.board?.movable?.color).toBe("black");
+  if (navigation === "replay") await humanMove("e7", "e5");
+  expect(treeStore.getState().position).toEqual([0, 1, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(mocks.board?.movable?.color).toBe("black");
+  expect(hintButton().disabled).toBe(false);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState().currentNode().shapes).toEqual([
+    { orig: "b8", dest: undefined, brush: "green" },
+  ]);
+  vi.setSystemTime(15000);
+  await humanMove("b8", "c6");
+  const state = treeStore.getState();
+  expect(state.position).toEqual([0, 1, 0, 0]);
+  expect(state.currentNode().san).toBe("Nc6");
+  expect(state.root.children[0].children.map((node) => node.san)).toEqual(["c5", "e5"]);
+  expect(state.root.children[0].children[0]).toEqual(wrongBranch);
+  expect(state.headers).toEqual(headers);
+  expect(state.headers.result).toBe("*");
+  expect(storedPuzzles()[0]).toEqual(firstAttempt);
+  expect(atoms.get(currentPuzzleFamily("puzzles-test"))).toBe(0);
+  expect(hintButton().disabled).toBe(true);
+  expect(mocks.board?.movable?.color).toBe("white");
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test.each(["earlier solution", "wrong branch", "invalid path"] as const)(
+  "reordered %s cursor blocks play while preserving only matched hints",
+  async (mode) => {
+    await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+    await humanMove("c7", "c5");
+    await humanMove("e7", "e5");
+    await act(async () => {
+      treeStore.getState().promoteToMainline([0, 1]);
+      treeStore
+        .getState()
+        .goToMove(
+          mode === "earlier solution" ? [0, 1] : mode === "wrong branch" ? [0, 0] : [0, 99],
+        );
+    });
+    const before = treeStore.getState();
+    const progress = getPuzzleProgress(storedPuzzles()[0], before.root, before.position);
+    expect(progress.step).toBe(mode === "earlier solution" ? 2 : null);
+    expect(progress.atFrontier).toBe(false);
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    expect(hintButton().disabled).toBe(mode !== "earlier solution");
+    mocks.playSound.mockClear();
+    await humanMove("g1", "f3");
+    expect(treeStore.getState()).toBe(before);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    await act(async () => hintButton().click());
+    expect(treeStore.getState().currentNode().shapes).toEqual(
+      mode === "earlier solution" ? [{ orig: "g1", dest: undefined, brush: "green" }] : [],
+    );
+  },
+);
 
 test("a terminal alternate mate offers no hint or bogus shape", async () => {
   const atoms = await loadPlaybackPuzzle("h7h8 g5g7", mateFen);

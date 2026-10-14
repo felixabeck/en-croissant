@@ -24,7 +24,6 @@ import {
 import type { Piece } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { makeUci, parseUci } from "chessops";
-import { normalizeMove } from "chessops/chess";
 import { INITIAL_FEN } from "chessops/fen";
 import { getDefaultStore, useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -59,6 +58,7 @@ import {
   tabsAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import { uciNormalize } from "@/utils/chess";
 import { isPrefix } from "@/utils/misc";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { getNodeAtPath, type GameHeaders, type TreeNode } from "@/utils/treeReducer";
@@ -437,8 +437,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
             child.move &&
             parsed &&
             parentPosition &&
-            makeUci(normalizeMove(parentPosition, child.move)) ===
-              makeUci(normalizeMove(parentPosition, parsed)),
+            uciNormalize(parentPosition, child.move) === uciNormalize(parentPosition, parsed),
         );
         if (matchingChildIndex === 0) continue;
         if (matchingChildIndex !== undefined && matchingChildIndex > 0) {
