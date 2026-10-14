@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
-import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { defaultTree } from "@/utils/treeReducer";
 import { getTabTreeKey, type Tab } from "./workspaceTypes";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
@@ -27,8 +26,6 @@ const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) })
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
 vi.mock("./persistError", () => persistError);
-
-const tabStorageCleanup = createTabStorageCleanup(tabStorage);
 
 const legacyTab = {
     name: "Legacy",
@@ -58,7 +55,6 @@ function storeUnownedDirtyTree() {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    tabStorageCleanup.drain();
     native.warn.mockClear();
     persistError.reportPersistError.mockClear();
 });

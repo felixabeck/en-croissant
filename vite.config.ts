@@ -70,6 +70,7 @@ export default defineConfig({
     },
     test: {
         environment: "jsdom",
+        setupFiles: ["./src/tests/setup.ts"],
         include: ["src/**/*.{test,spec}.{ts,tsx}", "scripts/**/*.test.mjs"],
         exclude: ["**/node_modules/**", ".stryker-tmp/**", "e2e/**"],
         // Size Vitest workers from the gate memory budget; Stryker forces one worker per runner.

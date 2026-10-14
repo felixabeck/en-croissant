@@ -1,10 +1,7 @@
 import { createStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
-
-const tabStorageCleanup = createTabStorageCleanup();
 
 beforeEach(() => {
     vi.resetModules();
@@ -14,7 +11,6 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    tabStorageCleanup.drain();
     sessionStorage.clear();
     localStorage.clear();
 });
@@ -23,7 +19,6 @@ async function importAtoms() {
     const workspace = await import("./workspace");
     const load = vi.spyOn(workspace, "loadWorkspace");
     const atoms = await import("./atoms");
-    tabStorageCleanup.track((await import("./store/tabStorage")).tabStorage);
     return { atoms, load };
 }
 

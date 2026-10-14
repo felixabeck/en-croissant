@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
-import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
 import {
     canRehydrate,
@@ -22,12 +21,10 @@ vi.mock("@/platform/native", () => native);
 vi.mock("@/state/persistError", () => persistError);
 
 let storage: TabStorageRepository;
-const tabStorageCleanup = createTabStorageCleanup();
 
 beforeEach(() => {
     sessionStorage.clear();
     storage = new TabStorageRepository();
-    tabStorageCleanup.track(storage);
     vi.useFakeTimers();
     native.warn.mockClear();
     persistError.reportPersistError.mockClear();
@@ -35,7 +32,6 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    tabStorageCleanup.drain();
     vi.useRealTimers();
 });
 
@@ -1761,6 +1757,79 @@ test("debounce scheduling replaces exactly one timer and installs one pair of li
     expect(clearTimeout).toHaveBeenCalledTimes(2);
     clearTimeout.mockRestore();
     addEventListener.mockRestore();
+});
+
+function withTabStorageTracker(
+    mode: string,
+    tracker: ((repository: TabStorageRepository) => void) | undefined,
+    run: () => void,
+) {
+    const key = "__chessfableTrackTabStorage";
+    const originalTracker = Object.getOwnPropertyDescriptor(globalThis, key);
+    try {
+        // Vitest's meta-env transform reads the same worker environment as stubEnv.
+        vi.stubEnv("MODE", mode);
+        if (tracker) {
+            Object.defineProperty(globalThis, key, {
+                configurable: true,
+                writable: true,
+                value: tracker,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, key);
+        }
+        run();
+    } finally {
+        try {
+            // These boundary cases deliberately bypass shared fixture registration.
+            storage.flush();
+        } finally {
+            if (originalTracker) Object.defineProperty(globalThis, key, originalTracker);
+            else Reflect.deleteProperty(globalThis, key);
+            vi.unstubAllEnvs();
+        }
+    }
+}
+
+test("non-test writes bypass a present test cleanup tracker and still flush", () => {
+    const tracker = vi.fn();
+    const tree = treeWith((state) => {
+        state.headers.event = "Production write";
+    });
+    withTabStorageTracker("production", tracker, () => {
+        expect(import.meta.env.MODE).toBe("production");
+        storage.write("production-write", { version: TREE_STORAGE_VERSION, state: tree });
+        expect(storage.pendingCount()).toBe(1);
+        expect(tracker).not.toHaveBeenCalled();
+        expect(storage.flush()).toEqual([]);
+        expect(storage.pendingCount()).toBe(0);
+        expect(deserializeStorageValue(sessionStorage.getItem("production-write")!)).toEqual({
+            version: TREE_STORAGE_VERSION,
+            state: tree,
+        });
+    });
+});
+
+test("test-mode writes tolerate an absent cleanup tracker and still flush", () => {
+    const tree = treeWith((state) => {
+        state.headers.event = "Unregistered test write";
+    });
+    withTabStorageTracker("test", undefined, () => {
+        expect(import.meta.env.MODE).toBe("test");
+        expect(() =>
+            storage.write("unregistered-write", {
+                version: TREE_STORAGE_VERSION,
+                state: tree,
+            }),
+        ).not.toThrow();
+        expect(storage.pendingCount()).toBe(1);
+        expect(storage.flush()).toEqual([]);
+        expect(storage.pendingCount()).toBe(0);
+        expect(deserializeStorageValue(sessionStorage.getItem("unregistered-write")!)).toEqual({
+            version: TREE_STORAGE_VERSION,
+            state: tree,
+        });
+    });
 });
 
 test("flush does not clear a timer when none is pending", () => {

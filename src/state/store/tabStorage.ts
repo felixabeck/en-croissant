@@ -813,6 +813,15 @@ export class TabStorageRepository {
             this.flushTimeout = null;
             this.flush({ notify: true });
         }, DEBOUNCE_MS);
+        // The shared test fixture owns scheduled writes across module resets. This hook
+        // neither imports test/platform modules nor changes production lifecycle handlers.
+        if (import.meta.env.MODE === "test") {
+            (
+                globalThis as typeof globalThis & {
+                    __chessfableTrackTabStorage?: (repository: TabStorageRepository) => void;
+                }
+            ).__chessfableTrackTabStorage?.(this);
+        }
     }
 
     private writeBlocker(

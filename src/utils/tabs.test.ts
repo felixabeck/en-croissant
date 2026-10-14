@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client";
 import { createStore, Provider } from "jotai";
 import { tabsAtom } from "@/state/atoms";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
-import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
@@ -27,13 +26,10 @@ const mocks = vi.hoisted(() => ({
     writeDbGame: vi.fn(),
 }));
 
-const tabStorageCleanup = createTabStorageCleanup(tabStorage);
-
 async function importFreshAdmission() {
     vi.resetModules();
     const atoms = await import("@/state/atoms");
     const repository = (await import("@/state/store/tabStorage")).tabStorage;
-    tabStorageCleanup.track(repository);
     return { atoms, repository, tabs: await import("./tabs") };
 }
 
@@ -246,7 +242,6 @@ afterEach(() => {
     closeTreeStore("save-as-test");
     removeFileFreshness("save-test");
     removeFileFreshness("save-as-test");
-    tabStorageCleanup.drain();
     sessionStorage.clear();
     vi.clearAllMocks();
     vi.useRealTimers();

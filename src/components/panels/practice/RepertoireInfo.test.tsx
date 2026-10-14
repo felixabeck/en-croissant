@@ -3,10 +3,11 @@ import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
 import { act, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import type { TreeStore } from "@/state/store/tree";
+import { tabStorage } from "@/state/store/tabStorage";
 import { activeTabAtom, referenceDbAtom, tabsAtom } from "@/state/atoms";
 import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
 import { parseUci } from "chessops";
@@ -240,4 +241,29 @@ test("coverage completion leaves dirty edits dirty", async () => {
   await act(async () => Promise.resolve());
 
   expect(store?.getState()).toMatchObject({ dirty: true, headers: { event: "Unsaved user edit" } });
+});
+
+test("shared teardown clears the debounce scheduled by repertoire edits", async () => {
+  let store: TreeStore | undefined;
+  await renderRepertoireInfo(defaultTree(), "repertoire-teardown", (captured) => {
+    store = captured;
+  });
+  const schedule = vi.spyOn(globalThis, "setTimeout");
+  const clear = vi.spyOn(globalThis, "clearTimeout");
+  await act(async () => {
+    store!.getState().setHeaders({ ...store!.getState().headers, event: "Edited repertoire" });
+  });
+  const index = schedule.mock.calls.findLastIndex(([, delay]) => delay === 300);
+  expect(index).toBeGreaterThanOrEqual(0);
+  const timer = schedule.mock.results[index].value;
+  expect(tabStorage.pendingCount()).toBeGreaterThan(0);
+  onTestFinished(() => {
+    try {
+      expect(clear).toHaveBeenCalledWith(timer);
+      expect(tabStorage.pendingCount()).toBe(0);
+    } finally {
+      schedule.mockRestore();
+      clear.mockRestore();
+    }
+  });
 });

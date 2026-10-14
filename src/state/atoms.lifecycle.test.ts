@@ -2,7 +2,6 @@ import { createStore, getDefaultStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
-import { createTabStorageCleanup } from "@/utils/tests/tabStorageCleanup";
 import {
     activeTabAtom,
     closeWorkspaceTabAtom,
@@ -45,11 +44,9 @@ const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
 
 const replacementTabIds = new Set<string>();
-const tabStorageCleanup = createTabStorageCleanup(tabStorage);
 
 async function importFreshAtoms() {
     const atoms = await import("./atoms");
-    tabStorageCleanup.track((await import("./store/tabStorage")).tabStorage);
     return atoms;
 }
 
@@ -61,7 +58,6 @@ afterEach(() => {
         tabStorage.remove(tabId);
     }
     replacementTabIds.clear();
-    tabStorageCleanup.drain();
 });
 
 function refuseWorkspaceWrites() {

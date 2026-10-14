@@ -1,8 +1,7 @@
 import type { TabStorageRepository } from "@/state/store/tabStorage";
 
-export function createTabStorageCleanup(staticRepository?: TabStorageRepository) {
+export function createTabStorageCleanup() {
     const repositories = new Set<TabStorageRepository>();
-    if (staticRepository) repositories.add(staticRepository);
 
     return {
         track(repository: TabStorageRepository) {
@@ -13,8 +12,6 @@ export function createTabStorageCleanup(staticRepository?: TabStorageRepository)
                 for (const id of repository.flush()) repository.remove(id);
             }
             repositories.clear();
-            // Static imports remain in use after module resets and between tests.
-            if (staticRepository) repositories.add(staticRepository);
         },
     };
 }
