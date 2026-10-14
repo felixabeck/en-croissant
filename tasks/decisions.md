@@ -7783,3 +7783,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** delayed ordinary saves would lose newly committed fields. JSON remains a deliberate configuration replacement through the existing validation boundary. Reversal requires equivalent rapid-edit, failed-predecessor and upgrade/attachment interleaving proof.
 * **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6b968302461e2550bbd46836ef06a8d191b47d92413b8d562d434ace3915fd48","input_sha256":"a7f0310d997e5575bda45f2292e8c9b38e8dd4796c508955796dc3d0a2fe3f7f","kind":"mutation-receipt","operation":"506900375f1e7a0d151b079d80e2b2d5db1a9322fe68ee3dcbd56b88d60f40ba","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-27"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-15 — recorded through the decisions lock
+
+### d-20261015-01 — How should invalid saved font scales be repaired?
+
+* **Question:** Should saved font scales outside the slider's supported domain be clamped or rejected to a safe default?
+* **Governs:** f-20261008-10
+* **Chosen:** One shared domain with default 100, integers 50–200 and steps of 10, used by the atom's Zod storage schema and the existing slider. Invalid persisted values repair to 100, valid 150 and endpoints 50/200 round-trip unchanged.
+* **Rejected:** A generic numeric preference restriction or silently clamping corrupt values to a different supported scale.
+* **Reason:** The actual slider already defines this domain. A corrupt value must not make the app unusable, and shared constants prevent its reader and writer from drifting. Reversal path: change the shared domain only alongside the slider and hydration/repair proofs.
+* **Decided by:** Codex, full-auto co-located finding execution, 2026-10-15. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4ba28872adb4911015a23ed7cf5ed9afc99ba7ce32e3e530b09dba61d63131ed","input_sha256":"916591fa0f34197e8d9719859642aeaed1f3fcdf15123cda41da80d16c5b6f8a","kind":"mutation-receipt","operation":"acdee9fb67315cebb1f55e3db76033009c11238c6b5a8ad69c5407ea3665abfa","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-01"],"target":"decisions-ledger","v":1} -->
