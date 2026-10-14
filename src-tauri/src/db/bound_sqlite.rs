@@ -335,20 +335,18 @@ impl BoundDatabase {
                 return Err(Error::Conflict("bound SQLite registry was poisoned".into()));
             }
         };
-        if registry.creating.get(&key).map(|claim| claim.token) != Some(token) {
-            drop(registry);
-            drop(registration);
-            return Err(Error::Conflict(
-                "bound SQLite registry reservation was lost".into(),
-            ));
-        }
         // Move the physical owner under the same guard that publishes the registration.
-        let Some(claim) = registry.creating.remove(&key) else {
-            drop(registry);
-            drop(registration);
-            return Err(Error::Conflict(
-                "bound SQLite registry reservation was lost".into(),
-            ));
+        let claim = match registry.creating.entry(key.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get().token == token => {
+                entry.remove()
+            }
+            _ => {
+                drop(registry);
+                drop(registration);
+                return Err(Error::Conflict(
+                    "bound SQLite registry reservation was lost".into(),
+                ));
+            }
         };
         registry
             .by_token
@@ -2711,6 +2709,122 @@ mod tests {
 
     #[cfg(unix)]
     use crate::infra::inode_ownership::open_descriptor_fds as primary_descriptors;
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_pin_full_quarantine_refuses_fresh_claim_before_open_and_reuses_existing() {
+        let name = "db::bound_sqlite::tests::primary_pin_full_quarantine_refuses_fresh_claim_before_open_and_reuses_existing";
+        crate::db::test_support::run_isolated(name, || {
+            use crate::infra::inode_ownership::PRIMARY_PIN_TEST_CONTROLS;
+            use std::{os::fd::AsRawFd, sync::atomic::AtomicBool};
+
+            for unclassified in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let owner_path = root.path().join("quarantine-owner.db3");
+                let fresh_path = root.path().join("fresh-primary.db3");
+                std::fs::write(&owner_path, b"owner").unwrap();
+                std::fs::write(&fresh_path, b"fresh").unwrap();
+                let owner_target = DatabaseFileTarget::for_test_path(&owner_path).unwrap();
+                let fresh_target = DatabaseFileTarget::for_test_path(&fresh_path).unwrap();
+                let fresh_key = BindingKey::for_target(&fresh_target).unwrap();
+                let owner = BoundDatabase::acquire(&owner_target).unwrap();
+                let mut quarantined_fds = Vec::new();
+                {
+                    let mut registry = REGISTRY.get().unwrap().lock().unwrap();
+                    for _ in 0..QUARANTINE_ADMISSION_LIMIT {
+                        let file = File::open(&owner_path).unwrap();
+                        quarantined_fds.push(file.as_raw_fd());
+                        registry
+                            .quarantine(file, (!unclassified).then_some(owner_target.identity()));
+                    }
+                    assert!(!registry.open_admitted());
+                    assert!(registry.sqlite_live(owner_target.identity()));
+                }
+                let mut owner_fds = primary_descriptors(owner_target.identity());
+                owner_fds.sort_unstable();
+                assert_eq!(owner_fds.len(), QUARANTINE_ADMISSION_LIMIT + 1);
+                assert!(primary_descriptors(fresh_target.identity()).is_empty());
+
+                let reused = BoundDatabase::acquire(&owner_target).unwrap();
+                assert_eq!(reused.token(), owner.token());
+                drop(reused);
+                let mut after_reuse = primary_descriptors(owner_target.identity());
+                after_reuse.sort_unstable();
+                assert_eq!(
+                    after_reuse, owner_fds,
+                    "same-key reuse must retain the same descriptors"
+                );
+
+                let opening = Arc::new(AtomicBool::new(false));
+                let opening_hook = Arc::clone(&opening);
+                PRIMARY_PIN_TEST_CONTROLS.with(|controls| {
+                    controls.borrow_mut().after_identify = Some(Box::new(move || {
+                        opening_hook.store(true, Ordering::SeqCst);
+                    }));
+                });
+                let creating = Arc::new(AtomicBool::new(false));
+                let creating_hook = Arc::clone(&creating);
+                REGISTRY
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .creation_hooks
+                    .insert(
+                        fresh_key.clone(),
+                        Box::new(move || creating_hook.store(true, Ordering::SeqCst)),
+                    );
+                let result = BoundDatabase::acquire(&fresh_target);
+                PRIMARY_PIN_TEST_CONTROLS
+                    .with(|controls| controls.borrow_mut().after_identify.take());
+                let fresh_fds = primary_descriptors(fresh_target.identity());
+                let (creating_claim, registered_claim) = {
+                    let mut registry = REGISTRY.get().unwrap().lock().unwrap();
+                    registry.creation_hooks.remove(&fresh_key);
+                    (
+                        registry.creating.contains_key(&fresh_key),
+                        registry.by_key.contains_key(&fresh_key),
+                    )
+                };
+                assert!(
+                    matches!(&result, Err(Error::Io(error)) if error.raw_os_error() == Some(libc::EMFILE)),
+                    "full quarantine must refuse fresh primary admission with EMFILE: unclassified={unclassified}, result={result:?}, descriptors={fresh_fds:?}, creating={creating_claim}, registered={registered_claim}"
+                );
+                assert!(
+                    !opening.load(Ordering::SeqCst),
+                    "admission must stop before the primary-open seam"
+                );
+                assert!(
+                    !creating.load(Ordering::SeqCst),
+                    "admission must stop before creating publication"
+                );
+                assert!(fresh_fds.is_empty());
+                assert!(!creating_claim && !registered_claim);
+                let mut after_refusal = primary_descriptors(owner_target.identity());
+                after_refusal.sort_unstable();
+                assert_eq!(
+                    after_refusal, owner_fds,
+                    "refusal must preserve retained descriptors"
+                );
+                for fd in quarantined_fds {
+                    assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+                }
+                drop(owner);
+                assert!(primary_descriptors(owner_target.identity()).is_empty());
+                {
+                    let registry = REGISTRY.get().unwrap().lock().unwrap();
+                    assert!(registry.open_admitted());
+                    assert!(registry.quarantined_descriptors.is_empty());
+                    assert!(registry.unclassified_descriptors.is_empty());
+                    assert!(!registry.sqlite_live(owner_target.identity()));
+                }
+                let fresh = BoundDatabase::acquire(&fresh_target).unwrap();
+                assert_eq!(primary_descriptors(fresh_target.identity()).len(), 1);
+                drop(fresh);
+                assert!(primary_descriptors(fresh_target.identity()).is_empty());
+            }
+        });
+    }
 
     #[cfg(unix)]
     fn assert_primary_pin(identity: (u64, u64)) {
