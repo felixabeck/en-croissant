@@ -7773,3 +7773,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** they restore a visible permanently retired engine or allow unsaved ordinary registrations. This narrows the write surface without reversing d-20261007-10. Reversal requires a new native retirement protocol and equivalent liveness proof.
 * **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86e6475e3c421dc826feb4599f80459cd3708fa508ff9363f81b30e846ba9c50","input_sha256":"172f2583bb9b450a8175783ed47f439a75663d8674760452862ea78976fc67ec","kind":"mutation-receipt","operation":"5c7a90ed146883219a6f04a1e06ba162da30adcc24e5b64e6642e12d972fb243","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-27 — How should responsive inline engine edits preserve concurrent committed fields?
+
+* **Question:** How should responsive inline engine edits preserve concurrent committed fields?
+* **Governs:** f-20261001-17
+* **Chosen:** Use field/option intents and one shared editor draft owner for local/cloud fields.
+* **Rejected:** full captured engine replacements for incremental edits.
+* **Reason:** delayed ordinary saves would lose newly committed fields. JSON remains a deliberate configuration replacement through the existing validation boundary. Reversal requires equivalent rapid-edit, failed-predecessor and upgrade/attachment interleaving proof.
+* **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6b968302461e2550bbd46836ef06a8d191b47d92413b8d562d434ace3915fd48","input_sha256":"a7f0310d997e5575bda45f2292e8c9b38e8dd4796c508955796dc3d0a2fe3f7f","kind":"mutation-receipt","operation":"506900375f1e7a0d151b079d80e2b2d5db1a9322fe68ee3dcbd56b88d60f40ba","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-27"],"target":"decisions-ledger","v":1} -->
