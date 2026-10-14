@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { INITIAL_FEN } from "chessops/fen";
 import type { Key } from "@lichess-org/chessground/types";
+import type { Config } from "@lichess-org/chessground/config";
 import { TreeStateContext, VariationChooserContext } from "@/components/common/TreeStateContext";
 import { createTreeStore } from "@/state/store/tree";
 import { createVariationChooserStore } from "@/state/store/variationChooser";
@@ -20,13 +21,16 @@ const mocks = vi.hoisted(() => ({
   afterMove: undefined as ((orig: Key, dest: Key) => void) | undefined,
   notify: vi.fn(),
   playSound: vi.fn(),
+  board: null as Config | null,
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/utils/sound", () => ({ playSound: mocks.playSound }));
 vi.mock("@/chessground/Chessground", () => ({
-  Chessground: ({ movable }: { movable: { events: { after: typeof mocks.afterMove } } }) => {
-    mocks.afterMove = movable.events.after;
+  Chessground: (props: Config) => {
+    mocks.board = props;
+    mocks.afterMove = (orig, dest) =>
+      props.movable?.events?.after?.(orig, dest, { premove: false });
     return <div data-testid="board" />;
   },
 }));
@@ -54,6 +58,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.board = null;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -63,15 +68,15 @@ afterEach(async () => {
   host.remove();
 });
 
-async function renderBoard(moves: string[], jump = false) {
-  const store = createTreeStore(undefined, defaultTree());
+async function renderBoard(moves: string[], jump = false, fen = INITIAL_FEN, initialFen = fen) {
+  const store = createTreeStore(undefined, defaultTree(initialFen));
   const atoms = createStore();
   atoms.set(jumpToNextPuzzleAtom, jump);
   const changeCompletion = vi.fn().mockResolvedValue(undefined);
   const generatePuzzle = vi.fn().mockResolvedValue(undefined);
   const puzzle: Puzzle = {
     id: 1,
-    fen: INITIAL_FEN,
+    fen,
     moves,
     completion: "incomplete",
     rating: 1200,
@@ -176,4 +181,56 @@ test("PuzzleBoard consumes store rejection after completion changes the live pos
     }),
   );
   expect(mocks.notify.mock.calls[0][0].message).not.toContain("e2e4");
+});
+
+test.each([
+  ["malformed FEN", "invalid"],
+  ["invalid chess setup", "8/8/8/8/8/8/8/8 w - - 0 1"],
+  ["unrelated Black-to-move root", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23"],
+])(
+  "PuzzleBoard safely renders %s and refuses an incorrect attempt on the prior tree",
+  async (_name, fen) => {
+    const { store, changeCompletion, generatePuzzle } = await renderBoard(
+      ["e7e5", "g1z3"],
+      false,
+      fen,
+      INITIAL_FEN,
+    );
+    const before = store.getState();
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    await act(async () => mocks.afterMove!("e2", "e4"));
+    expect(store.getState()).toBe(before);
+    expect(store.getState()).toEqual(before);
+    expect(changeCompletion).not.toHaveBeenCalled();
+    expect(generatePuzzle).not.toHaveBeenCalled();
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
+  },
+);
+
+test("PuzzleBoard preserves the valid Black-to-move orientation and legal pair", async () => {
+  const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
+  const { store, changeCompletion } = await renderBoard(["e7e5", "g1f3"], false, fen);
+  expect(mocks.board?.orientation).toBe("white");
+  expect(mocks.board?.movable?.color).toBe("black");
+  await act(async () => mocks.afterMove!("e7", "e5"));
+  expect(store.getState().position).toEqual([0, 0]);
+  expect(store.getState().currentNode().san).toBe("Nf3");
+  expect(changeCompletion).not.toHaveBeenCalled();
+  expect(mocks.playSound).toHaveBeenCalledOnce();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("PuzzleBoard rejects a malformed selected sequence before recording a wrong move", async () => {
+  const { store, changeCompletion } = await renderBoard(["e2e4", "g7z5"]);
+  const before = store.getState();
+  await act(async () => mocks.afterMove!("d2", "d4"));
+  expect(store.getState()).toBe(before);
+  expect(changeCompletion).not.toHaveBeenCalled();
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: `${enUSCatalogue.translation["MoveInput.InvalidMove"]} (2)`,
+  });
 });

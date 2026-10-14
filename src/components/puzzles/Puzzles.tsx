@@ -29,7 +29,6 @@ import {
   IconZoomCheck,
 } from "@tabler/icons-react";
 import { isNormal, makeSquare, makeUci, parseUci } from "chessops";
-import { parseFen } from "chessops/fen";
 import { useAtom } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -252,14 +251,40 @@ function Puzzles({ id }: { id: string }) {
       ? wonPuzzles.reduce((acc, p) => acc + (p.timeSpent || 0), 0) / wonPuzzles.length / 1000
       : 0;
 
-  function setPuzzle(puzzle: { fen: string; moves: string[] }) {
+  function admitPuzzle(
+    puzzle: Puzzle,
+    index: number,
+    {
+      append = false,
+      resumeTimer = true,
+      isCurrent = () => true,
+    }: {
+      append?: boolean;
+      resumeTimer?: boolean;
+      isCurrent?: () => boolean;
+    } = {},
+  ) {
     try {
       const result = validateMoveSequence(puzzle.fen, puzzle.moves);
       if (!result.success) throw result.error;
+      if (!isCurrent()) return;
+      if (!append) {
+        requestGeneration.current++;
+        puzzleRequest.current?.abort();
+      }
+      solutionAbortRef.current?.abort();
+      setIsPlayingSolution(false);
       setFen(puzzle.fen);
       if (result.moves[0]) makeMove({ payload: result.moves[0] });
+      if (append) setPuzzles((previous) => [...previous, puzzle]);
+      setCurrentPuzzle(index);
+      if (resumeTimer) {
+        setTimerStart(
+          puzzle.completion === "incomplete" ? Date.now() - (puzzle.timeSpent || 0) : null,
+        );
+      }
     } catch (error) {
-      notifyUnlessCancelled(commonErrorRef.current, error);
+      if (isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);
     }
   }
 
@@ -270,13 +295,7 @@ function Puzzles({ id }: { id: string }) {
     }
 
     if (nextIndex !== -1 && !force) {
-      solutionAbortRef.current?.abort();
-      setIsPlayingSolution(false);
-      setCurrentPuzzle(nextIndex);
-      setPuzzle(puzzles[nextIndex]);
-      if (trackTime) {
-        setTimerStart(Date.now() - (puzzles[nextIndex].timeSpent || 0));
-      }
+      admitPuzzle(puzzles[nextIndex], nextIndex, { resumeTimer: trackTime });
       return;
     }
 
@@ -312,28 +331,19 @@ function Puzzles({ id }: { id: string }) {
       }
       return;
     }
-    if (
-      request.signal.aborted ||
-      generation !== requestGeneration.current ||
-      !effectiveSelectedDbRef.current ||
-      capabilityKey(effectiveSelectedDbRef.current) !== capabilityKey(db)
-    ) {
-      return;
-    }
+    const isCurrent = () =>
+      !request.signal.aborted &&
+      generation === requestGeneration.current &&
+      effectiveSelectedDbRef.current !== null &&
+      capabilityKey(effectiveSelectedDbRef.current) === capabilityKey(db);
+    if (!isCurrent()) return;
     const puzzle = result;
     const newPuzzle: Puzzle = {
       ...puzzle,
       moves: puzzle.moves.split(" "),
       completion: "incomplete",
     };
-    setPuzzles((puzzles) => {
-      return [...puzzles, newPuzzle];
-    });
-    setCurrentPuzzle(puzzles.length);
-    setPuzzle(newPuzzle);
-    if (trackTime) {
-      setTimerStart(Date.now());
-    }
+    admitPuzzle(newPuzzle, puzzles.length, { append: true, resumeTimer: trackTime, isCurrent });
   }
 
   async function changeCompletion(completion: Completion) {
@@ -745,7 +755,7 @@ function Puzzles({ id }: { id: string }) {
               </IconAction>
               <IconAction
                 label={t("Puzzle.AnalyzePosition")}
-                disabled={!effectiveSelectedDb}
+                disabled={!effectiveSelectedDb || !turnToMove}
                 onClick={() => {
                   void runTabCreation({
                     create: () =>
@@ -756,10 +766,7 @@ function Puzzles({ id }: { id: string }) {
                         headers: {
                           ...defaultTree().headers,
                           fen: puzzles[currentPuzzle]?.fen,
-                          orientation:
-                            parseFen(puzzles[currentPuzzle].fen).unwrap().turn === "white"
-                              ? "black"
-                              : "white",
+                          orientation: turnToMove === "white" ? "black" : "white",
                         },
                       }),
                     onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
@@ -792,6 +799,11 @@ function Puzzles({ id }: { id: string }) {
                 const abortController = new AbortController();
                 solutionAbortRef.current = abortController;
                 const curPuzzle = puzzles[currentPuzzle];
+                const result = validateMoveSequence(curPuzzle.fen, curPuzzle.moves);
+                if (!result.success) {
+                  notifyUnlessCancelled(commonErrorRef.current, result.error);
+                  return;
+                }
 
                 if (curPuzzle.completion === "incomplete") {
                   changeCompletion("incorrect");
@@ -885,15 +897,7 @@ function Puzzles({ id }: { id: string }) {
                 current={currentPuzzle}
                 select={(i) => {
                   if (i === currentPuzzle) return;
-                  solutionAbortRef.current?.abort();
-                  setIsPlayingSolution(false);
-                  setCurrentPuzzle(i);
-                  setPuzzle(puzzles[i]);
-                  if (puzzles[i].completion === "incomplete") {
-                    setTimerStart(Date.now() - (puzzles[i].timeSpent || 0));
-                  } else {
-                    setTimerStart(null);
-                  }
+                  admitPuzzle(puzzles[i], i);
                 }}
               />
             </ScrollArea>

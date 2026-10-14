@@ -2,7 +2,6 @@ import { Box } from "@mantine/core";
 import { useElementSize, useForceUpdate } from "@mantine/hooks";
 import { type Move, makeUci, type NormalMove, parseSquare } from "chessops";
 import { chessgroundDests, chessgroundMove } from "chessops/compat";
-import { parseFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
 import { useContext, useState } from "react";
@@ -16,7 +15,7 @@ import { jumpToNextPuzzleAtom, moveHighlightAtom, showCoordinatesAtom } from "@/
 import classes from "@/styles/Chessboard.module.css";
 import { positionFromFen } from "@/utils/chessops";
 import type { Completion, Puzzle } from "@/utils/puzzles";
-import { getNodeAtPath, treeIteratorMainLine } from "@/utils/treeReducer";
+import { getBoardState, getNodeAtPath, treeIteratorMainLine } from "@/utils/treeReducer";
 import BoardFrame from "@/components/boards/BoardFrame";
 import { chooserArrows, continuationBrushes } from "@/components/boards/continuationArrows";
 import { useVariationChooser } from "@/components/common/TreeStateContext";
@@ -57,6 +56,8 @@ function PuzzleBoard({
   const [ended, setEnded] = useState(false);
 
   const [pos] = positionFromFen(currentNode.fen);
+  const [puzzlePos] = puzzle ? positionFromFen(puzzle.fen) : [null];
+  const matchesRoot = puzzle && getBoardState(root.fen) === getBoardState(puzzle.fen);
 
   const treeIter = treeIteratorMainLine(root);
   treeIter.next();
@@ -70,20 +71,27 @@ function PuzzleBoard({
       }
     }
   }
-  const orientation = puzzle?.fen
-    ? parseFen(puzzle.fen).unwrap().turn === "white"
-      ? "black"
-      : "white"
-    : "white";
+  const orientation = puzzlePos ? (puzzlePos.turn === "white" ? "black" : "white") : "white";
   const [pendingMove, setPendingMove] = useState<NormalMove | null>(null);
 
   const dests = pos ? chessgroundDests(pos) : new Map();
   const turn = pos?.turn || "white";
   const showCoordinates = useAtomValue(showCoordinatesAtom);
+  const canPlay =
+    puzzle &&
+    puzzlePos &&
+    matchesRoot &&
+    equal(position, Array(currentMove).fill(0)) &&
+    (puzzle.completion === "incomplete" || puzzle.completion === "incorrect");
 
   async function checkMove(move: Move) {
-    if (!pos) return;
-    if (!puzzle) return;
+    if (!pos || !puzzle || !canPlay || !pos.isLegal(move)) return;
+    const sequence = validateMoveSequence(puzzle.fen, puzzle.moves);
+    if (!sequence.success) {
+      notifyUnlessCancelled(t("Common.Error"), sequence.error);
+      reset();
+      return;
+    }
 
     const newPos = pos.clone();
     const uci = makeUci(move);
@@ -166,12 +174,7 @@ function PuzzleBoard({
             }}
             movable={{
               free: false,
-              color:
-                puzzle &&
-                equal(position, Array(currentMove).fill(0)) &&
-                (puzzle.completion === "incomplete" || puzzle.completion === "incorrect")
-                  ? turn
-                  : undefined,
+              color: canPlay ? turn : undefined,
               dests: dests,
               events: {
                 after: (orig, dest) => {
