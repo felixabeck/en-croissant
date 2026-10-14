@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/utils/sound", () => ({ playSound: mocks.playSound }));
+vi.mock("@tauri-apps/plugin-os", () => ({ platform: () => "linux" }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/i18n", async (original) => ({
@@ -114,7 +115,6 @@ vi.mock("../common/ConfirmModal", () => ({
     ) : null,
 }));
 vi.mock("../common/GameNotation", () => ({ default: () => null }));
-vi.mock("../common/MoveControls", () => ({ default: () => null }));
 vi.mock("../common/ChallengeHistory", async (original) => {
   const actual = await original<typeof import("../common/ChallengeHistory")>();
   return {
@@ -180,6 +180,14 @@ function solutionButton() {
   )!;
 }
 
+function previousButton() {
+  return document.querySelector<HTMLButtonElement>('[aria-label="Common.MoveControls.Previous"]')!;
+}
+
+function nextButton() {
+  return document.querySelector<HTMLButtonElement>('[aria-label="Common.MoveControls.Next"]')!;
+}
+
 function hintButton() {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (button) => button.textContent === "Puzzle.GetAHint",
@@ -233,6 +241,114 @@ async function selectIncomplete(index: number) {
 }
 
 const puzzleB = () => puzzleRow({ moves: ["g1f3", "d7d5"] });
+
+test.each(["resolve", "cancel", "error"] as const)(
+  "first wrong c5 then d5 preserve elapsed time while metadata is pending and after %s",
+  async (outcome) => {
+    const completion = deferred<string[]>();
+    mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    await act(async () => {
+      atoms.set(trackPuzzleTimeAtom, true);
+      atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000);
+    });
+    await humanMove("c7", "c5");
+    const firstTime = storedPuzzles()[0].timeSpent;
+    expect(firstTime).toBe(1000);
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    await humanMove("d7", "d5");
+    expect(treeStore.getState().position).toEqual([0]);
+    expect(treeStore.getState().root.children[0].children.map((node) => node.san)).toEqual([
+      "c5",
+      "d5",
+    ]);
+    expect(storedPuzzles()[0].timeSpent).toBe(firstTime);
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    mocks.playSound.mockClear();
+    await act(async () => {
+      if (outcome === "resolve") completion.resolve(["fork"]);
+      else
+        completion.reject(
+          commandError(
+            outcome === "cancel" ? "cancellation" : "database",
+            "old wrong metadata failed",
+          ),
+        );
+    });
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    await humanMove("c7", "c6");
+    expect(storedPuzzles()[0].timeSpent).toBe(firstTime);
+    expect(storedPuzzles()[0].completion).toBe("incorrect");
+    expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+  },
+);
+
+test("previously incorrect reopened puzzles retain their first time across wrong inputs", async () => {
+  const atoms = await renderPriorPuzzle(
+    [puzzleRow({ completion: "incorrect", timeSpent: 4321 })],
+    0,
+    ["e4"],
+  );
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), null));
+  await humanMove("c7", "c5");
+  await humanMove("d7", "d5");
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  expect(storedPuzzles()[0].timeSpent).toBe(4321);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+  expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("different puzzles each retain their own first wrong attempt", async () => {
+  const oldCompletion = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(oldCompletion.promise);
+  const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+  await humanMove("c7", "c5");
+  const firstTime = storedPuzzles()[0].timeSpent;
+  expect(firstTime).toBeGreaterThanOrEqual(1000);
+  await selectIncomplete(0);
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 2000));
+  await humanMove("e7", "e5");
+  const secondTime = storedPuzzles()[1].timeSpent;
+  expect(secondTime).toBeGreaterThanOrEqual(2000);
+  await humanMove("c7", "c5");
+  await act(async () => oldCompletion.resolve(["old fork"]));
+  expect(storedPuzzles().map((puzzle) => puzzle.completion)).toEqual(["incorrect", "incorrect"]);
+  expect(storedPuzzles().map((puzzle) => puzzle.timeSpent)).toEqual([firstTime, secondTime]);
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(2);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("a still-owned first wrong metadata failure reports once without losing elapsed time", async () => {
+  const completion = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+  await humanMove("c7", "c5");
+  const timeSpent = storedPuzzles()[0].timeSpent;
+  await act(async () => completion.reject(commandError("database", "owned wrong metadata failed")));
+  expect(storedPuzzles()[0].timeSpent).toBe(timeSpent);
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+    title: "Common.Error",
+    message: "owned wrong metadata failed",
+    color: "red",
+  });
+  await humanMove("d7", "d5");
+  expect(storedPuzzles()[0].timeSpent).toBe(timeSpent);
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+});
 
 async function replaceCurrentPuzzle(row: Puzzle) {
   await act(async () => {
@@ -342,7 +458,7 @@ test.each(["position", "tree", "unmount"] as const)(
   },
 );
 
-test("a stale wrong completion cannot change the replacement board's ended behavior", async () => {
+test("a stale wrong completion preserves the recorded first attempt after tree replacement", async () => {
   const completion = deferred<string[]>();
   mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
   const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
@@ -355,6 +471,7 @@ test("a stale wrong completion cannot change the replacement board's ended behav
   });
   const before = treeStore.getState();
   const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  const timeSpent = storedPuzzles()[0].timeSpent;
   mocks.playSound.mockClear();
   await act(async () => completion.resolve(["fork"]));
   expect(treeStore.getState()).toBe(before);
@@ -362,7 +479,9 @@ test("a stale wrong completion cannot change the replacement board's ended behav
   expect(mocks.notificationShow).not.toHaveBeenCalled();
   expect(mocks.playSound).not.toHaveBeenCalled();
   await humanMove("c7", "c5");
-  expect(mocks.getThemesForPuzzle).toHaveBeenCalledTimes(2);
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  expect(storedPuzzles()[0].timeSpent).toBe(timeSpent);
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
 });
 
 test.each(["resolve", "cancel"] as const)(
@@ -685,10 +804,11 @@ test.each([
   },
 );
 
-async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3") {
+async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3", fen = INITIAL_FEN) {
+  const initialCount = storedPuzzles().length;
   mocks.getPuzzle.mockResolvedValue({
     id: 10,
-    fen: INITIAL_FEN,
+    fen,
     moves,
     rating: 1200,
     rating_deviation: 50,
@@ -701,10 +821,277 @@ async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3") {
     document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')!.click();
   });
   expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
-    "1",
+    String(initialCount + 1),
   );
   return atoms;
 }
+
+test("a terminal alternate mate offers no hint or bogus shape", async () => {
+  const atoms = await loadPlaybackPuzzle("h7h8 g5g7", mateFen);
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+  await humanMove("g5", "h5");
+  expect(treeStore.getState().currentNode().san).toBe("Qh5#");
+  const before = treeStore.getState();
+  const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  expect(hintButton().disabled).toBe(true);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState()).toBe(before);
+  expect(treeStore.getState().currentNode().shapes).toEqual([]);
+  expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("the second Nf3 occurrence hints d7-d5 from the live cursor with progressive shapes", async () => {
+  const moves = "e2e4 g8f6 g1f3 f6g8 f3g1 g8f6 g1f3 d7d5";
+  expect(validateMoveSequence(INITIAL_FEN, moves.split(" ")).success).toBe(true);
+  await loadPlaybackPuzzle(moves);
+  await act(async () => {
+    expect(
+      treeStore.getState().makeMoves({ payload: moves.split(" ").slice(1), changeHeaders: false })
+        .success,
+    ).toBe(true);
+    treeStore.getState().goToMove([0, 0, 0]);
+  });
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(hintButton().disabled).toBe(false);
+  await act(async () => {
+    treeStore.getState().goToMove([0, 0, 0, 0, 0, 0, 0]);
+    hintButton().click();
+  });
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(treeStore.getState().currentNode().shapes).toEqual([
+    { orig: "d7", dest: undefined, brush: "green" },
+  ]);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState().currentNode().shapes).toEqual([
+    { orig: "d7", dest: "d5", brush: "green" },
+  ]);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState().currentNode().shapes).toEqual([]);
+  expect(mocks.board?.movable?.color).toBeUndefined();
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("hints use relative progress at a Black-to-move nonstandard initial ply", async () => {
+  const atoms = await loadPlaybackPuzzle("e7e5 g1f3", blackPuzzleFen);
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+  expect(treeStore.getState().root.halfMoves).toBe(45);
+  expect(treeStore.getState().currentNode().halfMoves).toBe(46);
+  expect(mocks.board?.movable?.color).toBe("white");
+  expect(hintButton().disabled).toBe(false);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState().currentNode().shapes).toEqual([
+    { orig: "g1", dest: undefined, brush: "green" },
+  ]);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState().currentNode().shapes).toEqual([
+    { orig: "g1", dest: "f3", brush: "green" },
+  ]);
+  await humanMove("g1", "f3");
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles()[0].completion).toBe("incorrect");
+  expect(hintButton().disabled).toBe(true);
+});
+
+test("root and no-last-move positions offer no continuation hint", async () => {
+  await loadPlaybackPuzzle();
+  await act(async () => treeStore.getState().goToMove([]));
+  const before = treeStore.getState();
+  expect(before.currentNode().move).toBeNull();
+  expect(hintButton().disabled).toBe(true);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState()).toBe(before);
+  expect(storedPuzzles()[0].completion).toBe("incomplete");
+  expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+});
+
+test.each(["earlier", "variation", "prefix mismatch", "root mismatch"] as const)(
+  "puzzle play remains frontier-only at %s and unmatched cursors offer no hint",
+  async (mode) => {
+    await loadPlaybackPuzzle();
+    await act(async () => {
+      treeStore.getState().makeMoves({ payload: ["e7e5", "g1f3"], changeHeaders: false });
+      if (mode === "earlier") treeStore.getState().goToMove([0]);
+      else if (mode === "variation") {
+        treeStore.getState().goToMove([0]);
+        treeStore.getState().makeMove({ payload: "c5" });
+      } else if (mode === "prefix mismatch") {
+        treeStore.getState().setFen(INITIAL_FEN);
+        treeStore.getState().makeMove({ payload: "d4" });
+      } else {
+        treeStore.getState().setFen(blackPuzzleFen);
+        treeStore.getState().makeMove({ payload: "e5" });
+      }
+    });
+    const before = treeStore.getState();
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    expect(hintButton().disabled).toBe(mode !== "earlier");
+    mocks.playSound.mockClear();
+    await humanMove(
+      mode === "variation" || mode === "root mismatch" ? "g1" : "e7",
+      mode === "variation" || mode === "root mismatch" ? "f3" : "e6",
+    );
+    expect(treeStore.getState()).toBe(before);
+    expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test("atomic pair rejection reports a malformed live suffix through the real store result", async () => {
+  await loadPlaybackPuzzle("e2e4 e7e5 g1f3");
+  expect(validateMoveSequence(INITIAL_FEN, ["e2e4", "e7e5", "g1f3"]).success).toBe(true);
+  await act(async () => {
+    const state = treeStore.getState();
+    treeStore.getState().setState({
+      ...state,
+      root: {
+        ...state.root,
+        children: [
+          {
+            ...state.root.children[0],
+            fen: "rnbqkbnr/pppppppp/8/8/4P3/7N/PPPP1PPP/RNBQKB1R b KQkq - 1 1",
+          },
+        ],
+      },
+    });
+  });
+  expect(mocks.board?.movable?.color).toBe("black");
+  const before = treeStore.getState();
+  const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  mocks.playSound.mockClear();
+  await humanMove("e7", "e5");
+  expect(treeStore.getState()).toBe(before);
+  expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+  expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+    title: "Common.Error",
+    message: "MoveInput.InvalidMove (2)",
+    color: "red",
+  });
+});
+
+test("Previous during solution playback preserves e4 and prevents a wrong promoted mainline", async () => {
+  await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+  vi.useFakeTimers();
+  await act(async () => solutionButton().click());
+  const committed = treeStore.getState();
+  expect(committed.currentNode().san).toBe("e4");
+  await act(async () => previousButton().click());
+  const navigated = treeStore.getState();
+  expect(navigated).not.toBe(committed);
+  expect(navigated.position).not.toBe(committed.position);
+  expect(navigated.position).toEqual([]);
+  mocks.playSound.mockClear();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(treeStore.getState()).toBe(navigated);
+  expect(treeStore.getState().root.children.map((node) => node.san)).toEqual(["e4"]);
+  expect(treeStore.getState().root.children[0].children).toEqual([]);
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+  await act(async () => nextButton().click());
+  expect(treeStore.getState().currentNode().san).toBe("e4");
+  expect(hintButton().disabled).toBe(false);
+});
+
+test("a playback metadata failure after Previous is quiet and cannot change the navigated tree", async () => {
+  await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+  const completion = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
+  vi.useFakeTimers();
+  await act(async () => solutionButton().click());
+  await act(async () => previousButton().click());
+  const before = treeStore.getState();
+  const rows = sessionStorage.getItem("puzzles-test-puzzles");
+  mocks.playSound.mockClear();
+  await act(async () =>
+    completion.reject(commandError("database", "stale playback metadata failed")),
+  );
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(treeStore.getState()).toBe(before);
+  expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  await act(async () => nextButton().click());
+  expect(hintButton().disabled).toBe(false);
+});
+
+test.each(["same cursor", "tree", "selection", "clear"] as const)(
+  "%s replacement during playback stops late moves and settles only its owner",
+  async (replacement) => {
+    sessionStorage.setItem("puzzles-test-puzzles", JSON.stringify([puzzleB()]));
+    await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+    vi.useFakeTimers();
+    await act(async () => solutionButton().click());
+    const committed = treeStore.getState();
+    await act(async () => {
+      if (replacement === "same cursor") treeStore.getState().goToMove([...committed.position]);
+      else if (replacement === "tree") treeStore.getState().setFen(INITIAL_FEN);
+      else if (replacement === "selection")
+        document
+          .querySelector<HTMLButtonElement>('[aria-label="ChallengeHistory.Incomplete"]')!
+          .click();
+      else document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.ClearSession"]')!.click();
+    });
+    const replaced = treeStore.getState();
+    expect(replaced).not.toBe(committed);
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    mocks.playSound.mockClear();
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(treeStore.getState()).toBe(replaced);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+test.each(["declared start", "invalid path", "unrelated root"] as const)(
+  "solution playback rejects %s without resetting or publishing the tree",
+  async (mismatch) => {
+    await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+    await act(async () => {
+      if (mismatch === "declared start") treeStore.getState().setStart([0]);
+      else if (mismatch === "invalid path") treeStore.getState().setStart([99]);
+      else treeStore.getState().setFen(blackPuzzleFen);
+    });
+    const before = treeStore.getState();
+    const rows = sessionStorage.getItem("puzzles-test-puzzles");
+    mocks.playSound.mockClear();
+    await act(async () => solutionButton().click());
+    expect(treeStore.getState()).toBe(before);
+    expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(rows);
+    expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
+test("still-owned playback preserves an existing variation and its comment", async () => {
+  await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
+  await act(async () => {
+    treeStore.getState().goToMove([]);
+    treeStore.getState().makeMove({ payload: "d4" });
+    treeStore.getState().setComment("retained variation");
+    treeStore.getState().goToMove([0]);
+  });
+  const variation = treeStore.getState().root.children[1];
+  expect(variation.san).toBe("d4");
+  vi.useFakeTimers();
+  await act(async () => solutionButton().click());
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(treeStore.getState().position).toEqual([0, 0, 0, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nc6");
+  expect(treeStore.getState().root.children[1]).toBe(variation);
+  expect(variation.comment).toBe("retained variation");
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
 
 test.each([
   ["malformed middle", "e2e4 g7z5 g1f3", 2, "g7z5"],
@@ -1209,16 +1596,13 @@ test("a malformed persisted FEN renders safely and cannot record an incorrect at
   expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
   expect(mocks.playSound).not.toHaveBeenCalled();
   expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(hintButton().disabled).toBe(true);
   await act(async () => hintButton().click());
   expect(treeStore.getState()).toBe(before);
   expect(sessionStorage.getItem("puzzles-test-puzzles")).toBe(previousRows);
   expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(1234);
   expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
-  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
-    title: "Common.Error",
-    message: "Board.Analysis.InvalidPosition",
-  });
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
 
 function outdatedAlert() {

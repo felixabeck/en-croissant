@@ -28,7 +28,7 @@ import {
   IconX,
   IconZoomCheck,
 } from "@tabler/icons-react";
-import { isNormal, makeSquare, makeUci, parseUci } from "chessops";
+import { makeSquare } from "chessops";
 import { useAtom } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -55,9 +55,20 @@ import { puzzleDatabaseExtension } from "@/utils/db";
 import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { normalizeError, runDestructiveWithRefresh } from "@/platform/errors";
-import { type Completion, getPuzzleDatabases, type Puzzle } from "@/utils/puzzles";
+import {
+  captureTreePositionOwner,
+  getPuzzleProgress,
+  type Completion,
+  getPuzzleDatabases,
+  type Puzzle,
+} from "@/utils/puzzles";
 import { createTab, runTabCreation } from "@/utils/tabs";
-import { defaultTree } from "@/utils/treeReducer";
+import {
+  defaultTree,
+  getBoardState,
+  getNodeAtPath,
+  getResolvedPathLength,
+} from "@/utils/treeReducer";
 import ChallengeHistory from "../common/ChallengeHistory";
 import ConfirmModal from "../common/ConfirmModal";
 import GameNotation from "../common/GameNotation";
@@ -80,12 +91,16 @@ function Puzzles({ id }: { id: string }) {
   const reset = useStore(store, (s) => s.reset);
   const makeMove = useStore(store, (s) => s.makeMove);
   const setShapes = useStore(store, (s) => s.setShapes);
-  const currentMove = useStore(store, (s) => s.currentNode().move);
+  const root = useStore(store, (s) => s.root);
+  const position = useStore(store, (s) => s.position);
   const [puzzles, setPuzzles] = useSessionStorage<Puzzle[]>({
     key: `${id}-puzzles`,
     defaultValue: [],
   });
   const [currentPuzzle, setCurrentPuzzle] = useAtom(useTabAtom(currentPuzzleFamily));
+  const latestPuzzle = useRef({ puzzle: puzzles[currentPuzzle], index: currentPuzzle });
+  latestPuzzle.current = { puzzle: puzzles[currentPuzzle], index: currentPuzzle };
+  const mounted = useRef(true);
 
   const [puzzleDbs, setPuzzleDbs] = useState<PuzzleDatabaseInfo[]>([]);
   const [selectedDb, setSelectedDb] = useAtom(selectedPuzzleDbAtom);
@@ -139,17 +154,18 @@ function Puzzles({ id }: { id: string }) {
     completedThemeController.current = null;
   }, [currentPuzzle]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       puzzleRequest.current?.abort();
       solutionAbortRef.current?.abort();
       solutionAbortRef.current = null;
       listingController.current?.abort();
       themeController.current?.abort();
       completedThemeController.current?.abort();
-    },
-    [],
-  );
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -357,13 +373,12 @@ function Puzzles({ id }: { id: string }) {
 
   async function changeCompletion(completion: Completion, isCurrent: () => boolean = () => true) {
     if (!isCurrent()) return;
-    const timeSpent = timerStart !== null ? Date.now() - timerStart : 0;
     const puzzle = puzzles[currentPuzzle];
-    setPuzzles((puzzles) => {
-      puzzles[currentPuzzle].completion = completion;
-      puzzles[currentPuzzle].timeSpent = timeSpent;
-      return [...puzzles];
-    });
+    if (!puzzle || puzzle.completion !== "incomplete") return;
+    // Claim the shared record synchronously before publishing or awaiting metadata.
+    puzzle.completion = completion;
+    puzzle.timeSpent = timerStart !== null ? Date.now() - timerStart : 0;
+    setPuzzles([...puzzles]);
     setTimerStart(null);
 
     if (effectiveSelectedDb && puzzle?.id) {
@@ -463,29 +478,7 @@ function Puzzles({ id }: { id: string }) {
       ? positionFromFen(puzzles[currentPuzzle]?.fen)[0]?.turn
       : null;
 
-  const currentlyOnLastMoveOrNoLastMove = (): boolean => {
-    if (!currentMove) return true;
-
-    const moves = puzzles[currentPuzzle]?.moves;
-    if (!moves) return true;
-
-    const lastMoveIndex = moves.indexOf(makeUci(currentMove));
-    return lastMoveIndex + 1 === moves.length;
-  };
-
-  const nextMoveUci = () => {
-    const curPuzzle = puzzles[currentPuzzle];
-    if (!curPuzzle || !currentMove) return;
-
-    const indexOfNextMoveToPlay = curPuzzle.moves.indexOf(makeUci(currentMove)) + 1;
-    const nextMoveUci = curPuzzle.moves[indexOfNextMoveToPlay];
-    if (!nextMoveUci) return;
-
-    const nextMove = parseUci(nextMoveUci);
-    if (!nextMove || !isNormal(nextMove)) return;
-
-    return nextMove;
-  };
+  const hintMove = getPuzzleProgress(puzzles[currentPuzzle], root, position).nextMove;
 
   return (
     <>
@@ -813,14 +806,12 @@ function Puzzles({ id }: { id: string }) {
                   return;
                 }
 
-                if (curPuzzle.completion === "incomplete") {
-                  changeCompletion("incorrect");
-                }
-
-                if (currentlyOnLastMoveOrNoLastMove()) return;
-
-                const nextMove = nextMoveUci();
+                const state = store.getState();
+                const nextMove = getPuzzleProgress(curPuzzle, state.root, state.position).nextMove;
                 if (!nextMove) return;
+                if (curPuzzle.completion === "incomplete") {
+                  void changeCompletion("incorrect");
+                }
 
                 const from = makeSquare(nextMove.from);
                 const to = makeSquare(nextMove.to);
@@ -846,9 +837,7 @@ function Puzzles({ id }: { id: string }) {
                   setShapes([...currentShapes, { orig: from, dest: undefined, brush: "green" }]);
                 }
               }}
-              disabled={
-                puzzles.length === 0 || currentlyOnLastMoveOrNoLastMove() || isPlayingSolution
-              }
+              disabled={puzzles.length === 0 || !hintMove || isPlayingSolution}
             >
               {t("Puzzle.GetAHint")}
             </Button>
@@ -860,22 +849,55 @@ function Puzzles({ id }: { id: string }) {
                 solutionAbortRef.current?.abort();
                 const abortController = new AbortController();
                 solutionAbortRef.current = abortController;
-                const isCurrent = () =>
-                  solutionAbortRef.current === abortController && !abortController.signal.aborted;
+                const curPuzzle = puzzles[currentPuzzle];
+                const databaseKey = effectiveSelectedDbKey;
+                const isOwner = () =>
+                  mounted.current &&
+                  solutionAbortRef.current === abortController &&
+                  !abortController.signal.aborted &&
+                  latestPuzzle.current.puzzle === curPuzzle &&
+                  latestPuzzle.current.index === currentPuzzle &&
+                  (effectiveSelectedDbRef.current
+                    ? capabilityKey(effectiveSelectedDbRef.current)
+                    : null) === databaseKey;
+                let ownsPosition = captureTreePositionOwner(store);
+                const isCurrent = () => isOwner() && ownsPosition();
                 setIsPlayingSolution(true);
                 try {
-                  const curPuzzle = puzzles[currentPuzzle];
                   const result = validateMoveSequence(curPuzzle.fen, curPuzzle.moves);
                   if (!result.success) throw result.error;
                   if (!isCurrent()) return;
+                  const state = store.getState();
+                  const start = state.headers.start ?? [];
+                  if (
+                    getBoardState(state.root.fen) !== getBoardState(curPuzzle.fen) ||
+                    getResolvedPathLength(state.root, start) !== start.length ||
+                    getBoardState(getNodeAtPath(state.root, start).fen) !==
+                      getBoardState(curPuzzle.fen)
+                  )
+                    return;
                   if (curPuzzle.completion === "incomplete") {
-                    void changeCompletion("incorrect");
+                    void changeCompletion("incorrect", isCurrent);
                   }
                   goToStart();
+                  const started = store.getState();
+                  if (
+                    !isOwner() ||
+                    started.root !== state.root ||
+                    started.position.length !== start.length ||
+                    !started.position.every((index, i) => index === start[i])
+                  )
+                    return;
+                  ownsPosition = captureTreePositionOwner(store, started);
                   for (const move of result.moves) {
                     if (!isCurrent()) return;
-                    makeMove({ payload: move, mainline: true });
+                    try {
+                      makeMove({ payload: move, mainline: true });
+                    } finally {
+                      if (isOwner()) ownsPosition = captureTreePositionOwner(store);
+                    }
                     await new Promise((r) => setTimeout(r, 500));
+                    if (!isCurrent()) return;
                   }
                 } catch (error) {
                   if (isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);

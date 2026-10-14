@@ -11,7 +11,7 @@ import { createTreeStore } from "@/state/store/tree";
 import { createVariationChooserStore } from "@/state/store/variationChooser";
 import { jumpToNextPuzzleAtom } from "@/state/atoms";
 import { defaultTree } from "@/utils/treeReducer";
-import type { Puzzle } from "@/utils/puzzles";
+import type { Completion, Puzzle } from "@/utils/puzzles";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
@@ -72,7 +72,9 @@ async function renderBoard(moves: string[], jump = false, fen = INITIAL_FEN, ini
   const store = createTreeStore(undefined, defaultTree(initialFen));
   const atoms = createStore();
   atoms.set(jumpToNextPuzzleAtom, jump);
-  const changeCompletion = vi.fn().mockResolvedValue(undefined);
+  const changeCompletion = vi.fn().mockImplementation(async (completion: Completion) => {
+    puzzle.completion = completion;
+  });
   const generatePuzzle = vi.fn().mockResolvedValue(undefined);
   const puzzle: Puzzle = {
     id: 1,

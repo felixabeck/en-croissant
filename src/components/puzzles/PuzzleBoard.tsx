@@ -2,7 +2,6 @@ import { Box } from "@mantine/core";
 import { useElementSize, useForceUpdate } from "@mantine/hooks";
 import { type Move, makeUci, type NormalMove, parseSquare } from "chessops";
 import { chessgroundDests, chessgroundMove } from "chessops/compat";
-import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -15,8 +14,13 @@ import { jumpToNextPuzzleAtom, moveHighlightAtom, showCoordinatesAtom } from "@/
 import classes from "@/styles/Chessboard.module.css";
 import { positionFromFen } from "@/utils/chessops";
 import { capabilityKey } from "@/utils/pathCapabilities";
-import type { Completion, Puzzle } from "@/utils/puzzles";
-import { getBoardState, getNodeAtPath, treeIteratorMainLine } from "@/utils/treeReducer";
+import {
+  captureTreePositionOwner,
+  getPuzzleProgress,
+  type Completion,
+  type Puzzle,
+} from "@/utils/puzzles";
+import { getNodeAtPath } from "@/utils/treeReducer";
 import BoardFrame from "@/components/boards/BoardFrame";
 import { chooserArrows, continuationBrushes } from "@/components/boards/continuationArrows";
 import { useVariationChooser } from "@/components/common/TreeStateContext";
@@ -65,36 +69,25 @@ function PuzzleBoard({
     };
   }, []);
   function captureOwner(expectedRoot = root, expectedPosition = position): () => boolean {
+    const ownsPosition = captureTreePositionOwner(store, {
+      root: expectedRoot,
+      position: expectedPosition,
+    });
     return () => {
-      const state = store.getState();
       return (
         mounted.current &&
         latest.current.puzzle === puzzle &&
         latest.current.currentPuzzle === currentPuzzle &&
         latest.current.databaseKey === databaseKey &&
-        state.root === expectedRoot &&
-        state.position === expectedPosition
+        ownsPosition()
       );
     };
   }
-  const [ended, setEnded] = useState(false);
 
   const [pos] = positionFromFen(currentNode.fen);
   const [puzzlePos] = puzzle ? positionFromFen(puzzle.fen) : [null];
-  const matchesRoot = puzzle && getBoardState(root.fen) === getBoardState(puzzle.fen);
-
-  const treeIter = treeIteratorMainLine(root);
-  treeIter.next();
-  let currentMove = 0;
-  if (puzzle) {
-    for (const { node } of treeIter) {
-      if (node.move && makeUci(node.move) === puzzle.moves[currentMove]) {
-        currentMove++;
-      } else {
-        break;
-      }
-    }
-  }
+  const progress = getPuzzleProgress(puzzle, root, position);
+  const currentMove = progress.step ?? 0;
   const orientation = puzzlePos ? (puzzlePos.turn === "white" ? "black" : "white") : "white";
   const [pendingMove, setPendingMove] = useState<NormalMove | null>(null);
 
@@ -104,8 +97,7 @@ function PuzzleBoard({
   const canPlay =
     puzzle &&
     puzzlePos &&
-    matchesRoot &&
-    equal(position, Array(currentMove).fill(0)) &&
+    progress.atFrontier &&
     (puzzle.completion === "incomplete" || puzzle.completion === "incorrect");
 
   async function checkMove(move: Move) {
@@ -127,12 +119,6 @@ function PuzzleBoard({
         uci,
         ...(newPos.isCheckmate() ? [] : puzzle.moves.slice(currentMove + 1, currentMove + 2)),
       ];
-      const validation = validateMoveSequence(currentNode.fen, newMoves);
-      if (!validation.success) {
-        notifyUnlessCancelled(t("Common.Error"), validation.error);
-        reset();
-        return;
-      }
       const result = makeMoves({
         payload: newMoves,
         mainline: true,
@@ -150,7 +136,6 @@ function PuzzleBoard({
           await changeCompletion("correct", isCurrentAfterMove);
           if (!isCurrentAfterMove()) return;
         }
-        setEnded(false);
 
         if (db && jumpToNextPuzzleImmediately) {
           await generatePuzzle(db, isCurrentAfterMove);
@@ -167,11 +152,10 @@ function PuzzleBoard({
       });
       const state = store.getState();
       const isCurrentAfterMove = captureOwner(state.root, state.position);
-      if (!ended) {
+      if (puzzle.completion === "incomplete") {
         await changeCompletion("incorrect", isCurrentAfterMove);
         if (!isCurrentAfterMove()) return;
       }
-      setEnded(true);
     }
     reset();
   }
