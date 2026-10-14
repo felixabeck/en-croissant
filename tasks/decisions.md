@@ -7645,3 +7645,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The observed RepertoireInfo teardown omission and the module-reset regressions show recurring manual adoption is incomplete. Scheduled-only registration settles the actual owners, keeps unrelated timers intact and preserves mock isolation. Failure cost: a missed scheduling registration permits a deferred write after environment destruction. Removal path: delete this hook, setup registration and cleanup helper when tab storage no longer schedules deferred writes. Reversal requires another proven universal teardown route with module-reset and mock-isolation proof.
 * **Decided by:** Codex, full-auto co-located finding execution, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"12f33ac0746b03347ef7f3dd0b0997d33f2514d6a12368b438cc92ce9ebcea6b","input_sha256":"1eb1d574268e908460a576b0761971900306c3f51f421aa164c8b6521ce08e6a","kind":"mutation-receipt","operation":"43a22301f4725e936e88ea40f37528a1d67488572eec49f24e89f332ed7f0ce8","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-13"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-14 — What sanitization does the reused warning fallback actually guarantee?
+
+* **Question:** What sanitization does the reused warning fallback actually guarantee?
+* **Governs:** f-20261007-08
+* **Chosen:** Retain the existing warnSafely call sites and fallback behavior. Correct only d-20261014-11's factual claim that the helper sanitizes the forwarded warning. The helper passes the primary message unchanged to both loggers, while safeFailureContext sanitizes the logger-failure context. LocalImage separately normalizes its primary error before calling the helper.
+* **Rejected:** Continuing the unsupported broader sanitization claim, changing unrelated logger contracts or reverting the console fallback.
+* **Reason:** The D1 records lens and root read src/platform/errors.ts:309-312. That producer contradicts the earlier prose claim. This is a factual correction, the chosen helper and fallback remain. Reversal requires changed helper behavior with direct emission proof.
+* **Decided by:** Codex, D1 review arbitration, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-15 — When does an exact public teardown caller attach to its attempt?
+
+* **Question:** When does an exact public teardown caller attach to its attempt?
+* **Governs:** f-20261001-14
+* **Chosen:** Bind each exact physical-teardown caller to its generation-keyed immutable attempt before a lifecycle wait can move it into a later retry. Use the existing pending registry and independently owned cleanup task, preserving exact handoff, warm-search semantics and explicit retries after an observed completed failure. Trace other physical-teardown entry points through the same admission boundary.
+* **Rejected:** Attaching only after the per-key lifecycle lock, treating a queued concurrent caller as an explicit retry, or adding a second cleanup registry.
+* **Reason:** D1 correctness, root-cause and engine-protocol traces demonstrate that lifecycle serialization changes which attempt a waiting caller sees. This completes O2 and d-20261014-04 without changing their bounded ownership or retry policy. Reversal requires another proven public-boundary attachment mechanism that preserves concurrent results, cancellation and successor identity.
+* **Decided by:** Codex, D1 review arbitration, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+
+### d-20261014-16 — How do concurrent game-session owners observe a taken join handle?
+
+* **Question:** How do concurrent game-session owners observe a taken join handle?
+* **Governs:** f-20261001-14
+* **Chosen:** Serialize join observation per LiveSession with the existing restore-on-cancellation ownership guard retained. A second owner waits for the first observation or restored handle, and cannot interpret a temporarily empty slot as successful task completion. Cache failed joins, including bounded timeout abort outcomes, in the existing session cleanup state. Release session observation capacity only after terminal cleanup has been observed.
+* **Rejected:** Treating an empty join slot or unset loop outcome as success while another owner is joining, detaching the handle on cancellation, or another session registry/background ownership layer.
+* **Reason:** D1 correctness provides a concrete no-engine running-task race where B returns Ok and releases its slot before A observes a panic. A per-session join boundary preserves the existing restoration contract and O4's retained production result. Reversal requires another proven concurrent join ownership mechanism with cancellation, timeout, panic and capacity proof.
+* **Decided by:** Codex, D1 review arbitration, drain session 88354097-6004-4014-a60b-919fe79440ef · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"a3c34d36fe72044347ce36bfc60d18e595ac7dceee2d0b7e694619ba5183a733","input_sha256":"d9ede5bdfa2b0aace04ebc339bd9f64336af3589b53b38ccaea482b6399f6b99","kind":"mutation-receipt","operation":"2f1c80bf9e8a9b25985679a143d364aa825abe4acfb36ca5e8826a296dae04a4","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-14","d-20261014-15","d-20261014-16"],"target":"decisions-ledger","v":1} -->
