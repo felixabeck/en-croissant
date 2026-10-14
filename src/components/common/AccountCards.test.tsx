@@ -220,13 +220,30 @@ describe("Lichess account removal", () => {
     });
   });
 
-  test("keeps the local session when native reports not found", async () => {
+  test("removes the local session when native reports not found", async () => {
     mocks.removeLichessAccount.mockResolvedValue({ state: "not_found" });
     await renderCards();
 
     await logout();
 
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(mocks.notificationsShow).not.toHaveBeenCalled();
+  });
+
+  test("keeps the local session when native removal throws", async () => {
+    const failure = new Error("native unavailable");
+    mocks.removeLichessAccount.mockRejectedValue(failure);
+    await renderCards();
+    const { logout: remove } = mocks.accountCard.mock.lastCall![0];
+
+    await act(async () => {
+      await expect(remove()).rejects.toBe(failure);
+    });
+
     expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
+    expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([session]);
     expect(mocks.notificationsShow).not.toHaveBeenCalled();
   });
 });

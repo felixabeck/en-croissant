@@ -205,30 +205,151 @@ describe("initializePersistedSessions", () => {
         expect(mocks.revokeLegacyLichessToken).toHaveBeenCalledTimes(1);
     });
 
-    test("reconciles the opaque handle returned by a successful migration", async () => {
-        localStorage.setItem(
-            "sessions",
-            JSON.stringify([
-                {
-                    player: "player",
-                    updatedAt: 1,
-                    lichess: {
-                        username: "player",
-                        account: { id: "player", username: "player" },
-                        accessToken: "legacy-token",
+    test.each(["successful", "failed"])(
+        "reconciles the opaque handle returned by a successful migration with %s listing",
+        async (listing) => {
+            localStorage.setItem(
+                "sessions",
+                JSON.stringify([
+                    {
+                        player: "player",
+                        updatedAt: 1,
+                        lichess: {
+                            username: "player",
+                            account: { id: "player", username: "player" },
+                            accessToken: "legacy-token",
+                        },
+                    },
+                ]),
+            );
+            mocks.migrateLegacyLichessToken.mockResolvedValue({
+                account: { username: "player", handle: "migrated-handle" },
+                durability_uncertain: false,
+            });
+            if (listing === "successful") {
+                mocks.listLichessAccounts.mockResolvedValue([
+                    { username: "PLAYER", handle: "migrated-handle" },
+                ]);
+            } else {
+                mocks.listLichessAccounts.mockRejectedValue(new Error("native unavailable"));
+            }
+            await initializePersistedSessions();
+
+            const sessions = JSON.parse(localStorage.getItem("sessions")!);
+            expect(sessions[0].lichess.handle).toBe("migrated-handle");
+            expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each([
+        { source: "persisted", populated: false },
+        { source: "persisted", populated: true },
+        { source: "earlier-migrated", populated: false },
+        { source: "earlier-migrated", populated: true },
+    ])(
+        "confirmed absence clears a $source handle and cannot restore it on reload (populated: $populated)",
+        async ({ source, populated }) => {
+            const publicSession = {
+                player: "Player alias",
+                updatedAt: 123,
+                lichess: {
+                    username: "Player",
+                    account: {
+                        id: "player",
+                        username: "Player",
+                        perfs: { blitz: { rating: 1800 } },
                     },
                 },
-            ]),
-        );
+                chessCom: { username: "OtherProvider", stats: {} },
+            };
+            const matchingSession = {
+                updatedAt: 456,
+                lichess: { username: "Present", account: { id: "present", username: "Present" } },
+            };
+            localStorage.setItem(
+                "sessions",
+                JSON.stringify([
+                    {
+                        ...publicSession,
+                        lichess: {
+                            ...publicSession.lichess,
+                            ...(source === "persisted"
+                                ? { handle: "stale-handle" }
+                                : { accessToken: "legacy-token" }),
+                        },
+                    },
+                    matchingSession,
+                ]),
+            );
+            mocks.migrateLegacyLichessToken.mockResolvedValue({
+                account: { username: "PLAYER", handle: "earlier-migrated-handle" },
+                durability_uncertain: false,
+            });
+            mocks.listLichessAccounts.mockResolvedValue(
+                populated ? [{ username: "PRESENT", handle: "present-handle" }] : [],
+            );
+
+            await initializePersistedSessions();
+            const expected = [
+                publicSession,
+                {
+                    ...matchingSession,
+                    lichess: {
+                        ...matchingSession.lichess,
+                        ...(populated ? { handle: "present-handle" } : {}),
+                    },
+                },
+            ];
+            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            expect(mocks.getLichessAccount).not.toHaveBeenCalled();
+
+            await initializePersistedSessions();
+            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            mocks.listLichessAccounts.mockRejectedValue(new Error("offline on reload"));
+            await initializePersistedSessions();
+            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            expect(mocks.migrateLegacyLichessToken).toHaveBeenCalledTimes(
+                source === "persisted" ? 0 : 1,
+            );
+            expect(localStorage.getItem("sessions")).not.toContain("legacy-token");
+        },
+    );
+
+    test("a later successful listing replaces an earlier migrated handle", async () => {
+        seedLegacySessions(["legacy-token"]);
         mocks.migrateLegacyLichessToken.mockResolvedValue({
-            account: { username: "player", handle: "migrated-handle" },
+            account: { username: "private-player-0", handle: "earlier-handle" },
             durability_uncertain: false,
         });
+        mocks.listLichessAccounts.mockResolvedValue([
+            { username: "PRIVATE-PLAYER-0", handle: "latest-handle" },
+        ]);
+
         await initializePersistedSessions();
 
-        const sessions = JSON.parse(localStorage.getItem("sessions")!);
-        expect(sessions[0].lichess.handle).toBe("migrated-handle");
-        expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
+        expect(JSON.parse(localStorage.getItem("sessions")!)[0].lichess.handle).toBe(
+            "latest-handle",
+        );
+    });
+
+    test("a failed listing preserves the offline public session and opaque handle across reload", async () => {
+        const session = {
+            player: "Alias",
+            updatedAt: 123,
+            lichess: {
+                username: "Player",
+                handle: "offline-handle",
+                account: { id: "player", username: "Player" },
+            },
+            chessCom: { username: "OtherProvider", stats: {} },
+        };
+        localStorage.setItem("sessions", JSON.stringify([session]));
+        mocks.listLichessAccounts.mockRejectedValue(new Error("native unavailable"));
+
+        await initializePersistedSessions();
+        await initializePersistedSessions();
+
+        expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([session]);
     });
 
     test("removes credential storage when the sanitized overwrite fails", async () => {

@@ -213,8 +213,7 @@ function LichessOrChessCom({
         logout={async () => {
           if (lichessSession.handle) {
             const removal = await tauri.removeLichessAccount(lichessSession.handle);
-            if (removal.state === "not_found") return;
-            if (removal.durability_uncertain) {
+            if (removal.state === "removed" && removal.durability_uncertain) {
               notifications.show({
                 message: t("Home.Accounts.RemoveDurabilityUncertain", {
                   defaultValue:

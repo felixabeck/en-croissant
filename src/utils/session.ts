@@ -194,23 +194,24 @@ export async function initializePersistedSessions(): Promise<void> {
         }),
     );
 
-    let accounts: Awaited<ReturnType<typeof tauri.listLichessAccounts>> = [];
+    let accounts: Awaited<ReturnType<typeof tauri.listLichessAccounts>> | null = null;
     try {
         accounts = await tauri.listLichessAccounts();
     } catch {
         // The sanitized public sessions remain usable offline. A later startup reconciles them.
     }
+    // A successful listing is newer authority than migration, including confirmed absence.
     const authoritative = new Map(
-        [
-            ...accounts,
-            ...migrated.filter(
+        (
+            accounts ??
+            migrated.filter(
                 (account): account is NonNullable<typeof account> =>
                     account !== null &&
                     account !== undefined &&
                     typeof account.username === "string" &&
                     typeof account.handle === "string",
-            ),
-        ].map((account: { username: string; handle: string }) => [
+            )
+        ).map((account: { username: string; handle: string }) => [
             account.username.toLocaleLowerCase(),
             account,
         ]),
@@ -219,7 +220,10 @@ export async function initializePersistedSessions(): Promise<void> {
         const lichess = session.lichess;
         if (!lichess) return session;
         const account = authoritative.get(lichess.username.toLocaleLowerCase());
-        return account ? { ...session, lichess: { ...lichess, handle: account.handle } } : session;
+        if (account) return { ...session, lichess: { ...lichess, handle: account.handle } };
+        return accounts === null
+            ? session
+            : { ...session, lichess: { ...lichess, handle: undefined } };
     });
     const existing = new Set(
         reconciled.flatMap((session) =>
