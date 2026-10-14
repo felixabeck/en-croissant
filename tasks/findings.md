@@ -14445,6 +14445,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Correction to the 2026-10-13 note above:** agent-kit f-20261011-08 is a different defect (the literal "Still open" guard), not this stale close-receipt header hash. This entry's reclose failure was added to agent-kit f-20261011-08 as a second witness of the same close path, so one writer fix covers both; close this entry when the vendor bump carries it.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a68de94e9228bd49abd6fd7c17e43d0ad9130ca17eca12ada3de7e1f44b97972","input_sha256":"6d4142d20590d998e44114c94a38a81d0d4d0fb44ec855480c61ceab2598d08e","kind":"mutation-receipt","operation":"0e94726659cd2bdc2d8f93443056efa20c33b879e2f59fa0baccd294b5920cd0","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-15"],"target":"f-20261008-15","v":1} -->
 
+**Pickup re-check 2026-10-14 (setup simplification):** obsolete. The stale close-receipt defect was fixed in agent-kit c6bdb226 and reached ChessFable through vendor commit d445b128; current scripts/findings.py close refreshes earlier close receipts before publishing the new closure. Closing is refused today only because an earlier annotation in this entry says "Still open", which is agent-kit f-20261011-08; close this finding once that is fixed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"110316cacc9a131046a8945c9fc48dbf568528ff7851143f56697f28245699d4","input_sha256":"dcbb45ff5236845393e5a860e5776afc20dc1d0882331e997e4b8fbd063e787e","kind":"mutation-receipt","operation":"68179cccc957d995d5754d27746723a732225abf9ed199389b8780bb4aa5de2e","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-15"],"target":"f-20261008-15","v":1} -->
+
 ---
 
 ## 2026-10-08 — filed through the inbox spool
