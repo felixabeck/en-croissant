@@ -15946,3 +15946,20 @@ Fresh tauri-build and pnpm verify:app passed on clean 52451154, canonical comple
 
 This closes the measured ownership defect and its completed local proof contract. Earlier individual CANTOPEN witnesses remain unattributed, green suites are not retrospective diagnoses. The ordinary-descriptor source probe ran on Linux, Windows GNU proof is compile/lint only, and native macOS/Windows runtime CI remains a separate required release step. Closure records will receive records-only review and final gates will bind the resulting clean HEAD before explicit fast-forward master push. Installation, build-ledger publication and retirement have not yet happened. All original fifteen findings remain handled, their setup machinery is not restored. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"e868a46c2f006a2b1ae32c8c25350e5da70aae327a27d4c5adc23673425d0caf","header_sha256":"4867ab6cdc4824c30fd84c9c03606570c179f97e6bb3c91f0a6b40d31f8d0eca","header_status":"handled","input_sha256":"0170fbdbc8503617385bfb7a7540fa2d73a83bd9c992e194c0feb51bc654a29e","kind":"mutation-receipt","operation":"e6d29e019142dbabdcd449e07ef448d2787d4bfdd6b8de159a7c17fc01b56414","options":{"section":null},"request_id_sha256":null,"results":["f-20261014-02"],"target":"f-20261014-02","v":1} -->
+
+---
+
+## 2026-10-14 — filed through the inbox spool
+
+### The new Unix primary-pin FIFO fixture calls an API unavailable on macOS
+
+* **ID:** f-20261014-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Follow-up of:** f-20261014-02
+* **Where:** src-tauri/src/db/bound_sqlite.rs:2973, primary_pin_rejects_changed_and_nonregular_candidates_before_publication, introduced by native repair commit28dec938.
+* **Defect:** The cfg(unix) test constructs a FIFO through rustix::fs::mkfifoat, which the locked rustix crate does not export for Apple targets. Pushed-SHA Test run38634597822 at be320461 failed macOS runtime compilation and both Darwin platform jobs with E0425, cannot find function mkfifoat in module rustix::fs. The macOS runtime test did not run, this is compile failure rather than evidence about primary-pin runtime semantics.
+* **Failure scenario:** Every required macOS test or Darwin all-targets clippy job compiling this Unix test fails before verification, blocking manual drain completion and reviewed installation.
+* **Evidence:** /tmp/chessfable-drain-final-20261014/ci-darwin-x86_64.log, ci-darwin-arm.log and ci-macos-test.log. Jobs116094418122,116094418803 and116094417876 each report the same missing API at line2973 and exit101. The prior Linux source probe retained Linux dependency APIs and was not native macOS proof.
+* **Fix shape:** Preserve the real FIFO case on every supported Unix platform. Reuse the established libc::mkfifo path within this same module, extracting one test-only FIFO creation operation for the new case and the two existing bound-SQLite FIFO callers. Preserve their mode bits, nonblocking checks, genuine special-file refusal and ownership assertions. No Linux-only guard, ignored case, new dependency, SDK, workflow, gate or production behavior change.
+* **Proof:** Relevant bound-SQLite runtime suite and local all-targets lint/test proof, pre-review and independent closure before final gates. The existing macOS compile red is the failing-platform witness, Linux passes are not a Mac repair proof. Required pushed-SHA native macOS runtime and both Darwin compilation jobs must pass, with Windows jobs preserved. All fifteen original findings and the measured native ownership closure remain handled.
+* **Found by:** Codex manual completion after explicit fast-forward master push, 2026-10-14. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
