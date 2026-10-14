@@ -78,7 +78,9 @@ recomputed on the next read.
   is written and covers both the write and drain. A termination request preempts the in-flight
   exchange through the actor's interrupt, including a warm transition waiting under its lifecycle
   lease. Teardown keeps its own bounds and is never interrupted. Every terminator reports the
-  shared cleanup attempt outcome for its exact generation.
+  shared cleanup attempt outcome for its exact generation. Physical teardown binds that attempt
+  under the publication barrier before waiting for a lifecycle lease. Warm search stop retains
+  its actor until physical cleanup is required.
 * Keep the original child handle and executable/resource leases until a successful OS wait confirms
   cleanup, including incomplete IO construction. Protocol service closes permanently on teardown.
   The existing generation-keyed pending registry retains failed cleanup owners. Each explicit
@@ -90,7 +92,9 @@ recomputed on the next read.
 * A live game session retains its production loop cleanup result through natural completion until
   retirement observes it. Reserve one of 4096 unobserved-session slots before launch. Natural
   success or completed retirement releases the slot. Failed child cleanup remains supervisor-owned.
-  Shutdown visits each captured session once. Task join payloads stay in native diagnostics and
+  Session owners serialize join observation, including cancellation restoration, and retain
+  failed joins and bounded timeout outcomes. Shutdown visits each captured session once.
+  Task join payloads stay in native diagnostics and
   use the shared renderer-safe error conversion.
 * Check that stopping one tab's engine cannot kill another tab's.
 

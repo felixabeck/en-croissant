@@ -934,10 +934,7 @@ impl ChildControl for ProcessChildControl {
         if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
             return Err(Error::Conflict("injected engine quit failure".into()));
         }
-        let stdin = self.stdin.as_mut().ok_or(Error::NoStdin)?;
-        stdin.write_all(b"quit\n").await?;
-        stdin.flush().await?;
-        Ok(())
+        self.write_line("quit").await
     }
 
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
@@ -1304,9 +1301,9 @@ pub struct EngineActor {
     cleanup: Option<Arc<ChildOwner>>,
     tx: mpsc::Sender<EngineCommand>,
     control_tx: mpsc::Sender<EngineCommand>,
-    // The task owns the runtime (and therefore the child process handles).
-    // Keep its handle with every clone so lifecycle callers can await its
-    // completion instead of detaching it after `Terminate`.
+    // Await protocol-task completion independently of confirmed child reaping.
+    // ChildOwner retains cleanup authority, including through PendingActor after
+    // this task exits with an unconfirmed reap.
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     joined: Arc<StdMutex<Option<ActorJoin>>>,
     termination_outcome: ActorTerminationOutcome,
@@ -1354,7 +1351,7 @@ static TERMINATION_REPLY_GATES: crate::infra::test_hooks::KeyedTestValues<
 > = crate::infra::test_hooks::KeyedTestValues::new();
 
 #[cfg(test)]
-static DRAIN_SNAPSHOT_GATES: crate::infra::test_hooks::KeyedTestValues<
+static TEARDOWN_SNAPSHOT_GATES: crate::infra::test_hooks::KeyedTestValues<
     (EngineKey, u64),
     Arc<TerminationReplyGate>,
 > = crate::infra::test_hooks::KeyedTestValues::new();
@@ -1999,9 +1996,30 @@ impl EngineSupervisor {
         pending: Arc<PendingActor>,
         admission: AdmissionLease,
     ) -> Result<SupervisedEngine, Error> {
+        let previous = {
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let valid = admission.cancel_error().is_none()
+                && self
+                    .validate_admission_policy(
+                        &key,
+                        &admission.admission.engine_id,
+                        &admission.admission.executable,
+                    )
+                    .is_ok();
+            if valid {
+                self.observe_previous_termination_locked(&key, admission.generation())
+            } else {
+                None
+            }
+        };
         let lifecycle = self.lifecycle_lease(&key);
         let _transition = lifecycle.lock().await;
-        self.publish_admitted_locked(key, pending, admission).await
+        self.publish_admitted_locked(key, pending, admission, previous)
+            .await
     }
 
     async fn publish_admitted_locked(
@@ -2009,6 +2027,7 @@ impl EngineSupervisor {
         key: EngineKey,
         pending: Arc<PendingActor>,
         mut admission: AdmissionLease,
+        previous: Option<Arc<PendingTermination>>,
     ) -> Result<SupervisedEngine, Error> {
         let actor = pending
             .actor
@@ -2034,22 +2053,18 @@ impl EngineSupervisor {
         ) {
             return Err(reject_actor(&pending, self.pending_actors.clone(), error).await);
         }
-        let previous = {
+        let previous = if previous.is_some() {
+            previous
+        } else {
             let _registration = self.registration.lock().await;
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.get_exact(&key)
-                .and_then(|previous| self.handoff_published_locked(&key, previous.generation))
+            self.observe_previous_termination_locked(&key, admission.generation())
         };
         if let Some(previous) = previous {
-            let stop = match previous.actor.get() {
-                Some(actor) => actor.stop_current().await,
-                None => Ok(()),
-            };
-            let terminate = previous.terminate(self.pending_actors.clone()).await;
-            if let Err(primary) = combine_shutdown_results(stop, terminate) {
+            if let Err(primary) = previous.wait().await {
                 return Err(reject_actor(&pending, self.pending_actors.clone(), primary).await);
             }
         }
@@ -2187,7 +2202,7 @@ impl EngineSupervisor {
             let pending = self.spawn_pending(&key, executable, &admission).await?;
             let mut guard = PendingActorGuard::new(pending.clone(), self.pending_actors.clone());
             let published = self
-                .publish_admitted_locked(key.clone(), pending, admission)
+                .publish_admitted_locked(key.clone(), pending, admission, None)
                 .await;
             guard.disarm();
             let current = published?;
@@ -2245,7 +2260,7 @@ impl EngineSupervisor {
         generation: u64,
         observed: Option<Arc<EngineActor>>,
     ) -> Result<(), Error> {
-        let observed = {
+        let (observed, attempt) = {
             let _registration = self.registration.lock().await;
             let _coordination = self
                 .admission_coordination
@@ -2277,18 +2292,15 @@ impl EngineSupervisor {
             {
                 self.cancel_admission(key, &admission);
             }
-            targeted
+            let attempt = self.observe_termination_locked(key, generation, false);
+            (targeted, attempt)
         };
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
-        let tracked = self.pending_actors.contains_key(&generation)
-            || self
-                .get_exact(key)
-                .is_some_and(|entry| entry.generation == generation);
-        let result = self.reap_published(key, generation).await;
-        match (result, observed) {
-            (Ok(()), Some(actor)) if !tracked => actor.final_termination_outcome().await,
-            (result, _) => result,
+        match (attempt, observed) {
+            (Some(attempt), _) => attempt.wait().await,
+            (None, Some(actor)) => actor.final_termination_outcome().await,
+            (None, None) => Ok(()),
         }
     }
 
@@ -2330,7 +2342,7 @@ impl EngineSupervisor {
         generation: Option<u64>,
         release: bool,
     ) -> Result<bool, Error> {
-        let (owner_generation, captured_admission) = {
+        let (owner_generation, captured_admission, pending_owners) = {
             let _coordination = self
                 .admission_coordination
                 .lock()
@@ -2341,13 +2353,23 @@ impl EngineSupervisor {
             } else {
                 None
             };
-            (owner_generation, captured_admission)
+            let pending_owners = if generation.is_none() {
+                self.pending_actors
+                    .iter()
+                    .filter(|entry| &entry.key == key)
+                    .map(|entry| entry.owner_generation)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            (owner_generation, captured_admission, pending_owners)
         };
         let mut target_generations = HashSet::new();
         if let Some(generation) = generation {
             target_generations.insert(generation);
         } else {
             target_generations.extend(owner_generation);
+            target_generations.extend(pending_owners);
             target_generations.extend(captured_admission.as_ref().map(|entry| entry.generation));
         }
         if target_generations.is_empty() {
@@ -2366,7 +2388,7 @@ impl EngineSupervisor {
             }
         }
         let registration = self.registration.lock().await;
-        {
+        let attempts = {
             let _coordination = self
                 .admission_coordination
                 .lock()
@@ -2392,10 +2414,39 @@ impl EngineSupervisor {
                     search.mark_cancelled();
                 }
             }
-        }
+            // Warm stop keeps serving the actor. Physical release, a terminal
+            // actor, or an already handed-off owner binds cleanup before waiting.
+            let physical = self.get_exact(key).filter(|current| {
+                target_generations.contains(&current.owner_generation())
+                    && (release || current.actor.terminal_snapshot().is_some())
+            });
+            let mut generations = self
+                .pending_actors
+                .iter()
+                .filter_map(|entry| {
+                    (&entry.key == key
+                        && (target_generations.contains(&entry.owner_generation)
+                            || selected_actor == Some(entry.generation)))
+                    .then_some(entry.generation)
+                })
+                .collect::<HashSet<_>>();
+            generations.extend(physical.map(|current| current.generation));
+            generations
+                .into_iter()
+                .filter_map(|generation| self.observe_termination_locked(key, generation, true))
+                .collect::<Vec<_>>()
+        };
         drop(registration);
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
+        if !attempts.is_empty() {
+            let results =
+                futures_util::future::join_all(attempts.iter().map(|attempt| attempt.wait())).await;
+            return results
+                .into_iter()
+                .fold(Ok(()), combine_shutdown_results)
+                .map(|_| false);
+        }
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
             if let Some(generation) = selected_actor {
                 self.reap_published(key, generation).await?;
@@ -2457,18 +2508,36 @@ impl EngineSupervisor {
                 })
                 .map(|entry| entry.value().clone())
                 .collect();
+            let published = published.map(|entry| {
+                let attempt = entry.start_termination(self.pending_actors.clone());
+                (entry, attempt)
+            });
+            let pending = pending
+                .into_iter()
+                .map(|entry| {
+                    let attempt = entry.start_termination(self.pending_actors.clone());
+                    (entry, attempt)
+                })
+                .collect::<Vec<_>>();
             (published, pending)
         };
+        #[cfg(test)]
+        for (entry, _) in published.iter().chain(pending.iter()) {
+            if let Some(gate) = TEARDOWN_SNAPSHOT_GATES.take(&(entry.key.clone(), entry.generation))
+            {
+                gate.park().await;
+            }
+        }
         let published = async {
             match published {
-                Some(entry) => entry.terminate(self.pending_actors.clone()).await,
+                Some((_, attempt)) => attempt.wait().await,
                 None => Ok(()),
             }
         };
         let pending = futures_util::future::join_all(
             pending
                 .into_iter()
-                .map(|entry| async move { entry.terminate(self.pending_actors.clone()).await }),
+                .map(|(_, attempt)| async move { attempt.wait().await }),
         );
         let (published, pending) = tokio::join!(published, pending);
         pending
@@ -2492,13 +2561,15 @@ impl EngineSupervisor {
                 .pending_actors
                 .entry(generation)
                 .or_insert_with(|| {
-                    Arc::new(PendingActor::new(
+                    let mut pending = PendingActor::new(
                         current.actor.clone(),
                         key.clone(),
                         generation,
                         current.engine_id.clone(),
                         current.executable.clone(),
-                    ))
+                    );
+                    pending.owner_generation = current.owner_generation();
+                    Arc::new(pending)
                 })
                 .clone();
             self.actors
@@ -2513,18 +2584,56 @@ impl EngineSupervisor {
     }
 
     async fn reap_published(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
-        let pending = {
+        let attempt = {
             let _registration = self.registration.lock().await;
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.handoff_published_locked(key, generation)
+            self.observe_termination_locked(key, generation, false)
         };
-        match pending {
-            Some(entry) => entry.terminate(self.pending_actors.clone()).await,
+        match attempt {
+            Some(attempt) => attempt.wait().await,
             None => Ok(()),
         }
+    }
+
+    // Bind the immutable attempt under the publication barrier, before any
+    // lifecycle wait. The attempt task owns cleanup even if its caller cancels.
+    fn observe_termination_locked(
+        &self,
+        key: &EngineKey,
+        generation: u64,
+        stop_first: bool,
+    ) -> Option<Arc<PendingTermination>> {
+        self.handoff_published_locked(key, generation)
+            .map(|entry| entry.start_termination_with_stop(self.pending_actors.clone(), stop_first))
+    }
+
+    fn observe_previous_termination_locked(
+        &self,
+        key: &EngineKey,
+        generation: u64,
+    ) -> Option<Arc<PendingTermination>> {
+        let previous = self
+            .get_exact(key)
+            .map(|current| current.generation)
+            .or_else(|| {
+                self.pending_actors
+                    .iter()
+                    .filter(|entry| &entry.key == key && entry.generation < generation)
+                    .filter(|entry| {
+                        entry
+                            .termination
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .as_ref()
+                            .is_some_and(|attempt| attempt.result.get().is_none())
+                    })
+                    .map(|entry| entry.generation)
+                    .max()
+            });
+        previous.and_then(|previous| self.observe_termination_locked(key, previous, true))
     }
 
     pub fn get_exact(&self, key: &EngineKey) -> Option<SupervisedEngine> {
@@ -2681,6 +2790,7 @@ impl EngineSupervisor {
         loop {
             // Publication moves between the two sets under this same barrier.
             let (targets, pending) = {
+                let _registration = self.registration.lock().await;
                 let _coordination = self
                     .admission_coordination
                     .lock()
@@ -2705,23 +2815,52 @@ impl EngineSupervisor {
                     .filter(|entry| !visited.contains(&entry.generation))
                     .map(|entry| entry.value().clone())
                     .collect();
+                let targets = targets
+                    .into_iter()
+                    .map(|(key, generation, actor)| {
+                        let attempt = self.observe_termination_locked(&key, generation, false);
+                        ObservedTerminationTarget {
+                            key,
+                            generation,
+                            actor,
+                            attempt,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let pending = pending
+                    .into_iter()
+                    .map(|entry| {
+                        let attempt = entry.start_termination(self.pending_actors.clone());
+                        (entry, attempt)
+                    })
+                    .collect::<Vec<_>>();
                 (targets, pending)
             };
             if targets.is_empty() && pending.is_empty() {
                 break;
             }
-            visited.extend(targets.iter().map(|(_, generation, _)| *generation));
-            visited.extend(pending.iter().map(|entry| entry.generation));
+            visited.extend(targets.iter().map(|target| target.generation));
+            visited.extend(pending.iter().map(|(entry, _)| entry.generation));
             #[cfg(test)]
-            for (key, generation, _) in &targets {
-                if let Some(gate) = DRAIN_SNAPSHOT_GATES.take(&(key.clone(), *generation)) {
+            for target in &targets {
+                if let Some(gate) =
+                    TEARDOWN_SNAPSHOT_GATES.take(&(target.key.clone(), target.generation))
+                {
                     gate.park().await;
                 }
             }
-            let pending =
-                futures_util::future::join_all(pending.into_iter().map(|entry| async move {
-                    entry
-                        .terminate(self.pending_actors.clone())
+            #[cfg(test)]
+            for (entry, _) in &pending {
+                if let Some(gate) =
+                    TEARDOWN_SNAPSHOT_GATES.take(&(entry.key.clone(), entry.generation))
+                {
+                    gate.park().await;
+                }
+            }
+            let pending = futures_util::future::join_all(pending.into_iter().map(
+                |(entry, attempt)| async move {
+                    attempt
+                        .wait()
                         .await
                         .err()
                         .map(|error| ActorShutdownFailure {
@@ -2729,7 +2868,8 @@ impl EngineSupervisor {
                             generation: entry.generation,
                             error,
                         })
-                }));
+                },
+            ));
             let (registered, pending) = tokio::join!(self.terminate_targets(targets), pending);
             failures.extend(registered);
             failures.extend(pending.into_iter().flatten());
@@ -2739,11 +2879,21 @@ impl EngineSupervisor {
 
     async fn terminate_targets(
         &self,
-        targets: Vec<(EngineKey, u64, Arc<EngineActor>)>,
+        targets: Vec<ObservedTerminationTarget>,
     ) -> Vec<ActorShutdownFailure> {
         let results = futures_util::future::join_all(targets.into_iter().map(
-            |(key, generation, actor)| async move {
-                let result = self.terminate_observed(&key, generation, Some(actor)).await;
+            |ObservedTerminationTarget {
+                 key,
+                 generation,
+                 actor,
+                 attempt,
+             }| async move {
+                let lifecycle = self.lifecycle_lease(&key);
+                let _transition = lifecycle.lock().await;
+                let result = match attempt {
+                    Some(attempt) => attempt.wait().await,
+                    None => actor.final_termination_outcome().await,
+                };
                 (key, generation, result)
             },
         ))
@@ -2806,6 +2956,7 @@ impl EngineSupervisor {
             ready: Notify::new(),
             key: key.clone(),
             generation: admission.generation(),
+            owner_generation: admission.generation(),
             engine_id: admission.admission.engine_id.clone(),
             executable: admission.admission.executable.clone(),
             termination: StdMutex::default(),
@@ -2855,6 +3006,13 @@ async fn reject_actor(
     Error::with_cleanup(primary, pending.terminate(entries).await)
 }
 
+struct ObservedTerminationTarget {
+    key: EngineKey,
+    generation: u64,
+    actor: Arc<EngineActor>,
+    attempt: Option<Arc<PendingTermination>>,
+}
+
 struct ActorShutdownFailure {
     key: EngineKey,
     generation: u64,
@@ -2876,6 +3034,7 @@ struct PendingActor {
     ready: Notify,
     key: EngineKey,
     generation: u64,
+    owner_generation: u64,
     engine_id: String,
     executable: PathRef,
     termination: StdMutex<Option<Arc<PendingTermination>>>,
@@ -2885,6 +3044,20 @@ struct PendingActor {
 struct PendingTermination {
     result: OnceLock<Result<(), Arc<Error>>>,
     completed: Notify,
+}
+
+impl PendingTermination {
+    async fn wait(&self) -> Result<(), Error> {
+        loop {
+            let completed = self.completed.notified();
+            tokio::pin!(completed);
+            completed.as_mut().enable();
+            if let Some(result) = self.result.get().cloned() {
+                return result.map_err(Error::Shared);
+            }
+            completed.await;
+        }
+    }
 }
 
 impl PendingActor {
@@ -2902,6 +3075,7 @@ impl PendingActor {
             ready: Notify::new(),
             key,
             generation,
+            owner_generation: generation,
             engine_id,
             executable,
             termination: StdMutex::default(),
@@ -2929,6 +3103,19 @@ impl PendingActor {
         self: &Arc<Self>,
         entries: Arc<DashMap<u64, Arc<Self>>>,
     ) -> Arc<PendingTermination> {
+        self.start_termination_with_stop(entries, false)
+    }
+
+    fn start_termination_with_stop(
+        self: &Arc<Self>,
+        entries: Arc<DashMap<u64, Arc<Self>>>,
+        stop_first: bool,
+    ) -> Arc<PendingTermination> {
+        if !stop_first {
+            if let Some(actor) = self.actor.get() {
+                actor.interrupt.cancel();
+            }
+        }
         let mut termination = self
             .termination
             .lock()
@@ -2966,7 +3153,14 @@ impl PendingActor {
                 combine_shutdown_results(cleanup, joined)
             } else {
                 match entry.actor.get() {
-                    Some(actor) => actor.terminate().await,
+                    Some(actor) => {
+                        let stop = if stop_first {
+                            actor.stop_current().await
+                        } else {
+                            Ok(())
+                        };
+                        combine_shutdown_results(stop, actor.terminate().await)
+                    }
                     None => Err(Error::EngineDisconnected),
                 }
             }
@@ -2991,17 +3185,7 @@ impl PendingActor {
         self: &Arc<Self>,
         entries: Arc<DashMap<u64, Arc<Self>>>,
     ) -> Result<(), Error> {
-        let attempt = self.start_termination(entries);
-        loop {
-            let completed = attempt.completed.notified();
-            tokio::pin!(completed);
-            completed.as_mut().enable();
-            let result = attempt.result.get().cloned();
-            if let Some(result) = result {
-                return result.map_err(Error::Shared);
-            }
-            completed.await;
-        }
+        self.start_termination(entries).wait().await
     }
 }
 
@@ -4104,11 +4288,16 @@ impl UciIo for GameCleanupTestIo {
 impl EngineActor {
     #[cfg(test)]
     pub(crate) fn recoverable_cleanup_test_actor() -> Arc<Self> {
+        Self::recoverable_cleanup_test_actor_with_cause("production-loop-reap-failure")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recoverable_cleanup_test_actor_with_cause(cause: &str) -> Arc<Self> {
         let mut actor = Self::new(
             Box::new(GameCleanupTestIo {
                 started: Arc::default(),
                 delay: None,
-                error: Some("production-loop-reap-failure".into()),
+                error: Some(cause.into()),
             }),
             EngineDeadlines::default(),
         );
@@ -6983,6 +7172,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retained_cleanup_supervisor_callers_bind_before_lifecycle_wait() {
+        type TerminationWaiter<'a> =
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + 'a>>;
+
+        for (held, cancelled, caller) in [false, true].into_iter().flat_map(|held| {
+            [None, Some("first"), Some("second")]
+                .into_iter()
+                .flat_map(move |cancelled| {
+                    [
+                        "exact",
+                        "release",
+                        "stop",
+                        "unscoped",
+                        "kill",
+                        "drain",
+                        "replacement",
+                    ]
+                    .map(|caller| (held, cancelled, caller))
+                })
+        }) {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let key = EngineKey::new(
+                format!("bound-attempt-{held}-{cancelled:?}-{caller}"),
+                "engine".into(),
+            )
+            .unwrap();
+            let expected = Arc::new(Error::Conflict("original-overlapping-reap-failure".into()));
+            let gate = TerminationReplyGate::new();
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.termination_error = Some(expected.clone());
+            io.termination_gate = Some(gate.clone());
+            let calls = io.terminate_calls.clone();
+            let mut actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+            let owner = Arc::new(ChildOwner::default());
+            let (child, _, dropped) = child_control([FakeWait::Ready]);
+            owner.state.lock().unwrap().control = Some(Box::new(child));
+            actor.cleanup = Some(owner);
+            let current = supervisor.replace(key.clone(), actor).await.unwrap();
+            let lifecycle = supervisor.lifecycle_lease(&key);
+            let transition = if held {
+                Some(lifecycle.lock().await)
+            } else {
+                None
+            };
+            let mut first: TerminationWaiter<'_> =
+                Box::pin(supervisor.terminate_exact(&key, current.generation));
+            assert!(futures_util::poll!(first.as_mut()).is_pending());
+            wait_for_pending_termination(&gate).await;
+            assert!(
+                lifecycle.try_lock().is_err(),
+                "A's teardown or its caller holds the lifecycle lock"
+            );
+            let snapshot = if matches!(caller, "kill" | "drain") {
+                let snapshot = TerminationReplyGate::new();
+                TEARDOWN_SNAPSHOT_GATES.arm((key.clone(), current.generation), snapshot.clone());
+                Some(snapshot)
+            } else {
+                None
+            };
+            let mut second: TerminationWaiter<'_> = match caller {
+                "release" => Box::pin(supervisor.release_generation(&key, current.generation)),
+                "stop" => Box::pin(async {
+                    supervisor
+                        .stop_search(&key, Some(current.generation))
+                        .await
+                        .map(|_| ())
+                }),
+                "unscoped" => {
+                    Box::pin(async { supervisor.stop_search(&key, None).await.map(|_| ()) })
+                }
+                "kill" => Box::pin(supervisor.kill_engine(&key)),
+                "drain" => Box::pin(supervisor.terminate_tab(&key.tab)),
+                "replacement" => Box::pin(async {
+                    let (actor, _) = EngineActor::recording_test_actor(&[]);
+                    supervisor
+                        .replace(key.clone(), (*actor).clone())
+                        .await
+                        .map(|_| ())
+                }),
+                _ => Box::pin(supervisor.terminate_exact(&key, current.generation)),
+            };
+            assert!(futures_util::poll!(second.as_mut()).is_pending());
+            if let Some(snapshot) = &snapshot {
+                assert!(
+                    snapshot.parked.load(Ordering::SeqCst),
+                    "second caller crossed its snapshot barrier"
+                );
+            }
+            let pending = supervisor
+                .pending_actors
+                .get(&current.generation)
+                .unwrap()
+                .clone();
+            let attempt = pending
+                .termination
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut first = Some(first);
+            let mut second = Some(second);
+            match cancelled {
+                Some("first") => drop(first.take()),
+                Some("second") => drop(second.take()),
+                _ => {}
+            }
+            gate.open();
+            pending_test_wait(async {
+                while attempt.result.get().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            if let Some(snapshot) = snapshot {
+                snapshot.open();
+            }
+            assert!(
+                !dropped.load(Ordering::SeqCst),
+                "caller cancellation cannot reap or drop the retained child"
+            );
+            drop(transition);
+            for waiter in [first, second].into_iter().flatten() {
+                let error = waiter.await.unwrap_err();
+                assert_same_termination_failure(&error, &expected);
+            }
+            assert!(
+                !dropped.load(Ordering::SeqCst),
+                "attached callers must not start a retry"
+            );
+            supervisor
+                .terminate_exact(&key, current.generation)
+                .await
+                .unwrap();
+            assert!(dropped.load(Ordering::SeqCst));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let (successor, _) = EngineActor::recording_test_actor(&[]);
+            let successor = supervisor
+                .replace(key.clone(), (*successor).clone())
+                .await
+                .unwrap();
+            supervisor
+                .terminate_exact(&key, current.generation)
+                .await
+                .unwrap();
+            assert_eq!(
+                supervisor.get_exact(&key).unwrap().generation,
+                successor.generation
+            );
+            supervisor
+                .terminate_exact(&key, successor.generation)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn retained_cleanup_pending_attempts_survive_cancellation_and_recovery() {
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("retained-attempt".into(), "engine".into()).unwrap();
@@ -7055,6 +7401,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_cleanup_actor_join_panic_survives_recovered_reap() {
+        let capture = crate::error::LogCaptureScope::start();
         const MARKER: &str = "/private/retained-actor-panic-marker";
         let supervisor = EngineSupervisor::default();
         let key = EngineKey::new("retained-panic".into(), "engine".into()).unwrap();
@@ -7067,7 +7414,7 @@ mod tests {
             .admit(key.clone(), key.engine.clone(), path_ref("panic"), false)
             .await
             .unwrap();
-        let pending = supervisor.track_pending_actor(key, actor, &admission);
+        let pending = supervisor.track_pending_actor(key.clone(), actor, &admission);
         let first = pending
             .terminate(supervisor.pending_actors.clone())
             .await
@@ -7083,11 +7430,12 @@ mod tests {
             "successful child retry cannot erase actor join failure"
         );
         assert!(!serde_json::to_string(&retry).unwrap().contains(MARKER));
-        assert!(crate::error::TASK_JOIN_DIAGNOSTICS
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|line| line.contains(MARKER)));
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Error
+                && record.message.contains("engine actor task failed")
+                && record.message.contains("retained-panic:engine generation=")
+                && record.message.contains(MARKER)
+        }));
     }
 
     #[tokio::test]
@@ -7138,15 +7486,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn retained_child_executable(directory: &tempfile::TempDir) -> EngineExecutable {
-        use std::os::unix::fs::PermissionsExt;
-        let script = directory.path().join("retained-child.sh");
-        if !script.exists() {
-            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+    fn stdin_waiting_executable(directory: &tempfile::TempDir) -> EngineExecutable {
+        let executable = std::fs::canonicalize("/bin/cat").unwrap();
         EngineExecutable::test_fixture(
-            std::fs::File::open(script).unwrap(),
+            std::fs::File::open(executable).unwrap(),
             directory.path().to_owned(),
             Vec::new(),
         )
@@ -7172,7 +7515,7 @@ mod tests {
             .unwrap();
         set_terminate_failure(Some(TerminateFailure::QuitKillReap));
         let pending = supervisor
-            .spawn_pending(&key, retained_child_executable(&directory), &admission)
+            .spawn_pending(&key, stdin_waiting_executable(&directory), &admission)
             .await
             .unwrap();
         let owner = pending.cleanup.as_ref().unwrap().clone();
@@ -7227,7 +7570,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let executable = retained_child_executable(&directory);
+        let executable = stdin_waiting_executable(&directory);
         let refused = supervisor
             .spawn_pending(&other, executable, &admission2)
             .await;
@@ -7246,7 +7589,7 @@ mod tests {
             .unwrap();
         assert_eq!(supervisor.child_slots.available_permits(), 1);
         assert!(supervisor.pending_actors.is_empty());
-        let executable = retained_child_executable(&directory);
+        let executable = stdin_waiting_executable(&directory);
         let next = supervisor
             .spawn_pending(&other, executable, &admission2)
             .await
@@ -7267,7 +7610,7 @@ mod tests {
         supervisor.cancel_admission(&key, &cancelled.admission);
         assert!(matches!(
             supervisor
-                .spawn_pending(&key, retained_child_executable(&directory), &cancelled)
+                .spawn_pending(&key, stdin_waiting_executable(&directory), &cancelled)
                 .await,
             Err(Error::Cancellation)
         ));
@@ -7282,43 +7625,84 @@ mod tests {
     #[tokio::test]
     async fn retained_cleanup_partial_io_survives_failed_reap() {
         for fault in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
-            let supervisor = EngineSupervisor::default();
             let directory = tempfile::tempdir().unwrap();
-            let key = EngineKey::new(format!("partial-{fault:?}"), "engine".into()).unwrap();
-            let admission = supervisor
-                .admit(key.clone(), key.engine.clone(), path_ref("partial"), false)
-                .await
-                .unwrap();
-            set_spawn_io_failure(Some(fault));
-            set_terminate_failure(Some(TerminateFailure::ReapError));
-            let result = supervisor
-                .spawn_pending(&key, retained_child_executable(&directory), &admission)
-                .await;
-            assert!(
-                matches!(&result, Err(Error::OperationAndCleanup { .. })),
-                "partial IO reports failed cleanup, got {:?}",
-                result.as_ref().err().map(Error::diagnostic)
-            );
-            let pending = supervisor
-                .pending_actors
-                .get(&admission.generation())
-                .unwrap()
-                .clone();
-            let owner = pending.cleanup.as_ref().unwrap();
-            {
-                let mut state = owner.state.lock().unwrap();
-                assert!(state.executable.is_some());
-                assert!(state.slot.is_some());
-                state.control.as_mut().unwrap().clear_failure();
-            }
-            supervisor.terminate_tab(&key.tab).await.unwrap();
-            assert!(!owner.unresolved());
-            assert!(supervisor.pending_actors.is_empty());
-            assert_eq!(
-                supervisor.child_slots.available_permits(),
-                MAX_OWNED_CHILDREN
-            );
+            assert_partial_io_retains_child_until_reaped(&directory, fault).await;
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn retained_cleanup_fixture_reaches_partial_io_with_original_script_open_for_writing() {
+        for fault in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
+            let directory = tempfile::tempdir().unwrap();
+            let writer =
+                hold_original_waiting_script_open_for_writing(&directory, "retained-child.sh");
+            assert_partial_io_retains_child_until_reaped(&directory, fault).await;
+            drop(writer);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hold_original_waiting_script_open_for_writing(
+        directory: &tempfile::TempDir,
+        filename: &str,
+    ) -> std::fs::File {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+
+        let mut writer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(directory.path().join(filename))
+            .unwrap();
+        writer
+            .write_all(b"#!/bin/sh\nwhile IFS= read -r line; do :; done\n")
+            .unwrap();
+        writer
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        writer
+    }
+
+    #[cfg(unix)]
+    async fn assert_partial_io_retains_child_until_reaped(
+        directory: &tempfile::TempDir,
+        fault: SpawnIoFailure,
+    ) {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new(format!("partial-{fault:?}"), "engine".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), key.engine.clone(), path_ref("partial"), false)
+            .await
+            .unwrap();
+        set_spawn_io_failure(Some(fault));
+        set_terminate_failure(Some(TerminateFailure::ReapError));
+        let result = supervisor
+            .spawn_pending(&key, stdin_waiting_executable(directory), &admission)
+            .await;
+        assert!(
+            matches!(&result, Err(Error::OperationAndCleanup { .. })),
+            "partial IO reports failed cleanup, got {:?}",
+            result.as_ref().err().map(Error::diagnostic)
+        );
+        let pending = supervisor
+            .pending_actors
+            .get(&admission.generation())
+            .unwrap()
+            .clone();
+        let owner = pending.cleanup.as_ref().unwrap();
+        {
+            let mut state = owner.state.lock().unwrap();
+            assert!(state.executable.is_some());
+            assert!(state.slot.is_some());
+            state.control.as_mut().unwrap().clear_failure();
+        }
+        supervisor.terminate_tab(&key.tab).await.unwrap();
+        assert!(!owner.unresolved());
+        assert!(supervisor.pending_actors.is_empty());
+        assert_eq!(
+            supervisor.child_slots.available_permits(),
+            MAX_OWNED_CHILDREN
+        );
     }
 
     #[cfg(unix)]
@@ -7349,8 +7733,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let a = retained_child_executable(&directory);
-        let b = retained_child_executable(&directory);
+        let a = stdin_waiting_executable(&directory);
+        let b = stdin_waiting_executable(&directory);
         let (a, b) = tokio::join!(
             supervisor.spawn_pending(&key_a, a, &admission_a),
             supervisor.spawn_pending(&key_b, b, &admission_b)
@@ -7864,7 +8248,7 @@ mod tests {
             let mut guard =
                 PendingActorGuard::new(pending.clone(), supervisor.pending_actors.clone());
             let published = supervisor
-                .publish_admitted_locked(key, pending, admission)
+                .publish_admitted_locked(key, pending, admission, None)
                 .await;
             guard.disarm();
             published?
@@ -8426,21 +8810,8 @@ mod tests {
         })
         .await;
         drop(registration);
-        // Finish the registration guard's separate cleanup so the drain's only wait is the child.
-        pending_test_wait(async {
-            loop {
-                let completed = REGISTRATION_GUARD_DROPS.lock().unwrap().iter().any(
-                    |(dropped_key, dropped_generation, completed)| {
-                        dropped_key == &key && *dropped_generation == generation && *completed
-                    },
-                );
-                if completed {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
+        // The registration guard observes the same physical teardown. Both it
+        // and the drain remain pending until this child exits.
         let drain = supervisor.terminate_all();
         tokio::pin!(drain);
         let first_poll = futures_util::poll!(&mut drain);
@@ -8471,6 +8842,16 @@ mod tests {
         );
         pending_test_wait(drain).await.unwrap();
         assert!(terminated.exists());
+        pending_test_wait(async {
+            while !REGISTRATION_GUARD_DROPS.lock().unwrap().iter().any(
+                |(dropped_key, dropped_generation, completed)| {
+                    dropped_key == &key && *dropped_generation == generation && *completed
+                },
+            ) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         assert!(supervisor.pending_actors.is_empty());
         assert!(supervisor.get_exact(&key).is_none());
     }
@@ -10721,6 +11102,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_join_waiter_retains_panicking_actor_failure() {
+        let capture = crate::error::LogCaptureScope::start();
         const CAUSE: &str = "cancelled-join-waiter-private-panic-path";
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         let key =
@@ -10751,7 +11133,7 @@ mod tests {
         let payload = serde_json::to_value(&first).unwrap();
         assert!(!payload.to_string().contains(CAUSE));
         assert!(first.diagnostic().contains("engine actor task failed"));
-        let records = crate::error::TASK_JOIN_DIAGNOSTICS.lock().unwrap();
+        let records = capture.messages();
         let records = records
             .iter()
             .filter(|line| line.contains("cancelled-join-tab:cancelled-join-engine generation=982"))
@@ -12105,16 +12487,26 @@ mod tests {
 
         let failures = supervisor
             .terminate_targets(vec![
-                (
-                    timeout_key.clone(),
-                    timeout.generation,
-                    timeout.actor.clone(),
-                ),
-                (
-                    combined_key.clone(),
-                    combined.generation,
-                    combined.actor.clone(),
-                ),
+                ObservedTerminationTarget {
+                    key: timeout_key.clone(),
+                    generation: timeout.generation,
+                    actor: timeout.actor.clone(),
+                    attempt: supervisor.observe_termination_locked(
+                        &timeout_key,
+                        timeout.generation,
+                        false,
+                    ),
+                },
+                ObservedTerminationTarget {
+                    key: combined_key.clone(),
+                    generation: combined.generation,
+                    actor: combined.actor.clone(),
+                    attempt: supervisor.observe_termination_locked(
+                        &combined_key,
+                        combined.generation,
+                        false,
+                    ),
+                },
             ])
             .await;
         assert_eq!(failures.len(), 2);
@@ -14066,6 +14458,8 @@ mod tests {
         let failure = Arc::new(Error::EngineTimeout("lease holder failed reap".into()));
         let mut io = FakeIo::new(Arc::default(), []);
         io.termination_error = Some(failure.clone());
+        let gate = TerminationReplyGate::new();
+        io.termination_gate = Some(gate.clone());
         let reaps = io.terminate_calls.clone();
         let actor = Arc::new(EngineActor::new(Box::new(io), EngineDeadlines::default()));
         let current = supervisor
@@ -14089,10 +14483,11 @@ mod tests {
             .unwrap();
         // The observed interrupt proves exact termination crossed its barrier
         // and is waiting for the lease still held by this transition owner.
-        let error = supervisor
-            .reap_published(&key, current.generation)
-            .await
-            .unwrap_err();
+        wait_for_pending_termination(&gate).await;
+        let mut reaper = Box::pin(supervisor.reap_published(&key, current.generation));
+        assert!(futures_util::poll!(reaper.as_mut()).is_pending());
+        gate.open();
+        let error = reaper.await.unwrap_err();
         assert_same_termination_failure(&error, &failure);
         assert!(supervisor.get_exact(&key).is_none());
         assert!(!supervisor.pending_actors.contains_key(&current.generation));
@@ -14108,6 +14503,8 @@ mod tests {
         let failure = Arc::new(Error::EngineTimeout("snapshot target failed reap".into()));
         let mut io = FakeIo::new(Arc::default(), []);
         io.termination_error = Some(failure.clone());
+        let reap_gate = TerminationReplyGate::new();
+        io.termination_gate = Some(reap_gate.clone());
         let reaps = io.terminate_calls.clone();
         let actor = Arc::new(EngineActor::new(Box::new(io), EngineDeadlines::default()));
         let current = supervisor
@@ -14120,19 +14517,17 @@ mod tests {
             .await
             .unwrap();
         let gate = TerminationReplyGate::new();
-        DRAIN_SNAPSHOT_GATES.arm((key.clone(), current.generation), gate.clone());
+        TEARDOWN_SNAPSHOT_GATES.arm((key.clone(), current.generation), gate.clone());
         let drain = tokio::spawn({
             let supervisor = supervisor.clone();
             async move { supervisor.terminate_all().await }
         });
         wait_for_flag(&gate.parked, "drain's actor snapshot").await;
-        assert_same_termination_failure(
-            &supervisor
-                .reap_published(&key, current.generation)
-                .await
-                .unwrap_err(),
-            &failure,
-        );
+        wait_for_pending_termination(&reap_gate).await;
+        let mut reaper = Box::pin(supervisor.reap_published(&key, current.generation));
+        assert!(futures_util::poll!(reaper.as_mut()).is_pending());
+        reap_gate.open();
+        assert_same_termination_failure(&reaper.await.unwrap_err(), &failure);
         assert!(supervisor.get_exact(&key).is_none());
         assert!(!supervisor.pending_actors.contains_key(&current.generation));
         gate.open();
@@ -14171,17 +14566,6 @@ mod tests {
                 .await
                 .unwrap();
             actor.start_search(&GoMode::Infinite).await.unwrap();
-            let gate = TerminationReplyGate::new();
-            let drain = if through_drain {
-                DRAIN_SNAPSHOT_GATES.arm((key.clone(), current.generation), gate.clone());
-                let supervisor = supervisor.clone();
-                let tab = key.tab.clone();
-                let drain = tokio::spawn(async move { supervisor.terminate_tab(&tab).await });
-                wait_for_flag(&gate.parked, "drain snapshot before replacement").await;
-                Some(drain)
-            } else {
-                None
-            };
             // Exercise publication itself, including handoff and its graceful
             // Stop under the lifecycle lease, rather than constructing pending state.
             let replacement = tokio::spawn({
@@ -14215,19 +14599,19 @@ mod tests {
                         .get()
                         .is_some_and(|pending| Arc::ptr_eq(pending, &actor))));
             assert!(!actor.interrupt.is_cancelled());
-            let mut termination = match drain {
-                Some(drain) => {
-                    gate.open();
-                    drain
-                }
-                None => tokio::spawn({
+            let mut termination = if through_drain {
+                let supervisor = supervisor.clone();
+                let tab = key.tab.clone();
+                tokio::spawn(async move { supervisor.terminate_tab(&tab).await })
+            } else {
+                tokio::spawn({
                     let supervisor = supervisor.clone();
                     let key = key.clone();
                     async move { supervisor.terminate_exact(&key, current.generation).await }
-                }),
+                })
             };
-            match timeout(Duration::from_millis(500), &mut termination).await {
-                Ok(result) => result.unwrap().unwrap(),
+            let observed = match timeout(Duration::from_millis(500), &mut termination).await {
+                Ok(result) => result.unwrap().unwrap_err(),
                 Err(_) => {
                     missed_bounds.push(if through_drain {
                         "drain"
@@ -14237,18 +14621,16 @@ mod tests {
                     // Keep the deliberate removal probe bounded and reap its fake
                     // runtime before proceeding to the other table row.
                     actor.terminate().await.unwrap();
-                    termination.await.unwrap().unwrap();
+                    termination.await.unwrap().unwrap_err()
                 }
-            }
+            };
             let result = timeout(Duration::from_millis(500), replacement)
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(
-                matches!(result, Err(Error::EngineDisconnected)),
-                "through_drain={through_drain}: {:?}",
-                result.map(|_| ())
-            );
+            let result = result.map(|_| ()).unwrap_err();
+            assert!(matches!(result.without_shared(), Error::EngineDisconnected));
+            assert_same_termination_failure(&observed, &result);
             assert_eq!(reaps.load(Ordering::SeqCst), 1);
             assert!(!supervisor.pending_actors.contains_key(&current.generation));
             assert!(supervisor.get_exact(&key).is_none());
@@ -14538,16 +14920,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn real_child_ignoring_quit_is_force_killed_within_reap_budget() {
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
-        let script = directory.path().join("ignore-quit.sh");
-        std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
-            std::fs::File::open(&script).unwrap(),
-            directory.path().to_path_buf(),
-            vec![],
-        );
+        #[cfg(target_os = "linux")]
+        let writer = hold_original_waiting_script_open_for_writing(&directory, "ignore-quit.sh");
+        let executable = stdin_waiting_executable(&directory);
         let deadlines = EngineDeadlines {
             quit: Duration::from_millis(20),
             kill_reap: Duration::from_millis(200),
@@ -14562,6 +14938,8 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "quit-ignoring child must not outlive quit + kill_reap + slack"
         );
+        #[cfg(target_os = "linux")]
+        drop(writer);
     }
 
     #[cfg(unix)]

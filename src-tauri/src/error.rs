@@ -363,11 +363,6 @@ impl Error {
         owner: &str,
     ) -> Self {
         log::error!("{context} owner={owner}: {error}");
-        #[cfg(test)]
-        TASK_JOIN_DIAGNOSTICS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(format!("{context} owner={owner}: {error}"));
         Self::Conflict(context.into())
     }
 
@@ -568,10 +563,6 @@ impl Error {
         }
     }
 }
-
-#[cfg(test)]
-pub(crate) static TASK_JOIN_DIAGNOSTICS: std::sync::Mutex<Vec<String>> =
-    std::sync::Mutex::new(Vec::new());
 
 /// Classifies expected search-stop consequences without hiding cleanup failures.
 pub(crate) fn cancelled_search_error(error: Error, cancelled: bool) -> Error {
@@ -1479,6 +1470,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_cleanup_shared_join_conversion_omits_private_panic_marker() {
+        let capture = LogCaptureScope::start();
         const MARKER: &str = "/private/error-join-marker";
         let join = tokio::spawn(async { panic!("{MARKER}") })
             .await
@@ -1488,11 +1480,13 @@ mod tests {
         assert!(!serde_json::to_string(&error).unwrap().contains(MARKER));
         let composite = Error::with_cleanup(error, Err(Error::Cancellation));
         assert!(!serde_json::to_string(&composite).unwrap().contains(MARKER));
-        assert!(TASK_JOIN_DIAGNOSTICS
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|line| line.contains(MARKER)));
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Error
+                && record
+                    .message
+                    .contains("task join failed owner=error serialization test")
+                && record.message.contains(MARKER)
+        }));
     }
 
     #[test]
