@@ -1,8 +1,19 @@
 import { type Draft, produce } from "immer";
+import { z } from "zod";
 import { createStore, useStore } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { GameQuery, PlayerQuery, TournamentQuery } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
+import { databaseHandleSchema } from "@/utils/pathCapabilities";
+
+// Hydrated selections supply identity only. DatabaseView gets display metadata from the
+// fresh listing before rendering its children, so retain the stored metadata unchanged.
+const persistedDatabaseSchema = z
+    .object({
+        type: z.literal("success"),
+        file: databaseHandleSchema,
+    })
+    .passthrough();
 
 export interface DatabaseViewStore {
     database?: SuccessDatabaseInfo;
@@ -201,6 +212,21 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
         {
             name: "database-view",
             storage: createJSONStorage(() => sessionStorage),
+            merge: (persistedState, currentState) => {
+                const stored =
+                    persistedState && typeof persistedState === "object"
+                        ? (persistedState as Partial<DatabaseViewStore>)
+                        : {};
+                const parsed = persistedDatabaseSchema.safeParse(stored.database);
+                return {
+                    ...currentState,
+                    database: parsed.success ? (parsed.data as SuccessDatabaseInfo) : undefined,
+                    activeTab: stored.activeTab ?? currentState.activeTab,
+                    games: stored.games ?? currentState.games,
+                    players: stored.players ?? currentState.players,
+                    tournaments: stored.tournaments ?? currentState.tournaments,
+                };
+            },
         },
     ),
 );
