@@ -7763,3 +7763,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** game/analysis consumers can act on unsaved records before rollback, and full-record rollback can overwrite newer writes. Ordinary failed changes should never become liveness authority. Reversal requires proving equivalent visibility, receipt, hydration and queued-intent behavior before switching the atom contract.
 * **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f440f40084c8f1d6c0d679e70f6a3f1f2c71163c22ec1e40191e4cc63e1d4fcf","input_sha256":"66ce8bf187607c5e42ee8230e76a035174d1f52110c5a05b9bc235e20696d210","kind":"mutation-receipt","operation":"660f1182766463a1ca7bb613aebc2a12963e08f994caeb90aab344404b678803","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-25"],"target":"decisions-ledger","v":1} -->
+
+### d-20261014-26 — How should permanent local removal preserve its failure contract?
+
+* **Question:** How should permanent local removal preserve its failure contract?
+* **Governs:** f-20261001-17
+* **Chosen:** Preserve removal's decided drop-on-failure behavior as a restricted local-id operation.
+* **Rejected:** blanket after-save removal and generic optimistic opt-outs.
+* **Reason:** they restore a visible permanently retired engine or allow unsaved ordinary registrations. This narrows the write surface without reversing d-20261007-10. Reversal requires a new native retirement protocol and equivalent liveness proof.
+* **Decided by:** Codex, adopted reviewed plan under full auto, 2026-10-14. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86e6475e3c421dc826feb4599f80459cd3708fa508ff9363f81b30e846ba9c50","input_sha256":"172f2583bb9b450a8175783ed47f439a75663d8674760452862ea78976fc67ec","kind":"mutation-receipt","operation":"5c7a90ed146883219a6f04a1e06ba162da30adcc24e5b64e6642e12d972fb243","options":{"section":null},"request_id_sha256":null,"results":["d-20261014-26"],"target":"decisions-ledger","v":1} -->
