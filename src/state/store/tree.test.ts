@@ -1,8 +1,11 @@
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import type { Outcome } from "@/bindings";
+import i18n from "@/i18n";
+import enUSCatalogue from "@/translation/en-US.json";
+import deDECatalogue from "@/translation/de-DE.json";
 import { fixtureNode } from "@/tests/treeFixtures";
 import {
     createNode,
@@ -19,11 +22,23 @@ import {
     discardTreeStoreStorage,
     nextContinuation,
     retryTreeStoreStorage,
+    validateMoveSequence,
 } from "./tree";
 import { tabStorage } from "./tabStorage";
 import { serializeStorageValue } from "./debouncedStorage";
 
 const persistedIds: string[] = [];
+beforeAll(async () => {
+    await i18n.init({
+        lng: "en-US",
+        fallbackLng: "en-US",
+        resources: {
+            "en-US": { translation: enUSCatalogue.translation },
+            "de-DE": { translation: deDECatalogue.translation },
+        },
+        interpolation: { escapeValue: false },
+    });
+});
 afterEach(() => {
     for (const id of persistedIds.splice(0)) {
         closeTreeStore(id);
@@ -870,6 +885,113 @@ test("makeMoves rebases once for the first prepend and selects the final move", 
     expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
     expect(state.position).toEqual([0, 0, 0]);
     expect(getNodeAtPath(state.root, state.position).san).toBe("Nf3");
+});
+
+test.each([
+    ["malformed middle SAN", ["d5", "invalid", "Nf3"], 2],
+    ["malformed suffix SAN", ["d5", "Nf3", "invalid"], 3],
+    ["malformed middle UCI", ["d7d5", "g1z3", "b8c6"], 2],
+    ["malformed suffix UCI", ["d7d5", "g1f3", "b8z6"], 3],
+    ["illegal middle UCI", ["d7d5", "g1g3", "b8c6"], 2],
+    ["illegal suffix UCI", ["d7d5", "g1f3", "b8b6"], 3],
+] as const)("makeMoves atomically rejects %s", (_name, payload, moveNumber) => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([0, 0, 0]);
+    store.getState().setPracticePath([1, 0, 0]);
+    store.getState().setResult("1-0");
+    store.getState().save();
+    const before = store.getState();
+    const playSound = vi.spyOn(sound, "playSound").mockImplementation(() => undefined);
+    try {
+        const result = before.makeMoves({ payload: [...payload], mainline: true });
+        expect(store.getState()).toBe(before);
+        expect(store.getState()).toEqual(before);
+        expect(store.getState().root).toBe(before.root);
+        expect(store.getState().position).toBe(before.position);
+        expect(store.getState().headers).toBe(before.headers);
+        expect(store.getState().practicePath).toBe(before.practicePath);
+        expect(store.getState().dirty).toBe(false);
+        expect(playSound).not.toHaveBeenCalled();
+        expect(result).toEqual({
+            success: false,
+            error: new Error(
+                `${enUSCatalogue.translation["MoveInput.InvalidMove"]} (${moveNumber})`,
+            ),
+        });
+    } finally {
+        playSound.mockRestore();
+    }
+});
+
+test.each([
+    ["en-US", enUSCatalogue.translation],
+    ["de-DE", deDECatalogue.translation],
+] as const)(
+    "sequence rejection uses the %s catalogue without exposing untrusted input",
+    async (locale, catalogue) => {
+        await i18n.changeLanguage(locale);
+        try {
+            const token = "<untrusted-puzzle-token>";
+            const moveResult = validateMoveSequence(INITIAL_FEN, ["e4", token]);
+            expect(moveResult.success).toBe(false);
+            if (moveResult.success) throw new Error("Expected invalid move rejection");
+            expect(moveResult.error.message).toBe(`${catalogue["MoveInput.InvalidMove"]} (2)`);
+            expect(moveResult.error.message).not.toContain(token);
+
+            for (const [fen, errorKey] of [
+                ["untrusted-board w - - 0 1", "Errors.InvalidBoard"],
+                ["8/8/8/8/8/8/8/8 w - - 0 1", "Errors.EmptyBoard"],
+            ] as const) {
+                const positionResult = validateMoveSequence(fen, ["e2e4"]);
+                expect(positionResult.success).toBe(false);
+                if (positionResult.success) throw new Error("Expected invalid position rejection");
+                expect(positionResult.error.message).toBe(
+                    catalogue["Board.Analysis.InvalidPosition"].replace(
+                        "{{error}}",
+                        catalogue[errorKey],
+                    ),
+                );
+                expect(positionResult.error.message).not.toContain(fen);
+            }
+        } finally {
+            await i18n.changeLanguage("en-US");
+        }
+    },
+);
+
+test("makeMoves empty batch preserves exact state and emits no sound", () => {
+    const store = mainlinePrependStore();
+    const before = store.getState();
+    const playSound = vi.spyOn(sound, "playSound").mockImplementation(() => undefined);
+    try {
+        expect(before.makeMoves({ payload: [], mainline: true })).toEqual({
+            success: true,
+            moves: [],
+        });
+        expect(store.getState()).toBe(before);
+        expect(playSound).not.toHaveBeenCalled();
+    } finally {
+        playSound.mockRestore();
+    }
+});
+
+test("makeMoves validates a Black-to-move custom FEN and sounds only the final move", () => {
+    const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
+    const store = createTreeStore(undefined, defaultTree(fen));
+    const playSound = vi.spyOn(sound, "playSound").mockImplementation(() => undefined);
+    try {
+        const result = store.getState().makeMoves({ payload: ["e7e5", "Nf3"], mainline: true });
+        expect(result.success).toBe(true);
+        const state = store.getState();
+        expect(state.root.fen).toBe(fen);
+        expect(state.position).toEqual([0, 0]);
+        expect(state.currentNode().san).toBe("Nf3");
+        expect(state.currentNode().halfMoves).toBe(state.root.halfMoves + 2);
+        expect(playSound).toHaveBeenCalledOnce();
+    } finally {
+        playSound.mockRestore();
+    }
 });
 
 test("deleteMove rebases the cursor through a later sibling by identity", () => {

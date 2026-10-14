@@ -6,10 +6,11 @@ import { type Draft, produce } from "immer";
 import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist, type PersistStorage } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
+import i18n from "@/i18n";
 import { tabStorage, TREE_STORAGE_VERSION, type TabTreeStorageStatus } from "./tabStorage";
 import { ANNOTATION_INFO, type Annotation, nagGlyph } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
-import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
+import { parseSanOrUci, positionFromFen, translateChessopsError } from "@/utils/chessops";
 import { isPrefix } from "@/utils/misc";
 import { getAnnotation } from "@/utils/score";
 import { playSound } from "@/utils/sound";
@@ -27,6 +28,37 @@ import {
     getMemoizedBoardStateMap,
     normalizeTreeHalfMoves,
 } from "@/utils/treeReducer";
+
+export type MoveSequenceResult =
+    | { success: true; moves: Move[] }
+    | { success: false; error: Error };
+
+export function validateMoveSequence(fen: string, payload: string[]): MoveSequenceResult {
+    const [pos, positionError] = positionFromFen(fen);
+    if (!pos) {
+        return {
+            success: false,
+            error: new Error(
+                i18n.t("Board.Analysis.InvalidPosition", {
+                    error: translateChessopsError(i18n.t, positionError),
+                }),
+            ),
+        };
+    }
+    const moves: Move[] = [];
+    for (const [index, token] of payload.entries()) {
+        const move = parseSanOrUci(pos, token);
+        if (!move) {
+            return {
+                success: false,
+                error: new Error(`${i18n.t("MoveInput.InvalidMove")} (${index + 1})`),
+            };
+        }
+        pos.play(move);
+        moves.push(move);
+    }
+    return { success: true, moves };
+}
 
 export interface TreeStoreState extends TreeState {
     currentNode: () => TreeNode;
@@ -58,7 +90,11 @@ export interface TreeStoreState extends TreeState {
 
     appendMove: (args: { payload: Move; clock?: number }) => void;
 
-    makeMoves: (args: { payload: string[]; mainline?: boolean; changeHeaders?: boolean }) => void;
+    makeMoves: (args: {
+        payload: string[];
+        mainline?: boolean;
+        changeHeaders?: boolean;
+    }) => MoveSequenceResult;
     deleteMove: (path?: number[]) => void;
     promoteVariation: (path: number[]) => void;
     promoteToMainline: (path: number[]) => void;
@@ -394,20 +430,18 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
                 }),
             ),
 
-        makeMoves: ({ payload, mainline, changeHeaders = true }) =>
+        makeMoves: ({ payload, mainline, changeHeaders = true }) => {
+            if (payload.length === 0) return { success: true, moves: [] };
+            const state = get();
+            const node = getNodeAtPath(state.root, state.position);
+            const result = validateMoveSequence(node.fen, payload);
+            if (!result.success) return result;
             set(
                 produce((state) => {
-                    state.dirty = true;
-                    const node = getNodeAtPath(state.root, state.position);
-                    const [pos] = positionFromFen(node.fen);
-                    if (!pos) return;
-                    for (const [i, move] of payload.entries()) {
-                        const m = parseSanOrUci(pos, move);
-                        if (!m) return;
-                        pos.play(m);
+                    for (const [i, move] of result.moves.entries()) {
                         makeMove({
                             state,
-                            move: m,
+                            move,
                             last: false,
                             mainline,
                             sound: i === payload.length - 1,
@@ -415,7 +449,9 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
                         });
                     }
                 }),
-            ),
+            );
+            return result;
+        },
         goToEnd: () =>
             set(
                 produce((state) => {

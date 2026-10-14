@@ -1,7 +1,7 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
-import { act } from "react";
+import { act, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type {
@@ -10,7 +10,9 @@ import type {
   PuzzleDatabaseInfo,
   PuzzleRootDescriptor,
 } from "@/bindings";
-import { TreeStateProvider } from "@/components/common/TreeStateContext";
+import { TreeStateContext, TreeStateProvider } from "@/components/common/TreeStateContext";
+import type { TreeStore } from "@/state/store/tree";
+import { INITIAL_FEN } from "chessops/fen";
 import {
   puzzleTimerFamily,
   puzzleRatingRangeAtom,
@@ -32,7 +34,10 @@ const mocks = vi.hoisted(() => ({
   deletePuzzleDatabase: vi.fn(),
   getThemesForPuzzle: vi.fn(),
   notificationShow: vi.fn(),
+  playSound: vi.fn(),
 }));
+
+vi.mock("@/utils/sound", () => ({ playSound: mocks.playSound }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/i18n", async (original) => ({
@@ -134,6 +139,190 @@ const otherWorkspace: PuzzleRootDescriptor = {
   displayName: "Other puzzles",
 };
 
+function solutionButton() {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Puzzle.ViewSolution",
+  )!;
+}
+
+function hintButton() {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Puzzle.GetAHint",
+  )!;
+}
+
+async function loadPlaybackPuzzle(moves = "e2e4 e7e5 g1f3") {
+  mocks.getPuzzle.mockResolvedValue({
+    id: 10,
+    fen: INITIAL_FEN,
+    moves,
+    rating: 1200,
+    rating_deviation: 50,
+    popularity: 1,
+    nb_plays: 1,
+  });
+  const atoms = await renderPuzzles();
+  await act(async () => atoms.set(trackPuzzleTimeAtom, false));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')!.click();
+  });
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "1",
+  );
+  return atoms;
+}
+
+test.each([
+  ["malformed middle", "e2e4 g7z5 g1f3", 2, "g7z5"],
+  ["malformed suffix", "e2e4 e7e5 g1z3", 3, "g1z3"],
+  ["illegal middle", "e2e4 e7e4 g1f3", 2, "e7e4"],
+  ["illegal suffix", "e2e4 e7e5 g1g3", 3, "g1g3"],
+] as const)(
+  "setup and View solution reject %s without mutation or sound",
+  async (_name, moves, index, token) => {
+    await loadPlaybackPuzzle(moves);
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: "red",
+        title: "Common.Error",
+        message: `MoveInput.InvalidMove (${index})`,
+      }),
+    );
+    expect(mocks.notificationShow.mock.calls[0][0].message).not.toContain(token);
+    expect(treeStore.getState().root.children).toEqual([]);
+    expect(treeStore.getState().dirty).toBe(false);
+    const before = treeStore.getState();
+    mocks.notificationShow.mockClear();
+    mocks.playSound.mockClear();
+    await act(async () => solutionButton().click());
+    expect(treeStore.getState()).toBe(before);
+    expect(treeStore.getState()).toEqual(before);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).toHaveBeenCalledOnce();
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: `MoveInput.InvalidMove (${index})`,
+      }),
+    );
+    expect(mocks.notificationShow.mock.calls[0][0].message).not.toContain(token);
+    expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
+    await act(async () => solutionButton().click());
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(2);
+    expect(treeStore.getState()).toBe(before);
+  },
+);
+
+test("View solution preserves 500 ms playback and normal completion", async () => {
+  await loadPlaybackPuzzle();
+  vi.useFakeTimers();
+  mocks.playSound.mockClear();
+  await act(async () => solutionButton().click());
+  expect(treeStore.getState().position).toEqual([0]);
+  expect(hintButton().disabled).toBe(true);
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+  await act(async () => vi.advanceTimersByTimeAsync(499));
+  expect(treeStore.getState().position).toEqual([0]);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(treeStore.getState().position).toEqual([0, 0]);
+  await act(async () => vi.advanceTimersByTimeAsync(1000));
+  expect(treeStore.getState().position).toEqual([0, 0, 0]);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(mocks.playSound).toHaveBeenCalledTimes(3);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("View solution reports a thrown store subscriber and releases playing ownership", async () => {
+  await loadPlaybackPuzzle();
+  const unsubscribe = treeStore.subscribe((state) => {
+    if (state.currentNode().move) throw new Error("playback subscriber failed");
+  });
+  try {
+    await act(async () => solutionButton().click());
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: "red",
+        message: "playback subscriber failed",
+      }),
+    );
+    expect(hintButton().disabled).toBe(false);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("a superseded View solution cannot clear or advance its successor", async () => {
+  await loadPlaybackPuzzle();
+  vi.useFakeTimers();
+  await act(async () => solutionButton().click());
+  await act(async () => vi.advanceTimersByTimeAsync(250));
+  await act(async () => solutionButton().click());
+  const successor = treeStore.getState();
+  mocks.playSound.mockClear();
+  await act(async () => vi.advanceTimersByTimeAsync(250));
+  expect(treeStore.getState()).toBe(successor);
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(hintButton().disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(250));
+  expect(treeStore.getState().position).toEqual([0, 0]);
+  expect(hintButton().disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(1000));
+  expect(treeStore.getState().position).toEqual([0, 0, 0]);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("a stale thrown playback cannot notify or clear its replacement's playing state", async () => {
+  await loadPlaybackPuzzle();
+  vi.useFakeTimers();
+  let replaced = false;
+  const unsubscribe = treeStore.subscribe((state) => {
+    if (!replaced && state.position.length === 1) {
+      replaced = true;
+      solutionButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      throw new Error("stale playback subscriber failed");
+    }
+  });
+  try {
+    await act(async () => solutionButton().click());
+    expect(replaced).toBe(true);
+    expect(hintButton().disabled).toBe(true);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(treeStore.getState().position).toEqual([0, 0]);
+    expect(hintButton().disabled).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(treeStore.getState().position).toEqual([0, 0, 0]);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  } finally {
+    unsubscribe();
+  }
+});
+
+test.each(["new puzzle", "database", "unmount"] as const)(
+  "%s cancels View solution without late moves or errors",
+  async (replacement) => {
+    const atoms = await loadPlaybackPuzzle();
+    vi.useFakeTimers();
+    await act(async () => solutionButton().click());
+    await act(async () => {
+      if (replacement === "new puzzle") {
+        document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')!.click();
+      } else if (replacement === "database") {
+        atoms.set(selectedPuzzleDbAtom, otherDb);
+      } else {
+        root.unmount();
+      }
+    });
+    const before = treeStore.getState();
+    mocks.playSound.mockClear();
+    mocks.notificationShow.mockClear();
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(treeStore.getState()).toBe(before);
+    expect(mocks.playSound).not.toHaveBeenCalled();
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
+
 function commandError(category: ErrorCategory, message: string) {
   return new TauriCommandError({
     tag: "backend-error",
@@ -146,6 +335,12 @@ function outdatedAlert() {
   return [...document.querySelectorAll('[role="alert"]')].find((element) =>
     element.textContent?.includes("Puzzle.DatabaseOutdated"),
   );
+}
+
+let treeStore: TreeStore;
+function CaptureTreeStore() {
+  treeStore = useContext(TreeStateContext)!;
+  return null;
 }
 
 let root: Root;
@@ -181,6 +376,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.useRealTimers();
   host.remove();
   portals.remove();
   localStorage.clear();
@@ -196,6 +392,7 @@ async function renderPuzzles() {
         <Provider store={store}>
           <WorkspaceTabScope tabId="puzzles-test">
             <TreeStateProvider>
+              <CaptureTreeStore />
               <Puzzles id="puzzles-test" />
             </TreeStateProvider>
           </WorkspaceTabScope>
@@ -455,7 +652,7 @@ test("puzzle or database replacement cancels completed-theme ownership and refus
   mocks.getPuzzleThemes.mockResolvedValue(["fork"]);
   mocks.getPuzzle.mockResolvedValue({
     id: 1,
-    fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+    fen: INITIAL_FEN,
     moves: "e2e4",
     rating: 1200,
     rating_deviation: 10,

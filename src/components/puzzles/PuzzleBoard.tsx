@@ -7,6 +7,9 @@ import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
 import { useContext, useState } from "react";
 import { useStore } from "zustand";
+import { useTranslation } from "react-i18next";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { validateMoveSequence } from "@/state/store/tree";
 import { Chessground } from "@/chessground/Chessground";
 import type { PathRef } from "@/bindings";
 import { jumpToNextPuzzleAtom, moveHighlightAtom, showCoordinatesAtom } from "@/state/atoms";
@@ -33,6 +36,7 @@ function PuzzleBoard({
   generatePuzzle: (db: PathRef) => Promise<void>;
   db: PathRef | null;
 }) {
+  const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
@@ -86,6 +90,13 @@ function PuzzleBoard({
     newPos.play(move);
 
     if (puzzle.moves[currentMove] === uci || newPos.isCheckmate()) {
+      const newMoves = puzzle.moves.slice(currentMove, currentMove + 2);
+      const validation = validateMoveSequence(currentNode.fen, newMoves);
+      if (!validation.success) {
+        notifyUnlessCancelled(t("Common.Error"), validation.error);
+        reset();
+        return;
+      }
       if (currentMove === puzzle.moves.length - 1) {
         if (puzzle.completion !== "incorrect") {
           await changeCompletion("correct");
@@ -98,12 +109,16 @@ function PuzzleBoard({
           return;
         }
       }
-      const newMoves = puzzle.moves.slice(currentMove, currentMove + 2);
-      makeMoves({
+      const result = makeMoves({
         payload: newMoves,
         mainline: true,
         changeHeaders: false,
       });
+      if (!result.success) {
+        notifyUnlessCancelled(t("Common.Error"), result.error);
+        reset();
+        return;
+      }
     } else {
       makeMove({
         payload: move,

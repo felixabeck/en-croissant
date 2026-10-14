@@ -51,6 +51,7 @@ import {
   trackPuzzleTimeAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import { validateMoveSequence } from "@/state/store/tree";
 import { puzzleDatabaseExtension } from "@/utils/db";
 import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
@@ -95,6 +96,7 @@ function Puzzles({ id }: { id: string }) {
   const [settingsOpened, setSettingsOpened] = useState(false);
   const requestGeneration = useRef(0);
   const puzzleRequest = useRef<AbortController | null>(null);
+  const solutionAbortRef = useRef<AbortController | null>(null);
   const listingController = useRef<AbortController | null>(null);
   const themeController = useRef<AbortController | null>(null);
   const completedThemeController = useRef<AbortController | null>(null);
@@ -117,6 +119,9 @@ function Puzzles({ id }: { id: string }) {
   useEffect(() => {
     requestGeneration.current++;
     puzzleRequest.current?.abort();
+    solutionAbortRef.current?.abort();
+    solutionAbortRef.current = null;
+    setIsPlayingSolution(false);
     completedThemeController.current?.abort();
     completedThemeController.current = null;
   }, [effectiveSelectedDbKey]);
@@ -129,6 +134,8 @@ function Puzzles({ id }: { id: string }) {
   useEffect(
     () => () => {
       puzzleRequest.current?.abort();
+      solutionAbortRef.current?.abort();
+      solutionAbortRef.current = null;
       listingController.current?.abort();
       themeController.current?.abort();
       completedThemeController.current?.abort();
@@ -246,11 +253,15 @@ function Puzzles({ id }: { id: string }) {
       : 0;
 
   function setPuzzle(puzzle: { fen: string; moves: string[] }) {
-    setFen(puzzle.fen);
-    makeMove({ payload: parseUci(puzzle.moves[0])! });
+    try {
+      const result = validateMoveSequence(puzzle.fen, puzzle.moves);
+      if (!result.success) throw result.error;
+      setFen(puzzle.fen);
+      if (result.moves[0]) makeMove({ payload: result.moves[0] });
+    } catch (error) {
+      notifyUnlessCancelled(commonErrorRef.current, error);
+    }
   }
-
-  const solutionAbortRef = useRef<AbortController | null>(null);
 
   async function generatePuzzle(db: PathRef, force: boolean = false) {
     let nextIndex = puzzles.findIndex((p, i) => i > currentPuzzle && p.completion === "incomplete");
@@ -829,22 +840,31 @@ function Puzzles({ id }: { id: string }) {
                 solutionAbortRef.current?.abort();
                 const abortController = new AbortController();
                 solutionAbortRef.current = abortController;
-
-                const curPuzzle = puzzles[currentPuzzle];
-                if (curPuzzle.completion === "incomplete") {
-                  changeCompletion("incorrect");
-                }
+                const isCurrent = () =>
+                  solutionAbortRef.current === abortController && !abortController.signal.aborted;
                 setIsPlayingSolution(true);
-                goToStart();
-                for (let i = 0; i < curPuzzle.moves.length; i++) {
-                  if (abortController.signal.aborted) break;
-                  makeMove({
-                    payload: parseUci(curPuzzle.moves[i])!,
-                    mainline: true,
-                  });
-                  await new Promise((r) => setTimeout(r, 500));
+                try {
+                  const curPuzzle = puzzles[currentPuzzle];
+                  const result = validateMoveSequence(curPuzzle.fen, curPuzzle.moves);
+                  if (!result.success) throw result.error;
+                  if (!isCurrent()) return;
+                  if (curPuzzle.completion === "incomplete") {
+                    void changeCompletion("incorrect");
+                  }
+                  goToStart();
+                  for (const move of result.moves) {
+                    if (!isCurrent()) return;
+                    makeMove({ payload: move, mainline: true });
+                    await new Promise((r) => setTimeout(r, 500));
+                  }
+                } catch (error) {
+                  if (isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);
+                } finally {
+                  if (solutionAbortRef.current === abortController) {
+                    solutionAbortRef.current = null;
+                    setIsPlayingSolution(false);
+                  }
                 }
-                setIsPlayingSolution(false);
               }}
               disabled={puzzles.length === 0}
             >
