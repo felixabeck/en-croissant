@@ -7900,3 +7900,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Cancellation adds an operation action without changing established ownership. Reversal path: an explicit product ownership decision.
 * **Decided by:** Codex, full auto, adopting reviewed plan D4 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"b6680cdc2ae99290cc85cce9289d6d3dd48d226f3b49f4dc22bf7d748ac4dbac","input_sha256":"8cfa6c7039a831fc9495edcfdd799f13e1dd35e8396cb8f1bda5235ddca20d1b","kind":"mutation-receipt","operation":"6e00bd0cea6ca25339306df9673d7ccabbb25cafb6dbc5b98e5fc375e5e50f7a","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-09","d-20261015-10","d-20261015-11","d-20261015-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-13 — How should the slow database test matrices preserve coverage while using harness parallelism?
+
+* **Question:** How should the slow database test matrices preserve coverage while using harness parallelism?
+* **Governs:** f-20260929-08
+* **Chosen:** Split the independent permission and abandoned-command matrix cases into separately discovered Rust tests, sharing existing assertion helpers and DatabaseCommandCase. Make the test-only BoundedHook wait only for the first invocation that consumes its one-shot notification.
+* **Rejected:** Removing assertions, reducing production deadlines, adding a timing gate, or dropping the test-only synchronization.
+* **Reason:** Root measured the permission group at 12.63 seconds, the two tail matrices at 6.04 seconds, and the copy test at 10.12 seconds. BoundedHook consumes its notification once but currently waits five seconds on every later invocation. Independent matrix cases can use normal test parallelism. Reversal path: regroup test entry points or restore repeated barriers if a future scenario explicitly owns several release signals.
+* **Decided by:** Codex, full auto, co-located pickup · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"cbf486d5a5419b35ac8b08f9eb85808d2a6243cfc62c7dd84606673594346069","input_sha256":"13ee9d8b019569c2125a34bee2d05fe11830e3336058937e6067d2f99280c129","kind":"mutation-receipt","operation":"4a31dc20436c1b5ff865629d12f60f51f733139ef940c88797b181dd968d97f4","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-13"],"target":"decisions-ledger","v":1} -->
