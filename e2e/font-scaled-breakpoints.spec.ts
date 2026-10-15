@@ -16,6 +16,81 @@ import {
 
 const databaseTitle = "Breakpoint database";
 
+test("font-scaled-breakpoints: conversion Cancel remains reachable at 320px and 200%", async ({
+    page,
+    mockScenario,
+    emitTauriEvent,
+    capture,
+    assertNoHorizontalOverflow,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    const sourceName =
+        "a-very-long-local-PGN-source-without-a-short-filename-for-cancellation-layout.pgn";
+    await mockScenario({
+        commands: {
+            ...databaseCommands("conversion-breakpoint", "conversion.db3", {
+                title: databaseTitle,
+                description: "",
+                player_count: 0,
+                event_count: 0,
+                game_count: 0,
+                storage_size: 0,
+                indexed: false,
+            }),
+            issue_pgn_workspace: {
+                result: {
+                    handle: { id: { id: "scaled-source" }, kind: "fileWorkspace" },
+                    displayName: sourceName,
+                    availability: "available",
+                },
+            },
+            count_pgn_games: { result: 100 },
+            convert_pgn: { delay: 60_000, result: null },
+            cancel_conversion: { delay: 60_000, result: true },
+        },
+    });
+    await page.goto("/library");
+    await page.getByRole("button").filter({ hasText: databaseTitle }).click();
+    await page.getByRole("button", { name: /^add games$/i }).click();
+    await expect
+        .poll(async () =>
+            page.evaluate(() =>
+                window.__E2E_TAURI__.invocations().find((call) => call.command === "convert_pgn"),
+            ),
+        )
+        .not.toBeUndefined();
+    const progressId = await page.evaluate(
+        () =>
+            (
+                window.__E2E_TAURI__.invocations().find((call) => call.command === "convert_pgn")!
+                    .args as { progressId: string }
+            ).progressId,
+    );
+    await emitTauriEvent({
+        event: "convert-progress",
+        payload: {
+            id: progressId,
+            imported_games: 12345,
+            elapsed_ms: 2000,
+            source_file_name: sourceName,
+        },
+    });
+    const cancel = page.getByRole("button", { name: `Cancel: ${sourceName}`, exact: true });
+    await expect(cancel).toBeEnabled();
+    await cancel.scrollIntoViewIfNeeded();
+    await assertNothingClipped(cancel, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    await capture("conversion-cancel-320-200");
+    await expect(page).toHaveScreenshot("conversion-cancel-320-200.png", { fullPage: true });
+    await cancel.click();
+    await expect(cancel).toBeDisabled();
+    await assertNothingClipped(cancel, { mode: "reachable" });
+    await capture("conversion-cancel-pending-320-200");
+    await expect(page).toHaveScreenshot("conversion-cancel-pending-320-200.png", {
+        fullPage: true,
+    });
+});
+
 test("font-scaled-breakpoints: visible library open controls wrap at 320px and 200%", async ({
     page,
     mockScenario,

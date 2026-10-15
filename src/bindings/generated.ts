@@ -643,9 +643,33 @@ async mergePlayers(file: DatabaseHandle, player1: number, player2: number) : Pro
     else return { status: "error", error: e  as any };
 }
 },
-async convertPgn(progressId: string, files: FileWorkspaceHandle[], database: DatabaseHandle, timestamp: number | null, title: string, description: string | null) : Promise<Result<null, ErrorPayload>> {
+async convertPgn(progressId: string, files: FileWorkspaceHandle[], database: DatabaseHandle, timestamp: number | null, title: string, description: string | null, ticket: string | null) : Promise<Result<null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { progressId, files, database, timestamp, title, description }) };
+    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { progressId, files, database, timestamp, title, description, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async prepareConversion() : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_conversion") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelConversion(ticket: string) : Promise<Result<boolean, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_conversion", { ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async releaseConversion(ticket: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("release_conversion", { ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

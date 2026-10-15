@@ -22,7 +22,12 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
-import { databaseConversionStateAtom, runDatabaseConversion } from "@/state/atoms";
+import {
+  databaseConversionStateAtom,
+  databaseConversionRefreshFailedAtom,
+  runDatabaseConversion,
+  type DatabaseConversionOperation,
+} from "@/state/atoms";
 import {
   getDatabases,
   manifestDatabaseInstallCard,
@@ -30,10 +35,16 @@ import {
   useDefaultDatabases,
 } from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
-import { logFailureSafely, runWithAppliedRecovery, safeFailureContext } from "@/platform/errors";
-import { runUnlessCancelled } from "@/components/files/notifyError";
+import {
+  errorUnlessCancelled,
+  logFailureSafely,
+  runWithAppliedRecovery,
+  safeFailureContext,
+} from "@/platform/errors";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
+import { refreshAfterDatabaseConversion } from "./databaseMutation";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
@@ -51,6 +62,8 @@ export async function convertLocalDatabase(
   title: string,
   description: string | undefined,
   onCreated: (handle: DatabaseHandle) => void,
+  operation?: Pick<DatabaseConversionOperation, "ticket" | "throwIfCancelled">,
+  onSecondaryFailure?: (cause: unknown) => void,
 ): Promise<DatabaseHandle> {
   const root = await tauri.getDatabaseWorkspace();
   const filename = `${crypto.randomUUID()}.db3`;
@@ -63,7 +76,16 @@ export async function convertLocalDatabase(
   );
   onCreated(dbPath);
   try {
-    await tauri.convertPgn(progressId, paths, dbPath, null, title, description ?? null);
+    operation?.throwIfCancelled();
+    await tauri.convertPgn(
+      progressId,
+      paths,
+      dbPath,
+      null,
+      title,
+      description ?? null,
+      operation?.ticket ?? null,
+    );
   } catch (cause) {
     try {
       await tauri.deleteDatabase(dbPath);
@@ -74,6 +96,7 @@ export async function convertLocalDatabase(
         { operation: "failed import database cleanup", primaryFailure },
         "Import cleanup logging failed",
       );
+      if (!errorUnlessCancelled(cause)) onSecondaryFailure?.(cleanupCause);
     }
     throw cause;
   }
@@ -95,6 +118,7 @@ function AddDatabase({
 }) {
   const { t } = useTranslation();
   const setConversionState = useSetAtom(databaseConversionStateAtom);
+  const setRefreshFailed = useSetAtom(databaseConversionRefreshFailedAtom);
 
   const { defaultDatabases, error, isLoading } = useDefaultDatabases(opened);
 
@@ -107,24 +131,25 @@ function AddDatabase({
         targetDatabaseTitle: title,
         sourceFileName: "PGN",
       },
-      async ({ id, setTarget }) => {
-        try {
-          await convertLocalDatabase(id, paths, title, description, setTarget);
-        } catch (cause) {
-          try {
+      (operation) =>
+        refreshAfterDatabaseConversion(
+          () =>
+            convertLocalDatabase(
+              operation.id,
+              paths,
+              title,
+              description,
+              operation.setTarget,
+              operation,
+              (cause) => notifyUnlessCancelled(t("Common.Error"), cause, "database"),
+            ),
+          async () => {
             await setDatabases(await getDatabases());
-          } catch (refreshCause) {
-            const primaryFailure = safeFailureContext(refreshCause);
-            await logFailureSafely(
-              `Failed import database refresh failed: ${primaryFailure.message}`,
-              { operation: "failed import database refresh", primaryFailure },
-              "Import refresh logging failed",
-            );
-          }
-          throw cause;
-        }
-        await setDatabases(await getDatabases());
-      },
+          },
+          setRefreshFailed,
+          t("Common.Error"),
+        ),
+      { onCancelError: (cause) => notifyUnlessCancelled(t("Common.Error"), cause, "database") },
     );
   }
 

@@ -6,6 +6,7 @@ import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
 import {
   databaseConversionStateAtom,
+  databaseConversionRefreshFailedAtom,
   referenceDbAtom,
   type DatabaseConversionEntry,
 } from "@/state/atoms";
@@ -15,6 +16,11 @@ import { useConversionProgress } from "@/hooks/useConversionProgress";
 
 const mocks = vi.hoisted(() => ({
   convertPgn: vi.fn(),
+  deleteDatabase: vi.fn(),
+  cancelConversion: vi.fn().mockResolvedValue(true),
+  withConversionTicket: vi.fn((run: (ticket: string) => Promise<unknown>) =>
+    run(`conversion-ticket:${crypto.randomUUID()}`),
+  ),
   getDatabaseWorkspace: vi.fn(),
   createWorkspaceDatabase: vi.fn(),
   listWorkspaceDatabases: vi.fn(),
@@ -40,9 +46,11 @@ vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
   return {
     ...actual,
+    withConversionTicket: mocks.withConversionTicket,
     tauri: {
       ...actual.tauri,
       convertPgn: mocks.convertPgn,
+      cancelConversion: mocks.cancelConversion,
       getDatabaseWorkspace: mocks.getDatabaseWorkspace,
       createWorkspaceDatabase: mocks.createWorkspaceDatabase,
       listWorkspaceDatabases: mocks.listWorkspaceDatabases,
@@ -52,7 +60,7 @@ vi.mock("@/platform/tauri", async () => {
       startProgress: mocks.startProgress,
       setProgressState: mocks.setProgressState,
       deleteEmptyGames: mocks.deleteEmptyGames,
-      deleteDatabase: vi.fn(),
+      deleteDatabase: mocks.deleteDatabase,
       exportToPgn: vi.fn(),
       issuePgnExportDestination: vi.fn(),
       clearGames: vi.fn(),
@@ -326,7 +334,7 @@ function conversionState() {
 function conversionRows() {
   return [...host.querySelectorAll("span")]
     .filter((span) => span.textContent?.startsWith("Databases.Add.Convert:"))
-    .map((span) => span.parentElement?.parentElement?.textContent);
+    .map((span) => span.parentElement?.parentElement?.textContent?.replace(/Common.Cancel$/, ""));
 }
 
 function activeOperation(index: number) {
@@ -372,6 +380,12 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   store.set(databaseConversionStateAtom, []);
+  store.set(databaseConversionRefreshFailedAtom, false);
+  mocks.cancelConversion.mockReset().mockResolvedValue(true);
+  mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
+  mocks.withConversionTicket
+    .mockReset()
+    .mockImplementation((run) => run(`conversion-ticket:${crypto.randomUUID()}`));
   mocks.convertPgn.mockImplementation((...args: unknown[]) => {
     const registered = conversionState().find((entry) => entry.id === args[0]);
     const registeredAtCall = registered ? { ...registered } : undefined;
@@ -532,6 +546,127 @@ async function startAddGames() {
   await vi.waitFor(() => expect(mocks.convertPgn.mock.calls.length).toBe(before + 1));
 }
 
+test("row Cancel forwards its exact conversion ticket, deduplicates pending clicks and survives navigation", async () => {
+  let releaseCancel!: () => void;
+  mocks.cancelConversion.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    }),
+  );
+  await renderRoute();
+  await selectExistingDatabase();
+  const add = buttonByText("Databases.Settings.AddGames")!;
+  await act(async () => {
+    add.click();
+    add.click();
+  });
+  await vi.waitFor(() => expect(convertCalls).toHaveLength(2));
+  const first = activeOperation(0);
+  const second = activeOperation(1);
+  expect(convertCalls[0].args[6]).not.toBe(convertCalls[1].args[6]);
+  const cancel = host.querySelector<HTMLButtonElement>(
+    'button[aria-label="Common.Cancel: more.pgn"]',
+  )!;
+  await act(async () => {
+    cancel.click();
+    cancel.click();
+  });
+  expect(mocks.cancelConversion).toHaveBeenCalledExactlyOnceWith(convertCalls[0].args[6]);
+  expect(cancel.disabled).toBe(true);
+  expect(conversionState().find((entry) => entry.id === first.id)?.cancelPending).toBe(true);
+  expect(conversionState().find((entry) => entry.id === second.id)?.cancelPending).toBe(false);
+  // The route disappears while accepted imports and their owning callbacks remain live.
+  await act(async () =>
+    root.render(
+      <Provider store={store}>
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <div>Other route</div>
+        </SWRConfig>
+      </Provider>,
+    ),
+  );
+  await renderRoute();
+  expect(
+    host.querySelector<HTMLButtonElement>('button[aria-label="Common.Cancel: more.pgn"]')!.disabled,
+  ).toBe(true);
+  await act(async () => releaseCancel());
+  await act(async () => convertCalls[0].reject(new Error("Cancellation")));
+  expect(conversionState().map((entry) => entry.id)).toEqual([second.id]);
+  expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+  await act(async () => convertCalls[1].resolve());
+  expect(conversionState()).toEqual([]);
+});
+
+test("cancel request rejection reports once and the row permits retry while transaction success remains authoritative", async () => {
+  await renderRoute();
+  await selectExistingDatabase();
+  await startAddGames();
+  mocks.cancelConversion.mockRejectedValueOnce(new Error("request failed"));
+  const cancel = host.querySelector<HTMLButtonElement>(
+    'button[aria-label="Common.Cancel: more.pgn"]',
+  )!;
+  await act(async () => cancel.click());
+  expect(mocks.notify).toHaveBeenCalledOnce();
+  expect(cancel.disabled).toBe(false);
+  await act(async () => cancel.click());
+  expect(mocks.cancelConversion).toHaveBeenCalledTimes(2);
+  await act(async () => convertCalls[0].resolve());
+  expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+  expect(conversionState()).toEqual([]);
+});
+
+test.each(["delete", "refresh", "both"])(
+  "cancelled new import with %s failure remains visible and offers reload recovery",
+  async (failure) => {
+    await renderRoute();
+    await startAddDatabase();
+    const cancel = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Common.Cancel: PGN"]',
+    )!;
+    await act(async () => cancel.click());
+    const unfinished = {
+      type: "error",
+      file: handleA,
+      filename: "unfinished.db3",
+      error: "Import unfinished",
+      indexed: false,
+    };
+    if (failure !== "refresh")
+      mocks.deleteDatabase.mockRejectedValueOnce(new Error("cleanup failed"));
+    if (failure !== "delete") mocks.getDatabases.mockRejectedValue(new Error("reload failed"));
+    else mocks.getDatabases.mockResolvedValue([unfinished]);
+    await act(async () => convertCalls[0].reject(new Error("Cancellation")));
+    expect(conversionState()).toEqual([]);
+    expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(handleA);
+    expect(mocks.notify.mock.calls.map(([notice]) => notice.message)).toEqual(
+      failure === "both"
+        ? ["cleanup failed", "reload failed"]
+        : [failure === "delete" ? "cleanup failed" : "reload failed"],
+    );
+    const retry = buttonByText("Databases.LoadRetry");
+    expect(Boolean(retry)).toBe(failure !== "delete");
+    if (retry) {
+      mocks.getDatabases.mockResolvedValue(
+        failure === "both" ? [unfinished] : [successDatabase(handleB, "Existing")],
+      );
+      await act(async () => retry.click());
+    }
+    const unfinishedCard = host.querySelector<HTMLButtonElement>(
+      `[data-testid='select-${databaseHandleKey(handleA)}']`,
+    );
+    if (unfinishedCard) {
+      await act(async () => unfinishedCard.click());
+    }
+    expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
+    expect(
+      Boolean(host.querySelector(`[data-testid='select-${databaseHandleKey(handleA)}']`)),
+    ).toBe(failure !== "refresh");
+    expect(Boolean(buttonByText("Common.Delete"))).toBe(failure !== "refresh");
+    expect(buttonByText("Databases.Settings.Explore")).toBeUndefined();
+  },
+);
+
 async function startAccountDownload() {
   const before = mocks.convertPgn.mock.calls.length;
   const download = host.querySelector(
@@ -604,7 +739,15 @@ test.each(
     await startAddGames();
     assertConversionCall(1);
     const games = activeOperation(1);
-    expect(mocks.convertPgn).toHaveBeenCalledWith(games.id, [addGamesPgn], handleB, null, "", null);
+    expect(mocks.convertPgn).toHaveBeenCalledWith(
+      games.id,
+      [addGamesPgn],
+      handleB,
+      null,
+      "",
+      null,
+      expect.stringMatching(/^conversion-ticket:/),
+    );
     expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([target, handleB]);
     expect(conversionRows()).toEqual([
       `Databases.Add.Convert: ${source}`,

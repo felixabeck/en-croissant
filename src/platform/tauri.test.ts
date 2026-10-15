@@ -21,6 +21,10 @@ const mocks = vi.hoisted(() => ({
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
     prepareDownload: vi.fn(),
+    prepareConversion: vi.fn(),
+    releaseConversion: vi.fn(),
+    cancelConversion: vi.fn(),
+    convertPgn: vi.fn(),
     releaseDownload: vi.fn(),
     prepareAnalysis: vi.fn(),
     cancelAnalysis: vi.fn(),
@@ -62,6 +66,10 @@ vi.mock("@/bindings/generated", () => ({
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
         prepareDownload: mocks.prepareDownload,
+        prepareConversion: mocks.prepareConversion,
+        releaseConversion: mocks.releaseConversion,
+        cancelConversion: mocks.cancelConversion,
+        convertPgn: mocks.convertPgn,
         releaseDownload: mocks.releaseDownload,
         prepareAnalysis: mocks.prepareAnalysis,
         cancelAnalysis: mocks.cancelAnalysis,
@@ -411,6 +419,71 @@ describe("tauri command facade", () => {
             "successful-ticket",
         );
         expect(mocks.releaseDownload).toHaveBeenCalledOnce();
+    });
+
+    test("conversion preparation forwards exact ticket and releases failure without masking it", async () => {
+        const { withConversionTicket } = await import("./tauri");
+        mocks.prepareConversion.mockResolvedValue({ status: "ok", data: "conversion-ticket" });
+        mocks.releaseConversion.mockResolvedValue({ status: "ok", data: null });
+        const failure = new Error("Cancellation");
+        const run = vi.fn(async (ticket: string) => {
+            expect(ticket).toBe("conversion-ticket");
+            throw failure;
+        });
+        await expect(withConversionTicket(run)).rejects.toBe(failure);
+        expect(mocks.releaseConversion).toHaveBeenCalledWith("conversion-ticket");
+        mocks.releaseConversion.mockClear();
+        await expect(withConversionTicket(async () => "committed")).resolves.toBe("committed");
+        expect(mocks.releaseConversion).not.toHaveBeenCalled();
+    });
+
+    test("conversion preparation rejection never dispatches and cancel failures remain typed", async () => {
+        const { tauri, withConversionTicket } = await import("./tauri");
+        mocks.prepareConversion.mockResolvedValue({
+            status: "error",
+            error: {
+                tag: "backend-error",
+                category: "resource-limit",
+                message: "Too many operations",
+            },
+        });
+        const run = vi.fn();
+        await expect(withConversionTicket(run)).rejects.toThrow("Too many operations");
+        expect(run).not.toHaveBeenCalled();
+        mocks.cancelConversion.mockResolvedValue({
+            status: "error",
+            error: { tag: "backend-error", category: "permission", message: "Permission denied" },
+        });
+        await expect(tauri.cancelConversion("exact-ticket")).rejects.toMatchObject({
+            details: { category: "permission" },
+        });
+        expect(mocks.cancelConversion).toHaveBeenCalledWith("exact-ticket");
+    });
+
+    test("convertPgn forwards all seven generated arguments including nullable ticket", async () => {
+        const { tauri } = await import("./tauri");
+        const database = { id: { id: "db" }, kind: "database" } as const;
+        mocks.convertPgn.mockResolvedValue({ status: "ok", data: null });
+        await tauri.convertPgn("operation", [], database, null, "Title", null, "exact-ticket");
+        expect(mocks.convertPgn).toHaveBeenCalledWith(
+            "operation",
+            [],
+            database,
+            null,
+            "Title",
+            null,
+            "exact-ticket",
+        );
+        await tauri.convertPgn("account", [], database, null, "Account", null, null);
+        expect(mocks.convertPgn).toHaveBeenLastCalledWith(
+            "account",
+            [],
+            database,
+            null,
+            "Account",
+            null,
+            null,
+        );
     });
 
     test("pgn and workspace reads reserve tickets and pass outside positional arguments", async () => {

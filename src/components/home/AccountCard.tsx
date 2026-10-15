@@ -190,6 +190,7 @@ export function AccountCard({
             timestamp === null ? null : timestamp / 1000,
             databaseTitle,
             null,
+            null,
           );
         } catch (caught) {
           await tauri.setProgressState(progressLease, 0, "failed").catch(

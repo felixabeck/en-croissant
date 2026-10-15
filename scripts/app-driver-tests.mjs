@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
+import { verifyConversionCancellationContract } from "./verify-app.mjs";
 import {
   Session,
   APP_BINARY,
@@ -16,6 +17,81 @@ import {
   createSharedShutdown,
   requirePrerequisites,
 } from "./app-driver.mjs";
+
+async function conversionContractCase(breakAssertion) {
+  const reports = [];
+  const retired = new Set();
+  const cancelled = new Set();
+  let nextTicket = 0;
+  let count = 0;
+  let revision = 0;
+  let paired = false;
+  const invoke = async (command, args) => {
+    if (command === "prepare_conversion") return `ticket:${++nextTicket}`;
+    if (command === "cancel_conversion") {
+      if (retired.has(args.ticket)) return breakAssertion === "CC5";
+      cancelled.add(args.ticket);
+      return true;
+    }
+    if (command === "release_conversion") {
+      retired.add(args.ticket);
+      return null;
+    }
+    if (command === "convert_pgn") {
+      if (cancelled.has(args.ticket) && breakAssertion !== "CC1")
+        throw { category: "cancellation" };
+      if (paired && breakAssertion === "CC4") throw new Error("retry refused");
+      count += breakAssertion === "CC0" && count === 0 ? 2 : 1;
+      revision++;
+      return null;
+    }
+    throw new Error(`unexpected command ${command}`);
+  };
+  await verifyConversionCancellationContract({
+    invoke,
+    seed: { id: "seed" },
+    source: { id: "large" },
+    database: { id: "database" },
+    snapshot: async () => ({
+      count,
+      revision,
+      games: paired && breakAssertion === "CC3" ? "changed content" : "seed content",
+    }),
+    cancelledPair: async () => {
+      paired = true;
+      retired.add("running");
+      retired.add("queued");
+      return {
+        started: true,
+        tickets: ["running", "queued"],
+        acknowledged: [true, true],
+        running: { category: breakAssertion === "CC2" ? "success" : "cancellation" },
+        queued: { category: "cancellation" },
+      };
+    },
+    report: (condition, label, detail) => reports.push({ condition, label, detail }),
+  });
+  return reports;
+}
+
+test("conversion harness runs its six native-outcome assertions without starting an application on import", async () => {
+  const reports = await conversionContractCase();
+  assert.equal(reports.length, 6);
+  assert.ok(
+    reports.every(({ condition }) => condition),
+    JSON.stringify(reports),
+  );
+});
+
+for (const assertion of ["CC0", "CC1", "CC2", "CC3", "CC4", "CC5"]) {
+  test(`conversion harness distinguishes ${assertion} failure from its successful assertions`, async () => {
+    const reports = await conversionContractCase(assertion);
+    const report = reports.find(({ label }) => label.startsWith(`${assertion} `));
+    assert.equal(report.condition, false);
+    assert.equal(typeof report.detail, "string");
+    assert.ok(report.detail.length > 0);
+  });
+}
 
 test("prerequisites check the selected application even when the default binary is absent", (t) => {
   const application = join(tmpdir(), "app-driver-selected-application");

@@ -1,9 +1,53 @@
 import type { DatabaseHandle, FileWorkspaceHandle } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { collectSWRKeys, databaseHandleKey, sameDatabaseHandle } from "@/utils/db";
-import { runDestructiveWithRefresh } from "@/platform/errors";
-import { runUnlessCancelled } from "@/components/files/notifyError";
+import {
+    errorUnlessCancelled,
+    logFailureSafely,
+    runDestructiveWithRefresh,
+    safeFailureContext,
+} from "@/platform/errors";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
+import type { DatabaseConversionOperation } from "@/state/atoms";
 import { type Cache, type ScopedMutator, unstable_serialize } from "swr";
+
+/** Keep the operation row through reload, preserving the transaction's primary outcome. */
+export async function refreshAfterDatabaseConversion<T>(
+    convert: () => Promise<T>,
+    refresh: () => Promise<unknown>,
+    setRefreshFailed: (failed: boolean) => void,
+    notifyTitle: string,
+): Promise<T> {
+    const reload = async () => {
+        try {
+            await refresh();
+            setRefreshFailed(false);
+        } catch (cause) {
+            setRefreshFailed(true);
+            throw cause;
+        }
+    };
+    let result: T;
+    try {
+        result = await convert();
+    } catch (cause) {
+        try {
+            await reload();
+        } catch (refreshCause) {
+            const primaryFailure = safeFailureContext(refreshCause);
+            await logFailureSafely(
+                `Failed import database refresh failed: ${primaryFailure.message}`,
+                { operation: "failed import database refresh", primaryFailure },
+                "Import refresh logging failed",
+            );
+            if (!errorUnlessCancelled(cause))
+                notifyUnlessCancelled(notifyTitle, refreshCause, "database");
+        }
+        throw cause;
+    }
+    await reload();
+    return result;
+}
 
 /** Refresh the admitted database's game, player and tournament queries after a game mutation.
  * Results are bounded by the original keys collected from this cache for this operation. */
@@ -89,19 +133,21 @@ export async function runAddGamesToDatabase(args: {
         progressId: string,
         files: FileWorkspaceHandle[],
         dest: DatabaseHandle,
+        ticket: string | null,
     ) => Promise<unknown>;
     dest: DatabaseHandle;
     notifyTitle: string;
     runConversion: (
         sourceFileName: string,
-        convert: (progressId: string) => Promise<void>,
+        convert: (operation: DatabaseConversionOperation) => Promise<void>,
     ) => Promise<void>;
 }): Promise<void> {
     await runUnlessCancelled(args.notifyTitle, async () => {
         const selected = await args.pickPgnFile();
         if (!selected) return;
-        await args.runConversion(selected.name, async (progressId) => {
-            await args.convertPgn(progressId, [selected.handle], args.dest);
+        await args.runConversion(selected.name, async (operation) => {
+            operation.throwIfCancelled();
+            await args.convertPgn(operation.id, [selected.handle], args.dest, operation.ticket);
         });
     });
 }

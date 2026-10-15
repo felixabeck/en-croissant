@@ -654,7 +654,7 @@ static DATABASE_COMMAND_CHECKPOINTS: once_cell::sync::Lazy<
     std::sync::Mutex<DatabaseCommandCheckpoints>,
 > = once_cell::sync::Lazy::new(Default::default);
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn install_database_command_checkpoint(
     label: &'static str,
     handle: &DatabaseHandle,
@@ -728,6 +728,31 @@ fn database_app_with_grant(
     app.manage(state);
     (app.handle().clone(), DatabaseHandle::new(commit.id))
 }
+
+#[cfg(test)]
+fn grant_pgn_file(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    path: &std::path::Path,
+    display_name: &str,
+    operations: Vec<PathOperation>,
+) -> FileWorkspaceHandle {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
+    let authority = guard.as_mut().unwrap();
+    let commit = authority.grant_persistent_file_for_test(path, display_name, operations);
+    FileWorkspaceHandle::new(commit.id)
+}
+
+#[cfg(test)]
+mod conversion_cancellation_tests;
+
+#[cfg(test)]
+static CONVERSION_BEFORE_REVISION: crate::infra::test_hooks::KeyedTestHooks<String> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
+#[cfg(test)]
+static CONVERSION_AFTER_COMMIT: crate::infra::test_hooks::KeyedTestHooks<String> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(test)]
 pub(crate) fn schema_database_case(
@@ -849,6 +874,8 @@ pub async fn convert_pgn(
     app: tauri::AppHandle,
     title: String,
     description: Option<String>,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     convert_pgn_command_core(
@@ -859,6 +886,8 @@ pub async fn convert_pgn(
         app,
         title,
         description,
+        ticket.as_deref(),
+        window.label(),
         &state,
     )
     .await
@@ -873,9 +902,14 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     title: String,
     description: Option<String>,
+    ticket: Option<&str>,
+    owner: &str,
     state: &AppState,
 ) -> Result<(), Error> {
-    let operation = state.operations.accept("convert_pgn")?;
+    let operation = match ticket {
+        Some(ticket) => state.operations.claim_conversion(ticket, owner)?,
+        None => state.operations.accept("convert_pgn")?,
+    };
     let cancellation = operation.token();
     let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
@@ -900,6 +934,35 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
             .await
     })
     .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn prepare_conversion(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    state.operations.prepare_conversion(window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_conversion(
+    ticket: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, Error> {
+    state.operations.cancel_conversion(&ticket, window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn release_conversion(
+    ticket: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    state.operations.release_conversion(&ticket, window.label())
 }
 
 #[derive(Default)]
@@ -1068,6 +1131,8 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                     create_required_indexes(db)?;
                 }
                 update_database_counts(db)?;
+                #[cfg(test)]
+                CONVERSION_BEFORE_REVISION.run(&progress_id);
                 Ok(())
             })
         })?;
@@ -1077,6 +1142,9 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
         Ok(())
     });
     finish_search_cache_after_transaction(result, search_cache, &target)?;
+
+    #[cfg(test)]
+    CONVERSION_AFTER_COMMIT.run(&progress_id);
 
     let _ = ConvertProgress {
         id: progress_id,
@@ -6499,19 +6567,6 @@ mod tests {
         target_player: i32,
     }
 
-    fn grant_pgn_file(
-        app: &tauri::AppHandle<tauri::test::MockRuntime>,
-        path: &Path,
-        display_name: &str,
-        operations: Vec<PathOperation>,
-    ) -> FileWorkspaceHandle {
-        let state = app.state::<AppState>();
-        let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
-        let authority = guard.as_mut().unwrap();
-        let commit = authority.grant_persistent_file_for_test(path, display_name, operations);
-        FileWorkspaceHandle::new(commit.id)
-    }
-
     fn prepare_database_command_case(
         case: DatabaseCommandCase,
         dir: &Path,
@@ -6606,6 +6661,8 @@ mod tests {
                     app.clone(),
                     "Imported".into(),
                     None,
+                    None,
+                    "main",
                     &state,
                 )
                 .await
@@ -7778,6 +7835,8 @@ mod tests {
             app.clone(),
             "Test".into(),
             None,
+            None,
+            "main",
             &state,
         )
         .await

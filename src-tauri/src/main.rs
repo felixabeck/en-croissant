@@ -66,9 +66,10 @@ use crate::chess::{
 };
 use crate::chesscom::{download_chess_com_games, get_public_chess_com_json};
 use crate::db::{
-    clear_games, convert_pgn, create_indexes, delete_database, delete_db_game, delete_empty_games,
-    delete_indexes, export_to_pgn, get_player, get_players_game_info, get_tournaments,
-    preload_reference_db, search_position, MmapSearchIndex,
+    cancel_conversion, clear_games, convert_pgn, create_indexes, delete_database, delete_db_game,
+    delete_empty_games, delete_indexes, export_to_pgn, get_player, get_players_game_info,
+    get_tournaments, preload_reference_db, prepare_conversion, release_conversion, search_position,
+    MmapSearchIndex,
 };
 use crate::error::Error;
 use crate::game::{
@@ -2070,6 +2071,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             file_exists,
             merge_players,
             convert_pgn,
+            prepare_conversion,
+            cancel_conversion,
+            release_conversion,
             get_player,
             count_pgn_games,
             file_revision,

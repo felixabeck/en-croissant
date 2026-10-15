@@ -631,6 +631,9 @@ test("database-files: concurrent conversions render their own live progress coun
     page,
     mockScenario,
     emitTauriEvent,
+    capture,
+    assertAccessible,
+    assertNoHorizontalOverflow,
 }) => {
     await mockScenario({
         commands: {
@@ -651,6 +654,7 @@ test("database-files: concurrent conversions render their own live progress coun
             },
             count_pgn_games: { result: 100 },
             convert_pgn: { delay: 60_000, result: null },
+            cancel_conversion: { delay: 60_000, result: true },
         },
     });
     await page.goto("/library");
@@ -695,15 +699,36 @@ test("database-files: concurrent conversions render their own live progress coun
     });
     const firstRow = page.getByText("Convert: first.pgn", { exact: true }).locator("../..");
     const secondRow = page.getByText("Convert: second.pgn", { exact: true }).locator("../..");
-    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/s");
-    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
+    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
+    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
     await secondRow.scrollIntoViewIfNeeded();
     await expect(secondRow).toBeInViewport();
     // Client navigation preserves the fixture session and the app-owned conversion registry.
     await page.getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("link", { name: "Library", exact: true }).click();
-    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/s");
-    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
+    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
+    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
+    await assertNoHorizontalOverflow();
+    await assertAccessible();
+    await capture("conversion-active");
+    await expect(page).toHaveScreenshot("conversion-active.png", { fullPage: true });
+    const cancel = firstRow.getByRole("button", { name: "Cancel: first.pgn", exact: true });
+    await cancel.click();
+    await expect(cancel).toBeDisabled();
+    await expect(
+        secondRow.getByRole("button", { name: "Cancel: second.pgn", exact: true }),
+    ).toBeEnabled();
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    const converted = calls.filter((call) => call.command === "convert_pgn");
+    expect(
+        (calls.find((call) => call.command === "cancel_conversion")!.args as { ticket: string })
+            .ticket,
+    ).toBe((converted[0].args as { ticket: string }).ticket);
+    expect((converted[0].args as { ticket: string }).ticket).not.toBe(
+        (converted[1].args as { ticket: string }).ticket,
+    );
+    await capture("conversion-cancel-pending");
+    await expect(page).toHaveScreenshot("conversion-cancel-pending.png", { fullPage: true });
     await expect(
         page.getByRole("button", { name: "Import or download database", exact: true }),
     ).toBeDisabled();

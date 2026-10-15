@@ -344,6 +344,16 @@ export function withDownloadTicket<T>(continuation: (ticket: string) => Promise<
     });
 }
 
+/** The owner requests conversion cancellation separately. No abort signal may override settlement. */
+export function withConversionTicket<T>(continuation: (ticket: string) => Promise<T>): Promise<T> {
+    return withPreparedTicket({
+        operation: "conversion",
+        prepare: () => commands.prepareConversion(),
+        cancel: (ticket) => commands.releaseConversion(ticket),
+        continuation,
+    });
+}
+
 async function invokeNativeRead(
     commandName: PropertyKey,
     command: (...args: unknown[]) => Promise<unknown>,

@@ -642,6 +642,8 @@ const tauriBootstrap = () => {
         list_practice_decks: { result: { decks: [], anomalies: [] } },
         get_database_workspace: { result: { id: { id: "database-root" }, kind: "databaseRoot" } },
         list_workspace_databases: { result: [] },
+        cancel_conversion: { result: true },
+        release_conversion: { result: null },
         get_opening_from_fens: { result: [] },
         list_puzzle_databases: { result: [] },
         kill_engines: { result: null },
@@ -679,6 +681,8 @@ const tauriBootstrap = () => {
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
         if (command === "prepare_native_read") return `e2e-native-read-${nextNativeTicket++}`;
+        if (command === "prepare_conversion" && !state.commands[command])
+            return `e2e-conversion-${nextNativeTicket++}`;
         if (command === "prepare_engine_search") return `e2e-engine-search-${nextNativeTicket++}`;
         if (command === "plugin:event|listen") {
             const callback = args.handler;

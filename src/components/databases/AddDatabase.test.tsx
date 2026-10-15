@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
-import { databaseConversionStateAtom } from "@/state/atoms";
+import { databaseConversionStateAtom, databaseConversionRefreshFailedAtom } from "@/state/atoms";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultDatabaseProgressId } from "@/utils/db";
@@ -15,6 +15,10 @@ import {
 const mocks = await vi.hoisted(async () => {
   const { createProgressButtonTestHarness } = await import("@/tests/progressButtonTestHarness");
   return Object.assign(createProgressButtonTestHarness(), {
+    withConversionTicket: vi.fn((run: (ticket: string) => Promise<unknown>) =>
+      run("conversion-ticket"),
+    ),
+    cancelConversion: vi.fn().mockResolvedValue(true),
     catalogError: undefined as unknown,
     getDatabaseWorkspace: vi.fn(),
     createWorkspaceDatabase: vi.fn(),
@@ -49,6 +53,7 @@ vi.mock("@/platform/tauri", async () => {
     ...actual,
     tauri: mocks,
     withDownloadTicket: mocks.withDownloadTicket,
+    withConversionTicket: mocks.withConversionTicket,
     tauriSubscriptions: {
       progress: mocks.subscribeProgress,
     },
@@ -161,10 +166,12 @@ beforeEach(() => {
   mocks.defaultDatabases = [];
   resetProgressButtonTestHarness(mocks);
   mocks.withDownloadTicket.mockReset().mockImplementation((run) => run("prepared-ticket"));
+  mocks.withConversionTicket.mockReset().mockImplementation((run) => run("conversion-ticket"));
   mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
   mocks.logError.mockReset().mockResolvedValue(undefined);
   mocks.getDatabases.mockReset().mockResolvedValue([]);
   getDefaultStore().set(databaseConversionStateAtom, []);
+  getDefaultStore().set(databaseConversionRefreshFailedAtom, false);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -243,6 +250,7 @@ test.each([
       null,
       "Imported",
       "notes",
+      null,
     );
   },
 );
@@ -687,6 +695,7 @@ test("cancellation deletes the created database and rethrows the same error", as
     null,
     "Games",
     null,
+    null,
   );
 });
 
@@ -700,6 +709,92 @@ test("a cancelled local conversion removes its entry and keeps the modal open si
   expect(setOpened).not.toHaveBeenCalledWith(false);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
+
+test("cancel during target creation skips native dispatch and retains the row through deletion and refresh", async () => {
+  setupLocalImport();
+  let created!: (handle: typeof importHandle) => void;
+  let deleted!: () => void;
+  let refreshed!: (value: never[]) => void;
+  mocks.createWorkspaceDatabase.mockReturnValueOnce(
+    new Promise((resolve) => {
+      created = resolve;
+    }),
+  );
+  mocks.deleteDatabase.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      deleted = resolve;
+    }),
+  );
+  mocks.getDatabases.mockReturnValueOnce(
+    new Promise<never[]>((resolve) => {
+      refreshed = resolve;
+    }),
+  );
+  await renderAddDatabase();
+  await submitLocalImport();
+  const store = getDefaultStore();
+  expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
+  await act(async () => store.get(databaseConversionStateAtom)[0].cancel!());
+  await act(async () => created(importHandle));
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+  expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
+  expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  await act(async () => deleted());
+  expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
+  await act(async () => refreshed([]));
+  expect(store.get(databaseConversionStateAtom)).toEqual([]);
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("a successful new-target conversion wins a pending cancellation and keeps its database", async () => {
+  setupLocalImport();
+  let committed!: () => void;
+  mocks.convertPgn.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      committed = resolve;
+    }),
+  );
+  const { setOpened } = await renderAddDatabase();
+  await submitLocalImport();
+  const store = getDefaultStore();
+  await act(async () => store.get(databaseConversionStateAtom)[0].cancel!());
+  expect(mocks.cancelConversion).toHaveBeenCalledWith("conversion-ticket");
+  await act(async () => committed());
+  expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+  expect(setOpened).toHaveBeenCalledWith(false);
+  expect(store.get(databaseConversionStateAtom)).toEqual([]);
+});
+
+test.each([false, true])(
+  "cancellation preserves its object and safely reports cleanup failure=%s",
+  async (cleanupFails) => {
+    setupLocalImport();
+    const cancellation = new TauriCommandError({
+      tag: "backend-error",
+      category: "cancellation",
+      message: "Cancellation",
+    });
+    mocks.convertPgn.mockRejectedValueOnce(cancellation);
+    if (cleanupFails) mocks.deleteDatabase.mockRejectedValueOnce(new Error("cleanup refused"));
+    const secondary = vi.fn();
+    await expect(
+      convertLocalDatabase(
+        "operation",
+        [importSource],
+        "Games",
+        undefined,
+        vi.fn(),
+        { ticket: "ticket", throwIfCancelled: () => undefined },
+        secondary,
+      ),
+    ).rejects.toBe(cancellation);
+    expect(secondary).toHaveBeenCalledTimes(cleanupFails ? 1 : 0);
+    expect(mocks.logError.mock.calls).toEqual(
+      cleanupFails ? [["Failed import database cleanup failed: cleanup refused"]] : [],
+    );
+  },
+);
 
 test.each([false, true])(
   "successful conversion surfaces refresh failure=%s without deleting the database",

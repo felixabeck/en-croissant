@@ -24,10 +24,22 @@
 // Earlier diagnostic failure logs are incomplete and are not matrix evidence. Root ordinary
 // recovery and final browser verification are separate and are not claimed by this evidence.
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { Chess, makeSquare } from "chessops";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
@@ -86,6 +98,10 @@ const filesRowName = "verify-sample";
 const filesMetadataRowName = "verify-metadata-only";
 const openingRowName = "verify-game-opening";
 const emptyOpeningRowName = "verify-empty-opening";
+const conversionSourceName = "verify-conversion-cancellation";
+const conversionSeedName = "verify-conversion-seed";
+const conversionSeedPgn =
+  '[Event "Cancellation seed"]\n[White "Seed White"]\n[Black "Seed Black"]\n[Result "*"]\n\n1. d4 d5 *\n';
 const openingDatabaseTitle = "verify opening database";
 const openingGames = [
   { white: "Opening First", black: "First Opponent", moves: "1. e4 e5 *", notation: "1.e4e5" },
@@ -512,6 +528,256 @@ async function invokeJsonAndWait(session, label, globalName, invokeExpression) {
   } catch (error) {
     return { result, value: undefined, error: error.message };
   }
+}
+
+// Conversion assertion staging inventory. Documented failure exit is 1 through check().
+// These assertions are UNSTAGED until the root records real application runs and exit statuses.
+// CC0: replace only verify-conversion-seed.pgn in the disposable profile before seed import
+// with a two-game PGN. CC1: use a disposable producer with the ticket-claim source hunk reverted.
+// CC2: use that producer for reserved/running/queued requests, keeping this verifier unchanged.
+// CC3: in a disposable producer, pass an independent uncancelled token from convert_pgn_command_core
+// to the worker so cancellation cannot roll back its import. CC4: use a disposable producer that
+// refuses ticketed imports after claim, so the unticketed seed still succeeds and retry rejects.
+// CC5: use a disposable producer that retains the completed conversion lease.
+// All source/binary mutations belong to isolated scratch builds, never the installed binary.
+// The root must record each distinct FAIL CC0..CC5 and observed exit 1, restore input/binary,
+// then record exit 0. Unit tests below this adapter do not constitute native assertion staging.
+export async function verifyConversionCancellationContract({
+  invoke,
+  cancelledPair,
+  snapshot,
+  seed,
+  source,
+  database,
+  report = check,
+}) {
+  const assertion = async (label, action) => {
+    try {
+      await action();
+      report(true, label);
+      return true;
+    } catch (cause) {
+      report(false, label, cause.message);
+      return false;
+    }
+  };
+  const importArgs = (file, ticket) => ({
+    progressId: `verify-conversion:${randomUUID()}`,
+    files: [file],
+    database,
+    timestamp: null,
+    title: "Cancellation proof",
+    description: null,
+    ticket,
+  });
+  let before;
+  const seeded = await assertion(
+    "CC0 conversion fixture seeds exactly one native game",
+    async () => {
+      if (!seed || !source) throw new Error("dedicated conversion PGNs were not listed");
+      await invoke("convert_pgn", importArgs(seed, null));
+      before = await snapshot();
+      if (before.count !== 1 || before.revision !== 1)
+        throw new Error(`unexpected seed: ${JSON.stringify(before)}`);
+    },
+  );
+  const requireSeed = () => {
+    if (!seeded) throw new Error("conversion seed failed");
+  };
+  await assertion(
+    "CC1 prepared conversion cancellation returns typed Cancellation before claim",
+    async () => {
+      requireSeed();
+      const ticket = await invoke("prepare_conversion", {});
+      try {
+        if ((await invoke("cancel_conversion", { ticket })) !== true)
+          throw new Error("reserved cancel was not acknowledged");
+        let rejected;
+        try {
+          await invoke("convert_pgn", importArgs(seed, ticket));
+        } catch (cause) {
+          rejected = cause;
+        }
+        if (rejected?.category !== "cancellation")
+          throw new Error(`wrong reserved outcome: ${JSON.stringify(rejected)}`);
+      } finally {
+        await invoke("release_conversion", { ticket });
+      }
+    },
+  );
+  let pair;
+  await assertion(
+    "CC2 native progress triggers running and same-target queued ticket cancellation",
+    async () => {
+      requireSeed();
+      pair = await cancelledPair(importArgs(source, null));
+      if (
+        !pair.started ||
+        pair.running?.category !== "cancellation" ||
+        pair.queued?.category !== "cancellation" ||
+        pair.acknowledged?.some((value) => value !== true) ||
+        pair.acknowledged?.length !== 2
+      )
+        throw new Error(`wrong running/queued outcome: ${JSON.stringify(pair)}`);
+    },
+  );
+  await assertion(
+    "CC3 cancelled native imports preserve existing content and DataRevision",
+    async () => {
+      requireSeed();
+      if (!pair) throw new Error("running/queued import did not settle");
+      const after = await snapshot();
+      if (JSON.stringify(after) !== JSON.stringify(before))
+        throw new Error(`rollback mismatch: ${JSON.stringify({ before, after })}`);
+    },
+  );
+  await assertion(
+    "CC4 a fresh conversion ticket retries successfully after cancellation",
+    async () => {
+      requireSeed();
+      const ticket = await invoke("prepare_conversion", {});
+      try {
+        await invoke("convert_pgn", importArgs(seed, ticket));
+      } finally {
+        await invoke("release_conversion", { ticket });
+      }
+      const after = await snapshot();
+      if (after.count !== 2 || after.revision !== 2)
+        throw new Error(`retry mismatch: ${JSON.stringify(after)}`);
+    },
+  );
+  await assertion("CC5 settled native conversion tickets are retired", async () => {
+    if (!pair) throw new Error("running/queued import did not settle");
+    if (pair.tickets?.length !== 2 || pair.tickets[0] === pair.tickets[1])
+      throw new Error("two distinct conversion tickets were not retained");
+    for (const ticket of pair.tickets) {
+      await invoke("release_conversion", { ticket });
+      if ((await invoke("cancel_conversion", { ticket })) !== false)
+        throw new Error("completed ticket remained active");
+    }
+  });
+}
+
+async function verifyConversionCancellation(session, ownedRoot) {
+  // This reader is restricted to this run's newly created disposable database.
+  const snapshot = () => {
+    const db = new DatabaseSync(join(ownedRoot, "verify-conversion-cancellation.db3"), {
+      readOnly: true,
+    });
+    try {
+      const count = db.prepare("SELECT COUNT(*) AS count FROM Games").get().count;
+      const revision = Number(
+        db.prepare("SELECT Value FROM Info WHERE Name = 'DataRevision'").get()?.Value ?? 0,
+      );
+      const games = count <= 2 ? db.prepare("SELECT * FROM Games ORDER BY ID").all() : [];
+      return { count, revision, games };
+    } finally {
+      db.close();
+    }
+  };
+  const invoke = async (command, args) => {
+    const response = await invokeJsonAndWait(
+      session,
+      command,
+      "__verifyConversionIPC",
+      `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`,
+    );
+    if (response.value === undefined) {
+      if (response.result.rejected) {
+        let rejection;
+        try {
+          rejection = JSON.parse(response.result.rejected);
+        } catch {
+          throw new Error(response.result.rejected);
+        }
+        throw rejection;
+      }
+      throw new Error(response.error ?? response.result.error ?? `${command} returned no value`);
+    }
+    return response.value;
+  };
+  const cancelledPair = async (args) => {
+    const runningTicket = await invoke("prepare_conversion", {});
+    const queuedTicket = await invoke("prepare_conversion", {});
+    const running = { ...args, ticket: runningTicket };
+    const queued = { ...args, progressId: `verify-queued:${randomUUID()}`, ticket: queuedTicket };
+    await session.execute(
+      `
+      const native = window.__TAURI_INTERNALS__;
+      const running = arguments[0], queued = arguments[1];
+      const state = window.__verifyConversionPair = { started: false, tickets: [running.ticket, queued.ticket] };
+      const outcome = error => ({ category: error && error.category, message: error && error.message });
+      window.__verifyConversionHandler = native.transformCallback(event => {
+        if (event.payload.id !== running.progressId || state.started) return;
+        state.started = true;
+        native.invoke('convert_pgn', queued).then(() => { state.queued = { category: 'success' }; }, error => { state.queued = outcome(error); });
+        Promise.all([running.ticket, queued.ticket].map(ticket => native.invoke('cancel_conversion', { ticket })))
+          .then(values => { state.acknowledged = values; }, error => { state.acknowledged = [outcome(error)]; });
+      });
+      return true;
+    `,
+      [running, queued],
+    );
+    const listener = await invokeJsonAndWait(
+      session,
+      "conversion listener registration",
+      "__verifyConversionListener",
+      `window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'convert-progress', target: { kind: 'Any' }, handler: window.__verifyConversionHandler })`,
+    );
+    try {
+      await session.execute(
+        `
+        window.__TAURI_INTERNALS__.invoke('convert_pgn', arguments[0]).then(
+          () => { window.__verifyConversionPair.running = { category: 'success' }; },
+          error => { window.__verifyConversionPair.running = { category: error && error.category, message: error && error.message }; });
+        return true;
+      `,
+        [running],
+      );
+      return await waitFor(
+        "native conversion pair settlement",
+        () =>
+          session.execute(`
+        const state = window.__verifyConversionPair;
+        return state.running && (!state.started || (state.queued && state.acknowledged)) ? state : false;
+      `),
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      );
+    } finally {
+      await invoke("cancel_conversion", { ticket: runningTicket });
+      await invoke("cancel_conversion", { ticket: queuedTicket });
+      await invoke("plugin:event|unlisten", { event: "convert-progress", eventId: listener.value });
+      await session.execute(
+        `window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener('convert-progress', arguments[0]); return true`,
+        [listener.value],
+      );
+    }
+  };
+  let entries;
+  let database;
+  try {
+    entries = await invoke("list_file_workspace", {
+      workspace: { id: { id: filesWorkspaceId }, kind: "fileWorkspace" },
+      ticket: null,
+    });
+    const root = await invoke("get_database_workspace", {});
+    database = await invoke("create_workspace_database", {
+      root,
+      filename: "verify-conversion-cancellation.db3",
+    });
+  } catch (cause) {
+    for (const label of ["CC0", "CC1", "CC2", "CC3", "CC4", "CC5"])
+      check(false, `${label} conversion setup unavailable`, cause.message);
+    return;
+  }
+  await verifyConversionCancellationContract({
+    invoke,
+    cancelledPair,
+    snapshot,
+    database,
+    seed: entries.find((entry) => entry.name === conversionSeedName)?.handle,
+    source: entries.find((entry) => entry.name === conversionSourceName)?.handle,
+  });
 }
 
 async function verifyProgressContract(session, { cancellation = false } = {}) {
@@ -1734,9 +2000,6 @@ async function verifyGameOpening(session) {
 }
 
 let cleanupSettled = false;
-process.on("exit", () => {
-  if (!cleanupSettled) console.error("cleanup did not finish before process exit");
-});
 let signalShutdown;
 const handleSignal = () => {
   if (signalShutdown) return;
@@ -1747,7 +2010,6 @@ const handleSignal = () => {
       process.exit(1);
     });
 };
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
 
 async function verifyFullApplication(profileDirectory, appEnvironment) {
   const practiceGame = 0;
@@ -1860,6 +2122,18 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
   await writeFile(join(filesWorkspace, `${openingRowName}.pgn`), openingPgn);
+  await writeFile(join(filesWorkspace, `${conversionSeedName}.pgn`), conversionSeedPgn);
+  const cancellationSource = join(filesWorkspace, `${conversionSourceName}.pgn`);
+  await writeFile(cancellationSource, "");
+  // Stream about 128 MiB of valid PGN so native progress can deliver a real running cancellation.
+  // Deterministic transaction-boundary races belong to the portable Rust tests.
+  const cancellationChunk = conversionSeedPgn
+    .replace("1. d4", `{${"x".repeat(4096)}}\n1. d4`)
+    .repeat(1024);
+  for (let chunk = 0; chunk < 32; chunk++) await appendFile(cancellationSource, cancellationChunk);
+  console.log(
+    `  .. conversion disposable inputs: ${cancellationSource}, ${join(filesWorkspace, `${conversionSeedName}.pgn`)}`,
+  );
   console.log(
     `  .. game-opening disposable PGN input: ${join(filesWorkspace, `${openingRowName}.pgn`)}`,
   );
@@ -3217,6 +3491,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   }
 
   await verifyGameOpening(session);
+  await verifyConversionCancellation(session, ownedRoot);
 
   // Lossless NAGs: setup failures are carried to every dependent assertion.
   const nagSetup = async (step, prerequisite, action) => {
@@ -4013,60 +4288,75 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   }
 }
 
-try {
-  if (!isAbsolute(progressApplication) || !existsSync(progressApplication)) {
-    throw new Error("progress application must name an existing absolute binary path");
-  }
-  if (
-    expectedProgressGeneration !== undefined &&
-    !canonicalProgressGeneration(expectedProgressGeneration)
-  ) {
-    throw new Error("expected progress generation must be a canonical unsigned u64 decimal string");
-  }
-  if (
-    !progressContractOnly &&
-    (applicationIndex !== -1 || progressGenerationIndex !== -1 || expectClearRejection)
-  ) {
-    throw new Error("disposable progress measurement options require --progress-contract");
-  }
-  requirePrerequisites(progressContractOnly ? progressApplication : APP_BINARY);
-
-  const { socket } = await startCompositor();
-  const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });
-  if (progressContractOnly) {
-    const progressSession = await Session.open(progressApplication);
-    try {
-      await waitFor("progress renderer startup", () => progressSession.execute(closeControlProbe));
-      await verifyProgressContract(progressSession, { cancellation: true });
-      if (screenshotPath && !expectClearRejection) {
-        await writeFile(screenshotPath, Buffer.from(await progressSession.screenshot(), "base64"));
-      }
-    } finally {
-      await progressSession.quit();
-    }
-  } else {
-    await verifyFullApplication(profileDirectory, appEnvironment);
-  }
-} catch (error) {
-  console.error(`\nverify:app could not run: ${error.message}`);
-  if (error.stack) console.error(error.stack);
-  const diagnostics = driverDiagnostics();
-  if (diagnostics) console.error(`  .. tauri-driver output:\n${diagnostics}`);
-  process.exitCode = 1;
-} finally {
+async function main() {
+  process.on("exit", () => {
+    if (!cleanupSettled) console.error("cleanup did not finish before process exit");
+  });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
   try {
-    await shutdown();
+    if (!isAbsolute(progressApplication) || !existsSync(progressApplication)) {
+      throw new Error("progress application must name an existing absolute binary path");
+    }
+    if (
+      expectedProgressGeneration !== undefined &&
+      !canonicalProgressGeneration(expectedProgressGeneration)
+    ) {
+      throw new Error(
+        "expected progress generation must be a canonical unsigned u64 decimal string",
+      );
+    }
+    if (
+      !progressContractOnly &&
+      (applicationIndex !== -1 || progressGenerationIndex !== -1 || expectClearRejection)
+    ) {
+      throw new Error("disposable progress measurement options require --progress-contract");
+    }
+    requirePrerequisites(progressContractOnly ? progressApplication : APP_BINARY);
+
+    const { socket } = await startCompositor();
+    const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });
+    if (progressContractOnly) {
+      const progressSession = await Session.open(progressApplication);
+      try {
+        await waitFor("progress renderer startup", () =>
+          progressSession.execute(closeControlProbe),
+        );
+        await verifyProgressContract(progressSession, { cancellation: true });
+        if (screenshotPath && !expectClearRejection) {
+          await writeFile(
+            screenshotPath,
+            Buffer.from(await progressSession.screenshot(), "base64"),
+          );
+        }
+      } finally {
+        await progressSession.quit();
+      }
+    } else {
+      await verifyFullApplication(profileDirectory, appEnvironment);
+    }
   } catch (error) {
-    console.error(`\nverify:app cleanup failed: ${error.message}`);
+    console.error(`\nverify:app could not run: ${error.message}`);
+    if (error.stack) console.error(error.stack);
+    const diagnostics = driverDiagnostics();
+    if (diagnostics) console.error(`  .. tauri-driver output:\n${diagnostics}`);
     process.exitCode = 1;
   } finally {
-    cleanupSettled = true;
+    try {
+      await shutdown();
+    } catch (error) {
+      console.error(`\nverify:app cleanup failed: ${error.message}`);
+      process.exitCode = 1;
+    } finally {
+      cleanupSettled = true;
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(`\n${failures.length} check(s) failed`);
+    process.exitCode = 1;
+  } else if (process.exitCode !== 1) {
+    console.log("\nall checks passed");
   }
 }
 
-if (failures.length > 0) {
-  console.error(`\n${failures.length} check(s) failed`);
-  process.exitCode = 1;
-} else if (process.exitCode !== 1) {
-  console.log("\nall checks passed");
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

@@ -281,7 +281,7 @@ describe("Add Games picker", () => {
             runDatabaseConversion(
                 (update) => store.set(databaseConversionStateAtom, update),
                 { targetDatabase: dest, targetDatabaseTitle: "Existing", sourceFileName },
-                ({ id }) => convert(id),
+                convert,
             ),
         );
     });
@@ -311,6 +311,7 @@ describe("Add Games picker", () => {
             expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
             [handle],
             dest,
+            null,
         );
         expect(runConversion).toHaveBeenCalledWith(selected.name, expect.any(Function));
         expect(store.get(databaseConversionStateAtom)).toEqual([]);

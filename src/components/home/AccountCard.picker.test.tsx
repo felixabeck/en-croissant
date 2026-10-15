@@ -302,6 +302,7 @@ test.each(["lichess", "chesscom"] as const)(
       null,
       `Felix ${type === "lichess" ? "Lichess" : "Chess.com"}`,
       null,
+      null,
     );
     expect(mocks.notify.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.convertPgn.mock.invocationCallOrder[0],
@@ -326,6 +327,7 @@ test.each(["lichess", "chesscom"] as const)(
       { id: { id: "database" }, kind: "database" },
       null,
       `Felix ${type === "lichess" ? "Lichess" : "Chess.com"}`,
+      null,
       null,
     );
   },
@@ -989,6 +991,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
     null,
     "Felix Chess.com",
     null,
+    null,
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
   expect(mocks.logFailureSafely).toHaveBeenCalledWith(
@@ -1040,6 +1043,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
     handle,
     null,
     "Felix Chess.com",
+    null,
     null,
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");

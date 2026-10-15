@@ -26,9 +26,19 @@ import { useSWRConfig } from "swr";
 import { useDatabaseList } from "@/hooks/useDatabaseList";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
-import { databaseConversionStateAtom, referenceDbAtom, runDatabaseConversion } from "@/state/atoms";
+import {
+  databaseConversionStateAtom,
+  databaseConversionRefreshFailedAtom,
+  referenceDbAtom,
+  runDatabaseConversion,
+} from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
-import { databaseHandleKey, sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
+import {
+  databaseHandleKey,
+  getDatabases,
+  sameDatabaseHandle,
+  type SuccessDatabaseInfo,
+} from "@/utils/db";
 import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
 import ConfirmModal from "../common/ConfirmModal";
@@ -39,6 +49,7 @@ import {
   invalidateDeletedDatabase,
   runAddGamesToDatabase,
   runPgnExport,
+  refreshAfterDatabaseConversion,
 } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
@@ -79,6 +90,9 @@ export function useDatabaseLibrary(
   const [open, setOpen] = useState(false);
   const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
   const [conversionState, setConversionState] = useAtom(databaseConversionStateAtom);
+  const [importRefreshFailed, setImportRefreshFailed] = useAtom(
+    databaseConversionRefreshFailedAtom,
+  );
   const conversionInProgress = conversionState.length > 0;
   const visibleDatabases = useMemo(() => {
     return (databases ?? []).filter(
@@ -266,10 +280,34 @@ export function useDatabaseLibrary(
     ),
     progress: (
       <>
+        {importRefreshFailed && (
+          <Button
+            variant="default"
+            onClick={() =>
+              void runUnlessCancelled(
+                t("Common.Error"),
+                async () => {
+                  await mutate(await getDatabases());
+                  setImportRefreshFailed(false);
+                },
+                "database",
+              )
+            }
+          >
+            {t("Databases.LoadRetry", { defaultValue: "Retry" })}
+          </Button>
+        )}
         {conversionState.map((entry) => (
           <Fragment key={entry.id}>
-            <Group px="xs" py={6} gap="xs" justify="space-between">
-              <Group gap={6}>
+            <Group
+              px="xs"
+              py={6}
+              gap="xs"
+              justify="space-between"
+              role="group"
+              aria-label={`${t("Databases.Add.Convert")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle ?? entry.id}`}
+            >
+              <Group gap={6} wrap="nowrap" style={{ minWidth: 0, flex: "1 1 12rem" }}>
                 <Loader size="xs" />
                 <Text size="sm" className="wrap-anywhere">
                   {entry.sourceFileName || entry.targetDatabaseTitle
@@ -284,6 +322,18 @@ export function useDatabaseLibrary(
                     ? ` • ${(entry.totalGames / entry.elapsedSeconds).toFixed(1)} games/s`
                     : ""}
                 </Text>
+              )}
+              {entry.cancel && (
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={entry.cancelPending}
+                  disabled={entry.cancelPending}
+                  aria-label={`${t("Common.Cancel")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle ?? entry.id}`}
+                  onClick={() => void entry.cancel?.()}
+                >
+                  {t("Common.Cancel")}
+                </Button>
               )}
             </Group>
             <Divider />
@@ -394,9 +444,16 @@ export function useDatabaseLibrary(
                   const dest = selectedDatabase.file;
                   void runAddGamesToDatabase({
                     pickPgnFile,
-                    convertPgn: async (progressId, files, destination) => {
-                      await tauri.convertPgn(progressId, files, destination, null, "", null);
-                      await mutate();
+                    convertPgn: async (progressId, files, destination, ticket) => {
+                      await refreshAfterDatabaseConversion(
+                        () =>
+                          tauri.convertPgn(progressId, files, destination, null, "", null, ticket),
+                        async () => {
+                          await mutate(await getDatabases());
+                        },
+                        setImportRefreshFailed,
+                        t("Common.Error"),
+                      );
                     },
                     dest,
                     notifyTitle: t("Common.Error"),
@@ -408,7 +465,11 @@ export function useDatabaseLibrary(
                           targetDatabaseTitle: selectedDatabase.title,
                           sourceFileName,
                         },
-                        ({ id }) => convert(id),
+                        convert,
+                        {
+                          onCancelError: (cause) =>
+                            notifyUnlessCancelled(t("Common.Error"), cause, "database"),
+                        },
                       ),
                   });
                 }}

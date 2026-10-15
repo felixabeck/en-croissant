@@ -47,6 +47,7 @@ enum ReservationKindOwned {
     Read,
     Analysis { tab: String },
     Download,
+    Conversion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub(crate) enum CancelledOperationKind {
     Read,
     Analysis,
     Download,
+    Conversion,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -67,6 +69,7 @@ enum ReservationKind<'a> {
     Read,
     Analysis { tab: &'a str },
     Download,
+    Conversion,
 }
 
 impl<'a> ReservationKind<'a> {
@@ -77,6 +80,7 @@ impl<'a> ReservationKind<'a> {
                 tab: tab.to_owned(),
             },
             Self::Download => ReservationKindOwned::Download,
+            Self::Conversion => ReservationKindOwned::Conversion,
         }
     }
 
@@ -84,7 +88,7 @@ impl<'a> ReservationKind<'a> {
         match self {
             Self::Read => LeaseKind::Read,
             Self::Analysis { .. } => LeaseKind::Analysis,
-            Self::Download => LeaseKind::Accepted,
+            Self::Download | Self::Conversion => LeaseKind::Accepted,
         }
     }
 
@@ -93,6 +97,7 @@ impl<'a> ReservationKind<'a> {
             Self::Read => "too many native read operations",
             Self::Analysis { .. } => "too many prepared analysis operations",
             Self::Download => "too many download reservations",
+            Self::Conversion => "too many conversion reservations",
         }
     }
 
@@ -101,6 +106,7 @@ impl<'a> ReservationKind<'a> {
             Self::Read => "native read reservation is unknown or expired",
             Self::Analysis { .. } => "analysis reservation is unknown or expired",
             Self::Download => "download reservation is unknown or expired",
+            Self::Conversion => "conversion reservation is unknown or expired",
         }
     }
 
@@ -109,11 +115,14 @@ impl<'a> ReservationKind<'a> {
             Self::Read => "native read reservation belongs to another webview",
             Self::Analysis { .. } => "analysis reservation belongs to another webview or tab",
             Self::Download => "download reservation belongs to another webview",
+            Self::Conversion => "conversion reservation belongs to another webview",
         }
     }
 
     fn wrong_kind_error(self, cancelling: bool) -> &'static str {
         match (self, cancelling) {
+            (Self::Conversion, false) => "reservation cannot be claimed as a conversion",
+            (Self::Conversion, true) => "reservation cannot be cancelled as a conversion",
             (Self::Read, false) => "analysis reservation cannot be claimed as a native read",
             (Self::Read, true) => "analysis reservation cannot be cancelled as a native read",
             (Self::Analysis { .. }, false) => {
@@ -136,6 +145,7 @@ impl<'a> ReservationKind<'a> {
             Self::Read => "native read reservation was already claimed",
             Self::Analysis { .. } => "analysis reservation was already claimed",
             Self::Download => "download reservation was already claimed",
+            Self::Conversion => "conversion reservation was already claimed",
         }
     }
 }
@@ -151,10 +161,16 @@ struct AcceptedEntry {
     owner: String,
     label: String,
     cancellation: CancellationToken,
-    download: bool,
+    kind: Option<ReservationKindOwned>,
     progress_id: Option<String>,
     admission_key: Option<String>,
     committing: bool,
+}
+
+impl AcceptedEntry {
+    fn is_download(&self) -> bool {
+        self.kind == Some(ReservationKindOwned::Download)
+    }
 }
 
 struct RegistryInner {
@@ -367,7 +383,7 @@ impl OperationRegistry {
                 owner: String::new(),
                 label: label.to_owned(),
                 cancellation: cancellation.clone(),
-                download: false,
+                kind: None,
                 progress_id: None,
                 admission_key: None,
                 committing: false,
@@ -396,6 +412,37 @@ impl OperationRegistry {
         exclusive: bool,
         download_cap: usize,
     ) -> Result<OperationLease, Error> {
+        self.claim_prepared(
+            ticket,
+            owner,
+            label,
+            ReservationKind::Download,
+            Some((progress_id, admission_key, exclusive, download_cap)),
+        )
+    }
+
+    pub fn prepare_conversion(&self, owner: &str) -> Result<String, Error> {
+        self.prepare_reservation(owner, ReservationKind::Conversion)
+    }
+
+    pub fn claim_conversion(&self, ticket: &str, owner: &str) -> Result<OperationLease, Error> {
+        self.claim_prepared(
+            ticket,
+            owner,
+            "convert_pgn",
+            ReservationKind::Conversion,
+            None,
+        )
+    }
+
+    fn claim_prepared(
+        &self,
+        ticket: &str,
+        owner: &str,
+        label: &str,
+        kind: ReservationKind<'_>,
+        download_policy: Option<(&str, &str, bool, usize)>,
+    ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
         Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
         if state.sealed {
@@ -406,49 +453,45 @@ impl OperationRegistry {
         let entry = state
             .reads
             .get(ticket)
-            .ok_or_else(|| Error::Conflict(ReservationKind::Download.unknown_error().into()))?;
+            .ok_or_else(|| Error::Conflict(kind.unknown_error().into()))?;
         if entry.owner != owner {
-            return Err(Error::Conflict(
-                ReservationKind::Download.owner_error().into(),
-            ));
+            return Err(Error::Conflict(kind.owner_error().into()));
         }
-        if !matches!(entry.kind, ReservationKindOwned::Download) {
-            return Err(Error::Conflict(
-                ReservationKind::Download.wrong_kind_error(false).into(),
-            ));
+        if entry.kind != kind.owned() {
+            return Err(Error::Conflict(kind.wrong_kind_error(false).into()));
         }
         if matches!(entry.state, ReadState::CancelledReserved { .. }) {
             state.reads.remove(ticket);
             return Err(Error::Cancellation);
         }
         if !matches!(entry.state, ReadState::Reserved { .. }) {
-            return Err(Error::Conflict(
-                ReservationKind::Download.claimed_error().into(),
-            ));
+            return Err(Error::Conflict(kind.claimed_error().into()));
         }
-        if state.accepted.values().any(|accepted| {
-            accepted.download
-                && (exclusive || accepted.owner == owner)
-                && accepted.admission_key.as_deref() == Some(admission_key)
-                && !accepted.cancellation.is_cancelled()
-        }) {
-            return Err(Error::Conflict(
-                "download progress is already active".into(),
-            ));
+        if let Some((_, admission_key, exclusive, download_cap)) = download_policy {
+            if state.accepted.values().any(|accepted| {
+                accepted.is_download()
+                    && (exclusive || accepted.owner == owner)
+                    && accepted.admission_key.as_deref() == Some(admission_key)
+                    && !accepted.cancellation.is_cancelled()
+            }) {
+                return Err(Error::Conflict(
+                    "download progress is already active".into(),
+                ));
+            }
+            if state
+                .accepted
+                .values()
+                .filter(|accepted| accepted.is_download())
+                .count()
+                >= download_cap
+            {
+                return Err(Error::ResourceLimit("too many active downloads".into()));
+            }
         }
         if state.accepted.len() >= MAX_ACCEPTED_OPERATIONS {
             return Err(Error::ResourceLimit(
                 "too many accepted native operations".into(),
             ));
-        }
-        if state
-            .accepted
-            .values()
-            .filter(|accepted| accepted.download)
-            .count()
-            >= download_cap
-        {
-            return Err(Error::ResourceLimit("too many active downloads".into()));
         }
         if state.accepted.contains_key(ticket) {
             return Err(Error::Conflict("native operation is already active".into()));
@@ -461,9 +504,10 @@ impl OperationRegistry {
                 owner: owner.to_owned(),
                 label: label.to_owned(),
                 cancellation: cancellation.clone(),
-                download: true,
-                progress_id: Some(progress_id.to_owned()),
-                admission_key: Some(admission_key.to_owned()),
+                kind: Some(kind.owned()),
+                progress_id: download_policy.map(|(progress_id, _, _, _)| progress_id.to_owned()),
+                admission_key: download_policy
+                    .map(|(_, admission_key, _, _)| admission_key.to_owned()),
                 committing: false,
             },
         );
@@ -476,18 +520,27 @@ impl OperationRegistry {
     }
 
     pub fn cancel_download(&self, ticket: &str, owner: &str) -> Result<bool, Error> {
+        self.cancel_prepared(ticket, owner, ReservationKind::Download)
+    }
+
+    pub fn cancel_conversion(&self, ticket: &str, owner: &str) -> Result<bool, Error> {
+        self.cancel_prepared(ticket, owner, ReservationKind::Conversion)
+    }
+
+    fn cancel_prepared(
+        &self,
+        ticket: &str,
+        owner: &str,
+        kind: ReservationKind<'_>,
+    ) -> Result<bool, Error> {
         let mut state = self.state()?;
         Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
         if let Some(entry) = state.reads.get(ticket) {
             if entry.owner != owner {
-                return Err(Error::Conflict(
-                    ReservationKind::Download.owner_error().into(),
-                ));
+                return Err(Error::Conflict(kind.owner_error().into()));
             }
-            if !matches!(entry.kind, ReservationKindOwned::Download) {
-                return Err(Error::Conflict(
-                    ReservationKind::Download.wrong_kind_error(true).into(),
-                ));
+            if entry.kind != kind.owned() {
+                return Err(Error::Conflict(kind.wrong_kind_error(true).into()));
             }
             match entry.state {
                 ReadState::Reserved { .. } => {
@@ -500,26 +553,33 @@ impl OperationRegistry {
                 }
                 ReadState::CancelledReserved { .. } => return Ok(true),
                 ReadState::Active { .. } => {
-                    return Err(Error::Conflict(
-                        "download reservation was already claimed".into(),
-                    ))
+                    return Err(Error::Conflict(kind.claimed_error().into()))
                 }
             }
         }
         let Some(entry) = state.accepted.get(ticket) else {
             return Ok(false);
         };
-        if !entry.download {
-            return Err(Error::Conflict(
-                "accepted native operation is not a download".into(),
-            ));
+        if !Self::accepted_matches(entry, kind) {
+            return Err(Error::Conflict(kind.wrong_kind_error(true).into()));
         }
         if entry.owner != owner {
-            return Err(Error::Conflict(
-                "download belongs to another webview".into(),
-            ));
+            return Err(Error::Conflict(kind.owner_error().into()));
         }
-        Ok(Self::cancel_accepted_download(entry))
+        if entry.is_download() {
+            Ok(Self::cancel_accepted_download(entry))
+        } else {
+            entry.cancellation.cancel();
+            Ok(true)
+        }
+    }
+
+    fn accepted_matches(entry: &AcceptedEntry, kind: ReservationKind<'_>) -> bool {
+        match kind {
+            ReservationKind::Download => entry.is_download(),
+            ReservationKind::Conversion => entry.kind == Some(ReservationKindOwned::Conversion),
+            _ => false,
+        }
     }
 
     fn cancel_accepted_download(entry: &AcceptedEntry) -> bool {
@@ -538,7 +598,7 @@ impl OperationRegistry {
         let state = self.state()?;
         let mut already_cancelled = false;
         for entry in state.accepted.values().filter(|entry| {
-            entry.download
+            entry.is_download()
                 && entry.owner == owner
                 && entry.progress_id.as_deref() == Some(progress_id)
         }) {
@@ -562,7 +622,7 @@ impl OperationRegistry {
     ) -> Result<R, Error> {
         let state = self.state()?;
         let live_download = state.accepted.values().any(|entry| {
-            entry.download
+            entry.is_download()
                 && entry.progress_id.as_deref() == Some(progress_id)
                 && !entry.cancellation.is_cancelled()
         });
@@ -570,27 +630,34 @@ impl OperationRegistry {
     }
 
     pub fn release_download(&self, ticket: &str, owner: &str) -> Result<(), Error> {
+        self.release_prepared(ticket, owner, ReservationKind::Download)
+    }
+
+    pub fn release_conversion(&self, ticket: &str, owner: &str) -> Result<(), Error> {
+        self.release_prepared(ticket, owner, ReservationKind::Conversion)
+    }
+
+    fn release_prepared(
+        &self,
+        ticket: &str,
+        owner: &str,
+        kind: ReservationKind<'_>,
+    ) -> Result<(), Error> {
         let mut state = self.state()?;
         Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
         if let Some(entry) = state.reads.get(ticket) {
             if entry.owner != owner {
-                return Err(Error::Conflict(
-                    ReservationKind::Download.owner_error().into(),
-                ));
+                return Err(Error::Conflict(kind.owner_error().into()));
             }
-            if !matches!(entry.kind, ReservationKindOwned::Download) {
-                return Err(Error::Conflict(
-                    ReservationKind::Download.wrong_kind_error(true).into(),
-                ));
+            if entry.kind != kind.owned() {
+                return Err(Error::Conflict(kind.wrong_kind_error(true).into()));
             }
             state.reads.remove(ticket);
             return Ok(());
         }
         if let Some(entry) = state.accepted.get(ticket) {
-            if !entry.download || entry.owner != owner {
-                return Err(Error::Conflict(
-                    "accepted native operation is not this webview's download".into(),
-                ));
+            if !Self::accepted_matches(entry, kind) || entry.owner != owner {
+                return Err(Error::Conflict(kind.owner_error().into()));
             }
         }
         Ok(())
@@ -649,6 +716,7 @@ impl OperationRegistry {
                     ReservationKindOwned::Read => CancelledOperationKind::Read,
                     ReservationKindOwned::Analysis { .. } => CancelledOperationKind::Analysis,
                     ReservationKindOwned::Download => CancelledOperationKind::Download,
+                    ReservationKindOwned::Conversion => CancelledOperationKind::Conversion,
                 },
             })
             .collect();
@@ -672,7 +740,7 @@ impl OperationRegistry {
         let accepted: Vec<_> = state
             .accepted
             .iter()
-            .filter(|(_, entry)| entry.download && entry.owner == owner && !entry.committing)
+            .filter(|(_, entry)| entry.is_download() && entry.owner == owner && !entry.committing)
             .map(|(ticket, entry)| {
                 entry.cancellation.cancel();
                 CancelledOperation {
@@ -764,8 +832,10 @@ impl OperationRegistry {
             .chain(state.accepted.iter().map(|(id, entry)| {
                 format!(
                     "{id} [{}] {}",
-                    if entry.download {
+                    if entry.is_download() {
                         "download-accepted"
+                    } else if entry.kind == Some(ReservationKindOwned::Conversion) {
+                        "conversion-accepted"
                     } else {
                         "accepted-active"
                     },
@@ -828,7 +898,7 @@ impl OperationCommitGate {
                 let entry = state.accepted.get_mut(&self.id).ok_or_else(|| {
                     Error::Conflict("download operation is no longer active".into())
                 })?;
-                if !entry.download {
+                if !entry.is_download() {
                     return Err(Error::Conflict("native operation is not a download".into()));
                 }
                 if entry.cancellation.is_cancelled() {
@@ -964,6 +1034,89 @@ impl Drop for OperationLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversion_reservations_validate_owner_kind_and_remember_cancellation() {
+        let registry = OperationRegistry::default();
+        let ticket = registry.prepare_conversion("first").unwrap();
+        assert!(registry.claim_conversion(&ticket, "other").is_err());
+        assert!(registry.cancel_conversion(&ticket, "other").is_err());
+        assert!(registry.release_conversion(&ticket, "other").is_err());
+        assert!(registry.cancel_download(&ticket, "first").is_err());
+        assert!(registry.release_download(&ticket, "first").is_err());
+        assert!(registry.cancel_conversion(&ticket, "first").unwrap());
+        assert!(registry.cancel_conversion(&ticket, "first").unwrap());
+        assert!(matches!(
+            registry.claim_conversion(&ticket, "first"),
+            Err(Error::Cancellation)
+        ));
+        assert!(!registry.cancel_conversion(&ticket, "first").unwrap());
+        let download = registry.prepare_download("first").unwrap();
+        assert!(registry.claim_conversion(&download, "first").is_err());
+        assert!(registry.cancel_conversion(&download, "first").is_err());
+        assert!(registry.release_conversion(&download, "first").is_err());
+        let read = registry.prepare_read("first").unwrap();
+        assert!(registry.claim_conversion(&read, "first").is_err());
+        registry.release_download(&download, "first").unwrap();
+        registry.cancel_read(&read, "first").unwrap();
+    }
+
+    #[test]
+    fn conversion_active_release_preserves_worker_and_only_exact_ticket_cancels() {
+        let registry = OperationRegistry::default();
+        let first = registry.prepare_conversion("first").unwrap();
+        let sibling = registry.prepare_conversion("first").unwrap();
+        let lease = registry.claim_conversion(&first, "first").unwrap();
+        let other = registry.claim_conversion(&sibling, "first").unwrap();
+        assert!(registry.cancel_conversion(&first, "other").is_err());
+        assert!(registry.release_conversion(&first, "other").is_err());
+        assert!(registry.cancel_download(&first, "first").is_err());
+        assert!(registry.release_download(&first, "first").is_err());
+        registry.release_conversion(&first, "first").unwrap();
+        assert_eq!(registry.outstanding_labels().unwrap().len(), 2);
+        registry.cancel_owner_reservations("first").unwrap();
+        registry.cancel_owner("first").unwrap();
+        assert!(!lease.token().is_cancelled());
+        assert!(registry.cancel_conversion(&first, "first").unwrap());
+        assert!(lease.token().is_cancelled());
+        assert!(!other.token().is_cancelled());
+        drop(lease);
+        assert!(!registry.cancel_conversion(&first, "first").unwrap());
+        registry.seal_and_request_cancellation().unwrap();
+        assert!(other.token().is_cancelled());
+        assert!(!registry.wait_for_drain(Duration::ZERO).unwrap());
+        drop(other);
+        assert!(registry.wait_for_drain(Duration::ZERO).unwrap());
+    }
+
+    #[test]
+    fn conversion_reservations_expire_and_share_bounded_capacity_without_download_policy() {
+        let expired = OperationRegistry::with_reservation_ttl(Duration::ZERO);
+        let ticket = expired.prepare_conversion("main").unwrap();
+        assert!(expired.claim_conversion(&ticket, "main").is_err());
+        assert!(!expired.cancel_conversion(&ticket, "main").unwrap());
+        let registry = OperationRegistry::default();
+        let tickets: Vec<_> = (0..MAX_NATIVE_READS)
+            .map(|_| registry.prepare_conversion("main").unwrap())
+            .collect();
+        assert!(matches!(
+            registry.prepare_conversion("main"),
+            Err(Error::ResourceLimit(_))
+        ));
+        let leases: Vec<_> = tickets
+            .iter()
+            .map(|ticket| registry.claim_conversion(ticket, "main").unwrap())
+            .collect();
+        let excess = registry.prepare_conversion("main").unwrap();
+        assert!(matches!(
+            registry.claim_conversion(&excess, "main"),
+            Err(Error::ResourceLimit(_))
+        ));
+        registry.release_conversion(&excess, "main").unwrap();
+        assert!(!registry.cancel_conversion(&excess, "main").unwrap());
+        drop(leases);
+        assert!(registry.accept("recovered").is_ok());
+    }
 
     #[tokio::test]
     async fn import_failure_operations_log_preserves_source_chain() {
