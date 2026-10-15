@@ -404,6 +404,14 @@ export class TabStorageRepository {
 
     /** Read the exact tab key while keeping unreadable and refused reads distinct from absence. */
     readTree(tabId: string, requireExisting = false): TabTreeReadResult {
+        return this.readTreeValue(tabId, requireExisting, true);
+    }
+
+    private readTreeValue(
+        tabId: string,
+        requireExisting: boolean,
+        migrate: boolean,
+    ): TabTreeReadResult {
         const pending = this.pending.get(tabId);
         if (pending) {
             this.setReadStatus(tabId, { kind: "available" });
@@ -442,7 +450,7 @@ export class TabStorageRepository {
 
         // Both an old uncompressed JSON payload and a former v0 envelope are
         // rewritten immediately, before the next debounced store update.
-        if (raw !== serializeStorageValue(decoded)) {
+        if (migrate && raw !== serializeStorageValue(decoded)) {
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(decoded));
             } catch (error) {
@@ -584,16 +592,16 @@ export class TabStorageRepository {
         }
     }
 
-    /** Creates an immediately durable clone without flushing any unrelated pending tree. */
-    cloneDurable(sourceTabId: string, targetTabId: string, requireExisting = false) {
+    /** Validated independent candidate without migrating, flushing or recovering the source. */
+    readForClone(sourceTabId: string, requireExisting = false): TreeState | null {
         // A duplication read cannot recover the original cached store. Only explicit hydration
         // may release its existing gate, even when the underlying storage has become readable.
+        const status = this.getStatus(sourceTabId);
         const source =
-            (NON_TREE_SESSION_KEYS.has(sourceTabId)
-                ? null
-                : this.writeBlocker(sourceTabId, requireExisting)) ??
-            this.readTree(sourceTabId, requireExisting);
-        if (source.kind === "absent") return;
+            status.kind === "unreadable" || status.kind === "unavailable"
+                ? status
+                : this.readTreeValue(sourceTabId, requireExisting, false);
+        if (source.kind === "absent") return null;
         if (source.kind === "unavailable") {
             throw new Error("Could not read the source tree for duplication.", {
                 cause: source.error,
@@ -604,7 +612,13 @@ export class TabStorageRepository {
         }
         const copy = this.validatedClone(source.value);
         if (!copy) throw new Error("Could not validate the source tree for duplication.");
-        this.seed(targetTabId, copy.state);
+        return copy.state as TreeState;
+    }
+
+    /** Creates an immediately durable clone without flushing any unrelated pending tree. */
+    cloneDurable(sourceTabId: string, targetTabId: string, requireExisting = false) {
+        const copy = this.readForClone(sourceTabId, requireExisting);
+        if (copy) this.seed(targetTabId, copy);
     }
 
     remove(tabId: string) {

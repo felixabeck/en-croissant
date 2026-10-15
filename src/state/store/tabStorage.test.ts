@@ -1064,6 +1064,78 @@ test("clone does not copy a live report operationId onto the duplicate tab", () 
     });
 });
 
+test.each(["candidate", "durable"] as const)(
+    "%s clone reads preserve cold legacy source bytes without a migration write",
+    (route) => {
+        const tree = defaultTree();
+        tree.root.comment = "legacy source bytes remain owned by the source";
+        const raw = JSON.stringify({ version: 0, state: tree });
+        sessionStorage.setItem("cold-legacy-source", raw);
+        const write = vi.spyOn(Storage.prototype, "setItem");
+        let candidate: ReturnType<typeof defaultTree>;
+        if (route === "candidate") {
+            candidate = storage.readForClone("cold-legacy-source", true)!;
+        } else {
+            storage.cloneDurable("cold-legacy-source", "legacy-copy", true);
+            candidate = storage.readForClone("legacy-copy")!;
+        }
+        expect(candidate.root).toEqual(tree.root);
+        candidate.root.comment = "independent candidate";
+        expect(write.mock.calls.filter(([key]) => key === "cold-legacy-source")).toEqual([]);
+        expect(sessionStorage.getItem("cold-legacy-source")).toBe(raw);
+        expect(storage.pendingCount()).toBe(0);
+    },
+);
+
+test("clone candidate permits an absent optional source and refuses a required missing source", () => {
+    expect(storage.readForClone("optional-candidate")).toBeNull();
+    expect(storage.getStatus("optional-candidate")).toEqual({ kind: "absent" });
+    expect(() => storage.readForClone("required-candidate", true)).toThrow(/read the source tree/);
+    expect(storage.getStatus("required-candidate")).toMatchObject({ kind: "unavailable" });
+    expect(storage.pendingCount()).toBe(0);
+});
+
+test.each(["unreadable", "unavailable", "missing"] as const)(
+    "clone candidate keeps the source's %s recovery gate after its bytes recover",
+    (failure) => {
+        const source = `gated-candidate-${failure}`;
+        if (failure === "unreadable") sessionStorage.setItem(source, "unreadable bytes");
+        const getItem = vi.spyOn(Storage.prototype, "getItem");
+        if (failure === "unavailable")
+            getItem.mockImplementation(() => {
+                throw new DOMException("read refused", "SecurityError");
+            });
+        storage.readTree(source, true);
+        const gate = storage.getStatus(source);
+        getItem.mockRestore();
+        const raw = serializeStorageValue({ version: TREE_STORAGE_VERSION, state: defaultTree() });
+        sessionStorage.setItem(source, raw);
+        const message = failure === "unreadable" ? /unreadable/ : /read the source tree/;
+        expect(() => storage.readForClone(source, true)).toThrow(message);
+        expect(() => storage.cloneDurable(source, "gated-copy", true)).toThrow(message);
+        expect(storage.getStatus(source)).toBe(gate);
+        expect(sessionStorage.getItem(source)).toBe(raw);
+        expect(sessionStorage.getItem("gated-copy")).toBeNull();
+        expect(storage.pendingCount()).toBe(0);
+    },
+);
+
+test("clone candidate validates pending actions and keeps the original edits queued", () => {
+    const tree = defaultTree();
+    storage.seed("candidate-source", tree);
+    const raw = sessionStorage.getItem("candidate-source");
+    tree.root.comment = "unflushed source edit";
+    tree.report = { inProgress: true, operationId: "source-lease" };
+    storage.write("candidate-source", { version: 1, state: { ...tree, action: () => undefined } });
+    const candidate = storage.readForClone("candidate-source", true)!;
+    expect(candidate.root.comment).toBe("unflushed source edit");
+    expect(candidate.report).toEqual({ inProgress: false, operationId: null });
+    candidate.root.comment = "destination only";
+    expect(storage.readForClone("candidate-source")!.root.comment).toBe("unflushed source edit");
+    expect(sessionStorage.getItem("candidate-source")).toBe(raw);
+    expect(storage.pendingCount()).toBe(1);
+});
+
 test("cloneDurable copies pending edits immediately without flushing unrelated trees", () => {
     const source = treeWith((state) => {
         state.dirty = true;

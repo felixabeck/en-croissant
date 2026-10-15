@@ -27,6 +27,8 @@ import {
   type TreeStore,
 } from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
+import { restorePuzzleSession } from "@/state/puzzleSession";
+import { defaultTree } from "@/utils/treeReducer";
 import {
   createTab,
   commitNewTab,
@@ -199,8 +201,19 @@ export default function BoardsPage() {
           commitNewTab({
             tab: { ...tab },
             setTabs,
-            seed: (id) =>
-              tabStorage.cloneDurable(getTabTreeKey(tab), id, tab.treeKey !== undefined),
+            seed: (id) => {
+              if (tab.type === "puzzles") {
+                const tree =
+                  tabStorage.readForClone(getTabTreeKey(tab), tab.treeKey !== undefined) ??
+                  defaultTree();
+                tabStorage.seed(id, {
+                  ...tree,
+                  puzzleSession: restorePuzzleSession(tab.value, tree),
+                });
+              } else {
+                tabStorage.cloneDurable(getTabTreeKey(tab), id, tab.treeKey !== undefined);
+              }
+            },
             existingTabIds: tabs.flatMap((candidate) => [
               candidate.value,
               getTabTreeKey(candidate),

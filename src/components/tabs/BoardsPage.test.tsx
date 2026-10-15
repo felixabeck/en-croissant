@@ -26,6 +26,8 @@ const fixtures = vi.hoisted(() => ({
   duplicateHandler: null as (() => void) | null,
   mountPanels: true,
   cloneDurable: vi.fn(),
+  readForClone: vi.fn(),
+  seed: vi.fn(),
   removeTreeSafely: vi.fn((_key: string) => true),
   recordFailedAdmission: vi.fn(),
   reportPersistError: vi.fn(),
@@ -125,6 +127,7 @@ vi.mock("@/state/keybinds", async () => {
   };
 });
 vi.mock("@/platform/native", () => ({ platform: () => "linux" }));
+vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
 vi.mock("@/platform/tauri", () => ({
   tauri: { abortGame: fixtures.abortGame, killEngines: fixtures.killEngines },
 }));
@@ -144,6 +147,8 @@ vi.mock("@/state/store/tabStorage", async (importOriginal) => {
     tabStorage: {
       storageFor: actual.tabStorage.storageFor.bind(actual.tabStorage),
       cloneDurable: fixtures.cloneDurable,
+      readForClone: fixtures.readForClone,
+      seed: fixtures.seed,
       removeTreeSafely: fixtures.removeTreeSafely,
       recordFailedAdmission: fixtures.recordFailedAdmission,
       getStatus: fixtures.getStatus,
@@ -324,6 +329,7 @@ function invokeHotkey(keys: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fixtures.commitReceipt = true;
   fixtures.treeStatuses.clear();
   fixtures.mountPanels = true;
   fixtures.duplicateHandler = null;
@@ -358,6 +364,8 @@ beforeEach(() => {
   fixtures.commitReceipt = true;
   fixtures.createTab.mockResolvedValue("created");
   fixtures.cloneDurable.mockReset();
+  fixtures.readForClone.mockReset();
+  fixtures.seed.mockReset();
   fixtures.removeTreeSafely.mockReset();
   fixtures.removeTreeSafely.mockReturnValue(true);
   fixtures.recordFailedAdmission.mockReset();
@@ -393,6 +401,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await act(async () => root.unmount());
   container.remove();
 });
@@ -575,6 +584,259 @@ test.each(["cold", "vanished"] as const)(
     realTree.closeTreeStore(owner.value);
     repository.remove(owner.treeKey);
     sessionStorage.removeItem("workspace");
+  },
+);
+
+async function realDuplicateStorage() {
+  const { tabStorage: repository } = await vi.importActual<
+    typeof import("@/state/store/tabStorage")
+  >("@/state/store/tabStorage");
+  const realTree = await vi.importActual<typeof import("@/state/store/tree")>("@/state/store/tree");
+  fixtures.cloneDurable.mockImplementation(repository.cloneDurable.bind(repository));
+  fixtures.readForClone.mockImplementation(repository.readForClone.bind(repository));
+  fixtures.seed.mockImplementation(repository.seed.bind(repository));
+  fixtures.getStatus.mockImplementation(repository.getStatus.bind(repository));
+  fixtures.subscribeStatus.mockImplementation(repository.subscribeStatus.bind(repository));
+  fixtures.createTreeStore.mockImplementation(realTree.createTreeStore);
+  fixtures.removeTreeSafely.mockImplementation(repository.removeTreeSafely.bind(repository));
+  fixtures.recordFailedAdmission.mockImplementation(
+    repository.recordFailedAdmission.bind(repository),
+  );
+  return { repository, realTree };
+}
+
+test.each(["legacy", "migrated"] as const)(
+  "puzzle Duplicate saves a complete independent %s owner while source migration is refused",
+  async (format) => {
+    const { repository, realTree } = await realDuplicateStorage();
+    const { defaultTree } = await import("@/utils/treeReducer");
+    const { restorePuzzleSession, selectedPuzzleIndex } = await import("@/state/puzzleSession");
+    const { deserializeStorageValue } = await import("@/state/store/debouncedStorage");
+    const source = crypto.randomUUID();
+    const physical = crypto.randomUUID();
+    const tree = defaultTree();
+    const puzzle = {
+      id: 7,
+      fen: tree.root.fen,
+      moves: ["e2e4", "e7e5", "g1f3", "b8c6"],
+      rating: 1200,
+      rating_deviation: 50,
+      popularity: 1,
+      nb_plays: 1,
+      completion: "incomplete" as const,
+    };
+    const history = JSON.stringify([puzzle]);
+    sessionStorage.setItem(`${source}-puzzles`, history);
+    if (format === "migrated") tree.puzzleSession = restorePuzzleSession(source, tree);
+    repository.seed(physical, tree);
+    const live = realTree.createTreeStore(source, undefined, physical);
+    live.getState().makeMove({ payload: { from: 12, to: 28 } });
+    live.getState().setComment("latest pending source annotation");
+    const state = live.getState();
+    const owns = state.capturePuzzleSessionOwner();
+    const bytes = sessionStorage.getItem(physical);
+    const pending = repository.pendingCount();
+    const originalSet = Storage.prototype.setItem;
+    const writes: string[] = [];
+    const fault = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (key === physical)
+          throw new DOMException("source migration refused", "QuotaExceededError");
+        writes.push(key);
+        return originalSet.call(this, key, value);
+      });
+    let destinationId: string | undefined;
+    let unsubscribe = () => {};
+    try {
+      expect(
+        state.transitionPuzzleSession((draft) => {
+          draft.puzzleSession = restorePuzzleSession(source, state);
+        }).success,
+      ).toBe(false);
+      expect(live.getState()).toBe(state);
+      const original = {
+        ...fixtures.tabs[0]!,
+        value: source,
+        treeKey: physical,
+        type: "puzzles" as const,
+      };
+      store.set(tabsAtom, [original]);
+      store.set(activeTabAtom, source);
+      await renderPage();
+      const admittedFrames: unknown[] = [];
+      unsubscribe = store.sub(tabsAtom, () => {
+        const destination = store.get(tabsAtom)[1];
+        if (destination)
+          admittedFrames.push(
+            deserializeStorageValue<{ state: typeof tree }>(
+              sessionStorage.getItem(destination.value)!,
+            )?.state,
+          );
+      });
+      await act(async () => fixtures.duplicateHandler!());
+      unsubscribe();
+      const destination = store.get(tabsAtom)[1]!;
+      destinationId = destination?.value;
+      expect(destination).toBeDefined();
+      expect(destination.treeKey).toBeUndefined();
+      expect(store.get(activeTabAtom)).toBe(destination.value);
+      const saved = deserializeStorageValue<{ state: typeof tree }>(
+        sessionStorage.getItem(destination.value)!,
+      )!.state;
+      expect(saved.puzzleSession).toBeDefined();
+      expect(saved.puzzleSession!.attempts.map((attempt) => attempt.puzzle)).toEqual([puzzle]);
+      expect(selectedPuzzleIndex(saved.puzzleSession)).toBe(0);
+      expect(saved.root).toEqual(state.root);
+      expect(saved.position).toEqual(state.position);
+      expect(admittedFrames).toEqual([saved]);
+      const legacyAttemptId = expect.any(String);
+      expect(saved.puzzleSession).toEqual(
+        state.puzzleSession ?? {
+          version: 1,
+          attempts: [{ attemptId: legacyAttemptId, puzzle }],
+          selectedAttemptId: saved.puzzleSession!.attempts[0].attemptId,
+        },
+      );
+      expect(writes).toContain(destination.value);
+      expect(sessionStorage.getItem(physical)).toBe(bytes);
+      expect(sessionStorage.getItem(`${source}-puzzles`)).toBe(history);
+      expect(live.getState()).toBe(state);
+      expect(owns()).toBe(true);
+      expect(repository.pendingCount()).toBe(pending);
+      const copy = realTree.getCachedTreeStore(destination.value)!;
+      expect(
+        copy.getState().transitionPuzzleSession((draft) => {
+          draft.root.comment = "independent destination edit";
+          draft.puzzleSession!.attempts[0].puzzle.timeSpent = 123;
+        }).success,
+      ).toBe(true);
+      expect(live.getState()).toBe(state);
+      expect(sessionStorage.getItem(physical)).toBe(bytes);
+      expect(sessionStorage.getItem(`${source}-puzzles`)).toBe(history);
+    } finally {
+      unsubscribe();
+      fault.mockRestore();
+      await act(async () => root.render(null));
+      realTree.closeTreeStore(source);
+      repository.remove(physical);
+      if (destinationId) {
+        realTree.closeTreeStore(destinationId);
+        repository.remove(destinationId);
+      }
+    }
+  },
+);
+
+test("puzzle Duplicate retains legacy history when its unrequired physical tree is absent", async () => {
+  const { repository } = await realDuplicateStorage();
+  const { defaultTree } = await import("@/utils/treeReducer");
+  const source = crypto.randomUUID();
+  const tree = defaultTree();
+  const puzzle = {
+    id: 1,
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+    moves: ["e7e5"],
+    rating: 1,
+    rating_deviation: 1,
+    popularity: 1,
+    nb_plays: 1,
+    completion: "incomplete",
+  };
+  const history = JSON.stringify([puzzle]);
+  sessionStorage.setItem(`${source}-puzzles`, history);
+  store.set(tabsAtom, [{ ...fixtures.tabs[0]!, value: source, type: "puzzles" }]);
+  store.set(activeTabAtom, source);
+  fixtures.mountPanels = false;
+  await renderPage();
+  await act(async () => fixtures.duplicateHandler!());
+  const destination = store.get(tabsAtom)[1]!;
+  expect(destination).toBeDefined();
+  const saved = repository.readForClone(destination.value)!;
+  expect(saved).not.toBeNull();
+  expect(saved.puzzleSession).toBeDefined();
+  expect(saved.puzzleSession!.attempts.map((attempt) => attempt.puzzle)).toEqual([puzzle]);
+  expect(saved.puzzleSession!.selectedAttemptId).toBeNull();
+  expect(saved.root).toEqual(tree.root);
+  expect(sessionStorage.getItem(source)).toBeNull();
+  expect(sessionStorage.getItem(`${source}-puzzles`)).toBe(history);
+  repository.remove(destination.value);
+});
+
+test.each([
+  "cold-missing",
+  "read-refused",
+  "missing",
+  "unreadable",
+  "unavailable",
+  "history",
+  "destination",
+  "workspace",
+] as const)(
+  "puzzle Duplicate refuses %s and preserves the original selection and recovery gate",
+  async (failure) => {
+    const { repository } = await realDuplicateStorage();
+    const { defaultTree } = await import("@/utils/treeReducer");
+    const source = crypto.randomUUID();
+    const physical = crypto.randomUUID();
+    const tree = defaultTree();
+    if (failure === "unreadable") sessionStorage.setItem(physical, "broken source bytes");
+    else if (failure !== "missing" && failure !== "cold-missing") repository.seed(physical, tree);
+    sessionStorage.setItem(`${source}-puzzles`, "[]");
+    const bytes = sessionStorage.getItem(physical);
+    const original = {
+      ...fixtures.tabs[0]!,
+      value: source,
+      treeKey: physical,
+      type: "puzzles" as const,
+    };
+    store.set(tabsAtom, [original]);
+    store.set(activeTabAtom, source);
+    fixtures.mountPanels = false;
+    const getItem = Storage.prototype.getItem;
+    const setItem = Storage.prototype.setItem;
+    const readFault = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(function (this: Storage, key) {
+        if (
+          ((failure === "unavailable" || failure === "read-refused") && key === physical) ||
+          (failure === "history" && key === `${source}-puzzles`)
+        )
+          throw new DOMException("read refused", "SecurityError");
+        return getItem.call(this, key);
+      });
+    if (["missing", "unreadable", "unavailable"].includes(failure)) {
+      repository.readTree(physical, true);
+      // Underlying bytes recover, but Duplicate must retain the original cached recovery gate.
+      readFault.mockRestore();
+      sessionStorage.setItem(physical, JSON.stringify({ version: 1, state: tree }));
+    }
+    const gate = repository.getStatus(physical);
+    const recoveryBytes = getItem.call(sessionStorage, physical);
+    const writeFault = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (failure === "destination" && key !== physical)
+          throw new DOMException("destination refused", "QuotaExceededError");
+        return setItem.call(this, key, value);
+      });
+    fixtures.commitReceipt = failure !== "workspace";
+    await renderPage();
+    await act(async () => fixtures.duplicateHandler!());
+    expect(store.get(tabsAtom)).toEqual([original]);
+    expect(store.get(activeTabAtom)).toBe(source);
+    expect(getItem.call(sessionStorage, physical)).toBe(recoveryBytes ?? bytes);
+    expect(getItem.call(sessionStorage, `${source}-puzzles`)).toBe("[]");
+    const status = repository.getStatus(physical);
+    const newlyUnavailable = failure === "cold-missing" || failure === "read-refused";
+    expect(status).toMatchObject(newlyUnavailable ? { kind: "unavailable" } : gate);
+    expect(status === gate).toBe(!newlyUnavailable);
+    expect(fixtures.removeTreeSafely).toHaveBeenCalledOnce();
+    const refusedId = fixtures.removeTreeSafely.mock.calls[0]![0];
+    expect(getItem.call(sessionStorage, refusedId)).toBeNull();
+    readFault.mockRestore();
+    writeFault.mockRestore();
+    repository.remove(physical);
   },
 );
 
