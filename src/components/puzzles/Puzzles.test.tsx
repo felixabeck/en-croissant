@@ -1,6 +1,6 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
-import { Provider, createStore } from "jotai";
+import { Provider, createStore, useAtom } from "jotai";
 import { act, useContext, type ComponentProps } from "react";
 import type { Config } from "@lichess-org/chessground/config";
 import { createRoot, type Root } from "react-dom/client";
@@ -2026,10 +2026,18 @@ async function renderPuzzles({
   initial,
   trackTime = false,
   legacy = false,
-}: { initial?: TreeState; trackTime?: boolean; legacy?: boolean } = {}) {
-  const store = createStore();
-  store.set(selectedPuzzleDbAtom, selectedDb);
-  store.set(trackPuzzleTimeAtom, trackTime);
+  atoms,
+}: {
+  initial?: TreeState;
+  trackTime?: boolean;
+  legacy?: boolean;
+  atoms?: ReturnType<typeof createStore>;
+} = {}) {
+  const store = atoms ?? createStore();
+  if (!atoms) {
+    store.set(selectedPuzzleDbAtom, selectedDb);
+    store.set(trackPuzzleTimeAtom, trackTime);
+  }
   if (!legacy && !initial && sessionStorage.getItem("puzzles-test-puzzles")) {
     initial = defaultTree();
     initial.puzzleSession = testSession(
@@ -2442,6 +2450,213 @@ test("timer close cleanup cannot recreate a retired physical tree", async () => 
   expect(sessionStorage.getItem("puzzles-test")).toBeNull();
   expect(sessionStorage.getItem("puzzles-test-puzzles")).toBeNull();
   expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(newerTimer);
+});
+
+test("UI refused tracking stop excludes the paused interval after resume", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow()], -1);
+  await renderPuzzles({ initial, trackTime: true });
+  await selectIncomplete(0);
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  vi.setSystemTime(10_000);
+  const previous = treeStore.getState();
+  const bytes = sessionStorage.getItem("puzzles-test");
+  const refuse = refusePuzzleTreeWrites();
+  await act(async () => trackingSwitch().click());
+  expect(trackingSwitch().checked).toBe(false);
+  expect(treeStore.getState()).toBe(previous);
+  expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+  refuse.mockRestore();
+  vi.setSystemTime(20_000);
+  await act(async () => trackingSwitch().click());
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(2000);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
+test.each(["paused", "resumed while refused"] as const)(
+  "UI refused tracking stop recovers while %s without charging disabled time",
+  async (recovery) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(9000);
+    const initial = defaultTree();
+    initial.puzzleSession = testSession([puzzleRow()], -1);
+    await renderPuzzles({ initial, trackTime: true });
+    await selectIncomplete(0);
+    const selectedTree = treeStore.getState().root;
+    vi.setSystemTime(10_000);
+    const refuse = refusePuzzleTreeWrites();
+    await act(async () => trackingSwitch().click());
+    const previous = treeStore.getState();
+    const bytes = sessionStorage.getItem("puzzles-test");
+    vi.setSystemTime(20_000);
+    if (recovery === "resumed while refused") {
+      await act(async () => trackingSwitch().click());
+    }
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    expect(trackingSwitch().checked).toBe(recovery === "resumed while refused");
+    expect(treeStore.getState()).toBe(previous);
+    expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+    refuse.mockRestore();
+    vi.setSystemTime(21_000);
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    expect(storedPuzzles()[0].timeSpent).toBe(recovery === "paused" ? 1000 : 2000);
+    expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+    expect(treeStore.getState().root).toEqual(selectedTree);
+    expect(treeStore.getState().position).toEqual([0]);
+  },
+);
+
+test("paused admission saves the previous owner's held elapsed before selection", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow(), puzzleB()], -1);
+  await renderPuzzles({ initial, trackTime: true });
+  await selectIncomplete(0);
+  vi.setSystemTime(10_000);
+  const refuse = refusePuzzleTreeWrites();
+  await act(async () => trackingSwitch().click());
+  const previous = treeStore.getState();
+  const bytes = sessionStorage.getItem("puzzles-test");
+  vi.setSystemTime(20_000);
+  await selectIncomplete(1);
+  expect(treeStore.getState()).toBe(previous);
+  expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+  refuse.mockRestore();
+  await selectIncomplete(1);
+  expect(trackingSwitch().checked).toBe(false);
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([1000, undefined]);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-1");
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+});
+
+test("paused first completion retains held time through refusal and retry", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow({ moves: ["e2e4", "e7e5", "g1f3", "b8c6"] })], -1);
+  const atoms = await renderPuzzles({ initial, trackTime: true });
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, false));
+  await selectIncomplete(0);
+  vi.setSystemTime(10_000);
+  const refuse = refusePuzzleTreeWrites();
+  await act(async () => trackingSwitch().click());
+  const previous = treeStore.getState();
+  const bytes = sessionStorage.getItem("puzzles-test");
+  vi.setSystemTime(20_000);
+  await act(async () => hintButton().click());
+  expect(treeStore.getState()).toBe(previous);
+  expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+  refuse.mockRestore();
+  vi.setSystemTime(30_000);
+  await act(async () =>
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Board.Practice.Retry")!
+      .click(),
+  );
+  expect(storedPuzzles()[0]).toMatchObject({ completion: "incorrect", timeSpent: 1000 });
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+  expect(treeStore.getState().root).toEqual(previous.root);
+  expect(treeStore.getState().position).toEqual(previous.position);
+});
+
+function OtherTrackingView() {
+  const [tracking, setTracking] = useAtom(trackPuzzleTimeAtom);
+  return (
+    <input
+      aria-label="Other view tracking"
+      type="checkbox"
+      checked={tracking}
+      onChange={(event) => setTracking(event.currentTarget.checked)}
+    />
+  );
+}
+
+test.each(["enabled", "disabled in another view"] as const)(
+  "actual refused unmount retains elapsed across a cached remount with tracking %s",
+  async (preference) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(9000);
+    const initial = defaultTree();
+    initial.puzzleSession = testSession([puzzleRow()], -1);
+    const atoms = await renderPuzzles({ initial, trackTime: true });
+    await selectIncomplete(0);
+    const cachedTree = treeStore;
+    const previous = treeStore.getState();
+    const bytes = sessionStorage.getItem("puzzles-test");
+    vi.setSystemTime(10_000);
+    const refuse = refusePuzzleTreeWrites();
+    await act(async () =>
+      root.render(
+        <Provider store={atoms}>
+          <OtherTrackingView />
+        </Provider>,
+      ),
+    );
+    expect(document.querySelector('[data-testid="actual-puzzle-board"]')).toBeNull();
+    expect(cachedTree.getState()).toBe(previous);
+    expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+    vi.setSystemTime(15_000);
+    if (preference === "disabled in another view") {
+      await act(async () =>
+        document.querySelector<HTMLInputElement>('[aria-label="Other view tracking"]')!.click(),
+      );
+    }
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Other view tracking"]')!.checked,
+    ).toBe(preference === "enabled");
+    refuse.mockRestore();
+    vi.setSystemTime(20_000);
+    expect(await renderPuzzles({ atoms })).toBe(atoms);
+    expect(treeStore).toBe(cachedTree);
+    expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+    expect(treeStore.getState().root).toEqual(previous.root);
+    expect(treeStore.getState().position).toEqual(previous.position);
+    expect(trackingSwitch().checked).toBe(preference === "enabled");
+    expect(storedPuzzles()[0].timeSpent).toBe(preference === "enabled" ? undefined : 1000);
+    if (preference === "disabled in another view") {
+      await act(async () => trackingSwitch().click());
+    }
+    vi.setSystemTime(21_000);
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    expect(storedPuzzles()[0].timeSpent).toBe(2000);
+    expect(treeStore.getState().root).toEqual(previous.root);
+    expect(treeStore.getState().position).toEqual(previous.position);
+  },
+);
+
+test("cold reopen after a refused unmount restores only durable elapsed", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow({ timeSpent: 500 })], -1);
+  await renderPuzzles({ initial, trackTime: true });
+  await selectIncomplete(0);
+  const selectedTree = treeStore.getState().root;
+  const bytes = sessionStorage.getItem("puzzles-test");
+  vi.setSystemTime(10_000);
+  const refuse = refusePuzzleTreeWrites();
+  await act(async () => root.unmount());
+  expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+  expect(storedPuzzles()[0].timeSpent).toBe(500);
+  refuse.mockRestore();
+  closeTreeStore("puzzles-test");
+  root = createRoot(host);
+  vi.setSystemTime(100_000);
+  await renderPuzzles({ trackTime: true });
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(storedPuzzles()[0].timeSpent).toBe(500);
+  vi.setSystemTime(100_500);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(1000);
 });
 
 test("UI history selection starts elapsed timing only when tracking is enabled", async () => {

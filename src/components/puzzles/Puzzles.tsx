@@ -36,6 +36,7 @@ import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
+  type PuzzleTimer,
   puzzleTimerFamily,
   hidePuzzleRatingAtom,
   jumpToNextPuzzleAtom,
@@ -88,6 +89,19 @@ import PuzzleBoard from "./PuzzleBoard";
 
 const puzzleRatingMarks = [600, 1700, 2800] as const;
 const unavailableValue = "-";
+
+function timerElapsed(timer: PuzzleTimer): number {
+  return timer.startedAt === undefined ? timer.elapsed : Date.now() - timer.startedAt;
+}
+
+function activeTimer(attemptId: string, elapsed: number, now: number): PuzzleTimer {
+  return { attemptId, startedAt: now - elapsed };
+}
+
+function pausedTimer(timer: PuzzleTimer, elapsed: number): PuzzleTimer {
+  return timer.startedAt === undefined ? timer : { attemptId: timer.attemptId, elapsed };
+}
+
 const addOptionLabel = (label: string) => `+ ${label}`;
 const emptySession = emptyPuzzleSession();
 
@@ -358,14 +372,14 @@ function PuzzleSessionView() {
       try {
         const admitted = transition((draft) => {
           const history = draft.puzzleSession ?? emptyPuzzleSession();
-          if (previousTimer && tracking) {
+          if (previousTimer && (tracking || previousTimer.startedAt === undefined)) {
             const prior = history.attempts.find(
               (attempt) =>
                 attempt.attemptId === previousTimer.attemptId &&
                 attempt.attemptId === history.selectedAttemptId,
             );
             if (prior?.puzzle.completion === "incomplete")
-              prior.puzzle.timeSpent = Date.now() - previousTimer.startedAt;
+              prior.puzzle.timeSpent = timerElapsed(previousTimer);
           }
           if (append) history.attempts.push({ attemptId: selected, puzzle });
           history.selectedAttemptId = selected;
@@ -384,7 +398,7 @@ function PuzzleSessionView() {
         if (!refused && live.puzzleSession !== previousSession && admitted) {
           const nextTimer =
             atomStore.get(trackPuzzleTimeAtom) && admitted.puzzle.completion === "incomplete"
-              ? { attemptId: selected, startedAt: Date.now() - (admitted.puzzle.timeSpent || 0) }
+              ? activeTimer(selected, admitted.puzzle.timeSpent || 0, Date.now())
               : null;
           setTimer((current) =>
             mounted.current && ownsSession() && current === previousTimer ? nextTimer : current,
@@ -488,7 +502,7 @@ function PuzzleSessionView() {
       firstResult.current = {
         attemptId,
         completion,
-        timeSpent: timerStart !== null ? Date.now() - timerStart : (puzzle.timeSpent ?? 0),
+        timeSpent: selectedTimer ? timerElapsed(selectedTimer) : (puzzle.timeSpent ?? 0),
       };
     const first = firstResult.current;
     function queueRetry(save: () => boolean | Promise<boolean>, owns = isCurrent) {
@@ -601,7 +615,8 @@ function PuzzleSessionView() {
   const atomStore = useAtomStore();
   const timerAtom = useTabAtom(puzzleTimerFamily);
   const [timer, setTimer] = useAtom(timerAtom);
-  const timerStart = timer?.attemptId === attemptId ? timer.startedAt : null;
+  const selectedTimer = timer?.attemptId === attemptId ? timer : null;
+  const timerStart = selectedTimer?.startedAt ?? null;
   const clearTimer = useCallback(
     (expected: typeof timer) => {
       setTimer((current) => (current === expected ? null : current));
@@ -626,8 +641,8 @@ function PuzzleSessionView() {
   const isPuzzleIncomplete = puzzles[currentPuzzle]?.completion === "incomplete";
   const savedElapsed = puzzles[currentPuzzle]?.timeSpent ?? 0;
   const elapsedTime =
-    timerStart !== null && isPuzzleIncomplete && trackTime
-      ? Date.now() - timerStart
+    selectedTimer && isPuzzleIncomplete
+      ? timerElapsed(selectedTimer)
       : puzzles[currentPuzzle]?.timeSpent || 0;
 
   useEffect(() => {
@@ -642,7 +657,11 @@ function PuzzleSessionView() {
     ) {
       setTimer((current) =>
         ownsSession() && current === timer
-          ? { attemptId, startedAt: Date.now() - savedElapsed }
+          ? activeTimer(
+              attemptId,
+              selectedTimer ? timerElapsed(selectedTimer) : savedElapsed,
+              Date.now(),
+            )
           : current,
       );
     }
@@ -656,6 +675,7 @@ function PuzzleSessionView() {
     store,
     timer,
     setTimer,
+    selectedTimer,
   ]);
 
   useEffect(() => {
@@ -670,32 +690,40 @@ function PuzzleSessionView() {
 
   useEffect(() => {
     const ownsSession = store.getState().capturePuzzleSessionOwner();
-    const saveElapsed = () => {
+    const saveElapsed = (freeze = false) => {
       const puzzle = store
         .getState()
         .puzzleSession?.attempts.find((attempt) => attempt.attemptId === attemptId)?.puzzle;
       if (
         ownsSession() &&
         atomStore.get(timerAtom) === timer &&
-        trackTime &&
-        timerStart !== null &&
+        selectedTimer &&
         puzzle?.completion === "incomplete"
       ) {
-        const finalElapsed = Date.now() - timerStart;
+        const expected = freeze
+          ? pausedTimer(selectedTimer, timerElapsed(selectedTimer))
+          : selectedTimer;
+        const finalElapsed = timerElapsed(expected);
+        if (expected !== selectedTimer) {
+          setTimer((current) => (current === timer && ownsSession() ? expected : current));
+        }
+        if (!ownsSession() || atomStore.get(timerAtom) !== expected) return;
         const saved = transition((draft) => {
           draft.puzzleSession!.attempts.find(
             (attempt) => attempt.attemptId === attemptId,
           )!.puzzle.timeSpent = finalElapsed;
         });
-        if (saved.success) clearTimer(timer);
+        if (saved.success) clearTimer(expected);
       }
     };
-    window.addEventListener("beforeunload", saveElapsed);
-    window.addEventListener("pagehide", saveElapsed);
+    const unload = () => saveElapsed();
+    if (selectedTimer?.startedAt === undefined) saveElapsed();
+    window.addEventListener("beforeunload", unload);
+    window.addEventListener("pagehide", unload);
     return () => {
-      window.removeEventListener("beforeunload", saveElapsed);
-      window.removeEventListener("pagehide", saveElapsed);
-      saveElapsed();
+      window.removeEventListener("beforeunload", unload);
+      window.removeEventListener("pagehide", unload);
+      saveElapsed(!mounted.current);
     };
   }, [
     trackTime,
@@ -709,6 +737,8 @@ function PuzzleSessionView() {
     store,
     transition,
     clearTimer,
+    selectedTimer,
+    setTimer,
   ]);
 
   const [, setTabs] = useAtom(tabsAtom);
@@ -898,6 +928,18 @@ function PuzzleSessionView() {
                       checked={trackTime}
                       onChange={(event) => {
                         if (!event.currentTarget.checked) {
+                          const live = store.getState();
+                          const ownsSession = live.capturePuzzleSessionOwner();
+                          const current = atomStore.get(timerAtom);
+                          if (
+                            current &&
+                            current.attemptId === live.puzzleSession?.selectedAttemptId
+                          ) {
+                            const paused = pausedTimer(current, timerElapsed(current));
+                            setTimer((value) =>
+                              ownsSession() && value === current ? paused : value,
+                            );
+                          }
                           setTrackTime(false);
                         } else {
                           setTrackTime(true);
