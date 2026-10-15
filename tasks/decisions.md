@@ -7981,3 +7981,49 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the primary hosted baseline ran2166 tests in269 seconds, with124 seconds in test durations and145 elsewhere, before the2696-test tree baseline hit300 seconds. The SDK schema and executor show dryRunTimeoutMinutes wraps the whole initial run, while testTimeout, timeoutMS and timeoutFactor have separate roles. No hang or specific avoidable bottleneck is proven. Full local base and serial trial both scored100%, but workload interference and the144-versus118-second workspace baseline do not establish serial benefit. A fresh review-plan judgment explicitly found that trial's O3 not met and the blanket prohibition conflated operational allowance with proof quality. Ten minutes is a defensible bounded trial, not uniquely optimal or proven sufficient until hosted confirmation. It adds no normal work or speed claim. Failure cost is up to five extra minutes before stopping an initially stalled whole suite. Reversal path: remove dryRunTimeoutMinutes from stryker.config.mjs and return to diagnosis. Existing recovery and supervision remain unchanged.
 * **Decided by:** Codex, full-auto f-20261001-20 release repair, 2026-10-15. Plan authorship and arbitration shared one context, detection ran on the same model family as code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"eebba7dc1dade93c17aa8630a23c4dbab722574621853c7523851b4668fa84d1","input_sha256":"2af0faf7c29bd7e9aff5a00ccab7b56fd6bd8619f4774a40fd8200faef2b65e9","kind":"mutation-receipt","operation":"aa78a16fb36a392731531393777f648097e753eda5452384d894b573daed78e1","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-20"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-21 — Where does a puzzle session persist coherently?
+
+* **Question:** Where should puzzle history, selection and the active tree share durable ownership?
+* **Governs:** f-20260920-08, f-20261014-01
+* **Chosen:** Embed the explicitly versioned session in the existing compressed physical tab-tree envelope and save complete candidates before live publication.
+* **Rejected:** Coordinating separate keys or adding a journal.
+* **Reason:** One atomic replacement reuses tree lifetime and durable reclamation. Reversal requires equivalent coherent ownership with legacy, refusal and close proof.
+* **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
+
+### d-20261015-22 — Which bounds protect puzzle history and selection?
+
+* **Question:** Which retention bounds preserve selected progress while preventing unbounded puzzle histories?
+* **Governs:** f-20260920-08
+* **Chosen:** Retain at most 100 attempts and 32 KiB compressed history measured as UTF-16 code units times two, protecting the selected attempt and refusing an individually oversized incoming candidate.
+* **Rejected:** Count-only retention or evicting the selected attempt.
+* **Reason:** Both variable row sizes and stable ownership require bounds. Reversal is a schema/budget change with boundary, realistic-size and quota proof that preserves progress.
+* **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
+
+### d-20261015-23 — How should ambiguous legacy puzzle ownership restore?
+
+* **Question:** What restores when legacy history cannot uniquely identify the saved tree's owner?
+* **Governs:** f-20260920-08, f-20261014-01
+* **Chosen:** Preserve the played tree and leave selection unresolved until existing history selection or Clear Session resolves it. Infer ownership before retention only from exactly one compatible root and ordered played path.
+* **Rejected:** Guessing index zero or resetting a valid tree.
+* **Reason:** Ambiguity does not authorize data loss. Reversal requires new ownership evidence and actual consumer proof.
+* **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
+
+### d-20261015-24 — What retains exact legacy puzzle cleanup authority?
+
+* **Question:** How does a non-UUID logical history key remain reclaimable after repair and independent removal refusal?
+* **Governs:** f-20260920-08
+* **Chosen:** Keep at most 100 unique exact history-key cleanup intents in existing workspace metadata, saved before source retirement, replayed independently of tree existence. Refuse overflow while preserving the old owner.
+* **Rejected:** Expiring tree-removal authority or broad suffix deletion.
+* **Reason:** The logical source can disappear before history deletion succeeds. Reversal requires equivalent cold-document retry authority, or retirement of legacy migration and all outstanding intents. Remove this legacy-only field and replay when no supported workspace contains those intents.
+* **Decided by:** Codex, adopted reviewed PR-1 correction under full auto · **Superseded-by:** -
+
+### d-20261015-25 — How do saved puzzle timing and revisits behave?
+
+* **Question:** What timing and tree state resumes for a selected puzzle or a historical revisit?
+* **Governs:** f-20260920-08, f-20261014-01
+* **Chosen:** Resume saved elapsed duration excluding application downtime, keep first incorrect result/time stable, and preserve restart-from-opening when explicitly selecting another attempt.
+* **Rejected:** Persisting wall-clock timer starts or adding one tree per history row.
+* **Reason:** This preserves the existing transient timer and one active tree. Reversal requires a separate evidenced product requirement.
+* **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"a0f716c429511238b336460ded2b8d6cd44da68554962b543a9e3d4f849c656b","input_sha256":"14cba44eb2fc1838fd68122f8890fb972a0f9abd3ad414b94b1f1707c635d3f4","kind":"mutation-receipt","operation":"ce7745a31afe5bb309372c0f20b28ebb4cf441f4e4908f4d3b59300050697b70","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-21","d-20261015-22","d-20261015-23","d-20261015-24","d-20261015-25"],"target":"decisions-ledger","v":1} -->
