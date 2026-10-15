@@ -12,7 +12,12 @@ import type {
   PuzzleRootDescriptor,
 } from "@/bindings";
 import { TreeStateContext, TreeStateProvider } from "@/components/common/TreeStateContext";
-import { validateMoveSequence, closeTreeStore, type TreeStore } from "@/state/store/tree";
+import {
+  validateMoveSequence,
+  closeTreeStore,
+  retargetTreeStore,
+  type TreeStore,
+} from "@/state/store/tree";
 import { makeUci, parseSquare } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { positionFromFen } from "@/utils/chessops";
@@ -30,8 +35,18 @@ import {
 } from "@/state/atoms";
 import { TauriCommandError } from "@/platform/tauri";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { catalogueI18n } from "@/tests/catalogues";
+import i18n from "@/i18n";
+import deDECatalogue from "@/translation/de-DE.json";
 import Puzzles from "./Puzzles";
-import { selectedPuzzleIndex, puzzleSchema, type PuzzleSession } from "@/state/puzzleSession";
+import {
+  selectedPuzzleIndex,
+  puzzleSchema,
+  puzzleSessionBytes,
+  MAX_PUZZLE_ATTEMPTS,
+  MAX_PUZZLE_SESSION_BYTES,
+  type PuzzleSession,
+} from "@/state/puzzleSession";
 import { tabStorage } from "@/state/store/tabStorage";
 import { deserializeStorageValue, serializeStorageValue } from "@/state/store/debouncedStorage";
 
@@ -242,6 +257,13 @@ function storedHistoryBytes() {
   );
 }
 
+function ownedTimer(
+  startedAt: number,
+  attemptId = treeStore.getState().puzzleSession?.selectedAttemptId ?? "previous-attempt",
+) {
+  return { attemptId, startedAt };
+}
+
 async function newPuzzle() {
   await act(async () => {
     document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')!.click();
@@ -290,7 +312,7 @@ test.each(["correct", "incorrect"] as const)(
     await act(async () => {
       atoms.set(jumpToNextPuzzleAtom, false);
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
     });
     mocks.getThemesForPuzzle.mockImplementationOnce(() => {
       expect(storedPuzzles()[0].completion).toBe(completion);
@@ -321,7 +343,7 @@ test.each(["incomplete", "correct", "removed"] as const)(
     vi.setSystemTime(10_000);
     await act(async () => {
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
     });
     vi.setSystemTime(10_100);
     const rows =
@@ -354,7 +376,7 @@ test.each(["tracking", "selection", "unmount"] as const)(
     vi.setSystemTime(10_000);
     await act(async () => {
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
     });
     vi.setSystemTime(10_100);
     if (exit === "tracking") await act(async () => trackingSwitch().click());
@@ -368,13 +390,13 @@ test.each(["tracking", "selection", "unmount"] as const)(
   },
 );
 
-test("timer cleanup retains a replacement at its reused index on unmount without restarting the timer", async () => {
+test("timer cleanup resumes a replacement's own elapsed time without reusing the previous owner's start", async () => {
   const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
   vi.useFakeTimers();
   vi.setSystemTime(10_000);
   await act(async () => {
     atoms.set(trackPuzzleTimeAtom, true);
-    atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
   });
   const replacement = puzzleRow({ timeSpent: 4321 });
   await act(async () => {
@@ -389,7 +411,7 @@ test("timer cleanup retains a replacement at its reused index on unmount without
   expect(storedPuzzles()[0]).toEqual(replacement);
   vi.setSystemTime(10_100);
   await act(async () => root.unmount());
-  expect(storedPuzzles()[0]).toEqual(replacement);
+  expect(storedPuzzles()[0]).toEqual({ ...replacement, timeSpent: 4421 });
   expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
 
@@ -507,7 +529,7 @@ test.each(["resolve", "cancel", "error"] as const)(
     vi.setSystemTime(10_000);
     await act(async () => {
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000));
     });
     await humanMove("c7", "c5");
     const firstTime = storedPuzzles()[0].timeSpent;
@@ -568,12 +590,16 @@ test("different puzzles each retain their own first wrong attempt", async () => 
   const oldCompletion = deferred<string[]>();
   mocks.getThemesForPuzzle.mockReturnValueOnce(oldCompletion.promise);
   const atoms = await renderPriorPuzzle([puzzleRow(), puzzleB()], 0, ["e4"]);
-  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+  await act(async () =>
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000)),
+  );
   await humanMove("c7", "c5");
   const firstTime = storedPuzzles()[0].timeSpent;
   expect(firstTime).toBeGreaterThanOrEqual(1000);
   await selectIncomplete(0);
-  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 2000));
+  await act(async () =>
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 2000)),
+  );
   await humanMove("e7", "e5");
   const secondTime = storedPuzzles()[1].timeSpent;
   expect(secondTime).toBeGreaterThanOrEqual(2000);
@@ -589,7 +615,9 @@ test("a still-owned first wrong metadata failure reports once without losing ela
   const completion = deferred<string[]>();
   mocks.getThemesForPuzzle.mockReturnValueOnce(completion.promise);
   const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
-  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+  await act(async () =>
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000)),
+  );
   await humanMove("c7", "c5");
   const timeSpent = storedPuzzles()[0].timeSpent;
   await act(async () => completion.reject(commandError("database", "owned wrong metadata failed")));
@@ -757,7 +785,9 @@ test.each(["resolve", "cancel"] as const)(
     await humanMove("e7", "e5");
     expect(storedPuzzles()[0].completion).toBe("incorrect");
     const timeSpent = storedPuzzles()[0].timeSpent;
-    await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 100));
+    await act(async () =>
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 100)),
+    );
     const timer = atoms.get(puzzleTimerFamily("puzzles-test"));
     const before = treeStore.getState();
     const rows = storedHistoryBytes();
@@ -919,7 +949,7 @@ test.each(["resolve", "error"] as const)(
     const replacementAtoms = await renderPuzzles();
     await act(async () => {
       expect(treeStore.getState().makeMoves({ payload: ["g1f3"] }).success).toBe(true);
-      replacementAtoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000);
+      replacementAtoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000));
     });
     expect(treeStore).not.toBe(oldStore);
     const before = treeStore.getState();
@@ -1032,7 +1062,9 @@ test.each([
     mocks.playSound.mockClear();
     const completionQuery = deferred<string[]>();
     mocks.getThemesForPuzzle.mockReturnValueOnce(completionQuery.promise);
-    await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000));
+    await act(async () =>
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000)),
+    );
     await humanMove("g5", "h5");
     const state = treeStore.getState();
     expect(state.position).toEqual([0, 0]);
@@ -1061,6 +1093,31 @@ test.each([
     expect(treeStore.getState().root).toEqual(state.root);
     expect(treeStore.getState().position).toEqual(state.position);
     expect(storedPuzzles()[0].themes).toEqual(["mate"]);
+    tabStorage.flush();
+    const saved = deserializeStorageValue<{ state: TreeState }>(
+      sessionStorage.getItem("puzzles-test")!,
+    )!.state;
+    const selectedIdentity = saved.puzzleSession!.selectedAttemptId;
+    const firstResult = { ...saved.puzzleSession!.attempts[0].puzzle };
+    await act(async () => root.unmount());
+    closeTreeStore("puzzles-test");
+    root = createRoot(host);
+    const reopenedAtoms = await renderPuzzles({ trackTime: true });
+    const reopened = treeStore.getState();
+    expect(reopened.puzzleSession!.selectedAttemptId).toBe(selectedIdentity);
+    expect(selectedPuzzleIndex(reopened.puzzleSession)).toBe(0);
+    expect(reopened.root).toEqual(saved.root);
+    expect(reopened.position).toEqual(saved.position);
+    expect(reopened.currentNode().san).toBe("Qh5#");
+    expect(positionFromFen(reopened.currentNode().fen)[0]?.isCheckmate()).toBe(true);
+    expect(getPuzzleProgress(firstResult, reopened.root, reopened.position).nextMove).toBeNull();
+    expect(reopened.puzzleSession!.attempts[0].puzzle).toEqual(firstResult);
+    expect(reopenedAtoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+    expect(mocks.board?.fen).toBe(reopened.currentNode().fen);
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    await humanMove("h8", "h7");
+    expect(treeStore.getState()).toBe(reopened);
+    expect(storedPuzzles()[0]).toEqual(firstResult);
   },
 );
 
@@ -1097,7 +1154,7 @@ test.each([
   const atoms = await loadPlaybackPuzzle("e2e4 e7e5 g1f3 b8c6");
   await act(async () => {
     atoms.set(jumpToNextPuzzleAtom, false);
-    atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
   });
   await humanMove("c7", "c5");
   const firstAttempt = storedPuzzles()[0];
@@ -1633,7 +1690,7 @@ async function renderPriorPuzzle(rows: Puzzle[], index = 0, line = ["e4", "e5", 
     treeStore.getState().setPracticePath(line.length > 1 ? [0, 0] : [0]);
     treeStore.getState().setResult("1-0");
     treeStore.getState().save();
-    atoms.set(puzzleTimerFamily("puzzles-test"), 1234);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(1234));
   });
   mocks.playSound.mockClear();
   mocks.notificationShow.mockClear();
@@ -1670,7 +1727,7 @@ test.each(rejectedCandidates)(
       await newPuzzle();
       expect(storedHistoryBytes()).toBe(previousRows);
       expect(selectedPuzzleIndex(treeStore.getState().puzzleSession)).toBe(1);
-      expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(1234);
+      expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(1234));
       expect(treeStore.getState()).toBe(before);
       expect(treeStore.getState()).toEqual(before);
       expect(treeChanged).not.toHaveBeenCalled();
@@ -1834,7 +1891,7 @@ test("database dropdown cancels a fetched malformed candidate without stale noti
   const previousRows = storedHistoryBytes();
   await act(async () => resolvePuzzle({ ...puzzleRow(), fen: "invalid", moves: "e2e4" }));
   expect(selectedPuzzleIndex(treeStore.getState().puzzleSession)).toBe(0);
-  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(1234);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(1234));
   expect(treeStore.getState()).toBe(before);
   expect(storedHistoryBytes()).toBe(previousRows);
   expect(mocks.playSound).not.toHaveBeenCalled();
@@ -1896,7 +1953,7 @@ test("a malformed persisted FEN renders safely and cannot record an incorrect at
   await act(async () => mocks.board!.movable!.events!.after!("e7", "e5", { premove: false }));
   expect(treeStore.getState()).toBe(before);
   expect(storedHistoryBytes()).toBe(previousRows);
-  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(1234);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(1234));
   expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
   expect(mocks.playSound).not.toHaveBeenCalled();
   expect(mocks.notificationShow).not.toHaveBeenCalled();
@@ -1904,7 +1961,7 @@ test("a malformed persisted FEN renders safely and cannot record an incorrect at
   await act(async () => hintButton().click());
   expect(treeStore.getState()).toBe(before);
   expect(storedHistoryBytes()).toBe(previousRows);
-  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(1234);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(1234));
   expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
   expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
@@ -2095,15 +2152,154 @@ function refusePuzzleTreeWrites() {
     });
 }
 
+function retentionBoundarySession(cachedSuccessor: boolean): PuzzleSession {
+  // Deterministic, schema-valid metadata fills the real compressed budget.
+  let seed = 123456789;
+  const noise = Array.from({ length: 32_768 }, () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return String.fromCharCode(33 + ((seed >>> 16) % 94));
+  }).join("");
+  const candidate = (length: number, completed = false) => {
+    const rows = [
+      puzzleRow({ id: 11, themes: noise.slice(0, length).match(/.{1,256}/g) ?? [] }),
+      ...(cachedSuccessor ? [puzzleB()] : []),
+      puzzleRow({
+        id: 22,
+        ...(completed ? { completion: "correct", timeSpent: 1000 } : {}),
+      }),
+    ];
+    return testSession(rows, rows.length - 1);
+  };
+  let low = 0;
+  let high = noise.length;
+  expect(puzzleSessionBytes(candidate(high))).toBeGreaterThan(MAX_PUZZLE_SESSION_BYTES);
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (puzzleSessionBytes(candidate(middle)) <= MAX_PUZZLE_SESSION_BYTES) low = middle;
+    else high = middle;
+  }
+  for (let length = low; length >= low - 64; length--) {
+    const session = candidate(length);
+    if (
+      puzzleSessionBytes(session) <= MAX_PUZZLE_SESSION_BYTES &&
+      puzzleSessionBytes(candidate(length, true)) > MAX_PUZZLE_SESSION_BYTES
+    )
+      return session;
+  }
+  throw new Error("Could not stage the completion retention boundary");
+}
+
+async function completePuzzleWithRetention(cachedSuccessor: boolean) {
+  const session = retentionBoundarySession(cachedSuccessor);
+  const selectedIndex = selectedPuzzleIndex(session);
+  const selected = session.selectedAttemptId;
+  const evicted = session.attempts[0];
+  const cached = cachedSuccessor ? session.attempts[selectedIndex - 1] : null;
+  const atoms = await renderPriorPuzzle(
+    session.attempts.map(({ puzzle }) => puzzle),
+    selectedIndex,
+    ["e4"],
+  );
+  expect(treeStore.getState().puzzleSession!.attempts).toHaveLength(cachedSuccessor ? 3 : 2);
+  expect(puzzleSessionBytes(treeStore.getState().puzzleSession!)).toBeLessThanOrEqual(
+    MAX_PUZZLE_SESSION_BYTES,
+  );
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  const boardElement = document.querySelector('[data-testid="actual-puzzle-board"]');
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  await act(async () => {
+    atoms.set(jumpToNextPuzzleAtom, true);
+    atoms.set(trackPuzzleTimeAtom, true);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
+  });
+  const themes = deferred<string[]>();
+  const successor = deferred<NativePuzzle>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(themes.promise);
+  mocks.getPuzzle.mockReturnValueOnce(successor.promise);
+  await humanMove("e7", "e5");
+  const completed = treeStore.getState();
+  expect(completed.puzzleSession!.attempts.map(({ attemptId }) => attemptId)).toEqual(
+    session.attempts
+      .filter(({ attemptId }) => attemptId !== evicted.attemptId)
+      .map(({ attemptId }) => attemptId),
+  );
+  expect(completed.puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(selectedPuzzleIndex(completed.puzzleSession)).toBe(selectedIndex - 1);
+  expect(completed.currentNode().san).toBe("e5");
+  expect(completed.position).toEqual([0, 0]);
+  expect(
+    completed.puzzleSession!.attempts.find(({ attemptId }) => attemptId === selected)?.puzzle,
+  ).toMatchObject({
+    id: 22,
+    completion: "correct",
+    timeSpent: 1000,
+  });
+  expect(document.querySelector('[data-testid="actual-puzzle-board"]')).toBe(boardElement);
+  expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce();
+  const themeSignal = mocks.getThemesForPuzzle.mock.calls[0][2].signal as AbortSignal;
+  expect(themeSignal.aborted).toBe(false);
+  expect(mocks.getPuzzle).not.toHaveBeenCalled();
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+  vi.setSystemTime(15_000);
+  await act(async () => themes.resolve(["fork"]));
+  const history = treeStore.getState().puzzleSession!;
+  expect(history.attempts.find(({ attemptId }) => attemptId === selected)?.puzzle).toMatchObject({
+    id: 22,
+    completion: "correct",
+    timeSpent: 1000,
+    themes: ["fork"],
+  });
+  return { history, completed, selected, cached, evicted, successor };
+}
+
+function expectRetainedPuzzleSession(evicted: PuzzleSession["attempts"][number]) {
+  const finalSession = treeStore.getState().puzzleSession!;
+  expect(
+    finalSession.attempts.some(
+      ({ attemptId, puzzle }) => attemptId === evicted.attemptId || puzzle.id === evicted.puzzle.id,
+    ),
+  ).toBe(false);
+  expect(finalSession.attempts).toHaveLength(2);
+  expect(finalSession.attempts.length).toBeLessThanOrEqual(MAX_PUZZLE_ATTEMPTS);
+  expect(puzzleSessionBytes(finalSession)).toBeLessThanOrEqual(MAX_PUZZLE_SESSION_BYTES);
+  expect(storedPuzzles()).toEqual(finalSession.attempts.map(({ puzzle }) => puzzle));
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+}
+
+test("completion retention keeps B's board and fetches a native successor after A eviction", async () => {
+  const { history, completed, selected, evicted, successor } =
+    await completePuzzleWithRetention(false);
+  expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+  expect(history.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(completed.root);
+  expect(treeStore.getState().position).toEqual(completed.position);
+  await act(async () => successor.resolve({ ...puzzleB(), moves: "g1f3 d7d5" }));
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).not.toBe(selected);
+  expectRetainedPuzzleSession(evicted);
+});
+
+test("completion retention keeps B's board and selects cached previous C after A eviction", async () => {
+  const { history, cached, evicted } = await completePuzzleWithRetention(true);
+  expect(mocks.getPuzzle).not.toHaveBeenCalled();
+  expect(history.selectedAttemptId).toBe(cached!.attemptId);
+  expect(selectedPuzzleIndex(history)).toBe(0);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expectRetainedPuzzleSession(evicted);
+});
+
 test("real storage admission refusal preserves selection and queued progress then retries without stale overwrite", async () => {
-  await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
   await act(async () => treeStore.getState().setComment("pending latest edit"));
   const previous = treeStore.getState();
+  const previousTimer = atoms.get(puzzleTimerFamily("puzzles-test"));
   const bytes = sessionStorage.getItem("puzzles-test");
   const refuse = refusePuzzleTreeWrites();
   mocks.getPuzzle.mockResolvedValue({ ...puzzleB(), moves: "g1f3 d7d5" });
   await newPuzzle();
   expect(treeStore.getState()).toBe(previous);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(previousTimer);
   expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
   expect(selectedPuzzleIndex(treeStore.getState().puzzleSession)).toBe(0);
   refuse.mockRestore();
@@ -2164,12 +2360,16 @@ test("refused theme metadata can retry its own immutable owner before admitting 
 test.each(["hint", "playback"] as const)(
   "a refused %s completion keeps the first incorrect time stable through retry",
   async (action) => {
-    const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+    const atoms = await renderPriorPuzzle(
+      [puzzleRow({ moves: ["e2e4", "e7e5", "g1f3", "b8c6"] })],
+      0,
+      ["e4"],
+    );
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(10_000);
     await act(async () => {
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
     });
     await act(async () => treeStore.getState().setStart([]));
     const beforeAttempt = treeStore.getState();
@@ -2177,6 +2377,16 @@ test.each(["hint", "playback"] as const)(
     await act(async () => (action === "hint" ? hintButton() : solutionButton()).click());
     expect(treeStore.getState()).toBe(beforeAttempt);
     expect(storedPuzzles()[0].completion).toBe("incomplete");
+    expect(mocks.board?.movable?.dests?.get("e7")).toContain("e5");
+    const refusedBytes = sessionStorage.getItem("puzzles-test");
+    vi.setSystemTime(10_500);
+    await humanMove("e7", "e5");
+    expect(treeStore.getState()).toBe(beforeAttempt);
+    expect(treeStore.getState().root).toBe(beforeAttempt.root);
+    expect(treeStore.getState().position).toEqual([0]);
+    expect(mocks.board?.movable?.color).toBeUndefined();
+    expect(sessionStorage.getItem("puzzles-test")).toBe(refusedBytes);
+    expect(storedPuzzles()[0].timeSpent).toBeUndefined();
     refuse.mockRestore();
     vi.setSystemTime(11_000);
     await act(async () =>
@@ -2221,14 +2431,148 @@ test("timer close cleanup cannot recreate a retired physical tree", async () => 
   const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
   await act(async () => {
     atoms.set(trackPuzzleTimeAtom, true);
-    atoms.set(puzzleTimerFamily("puzzles-test"), Date.now() - 1000);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(Date.now() - 1000));
   });
   closeTreeStore("puzzles-test");
   tabStorage.remove("puzzles-test");
+  const newerTimer = ownedTimer(Date.now(), "replacement-owner");
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), newerTimer));
   await act(async () => root.unmount());
   tabStorage.flush();
   expect(sessionStorage.getItem("puzzles-test")).toBeNull();
   expect(sessionStorage.getItem("puzzles-test-puzzles")).toBeNull();
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(newerTimer);
+});
+
+test("UI history selection preserves elapsed across equal timer starts and a cold reopen", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow(), { ...puzzleB(), timeSpent: 1000 }], -1);
+  await renderPuzzles({ initial, trackTime: true });
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBeNull();
+  await selectIncomplete(0);
+  expect(treeStore.getState().currentNode().san).toBe("e4");
+  vi.setSystemTime(10_000);
+  await selectIncomplete(1);
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  expect(selected).toBe("test-1");
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([1000, 1000]);
+  vi.setSystemTime(11_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(1000);
+  expect(storedPuzzles()[1].timeSpent).toBe(2000);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+  await act(async () => root.unmount());
+  closeTreeStore("puzzles-test");
+  root = createRoot(host);
+  vi.setSystemTime(110_000);
+  await renderPuzzles({ trackTime: true });
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([1000, 2000]);
+  vi.setSystemTime(110_500);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([1000, 2500]);
+});
+
+test.each([
+  { outcome: "subscriber throw", startedAt: 9000, elapsed: 2000 },
+  { outcome: "subscriber retarget and throw", startedAt: 5000, elapsed: 6000 },
+])(
+  "admission retains the selected timer owner after $outcome",
+  async ({ outcome, startedAt, elapsed }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(9000);
+    const initial = defaultTree();
+    initial.puzzleSession = testSession([puzzleRow(), { ...puzzleB(), timeSpent: 1000 }], -1);
+    const atoms = await renderPuzzles({ initial, trackTime: true });
+    await selectIncomplete(0);
+    const previousTimer = atoms.get(puzzleTimerFamily("puzzles-test"));
+    let observedTimer: typeof previousTimer = null;
+    let notified = false;
+    let physical = "puzzles-test";
+    const newerTimer = ownedTimer(startedAt, "test-1");
+    const unsubscribe = treeStore.subscribe((state) => {
+      if (notified || state.puzzleSession?.selectedAttemptId !== "test-1") return;
+      notified = true;
+      observedTimer = atoms.get(puzzleTimerFamily("puzzles-test"));
+      if (outcome === "subscriber retarget and throw") {
+        physical = crypto.randomUUID();
+        const replacement = {
+          ...defaultTree(),
+          root: state.root,
+          position: state.position,
+          puzzleSession: state.puzzleSession,
+        };
+        tabStorage.seed(physical, replacement);
+        retargetTreeStore("puzzles-test", physical, replacement);
+        atoms.set(puzzleTimerFamily("puzzles-test"), newerTimer);
+      }
+      throw new Error("admission subscriber failed");
+    });
+    vi.setSystemTime(10_000);
+    try {
+      await selectIncomplete(1);
+    } finally {
+      unsubscribe();
+    }
+    expect(notified).toBe(true);
+    expect(observedTimer).toBe(previousTimer);
+    expect(observedTimer).toEqual(ownedTimer(9000, "test-0"));
+    expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-1");
+    expect(treeStore.getState().currentNode().san).toBe("Nf3");
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(newerTimer);
+    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "admission subscriber failed",
+    });
+    vi.setSystemTime(11_000);
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    expect(
+      treeStore.getState().puzzleSession!.attempts.map(({ puzzle }) => puzzle.timeSpent),
+    ).toEqual([1000, elapsed]);
+    expect(
+      tabStorage
+        .read<TreeState>(physical)!
+        .state.puzzleSession!.attempts.map(({ puzzle }) => puzzle.timeSpent),
+    ).toEqual([1000, elapsed]);
+  },
+);
+
+test("elapsed cleanup cannot clear a newer timer installed by its save subscriber", async () => {
+  const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  await act(async () => {
+    atoms.set(trackPuzzleTimeAtom, true);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
+  });
+  const newerTimer = ownedTimer(10_000);
+  let replaced = false;
+  const unsubscribe = treeStore.subscribe((state) => {
+    if (replaced || state.puzzleSession!.attempts[0].puzzle.timeSpent !== 2000) return;
+    replaced = true;
+    atoms.set(puzzleTimerFamily("puzzles-test"), newerTimer);
+  });
+  vi.setSystemTime(11_000);
+  try {
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+  } finally {
+    unsubscribe();
+  }
+  expect(replaced).toBe(true);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(newerTimer);
+  expect(storedPuzzles()[0].timeSpent).toBe(2000);
+  vi.setSystemTime(15_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(5000);
 });
 
 test("incomplete elapsed time resumes after a cold reload without application downtime", async () => {
@@ -2237,7 +2581,7 @@ test("incomplete elapsed time resumes after a cold reload without application do
   const atoms = await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
   await act(async () => {
     atoms.set(trackPuzzleTimeAtom, true);
-    atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+    atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
   });
   vi.setSystemTime(10_100);
   await act(async () => root.unmount());
@@ -2246,7 +2590,7 @@ test("incomplete elapsed time resumes after a cold reload without application do
   vi.setSystemTime(110_100);
   root = createRoot(host);
   const reloaded = await renderPuzzles({ trackTime: true });
-  expect(reloaded.get(puzzleTimerFamily("puzzles-test"))).toBe(109_000);
+  expect(reloaded.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(109_000));
   await humanMove("c7", "c5");
   expect(storedPuzzles()[0].timeSpent).toBe(1100);
 });
@@ -2259,13 +2603,13 @@ test.each(["beforeunload", "pagehide"] as const)(
     vi.setSystemTime(10_000);
     await act(async () => {
       atoms.set(trackPuzzleTimeAtom, true);
-      atoms.set(puzzleTimerFamily("puzzles-test"), 9000);
+      atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000));
     });
     const previous = treeStore.getState();
     const refuse = refusePuzzleTreeWrites();
     await act(async () => window.dispatchEvent(new Event(event)));
     expect(treeStore.getState()).toBe(previous);
-    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(9000);
+    expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(9000));
     refuse.mockRestore();
     vi.setSystemTime(10_100);
     await act(async () => window.dispatchEvent(new Event(event)));
@@ -2290,7 +2634,9 @@ test("legacy inference retains an old selected attempt before bounding more than
   expect(treeStore.getState().position).toEqual([0]);
 });
 
-test("an oversized incoming puzzle leaves the current owner and tree intact", async () => {
+test("an oversized incoming puzzle reports the German quota message and leaves the current owner and tree intact", async () => {
+  const translator = await catalogueI18n("de-DE");
+  vi.spyOn(i18n, "t").mockImplementation(translator.t);
   await renderPriorPuzzle([puzzleRow()], 0, ["e4"]);
   const before = treeStore.getState();
   let entropy = 42;
@@ -2305,7 +2651,12 @@ test("an oversized incoming puzzle leaves the current owner and tree intact", as
   await newPuzzle();
   expect(treeStore.getState()).toBe(before);
   expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
-  expect(mocks.notificationShow).toHaveBeenCalled();
+  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: deDECatalogue.translation["Common.Error"],
+    message: deDECatalogue.translation["Common.StorageQuotaExceeded"],
+  });
+  expect(mocks.playSound).not.toHaveBeenCalled();
 });
 
 test.each(["workspace", "listing"] as const)(
@@ -2685,7 +3036,7 @@ test("successful deletion clears the selected puzzle session and closes the moda
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(puzzleTimerFamily("puzzles-test"), 123);
+    store.set(puzzleTimerFamily("puzzles-test"), ownedTimer(123));
   });
 
   await openAndConfirmDeletion();
@@ -2715,14 +3066,14 @@ test("pre-delete failure preserves selection, list, session, timer and modal", a
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(puzzleTimerFamily("puzzles-test"), 123);
+    store.set(puzzleTimerFamily("puzzles-test"), ownedTimer(123));
   });
 
   await openAndConfirmDeletion();
 
   await vi.waitFor(() => expect(mocks.notificationShow).toHaveBeenCalled());
   expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
-  expect(store.get(puzzleTimerFamily("puzzles-test"))).toBe(123);
+  expect(store.get(puzzleTimerFamily("puzzles-test"))).toEqual(ownedTimer(123));
   expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
     "1",
   );
@@ -2745,7 +3096,7 @@ test("applied deletion converges state, closes the modal and still reports clean
   const store = await renderPuzzles();
   await act(async () => {
     store.set(trackPuzzleTimeAtom, true);
-    store.set(puzzleTimerFamily("puzzles-test"), 123);
+    store.set(puzzleTimerFamily("puzzles-test"), ownedTimer(123));
   });
 
   await openAndConfirmDeletion();

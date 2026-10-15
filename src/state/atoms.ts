@@ -726,7 +726,9 @@ export const coverageMinGamesAtom = atomWithStorage<number>(
     createPreferenceStorage(50),
 );
 
-export const puzzleTimerFamily = atomFamily((_tab: string) => atom<number | null>(null));
+export const puzzleTimerFamily = atomFamily((_tab: string) =>
+    atom<{ attemptId: string; startedAt: number } | null>(null),
+);
 
 // CP / WDL
 

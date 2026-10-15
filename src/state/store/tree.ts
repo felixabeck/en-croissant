@@ -139,13 +139,6 @@ const reportOwners = new Map<string, object>();
 const treeStores = new Map<string, PersistedTreeStore>();
 const closingReportOwners = new Map<string, ReportOwnerInvalidation>();
 
-function prepareAdmittedStateInstallation(
-    install: StoreApi<TreeStoreState>["setState"],
-    state: Partial<TreeStoreState>,
-): () => void {
-    return () => install(state);
-}
-
 export function getCachedTreeStore(tab: string): TreeStore | undefined {
     return treeStores.get(tab);
 }
@@ -162,10 +155,10 @@ export function prepareTreeStoreRetarget(
         storage: tabStorage.storageFor<TreeStoreState>(treeKey !== tab),
     };
     const state = { puzzleSession: undefined, ...tree, practicePath: null };
-    const install = prepareAdmittedStateInstallation(store[installAdmittedTree], state);
+    const install = store[installAdmittedTree];
     return () => {
         store.persist.setOptions(options);
-        install();
+        install(state);
     };
 }
 
@@ -327,7 +320,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
             }
             // Subscriber failures occur after installation. They must not be reported as a
             // refused save or invite a retry of a transition that is already durable.
-            prepareAdmittedStateInstallation(install, candidate)();
+            install(candidate);
             return { success: true, persistence: id ? "saved" : "memory" };
         },
 
@@ -805,7 +798,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
     });
 };
 
-function makeMove({
+export function makeMove({
     state,
     move,
     last,
@@ -815,7 +808,7 @@ function makeMove({
     clock,
     sound = true,
 }: {
-    state: TreeStoreState;
+    state: TreeState & { practicePath?: number[] | null };
     move: Move;
     last: boolean;
     changePosition?: boolean;
@@ -959,17 +952,17 @@ function rebasePathAfterPrepend(target: number[], parent: number[]): number[] {
 }
 
 function rebaseTrackedPaths(
-    state: TreeStoreState,
+    state: TreeState & { practicePath?: number[] | null },
     rebase: (target: number[]) => number[] | undefined,
     fallback: {
         position: number[];
         start: number[] | undefined;
-        practicePath: number[] | null;
+        practicePath: number[] | null | undefined;
     },
 ) {
     state.position = rebase(state.position) ?? fallback.position;
     if (state.headers.start) state.headers.start = rebase(state.headers.start) ?? fallback.start;
-    if (state.practicePath !== null)
+    if (state.practicePath != null)
         state.practicePath = rebase(state.practicePath) ?? fallback.practicePath;
 }
 

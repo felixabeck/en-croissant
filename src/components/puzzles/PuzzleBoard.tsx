@@ -86,8 +86,8 @@ function PuzzleBoard({
       return (
         mounted.current &&
         ownsSession() &&
-        (attemptId !== undefined || latest.current.puzzle === puzzle) &&
-        latest.current.currentPuzzle === currentPuzzle &&
+        (attemptId !== undefined ||
+          (latest.current.puzzle === puzzle && latest.current.currentPuzzle === currentPuzzle)) &&
         latest.current.databaseKey === databaseKey &&
         ownsPosition()
       );
