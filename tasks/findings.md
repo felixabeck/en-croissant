@@ -16029,7 +16029,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### Engine form exposes a newly picked binary before its configuration probe completes
 
-* **ID:** f-20261015-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-02 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** ux
 * **Where:** src/components/engines/EngineForm.tsx:69-84, binary selection callback and unguarded form submission.
@@ -16041,6 +16041,9 @@ This closes the measured ownership defect and its completed local proof contract
 * **Found by:** review-correctness round1, confidence97, full interactive f-20261001-17 drain. Root confirms the immediate handle assignment and later independent field assignments, with no detection/submission guard. Same actual engine editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"54cd2c83042dd837efd45ff82c1a0bc3a75e2caad99f38525e7cbd17ba44e6f7","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-02"],"target":"f-20261015-02","v":1} -->
+
+* **Handled 2026-10-15:** One bounded form/picker owner blocks duplicate submit and current binary detection, adopts handle/name/filename/defaults coherently, preserves previous coherent fields on failure and rejects stale completions. Receipt-owned cleanup/close and native attachment issuance/adoption are retained. Repair6a6d1e99, decisiond-20261015-02. Repeated Add, delayed/rejected/stale picker/config and coherent retry assertions have meaningful source-only red1/restored0 witnesses. Existing native picker transport is mocked in unit proof, no actual GTK picker claim. Rejected publishing binary B beside A configuration and overlapping form registration. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"c2002a05c9e8917355023fd1aa729e3e5d490a8dd5c5c86aa2a318ef99143eb1","header_sha256":"022e91a24474997277ea9712053740e402ffed83d050207dba751907f460e7a3","header_status":"handled","input_sha256":"51712ca114521153cf3bce4f1babe38bbcf34ed2ac26cfe8508dea09b19c4919","kind":"mutation-receipt","operation":"173e15dbbb68408e007a6118cbd941668fab124a31f4e353bc402f37005c4522","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-02"],"target":"f-20261015-02","v":1} -->
 
 ### Synced engine search defaults stay stale while the analysis settings panel is unmounted
 
