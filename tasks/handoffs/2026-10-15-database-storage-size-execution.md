@@ -74,3 +74,27 @@ The corrected full pre-review passed, including mutation 446.6 seconds. The comp
 ## Release repair code review complete
 
 Seven cumulative code lenses approved the fixture and SDK configuration repairs. No source finding or unresolved Fix remains. Finding f-20261015-08 remains open until actual hosted confirmation, with its closure planned through the ordinary records-only route afterward. Full clean-tree push gates, required hosted jobs and installation remain pending. Source data and earlier native/pixel proof are unchanged. Plan authorship and arbitration shared one context, and detection used the code's model family in fresh sessions.
+
+## Hosted confirmation, 2026-10-15
+
+This actual completed result supersedes the earlier hosted-confirmation-pending checkpoints. Source fd885f1891425d4103d5610b5c55d59a4dfb373d passed the complete Test workflow, run38734981517, https://github.com/felixabeck/en-croissant/actions/runs/38734981517. All six required jobs succeeded, including Linux test116421889208, completed13:14:47UTC. The five portable jobs are listed below. No workflow dispatch was used.
+
+- rust-macos-test: success, job116421888831.
+- rust-windows-test: success, job116421889080.
+- rust-platform (windows-latest, x86_64-pc-windows-msvc): success, job116421889122.
+- test: success, job116421889208.
+- rust-platform (macos-latest, x86_64-apple-darwin): success, job116421889411.
+- rust-platform (macos-latest, aarch64-apple-darwin): success, job116421889465.
+
+Both database_storage_size_serializes_exact_decimal_strings_across_u64_range and database_storage_size_matches_actual_metadata_length_as_a_json_string were explicitly observed as passing in both Windows and macOS Rust test logs. These are actual runtime results. Full logs are source-windows-tests.log and source-macos-tests.log under /tmp/build-storage-9900f4c3.
+
+Hosted frontend-mutation artifact inspection:
+- game-practice: score100, statuses {'Killed': 87}, baseline Ran 291 tests in 20 seconds (net 3940.498969000011 ms, overhead 16887.50103099999 ms).
+- tree-path: score100, statuses {'Ignored': 6, 'Killed': 169, 'Timeout': 7}, baseline Ran 2698 tests in 4 minutes and 58 seconds (net 109422.91098000025 ms, overhead 189275.08901999975 ms).
+- workspace-storage: score100, statuses {'Ignored': 3, 'Killed': 1074}, baseline Ran 2166 tests in 4 minutes and 27 seconds (net 122224.41925300032 ms, overhead 145140.58074699968 ms).
+
+All three emitted SDK configurations use the reviewed10-minute whole-initial-suite allowance, perTest coverage, related selection, thresholds100, timeoutMS5000 and timeoutFactor1.5. No test or mutant proof was removed. Tree baseline completed in4m58s on this run, below the former five-minute cap. This successful confirmation establishes feasibility with the reviewed bound, it does not prove this particular run would have failed at five minutes or establish a speed improvement. The original published300-second timeout remains the actual negative evidence. The additional worst-case failure cost is five minutes before aborting a stalled whole initial suite. Reversal is git revert1b2158ba followed by normal review and gates.
+
+The owned ci-mutation-budget probe was removed safely with kit after all baseline, serial-trial and corrected SDK reports were archived outside it. Its sole owned config patch was verified and restored before removal. The drain worktree remains intact.
+
+f-20261015-08 can now close with actual hosted confirmation. f-20261001-20 was already closed with its source and real-app proof. Local installation and the normal records-only release remain upcoming at this checkpoint. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
