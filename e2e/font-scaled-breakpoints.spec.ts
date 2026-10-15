@@ -84,6 +84,9 @@ test("font-scaled-breakpoints: conversion Cancel remains reachable at 320px and 
     await expect(page).toHaveScreenshot("conversion-cancel-320-200.png", { fullPage: true });
     await cancel.click();
     await expect(cancel).toBeDisabled();
+    // Measure the settled loading state, since disabled alone does not await the transition.
+    await expect(cancel.locator(".mantine-Button-inner")).toHaveCSS("opacity", "0");
+    await expect(cancel.locator(".mantine-Button-loader")).toHaveCSS("opacity", "1");
     await assertNothingClipped(cancel, { mode: "reachable" });
     await capture("conversion-cancel-pending-320-200");
     await expect(page).toHaveScreenshot("conversion-cancel-pending-320-200.png", {
