@@ -1,13 +1,28 @@
 // Historical evidence: docs/context/RULE-HISTORY.md → scripts/verify-app.mjs.
-// Engine publication evidence, expected staged failure status: 1.
-// EP1-card / EP1-storage / EP2-error / EP2-card / EP2-input / EP2-storage:
-// staging prepared, observed exit status pending root's authorized real-product run.
-// These assertions are untrusted until their distinguishable FAIL messages and same-run
-// exit statuses are recorded here. Stage each with disposable profile inputs only.
-// After the successful write, change its selected card name text node for EP1-card or its engines
-// stored name for EP1-storage. After the refused write, remove its error notification for
-// EP2-error, change its selected card name text node for EP2-card, its input value for EP2-input, or
-// its engines stored name for EP2-storage. Restore immediately and observe green.
+// Native engine publication staging: 2026-10-15, producer 8e3f1852 (fixed release).
+// Run evidence: /tmp/build-4056308d/native-engine-matrix-root-hide.log.
+// Exit evidence: /tmp/build-4056308d/native-engine-matrix-root-hide.actual-exit records status 1.
+// Disposable profile inputs only. EP1 kept the real Name value "Fixture saved publication"
+// while the selected card text and valid serialized engines value decoded to
+// "Scratch EP1 altered publication".
+// EP2 refused the disposable profile's engines write, then its Name DOM value, selected card
+// text, and valid serialized engines value decoded to "Scratch EP2 altered publication".
+// A reversible notification-root display override hid the save error. Exact original engines
+// bytes, notification display value and priority, and Storage.prototype.setItem ownership were
+// captured and restored. No fixture, assertion, or library changes were made.
+// Final restoration marker observed: "STAGE: both real-input cases restored, fetch ownership restored".
+// Each assertion below printed FAIL in that same run with observed and documented exit status 1:
+// FAIL  EP1-card successful Name edit publishes the saved engine card
+// FAIL  EP1-storage successful Name edit persists the decoded engine name
+// FAIL  EP2-error refused engines storage write reports the save error
+// FAIL  EP2-card refused Name edit retains the saved engine card
+// FAIL  EP2-input refused Name draft settles to the saved name
+// FAIL  EP2-storage refused Name edit retains the decoded saved engine name
+// Separate behavioral witness: native-old-red.log and native-old-red.exit showed EP2-card and EP2-input FAIL at
+// exit 1 with saved stored name "Fixture saved publication", then exact source restoration and
+// rebuilt producer exit 0. It is not the six-assertion staging run.
+// Earlier diagnostic failure logs are incomplete and are not matrix evidence. Root ordinary
+// recovery and final browser verification are separate and are not claimed by this evidence.
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
