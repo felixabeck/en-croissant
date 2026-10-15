@@ -7795,3 +7795,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The actual slider already defines this domain. A corrupt value must not make the app unusable, and shared constants prevent its reader and writer from drifting. Reversal path: change the shared domain only alongside the slider and hydration/repair proofs.
 * **Decided by:** Codex, full-auto co-located finding execution, 2026-10-15. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4ba28872adb4911015a23ed7cf5ed9afc99ba7ce32e3e530b09dba61d63131ed","input_sha256":"916591fa0f34197e8d9719859642aeaed1f3fcdf15123cda41da80d16c5b6f8a","kind":"mutation-receipt","operation":"acdee9fb67315cebb1f55e3db76033009c11238c6b5a8ad69c5407ea3665abfa","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-02 — How should engine form and JSON submissions retain one coherent input snapshot?
+
+* **Question:** How should detection, repeated submission and new input be owned while an explicit engine form or JSON save is pending?
+* **Governs:** f-20261001-17, f-20261015-02
+* **Chosen:** A bounded current form owner admits one submission or binary detection at a time. Disable editable submission controls during that operation, keep modal close/navigation available, and adopt a successful current binary handle/configuration together. Failed detection keeps the prior coherent form and reports its error. Existing open-owner guards prevent a closed/reopened editor being closed by the old receipt.
+* **Rejected:** Publishing a partial binary choice, accepting repeated Add submissions before persistence, allowing newer enabled JSON input to be discarded by an older receipt, or building another form-action queue to preserve those ambiguous overlapping submissions.
+* **Reason:** The explicit Save/Add action submits one coherent snapshot. Pending controls and synchronous admission give that action a clear owner while retaining retry and cancellation through the existing UI. Inline fields retain their separate responsive draft contract. Reversal path: replace the admission contract only with equivalent detection, repeated-submit, refusal, reopen and newest-input proof.
+* **Decided by:** Codex, cumulative review arbitration, 2026-10-15. **Superseded-by:** -
+
+### d-20261015-03 — Where should synced analysis defaults become effective?
+
+* **Question:** Should synced analysis settings be maintained by a mounted visual effect or derived at their shared read boundary?
+* **Governs:** f-20261001-17, f-20261015-03
+* **Chosen:** The shared per-tab settings boundary derives synced go/options from the latest committed engine, while enabled/synced flags and unsynced values remain tab-owned. All existing listeners, fingerprints and visual readers use that same boundary. Remove BestMoves' effect mirror. Synced input uses the existing shared draft/intents contract so a rapid reversal is accepted against the latest pending intent and saves in order, while searches read committed settings.
+* **Rejected:** Synchronizing only when BestMoves is mounted, adding another listener-only mirror, or dropping a reversal because it equals the old committed value.
+* **Reason:** Panel mount cannot determine which durable defaults a search uses. Shared derivation removes that second authority, and local drafts preserve responsive intent without letting unsaved defaults control searches. Reversal path: prove equivalent panel-absent listener, saved/refused defaults, rapid reversal, unsynced isolation and tab disposal behavior before replacing the boundary.
+* **Decided by:** Codex, cumulative review arbitration, 2026-10-15. **Superseded-by:** -
+
+### d-20261015-04 — How should a failed local engine configuration read be shown?
+
+* **Question:** Should a current configuration failure be rendered at the editor or notified on every query retry?
+* **Governs:** f-20261015-01
+* **Chosen:** Render the current handle-keyed query's normalized public failure using the existing localized error UI convention. Saved metadata stays usable. A new owner or successful recovery clears that obsolete error.
+* **Rejected:** An empty Advanced Settings section, unconditional repeated retry notifications or a new error-reporting framework.
+* **Reason:** The query already owns its current error. Rendering that state keeps failure attribution with the selected engine and avoids stale or repeated toasts. Reversal path: use another existing presentation only with equivalent current-owner, failure, recovery and no-duplicate proof.
+* **Decided by:** Codex, cumulative review arbitration, 2026-10-15. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"25587d440079bc400fc026da42bc7bcc345664d4edcc44891691cbd3cb4a8a72","input_sha256":"a7109039316473e260bf5e544ff32f49e53f4b29315ade35b3a66020ae8d6284","kind":"mutation-receipt","operation":"9bf0a4e1e1f983cd9ef3ed1e0fa63b6a76b110eb77892c21b8cbcad10d9e5010","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-02","d-20261015-03","d-20261015-04"],"target":"decisions-ledger","v":1} -->
