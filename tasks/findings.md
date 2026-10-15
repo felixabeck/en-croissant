@@ -16104,3 +16104,20 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof required:** Both existing narrow German editor journeys pass their unchanged reachable assertions in the canonical container, with inspected captures and no horizontal page overflow. Restore old source alone to reproduce the same failures.
 * **Related:** f-20260927-08 settled font-aware breakpoint scaling and f-20260829-02 handled earlier narrow layout breakage. Their presence does not establish a shared Root. f-20261001-17 currently edits this actual editor area, Fix now.
 * **Found by:** Root actual browser verification in the full interactive f-20261001-17 drain. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-15 — filed through the inbox spool
+
+### Reachability assertion rejects a native text input whose long value is reachable by caret scrolling
+
+* **ID:** f-20261015-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** tooling
+* **Where:** e2e/fixtures.ts assertNothingClipped contentLost/contentPasses handling of HTMLInputElement.
+* **Defect:** The reachable mode treats a single-line text input's value scrollWidth as lost content even when native caret navigation reaches both ends. This blocks the required real browser proof after actual panel overflow has been removed.
+* **Evidence:** Canonical browser-input.zi34fX exits1 with46passed/2failed. Both actual local/cloud engine Name fields pass native End yielding scrollLeft>0, Home yielding0 and exact full-value assertions. The next unchanged reachable assertion still rejects their internal value widths310/258 against136. The attempted explicit input overflow-x:auto rule does not change that rejection and should be removed.
+* **Fix shape:** Model native single-line text-input value scrolling in the existing reachable checker, preserving bounding-box/ancestor clipping and strict clipped mode. Keep positive native caret proof and a real displaced/clipped control refusal case in the existing journeys. No global ignore or CSS concealment.
+* **Proof:** Same canonical native-caret journeys pass, removing only the checker correction makes the original value-clipping assertions fail1, restoration passes0. A displaced or clipped actual control must still be rejected, and all existing geometry/browser tests remain green.
+* **Related:** f-20261015-06 is the distinct real engine-panel layout defect. This checker issue was exposed after its panel correction, no shared Root is asserted.
+* **Found by:** Codex root actual browser verification, same OpenAI family as code, plan authorship and arbitration shared one context. Fix now as a direct blocker to required proof.
