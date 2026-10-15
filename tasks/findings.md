@@ -16034,6 +16034,8 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof:** Real EngineForm/LocalEngine native transport cases for A→B delayed detection, refusal and retry, double submit during delayed preparation, and unmount. Require no mixed saved registration or duplicate admission. Source-only production faults must fail the relevant assertions and restore green.
 * **Related:** f-20261001-17 exposes the submission path's save receipt, this pre-existing detector ownership defect is a distinct cause. No shared Root is asserted.
 * **Found by:** review-correctness round1, confidence97, full interactive f-20261001-17 drain. Root confirms the immediate handle assignment and later independent field assignments, with no detection/submission guard. Same actual engine editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"54cd2c83042dd837efd45ff82c1a0bc3a75e2caad99f38525e7cbd17ba44e6f7","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-02"],"target":"f-20261015-02","v":1} -->
 
 ### Synced engine search defaults stay stale while the analysis settings panel is unmounted
 
