@@ -15,15 +15,6 @@ export type EngineEditIntent =
     | { kind: "defaults"; settings: EngineOption[] }
     | { kind: "reset"; settings: EngineOption[] | undefined };
 
-export function mergeEngineOptions(
-    current: EngineOption[],
-    changed: EngineOption[],
-    removed: string[] = [],
-): EngineOption[] {
-    const names = new Set([...removed, ...changed.map((option) => option.name)]);
-    return [...current.filter((option) => !names.has(option.name)), ...changed];
-}
-
 /** Applies only the accepted fields to the latest record. Missing identities stay missing. */
 export function applyEngineEdit(engine: Engine, intent: EngineEditIntent): Engine {
     if (intent.kind === "field") {
@@ -43,17 +34,13 @@ export function applyEngineEdit(engine: Engine, intent: EngineEditIntent): Engin
             ],
         };
     }
-    const settings = mergeEngineOptions(
-        engine.settings ?? [],
-        intent.value === null
-            ? []
-            : [
-                  typeof intent.value === "string"
-                      ? { type: "string", name: intent.name, value: intent.value }
-                      : intent.value,
-              ],
-        [intent.name],
-    );
+    const settings = (engine.settings ?? []).filter((option) => option.name !== intent.name);
+    if (intent.value !== null)
+        settings.push(
+            typeof intent.value === "string"
+                ? { type: "string", name: intent.name, value: intent.value }
+                : intent.value,
+        );
     return { ...engine, settings };
 }
 
@@ -103,40 +90,51 @@ export function useEngineEditDraft<T extends Engine>(engine: T) {
     const [, save] = useAtom(enginesAtom);
     const store = useStore();
     const { t } = useTranslation();
-    const owner = useRef(new EngineEditDraft());
+    const owner = useRef({ id: engine.id, draft: new EngineEditDraft() });
     const [, render] = useState(0);
     useEffect(() => {
         const draft = new EngineEditDraft();
-        owner.current = draft;
+        owner.current = { id: engine.id, draft };
         return () => draft.close();
     }, [engine.id]);
 
     const submit = useCallback(
-        (intent: EngineEditIntent) => {
-            const draft = owner.current;
-            const identity = draft.accept(intent);
-            if (identity === null) return;
+        (action: EngineEditIntent | EngineEditIntent[]) => {
+            const draft = owner.current.draft;
+            if (
+                owner.current.id !== engine.id ||
+                !store.get(enginesAtom)?.some((item) => item.id === engine.id)
+            )
+                return;
+            const intents = Array.isArray(action) ? action : [action];
+            if (intents.length === 0) return;
+            const accepted = intents.map((intent) => ({ intent, identity: draft.accept(intent) }));
+            if (accepted.some(({ identity }) => identity === null)) return;
             render((value) => value + 1);
             void (async () => {
                 try {
                     await save((current) =>
                         current.map((item) =>
-                            item.id === engine.id ? applyEngineEdit(item, intent) : item,
+                            item.id === engine.id ? intents.reduce(applyEngineEdit, item) : item,
                         ),
                     );
                 } catch (error) {
                     notifyUnlessCancelled(t("Common.Error"), error);
                 } finally {
-                    if (draft.settle(intent, identity)) render((value) => value + 1);
+                    let settled = false;
+                    for (const { intent, identity } of accepted) {
+                        if (draft.settle(intent, identity)) settled = true;
+                    }
+                    if (settled) render((value) => value + 1);
                 }
             })();
         },
-        [engine.id, save, t],
+        [engine.id, save, store, t],
     );
 
     const readDisplayed = useCallback(
         () =>
-            owner.current.display(
+            owner.current.draft.display(
                 (store.get(enginesAtom)?.find((item) => item.id === engine.id) ?? engine) as T,
             ),
         [engine, store],

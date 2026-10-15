@@ -3,17 +3,25 @@ import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { displayEngine, engineDisplayHarness } from "@/tests/engineDisplay";
-import { engineTerminalFamily, engineRetryFamily, enginesAtom } from "@/state/atoms";
+import {
+  engineTerminalFamily,
+  engineRetryFamily,
+  enginesAtom,
+  tabEngineSettingsFamily,
+} from "@/state/atoms";
+import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
 import { useAtomValue } from "jotai";
 import type { Settings } from "./EngineSettingsForm";
 import { analysisSearch } from "./analysisSearch";
 import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import BestMoves from "./BestMoves";
 import { errorUnlessCancelled } from "@/platform/errors";
+import { installResizeObserverStub } from "@/tests/resizeObserver";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 const publication = vi.hoisted(() => ({
   reconcile: vi.fn(),
+  realForm: false,
   displayed: undefined as Settings | undefined,
   setSettings: undefined as undefined | ((update: (current: Settings) => Settings) => void),
 }));
@@ -24,19 +32,17 @@ vi.mock("@/platform/tauri", async (importOriginal) => {
     tauri: { ...actual.tauri, reconcileEngineAttachments: publication.reconcile },
   };
 });
-vi.mock("./EngineSettingsForm", () => ({
-  default: ({
-    setSettings,
-    settings,
-  }: {
-    setSettings: typeof publication.setSettings;
-    settings: Settings;
-  }) => {
-    publication.setSettings = setSettings;
-    publication.displayed = settings;
-    return null;
-  },
-}));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("./EngineSettingsForm", async (importOriginal) => {
+  const { default: Form } = await importOriginal<typeof import("./EngineSettingsForm")>();
+  return {
+    default: (props: React.ComponentProps<typeof Form>) => {
+      publication.setSettings = props.setSettings;
+      publication.displayed = props.settings;
+      return publication.realForm ? <Form {...props} /> : null;
+    },
+  };
+});
 vi.mock("./AnalysisRow", () => ({
   default: ({ moves, inert, fen, halfMoves }: any) => (
     <tr data-inert={inert} data-fen={fen} data-ply={halfMoves}>
@@ -47,6 +53,8 @@ vi.mock("./AnalysisRow", () => ({
 let h: ReturnType<typeof engineDisplayHarness>;
 beforeEach(() => {
   publication.reconcile.mockReset().mockResolvedValue(undefined);
+  publication.realForm = false;
+  installResizeObserverStub();
   vi.useFakeTimers();
   h = engineDisplayHarness();
 });
@@ -69,6 +77,139 @@ function LivePanel() {
     </Accordion>
   ) : null;
 }
+
+test.each([false, true])(
+  "parent sync admission persists retained local defaults with absent globals, refusal %s",
+  async (refused) => {
+    const local = {
+      enabled: true,
+      synced: false,
+      go: { t: "Depth" as const, c: 17 },
+      settings: [{ type: "string" as const, name: "Hash", value: "128" }],
+    };
+    await h.store.set(enginesAtom, [displayEngine]);
+    h.store.set(h.settingsAtom, local);
+    const other = tabEngineSettingsFamily({ tab: "another-tab", engineId: displayEngine.id });
+    h.store.set(other, { ...local, enabled: false, go: { t: "Depth", c: 5 } });
+    const otherBefore = h.store.get(other);
+    publication.realForm = true;
+    await h.render(<LivePanel />);
+    const bytes = localStorage.getItem("engines");
+    let release!: () => void;
+    let reject!: (error: Error) => void;
+    publication.reconcile.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve, refuse) => {
+          release = resolve;
+          reject = refuse;
+        }),
+    );
+    const syncLabel = [...h.host.querySelectorAll("label")].find(
+      (label) => label.textContent === "Board.Analysis.SyncGlobally",
+    )!;
+    const sync = document.getElementById(syncLabel.htmlFor) as HTMLInputElement;
+    expect(sync.checked).toBe(false);
+    await act(async () => sync.click());
+    // Drain even the syncing=false fault, which admits no native save.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const pending = publication.displayed;
+    const committed = h.store.get(h.settingsAtom);
+    const pendingBytes = localStorage.getItem("engines");
+    await act(async () => {
+      if (refused) reject?.(new Error("sync refused"));
+      else release?.();
+    });
+    // A dropped action leaves its one-shot transport unused. The drain must stay independent.
+    publication.reconcile.mockReset().mockResolvedValue(undefined);
+    await act(async () => {
+      await h.store.set(enginesAtom, (current) => current);
+    });
+    const saved = h.store.get(enginesAtom)![0];
+    expect(saved.go).toEqual(refused ? undefined : local.go);
+    expect(saved.settings).toEqual(refused ? undefined : local.settings);
+    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+    expect(pending?.go).toEqual(local.go);
+    expect(pending?.settings).toEqual(local.settings);
+    expect(committed).toEqual({ ...local, synced: true, go: { t: "Infinite" }, settings: [] });
+    expect(pendingBytes).toBe(bytes);
+    expect(h.store.get(h.settingsAtom)).toEqual({
+      ...local,
+      synced: true,
+      go: refused ? { t: "Infinite" } : local.go,
+      settings: refused ? [] : local.settings,
+    });
+    expect(h.store.get(other)).toBe(otherBefore);
+  },
+);
+
+test.each(["sync", "options"] as const)(
+  "one parent %s settings action refuses all members and a later action saves independently",
+  async (action) => {
+    const hash = { type: "string" as const, name: "Hash", value: "64" };
+    const threads = { type: "string" as const, name: "Threads", value: "1" };
+    await h.store.set(enginesAtom, [
+      { ...displayEngine, settings: [hash, threads], go: { t: "Depth", c: 10 } },
+    ]);
+    h.store.set(h.settingsAtom, {
+      enabled: true,
+      synced: action !== "sync",
+      settings: [hash, threads],
+      go: { t: "Depth", c: 17 },
+    });
+    await h.render(<LivePanel />);
+    const before = h.store.get(enginesAtom)![0];
+    let reject!: (error: Error) => void;
+    publication.reconcile.mockClear();
+    publication.reconcile.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, refuse) => {
+          reject = refuse;
+        }),
+    );
+    await act(async () =>
+      publication.setSettings!((current) => ({
+        ...current,
+        synced: true,
+        settings: [
+          { ...hash, value: "128" },
+          { ...threads, value: "8" },
+        ],
+        go: { t: "Depth", c: 21 },
+      })),
+    );
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    expect(publication.displayed).toMatchObject({
+      settings: [
+        { ...hash, value: "128" },
+        { ...threads, value: "8" },
+      ],
+      go: { t: "Depth", c: 21 },
+    });
+    expect(h.store.get(enginesAtom)![0]).toEqual(before);
+    await act(async () => reject(new Error("whole action refused")));
+    await act(async () => {
+      await h.store.set(enginesAtom, (current) => current);
+    });
+    const settled = h.store.get(enginesAtom)![0];
+    const settledBytes = decodeCompressedOrJson(localStorage.getItem("engines")!);
+    await act(async () =>
+      publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 30 } })),
+    );
+    await act(async () => {
+      await h.store.set(enginesAtom, (current) => current);
+    });
+    expect(settled).toEqual(before);
+    expect(settledBytes).toEqual([before]);
+    expect(h.store.get(enginesAtom)![0]).toEqual({ ...before, go: { t: "Depth", c: 30 } });
+    expect(publication.displayed).toMatchObject({
+      settings: before.settings,
+      go: { t: "Depth", c: 30 },
+    });
+  },
+);
 
 test("rapid synced Hash reversal uses latest pending input while search settings remain committed", async () => {
   const hash = (value: string) => ({ type: "string" as const, name: "Hash", value });

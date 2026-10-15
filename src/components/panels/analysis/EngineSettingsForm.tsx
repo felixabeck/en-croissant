@@ -6,21 +6,17 @@ import { useAtomValue } from "jotai";
 import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { GoMode } from "@/bindings";
+import type { AnalysisSettings } from "@/state/analysisSettings";
 import GoModeInput from "@/components/common/GoModeInput";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
-import { type Engine, type EngineSettings, killEngine } from "@/utils/engines";
+import { type Engine, killEngine } from "@/utils/engines";
 import CoresSlider from "./CoresSlider";
 import HashSlider from "./HashSlider";
 import LinesSlider from "./LinesSlider";
 
-export type Settings = {
-  enabled: boolean;
-  go: GoMode;
-  settings: EngineSettings;
-  synced: boolean;
-};
+export type Settings = AnalysisSettings;
 
 interface EngineSettingsProps {
   engine: Engine;

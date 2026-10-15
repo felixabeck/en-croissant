@@ -30,7 +30,8 @@ import { memo, startTransition, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { BestMoves } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { useEngineEditDraft } from "@/components/engines/engineEditDraft";
+import { useEngineEditDraft, type EngineEditIntent } from "@/components/engines/engineEditDraft";
+import { projectAnalysisSettings } from "@/state/analysisSettings";
 import {
   currentDetachedEngineAtom,
   threatFamily,
@@ -88,25 +89,13 @@ function BestMovesComponent({
   });
   const [committedSettings, setSettings2] = useAtom(settingsAtom);
 
-  const settings = committedSettings.synced
-    ? {
-        ...committedSettings,
-        settings: displayed.settings ?? [],
-        go: displayed.go ?? { t: "Infinite" as const },
-      }
-    : committedSettings;
+  const settings = projectAnalysisSettings(committedSettings, displayed);
 
   const setSettings = useCallback(
     (fn: (prev: Settings) => Settings) => {
       const pending = readDisplayed();
       const current = store.get(settingsAtom);
-      const previous = current.synced
-        ? {
-            ...current,
-            settings: pending.settings ?? [],
-            go: pending.go ?? { t: "Infinite" as const },
-          }
-        : current;
+      const previous = projectAnalysisSettings(current, pending);
       const newSettings = fn(previous);
       if (!newSettings.synced) {
         setSettings2(newSettings);
@@ -130,13 +119,15 @@ function BestMovesComponent({
         .filter((old) => !newSettings.settings.some((option) => option.name === old.name))
         .map((option) => option.name);
       const goChanged = syncing || !equal(newSettings.go, previous.go);
-      if (syncing) submit({ kind: "reset", settings: newSettings.settings });
+      const intents: EngineEditIntent[] = [];
+      if (syncing) intents.push({ kind: "reset", settings: newSettings.settings });
       else {
         for (const option of changedOptions)
-          submit({ kind: "option", name: option.name, value: option });
-        for (const name of removedOptions) submit({ kind: "option", name, value: null });
+          intents.push({ kind: "option", name: option.name, value: option });
+        for (const name of removedOptions) intents.push({ kind: "option", name, value: null });
       }
-      if (goChanged) submit({ kind: "field", field: "go", value: newSettings.go });
+      if (goChanged) intents.push({ kind: "field", field: "go", value: newSettings.go });
+      submit(intents);
     },
     [readDisplayed, settingsAtom, store, setSettings2, submit],
   );

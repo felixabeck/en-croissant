@@ -136,6 +136,7 @@ const setAtomEngines = vi.fn(async (update: TestUpdate) => {
 vi.mock("jotai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("jotai")>()),
   useAtom: () => [atomEngines, setAtomEngines],
+  useStore: () => ({ get: () => atomEngines }),
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

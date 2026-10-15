@@ -73,6 +73,30 @@ test("named resource intents preserve their type and removal composes with indep
     expect(engine.go).toBeUndefined();
 });
 
+test("single named replacement removes duplicate matches and retains unrelated option order immutably", () => {
+    const book = { type: "resource" as const, name: "Book", resources: [] };
+    const settings = [
+        book,
+        { type: "string" as const, name: "Hash", value: "16" },
+        ...engine.settings!,
+        { type: "string" as const, name: "Hash", value: "32" },
+    ];
+    const original = { ...engine, settings };
+    Object.freeze(settings);
+    const replaced = applyEngineEdit(original, { kind: "option", name: "Hash", value: "64" });
+    expect(replaced.settings).toEqual([
+        book,
+        ...engine.settings!,
+        { type: "string", name: "Hash", value: "64" },
+    ]);
+    expect(replaced.settings?.[0]).toBe(book);
+    expect(
+        applyEngineEdit(original, { kind: "option", name: "Hash", value: null }).settings,
+    ).toEqual([book, ...engine.settings!]);
+    expect(original.settings).toBe(settings);
+    expect(original.settings).toHaveLength(4);
+});
+
 test("newest Hash intent after Reset displays in acceptance order while earlier saves are pending", () => {
     const draft = new EngineEditDraft();
     const first = { kind: "option", name: "Hash", value: "32" } as const;

@@ -158,6 +158,66 @@ function refuseStorage() {
     });
 }
 
+test("default-true check disable stays false through pending save and hydration while refusal restores true", async () => {
+  mocks.config.mockResolvedValue({
+    name: "Stockfish",
+    options: [{ type: "check", value: { name: "Ponder", default: true } }],
+  });
+  await mount([engine]);
+  const check = input("Ponder");
+  expect(check.checked).toBe(true);
+  const bytes = localStorage.getItem("engines");
+  let release!: () => void;
+  mocks.reconcile.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await act(async () => check.click());
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const pendingChecked = check.checked;
+  const pendingBytes = localStorage.getItem("engines");
+  await act(async () => release());
+  await act(async () => {
+    await store.set(enginesAtom, (current) => current);
+  });
+  expect(pendingChecked).toBe(false);
+  expect(pendingBytes).toBe(bytes);
+  expect(check.checked).toBe(false);
+  expect(store.get(enginesAtom)?.[0].settings).toEqual([
+    { type: "string", name: "Ponder", value: "false" },
+  ]);
+  const { createEngineOwnerStorage, enginesSchema } = await import("@/state/engineOwnerStorage");
+  const hydrated = await createEngineOwnerStorage("engines", enginesSchema, []).getItem(
+    "engines",
+    [],
+  );
+  await act(async () => {
+    await store.set(enginesAtom, hydrated);
+  });
+  await act(async () => {
+    await router.navigate({ to: "/engines", search: {} });
+  });
+  await act(async () => {
+    await router.navigate({ to: "/engines", search: { selected: 0 } });
+  });
+  expect(input("Ponder").checked).toBe(false);
+  await act(async () => input("Ponder").click());
+  await act(async () => {
+    await store.set(enginesAtom, (current) => current);
+  });
+  expect(input("Ponder").checked).toBe(true);
+  const refusal = refuseStorage();
+  await act(async () => input("Ponder").click());
+  await vi.waitFor(() => expect(mocks.report).toHaveBeenCalledOnce());
+  await act(async () => {
+    await store.set(enginesAtom, (current) => current);
+  });
+  expect(input("Ponder").checked).toBe(true);
+  refusal.mockRestore();
+});
+
 test("actual local Add creates one registration and immutable id from repeated submit during delayed persistence", async () => {
   await mount([]);
   mocks.binary.mockResolvedValue(engine.handle);

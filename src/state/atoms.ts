@@ -59,6 +59,7 @@ import { serializeStorageValue } from "./store/debouncedStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
 import { createPracticeDeckAtom, type PracticeData } from "./practiceStorage";
 import { removeFileFreshness } from "./fileFreshness";
+import { projectAnalysisSettings, type AnalysisSettings } from "./analysisSettings";
 
 export type { PracticeData } from "./practiceStorage";
 export { enginesSchema } from "./engineOwnerStorage";
@@ -944,13 +945,7 @@ export const tabEngineSettingsFamily = atomFamily(
         defaultSettings?: EngineSettings;
         defaultGo?: GoMode;
     }) => {
-        type Settings = {
-            enabled: boolean;
-            settings: EngineSettings;
-            go: GoMode;
-            synced: boolean;
-        };
-        const local = atom<Settings>({
+        const local = atom<AnalysisSettings>({
             enabled: false,
             settings: defaultSettings || [],
             go: defaultGo || { t: "Infinite" },
@@ -959,16 +954,14 @@ export const tabEngineSettingsFamily = atomFamily(
         const effective = atom(
             (get) => {
                 const settings = get(local);
-                if (!settings.synced) return settings;
                 const engine = get(enginesAtom)?.find((item) => item.id === engineId);
-                if (!engine) return settings;
-                return {
-                    ...settings,
-                    settings: engine.settings ?? [],
-                    go: engine.go ?? { t: "Infinite" as const },
-                };
+                return projectAnalysisSettings(settings, engine);
             },
-            (get, set, update: Settings | ((current: Settings) => Settings)) => {
+            (
+                get,
+                set,
+                update: AnalysisSettings | ((current: AnalysisSettings) => AnalysisSettings),
+            ) => {
                 set(local, typeof update === "function" ? update(get(effective)) : update);
             },
         );

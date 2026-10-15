@@ -626,7 +626,7 @@ function EngineSettings({
                 <Checkbox
                   key={o.value.name}
                   label={o.value.name}
-                  checked={!!o.value.value}
+                  checked={o.value.value === true || o.value.value === "true"}
                   disabled={o.value.name === "UCI_Chess960"}
                   onChange={(e) =>
                     setSetting(o.value.name, e.currentTarget.checked, o.value.default as boolean)

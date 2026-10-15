@@ -1,5 +1,76 @@
 import { expect, test, type MockScenario } from "./fixtures";
 
+test("accounts-puzzles-engines: default-true check stays disabled after save and reload and refusal restores true", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.addInitScript(() => {
+        localStorage.setItem("font-size", "100");
+        if (localStorage.getItem("engines") === null)
+            localStorage.setItem(
+                "engines",
+                JSON.stringify([
+                    {
+                        type: "local",
+                        id: "check-entry",
+                        name: "Check engine",
+                        version: "18",
+                        filename: "stockfish",
+                        handle: { id: { id: "check-binary" }, kind: "engine" },
+                        settings: [],
+                    },
+                ]),
+            );
+    });
+    await mockScenario({
+        commands: {
+            file_exists: { result: true },
+            get_engine_config: {
+                result: {
+                    name: "Check engine",
+                    options: [{ type: "check", value: { name: "Ponder", default: true } }],
+                },
+            },
+            reconcile_engine_attachments: { result: null, delay: 700 },
+        },
+    });
+    await page.goto("/engines?selected=0");
+    const ponder = page.getByRole("checkbox", { name: "Ponder", exact: true });
+    await expect(ponder).toBeChecked();
+    const bytes = await page.evaluate(() => localStorage.getItem("engines"));
+    await ponder.uncheck();
+    await expect(ponder).not.toBeChecked();
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);
+    await capture("engine-check-false-pending");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("engines"))).not.toBe(bytes);
+    await expect(ponder).not.toBeChecked();
+    await page.evaluate(() => sessionStorage.setItem("__E2E_PRESERVE_STORAGE_ONCE__", "1"));
+    await page.reload();
+    await expect(ponder).not.toBeChecked();
+    await capture("engine-check-false-rehydrated");
+    const falseBytes = await page.evaluate(() => localStorage.getItem("engines"));
+    await ponder.check();
+    await expect
+        .poll(() => page.evaluate(() => localStorage.getItem("engines")))
+        .not.toBe(falseBytes);
+    await page.evaluate(() => {
+        const original = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (key, value) {
+            if (key === "engines")
+                throw new DOMException("Engine storage refused", "QuotaExceededError");
+            original.call(this, key, value);
+        };
+    });
+    const trueBytes = await page.evaluate(() => localStorage.getItem("engines"));
+    await ponder.uncheck();
+    await expect(ponder).not.toBeChecked();
+    await expect(page.getByText(/The engine list could not be saved/).first()).toBeVisible();
+    await expect(ponder).toBeChecked();
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(trueBytes);
+    await capture("engine-check-refused-restores-true");
+});
+
 test("accounts-puzzles-engines: current engine configuration failure keeps saved metadata usable", async ({
     page,
     mockScenario,
