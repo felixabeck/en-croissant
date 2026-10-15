@@ -16011,7 +16011,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### Engine configuration probe errors leave Advanced Settings empty without an explanation
 
-* **ID:** f-20261015-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-01 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** ux
 * **Where:** src/components/engines/EnginesPage.tsx:327-381, LocalSettings useSWRImmutable configuration read.
@@ -16023,6 +16023,9 @@ This closes the measured ownership defect and its completed local proof contract
 * **Found by:** review-error-handling in cumulative diff round1 of the full interactive f-20261001-17 drain, confidence97, origin3afed0317. Root confirmed the data-only destructure, empty fallback and absence of a global SWR error handler. Same actual editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"8ae2dc5d21344641ec3396b4d6a29b00838fc4db0f15ba37882d31ce55dc4577","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-01"],"target":"f-20261015-01","v":1} -->
+
+* **Handled 2026-10-15:** Current handle-keyed configuration query failures render through the existing normalized localized Alert, while saved metadata stays editable. Current-owner/key replacement and successful recovery clear obsolete failures. No retry-toast loop or raw diagnostic framework was added. Repair6a6d1e99, decisiond-20261015-04. Real routed rejection/recovery tests and source-only failure-presentation witness are green after meaningful red1. Actual desktop and German320px/200% browser captures show the full error, the latter with viewport ratio1. Rejected silent empty Advanced Settings and repeated notification side effects. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"8d244b5d08cfda6c2294d095d243e144a32df772f2349f2c056768b4bafa553b","header_sha256":"87a7705a2da2c0d8296053e7b6f3e682d419aff1e03bb235218c4124f9358d37","header_status":"handled","input_sha256":"7ad05db90be9fbf8747bb5bb7c2b358af6cc40ff03d772d6b34ad2b9c39222c8","kind":"mutation-receipt","operation":"ca20238148a5d92d8a3381743b33a8afd7282cb198ac429933a8b5abc6515c11","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-01"],"target":"f-20261015-01","v":1} -->
 
 ### Engine form exposes a newly picked binary before its configuration probe completes
 
