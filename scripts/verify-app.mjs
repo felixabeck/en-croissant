@@ -1308,7 +1308,22 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
 // restoration belong in the execution handoff above. This recipe is not a runtime receipt.
 // Wiring breaks are confined to production source/binary inputs, never this verifier or its
 // assertion definitions. GO1's fixture path is logged and only the harness's profile is edited.
-async function verifyGameOpening(session) {
+// Database storage staging receipt: 2026-10-15, root-owned negative runtime evidence.
+// Log: /home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-4f037293-7a5d-4a44-a0bd-4bcb889b8bc7/gate-numeric-runtime-retry.FfGTjx/log
+// Expected failure status 1, observed status 1 in the adjacent completion.record.
+// FAIL  DS1 native database storage_size is the exact decimal string of its file length
+// FAIL  DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON
+// Both expected string "4096" and observed numeric 4096, in IPC and plain JSON respectively.
+// Exactly two checks failed. All others, including 50 practice ratings and cleanup, passed.
+// Root confirmed /tmp/chessfable-verify-QyzyZn is gone and native source restoration cmp passed.
+// Corrected full runtime verification remains pending. Forthcoming execution handoff:
+// tasks/handoffs/2026-10-15-database-storage-size-execution.md.
+// Reproduce: reverse only native-production-fix.patch's field and producer hunks, rebuild,
+// then run the existing pnpm verify:app with its disposable profile and screenshot output.
+// One numeric producer reversal stages both assertions because each emits a distinct FAIL.
+// Keep the verifier, facade and store unchanged. Restore the native hunks exactly, rebuild
+// and rerun the existing verifier for corrected positive evidence.
+async function verifyGameOpening(session, ownedRoot) {
   const assertion = async (message, action) => {
     try {
       await action();
@@ -1481,6 +1496,20 @@ async function verifyGameOpening(session) {
   const requireSeed = () => {
     if (!seeded) throw new Error("not attempted: GO1 fixture setup failed");
   };
+  await assertion(
+    "DS1 native database storage_size is the exact decimal string of its file length",
+    async () => {
+      requireSeed();
+      const metadata = await invoke("get_db_info", { file: database, ticket: null });
+      const expected = (
+        await stat(join(ownedRoot, "verify-game-opening.db3"), { bigint: true })
+      ).size.toString();
+      if (metadata.storage_size !== expected)
+        throw new Error(
+          `expected storage_size ${JSON.stringify(expected)}, received ${JSON.stringify(metadata.storage_size)}`,
+        );
+    },
+  );
   const overview = async () => {
     requireSeed();
     await showLibraryOverview(session);
@@ -1592,6 +1621,26 @@ async function verifyGameOpening(session) {
         "return [...document.querySelectorAll('h1,h2,h3')].some(node => node.textContent === arguments[0])",
         [openingDatabaseTitle],
       );
+    },
+  );
+  await assertion(
+    "DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON",
+    async () => {
+      requireSeed();
+      const raw = await session.execute("return sessionStorage.getItem('database-view')");
+      const selected = raw && JSON.parse(raw).state?.database;
+      const expected = (
+        await stat(join(ownedRoot, "verify-game-opening.db3"), { bigint: true })
+      ).size.toString();
+      if (
+        selected?.type !== "success" ||
+        selected.file?.kind !== database.kind ||
+        selected.file?.id?.id !== database.id.id ||
+        selected.storage_size !== expected
+      )
+        throw new Error(
+          `expected successful selection ${database.id.id} with storage_size ${JSON.stringify(expected)}, received ${JSON.stringify(selected)}`,
+        );
     },
   );
   await assertion(
@@ -3510,7 +3559,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     check(notation === true, filesNotationCheck, notation.error);
   }
 
-  await verifyGameOpening(session);
+  await verifyGameOpening(session, ownedRoot);
   await verifyConversionCancellation(session, ownedRoot);
 
   // Lossless NAGs: setup failures are carried to every dependent assertion.

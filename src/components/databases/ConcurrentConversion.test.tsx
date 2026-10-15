@@ -301,8 +301,7 @@ function successDatabase(file: DatabaseHandle, title: string): SuccessDatabaseIn
     player_count: 2,
     event_count: 2,
     game_count: 1,
-    // Native JSON represents this counter as a number.
-    storage_size: 1 as unknown as bigint,
+    storage_size: "1",
     filename: `${databaseHandleKey(file)}.db3`,
     indexed: true,
     file,

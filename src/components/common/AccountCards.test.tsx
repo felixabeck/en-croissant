@@ -276,7 +276,7 @@ test.each(["lichess", "chesscom"] as const)(
       player_count: 0,
       game_count: 0,
       event_count: 0,
-      storage_size: 0n,
+      storage_size: "0",
     };
     await renderCards([broken, usable]);
     expect(mocks.accountCard).toHaveBeenLastCalledWith(

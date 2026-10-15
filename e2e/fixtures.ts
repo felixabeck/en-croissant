@@ -490,7 +490,7 @@ export const gameOpeningCommands: NonNullable<MockScenario["commands"]> = {
         game_count: 2,
         player_count: 4,
         event_count: 2,
-        storage_size: 4096,
+        storage_size: "4096",
         indexed: false,
     }),
     get_games: { result: { data: gameOpeningFixture.games, count: 2 } },
@@ -534,7 +534,7 @@ export const databaseLayoutCommands: NonNullable<MockScenario["commands"]> = {
 export function databaseCommands(
     id: string,
     filename: string,
-    info: Omit<DatabaseInfo, "filename" | "storage_size"> & { storage_size: number },
+    info: Omit<DatabaseInfo, "filename">,
 ): NonNullable<MockScenario["commands"]> {
     return {
         list_workspace_databases: {

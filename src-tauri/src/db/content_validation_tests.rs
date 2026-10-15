@@ -8,6 +8,51 @@ use std::{
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 type App = tauri::AppHandle<tauri::test::MockRuntime>;
 
+#[test]
+fn database_storage_size_serializes_exact_decimal_strings_across_u64_range() {
+    for decimal in [
+        "0",
+        "1",
+        "9007199254740991",
+        "9007199254740992",
+        "9007199254740993",
+        "18446744073709551615",
+    ] {
+        let info = DatabaseInfo {
+            title: "Storage size".into(),
+            description: String::new(),
+            player_count: 1,
+            event_count: 2,
+            game_count: 3,
+            storage_size: decimal.parse().unwrap(),
+            filename: "games.db3".into(),
+            indexed: false,
+        };
+        let wire = serde_json::to_value(info).unwrap();
+        assert_eq!(wire["storage_size"], serde_json::json!(decimal));
+        assert_eq!(wire["player_count"], 1);
+        assert_eq!(wire["event_count"], 2);
+        assert_eq!(wire["game_count"], 3);
+    }
+}
+
+#[tokio::test]
+async fn database_storage_size_matches_actual_metadata_length_as_a_json_string() {
+    let _serial = SERIAL.lock().await;
+    let (_dir, app, handle, path) = blocking_database_case();
+    let state = app.state::<AppState>();
+    let metadata = get_db_info_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        handle,
+    )
+    .unwrap();
+    let length = std::fs::metadata(path).unwrap().len();
+    assert!(length > 0);
+    let wire = serde_json::to_value(metadata.info).unwrap();
+    assert_eq!(wire["storage_size"], serde_json::json!(length.to_string()));
+}
+
 fn stamp_path(path: &Path) -> PathBuf {
     path.with_file_name(search_index::integrity_stamp_leaf(
         path.file_name().unwrap(),
@@ -297,7 +342,7 @@ async fn content_validation_current_version_returns_stored_metadata_without_prag
         ),
         (42, 9, 3)
     );
-    assert!(metadata.storage_size > 0);
+    assert_ne!(metadata.storage_size.to_string(), "0");
     assert!(metadata.scan.is_some());
     assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
     let identity = warm(&app, &handle);

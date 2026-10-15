@@ -1219,7 +1219,7 @@ export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; ava
  */
 export type DatabaseHandle = { id: PathRef; kind: DatabaseHandleKind }
 export type DatabaseHandleKind = "database"
-export type DatabaseInfo = { title: string; description: string; player_count: number; event_count: number; game_count: number; storage_size: bigint; filename: string; indexed: boolean }
+export type DatabaseInfo = { title: string; description: string; player_count: number; event_count: number; game_count: number; storage_size: string; filename: string; indexed: boolean }
 /**
  * Opaque handle for a database root.  A root is the only capability that may
  * create or discover database children; the renderer never supplies a path or

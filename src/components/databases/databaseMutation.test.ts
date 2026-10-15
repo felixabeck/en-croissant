@@ -330,7 +330,7 @@ describe("database deletion transaction", () => {
                 player_count: 0,
                 event_count: 0,
                 game_count: 0,
-                storage_size: BigInt(0),
+                storage_size: "0",
                 indexed: false,
             },
         };

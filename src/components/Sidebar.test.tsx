@@ -91,8 +91,7 @@ const database: SuccessDatabaseInfo = {
   player_count: 0,
   event_count: 0,
   game_count: 0,
-  // Native JSON represents this counter as a number.
-  storage_size: 0 as unknown as bigint,
+  storage_size: "0",
   indexed: false,
 };
 

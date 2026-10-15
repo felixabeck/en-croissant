@@ -979,7 +979,7 @@ test("async-errors: wraps a long database title in the list at 320px", async ({
             player_count: 0,
             event_count: 0,
             game_count: 0,
-            storage_size: 0,
+            storage_size: "0",
             indexed: false,
         }),
     });

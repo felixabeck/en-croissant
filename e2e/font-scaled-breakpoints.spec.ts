@@ -34,7 +34,7 @@ test("font-scaled-breakpoints: conversion Cancel remains reachable at 320px and 
                 player_count: 0,
                 event_count: 0,
                 game_count: 0,
-                storage_size: 0,
+                storage_size: "0",
                 indexed: false,
             }),
             issue_pgn_workspace: {
@@ -193,7 +193,7 @@ const databaseScenario: MockScenario = {
         player_count: 1,
         event_count: 1,
         game_count: 0,
-        storage_size: 0,
+        storage_size: "0",
         indexed: false,
     }),
 };

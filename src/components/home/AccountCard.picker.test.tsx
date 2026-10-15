@@ -214,7 +214,7 @@ function accountDatabases(type: "chesscom" | "lichess" = "chesscom"): ManagedDat
       player_count: 2,
       event_count: 1,
       game_count: 3,
-      storage_size: 0n,
+      storage_size: "0",
       indexed: false,
     },
   ];

@@ -92,7 +92,7 @@ function database(id: string) {
     player_count: 1,
     event_count: 1,
     game_count: 2,
-    storage_size: 1n,
+    storage_size: "1",
     filename: id === "db-2" ? "Magnus_chesscom.db3" : "Magnus_lichess.db3",
     indexed: true,
     file: { id: { id }, kind: "database" as const },

@@ -157,7 +157,7 @@ test("retry reloads a matching database and leaves the failure state", async () 
     player_count: 0,
     event_count: 0,
     game_count: 0,
-    storage_size: BigInt(0),
+    storage_size: "0",
     indexed: false,
   };
   mocks.getDatabases.mockResolvedValueOnce([database]);

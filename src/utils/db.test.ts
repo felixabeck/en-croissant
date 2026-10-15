@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle, GameQuery } from "@/bindings";
+import type { DatabaseInfo as NativeDatabaseInfo } from "@/bindings/generated";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import i18n from "i18next";
 import { supportedLocales } from "@/i18n";
@@ -64,7 +65,7 @@ const database = (id: string, filename = `${id}.db3`): ManagedDatabaseInfo => ({
     player_count: 0,
     event_count: 0,
     game_count: 0,
-    storage_size: BigInt(0),
+    storage_size: "0",
     indexed: false,
 });
 
@@ -87,6 +88,47 @@ describe("database capability UI mapping", () => {
 });
 
 describe("production database metadata pipeline", () => {
+    it("persists and rehydrates exact native decimal metadata through the facade and plain JSON", async () => {
+        const metadata: NativeDatabaseInfo = {
+            filename: "exact.db3",
+            title: "Exact byte count",
+            description: "",
+            player_count: 1,
+            event_count: 2,
+            game_count: 3,
+            storage_size: "9007199254740993",
+            indexed: false,
+        };
+        mocks.listWorkspaceDatabases.mockResolvedValue([
+            { handle: handle("exact"), filename: metadata.filename, availability: "available" },
+        ]);
+        mocks.getDbInfo.mockResolvedValue(metadata);
+        const [managed] = await getDatabases();
+        expect(managed).toEqual({ ...metadata, type: "success", file: handle("exact") });
+        if (managed?.type !== "success") throw new Error("expected successful managed metadata");
+
+        const { activeDatabaseViewStore: store } = await import("@/state/store/database");
+        try {
+            store.getState().setDatabase(managed);
+            const raw = sessionStorage.getItem("database-view");
+            expect(raw).not.toBeNull();
+            const stored = JSON.parse(raw!);
+            expect(stored.version).toBe(0);
+            expect(stored.state.database).toEqual(managed);
+            expect(stored.state.database.storage_size).toBe("9007199254740993");
+
+            vi.resetModules();
+            const { activeDatabaseViewStore: rehydrated } = await import("@/state/store/database");
+            expect(rehydrated.persist.hasHydrated()).toBe(true);
+            expect(rehydrated.getState().database).toEqual(managed);
+            expect(rehydrated.getState().database?.storage_size).toBe("9007199254740993");
+            rehydrated.getState().clearDatabase();
+        } finally {
+            store.getState().clearDatabase();
+            sessionStorage.removeItem("database-view");
+        }
+    });
+
     it("hydrates more than 128 entries sequentially as successful managed databases", async () => {
         const descriptors = Array.from({ length: 130 }, (_, index) => ({
             handle: handle(`db-${index}`),
@@ -108,7 +150,7 @@ describe("production database metadata pipeline", () => {
                 player_count: 0,
                 event_count: 0,
                 game_count: 0,
-                storage_size: 0n,
+                storage_size: "0",
                 indexed: false,
             };
         });
@@ -138,7 +180,7 @@ describe("production database metadata pipeline", () => {
                 player_count: 0,
                 event_count: 0,
                 game_count: 0,
-                storage_size: 0n,
+                storage_size: "0",
                 indexed: false,
             };
         });
@@ -353,7 +395,7 @@ describe("production database metadata pipeline", () => {
             player_count: 0,
             event_count: 0,
             game_count: 0,
-            storage_size: 0n,
+            storage_size: "0",
             indexed: false,
         });
         controller.abort();
@@ -381,7 +423,7 @@ describe("production database metadata pipeline", () => {
             player_count: 0,
             event_count: 0,
             game_count: 0,
-            storage_size: 0n,
+            storage_size: "0",
             indexed: false,
         });
         controller.abort();

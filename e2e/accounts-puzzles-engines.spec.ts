@@ -136,7 +136,7 @@ const summaryDatabaseInfo = {
     player_count: 1,
     event_count: 1,
     game_count: 8,
-    storage_size: 1024,
+    storage_size: "1024",
     indexed: true,
 };
 const summaryLichessInfo = {

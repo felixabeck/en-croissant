@@ -857,7 +857,7 @@ describe("InfoPanel game loading and cancellation", () => {
       player_count: 0,
       event_count: 0,
       game_count: 0,
-      storage_size: 0 as unknown as bigint,
+      storage_size: "0",
       indexed: false,
     };
     mocks.getDatabases.mockResolvedValue([database]);

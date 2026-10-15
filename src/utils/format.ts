@@ -3,14 +3,16 @@ export function formatNumber(value?: number): string {
     return Intl.NumberFormat().format(value);
 }
 
-export function formatBytes(bytes: bigint | number, decimals = 2) {
+export function formatBytes(bytes: bigint | number | string, decimals = 2) {
     const k = 1024;
     const dm = decimals < 0 ? 0 : decimals;
     const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
 
-    const i = Math.floor(Math.log(Number(bytes)) / Math.log(k));
+    const value = Number(bytes);
+    const i =
+        value === 0 ? 0 : Math.min(Math.floor(Math.log(value) / Math.log(k)), sizes.length - 1);
 
-    return `${Number.parseFloat((Number(bytes) / k ** i).toFixed(dm))} ${sizes[i]}`;
+    return `${Number.parseFloat((value / k ** i).toFixed(dm))} ${sizes[i]}`;
 }
 
 export function formatDuration(ms: number): string {

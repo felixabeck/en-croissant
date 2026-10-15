@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { databaseRouteTarget, resolveDatabaseRoute } from "@/components/databases/databaseRoute";
 import { INITIAL_FEN } from "chessops/fen";
+import type { SuccessDatabaseInfo } from "@/utils/db";
+import { formatBytes } from "@/utils/format";
 import { activeDatabaseViewStore, type DatabaseViewStore } from "./database";
 
 afterEach(() => {
@@ -17,6 +19,7 @@ const selectedDatabase = {
     player_count: 1,
     event_count: 2,
     game_count: 3,
+    // Legacy persisted metadata supplies identity even while its size is still numeric.
     storage_size: 0,
     indexed: true,
 };
@@ -32,6 +35,24 @@ async function hydrate(state?: unknown) {
 }
 
 describe("database-view sessionStorage hydration", () => {
+    it("retains legacy numeric selection identity while displaying fresh exact listing metadata", async () => {
+        const store = await hydrate({ database: selectedDatabase });
+        expect(store.getState().database).toEqual(selectedDatabase);
+        const fresh: SuccessDatabaseInfo = {
+            ...selectedDatabase,
+            type: "success",
+            file: { id: { id: "selected" }, kind: "database" },
+            title: "Fresh native metadata",
+            storage_size: "9007199254740993",
+        };
+        const route = resolveDatabaseRoute([fresh], "selected", store.getState().database);
+        expect(route).toEqual({ status: "ready", database: fresh });
+        if (route.status !== "ready") throw new Error("expected ready legacy identity");
+        expect(route.database).toBe(fresh);
+        expect(formatBytes(route.database.storage_size)).toBe("8192 TB");
+        expect(store.getState().database).toEqual(selectedDatabase);
+    });
+
     it.each([
         null,
         {},

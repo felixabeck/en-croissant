@@ -103,7 +103,7 @@ const database: ManagedDatabaseInfo = {
   game_count: 2,
   player_count: 2,
   event_count: 2,
-  storage_size: 0 as unknown as bigint,
+  storage_size: "0",
 };
 let root: Root;
 let host: HTMLDivElement;

@@ -1279,7 +1279,7 @@ pub struct DatabaseInfo {
     player_count: i32,
     event_count: i32,
     game_count: i32,
-    storage_size: u64,
+    storage_size: String,
     filename: String,
     indexed: bool,
 }
@@ -1465,7 +1465,7 @@ fn get_db_info_blocking(
         .unwrap_or(0);
 
     let identity = repository.database_identity(&target)?;
-    let storage_size = identity.length;
+    let storage_size = identity.length.to_string();
     let scan = content_validation::inspect(repository, &target, &identity, authority, &file)?
         .then(|| (target.path().to_path_buf(), identity));
     let filename = target
@@ -9372,7 +9372,7 @@ mod tests {
         assert_eq!(before.description, "");
         assert_eq!(before.filename, "games.db3");
         assert!(!before.indexed);
-        assert!(before.storage_size > 0);
+        assert_ne!(before.storage_size.to_string(), "0");
 
         edit_db_info_blocking(
             &state.pgn_path_authority,

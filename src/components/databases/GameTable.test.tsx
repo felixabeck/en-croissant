@@ -157,7 +157,7 @@ test.each([
     player_count: 4,
     event_count: 2,
     game_count: 2,
-    storage_size: 0n,
+    storage_size: "0",
     indexed: true,
   };
   // Exercise the actual store's sessionStorage boundary. A matching active identity
