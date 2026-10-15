@@ -6,6 +6,8 @@ import { decodeCompressedOrJson, serializeStorageValue } from "./store/debounced
 import { createTabIdSchema, persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { getTabTreeKey, newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
+import { legacyPuzzleKey, removeLegacyPuzzleKey, restorePuzzleSession } from "./puzzleSession";
+import { defaultTree, type TreeState } from "@/utils/treeReducer";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
 const WORKSPACE_VERSION = 1;
@@ -22,6 +24,7 @@ export type Workspace = z.infer<ReturnType<typeof createLiveWorkspaceSchema>>;
 
 export const MAX_WORKSPACE_TABS = 100;
 export const MAX_PENDING_TREE_REMOVALS = 100;
+export const MAX_PENDING_PUZZLE_REMOVALS = 100;
 const MAX_ACTIVE_TAB_ID_LENGTH = 128;
 
 function createLiveWorkspaceSchema() {
@@ -44,6 +47,13 @@ function createLiveWorkspaceSchema() {
         treeOwnershipPendingRemovalIds: z
             .array(z.string().min(1))
             .max(MAX_PENDING_TREE_REMOVALS)
+            .optional(),
+        // Remove this legacy-only field and its replay when migration is retired and no
+        // supported workspace carries outstanding history cleanup intents (d-20261015-24).
+        legacyPuzzleRemovalKeys: z
+            .array(z.string().min(8).max(256).endsWith("-puzzles"))
+            .max(MAX_PENDING_PUZZLE_REMOVALS)
+            .refine((keys) => new Set(keys).size === keys.length)
             .optional(),
     });
 }
@@ -95,7 +105,13 @@ export function defaultWorkspace(): Workspace {
 type WorkspaceRepairPlan = {
     workspace: Workspace;
     unrepairedWorkspace: Workspace;
-    cloneTargets: Array<{ sourceId: string; targetId: string; requireExisting: boolean }>;
+    cloneTargets: Array<{
+        sourceId: string;
+        logicalId: string;
+        puzzle: boolean;
+        targetId: string;
+        requireExisting: boolean;
+    }>;
 };
 
 function resolveActiveTab(tabs: readonly Tab[], legacyActive: string | null): string {
@@ -133,6 +149,8 @@ function planWorkspaceRepair(
         const migratedId = newWorkspaceId([...reserved, ...ids, ...treeKeys]);
         cloneTargets.push({
             sourceId,
+            logicalId: tab.value,
+            puzzle: tab.type === "puzzles",
             targetId: migratedId,
             requireExisting: tab.treeKey !== undefined,
         });
@@ -199,6 +217,42 @@ export function reconcilePendingTreeRemovals(
         : { ids: null, overflowCount: pending.size };
 }
 
+/** Old intents already carry durable authority. New keys cannot be removed before publication. */
+export function reconcileLegacyPuzzleRemovals(
+    prior: readonly string[],
+    retiredLogicalIds: Iterable<string>,
+    retainedTabs: readonly Tab[],
+): string[] | null {
+    const retained = new Set(retainedTabs.map((tab) => legacyPuzzleKey(tab.value)));
+    const keys = new Set(prior.filter((key) => !retained.has(key) && !removeLegacyPuzzleKey(key)));
+    for (const id of retiredLogicalIds) {
+        const key = legacyPuzzleKey(id);
+        if (!retained.has(key) && !createTabIdSchema().safeParse(id).success) keys.add(key);
+    }
+    return keys.size <= MAX_PENDING_PUZZLE_REMOVALS ? [...keys] : null;
+}
+
+/** UUID orphans are discoverable only with authoritative workspace ownership. */
+export function sweepLegacyPuzzleKeys(workspace: Workspace) {
+    workspace.legacyPuzzleRemovalKeys?.forEach(removeLegacyPuzzleKey);
+    if (workspace.treeOwnershipUncertain) return;
+    const retained = new Set(workspace.tabs.map((tab) => legacyPuzzleKey(tab.value)));
+    const uuid = createTabIdSchema();
+    try {
+        const keys = Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i));
+        for (const key of keys) {
+            if (
+                key?.endsWith("-puzzles") &&
+                !retained.has(key) &&
+                uuid.safeParse(key.slice(0, -8)).success
+            )
+                removeLegacyPuzzleKey(key);
+        }
+    } catch (error) {
+        reportPersistError(persistStorageWriteError(error));
+    }
+}
+
 const workspaceErrorKey = "Common.ConfirmationError.unexpected";
 
 function workspaceActionError(cause: Error): Error {
@@ -211,6 +265,12 @@ function workspaceActionError(cause: Error): Error {
 export function pendingTreeRemovalCapacityError(count: number): Error {
     return workspaceActionError(
         new Error(`Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`),
+    );
+}
+
+export function pendingPuzzleRemovalCapacityError(): Error {
+    return workspaceActionError(
+        new Error(`Pending legacy puzzle removals exceeded ${MAX_PENDING_PUZZLE_REMOVALS}`),
     );
 }
 
@@ -237,6 +297,8 @@ function workspaceFromValue(value: unknown): Workspace | null {
     if (parsed.data.treeOwnershipPendingRemovalIds !== undefined) {
         workspace.treeOwnershipPendingRemovalIds = parsed.data.treeOwnershipPendingRemovalIds;
     }
+    if (parsed.data.legacyPuzzleRemovalKeys !== undefined)
+        workspace.legacyPuzzleRemovalKeys = parsed.data.legacyPuzzleRemovalKeys;
     return workspace;
 }
 
@@ -277,6 +339,9 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const persistedPendingRemovals = currentResult.success
         ? (currentResult.data.treeOwnershipPendingRemovalIds ?? [])
         : [];
+    const persistedPuzzleRemovals = currentResult.success
+        ? (currentResult.data.legacyPuzzleRemovalKeys ?? [])
+        : [];
     const legacy =
         current ??
         ({
@@ -310,6 +375,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     if (persistedPendingRemovals.length > 0) {
         plan.unrepairedWorkspace.treeOwnershipPendingRemovalIds = [...persistedPendingRemovals];
     }
+    if (persistedPuzzleRemovals.length > 0)
+        plan.unrepairedWorkspace.legacyPuzzleRemovalKeys = [...persistedPuzzleRemovals];
     const takingFreshOwnershipSnapshot =
         treeOwnershipUncertain && persistedProtectedTreeIds === undefined;
     if (treeOwnershipUncertain) {
@@ -342,12 +409,16 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         tabStorage.removeKnownTreesSafely(stagedClones.keys());
         return plan.unrepairedWorkspace;
     };
-    for (const { sourceId, targetId, requireExisting } of plan.cloneTargets) {
+    for (const { sourceId, logicalId, puzzle, targetId, requireExisting } of plan.cloneTargets) {
         const result = tabStorage.clone(sourceId, targetId, requireExisting);
         if (result.kind === "unavailable" || result.kind === "copy-failed") {
             return refuseRepair(result.error);
         }
         if (result.kind === "unreadable") {
+            if (puzzle)
+                return refuseRepair(
+                    new Error("Cannot migrate puzzle ownership from an unreadable tree"),
+                );
             try {
                 tabStorage.copyUnreadableForWorkspaceRepair(targetId, result.rawValue);
             } catch (error) {
@@ -358,6 +429,32 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
         if (result.kind === "copied") {
             stagedClones.set(targetId, true);
+            if (puzzle) {
+                try {
+                    const copied = tabStorage.readTree(targetId);
+                    if (copied.kind !== "available")
+                        throw new Error("Puzzle migration target is unavailable");
+                    const tree = copied.value.state as TreeState;
+                    tabStorage.seed(targetId, {
+                        ...tree,
+                        puzzleSession: restorePuzzleSession(logicalId, tree),
+                    });
+                } catch (error) {
+                    return refuseRepair(error);
+                }
+            }
+        }
+        if (result.kind === "absent" && puzzle) {
+            try {
+                const tree = defaultTree();
+                tabStorage.seed(targetId, {
+                    ...tree,
+                    puzzleSession: restorePuzzleSession(logicalId, tree),
+                });
+                stagedClones.set(targetId, true);
+            } catch (error) {
+                return refuseRepair(error);
+            }
         }
     }
     if (stagedClones.size > 0) {
@@ -405,6 +502,17 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         );
     }
 
+    const puzzleRemovalKeys = reconcileLegacyPuzzleRemovals(
+        persistedPuzzleRemovals,
+        plan.cloneTargets.filter(({ puzzle }) => puzzle).map(({ logicalId }) => logicalId),
+        plan.workspace.tabs,
+    );
+    if (puzzleRemovalKeys === null) {
+        reportPersistError(pendingPuzzleRemovalCapacityError());
+        return refuseRepair();
+    }
+    if (puzzleRemovalKeys.length > 0) plan.workspace.legacyPuzzleRemovalKeys = puzzleRemovalKeys;
+
     const payload = serializeStorageValue(plan.workspace);
     if (storedWorkspace !== payload || legacyStoragePresent) {
         try {
@@ -417,6 +525,10 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     // Every migrated source is in the published pending-removal list. This also reclaims
     // unreadable bytes, which ordinary orphan sweeps cannot decode.
     const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
+    if (hasAuthoritativeWorkspace || validMigrationSource) sweepLegacyPuzzleKeys(plan.workspace);
+    else
+        for (const historyKey of plan.workspace.legacyPuzzleRemovalKeys ?? [])
+            removeLegacyPuzzleKey(historyKey);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {

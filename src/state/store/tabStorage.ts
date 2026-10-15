@@ -96,7 +96,10 @@ function createPersistedTreeSchema() {
     ]);
     const shapeSchema = z.object({
         orig: z.string().regex(/^[a-h][1-8]$/),
-        dest: z.string().regex(/^[a-h][1-8]$/),
+        dest: z
+            .string()
+            .regex(/^[a-h][1-8]$/)
+            .optional(),
         brush: z.string().max(MAX_SHAPE_BRUSH_LENGTH),
         modifiers: z
             .object({
@@ -147,7 +150,7 @@ function createPersistedTreeSchema() {
         halfMoves: number;
         shapes: Array<{
             orig: string;
-            dest: string;
+            dest?: string;
             brush: string;
             modifiers?: { lineWidth?: number; opacity?: number };
         }>;

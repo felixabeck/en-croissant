@@ -41,7 +41,10 @@ import {
     WORKSPACE_STORAGE_KEY,
     loadWorkspace,
     pendingTreeRemovalCapacityError,
+    pendingPuzzleRemovalCapacityError,
     reconcilePendingTreeRemovals,
+    reconcileLegacyPuzzleRemovals,
+    sweepLegacyPuzzleKeys,
     saveWorkspace,
     type Workspace,
 } from "./workspace";
@@ -102,15 +105,28 @@ const commitWorkspaceAtom = atom(
             return false;
         }
         const pendingRemovalIds = pendingRemovalResult.ids;
+        const puzzleRemovals = reconcileLegacyPuzzleRemovals(
+            previous.legacyPuzzleRemovalKeys ?? [],
+            previous.tabs
+                .filter((tab) => !workspace.tabs.some((next) => next.value === tab.value))
+                .map((tab) => tab.value),
+            workspace.tabs,
+        );
+        if (puzzleRemovals === null) {
+            reportPersistError(pendingPuzzleRemovalCapacityError());
+            return false;
+        }
         const canonical = {
             ...workspace,
             ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),
             treeOwnershipPendingRemovalIds:
                 pendingRemovalIds.length === 0 ? undefined : pendingRemovalIds,
+            legacyPuzzleRemovalKeys: puzzleRemovals.length === 0 ? undefined : puzzleRemovals,
         };
         const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
         if (!saved) return false;
         set(committedWorkspaceAtom, saved);
+        sweepLegacyPuzzleKeys(saved);
         onSaved?.(saved);
         return true;
     },
@@ -798,8 +814,6 @@ export const pgnOptionsFamily = atomFamily((_tab: string) =>
     }),
 );
 
-export const currentPuzzleFamily = atomFamily((_tab: string) => atom(0));
-
 // Game
 
 type GameState = "settingUp" | "playing" | "gameOver";
@@ -1089,7 +1103,6 @@ export function disposeTabAtoms(tabId: string) {
         practiceTabFamily,
         expandedEnginesFamily,
         pgnOptionsFamily,
-        currentPuzzleFamily,
         gameStateFamily,
         playersFamily,
         gameIdFamily,

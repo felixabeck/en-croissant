@@ -1,6 +1,15 @@
 import { z } from "zod";
-import { validateMoveSequence } from "@/utils/puzzles";
-import { serializeStorageValue } from "./store/debouncedStorage";
+import { getPuzzleProgress, validateMoveSequence } from "@/utils/puzzles";
+import {
+    getBoardState,
+    getNodeAtPath,
+    getResolvedPathLength,
+    type TreeState,
+} from "@/utils/treeReducer";
+import { positionFromFen } from "@/utils/chessops";
+import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
+import { persistStorageWriteError } from "./store/tabStorage";
+import { reportPersistError } from "./persistError";
 
 export const MAX_PUZZLE_ATTEMPTS = 100;
 export const MAX_PUZZLE_SESSION_BYTES = 32_768;
@@ -107,4 +116,64 @@ export function boundPuzzleSession(
         session.attempts.splice(index, 1);
     }
     return session;
+}
+
+export const legacyPuzzleKey = (logicalId: string) => `${logicalId}-puzzles`;
+
+/** The saved played path establishes ownership without replacing annotations or variations. */
+export function puzzleOwnsTree(puzzle: Puzzle, tree: TreeState): boolean {
+    if (
+        getBoardState(puzzle.fen) !== getBoardState(tree.root.fen) ||
+        getResolvedPathLength(tree.root, tree.position) !== tree.position.length
+    )
+        return false;
+    if (getPuzzleProgress(puzzle, tree.root, tree.position).step !== null) return true;
+    // An accepted alternative checkmate also terminates the existing puzzle contract.
+    const prefix = tree.position.slice(0, -1);
+    const [position] = positionFromFen(getNodeAtPath(tree.root, tree.position).fen);
+    return (
+        tree.position.length > 0 &&
+        !!position?.isCheckmate() &&
+        getPuzzleProgress(puzzle, tree.root, prefix).step !== null
+    );
+}
+
+/** Legacy rows are independent. Infer before eviction, including duplicate database row IDs. */
+export function restorePuzzleSession(logicalId: string, tree: TreeState): PuzzleSession {
+    if (tree.puzzleSession) {
+        const index = selectedPuzzleIndex(tree.puzzleSession);
+        return index >= 0 && !puzzleOwnsTree(tree.puzzleSession.attempts[index].puzzle, tree)
+            ? { ...tree.puzzleSession, selectedAttemptId: null }
+            : tree.puzzleSession;
+    }
+    const raw = sessionStorage.getItem(legacyPuzzleKey(logicalId));
+    const value = decodeCompressedOrJson(raw);
+    const attempts: PuzzleAttempt[] = [];
+    if (Array.isArray(value)) {
+        for (const row of value) {
+            const parsed = puzzleSchema.safeParse(row);
+            if (parsed.success)
+                attempts.push({ attemptId: crypto.randomUUID(), puzzle: parsed.data });
+        }
+    }
+    const owners = attempts.filter(({ puzzle }) => puzzleOwnsTree(puzzle, tree));
+    return boundPuzzleSession(
+        {
+            version: 1,
+            attempts,
+            selectedAttemptId: owners.length === 1 ? owners[0].attemptId : null,
+        },
+        [],
+    );
+}
+
+/** Confirm absence before discharging exact-key cleanup authority. Refusals retain the intent. */
+export function removeLegacyPuzzleKey(key: string): boolean {
+    try {
+        if (sessionStorage.getItem(key) !== null) sessionStorage.removeItem(key);
+        return sessionStorage.getItem(key) === null;
+    } catch (error) {
+        reportPersistError(persistStorageWriteError(error));
+        return false;
+    }
 }

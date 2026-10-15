@@ -18,7 +18,6 @@ import {
   Text,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { useSessionStorage } from "@mantine/hooks";
 import {
   IconAlertTriangle,
   IconFlame,
@@ -29,6 +28,8 @@ import {
   IconZoomCheck,
 } from "@tabler/icons-react";
 import { makeSquare } from "chessops";
+import { makeFen } from "chessops/fen";
+import { makeSanAndPlay } from "chessops/san";
 import { useAtom } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -37,7 +38,6 @@ import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
-  currentPuzzleFamily,
   puzzleTimerFamily,
   hidePuzzleRatingAtom,
   jumpToNextPuzzleAtom,
@@ -51,6 +51,16 @@ import {
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { validateMoveSequence } from "@/state/store/tree";
+import {
+  emptyPuzzleSession,
+  legacyPuzzleKey,
+  puzzleSchema,
+  removeLegacyPuzzleKey,
+  restorePuzzleSession,
+  selectedPuzzleIndex,
+} from "@/state/puzzleSession";
+import { persistStorageWriteError } from "@/state/store/tabStorage";
+import { reportPersistError } from "@/state/persistError";
 import { puzzleDatabaseExtension } from "@/utils/db";
 import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
@@ -63,8 +73,10 @@ import {
   type Puzzle,
 } from "@/utils/puzzles";
 import { createTab, runTabCreation } from "@/utils/tabs";
+import { playSound } from "@/utils/sound";
 import {
   defaultTree,
+  createNode,
   getBoardState,
   getNodeAtPath,
   getResolvedPathLength,
@@ -80,26 +92,62 @@ import PuzzleBoard from "./PuzzleBoard";
 const puzzleRatingMarks = [600, 1700, 2800] as const;
 const unavailableValue = "-";
 const addOptionLabel = (label: string) => `+ ${label}`;
+const emptySession = emptyPuzzleSession();
 
 function Puzzles({ id }: { id: string }) {
+  const store = useContext(TreeStateContext)!;
+  const { t } = useTranslation();
+  const [ready, setReady] = useState(false);
+  function restore() {
+    try {
+      const state = store.getState();
+      const session = restorePuzzleSession(id, state);
+      if (
+        session !== state.puzzleSession &&
+        !state.transitionPuzzleSession((draft) => {
+          draft.puzzleSession = session;
+        }).success
+      )
+        return;
+      removeLegacyPuzzleKey(legacyPuzzleKey(id));
+      setReady(true);
+    } catch (error) {
+      reportPersistError(persistStorageWriteError(error));
+    }
+  }
+  useEffect(restore, [store, id]);
+  return ready ? (
+    <PuzzleSessionView />
+  ) : (
+    <Button onClick={restore}>{t("TreeRecovery.Retry")}</Button>
+  );
+}
+
+function PuzzleSessionView() {
   const { t } = useTranslation();
   const commonErrorRef = useRef(t("Common.Error"));
   commonErrorRef.current = t("Common.Error");
   const store = useContext(TreeStateContext)!;
-  const setFen = useStore(store, (s) => s.setFen);
   const goToStart = useStore(store, (s) => s.goToStart);
-  const reset = useStore(store, (s) => s.reset);
   const makeMove = useStore(store, (s) => s.makeMove);
   const setShapes = useStore(store, (s) => s.setShapes);
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
-  const [puzzles, setPuzzles] = useSessionStorage<Puzzle[]>({
-    key: `${id}-puzzles`,
-    defaultValue: [],
-  });
-  const [currentPuzzle, setCurrentPuzzle] = useAtom(useTabAtom(currentPuzzleFamily));
-  const latestPuzzle = useRef({ puzzle: puzzles[currentPuzzle], index: currentPuzzle });
-  latestPuzzle.current = { puzzle: puzzles[currentPuzzle], index: currentPuzzle };
+  const session = useStore(store, (s) => s.puzzleSession) ?? emptySession;
+  const puzzles = session.attempts.map((attempt) => attempt.puzzle);
+  const currentPuzzle = selectedPuzzleIndex(session);
+  const attemptId = session.selectedAttemptId;
+  const transition = store.getState().transitionPuzzleSession;
+  const firstResult = useRef<{
+    attemptId: string | null;
+    completion: Completion;
+    timeSpent: number;
+  } | null>(null);
+  const [completionRetry, setCompletionRetry] = useState<{
+    attemptId: string | null;
+    owns: () => boolean;
+    retry: () => void;
+  } | null>(null);
   const mounted = useRef(true);
 
   const [puzzleDbs, setPuzzleDbs] = useState<PuzzleDatabaseInfo[]>([]);
@@ -294,22 +342,53 @@ function Puzzles({ id }: { id: string }) {
       if (!isCurrent()) return;
       const result = validateMoveSequence(puzzle.fen, puzzle.moves);
       if (!result.success) throw result.error;
+      puzzleSchema.parse(puzzle);
       if (!isCurrent()) return;
+      const opening = defaultTree(puzzle.fen);
+      const [pos] = positionFromFen(puzzle.fen);
+      const move = result.moves[0];
+      if (!pos || !move) return;
+      const san = makeSanAndPlay(pos, move);
+      opening.root.children = [
+        createNode({
+          fen: makeFen(pos.toSetup()),
+          move,
+          san,
+          halfMoves: opening.root.halfMoves + 1,
+        }),
+      ];
+      opening.position = [0];
+      opening.dirty = true;
+      const selected = append ? crypto.randomUUID() : session.attempts[index].attemptId;
+      if (
+        !transition((draft) => {
+          const history = draft.puzzleSession ?? emptyPuzzleSession();
+          if (timerStart !== null && trackTime) {
+            const prior = history.attempts.find(
+              (attempt) => attempt.attemptId === history.selectedAttemptId,
+            );
+            if (prior?.puzzle.completion === "incomplete")
+              prior.puzzle.timeSpent = Date.now() - timerStart;
+          }
+          if (append) history.attempts.push({ attemptId: selected, puzzle });
+          history.selectedAttemptId = selected;
+          Object.assign(draft, opening, { puzzleSession: history });
+        }).success
+      )
+        return;
+      playSound(san.includes("x"), san.includes("+"));
       if (!append) {
         requestGeneration.current++;
         puzzleRequest.current?.abort();
       }
       solutionAbortRef.current?.abort();
       setIsPlayingSolution(false);
-      setFen(puzzle.fen);
-      if (result.moves[0]) makeMove({ payload: result.moves[0] });
-      if (append) setPuzzles((previous) => [...previous, puzzle]);
-      setCurrentPuzzle(index);
       if (resumeTimer) {
         setTimerStart(
           puzzle.completion === "incomplete" ? Date.now() - (puzzle.timeSpent || 0) : null,
         );
       }
+      return true;
     } catch (error) {
       if (isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);
     }
@@ -339,15 +418,19 @@ function Puzzles({ id }: { id: string }) {
       const rating = puzzles[currentPuzzle]?.rating;
       if (rating) {
         range = [rating + 50, rating + 100];
-        setRatingRange([rating + 50, rating + 100]);
       }
     }
     const generation = ++requestGeneration.current;
     puzzleRequest.current?.abort();
     const request = new AbortController();
     puzzleRequest.current = request;
+    const ownsSession = store.getState().capturePuzzleSessionOwner();
+    const ownsPosition = captureTreePositionOwner(store);
     const isCurrent = () =>
       isOwned() &&
+      ownsSession() &&
+      ownsPosition() &&
+      mounted.current &&
       generation === requestGeneration.current &&
       ownsDatabaseRequest(db, request.signal);
     let result;
@@ -368,17 +451,82 @@ function Puzzles({ id }: { id: string }) {
       moves: puzzle.moves.split(" "),
       completion: "incomplete",
     };
-    admitPuzzle(newPuzzle, puzzles.length, { append: true, resumeTimer: trackTime, isCurrent });
+    if (
+      admitPuzzle(newPuzzle, puzzles.length, { append: true, resumeTimer: trackTime, isCurrent }) &&
+      progressive &&
+      range !== ratingRange
+    )
+      setRatingRange(range);
   }
 
-  async function changeCompletion(completion: Completion, isCurrent: () => boolean = () => true) {
-    if (!isCurrent()) return;
-    const puzzle = puzzles[currentPuzzle];
-    if (!puzzle || puzzle.completion !== "incomplete") return;
-    // Claim the shared record synchronously before publishing or awaiting metadata.
-    puzzle.completion = completion;
-    puzzle.timeSpent = timerStart !== null ? Date.now() - timerStart : 0;
-    setPuzzles([...puzzles]);
+  async function changeCompletion(
+    completion: Completion,
+    isCurrent: () => boolean = () => true,
+    refreshOwner: () => void = () => {},
+  ) {
+    if (!isCurrent()) return false;
+    const puzzle = store
+      .getState()
+      .puzzleSession?.attempts.find((attempt) => attempt.attemptId === attemptId)?.puzzle;
+    if (!puzzle) return false;
+    if (puzzle.completion !== "incomplete") return true;
+    if (firstResult.current?.attemptId !== attemptId)
+      firstResult.current = {
+        attemptId,
+        completion,
+        timeSpent: timerStart !== null ? Date.now() - timerStart : (puzzle.timeSpent ?? 0),
+      };
+    const first = firstResult.current;
+    function queueRetry(save: () => boolean | Promise<boolean>, owns = isCurrent) {
+      setCompletionRetry({
+        attemptId,
+        owns,
+        retry: () => {
+          if (!owns()) return;
+          void Promise.resolve()
+            .then(save)
+            .then((saved) => {
+              if (
+                saved &&
+                owns() &&
+                first.completion === "correct" &&
+                effectiveSelectedDb &&
+                jumpToNextPuzzleImmediately
+              )
+                return generatePuzzle(effectiveSelectedDb, false, isCurrent);
+            })
+            .catch((error) => {
+              if (owns()) notifyUnlessCancelled(commonErrorRef.current, error);
+            });
+        },
+      });
+    }
+    let ownsSession = store.getState().capturePuzzleSessionOwner();
+    let saved;
+    try {
+      saved = transition((draft) => {
+        const selected = draft.puzzleSession!.attempts.find(
+          (attempt) => attempt.attemptId === attemptId,
+        )!;
+        selected.puzzle = {
+          ...selected.puzzle,
+          completion: first.completion,
+          timeSpent: first.timeSpent,
+        };
+      });
+    } catch (error) {
+      // Installation can throw from a subscriber after the complete candidate was saved.
+      refreshOwner();
+      if (mounted.current && isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);
+      return false;
+    }
+    if (!saved.success) {
+      queueRetry(() => changeCompletion(completion, isCurrent, refreshOwner));
+      return false;
+    }
+    setCompletionRetry(null);
+    ownsSession = store.getState().capturePuzzleSessionOwner();
+    refreshOwner();
     setTimerStart(null);
 
     if (effectiveSelectedDb && puzzle?.id) {
@@ -389,18 +537,32 @@ function Puzzles({ id }: { id: string }) {
       completedThemeController.current = controller;
       const ownsCompletion = () =>
         isCurrent() &&
+        ownsSession() &&
+        mounted.current &&
         generation === requestGeneration.current &&
         ownsDatabaseRequest(database, controller.signal);
       try {
         const themes = await tauri.getThemesForPuzzle(database, puzzle.id, {
           signal: controller.signal,
         });
-        if (!ownsCompletion()) return;
-        setPuzzles((puzzles) => {
-          if (!ownsCompletion() || puzzles[currentPuzzle] !== puzzle) return puzzles;
-          puzzles[currentPuzzle].themes = themes;
-          return [...puzzles];
-        });
+        const saveThemes = (): boolean => {
+          if (!ownsCompletion()) return false;
+          if (
+            !transition((draft) => {
+              draft.puzzleSession!.attempts.find(
+                (attempt) => attempt.attemptId === attemptId,
+              )!.puzzle.themes = themes;
+            }).success
+          ) {
+            queueRetry(saveThemes, ownsCompletion);
+            return false;
+          }
+          ownsSession = store.getState().capturePuzzleSessionOwner();
+          refreshOwner();
+          setCompletionRetry(null);
+          return true;
+        };
+        if (!saveThemes()) return false;
       } catch (error) {
         if (ownsCompletion() && normalizeError(error).category !== "cancelled") {
           notifications.show({
@@ -411,6 +573,7 @@ function Puzzles({ id }: { id: string }) {
         }
       }
     }
+    return true;
   }
 
   const [addOpened, setAddOpened] = useState(false);
@@ -422,19 +585,25 @@ function Puzzles({ id }: { id: string }) {
   const [trackTime, setTrackTime] = useAtom(trackPuzzleTimeAtom);
 
   const [timerStart, setTimerStart] = useAtom(useTabAtom(puzzleTimerFamily));
+  const timerOwner = useRef({ attemptId, timerStart });
+  if (timerOwner.current.timerStart !== timerStart) timerOwner.current = { attemptId, timerStart };
   const [, setTick] = useState(0);
   resetWorkspaceRef.current = () => {
+    if (
+      !transition((draft) =>
+        Object.assign(draft, defaultTree(), { puzzleSession: emptyPuzzleSession() }),
+      ).success
+    )
+      return;
     solutionAbortRef.current?.abort();
-    setPuzzles([]);
-    setCurrentPuzzle(0);
     setAvailableThemes([]);
     setThemesTableMissing(false);
     setSelectedTheme(null);
     setTimerStart(null);
     setIsPlayingSolution(false);
-    reset();
   };
   const isPuzzleIncomplete = puzzles[currentPuzzle]?.completion === "incomplete";
+  const savedElapsed = puzzles[currentPuzzle]?.timeSpent ?? 0;
   const elapsedTime =
     timerStart && isPuzzleIncomplete && trackTime
       ? Date.now() - timerStart
@@ -442,9 +611,9 @@ function Puzzles({ id }: { id: string }) {
 
   useEffect(() => {
     if (trackTime && isPuzzleIncomplete && timerStart === null) {
-      setTimerStart(Date.now());
+      setTimerStart(Date.now() - savedElapsed);
     }
-  }, [trackTime, isPuzzleIncomplete, timerStart, setTimerStart]);
+  }, [trackTime, isPuzzleIncomplete, timerStart, savedElapsed, setTimerStart]);
 
   useEffect(() => {
     if (!trackTime || !isPuzzleIncomplete || timerStart === null) return;
@@ -457,20 +626,36 @@ function Puzzles({ id }: { id: string }) {
   }, [trackTime, isPuzzleIncomplete, timerStart]);
 
   useEffect(() => {
-    const puzzle =
-      latestPuzzle.current.index === currentPuzzle ? latestPuzzle.current.puzzle : undefined;
-    return () => {
-      if (trackTime && timerStart !== null && puzzle?.completion === "incomplete") {
+    const ownsSession = store.getState().capturePuzzleSessionOwner();
+    const timedAttempt = timerOwner.current.attemptId;
+    const saveElapsed = () => {
+      const puzzle = store
+        .getState()
+        .puzzleSession?.attempts.find((attempt) => attempt.attemptId === attemptId)?.puzzle;
+      if (
+        ownsSession() &&
+        timedAttempt === attemptId &&
+        trackTime &&
+        timerStart !== null &&
+        puzzle?.completion === "incomplete"
+      ) {
         const finalElapsed = Date.now() - timerStart;
-        setPuzzles((prev) => {
-          if (prev[currentPuzzle] !== puzzle || puzzle.completion !== "incomplete") return prev;
-          const newPuzzles = [...prev];
-          puzzle.timeSpent = finalElapsed;
-          return newPuzzles;
+        const saved = transition((draft) => {
+          draft.puzzleSession!.attempts.find(
+            (attempt) => attempt.attemptId === attemptId,
+          )!.puzzle.timeSpent = finalElapsed;
         });
+        if (saved.success) setTimerStart(null);
       }
     };
-  }, [trackTime, timerStart, currentPuzzle, isPuzzleIncomplete, setPuzzles]);
+    window.addEventListener("beforeunload", saveElapsed);
+    window.addEventListener("pagehide", saveElapsed);
+    return () => {
+      window.removeEventListener("beforeunload", saveElapsed);
+      window.removeEventListener("pagehide", saveElapsed);
+      saveElapsed();
+    };
+  }, [trackTime, timerStart, attemptId, isPuzzleIncomplete, store, transition, setTimerStart]);
 
   const [, setTabs] = useAtom(tabsAtom);
 
@@ -491,6 +676,7 @@ function Puzzles({ id }: { id: string }) {
           changeCompletion={changeCompletion}
           generatePuzzle={(database, isCurrent) => generatePuzzle(database, false, isCurrent)}
           db={effectiveSelectedDb}
+          blocked={completionRetry?.attemptId === attemptId && completionRetry.owns()}
         />
       </Portal>
       <Portal target="#topRight" style={{ height: "100%" }}>
@@ -730,6 +916,9 @@ function Puzzles({ id }: { id: string }) {
             )}
           </Group>
           <Divider my="sm" />
+          {completionRetry?.attemptId === attemptId && completionRetry.owns() && (
+            <Button onClick={completionRetry.retry}>{t("Board.Practice.Retry")}</Button>
+          )}
           {!isPuzzleIncomplete && (puzzles[currentPuzzle]?.themes?.length ?? 0) > 0 && (
             <Group gap="xs" mb="sm">
               {puzzles[currentPuzzle]?.themes?.map((theme) => (
@@ -780,8 +969,15 @@ function Puzzles({ id }: { id: string }) {
               <IconAction
                 label={t("Puzzle.ClearSession")}
                 onClick={() => {
-                  setPuzzles([]);
-                  reset();
+                  if (
+                    !transition((draft) =>
+                      Object.assign(draft, defaultTree(), { puzzleSession: emptyPuzzleSession() }),
+                    ).success
+                  )
+                    return;
+                  requestGeneration.current++;
+                  puzzleRequest.current?.abort();
+                  solutionAbortRef.current?.abort();
                   setTimerStart(null);
                   setIsPlayingSolution(false);
                 }}
@@ -812,6 +1008,13 @@ function Puzzles({ id }: { id: string }) {
                 if (!nextMove) return;
                 if (curPuzzle.completion === "incomplete") {
                   void changeCompletion("incorrect");
+                  if (
+                    store
+                      .getState()
+                      .puzzleSession?.attempts.find((attempt) => attempt.attemptId === attemptId)
+                      ?.puzzle.completion === "incomplete"
+                  )
+                    return;
                 }
 
                 const from = makeSquare(nextMove.from);
@@ -852,23 +1055,25 @@ function Puzzles({ id }: { id: string }) {
                 solutionAbortRef.current = abortController;
                 const curPuzzle = puzzles[currentPuzzle];
                 const databaseKey = effectiveSelectedDbKey;
+                let ownsSession = store.getState().capturePuzzleSessionOwner();
                 const isOwner = () =>
                   mounted.current &&
+                  ownsSession() &&
                   solutionAbortRef.current === abortController &&
                   !abortController.signal.aborted &&
-                  latestPuzzle.current.puzzle === curPuzzle &&
-                  latestPuzzle.current.index === currentPuzzle &&
+                  store.getState().puzzleSession?.selectedAttemptId === attemptId &&
                   (effectiveSelectedDbRef.current
                     ? capabilityKey(effectiveSelectedDbRef.current)
                     : null) === databaseKey;
                 let ownsPosition = captureTreePositionOwner(store);
                 const isCurrent = () => isOwner() && ownsPosition();
+                let awaitingCompletionRetry = false;
                 setIsPlayingSolution(true);
                 try {
                   const result = validateMoveSequence(curPuzzle.fen, curPuzzle.moves);
                   if (!result.success) throw result.error;
                   if (!isCurrent()) return;
-                  const state = store.getState();
+                  let state = store.getState();
                   const start = state.headers.start ?? [];
                   if (
                     getBoardState(state.root.fen) !== getBoardState(curPuzzle.fen) ||
@@ -878,8 +1083,22 @@ function Puzzles({ id }: { id: string }) {
                   )
                     return;
                   if (curPuzzle.completion === "incomplete") {
-                    void changeCompletion("incorrect", isCurrent);
+                    void changeCompletion("incorrect", isCurrent, () => {
+                      ownsSession = store.getState().capturePuzzleSessionOwner();
+                      ownsPosition = captureTreePositionOwner(store);
+                      state = store.getState();
+                    });
+                    if (
+                      store
+                        .getState()
+                        .puzzleSession?.attempts.find((attempt) => attempt.attemptId === attemptId)
+                        ?.puzzle.completion === "incomplete"
+                    ) {
+                      awaitingCompletionRetry = true;
+                      return;
+                    }
                   }
+                  if (!isCurrent()) return;
                   goToStart();
                   const started = store.getState();
                   if (
@@ -904,12 +1123,12 @@ function Puzzles({ id }: { id: string }) {
                   if (isCurrent()) notifyUnlessCancelled(commonErrorRef.current, error);
                 } finally {
                   if (solutionAbortRef.current === abortController) {
-                    solutionAbortRef.current = null;
+                    if (!awaitingCompletionRetry) solutionAbortRef.current = null;
                     setIsPlayingSolution(false);
                   }
                 }
               }}
-              disabled={puzzles.length === 0}
+              disabled={currentPuzzle < 0}
             >
               {t("Puzzle.ViewSolution")}
             </Button>

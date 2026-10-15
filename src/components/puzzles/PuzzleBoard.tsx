@@ -34,12 +34,18 @@ function PuzzleBoard({
   changeCompletion,
   generatePuzzle,
   db,
+  blocked = false,
 }: {
   puzzles: Puzzle[];
   currentPuzzle: number;
-  changeCompletion: (completion: Completion, isCurrent?: () => boolean) => Promise<void>;
+  changeCompletion: (
+    completion: Completion,
+    isCurrent?: () => boolean,
+    refreshOwner?: () => void,
+  ) => Promise<boolean | void>;
   generatePuzzle: (db: PathRef, isCurrent?: () => boolean) => Promise<void>;
   db: PathRef | null;
+  blocked?: boolean;
 }) {
   const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
@@ -70,6 +76,8 @@ function PuzzleBoard({
     };
   }, []);
   function captureOwner(expectedRoot = root, expectedPosition = position): () => boolean {
+    const ownsSession = store.getState().capturePuzzleSessionOwner();
+    const attemptId = store.getState().puzzleSession?.selectedAttemptId;
     const ownsPosition = captureTreePositionOwner(store, {
       root: expectedRoot,
       position: expectedPosition,
@@ -77,7 +85,8 @@ function PuzzleBoard({
     return () => {
       return (
         mounted.current &&
-        latest.current.puzzle === puzzle &&
+        ownsSession() &&
+        (attemptId !== undefined || latest.current.puzzle === puzzle) &&
         latest.current.currentPuzzle === currentPuzzle &&
         latest.current.databaseKey === databaseKey &&
         ownsPosition()
@@ -96,6 +105,7 @@ function PuzzleBoard({
   const turn = pos?.turn || "white";
   const showCoordinates = useAtomValue(showCoordinatesAtom);
   const canPlay =
+    !blocked &&
     puzzle &&
     puzzlePos &&
     progress.atFrontier &&
@@ -131,10 +141,15 @@ function PuzzleBoard({
         return;
       }
       const state = store.getState();
-      const isCurrentAfterMove = captureOwner(state.root, state.position);
+      let ownsAfterMove = captureOwner(state.root, state.position);
+      const isCurrentAfterMove = () => ownsAfterMove();
+      const refreshOwner = () => {
+        ownsAfterMove = captureOwner(store.getState().root, store.getState().position);
+      };
       if (currentMove === puzzle.moves.length - 1 || newPos.isCheckmate()) {
         if (puzzle.completion !== "incorrect") {
-          await changeCompletion("correct", isCurrentAfterMove);
+          const saved = await changeCompletion("correct", isCurrentAfterMove, refreshOwner);
+          if (saved === false) return;
           if (!isCurrentAfterMove()) return;
         }
 
@@ -152,9 +167,12 @@ function PuzzleBoard({
         changeHeaders: false,
       });
       const state = store.getState();
-      const isCurrentAfterMove = captureOwner(state.root, state.position);
+      let ownsAfterMove = captureOwner(state.root, state.position);
+      const isCurrentAfterMove = () => ownsAfterMove();
       if (puzzle.completion === "incomplete") {
-        await changeCompletion("incorrect", isCurrentAfterMove);
+        await changeCompletion("incorrect", isCurrentAfterMove, () => {
+          ownsAfterMove = captureOwner(store.getState().root, store.getState().position);
+        });
         if (!isCurrentAfterMove()) return;
       }
     }

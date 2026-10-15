@@ -1,4 +1,13 @@
-import { expect, test, type MockScenario } from "./fixtures";
+import {
+    activeWorkspaceTab,
+    playBoardMove,
+    preserveStorageForReload,
+    expect,
+    test,
+    type MockScenario,
+} from "./fixtures";
+import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
+import type { TreeState } from "../src/utils/treeReducer";
 
 test("accounts-puzzles-engines: default-true check stays disabled after save and reload and refusal restores true", async ({
     page,
@@ -666,6 +675,107 @@ test("accounts-puzzles-engines: navigates empty account, puzzle, and engine stat
     await page.mouse.move(0, 0);
     await capture("accounts-puzzles-engines");
     await expect(page).toHaveScreenshot("accounts-puzzles-engines.png", { fullPage: true });
+});
+
+test("accounts-puzzles-engines: selected puzzle B survives reload, refused admission retries and close reclaims its keys", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
+    const row = { id: 7, fen, rating: 1200, rating_deviation: 50, popularity: 1, nb_plays: 1 };
+    const a = { ...row, moves: "e7e6 d2d4" };
+    const b = { ...row, moves: "e7e5 g1f3 b8c6 f1c4" };
+    await page.addInitScript(() => {
+        localStorage.setItem("font-size", "100");
+        localStorage.setItem("puzzle-db", JSON.stringify({ id: "session-puzzles" }));
+        localStorage.setItem("track-puzzle-time", "false");
+    });
+    await mockScenario({
+        commands: {
+            list_puzzle_databases: {
+                result: [
+                    {
+                        title: "Session.db3",
+                        description: "Session",
+                        puzzleCount: 2,
+                        storageSize: "1024",
+                        path: { id: "session-puzzles" },
+                    },
+                ],
+            },
+            get_puzzle_themes: { result: [] },
+            get_themes_for_puzzle: { result: [] },
+            get_puzzle: { results: [a, b], result: b },
+        },
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Train", exact: true }).click();
+    const next = page.getByRole("button", { name: "New Puzzle", exact: true });
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect(
+        page.getByRole("button", { name: "Challenge 1: incomplete", exact: true }),
+    ).toBeVisible();
+    await next.click();
+    await expect(
+        page.getByRole("button", { name: "Challenge 2: incomplete", exact: true }),
+    ).toBeVisible();
+    const tab = (await activeWorkspaceTab(page))!;
+    const key = tab.treeKey ?? tab.value;
+    const read = async () =>
+        deserializeStorageValue<{ state: TreeState }>(
+            (await page.evaluate((key) => sessionStorage.getItem(key), key))!,
+        )!.state;
+    const selectedB = (await read()).puzzleSession!.selectedAttemptId;
+    await playBoardMove(page, page.locator("cg-board"), "g1", "f3");
+    await expect.poll(async () => (await read()).position.length).toBe(3);
+    const progress = await read();
+    await capture("puzzle-session-b-progress");
+    await preserveStorageForReload(page);
+    await expect(next).toBeEnabled();
+    await expect(
+        page.getByRole("button", { name: "Challenge 2: incomplete", exact: true }),
+    ).toBeVisible();
+    expect((await read()).puzzleSession!.selectedAttemptId).toBe(selectedB);
+    expect((await read()).position).toEqual(progress.position);
+    expect((await read()).root).toEqual(progress.root);
+    await capture("puzzle-session-b-reloaded");
+    const before = await page.evaluate((key) => sessionStorage.getItem(key), key);
+    await page.evaluate((target) => {
+        const original = Storage.prototype.setItem;
+        Object.assign(window, {
+            __restorePuzzleStorage: () => {
+                Storage.prototype.setItem = original;
+            },
+        });
+        Storage.prototype.setItem = function (key, value) {
+            if (key === target)
+                throw new DOMException("Puzzle storage refused", "QuotaExceededError");
+            original.call(this, key, value);
+        };
+    }, key);
+    await next.click();
+    await expect(page.getByText(/storage|quota/i).last()).toBeVisible();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), key)).toBe(before);
+    expect((await read()).puzzleSession!.selectedAttemptId).toBe(selectedB);
+    await capture("puzzle-session-save-refused");
+    await page.evaluate(() =>
+        (window as typeof window & { __restorePuzzleStorage: () => void }).__restorePuzzleStorage(),
+    );
+    await next.click();
+    await expect(
+        page.getByRole("button", { name: "Challenge 3: incomplete", exact: true }),
+    ).toBeVisible();
+    expect((await read()).puzzleSession!.selectedAttemptId).not.toBe(selectedB);
+    await capture("puzzle-session-save-retried");
+    await page.evaluate((logical) => sessionStorage.setItem(`${logical}-puzzles`, "[]"), tab.value);
+    await page.getByRole("button", { name: "Close tab", exact: true }).click();
+    await expect.poll(() => page.evaluate((key) => sessionStorage.getItem(key), key)).toBeNull();
+    expect(
+        await page.evaluate((logical) => sessionStorage.getItem(`${logical}-puzzles`), tab.value),
+    ).toBeNull();
+    await capture("puzzle-session-closed-keys-reclaimed");
 });
 
 test("accounts-puzzles-engines: moves the active sidebar marker with navigation", async ({

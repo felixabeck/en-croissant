@@ -6,6 +6,8 @@ import { defaultTree } from "@/utils/treeReducer";
 import { getTabTreeKey, type Tab } from "./workspaceTypes";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
+import { createTreeStore } from "./store/tree";
+import type { Puzzle } from "./puzzleSession";
 import {
     defaultWorkspace,
     LEGACY_WORKSPACE_VERSION,
@@ -13,12 +15,15 @@ import {
     readStoredWorkspaceValue,
     saveWorkspace,
     sweepOrphanedTreeKeys,
+    sweepLegacyPuzzleKeys,
     MAX_PROTECTED_TREE_KEYS,
     MAX_PROTECTED_TREE_KEY_LENGTH,
     MAX_PENDING_TREE_REMOVALS,
     MAX_WORKSPACE_TABS,
     WORKSPACE_STORAGE_KEY,
     pendingTreeRemovalCapacityError,
+    pendingPuzzleRemovalCapacityError,
+    reconcileLegacyPuzzleRemovals,
     reconcilePendingTreeRemovals,
 } from "./workspace";
 
@@ -37,6 +42,408 @@ const legacyTab = {
 function loadStoredWorkspace() {
     return loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
 }
+
+function puzzleRepairFixture() {
+    sessionStorage.clear();
+    const physical = crypto.randomUUID();
+    const logical = "old-puzzle-logical-owner";
+    const owner: Tab = { ...legacyTab, value: logical, treeKey: physical, type: "puzzles" };
+    const unrelated: Tab = { ...legacyTab, value: crypto.randomUUID() };
+    const memory = createTreeStore();
+    memory.getState().makeMove({ payload: "e4" });
+    memory.getState().setComment("saved played tree");
+    const base: Puzzle = {
+        id: 7,
+        fen: defaultTree().root.fen,
+        moves: ["e2e4", "e7e5"],
+        rating: 1200,
+        rating_deviation: 50,
+        popularity: 1,
+        nb_plays: 1,
+        completion: "incomplete",
+    };
+    tabStorage.seed(physical, memory.getState());
+    tabStorage.seed(unrelated.value, defaultTree());
+    sessionStorage.setItem(
+        `${logical}-puzzles`,
+        JSON.stringify([{ ...base, moves: ["g1f3", "d7d5"] }, null, base]),
+    );
+    sessionStorage.setItem("foreign-puzzles", "foreign value");
+    const envelope = { version: 1, tabs: [owner, unrelated], activeTab: unrelated.value };
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(envelope));
+    return { physical, logical, owner, unrelated, envelope, historyKey: `${logical}-puzzles` };
+}
+
+test("PR-1 cold document replays logical history cleanup after different physical source retirement", async () => {
+    const fixture = puzzleRepairFixture();
+    const deny = denyStorageRemoval(fixture.historyKey);
+    const loaded = loadStoredWorkspace();
+    const repaired = loaded.tabs[0]!;
+    expect(repaired.value).not.toBe(fixture.logical);
+    expect(loaded.activeTab).toBe(fixture.unrelated.value);
+    const tree = tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(repaired))!.state;
+    expect(tree.root.children[0].comment).toBe("saved played tree");
+    expect(tree.position).toEqual([0]);
+    expect(tree.puzzleSession!.attempts).toHaveLength(2);
+    expect(tree.puzzleSession!.selectedAttemptId).toBe(tree.puzzleSession!.attempts[1].attemptId);
+    expect(loaded.legacyPuzzleRemovalKeys).toEqual([fixture.historyKey]);
+    expect(sessionStorage.getItem(fixture.physical)).toBeNull();
+    expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+    deny.mockRestore();
+    vi.resetModules();
+    const cold = await import("./workspace");
+    const restored = cold.loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(restored.tabs).toEqual(loaded.tabs);
+    expect(sessionStorage.getItem(fixture.historyKey)).toBeNull();
+    expect(restored.legacyPuzzleRemovalKeys).toBeUndefined();
+    expect(sessionStorage.getItem("foreign-puzzles")).toBe("foreign value");
+    expect(sessionStorage.getItem(fixture.unrelated.value)).not.toBeNull();
+});
+
+test.each(["save", "capacity"] as const)(
+    "puzzle ID repair %s refusal preserves original logical and physical owners",
+    (failure) => {
+        const fixture = puzzleRepairFixture();
+        let expectedIntents: string[] | undefined;
+        if (failure === "capacity") {
+            const keys = Array.from({ length: 100 }, (_, i) => `retired-${i}-puzzles`);
+            expectedIntents = keys;
+            for (const key of keys) sessionStorage.setItem(key, "[]");
+            sessionStorage.setItem(
+                WORKSPACE_STORAGE_KEY,
+                serializeStorageValue({ ...fixture.envelope, legacyPuzzleRemovalKeys: keys }),
+            );
+            denyStorageRemoval((candidate) => keys.includes(candidate));
+        } else {
+            const write = Storage.prototype.setItem;
+            vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+                function (this: Storage, key, value) {
+                    if (key === WORKSPACE_STORAGE_KEY)
+                        throw new DOMException("refused intent", "QuotaExceededError");
+                    write.call(this, key, value);
+                },
+            );
+        }
+        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        const loaded = loadStoredWorkspace();
+        expect(loaded.tabs).toEqual(fixture.envelope.tabs);
+        expect(loaded.legacyPuzzleRemovalKeys).toEqual(expectedIntents);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+        expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+        expect(sessionStorage.getItem(fixture.physical)).not.toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalled();
+    },
+);
+
+test("legacy cleanup replays absent targets independently of source trees and retains refused reads", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    const key = "absent-logical-source-puzzles";
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ ...workspace, legacyPuzzleRemovalKeys: [key] }),
+    );
+    const read = Storage.prototype.getItem;
+    const refusal = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, name) {
+            if (name === key) throw new Error("refused exact history read");
+            return read.call(this, name);
+        });
+    expect(loadStoredWorkspace().legacyPuzzleRemovalKeys).toEqual([key]);
+    refusal.mockRestore();
+    expect(loadStoredWorkspace().legacyPuzzleRemovalKeys).toBeUndefined();
+    expect(
+        (readStoredWorkspace() as { legacyPuzzleRemovalKeys?: string[] }).legacyPuzzleRemovalKeys,
+    ).toBeUndefined();
+});
+
+test.each(["read", "tree-save"] as const)(
+    "background puzzle repair %s refusal preserves both source owners",
+    (failure) => {
+        const fixture = puzzleRepairFixture();
+        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        if (failure === "read") {
+            const read = Storage.prototype.getItem;
+            vi.spyOn(Storage.prototype, "getItem").mockImplementation(
+                function (this: Storage, key) {
+                    if (key === fixture.historyKey) throw new Error("history read refused");
+                    return read.call(this, key);
+                },
+            );
+        } else {
+            const write = Storage.prototype.setItem;
+            vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+                function (this: Storage, key, value) {
+                    if (
+                        ![
+                            fixture.physical,
+                            fixture.unrelated.value,
+                            WORKSPACE_STORAGE_KEY,
+                        ].includes(key)
+                    )
+                        throw new DOMException("combined migration refused", "QuotaExceededError");
+                    write.call(this, key, value);
+                },
+            );
+        }
+        expect(loadStoredWorkspace().tabs).toEqual(fixture.envelope.tabs);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+        expect(sessionStorage.getItem(fixture.physical)).not.toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalled();
+        vi.restoreAllMocks();
+        expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+        const loaded = loadStoredWorkspace();
+        expect(loaded.tabs[0].value).not.toBe(fixture.logical);
+        expect(
+            tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(loaded.tabs[0]))!.state
+                .puzzleSession!.attempts,
+        ).toHaveLength(2);
+    },
+);
+
+test.each([false, true])(
+    "UUID legacy history sweeping requires authoritative workspace ownership (uncertain: %s)",
+    (uncertain) => {
+        sessionStorage.clear();
+        const workspace = defaultWorkspace();
+        const retainedKey = `${workspace.tabs[0].value}-puzzles`;
+        const orphanKey = `${crypto.randomUUID()}-puzzles`;
+        sessionStorage.setItem(retainedKey, "retained");
+        sessionStorage.setItem(orphanKey, "orphan");
+        sessionStorage.setItem("unrelated-puzzles", "foreign");
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({
+                ...workspace,
+                ...(uncertain
+                    ? { treeOwnershipUncertain: true, treeOwnershipProtectedIds: [] }
+                    : {}),
+            }),
+        );
+        const loaded = loadStoredWorkspace();
+        expect(sessionStorage.getItem(orphanKey)).toBe(uncertain ? "orphan" : null);
+        sweepLegacyPuzzleKeys(loaded);
+        expect(sessionStorage.getItem(orphanKey)).toBe(uncertain ? "orphan" : null);
+        expect(sessionStorage.getItem(retainedKey)).toBe("retained");
+        expect(sessionStorage.getItem("unrelated-puzzles")).toBe("foreign");
+    },
+);
+
+test("saved cleanup intents reject duplicate and non-history keys and survive canonical workspace publication", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    const historyKey = "retired-owner-puzzles";
+    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+        ...workspace,
+        legacyPuzzleRemovalKeys: [historyKey],
+    });
+    expect(saved?.legacyPuzzleRemovalKeys).toEqual([historyKey]);
+    expect((readStoredWorkspace() as typeof saved)?.legacyPuzzleRemovalKeys).toEqual([historyKey]);
+    const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    for (const keys of [
+        [historyKey, historyKey],
+        ["unrelated-storage"],
+        [`${"x".repeat(249)}-puzzles`],
+    ]) {
+        expect(
+            saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+                ...workspace,
+                legacyPuzzleRemovalKeys: keys,
+            }),
+        ).toBeNull();
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+    }
+});
+
+test("cleanup reconciliation protects retained logical owners, uses UUID discovery and admits exactly 100 proven keys", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: "still-live" };
+    const retainedKey = `${retained.value}-puzzles`;
+    const uuid = crypto.randomUUID();
+    sessionStorage.setItem(retainedKey, "live history");
+    expect(
+        reconcileLegacyPuzzleRemovals([retainedKey], [retained.value, uuid, "retired"], [retained]),
+    ).toEqual(["retired-puzzles"]);
+    expect(sessionStorage.getItem(retainedKey)).toBe("live history");
+    const retired = Array.from({ length: 100 }, (_, i) => `old-${i}`);
+    expect(reconcileLegacyPuzzleRemovals([], retired, [])).toEqual(
+        retired.map((id) => `${id}-puzzles`),
+    );
+    expect(reconcileLegacyPuzzleRemovals([], [...retired, "overflow"], [])).toBeNull();
+});
+
+test("legacy cleanup capacity errors keep localized action text and the concrete refusal cause", () => {
+    const error = pendingPuzzleRemovalCapacityError();
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe(
+        i18n.t("Common.ConfirmationError.unexpected") ||
+            enUSCatalogue.translation["Common.ConfirmationError.unexpected"],
+    );
+    expect(error.cause).toEqual(new Error("Pending legacy puzzle removals exceeded 100"));
+});
+
+test("history sweeping reports refused enumeration and retries without deleting unrelated UUID-prefixed values", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    const orphanKey = `${crypto.randomUUID()}-puzzles`;
+    const unrelated = `${crypto.randomUUID()}-foreign`;
+    sessionStorage.setItem(orphanKey, "orphan");
+    sessionStorage.setItem(unrelated, "foreign");
+    const failure = new Error("session keys unavailable");
+    const refuse = vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+        throw failure;
+    });
+    sweepLegacyPuzzleKeys(workspace);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(failure);
+    expect(sessionStorage.getItem(orphanKey)).toBe("orphan");
+    refuse.mockRestore();
+    sweepLegacyPuzzleKeys(workspace);
+    expect(sessionStorage.getItem(orphanKey)).toBeNull();
+    expect(sessionStorage.getItem(unrelated)).toBe("foreign");
+});
+
+test("history sweeping skips absent enumerated entries and still reclaims later orphan keys", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    sessionStorage.setItem("unrelated", "foreign");
+    const orphanKey = `${crypto.randomUUID()}-puzzles`;
+    sessionStorage.setItem(orphanKey, "orphan");
+    const original = Storage.prototype.key;
+    vi.spyOn(Storage.prototype, "key").mockImplementation(function (this: Storage, index) {
+        return index === 0 ? null : original.call(this, index);
+    });
+    sweepLegacyPuzzleKeys(workspace);
+    expect(sessionStorage.getItem(orphanKey)).toBeNull();
+    expect(sessionStorage.getItem("unrelated")).toBe("foreign");
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+});
+
+test.each(["missing", "legacy"] as const)(
+    "startup history sweeping requires %s metadata to provide actual ownership authority",
+    (source) => {
+        sessionStorage.clear();
+        const orphanKey = `${crypto.randomUUID()}-puzzles`;
+        sessionStorage.setItem(orphanKey, "orphan");
+        if (source === "legacy") {
+            const owner = { ...legacyTab, value: crypto.randomUUID() };
+            sessionStorage.setItem("tabs", serializeStorageValue([owner]));
+            sessionStorage.setItem("activeTab", serializeStorageValue(owner.value));
+        }
+        loadStoredWorkspace();
+        expect(sessionStorage.getItem(orphanKey)).toBe(source === "legacy" ? null : "orphan");
+    },
+);
+
+test("analysis ID repair preserves unrelated logical history and does not invent a puzzle session", () => {
+    const fixture = puzzleRepairFixture();
+    const owner = { ...fixture.owner, type: "analysis" as const };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ ...fixture.envelope, tabs: [owner, fixture.unrelated] }),
+    );
+    const raw = sessionStorage.getItem(fixture.historyKey);
+    const loaded = loadStoredWorkspace();
+    const repaired = loaded.tabs[0];
+    expect(repaired.value).not.toBe(owner.value);
+    expect(
+        tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(repaired))!.state
+            .puzzleSession,
+    ).toBeUndefined();
+    expect(sessionStorage.getItem(fixture.historyKey)).toBe(raw);
+    expect(loaded.legacyPuzzleRemovalKeys).toBeUndefined();
+});
+
+test("unreadable puzzle repair retains both original owners and reports the ownership failure", () => {
+    const fixture = puzzleRepairFixture();
+    const raw = "unreadable played puzzle bytes";
+    sessionStorage.setItem(fixture.physical, raw);
+    const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    expect(loadStoredWorkspace().tabs).toEqual(fixture.envelope.tabs);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+    expect(sessionStorage.getItem(fixture.physical)).toBe(raw);
+    expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        new Error("Cannot migrate puzzle ownership from an unreadable tree"),
+    );
+});
+
+test("a copied puzzle target unavailable before combined migration refuses publication with its cause", () => {
+    const fixture = puzzleRepairFixture();
+    const read = tabStorage.readTree.bind(tabStorage);
+    vi.spyOn(tabStorage, "readTree").mockImplementation((id, required) =>
+        id !== fixture.physical && id !== fixture.unrelated.value
+            ? { kind: "absent" }
+            : read(id, required),
+    );
+    const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    expect(loadStoredWorkspace().tabs).toEqual(fixture.envelope.tabs);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+    expect(sessionStorage.getItem(fixture.physical)).not.toBeNull();
+    expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        new Error("Puzzle migration target is unavailable"),
+    );
+});
+
+test.each(["saved", "refused-write", "refused-verification"] as const)(
+    "an absent implicit puzzle source transfers logical history only after %s admission",
+    (outcome) => {
+        sessionStorage.clear();
+        const owner: Tab = { ...legacyTab, type: "puzzles", value: "empty-legacy-puzzle" };
+        const puzzle: Puzzle = {
+            id: 1,
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+            moves: ["e7e5", "g1f3"],
+            rating: 1200,
+            rating_deviation: 50,
+            popularity: 1,
+            nb_plays: 1,
+            completion: "incomplete",
+        };
+        const historyKey = `${owner.value}-puzzles`;
+        const historyBytes = JSON.stringify([puzzle]);
+        sessionStorage.setItem(historyKey, historyBytes);
+        const envelope = { version: 1, tabs: [owner], activeTab: owner.value };
+        sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(envelope));
+        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        let target: string | undefined;
+        const write = Storage.prototype.setItem;
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+            function (this: Storage, key, value) {
+                if (key !== WORKSPACE_STORAGE_KEY) {
+                    if (outcome === "refused-write")
+                        throw new DOMException("combined tree refused", "QuotaExceededError");
+                    target = key;
+                }
+                write.call(this, key, value);
+            },
+        );
+        const read = Storage.prototype.getItem;
+        vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+            if (outcome === "refused-verification" && key === target)
+                throw new Error("combined tree verification unavailable");
+            return read.call(this, key);
+        });
+        const loaded = loadStoredWorkspace();
+        vi.restoreAllMocks();
+        expect(loaded.tabs[0].value === owner.value).toBe(outcome !== "saved");
+        expect(sessionStorage.getItem(historyKey)).toBe(outcome === "saved" ? null : historyBytes);
+        const tree =
+            loaded.tabs[0].value !== owner.value
+                ? tabStorage.read<ReturnType<typeof defaultTree>>(getTabTreeKey(loaded.tabs[0]))!
+                      .state
+                : undefined;
+        expect(tree?.root).toEqual(outcome === "saved" ? defaultTree().root : undefined);
+        expect(tree?.puzzleSession?.attempts.map((attempt) => attempt.puzzle)).toEqual(
+            outcome === "saved" ? [puzzle] : undefined,
+        );
+        expect(tree?.puzzleSession?.selectedAttemptId).toBe(outcome === "saved" ? null : undefined);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(
+            outcome === "saved" ? serializeStorageValue(loaded) : bytes,
+        );
+    },
+);
 
 function readStoredWorkspace() {
     const raw = sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!;

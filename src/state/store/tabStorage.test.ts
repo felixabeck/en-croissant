@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import { defaultTree } from "@/utils/treeReducer";
 import { emptyPuzzleSession } from "@/state/puzzleSession";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
@@ -8,6 +9,7 @@ import {
     isBoundedTreeForStorage,
     migrateTreeForStorage,
     persistStorageWriteError,
+    prepareTreeForStorage,
     PGN_TEXT_MAX,
     TabStorageRepository,
     TREE_STORAGE_VERSION,
@@ -142,6 +144,86 @@ test.each([false, true])("session survives %s durable cloning independently", (d
             .selectedAttemptId,
     ).toBeNull();
 });
+
+function treeWithCircleAndArrow() {
+    const tree = treeWithPaths({ position: [0] });
+    tree.puzzleSession = emptyPuzzleSession();
+    tree.root.shapes = [
+        { orig: "a1", brush: "green" },
+        { orig: "b2", dest: "h8", brush: "red", modifiers: { lineWidth: 2 } },
+    ] satisfies DrawShape[];
+    tree.root.children[0].shapes = [{ orig: "e4", dest: undefined, brush: "blue" }];
+    return tree;
+}
+
+test.each(["admission", "ordinary flush"] as const)(
+    "circles and arrows survive %s and a fresh storage reader without losing annotations",
+    (route) => {
+        const tree = treeWithCircleAndArrow();
+        expect(prepareTreeForStorage(tree).root.shapes).toEqual(tree.root.shapes);
+        if (route === "admission") storage.seed("drawings", tree);
+        else storage.write("drawings", { version: TREE_STORAGE_VERSION, state: tree });
+        expect(storage.flush()).toEqual([]);
+        const durable = deserializeStorageValue<{ state: StoredTreeForTest }>(
+            sessionStorage.getItem("drawings")!,
+        )!.state;
+        expect(durable.root.shapes).toEqual(tree.root.shapes);
+        expect(durable.root.children[0].shapes).toEqual([{ orig: "e4", brush: "blue" }]);
+        const restored = new TabStorageRepository().read<StoredTreeForTest>("drawings")!.state;
+        expect(restored.root.shapes).toEqual(tree.root.shapes);
+        expect(restored.root.children[0].shapes).toEqual([{ orig: "e4", brush: "blue" }]);
+        expect(restored.position).toEqual([0]);
+        expect(restored.puzzleSession).toEqual(tree.puzzleSession);
+    },
+);
+
+test.each([false, true])(
+    "circle and arrow annotations survive durable clone %s independently",
+    (durable) => {
+        const tree = treeWithCircleAndArrow();
+        storage.seed("drawn-source", tree);
+        const result = durable
+            ? storage.cloneDurable("drawn-source", "drawn-copy")
+            : storage.clone("drawn-source", "drawn-copy");
+        expect(result).toEqual(durable ? undefined : { kind: "copied" });
+        expect(storage.flush()).toEqual([]);
+        const reader = new TabStorageRepository();
+        const copy = reader.read<StoredTreeForTest>("drawn-copy")!.state;
+        expect(copy.root.shapes).toEqual(tree.root.shapes);
+        expect(copy.root.children[0].shapes).toEqual(tree.root.children[0].shapes);
+        copy.root.shapes[0].brush = "yellow";
+        expect(reader.read<StoredTreeForTest>("drawn-source")!.state.root.shapes).toEqual(
+            tree.root.shapes,
+        );
+    },
+);
+
+test.each([null, 42, "", "e9", "xa1", "h8x"])(
+    "a present malformed drawing destination %j still refuses admission, flush and reload",
+    (dest) => {
+        const original = treeWithCircleAndArrow();
+        storage.seed("drawing-owner", original);
+        const bytes = sessionStorage.getItem("drawing-owner");
+        const invalid = structuredClone(original);
+        invalid.root.shapes = [{ orig: "a1", dest, brush: "green" }] as never;
+        expect(() => prepareTreeForStorage(invalid)).toThrow(
+            "Cannot persist an invalid game tree.",
+        );
+        expect(() => storage.seed("drawing-owner", invalid)).toThrow(
+            "Cannot persist an invalid game tree.",
+        );
+        storage.write("drawing-owner", { version: TREE_STORAGE_VERSION, state: invalid });
+        expect(storage.flush({ notify: true })).toEqual(["drawing-owner"]);
+        expect(sessionStorage.getItem("drawing-owner")).toBe(bytes);
+        const raw = serializeStorageValue({ version: TREE_STORAGE_VERSION, state: invalid });
+        sessionStorage.setItem("corrupt-drawings", raw);
+        expect(new TabStorageRepository().readTree("corrupt-drawings")).toEqual({
+            kind: "unreadable",
+            rawValue: raw,
+        });
+        expect(sessionStorage.getItem("corrupt-drawings")).toBe(raw);
+    },
+);
 
 test.each([
     { version: 2, attempts: [], selectedAttemptId: null },

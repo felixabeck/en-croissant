@@ -512,6 +512,61 @@ test("duplication durably clones the physical owner into an independent fresh ke
     expect(sessionStorage.getItem(duplicate!)).not.toBeNull();
 });
 
+test("migrated puzzle duplication shares the tree clone path and close preserves its independent session", () => {
+    const fixture = makeReplacementFixture({ ownerType: "puzzles" });
+    const source = fixture.ownerTreeStore;
+    source.getState().makeMove({ payload: "e4" });
+    expect(
+        source.getState().transitionPuzzleSession((draft) => {
+            const puzzle = {
+                id: 1,
+                fen: defaultTree().root.fen,
+                moves: ["e2e4", "e7e5"],
+                rating: 1200,
+                rating_deviation: 50,
+                popularity: 1,
+                nb_plays: 1,
+                completion: "incomplete" as const,
+            };
+            draft.puzzleSession = {
+                version: 1,
+                attempts: [{ attemptId: "selected-owner", puzzle }],
+                selectedAttemptId: "selected-owner",
+            };
+        }).success,
+    ).toBe(true);
+    source.getState().setComment("latest puzzle annotation");
+    const copyId = commitNewTab({
+        tab: fixture.owner,
+        setTabs: (tabs, active) => fixture.store.set(tabsAtom, tabs, active),
+        seed: (id) => tabStorage.cloneDurable(getTabTreeKey(fixture.owner), id),
+    })!;
+    replacementTabIds.add(copyId);
+    const copy = createTreeStore(copyId);
+    expect(copy.getState().puzzleSession).toEqual(source.getState().puzzleSession);
+    expect(copy.getState().currentNode().comment).toBe("latest puzzle annotation");
+    copy.getState().transitionPuzzleSession((draft) => {
+        draft.puzzleSession!.attempts[0].puzzle.completion = "incorrect";
+    });
+    expect(source.getState().puzzleSession!.attempts[0].puzzle.completion).toBe("incomplete");
+    sessionStorage.setItem(`${fixture.owner.value}-puzzles`, "[]");
+    const unrelatedBytes = sessionStorage.getItem(fixture.second.value);
+    const previous = sessionStorage.getItem(fixture.owner.value);
+    const refuse = refuseWorkspaceWrites();
+    expect(fixture.store.set(closeWorkspaceTabAtom, fixture.owner.value)).toBe(false);
+    expect(sessionStorage.getItem(fixture.owner.value)).toBe(previous);
+    expect(sessionStorage.getItem(`${fixture.owner.value}-puzzles`)).toBe("[]");
+    refuse.mockRestore();
+    expect(fixture.store.set(closeWorkspaceTabAtom, fixture.owner.value)).toBe(true);
+    closeTreeStore(fixture.owner.value);
+    tabStorage.flush();
+    expect(sessionStorage.getItem(fixture.owner.value)).toBeNull();
+    expect(sessionStorage.getItem(`${fixture.owner.value}-puzzles`)).toBeNull();
+    expect(sessionStorage.getItem(copyId)).not.toBeNull();
+    expect(copy.getState().puzzleSession!.attempts[0].puzzle.completion).toBe("incorrect");
+    expect(sessionStorage.getItem(fixture.second.value)).toBe(unrelatedBytes);
+});
+
 test.each(["transient-read", "missing-reference"] as const)(
     "duplication retains the %s hydration gate until explicit recovery",
     async (scenario) => {

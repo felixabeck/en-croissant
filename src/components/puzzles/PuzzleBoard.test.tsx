@@ -145,7 +145,11 @@ test.each([false, true])(
   async (jump) => {
     const { store, changeCompletion, generatePuzzle } = await renderBoard(["e2e4"], jump);
     await act(async () => mocks.afterMove!("e2", "e4"));
-    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct", expect.any(Function));
+    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith(
+      "correct",
+      expect.any(Function),
+      expect.any(Function),
+    );
     expect(store.getState().position).toEqual([0]);
     expect(mocks.playSound).toHaveBeenCalledOnce();
     expect(generatePuzzle).toHaveBeenCalledTimes(jump ? 1 : 0);
@@ -158,7 +162,11 @@ test("PuzzleBoard records a wrong move without moving the cursor and marks incor
   await act(async () => mocks.afterMove!("d2", "d4"));
   expect(store.getState().position).toEqual([]);
   expect(store.getState().root.children[0].san).toBe("d4");
-  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect", expect.any(Function));
+  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith(
+    "incorrect",
+    expect.any(Function),
+    expect.any(Function),
+  );
   await act(async () => mocks.afterMove!("d2", "d4"));
   expect(changeCompletion).toHaveBeenCalledOnce();
   expect(mocks.notify).not.toHaveBeenCalled();
