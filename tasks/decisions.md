@@ -7910,3 +7910,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Root measured the permission group at 12.63 seconds, the two tail matrices at 6.04 seconds, and the copy test at 10.12 seconds. BoundedHook consumes its notification once but currently waits five seconds on every later invocation. Independent matrix cases can use normal test parallelism. Reversal path: regroup test entry points or restore repeated barriers if a future scenario explicitly owns several release signals.
 * **Decided by:** Codex, full auto, co-located pickup · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"cbf486d5a5419b35ac8b08f9eb85808d2a6243cfc62c7dd84606673594346069","input_sha256":"13ee9d8b019569c2125a34bee2d05fe11830e3336058937e6067d2f99280c129","kind":"mutation-receipt","operation":"4a31dc20436c1b5ff865629d12f60f51f733139ef940c88797b181dd968d97f4","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-13"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-14 — Does a failed post-import reload replace a committed import result?
+
+* **Question:** Does a failed post-import reload replace a committed import result?
+* **Governs:** f-20261001-19
+* **Chosen:** Preserve the committed result, close the new-import modal normally, report the real reload failure once through existing renderer-safe notifications, and retain the existing library retry action. Failed or cancelled conversions retain their original cause and current notification ownership.
+* **Rejected:** Rejecting a successful conversion solely because the later reload fails, which leaves a populated modal available for duplicate submission. Also rejected adding a second reload/notification implementation or new product copy for the same existing error.
+* **Reason:** The adopted O3 and d-20261015-11 make the actual transaction result authoritative. Error-handling review found the helper violated that outcome for a successful import. Reversal path: change the shared helper and its committed-success regression if product intent later explicitly makes successful import completion depend on a library reload.
+* **Decided by:** Codex, full auto, push review C1 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f41c1fd9a9227eb23fdcdd59c3bf7c92ac40a8eda527123dddcefd81f578c7bc","input_sha256":"2924941dc5902343aa8c281526b30f8e141979ac38b7097a70bfc617959d5d02","kind":"mutation-receipt","operation":"cdc97be43806516fbfa9667191940212a235256f158f76a9173c2a162fc40744","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-14"],"target":"decisions-ledger","v":1} -->
