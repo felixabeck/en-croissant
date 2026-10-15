@@ -530,18 +530,38 @@ async function invokeJsonAndWait(session, label, globalName, invokeExpression) {
   }
 }
 
-// Conversion assertion staging inventory. Documented failure exit is 1 through check().
-// These assertions are UNSTAGED until the root records real application runs and exit statuses.
-// CC0: replace only verify-conversion-seed.pgn in the disposable profile before seed import
-// with a two-game PGN. CC1: use a disposable producer with the ticket-claim source hunk reverted.
-// CC2: use that producer for reserved/running/queued requests, keeping this verifier unchanged.
-// CC3: in a disposable producer, pass an independent uncancelled token from convert_pgn_command_core
-// to the worker so cancellation cannot roll back its import. CC4: use a disposable producer that
-// refuses ticketed imports after claim, so the unticketed seed still succeeds and retry rejects.
-// CC5: use a disposable producer that retains the completed conversion lease.
-// All source/binary mutations belong to isolated scratch builds, never the installed binary.
-// The root must record each distinct FAIL CC0..CC5 and observed exit 1, restore input/binary,
-// then record exit 0. Unit tests below this adapter do not constitute native assertion staging.
+// Conversion assertion staging receipts. Root observed these native application runs.
+// Negative evidence base: /tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635/
+// native-fault.log, native-seed.log, native-setup.log and corresponding native-fault.actual-exit, native-seed.actual-exit, native-setup.actual-exit.
+// Disposable fault producer based on a98d07e5 changed only operations.rs cancel_conversion to return Ok(true).
+// A disposable PGN with 100 valid games let ignored cancellation settle within the existing budget.
+// CC0 passed. Actual exit 1 with these direct failures:
+// FAIL CC1 prepared conversion cancellation returns typed Cancellation before claim (outcome undefined).
+// FAIL CC2 native progress triggers running and same-target queued ticket cancellation (both succeeded despite [true, true] acknowledgements).
+// FAIL CC3 cancelled native imports preserve existing content and DataRevision (count/revision 1/1 became 202/4).
+// FAIL CC4 a fresh conversion ticket retries successfully after cancellation (count/revision reached 203/5).
+// FAIL CC5 settled native conversion tickets are retired (completed ticket remained active).
+// Seed probe restored the correct producer, changed only the disposable seed PGN to two games and saved its original bytes.
+// Actual exit 1: FAIL CC0 conversion fixture seeds exactly one native game (count 2, revision 1).
+// CC1-CC5 were dependent failures, not direct receipts. An unrelated freshness timing miss under load was not changed or used for staging.
+// Setup probe used the correct producer and a disposable preexisting database at the harness target path. No live or production database was edited.
+// Actual exit 1, setup refusal separate from assertions:
+// FAIL CC0 conversion setup unavailable: Conflict: database filename already exists
+// FAIL CC1 conversion setup unavailable: Conflict: database filename already exists
+// FAIL CC2 conversion setup unavailable: Conflict: database filename already exists
+// FAIL CC3 conversion setup unavailable: Conflict: database filename already exists
+// FAIL CC4 conversion setup unavailable: Conflict: database filename already exists
+// FAIL CC5 conversion setup unavailable: Conflict: database filename already exists
+// Original fixture bytes were saved, then all three disposable negative profiles were deleted after process shutdown.
+// Producer source was restored clean and rebuilt successfully, and the owned staging worktree was removed through kit.
+// The positive run used fresh unmodified inputs produced by the unchanged harness.
+// Root final proof ran the unchanged verifier after C1 repair on base HEAD 09e4afb4 plus the C1 source patch.
+// The completion record was polled and validated with status 0:
+// /home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-943062b9-1e23-42b1-83a0-e262a3eac635/gate-native-final.0qolvr/completion.record
+// pnpm build ran, then pnpm verify:app --screenshot /tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635/verify-ui/final.png.
+// CC0-CC5 and the full verifier passed with observed exit 0.
+// Its /tmp/chessfable-verify-nedV5q profile was absent after completion. This is local runtime proof, not Windows or macOS proof.
+// Expanded root receipts: tasks/handoffs/2026-10-15-local-pgn-cancellation-execution.md
 export async function verifyConversionCancellationContract({
   invoke,
   cancelledPair,

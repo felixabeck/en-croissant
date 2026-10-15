@@ -701,18 +701,21 @@ test("database-files: concurrent conversions render their own live progress coun
     const secondRow = page.getByText("Convert: second.pgn", { exact: true }).locator("../..");
     await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
-    await secondRow.scrollIntoViewIfNeeded();
-    await expect(secondRow).toBeInViewport();
     // Client navigation preserves the fixture session and the app-owned conversion registry.
     await page.getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("link", { name: "Library", exact: true }).click();
     await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
+    await secondRow.scrollIntoViewIfNeeded();
+    await expect(secondRow).toBeInViewport();
+    const cancel = firstRow.getByRole("button", { name: "Cancel: first.pgn", exact: true });
+    await expect(cancel).toBeInViewport();
+    await page.mouse.move(400, 40);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await assertNoHorizontalOverflow();
     await assertAccessible();
     await capture("conversion-active");
     await expect(page).toHaveScreenshot("conversion-active.png", { fullPage: true });
-    const cancel = firstRow.getByRole("button", { name: "Cancel: first.pgn", exact: true });
     await cancel.click();
     await expect(cancel).toBeDisabled();
     await expect(
