@@ -2,15 +2,24 @@ import type { DrawShape } from "@lichess-org/chessground/draw";
 import { isNormal, type Move, parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
 import { makeSan, parseSan } from "chessops/san";
-import { type Draft, produce } from "immer";
+import { type Draft, freeze, produce } from "immer";
 import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist, type PersistStorage } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
-import i18n from "@/i18n";
-import { tabStorage, TREE_STORAGE_VERSION, type TabTreeStorageStatus } from "./tabStorage";
+import {
+    prepareTreeForStorage,
+    persistStorageWriteError,
+    tabStorage,
+    TREE_STORAGE_VERSION,
+    type TabTreeStorageStatus,
+} from "./tabStorage";
+import { boundPuzzleSession } from "@/state/puzzleSession";
+import { reportPersistError } from "@/state/persistError";
 import { ANNOTATION_INFO, type Annotation, nagGlyph } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
-import { parseSanOrUci, positionFromFen, translateChessopsError } from "@/utils/chessops";
+import { positionFromFen } from "@/utils/chessops";
+import { validateMoveSequence, type MoveSequenceResult } from "@/utils/puzzles";
+export { validateMoveSequence, type MoveSequenceResult } from "@/utils/puzzles";
 import { isPrefix } from "@/utils/misc";
 import { getAnnotation } from "@/utils/score";
 import { playSound } from "@/utils/sound";
@@ -29,38 +38,13 @@ import {
     normalizeTreeHalfMoves,
 } from "@/utils/treeReducer";
 
-export type MoveSequenceResult =
-    | { success: true; moves: Move[] }
-    | { success: false; error: Error };
-
-export function validateMoveSequence(fen: string, payload: string[]): MoveSequenceResult {
-    const [pos, positionError] = positionFromFen(fen);
-    if (!pos) {
-        return {
-            success: false,
-            error: new Error(
-                i18n.t("Board.Analysis.InvalidPosition", {
-                    error: translateChessopsError(i18n.t, positionError),
-                }),
-            ),
-        };
-    }
-    const moves: Move[] = [];
-    for (const [index, token] of payload.entries()) {
-        const move = parseSanOrUci(pos, token);
-        if (!move) {
-            return {
-                success: false,
-                error: new Error(`${i18n.t("MoveInput.InvalidMove")} (${index + 1})`),
-            };
-        }
-        pos.play(move);
-        moves.push(move);
-    }
-    return { success: true, moves };
-}
-
 export interface TreeStoreState extends TreeState {
+    /** Refresh after an operation's own transition, combine with its live-position/token guard. */
+    capturePuzzleSessionOwner: () => () => boolean;
+    /** Builds from the latest live frame and publishes only after durable admission. */
+    transitionPuzzleSession: (
+        update: (draft: Draft<TreeState>) => void,
+    ) => PuzzleSessionTransitionResult;
     currentNode: () => TreeNode;
     getNode: (path: number[]) => TreeNode | null;
 
@@ -136,6 +120,10 @@ export interface TreeStoreState extends TreeState {
     setAppendAttempted: (value: boolean) => void;
 }
 
+export type PuzzleSessionTransitionResult =
+    | { success: true; persistence: "saved" | "memory" }
+    | { success: false; error: Error };
+
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
 const installAdmittedTree = Symbol("installAdmittedTree");
 type PersistedTreeStore = TreeStore & {
@@ -150,6 +138,13 @@ type PersistedTreeStore = TreeStore & {
 const reportOwners = new Map<string, object>();
 const treeStores = new Map<string, PersistedTreeStore>();
 const closingReportOwners = new Map<string, ReportOwnerInvalidation>();
+
+function prepareAdmittedStateInstallation(
+    install: StoreApi<TreeStoreState>["setState"],
+    state: Partial<TreeStoreState>,
+): () => void {
+    return () => install(state);
+}
 
 export function getCachedTreeStore(tab: string): TreeStore | undefined {
     return treeStores.get(tab);
@@ -166,10 +161,11 @@ export function prepareTreeStoreRetarget(
         name: treeKey,
         storage: tabStorage.storageFor<TreeStoreState>(treeKey !== tab),
     };
-    const state = { ...tree, practicePath: null };
+    const state = { puzzleSession: undefined, ...tree, practicePath: null };
+    const install = prepareAdmittedStateInstallation(store[installAdmittedTree], state);
     return () => {
         store.persist.setOptions(options);
-        store[installAdmittedTree](state);
+        install();
     };
 }
 
@@ -301,8 +297,39 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
         if (existing) return existing;
     }
     const initialTree = initTree ?? defaultTree();
+    let install!: StoreApi<TreeStoreState>["setState"];
+    let isCurrent = () => true;
+    let persistenceKey = () => treeKey;
     const stateCreator: StateCreator<TreeStoreState> = (set, get) => ({
         ...initialTree,
+
+        capturePuzzleSessionOwner: () => {
+            const key = persistenceKey();
+            const session = get().puzzleSession;
+            return () => isCurrent() && persistenceKey() === key && get().puzzleSession === session;
+        },
+
+        transitionPuzzleSession: (update) => {
+            let candidate: TreeStoreState;
+            try {
+                if (!isCurrent()) throw new Error("The puzzle tree owner has retired.");
+                candidate = produce(get(), (draft) => {
+                    update(draft);
+                    if (draft.puzzleSession)
+                        draft.puzzleSession = boundPuzzleSession(draft.puzzleSession);
+                });
+                candidate = freeze({ ...candidate, ...prepareTreeForStorage(candidate) }, true);
+                if (id) tabStorage.seed(persistenceKey()!, candidate);
+            } catch (cause) {
+                const error = persistStorageWriteError(cause);
+                reportPersistError(error);
+                return { success: false, error };
+            }
+            // Subscriber failures occur after installation. They must not be reported as a
+            // refused save or invite a retry of a transition that is already durable.
+            prepareAdmittedStateInstallation(install, candidate)();
+            return { success: true, persistence: id ? "saved" : "memory" };
+        },
 
         currentNode: () => getNodeAtPath(get().root, get().position),
         getNode: (path: number[]) => getNodeAtPath(get().root, path),
@@ -311,12 +338,12 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
         setPracticePath: (path) => set({ practicePath: path }),
 
         setState: (state) => {
-            set(() => ({ ...state, practicePath: null }));
+            set(() => ({ puzzleSession: undefined, ...state, practicePath: null }));
         },
 
         reset: () =>
             set(() => {
-                return { ...defaultTree(), practicePath: null };
+                return { ...defaultTree(), puzzleSession: undefined, practicePath: null };
             }),
 
         save: (stamp) => {
@@ -738,7 +765,6 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
     });
 
     if (id) {
-        let install!: StoreApi<TreeStoreState>["setState"];
         const persistedCreator = persist(stateCreator, {
             name: treeKey!,
             version: TREE_STORAGE_VERSION,
@@ -767,10 +793,13 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
             dispose: () => undefined,
         });
         treeStores.set(id, ownedStore);
+        isCurrent = () => treeStores.get(id) === ownedStore;
+        persistenceKey = () => ownedStore.persist.getOptions().name;
         return ownedStore;
     }
 
     const store = createStore<TreeStoreState>()(stateCreator);
+    install = store.setState;
     return Object.assign(store, {
         dispose: () => undefined,
     });

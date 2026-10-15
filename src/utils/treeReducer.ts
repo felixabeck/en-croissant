@@ -2,6 +2,7 @@ import type { DrawShape } from "@lichess-org/chessground/draw";
 import type { Move } from "chessops";
 import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Outcome, Score } from "@/bindings";
+import type { PuzzleSession } from "@/state/puzzleSession";
 
 export interface TreeState {
     root: TreeNode;
@@ -11,6 +12,7 @@ export interface TreeState {
     sourceStamp: string | null;
     appendAttempted: boolean;
     report: ReportState;
+    puzzleSession?: PuzzleSession;
 }
 
 type BoardStateMap = Record<string, { node: TreeNode; path: number[] }[]>;

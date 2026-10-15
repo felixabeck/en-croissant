@@ -26,8 +26,188 @@ import {
 } from "./tree";
 import { tabStorage } from "./tabStorage";
 import { serializeStorageValue } from "./debouncedStorage";
+import { emptyPuzzleSession } from "@/state/puzzleSession";
 
 const persistedIds: string[] = [];
+
+test("session transition saves the latest accepted tree before publication and bypasses mutable actions", () => {
+    const id = crypto.randomUUID();
+    persistedIds.push(id);
+    const store = createTreeStore(id);
+    store.getState().makeMoves({ payload: ["e4", "e5"] });
+    store.getState().setComment("played annotation");
+    const before = store.getState();
+    vi.spyOn(before, "setState").mockImplementation(() => {
+        throw new Error("must bypass action");
+    });
+    const observed: unknown[] = [];
+    const unsubscribe = store.subscribe((state) => {
+        observed.push(tabStorage.read(id)?.state);
+        expect(sessionStorage.getItem(id)).not.toBeNull();
+        expect(state.puzzleSession).toEqual(emptyPuzzleSession());
+    });
+    expect(
+        before.transitionPuzzleSession((draft) => {
+            draft.puzzleSession = emptyPuzzleSession();
+        }),
+    ).toEqual({ success: true, persistence: "saved" });
+    unsubscribe();
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ position: [0, 0], puzzleSession: emptyPuzzleSession() });
+    expect(store.getState().currentNode().comment).toBe("played annotation");
+    expect(before.puzzleSession).toBeUndefined();
+    expect(tabStorage.pendingCount()).toBe(0);
+    expect(Object.isFrozen(store.getState().puzzleSession)).toBe(true);
+    store.getState().goToPrevious();
+    expect(tabStorage.flush()).toEqual([]);
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        position: [0],
+        puzzleSession: emptyPuzzleSession(),
+    });
+});
+
+test("refused session completion preserves accepted moves, live identity and saved bytes until retry", () => {
+    const id = crypto.randomUUID();
+    persistedIds.push(id);
+    const store = createTreeStore(id);
+    store.getState().transitionPuzzleSession((draft) => {
+        draft.puzzleSession = emptyPuzzleSession();
+    });
+    const bytes = sessionStorage.getItem(id);
+    store.getState().makeMoves({ payload: ["e4", "e5"] });
+    const before = store.getState();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("full", "QuotaExceededError");
+    });
+    const result = before.transitionPuzzleSession((draft) => {
+        draft.puzzleSession!.selectedAttemptId = "unresolved";
+        draft.headers.event = "completion candidate";
+    });
+    expect(result).toMatchObject({ success: false });
+    expect(store.getState()).toBe(before);
+    expect(store.getState().position).toEqual([0, 0]);
+    expect(sessionStorage.getItem(id)).toBe(bytes);
+    expect(tabStorage.pendingCount()).toBe(1);
+    setItem.mockRestore();
+    expect(
+        before.transitionPuzzleSession((draft) => {
+            draft.puzzleSession!.selectedAttemptId = "unresolved";
+        }),
+    ).toEqual({ success: true, persistence: "saved" });
+    expect(before.puzzleSession!.selectedAttemptId).toBeNull();
+    expect(tabStorage.pendingCount()).toBe(0);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        position: [0, 0],
+        puzzleSession: { selectedAttemptId: "unresolved" },
+    });
+});
+
+test("memory provider transitions validate and publish without browser persistence", () => {
+    const store = createTreeStore();
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const before = store.getState();
+    expect(
+        before.transitionPuzzleSession((draft) => {
+            draft.puzzleSession = emptyPuzzleSession();
+            draft.root.comment = "memory";
+        }),
+    ).toEqual({ success: true, persistence: "memory" });
+    expect(store.getState().root.comment).toBe("memory");
+    expect(before.root.comment).toBe("");
+    expect(setItem).not.toHaveBeenCalled();
+    const installed = store.getState();
+    expect(
+        installed.transitionPuzzleSession((draft) => {
+            draft.root.clock = Infinity;
+        }),
+    ).toEqual({ success: false, error: new Error("Cannot persist an invalid game tree.") });
+    expect(store.getState()).toBe(installed);
+    setItem.mockRestore();
+});
+
+test("session transition bounds incoming history before saving and protects selected attempt", () => {
+    const id = crypto.randomUUID();
+    persistedIds.push(id);
+    const store = createTreeStore(id);
+    const puzzle = {
+        id: 1,
+        fen: INITIAL_FEN,
+        moves: ["e2e4"],
+        rating: 1500,
+        rating_deviation: 50,
+        popularity: 90,
+        nb_plays: 100,
+        completion: "incomplete" as const,
+    };
+    const result = store.getState().transitionPuzzleSession((draft) => {
+        draft.puzzleSession = {
+            version: 1,
+            attempts: Array.from({ length: 101 }, (_, i) => ({
+                attemptId: `attempt-${i}`,
+                puzzle,
+            })),
+            selectedAttemptId: "attempt-0",
+        };
+    });
+    expect(result).toEqual({ success: true, persistence: "saved" });
+    expect(store.getState().puzzleSession!.attempts).toHaveLength(100);
+    expect(
+        store
+            .getState()
+            .puzzleSession!.attempts.slice(0, 2)
+            .map((attempt) => attempt.attemptId),
+    ).toEqual(["attempt-0", "attempt-2"]);
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        puzzleSession: store.getState().puzzleSession,
+    });
+});
+
+test("tree replacement and reset clear an absent optional session instead of retaining a prior owner", () => {
+    const store = createTreeStore(undefined, {
+        ...defaultTree(),
+        puzzleSession: emptyPuzzleSession(),
+    });
+    store.getState().setState(defaultTree());
+    expect(store.getState().puzzleSession).toBeUndefined();
+    store.getState().transitionPuzzleSession((draft) => {
+        draft.puzzleSession = emptyPuzzleSession();
+    });
+    store.getState().reset();
+    expect(store.getState().puzzleSession).toBeUndefined();
+});
+
+test("session admission publishes the same canonical cursor that its saved tree restores", () => {
+    const id = crypto.randomUUID();
+    persistedIds.push(id);
+    const store = createTreeStore(id);
+    const result = store.getState().transitionPuzzleSession((draft) => {
+        draft.puzzleSession = emptyPuzzleSession();
+        draft.position = [9];
+        draft.headers.start = [9];
+    });
+    expect(result.success).toBe(true);
+    expect(store.getState().position).toEqual([]);
+    expect(store.getState().headers.start).toBeUndefined();
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        position: [],
+        puzzleSession: emptyPuzzleSession(),
+    });
+});
+
+test("retired session store cannot recreate removed storage", () => {
+    const id = crypto.randomUUID();
+    const store = createTreeStore(id);
+    closeTreeStore(id);
+    tabStorage.remove(id);
+    expect(
+        store.getState().transitionPuzzleSession((draft) => {
+            draft.puzzleSession = emptyPuzzleSession();
+        }),
+    ).toMatchObject({ success: false });
+    expect(sessionStorage.getItem(id)).toBeNull();
+    expect(tabStorage.pendingCount()).toBe(0);
+});
 beforeAll(async () => {
     await i18n.init({
         lng: "en-US",

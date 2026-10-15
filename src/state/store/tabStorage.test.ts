@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
+import { emptyPuzzleSession } from "@/state/puzzleSession";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
 import {
     canRehydrate,
@@ -81,6 +82,92 @@ function treeWithPaths(paths: {
 function persistTree(tabId: string, state: unknown) {
     sessionStorage.setItem(tabId, serializeStorageValue({ version: TREE_STORAGE_VERSION, state }));
 }
+
+test("durable seed supersedes only its own stale pending frame and survives unload", () => {
+    persistTree("session", defaultTree());
+    const old = treeWith((tree) => {
+        tree.root.comment = "old queued frame";
+    });
+    storage.write("session", { version: TREE_STORAGE_VERSION, state: old });
+    storage.write("other", { version: TREE_STORAGE_VERSION, state: old });
+    const candidate = treeWith((tree) => {
+        tree.puzzleSession = emptyPuzzleSession();
+        tree.root.comment = "admitted session";
+    });
+    storage.seed("session", candidate);
+    expect(storage.pendingCount()).toBe(1);
+    expect(storage.read("session")?.state).toMatchObject(candidate);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(storage.read("session")?.state).toMatchObject(candidate);
+    expect(storage.read("other")?.state).toMatchObject(old);
+});
+
+test("refused seed retains durable bytes and pending edits for retry", () => {
+    storage.seed("session", defaultTree());
+    const before = sessionStorage.getItem("session");
+    const pending = treeWith((tree) => {
+        tree.root.comment = "latest played tree";
+    });
+    storage.write("session", { version: TREE_STORAGE_VERSION, state: pending });
+    const candidate = { ...pending, puzzleSession: emptyPuzzleSession() };
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("full", "QuotaExceededError");
+    });
+    expect(() => storage.seed("session", candidate)).toThrow("session storage is full");
+    expect(sessionStorage.getItem("session")).toBe(before);
+    expect(storage.pendingCount()).toBe(1);
+    expect(storage.read("session")?.state).toMatchObject(pending);
+    setItem.mockRestore();
+    storage.seed("session", candidate);
+    expect(storage.pendingCount()).toBe(0);
+    expect(storage.read("session")?.state).toMatchObject(candidate);
+});
+
+test.each([false, true])("session survives %s durable cloning independently", (durable) => {
+    const source = treeWith((tree) => {
+        tree.puzzleSession = emptyPuzzleSession();
+    });
+    storage.seed("source-session", source);
+    const result = durable
+        ? storage.cloneDurable("source-session", "copy-session")
+        : storage.clone("source-session", "copy-session");
+    expect(result).toEqual(durable ? undefined : { kind: "copied" });
+    storage.flush();
+    const copy = storage.read<ReturnType<typeof defaultTree>>("copy-session")!.state;
+    expect(copy.puzzleSession).toEqual(source.puzzleSession);
+    expect(copy.puzzleSession).not.toBe(source.puzzleSession);
+    copy.puzzleSession!.selectedAttemptId = "unresolved";
+    expect(
+        storage.read<ReturnType<typeof defaultTree>>("source-session")!.state.puzzleSession!
+            .selectedAttemptId,
+    ).toBeNull();
+});
+
+test.each([
+    { version: 2, attempts: [], selectedAttemptId: null },
+    { version: 1, attempts: "broken", selectedAttemptId: null },
+    null,
+])(
+    "present invalid session preserves the complete original record through reads and writes: %j",
+    (puzzleSession) => {
+        const raw = serializeStorageValue({
+            version: TREE_STORAGE_VERSION,
+            state: { ...defaultTree(), puzzleSession },
+        });
+        sessionStorage.setItem("invalid-session", raw);
+        expect(storage.readTree("invalid-session")).toEqual({ kind: "unreadable", rawValue: raw });
+        storage.write("invalid-session", { state: defaultTree() });
+        expect(() => storage.seed("invalid-session", defaultTree())).toThrow(
+            "unreadable or unavailable",
+        );
+        expect(storage.clone("invalid-session", "copy")).toEqual({
+            kind: "unreadable",
+            rawValue: raw,
+        });
+        expect(storage.flush()).toEqual([]);
+        expect(sessionStorage.getItem("invalid-session")).toBe(raw);
+    },
+);
 
 function storeLegacyTree(tabId: string, state: unknown) {
     sessionStorage.setItem(tabId, JSON.stringify({ version: 0, state }));

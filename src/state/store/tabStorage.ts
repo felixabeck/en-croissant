@@ -1,8 +1,9 @@
 import { warnSafely } from "@/platform/errors";
 import { ANNOTATION_INFO, MAX_NAG } from "@/utils/annotation";
 import { reportPersistError } from "@/state/persistError";
+import { puzzleSessionSchema } from "@/state/puzzleSession";
 import { splitPgnComment } from "@/utils/pgnComment";
-import { getResolvedPathLength } from "@/utils/treeReducer";
+import { getResolvedPathLength, type TreeState } from "@/utils/treeReducer";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
@@ -186,6 +187,7 @@ function createPersistedTreeSchema() {
             operationId: z.string().nullable().optional(),
         }),
         practicePath: pathSchema.nullable().optional(),
+        puzzleSession: puzzleSessionSchema.optional(),
     });
 }
 
@@ -328,6 +330,13 @@ function parseTree(value: unknown): ValidatedStoredTree | null {
 /** The read gate as a predicate: whether this tree state would rehydrate if it were stored. */
 export function canRehydrate(state: unknown): boolean {
     return parseTree(state) !== null;
+}
+
+/** Admission installs the same canonical paths and fields that a fresh reader will restore. */
+export function prepareTreeForStorage(state: unknown): TreeState {
+    const value = parseTree(state);
+    if (!value) throw new Error("Cannot persist an invalid game tree.");
+    return value.state as TreeState;
 }
 
 export function createTabStorageQuotaError(cause: unknown): Error {
@@ -504,6 +513,8 @@ export class TabStorageRepository {
         }
         try {
             sessionStorage.setItem(tabId, serializeStorageValue(value));
+            // This complete durable frame supersedes every older debounced frame for this key.
+            this.pending.delete(tabId);
             this.setReadStatus(tabId, { kind: "available" });
         } catch (error) {
             throw persistStorageWriteError(error);

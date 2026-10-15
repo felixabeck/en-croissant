@@ -8,6 +8,7 @@ import {
 } from "@/utils/treeReducer";
 import { serializeStorageValue } from "./debouncedStorage";
 import { tabStorage, TREE_STORAGE_VERSION } from "./tabStorage";
+import { emptyPuzzleSession } from "@/state/puzzleSession";
 import {
     captureReportOwner,
     closeTreeStore,
@@ -19,6 +20,104 @@ import {
 } from "./tree";
 
 const ids: string[] = [];
+
+test("session selection B and played annotations restore together in a fresh store", () => {
+    const id = crypto.randomUUID();
+    ids.push(id);
+    const store = createTreeStore(id);
+    const puzzle = {
+        id: 1,
+        fen: defaultTree().root.fen,
+        moves: ["e2e4", "e7e5"],
+        rating: 1500,
+        rating_deviation: 50,
+        popularity: 90,
+        nb_plays: 100,
+        completion: "incomplete" as const,
+        timeSpent: 1200,
+    };
+    store.getState().makeMoves({ payload: ["e4", "e5"] });
+    store.getState().setComment("B played annotation");
+    expect(
+        store.getState().transitionPuzzleSession((draft) => {
+            draft.puzzleSession = {
+                version: 1,
+                attempts: [
+                    { attemptId: "a", puzzle },
+                    { attemptId: "b", puzzle },
+                ],
+                selectedAttemptId: "b",
+            };
+        }).success,
+    ).toBe(true);
+    const expected = store.getState();
+    closeTreeStore(id);
+    const restored = createTreeStore(id);
+    expect(restored).not.toBe(store);
+    expect(restored.getState().root).toEqual(expected.root);
+    expect(restored.getState()).toMatchObject({
+        position: [0, 0],
+        puzzleSession: expected.puzzleSession,
+    });
+    expect(restored.getState().currentNode().comment).toBe("B played annotation");
+    expect(restored.getState().puzzleSession!.selectedAttemptId).toBe("b");
+});
+
+test("session transition after retarget saves only the current physical generation", () => {
+    const logical = crypto.randomUUID();
+    const physical = crypto.randomUUID();
+    ids.push(logical, physical);
+    const store = createTreeStore(logical);
+    const ownsOriginal = store.getState().capturePuzzleSessionOwner();
+    const replacement = { ...defaultTree(), puzzleSession: emptyPuzzleSession() };
+    tabStorage.seed(physical, replacement);
+    retargetTreeStore(logical, physical, replacement);
+    expect(ownsOriginal()).toBe(false);
+    const ownsReplacement = store.getState().capturePuzzleSessionOwner();
+    expect(ownsReplacement()).toBe(true);
+    expect(
+        store.getState().transitionPuzzleSession((draft) => {
+            draft.root.comment = "physical session";
+        }).success,
+    ).toBe(true);
+    expect(sessionStorage.getItem(logical)).toBeNull();
+    expect(tabStorage.read(physical, true)?.state).toMatchObject({
+        root: { comment: "physical session" },
+        puzzleSession: emptyPuzzleSession(),
+    });
+    expect(ownsReplacement()).toBe(false);
+    const ownsCommitted = store.getState().capturePuzzleSessionOwner();
+    expect(ownsCommitted()).toBe(true);
+    closeTreeStore(logical);
+    expect(ownsCommitted()).toBe(false);
+});
+
+test("invalid session hydration gates the tree and preserves bytes until explicit discard", async () => {
+    const id = crypto.randomUUID();
+    ids.push(id);
+    const bytes = serializeStorageValue({
+        version: TREE_STORAGE_VERSION,
+        state: { ...defaultTree(), puzzleSession: { version: 99 } },
+    });
+    sessionStorage.setItem(id, bytes);
+    const store = createTreeStore(id);
+    const before = store.getState();
+    expect(tabStorage.getStatus(id)).toEqual({ kind: "unreadable", rawValue: bytes });
+    expect(
+        before.transitionPuzzleSession((draft) => {
+            draft.puzzleSession = emptyPuzzleSession();
+        }).success,
+    ).toBe(false);
+    expect(store.getState()).toBe(before);
+    expect(sessionStorage.getItem(id)).toBe(bytes);
+    expect(await retryTreeStoreStorage(id)).toEqual({ kind: "unreadable", rawValue: bytes });
+    expect(discardTreeStoreStorage(id)).toBe(true);
+    expect(
+        store.getState().transitionPuzzleSession((draft) => {
+            draft.puzzleSession = emptyPuzzleSession();
+        }).success,
+    ).toBe(true);
+});
 
 test("prepared retarget bypasses mutable actions and preserves the durable seed through subscriber failure", () => {
     const logical = crypto.randomUUID();

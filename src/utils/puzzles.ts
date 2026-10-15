@@ -3,23 +3,43 @@ import { type PuzzleDatabaseInfo, type PuzzleRootDescriptor } from "@/bindings";
 import { isNormal, parseUci, type Move, type NormalMove } from "chessops";
 import type { Chess } from "chessops/chess";
 import type { TreeStore } from "@/state/store/tree";
+import i18n from "@/i18n";
 import { uciNormalize } from "@/utils/chess";
-import { positionFromFen } from "@/utils/chessops";
+import { parseSanOrUci, positionFromFen, translateChessopsError } from "@/utils/chessops";
 import { getBoardState, type TreeNode, type TreeState } from "@/utils/treeReducer";
 
-export type Completion = "correct" | "incorrect" | "incomplete";
+import type { Puzzle } from "@/state/puzzleSession";
+export type { Completion, Puzzle } from "@/state/puzzleSession";
 
-export interface Puzzle {
-    id: number;
-    fen: string;
-    moves: string[];
-    rating: number;
-    rating_deviation: number;
-    popularity: number;
-    nb_plays: number;
-    completion: Completion;
-    timeSpent?: number;
-    themes?: string[];
+export type MoveSequenceResult =
+    | { success: true; moves: Move[] }
+    | { success: false; error: Error };
+
+export function validateMoveSequence(fen: string, payload: string[]): MoveSequenceResult {
+    const [pos, positionError] = positionFromFen(fen);
+    if (!pos) {
+        return {
+            success: false,
+            error: new Error(
+                i18n.t("Board.Analysis.InvalidPosition", {
+                    error: translateChessopsError(i18n.t, positionError),
+                }),
+            ),
+        };
+    }
+    const moves: Move[] = [];
+    for (const [index, token] of payload.entries()) {
+        const move = parseSanOrUci(pos, token);
+        if (!move) {
+            return {
+                success: false,
+                error: new Error(`${i18n.t("MoveInput.InvalidMove")} (${index + 1})`),
+            };
+        }
+        pos.play(move);
+        moves.push(move);
+    }
+    return { success: true, moves };
 }
 
 export function puzzleMoveMatches(
