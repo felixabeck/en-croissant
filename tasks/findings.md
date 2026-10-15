@@ -16019,6 +16019,8 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof required:** Real routed LocalSettings rejection shows the typed public error without changing the engine card or stored record, with owner/key replacement and successful recovery clearing the obsolete failure. Source-only fault of the error presentation must fail the visible-error assertion and restore green.
 * **Related:** f-20261001-17 owns ordinary engine publication in this component. This is a distinct pre-existing error surface, no common Root is asserted.
 * **Found by:** review-error-handling in cumulative diff round1 of the full interactive f-20261001-17 drain, confidence97, origin3afed0317. Root confirmed the data-only destructure, empty fallback and absence of a global SWR error handler. Same actual editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"8ae2dc5d21344641ec3396b4d6a29b00838fc4db0f15ba37882d31ce55dc4577","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-01"],"target":"f-20261015-01","v":1} -->
 
 ### Engine form exposes a newly picked binary before its configuration probe completes
 
