@@ -7950,3 +7950,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** old display metadata is not authoritative. Reversal path: evidence that a consumer uses stored size before native refresh, addressed at that consumer boundary.
 * **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"10188e2cb88f5d2046b85ea7656e0abd8d47f42ab715bcab9d29251de911bb3a","input_sha256":"521c29922c9ce7137d0af35a306a0a5d2c9977688a6c51561b775c4fa63c967c","kind":"mutation-receipt","operation":"3db2f93def7c36583a25a460870ff43cd4988e8424f72a914bae574492e2d58d","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-17"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-18 — Does the repeated Files metadata verification failure still qualify as a single unreproduced observation?
+
+* **Question:** Does the repeated Files metadata verification failure still qualify as a single unreproduced observation?
+* **Governs:** f-20261008-01, f-20261001-20
+* **Chosen:** Reopen the existing finding for its independent driver-versus-product investigation, retaining the separate fix-design scope. Complete the byte-count slice only after a whole unchanged corrected verifier and pixel suite pass.
+* **Rejected:** Leave the single-observation rejection standing, duplicate the finding, bypass the failing assertions, or guess a metadata/product repair from the failure alone.
+* **Reason:** The 2026-10-15 corrected native run independently reproduced the exact two checks and game sidecar after the earlier 2026-10-07/08 observation. This evidence was unavailable to the 2026-10-13 single-unreproduced-failure rejection. DS1 and DS2 passed and the byte-count change touches no Files metadata implementation. Full log is gate-verify-ui-final.6H0rIx/log under the execution handoff's gate directory. Reversal path: source and runtime evidence proving the observed failure is invalid or completing the focused investigation and repair, through the existing ledger writer.
+* **Decided by:** Codex, autonomously during full-auto verification · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2bf89753a51682c52e5f701e29eb2a0e4b749755a28032d422a68d72ce733fda","input_sha256":"0d2253c638a9aa0f2cbdda50fbf22134980ee5f54570c426c53c7de4ee64944d","kind":"mutation-receipt","operation":"48437f8621d4ac7c5a73c3a5616c3813e5cbdb4f9a4cfded0a725a39ebba081a","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-18"],"target":"decisions-ledger","v":1} -->
