@@ -1,9 +1,9 @@
 import { tauri } from "@/platform/tauri";
 import { Button, Input, NumberInput, Text, TextInput } from "@mantine/core";
 import type { UseFormReturnType } from "@mantine/form";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { type LocalEngine, requiredEngineSettingsDefaults } from "@/utils/engines";
 import { EngineAttachmentDraft } from "./engineAttachments";
 import type { EngineOwnerSaveReceipt } from "@/state/engineOwnerStorage";
@@ -25,35 +25,51 @@ export default function EngineForm({
   const { t } = useTranslation();
   const errorTitle = t("Common.Error");
 
-  const pickerGeneration = useRef({ value: 0 });
+  const operation = useRef({ active: true, busy: false });
+  const [busy, setBusy] = useState(false);
   const attachmentDraft = useRef(new EngineAttachmentDraft());
   useEffect(() => {
     const draft = new EngineAttachmentDraft();
-    const pickerState = pickerGeneration.current;
+    const owner = { active: true, busy: false };
+    operation.current = owner;
+    setBusy(false);
     attachmentDraft.current = draft;
     return () => {
-      pickerState.value++;
+      owner.active = false;
       void draft.close().catch((error) => notifyUnlessCancelled(errorTitle, error));
     };
   }, [errorTitle]);
 
+  async function runOwned(
+    run: (owner: { active: boolean; busy: boolean }, draft: EngineAttachmentDraft) => Promise<void>,
+    reportAfterClose = false,
+  ) {
+    const owner = operation.current;
+    if (!owner.active || owner.busy) return;
+    owner.busy = true;
+    setBusy(true);
+    try {
+      await run(owner, attachmentDraft.current);
+    } catch (error) {
+      if (owner.active || reportAfterClose) notifyUnlessCancelled(errorTitle, error);
+    } finally {
+      owner.busy = false;
+      if (owner.active) setBusy(false);
+    }
+  }
+
   return (
     <form
-      onSubmit={form.onSubmit(async (values) => {
-        const draft = attachmentDraft.current;
-        const generation = pickerGeneration.current.value;
-        const submittedAttachments = draft.submission();
-        try {
+      onSubmit={form.onSubmit((values) =>
+        runOwned(async (owner, draft) => {
+          const submittedAttachments = draft.submission();
           const receipt = await onSubmit({ ...values, loaded: true });
           if (receipt) {
             await draft.adopt(receipt, submittedAttachments);
-            if (receipt.saved && generation === pickerGeneration.current.value)
-              await onSaved?.(receipt);
+            if (receipt.saved && owner.active) await onSaved?.(receipt);
           }
-        } catch (error) {
-          notifyUnlessCancelled(errorTitle, error);
-        }
-      })}
+        }, true),
+      )}
     >
       <FileInput
         label={t("Engines.Add.BinaryFile")}
@@ -61,19 +77,20 @@ export default function EngineForm({
         filename={form.values.filename}
         error={form.errors?.filename}
         withAsterisk
+        disabled={busy}
         onClick={() => {
-          const generation = ++pickerGeneration.current.value;
-          void runUnlessCancelled(errorTitle, async () => {
+          void runOwned(async (owner) => {
             const handle = await tauri.issueEngineBinary();
-            if (generation !== pickerGeneration.current.value) return handle;
-            form.setFieldValue("handle", handle);
+            if (!owner.active) return;
             const config = await tauri.getEngineConfig(handle);
-            if (generation !== pickerGeneration.current.value) return handle;
+            if (!owner.active) return;
             const settings = requiredEngineSettingsDefaults(config);
-            form.setFieldValue("filename", config.name || "Engine");
-            form.setFieldValue("name", config.name);
-            form.setFieldValue("settings", settings);
-            return handle;
+            form.setValues({
+              handle,
+              filename: config.name || "Engine",
+              name: config.name,
+              settings,
+            });
           });
         }}
       />
@@ -83,12 +100,14 @@ export default function EngineForm({
         placeholder={t("Engines.Add.Name.Autodetect")}
         withAsterisk
         {...form.getInputProps("name")}
+        disabled={busy}
       />
 
       <NumberInput
         label={t("Engines.Add.Elo")}
         placeholder={t("Engines.Add.Elo.Desc")}
         {...form.getInputProps("elo")}
+        disabled={busy}
       />
 
       <Input.Wrapper
@@ -98,12 +117,15 @@ export default function EngineForm({
         <Input
           component="button"
           type="button"
+          disabled={busy}
           onClick={() => {
-            void runUnlessCancelled(errorTitle, async () => {
-              return attachmentDraft.current.issue(
+            void runOwned(async (owner, draft) => {
+              await draft.issue(
                 "image",
                 () => tauri.issueEngineImage(),
-                (imageHandle) => form.setFieldValue("imageHandle", imageHandle),
+                (imageHandle, isCurrent) => {
+                  if (owner.active && isCurrent()) form.setFieldValue("imageHandle", imageHandle);
+                },
               );
             });
           }}
@@ -114,7 +136,7 @@ export default function EngineForm({
         </Input>
       </Input.Wrapper>
 
-      <Button fullWidth mt="xl" type="submit">
+      <Button fullWidth mt="xl" type="submit" disabled={busy}>
         {submitLabel}
       </Button>
     </form>

@@ -935,7 +935,7 @@ export const createFirstEngineWithLinesAtom = (tab: string, fen: string, gameMov
 export const tabEngineSettingsFamily = atomFamily(
     ({
         tab: _tab,
-        engineId: _engineId,
+        engineId,
         defaultSettings,
         defaultGo,
     }: {
@@ -944,17 +944,35 @@ export const tabEngineSettingsFamily = atomFamily(
         defaultSettings?: EngineSettings;
         defaultGo?: GoMode;
     }) => {
-        return atom<{
+        type Settings = {
             enabled: boolean;
             settings: EngineSettings;
             go: GoMode;
             synced: boolean;
-        }>({
+        };
+        const local = atom<Settings>({
             enabled: false,
             settings: defaultSettings || [],
             go: defaultGo || { t: "Infinite" },
             synced: true,
         });
+        const effective = atom(
+            (get) => {
+                const settings = get(local);
+                if (!settings.synced) return settings;
+                const engine = get(enginesAtom)?.find((item) => item.id === engineId);
+                if (!engine) return settings;
+                return {
+                    ...settings,
+                    settings: engine.settings ?? [],
+                    go: engine.go ?? { t: "Infinite" as const },
+                };
+            },
+            (get, set, update: Settings | ((current: Settings) => Settings)) => {
+                set(local, typeof update === "function" ? update(get(effective)) : update);
+            },
+        );
+        return effective;
     },
     (a, b) => a.tab === b.tab && a.engineId === b.engineId,
 );

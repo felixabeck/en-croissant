@@ -53,8 +53,24 @@ test("draft acknowledgements retain only newest input and failure cannot poison 
     expect(draft.display(engine)).toEqual(engine);
     const pendingId = draft.accept(old);
     draft.close();
+    expect(draft.accept(version)).toBeNull();
     expect(draft.settle(old, pendingId)).toBe(false);
     expect(draft.display(engine)).toEqual(engine);
+});
+
+test("named resource intents preserve their type and removal composes with independent go", () => {
+    const resource = { type: "resource" as const, name: "Book", resources: [] };
+    const changed = applyEngineEdit(engine, { kind: "option", name: "Book", value: resource });
+    const searching = applyEngineEdit(changed, {
+        kind: "field",
+        field: "go",
+        value: { t: "Depth", c: 12 },
+    });
+    expect(searching.settings).toEqual([...engine.settings!, resource]);
+    const removed = applyEngineEdit(searching, { kind: "option", name: "Book", value: null });
+    expect(removed.settings).toEqual(engine.settings);
+    expect(removed.go).toEqual({ t: "Depth", c: 12 });
+    expect(engine.go).toBeUndefined();
 });
 
 test("newest Hash intent after Reset displays in acceptance order while earlier saves are pending", () => {

@@ -18,6 +18,57 @@ import {
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
 const germanListingCopy = germanCatalogue.translation;
 
+test("engine editor: current configuration error at 320px and 200% German", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.addInitScript(() => {
+        localStorage.setItem("font-size", "200");
+        localStorage.setItem("i18nextLng", "de-DE");
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "local",
+                    id: "config-failure-narrow",
+                    name: "Gespeicherte Engine",
+                    version: "18",
+                    filename: "stockfish",
+                    handle: { id: { id: "config-failure-binary" }, kind: "engine" },
+                    settings: [],
+                },
+            ]),
+        );
+    });
+    await mockScenario({
+        commands: {
+            file_exists: { result: true },
+            get_engine_config: {
+                error: {
+                    tag: "backend-error",
+                    category: "engine-timeout",
+                    message: "Engine configuration timed out.",
+                },
+            },
+        },
+    });
+    await page.goto("/engines?selected=0");
+    const name = page.getByRole("textbox", { name: "Name", exact: true });
+    await expect(name).toHaveValue("Gespeicherte Engine");
+    await expect(name).toBeEditable();
+    const failure = page.getByRole("alert");
+    await expect(failure).toContainText(germanListingCopy["Common.Error"]);
+    await expect(failure).toContainText("Engine configuration timed out.");
+    await failure.scrollIntoViewIfNeeded();
+    await assertNothingClipped(failure, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    await capture("engine-config-error-320-200-de");
+    await expect(failure).toHaveScreenshot("engine-config-error-320-200-de.png");
+});
+
 test("engine editor: refused cloud draft settles at 320px and 200% German", async ({
     page,
     mockScenario,

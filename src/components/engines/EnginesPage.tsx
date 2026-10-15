@@ -1,6 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import type { EngineOption, EngineResourceHandle } from "@/bindings";
 import {
+  Alert,
   Button,
   Center,
   Checkbox,
@@ -24,6 +25,7 @@ import {
 import { useToggle } from "@mantine/hooks";
 import AppModal from "../common/AppModal";
 import {
+  IconAlertCircle,
   IconCloud,
   IconCopy,
   IconCpu,
@@ -57,6 +59,7 @@ import {
   requiredEngineSettingsDefaults,
 } from "@/utils/engines";
 import { capabilityKey } from "@/utils/pathCapabilities";
+import { errorUnlessCancelled } from "@/platform/errors";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import GoModeInput from "../common/GoModeInput";
@@ -324,12 +327,13 @@ function EngineSettings({
       void draft.close().catch((error) => notifyUnlessCancelled(errorTitle, error));
     };
   }, [errorTitle, targetId]);
-  const { data: options } = useSWRImmutable(
+  const { data: options, error: configError } = useSWRImmutable(
     ["engine-config", capabilityKey(engine.handle)],
     async () => {
       return await tauri.getEngineConfig(engine.handle);
     },
   );
+  const configFailure = configError === undefined ? null : errorUnlessCancelled(configError);
 
   const saveAttachment = useCallback(
     async (
@@ -514,6 +518,11 @@ function EngineSettings({
         />
 
         <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
+        {configFailure && (
+          <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
+            {configFailure.message}
+          </Alert>
+        )}
         <SimpleGrid cols={2}>
           {completeOptions
             .filter((option: { type: string }) => option.type !== "check")
@@ -772,8 +781,10 @@ function JSONModal({
     >
       <JsonInput
         autosize
+        disabled={saving}
         value={value}
         onChange={(e) => {
+          if (submission.current.busy) return;
           setValue(e);
           setError(null);
         }}

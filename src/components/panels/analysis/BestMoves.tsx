@@ -25,19 +25,17 @@ import {
   IconTargetArrow,
 } from "@tabler/icons-react";
 import equal from "fast-deep-equal";
-import { useAtom, useAtomValue } from "jotai";
-import { memo, startTransition, useCallback, useEffect } from "react";
+import { useAtom, useAtomValue, useStore } from "jotai";
+import { memo, startTransition, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { BestMoves } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { mergeEngineOptions } from "@/components/engines/engineEditDraft";
+import { useEngineEditDraft } from "@/components/engines/engineEditDraft";
 import {
   currentDetachedEngineAtom,
   threatFamily,
   engineProgressFamily,
   engineRetryFamily,
-  enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
 import { swapMove, translateChessopsError } from "@/utils/chessops";
@@ -80,29 +78,36 @@ function BestMovesComponent({
   const ownerTabId = useOwnerTabId();
   const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
   const [, setRetry] = useAtom(engineRetryFamily({ engine: engine.id, tab: ownerTabId }));
-  const [, setEngines] = useAtom(enginesAtom);
-  const [settings, setSettings2] = useAtom(
-    tabEngineSettingsFamily({
-      engineId: engine.id,
-      defaultSettings: engine.settings ?? undefined,
-      defaultGo: engine.go ?? undefined,
-      tab: ownerTabId,
-    }),
-  );
+  const { displayed, readDisplayed, submit } = useEngineEditDraft(engine);
+  const store = useStore();
+  const settingsAtom = tabEngineSettingsFamily({
+    engineId: engine.id,
+    defaultSettings: engine.settings ?? undefined,
+    defaultGo: engine.go ?? undefined,
+    tab: ownerTabId,
+  });
+  const [committedSettings, setSettings2] = useAtom(settingsAtom);
 
-  useEffect(() => {
-    if (settings.synced) {
-      setSettings2((prev) => ({
-        ...prev,
-        go: engine.go || prev.go,
-        settings: engine.settings || prev.settings,
-      }));
-    }
-  }, [engine.settings, engine.go, settings.synced, setSettings2]);
+  const settings = committedSettings.synced
+    ? {
+        ...committedSettings,
+        settings: displayed.settings ?? [],
+        go: displayed.go ?? { t: "Infinite" as const },
+      }
+    : committedSettings;
 
   const setSettings = useCallback(
     (fn: (prev: Settings) => Settings) => {
-      const newSettings = fn(settings);
+      const pending = readDisplayed();
+      const current = store.get(settingsAtom);
+      const previous = current.synced
+        ? {
+            ...current,
+            settings: pending.settings ?? [],
+            go: pending.go ?? { t: "Infinite" as const },
+          }
+        : current;
+      const newSettings = fn(previous);
       if (!newSettings.synced) {
         setSettings2(newSettings);
         return;
@@ -112,35 +117,28 @@ function BestMovesComponent({
         enabled: newSettings.enabled,
         synced: newSettings.synced,
       }));
-      const syncing = !settings.synced;
+      const syncing = !previous.synced;
       const changedOptions = newSettings.settings.filter(
         (option) =>
           syncing ||
           !equal(
             option,
-            settings.settings.find((old) => old.name === option.name),
+            previous.settings.find((old) => old.name === option.name),
           ),
       );
-      const removedOptions = settings.settings
+      const removedOptions = previous.settings
         .filter((old) => !newSettings.settings.some((option) => option.name === old.name))
         .map((option) => option.name);
-      const goChanged = syncing || !equal(newSettings.go, settings.go);
-      if (!syncing && !goChanged && changedOptions.length === 0 && removedOptions.length === 0)
-        return;
-      void setEngines((current) =>
-        current.map((item) => {
-          if (item.id !== engine.id) return item;
-          return {
-            ...item,
-            settings: syncing
-              ? newSettings.settings
-              : mergeEngineOptions(item.settings ?? [], changedOptions, removedOptions),
-            ...(goChanged ? { go: newSettings.go } : {}),
-          };
-        }),
-      ).catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
+      const goChanged = syncing || !equal(newSettings.go, previous.go);
+      if (syncing) submit({ kind: "reset", settings: newSettings.settings });
+      else {
+        for (const option of changedOptions)
+          submit({ kind: "option", name: option.name, value: option });
+        for (const name of removedOptions) submit({ kind: "option", name, value: null });
+      }
+      if (goChanged) submit({ kind: "field", field: "go", value: newSettings.go });
     },
-    [engine, settings, setSettings2, setEngines, t],
+    [readDisplayed, settingsAtom, store, setSettings2, submit],
   );
 
   const [settingsOn, toggleSettingsOn] = useToggle();

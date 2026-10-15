@@ -8,7 +8,7 @@ import {
 import { getDefaultStore } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { SWRConfig } from "swr";
+import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n, { initializeI18n } from "@/i18n";
 import { Route } from "@/routes/engines";
@@ -19,6 +19,9 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 import type { Engine, LocalEngine } from "@/utils/engines";
 import EnginesPage from "./EnginesPage";
+import { MissingLocalEngineError, toPlayerConfig } from "@/components/boards/playerConfig";
+import { serializeStorageValue } from "@/state/store/debouncedStorage";
+import { capabilityKey } from "@/utils/pathCapabilities";
 
 const mocks = vi.hoisted(() => ({
   reconcile: vi.fn(),
@@ -26,7 +29,10 @@ const mocks = vi.hoisted(() => ({
   report: vi.fn(),
   image: vi.fn(),
   config: vi.fn(),
+  binary: vi.fn(),
+  notify: vi.fn(),
 }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.report }));
 vi.mock("@/platform/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/platform/tauri")>();
@@ -36,6 +42,7 @@ vi.mock("@/platform/tauri", async (importOriginal) => {
       ...actual.tauri,
       fileExists: vi.fn().mockResolvedValue(true),
       getEngineConfig: mocks.config,
+      issueEngineBinary: mocks.binary,
       reconcileEngineAttachments: mocks.reconcile,
       retireEngine: mocks.retire,
       issueEngineImage: mocks.image,
@@ -61,6 +68,11 @@ const store = getDefaultStore();
 let host: HTMLDivElement;
 let root: Root;
 let router: ReturnType<typeof createRouter>;
+let mutate: ReturnType<typeof useSWRConfig>["mutate"];
+function QueryOwner() {
+  mutate = useSWRConfig().mutate;
+  return null;
+}
 
 beforeEach(async () => {
   localStorage.clear();
@@ -104,6 +116,7 @@ async function mount(records: Engine[] = [engine, twin]) {
     root.render(
       <MantineProvider env="test">
         <SWRConfig value={{ provider: () => new Map(), shouldRetryOnError: false }}>
+          <QueryOwner />
           <RouterProvider router={router} />
         </SWRConfig>
       </MantineProvider>,
@@ -117,8 +130,10 @@ function button(label: string, scope: ParentNode = host) {
   if (!result) throw new Error(`missing button: ${label}`);
   return result!;
 }
-function input(label: string): HTMLInputElement {
-  const node = [...host.querySelectorAll("label")].find((node) => node.textContent === label);
+function input(label: string, scope: ParentNode = host): HTMLInputElement {
+  const node = [...scope.querySelectorAll("label")].find(
+    (node) => node.textContent?.replace(/\s*\*$/, "") === label,
+  );
   if (!node) throw new Error(`missing input label: ${label}`);
   return document.getElementById(node!.htmlFor) as HTMLInputElement;
 }
@@ -142,6 +157,262 @@ function refuseStorage() {
       return original.call(this, key, value);
     });
 }
+
+test("actual local Add creates one registration and immutable id from repeated submit during delayed persistence", async () => {
+  await mount([]);
+  mocks.binary.mockResolvedValue(engine.handle);
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>('button[aria-label="Add New"]')!.click(),
+  );
+  const dialog = document.querySelector('[role="dialog"]')!;
+  await act(async () => button("Local", dialog).click());
+  await act(async () =>
+    dialog.querySelector<HTMLButtonElement>("button.mantine-Input-input")!.click(),
+  );
+  await vi.waitFor(() => expect(input("Name", dialog).value).toBe("Stockfish"));
+  mocks.reconcile.mockClear();
+  let release!: () => void;
+  mocks.reconcile.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const form = dialog.querySelector("form")!;
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const pending = store.get(enginesAtom);
+  await act(async () => release());
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+  expect(pending).toEqual([]);
+  expect(store.get(enginesAtom)).toHaveLength(1);
+  expect(mocks.reconcile).toHaveBeenCalledTimes(2);
+  const saved = store.get(enginesAtom)![0];
+  expect(saved.id).toBeTruthy();
+  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+});
+
+test("actual local Add admits one repeated form submission and permits deliberate retry after refusal", async () => {
+  await mount([]);
+  mocks.binary.mockResolvedValue(engine.handle);
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>('button[aria-label="Add New"]')!.click(),
+  );
+  const dialog = document.querySelector('[role="dialog"]')!;
+  await act(async () => button("Local", dialog).click());
+  await act(async () =>
+    dialog.querySelector<HTMLButtonElement>("button.mantine-Input-input")!.click(),
+  );
+  await vi.waitFor(() => expect(input("Name", dialog).value).toBe("Stockfish"));
+  mocks.reconcile.mockClear();
+  let refuse!: (error: Error) => void;
+  mocks.reconcile.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        refuse = reject;
+      }),
+  );
+  const form = dialog.querySelector("form")!;
+  const submit = () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await act(async () => {
+    submit();
+    submit();
+  });
+  await vi.waitFor(() => expect(refuse).toBeTypeOf("function"));
+  const addDisabled = button("Add", form).disabled;
+  const nameDisabled = input("Name", dialog).disabled;
+  const pendingRecords = store.get(enginesAtom);
+  await act(async () => {
+    refuse(new Error("refused"));
+  });
+  await vi.waitFor(() => expect(button("Add", form).disabled).toBe(false));
+  expect(addDisabled).toBe(true);
+  expect(nameDisabled).toBe(true);
+  expect(pendingRecords).toEqual([]);
+  expect(mocks.reconcile).toHaveBeenCalledOnce();
+  expect(store.get(enginesAtom)).toEqual([]);
+  await act(async () => {
+    submit();
+    submit();
+  });
+  await vi.waitFor(() => expect(store.get(enginesAtom)).toHaveLength(1));
+  const saved = store.get(enginesAtom)![0];
+  expect(saved.id).toBeTruthy();
+  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+  expect(
+    mocks.reconcile.mock.calls.filter(([request]) => request.action === "prepare"),
+  ).toHaveLength(2);
+});
+
+test("successful routed removal persists before pending retirement and prevents player reuse", async () => {
+  await mount([engine]);
+  mocks.reconcile.mockClear();
+  let finish!: () => void;
+  let retirementFinished = false;
+  mocks.retire.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = () => {
+          retirementFinished = true;
+          resolve();
+        };
+      }),
+  );
+  expect(store.get(enginesAtom)).toEqual([engine]);
+  await act(async () => button("Remove").click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog).not.toBeNull();
+  await act(async () => button("Remove", dialog).click());
+  await vi.waitFor(() => expect(mocks.retire).toHaveBeenCalledOnce());
+  expect(mocks.retire).toHaveBeenCalledWith(engine.id);
+  expect(retirementFinished).toBe(false);
+  expect(store.get(enginesAtom)).toEqual([]);
+  expect(localStorage.getItem("engines")).toBe(serializeStorageValue([]));
+  expect(mocks.reconcile).toHaveBeenNthCalledWith(1, { action: "prepare", retained_ids: [] });
+  expect(mocks.reconcile).toHaveBeenNthCalledWith(2, {
+    action: "reconcile",
+    retained_ids: [],
+    abandoned_ids: [],
+    startup: false,
+  });
+  expect(() =>
+    toPlayerConfig({ type: "engine", engine, go: { t: "Depth", c: 1 } }, store.get(enginesAtom)),
+  ).toThrow(MissingLocalEngineError);
+  await act(async () => finish());
+  expect(mocks.retire).toHaveBeenCalledExactlyOnceWith(engine.id);
+});
+
+test("current handle configuration rejection is visible, metadata remains usable and recovery clears the error", async () => {
+  const failure = {
+    tag: "backend-error",
+    category: "engine-timeout",
+    message: "Engine configuration unavailable",
+    diagnostic: "Private native handshake trace",
+  };
+  mocks.config.mockRejectedValueOnce(failure);
+  await mount();
+  await vi.waitFor(() =>
+    expect(host.querySelector('[role="alert"]')?.textContent ?? "").toContain(failure.message),
+  );
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(i18n.t("Common.Error"));
+  expect(host.textContent).not.toContain(failure.diagnostic);
+  await type(input("Name"), "Metadata still usable");
+  await vi.waitFor(() => expect(store.get(enginesAtom)?.[0].name).toBe("Metadata still usable"));
+  await act(async () => {
+    await mutate(["engine-config", capabilityKey(engine.handle)]);
+  });
+  await vi.waitFor(() => expect(host.querySelector('[role="alert"]')).toBeNull());
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("a new selected handle clears the previous configuration error", async () => {
+  mocks.config.mockRejectedValueOnce({
+    tag: "backend-error",
+    category: "engine-timeout",
+    message: "Previous configuration unavailable",
+  });
+  const other = { ...twin, handle: { ...twin.handle, id: { id: "healthy-selection" } } };
+  await mount([engine, other]);
+  await vi.waitFor(() =>
+    expect(host.querySelector('[role="alert"]')?.textContent ?? "").toContain(
+      "Previous configuration unavailable",
+    ),
+  );
+  await act(async () => {
+    await router.navigate({ to: "/engines", search: { selected: 1 } });
+  });
+  await vi.waitFor(() => expect(mocks.config).toHaveBeenCalledWith(other.handle));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(input("Name").value).toBe(other.name);
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("a stale configuration rejection cannot follow a new handle selection", async () => {
+  let reject!: (error: Error) => void;
+  mocks.config.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, refuse) => {
+        reject = refuse;
+      }),
+  );
+  const other = { ...twin, handle: { ...twin.handle, id: { id: "different-binary" } } };
+  await mount([engine, other]);
+  await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+  await act(async () => {
+    await router.navigate({ to: "/engines", search: { selected: 1 } });
+  });
+  await vi.waitFor(() => expect(mocks.config).toHaveBeenCalledWith(other.handle));
+  await act(async () => reject(new Error("Obsolete configuration failure")));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.textContent).not.toContain("Obsolete configuration failure");
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("pending JSON submission disables raw editing and refusal retains its immutable submitted text", async () => {
+  await mount();
+  await act(async () => button("Edit JSON").click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  const textarea = dialog.querySelector("textarea")!;
+  const submitted = JSON.stringify({ ...engine, name: "Submitted JSON" });
+  await type(textarea, submitted);
+  let refuse!: (error: Error) => void;
+  mocks.reconcile.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        refuse = reject;
+      }),
+  );
+  await act(async () => button("Save", dialog).click());
+  await vi.waitFor(() => expect(refuse).toBeTypeOf("function"));
+  const inputDisabled = textarea.disabled;
+  const saveDisabled = button("Save", dialog).disabled;
+  const closeDisabled = dialog.querySelector<HTMLButtonElement>(
+    `button[aria-label="${i18n.t("Common.Close")}"]`,
+  )!.disabled;
+  await act(async () => refuse(new Error("JSON refused")));
+  await vi.waitFor(() => expect(textarea.disabled).toBe(false));
+  expect(inputDisabled).toBe(true);
+  expect(saveDisabled).toBe(true);
+  expect(closeDisabled).toBe(false);
+  expect(textarea.value).toBe(submitted);
+  expect(store.get(enginesAtom)).toEqual([engine, twin]);
+});
+
+test("an older delayed JSON Save cannot close a reopened editor or discard its new raw draft", async () => {
+  await mount();
+  await act(async () => button("Edit JSON").click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  await type(
+    dialog.querySelector("textarea")!,
+    JSON.stringify({ ...engine, name: "Older JSON save" }),
+  );
+  let release!: () => void;
+  mocks.reconcile.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await act(async () => button("Save", dialog).click());
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await act(async () =>
+    dialog
+      .querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t("Common.Close")}"]`)!
+      .click(),
+  );
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+  await act(async () => button("Edit JSON").click());
+  const reopened = document.querySelector('[role="dialog"]')!;
+  const draft = JSON.stringify({ ...engine, name: "New reopened draft" });
+  await type(reopened.querySelector("textarea")!, draft);
+  await act(async () => release());
+  await vi.waitFor(() => expect(store.get(enginesAtom)?.[0].name).toBe("Older JSON save"));
+  expect(document.querySelector('[role="dialog"]')).toBe(reopened);
+  expect(reopened.querySelector("textarea")!.value).toBe(draft);
+});
 
 test("routed rapid drafts stay responsive, failed name does not contaminate version, newest edit survives reload", async () => {
   await mount();

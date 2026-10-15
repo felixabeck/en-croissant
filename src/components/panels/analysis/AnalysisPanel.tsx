@@ -184,12 +184,9 @@ function AnalysisPanel() {
                   onDragEnd={({ destination, source }) => {
                     if (destination?.index === undefined) return;
                     startTransition(async () => {
-                      const reordered = reorderEngines(
-                        loadedEngines,
-                        source.index,
-                        destination!.index,
-                      );
-                      const order = reordered.map((engine) => engine.id);
+                      const order = loadedEngines.map((engine) => engine.id);
+                      const [moved] = order.splice(source.index, 1);
+                      order.splice(destination!.index, 0, moved);
                       setOptimisticOrder(order);
                       try {
                         await setEngines((current) => applyEngineOrder(current, order));
@@ -300,25 +297,6 @@ export function applyEngineOrder(engines: Engine[], order: string[]): Engine[] {
   ordered.push(...byId.values());
   let index = 0;
   return engines.map((engine) => (engine.loaded ? ordered[index++] : engine));
-}
-
-function reorderEngines(
-  engines: Engine[],
-  sourceIndex: number,
-  destinationIndex: number,
-): Engine[] {
-  const result = Array.from(engines);
-  const loaded = result.filter((e) => e.loaded);
-  const [removed] = loaded.splice(sourceIndex, 1);
-  loaded.splice(destinationIndex, 0, removed);
-
-  result.forEach((e, i) => {
-    if (e.loaded) {
-      result[i] = loaded.shift()!;
-    }
-  });
-
-  return result;
 }
 
 export function EngineSummary({

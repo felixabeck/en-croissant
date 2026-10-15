@@ -1,5 +1,52 @@
 import { expect, test, type MockScenario } from "./fixtures";
 
+test("accounts-puzzles-engines: current engine configuration failure keeps saved metadata usable", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.addInitScript(() => {
+        localStorage.setItem("font-size", "100");
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "local",
+                    id: "config-failure-desktop",
+                    name: "Saved engine",
+                    version: "18",
+                    filename: "stockfish",
+                    handle: { id: { id: "config-failure-binary" }, kind: "engine" },
+                    settings: [],
+                },
+            ]),
+        );
+    });
+    await mockScenario({
+        commands: {
+            file_exists: { result: true },
+            get_engine_config: {
+                error: {
+                    tag: "backend-error",
+                    category: "engine-timeout",
+                    message: "Engine configuration timed out.",
+                },
+            },
+        },
+    });
+    await page.goto("/engines?selected=0");
+    const failure = page.getByRole("alert");
+    await expect(failure).toContainText("Error");
+    await expect(failure).toContainText("Engine configuration timed out.");
+    await expect(page.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
+        "Saved engine",
+    );
+    await expect(page.getByRole("textbox", { name: "Name", exact: true })).toBeEditable();
+    await failure.scrollIntoViewIfNeeded();
+    await capture("engine-config-error-desktop");
+    await expect(page).toHaveScreenshot("engine-config-error-desktop.png", { fullPage: true });
+});
+
 const summaryLichessDatabase = {
     handle: { id: { id: "summary-lichess" }, kind: "database" },
     filename: "alex_lichess.db3",

@@ -31,7 +31,7 @@ vi.mock("@hello-pangea/dnd", () => ({
     children({ innerRef: () => undefined, draggableProps: {}, dragHandleProps: {} }),
 }));
 vi.mock("./BestMoves", () => ({
-  default: () => null,
+  default: ({ engine }: any) => <span data-engine-id={engine.id} />,
   arrowColors: [{ strong: "blue" }, { strong: "green" }],
 }));
 
@@ -62,7 +62,10 @@ test("real-store drag intent cannot resurrect a queued removal or overwrite newe
   const tree = createTreeStore();
   const first = { ...displayEngine, id: "first" };
   const second = { ...displayEngine, id: "second" };
-  await h.store.set(enginesAtom, [first, second]);
+  const third = { ...displayEngine, id: "third" };
+  const added = { ...displayEngine, id: "added" };
+  const unloaded = { ...displayEngine, id: "unloaded", loaded: false };
+  await h.store.set(enginesAtom, [first, unloaded, second, third]);
   await h.render(
     <TreeStateContext.Provider value={tree}>
       <AnalysisPanel />
@@ -75,14 +78,15 @@ test("real-store drag intent cannot resurrect a queued removal or overwrite newe
         release = resolve;
       }),
   );
-  const newer = h.store.set(enginesAtom, (current) =>
-    current.map((engine) =>
+  const newer = h.store.set(enginesAtom, (current) => [
+    ...current.map((engine) =>
       engine.id === second.id ? { ...engine, name: "Updated", version: "new" } : engine,
     ),
-  );
+    added,
+  ]);
   await vi.waitFor(() => expect(release).toBeTypeOf("function"));
   const removal = h.store.set(enginesAtom, { removeLocalId: first.id });
-  await act(async () => reorder.drag!({ source: { index: 0 }, destination: { index: 1 } }));
+  await act(async () => reorder.drag!({ source: { index: 2 }, destination: { index: 0 } }));
   await act(async () => {
     release();
     await newer;
@@ -90,9 +94,46 @@ test("real-store drag intent cannot resurrect a queued removal or overwrite newe
   });
   await vi.waitFor(() =>
     expect(h.store.get(enginesAtom)).toEqual([
+      { ...unloaded, legacyAssessment: null },
+      { ...third, legacyAssessment: null },
       { ...second, name: "Updated", version: "new", legacyAssessment: null },
+      { ...added, legacyAssessment: null },
     ]),
   );
+  tree.dispose();
+});
+
+test("refused routed drag rolls its presentation back to committed order", async () => {
+  installResizeObserverStub();
+  reorder.reconcile.mockReset().mockResolvedValue(undefined);
+  h = engineDisplayHarness();
+  const tree = createTreeStore();
+  await h.store.set(enginesAtom, [
+    { ...displayEngine, id: "first" },
+    { ...displayEngine, id: "second" },
+  ]);
+  await h.render(
+    <TreeStateContext.Provider value={tree}>
+      <AnalysisPanel />
+    </TreeStateContext.Provider>,
+  );
+  const order = () =>
+    [...h.host.querySelectorAll("[data-engine-id]")].map((node) =>
+      node.getAttribute("data-engine-id"),
+    );
+  let reject!: (error: Error) => void;
+  reorder.reconcile.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, refuse) => {
+        reject = refuse;
+      }),
+  );
+  await act(async () => reorder.drag!({ source: { index: 0 }, destination: { index: 1 } }));
+  await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+  expect(order()).toEqual(["second", "first"]);
+  await act(async () => reject(new Error("drag refused")));
+  await vi.waitFor(() => expect(order()).toEqual(["first", "second"]));
+  expect(h.store.get(enginesAtom)?.map((item) => item.id)).toEqual(["first", "second"]);
   tree.dispose();
 });
 test("EngineSummary uses the shared dimmed fallback instead of ??? until a current result", async () => {

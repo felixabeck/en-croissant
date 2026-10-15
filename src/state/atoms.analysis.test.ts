@@ -32,6 +32,7 @@ import {
     enginesAtom,
     createFirstEngineWithLinesAtom,
     tabsAtom,
+    tabEngineSettingsFamily,
 } from "./atoms";
 
 const engine = {
@@ -43,6 +44,50 @@ const engine = {
     handle: { id: { id: "same-handle" }, kind: "engine" as const },
     loaded: true,
 };
+
+test("synced settings derive committed defaults without a visual owner and preserve tab identity and isolation", async () => {
+    const store = createStore();
+    const param = {
+        tab: "shared-defaults",
+        engineId: engine.id,
+        defaultGo: { t: "Depth" as const, c: 3 },
+    };
+    const settings = tabEngineSettingsFamily(param);
+    expect(store.get(settings).go).toEqual(param.defaultGo);
+    await store.set(enginesAtom, [
+        {
+            ...engine,
+            go: { t: "Depth", c: 10 },
+            settings: [{ type: "string", name: "Hash", value: "64" }],
+        },
+    ]);
+    store.set(settings, (current) => ({ ...current, enabled: true }));
+    const other = tabEngineSettingsFamily({ tab: "isolated-defaults", engineId: engine.id });
+    store.set(other, { enabled: false, synced: false, settings: [], go: { t: "Depth", c: 7 } });
+    await store.set(enginesAtom, (current) =>
+        current.map((item) => ({ ...item, go: { t: "Depth", c: 20 }, settings: undefined })),
+    );
+    expect(store.get(settings)).toEqual({
+        enabled: true,
+        synced: true,
+        go: { t: "Depth", c: 20 },
+        settings: [],
+    });
+    expect(store.get(other)).toEqual({
+        enabled: false,
+        synced: false,
+        go: { t: "Depth", c: 7 },
+        settings: [],
+    });
+    await store.set(enginesAtom, (current) => current.map((item) => ({ ...item, go: undefined })));
+    expect(store.get(settings).go).toEqual({ t: "Infinite" });
+    expect(tabEngineSettingsFamily({ ...param, defaultGo: { t: "Infinite" } })).toBe(settings);
+    disposeTabAtoms(param.tab);
+    expect(tabEngineSettingsFamily(param)).not.toBe(settings);
+    expect(tabEngineSettingsFamily({ tab: "isolated-defaults", engineId: engine.id })).toBe(other);
+    disposeTabAtoms(param.tab);
+    disposeTabAtoms("isolated-defaults");
+});
 
 test("game interruption belongs to one tab and is reclaimed on disposal", () => {
     const store = createStore();

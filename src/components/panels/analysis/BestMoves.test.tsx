@@ -14,6 +14,7 @@ import { errorUnlessCancelled } from "@/platform/errors";
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 const publication = vi.hoisted(() => ({
   reconcile: vi.fn(),
+  displayed: undefined as Settings | undefined,
   setSettings: undefined as undefined | ((update: (current: Settings) => Settings) => void),
 }));
 vi.mock("@/platform/tauri", async (importOriginal) => {
@@ -24,8 +25,15 @@ vi.mock("@/platform/tauri", async (importOriginal) => {
   };
 });
 vi.mock("./EngineSettingsForm", () => ({
-  default: ({ setSettings }: { setSettings: typeof publication.setSettings }) => {
+  default: ({
+    setSettings,
+    settings,
+  }: {
+    setSettings: typeof publication.setSettings;
+    settings: Settings;
+  }) => {
     publication.setSettings = setSettings;
+    publication.displayed = settings;
     return null;
   },
 }));
@@ -61,6 +69,39 @@ function LivePanel() {
     </Accordion>
   ) : null;
 }
+
+test("rapid synced Hash reversal uses latest pending input while search settings remain committed", async () => {
+  const hash = (value: string) => ({ type: "string" as const, name: "Hash", value });
+  await h.store.set(enginesAtom, [{ ...displayEngine, settings: [hash("64")] }]);
+  h.store.set(h.settingsAtom, {
+    enabled: true,
+    synced: true,
+    go: { t: "Infinite" },
+    settings: [hash("64")],
+  });
+  await h.render(<LivePanel />);
+  publication.reconcile.mockClear();
+  let release!: () => void;
+  publication.reconcile.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await act(async () => {
+    publication.setSettings!((current) => ({ ...current, settings: [hash("128")] }));
+    publication.setSettings!((current) => ({
+      ...current,
+      settings: current.settings.map((option) => (option.name === "Hash" ? hash("64") : option)),
+    }));
+  });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  expect(h.store.get(h.settingsAtom).settings).toEqual([hash("64")]);
+  await act(async () => release());
+  await vi.waitFor(() => expect(h.store.get(enginesAtom)?.[0].settings).toEqual([hash("64")]));
+  expect(publication.reconcile).toHaveBeenCalledTimes(4);
+  expect(publication.displayed?.settings).toEqual([hash("64")]);
+});
 
 test("synced defaults remain committed while a save is pending or refused and merge other queued options", async () => {
   await h.store.set(enginesAtom, [
@@ -118,6 +159,43 @@ test("synced defaults remain committed while a save is pending or refused and me
   });
 });
 
+test("pending synced option removal and independent go intent preserve latest fields without carrying refused options", async () => {
+  const hash = { type: "string" as const, name: "Hash", value: "64" };
+  const threads = { type: "string" as const, name: "Threads", value: "1" };
+  await h.store.set(enginesAtom, [{ ...displayEngine, settings: [hash, threads] }]);
+  h.store.set(h.settingsAtom, {
+    enabled: true,
+    synced: true,
+    settings: [hash, threads],
+    go: { t: "Infinite" },
+  });
+  await h.render(<LivePanel />);
+  let reject!: (error: Error) => void;
+  publication.reconcile.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, refuse) => {
+        reject = refuse;
+      }),
+  );
+  await act(async () =>
+    publication.setSettings!((current) => ({
+      ...current,
+      settings: current.settings.filter((option) => option.name !== "Hash"),
+    })),
+  );
+  await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+  expect(publication.displayed?.settings).toEqual([threads]);
+  await act(async () =>
+    publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 12 } })),
+  );
+  expect(publication.displayed?.settings).toEqual([threads]);
+  expect(h.store.get(h.settingsAtom).go).toEqual({ t: "Infinite" });
+  await act(async () => reject(new Error("remove refused")));
+  await vi.waitFor(() => expect(h.store.get(enginesAtom)?.[0].go).toEqual({ t: "Depth", c: 12 }));
+  expect(h.store.get(enginesAtom)?.[0].settings).toEqual([hash, threads]);
+  expect(publication.displayed?.settings).toEqual([hash, threads]);
+});
+
 test("unsynced analysis edits retain their separate per-tab state without saving defaults", async () => {
   await h.render(panel());
   publication.reconcile.mockClear();
@@ -126,6 +204,38 @@ test("unsynced analysis edits retain their separate per-tab state without saving
   );
   expect(h.store.get(h.settingsAtom).go).toEqual({ t: "Depth", c: 9 });
   expect(publication.reconcile).not.toHaveBeenCalled();
+});
+
+test("accepted synced writes finish after unmount and queued edits cannot recreate an absent identity", async () => {
+  await h.store.set(enginesAtom, [displayEngine]);
+  h.store.set(h.settingsAtom, { enabled: true, synced: true, settings: [], go: { t: "Infinite" } });
+  await h.render(<LivePanel />);
+  let release!: () => void;
+  publication.reconcile.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await act(async () =>
+    publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 12 } })),
+  );
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const removal = h.store.set(enginesAtom, { removeLocalId: displayEngine.id });
+  await act(async () =>
+    publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 20 } })),
+  );
+  const stale = publication.setSettings!;
+  await h.render(null);
+  await act(async () => {
+    release();
+    await removal;
+  });
+  await vi.waitFor(() => expect(h.store.get(enginesAtom)).toEqual([]));
+  publication.reconcile.mockClear();
+  await act(async () => stale((current) => ({ ...current, go: { t: "Depth", c: 30 } })));
+  expect(publication.reconcile).not.toHaveBeenCalled();
+  expect(h.store.get(enginesAtom)).toEqual([]);
 });
 afterEach(async () => {
   await h.close();

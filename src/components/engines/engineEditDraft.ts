@@ -1,4 +1,4 @@
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -11,7 +11,7 @@ export type EngineEditIntent =
     | { kind: "field"; field: "version"; value: string }
     | { kind: "field"; field: "elo"; value: number | undefined }
     | { kind: "field"; field: "go"; value: LocalEngine["go"] }
-    | { kind: "option"; name: string; value: string | null }
+    | { kind: "option"; name: string; value: string | EngineOption | null }
     | { kind: "defaults"; settings: EngineOption[] }
     | { kind: "reset"; settings: EngineOption[] | undefined };
 
@@ -45,7 +45,13 @@ export function applyEngineEdit(engine: Engine, intent: EngineEditIntent): Engin
     }
     const settings = mergeEngineOptions(
         engine.settings ?? [],
-        intent.value === null ? [] : [{ type: "string", name: intent.name, value: intent.value }],
+        intent.value === null
+            ? []
+            : [
+                  typeof intent.value === "string"
+                      ? { type: "string", name: intent.name, value: intent.value }
+                      : intent.value,
+              ],
         [intent.name],
     );
     return { ...engine, settings };
@@ -65,16 +71,15 @@ export class EngineEditDraft {
     private closed = false;
 
     accept(intent: EngineEditIntent) {
+        if (this.closed) return null;
         const identity = Symbol();
-        if (!this.closed) {
-            const key = intentKey(intent);
-            this.intents.delete(key);
-            this.intents.set(key, { identity, intent });
-        }
+        const key = intentKey(intent);
+        this.intents.delete(key);
+        this.intents.set(key, { identity, intent });
         return identity;
     }
 
-    settle(intent: EngineEditIntent, identity: symbol) {
+    settle(intent: EngineEditIntent, identity: symbol | null) {
         const key = intentKey(intent);
         if (this.closed || this.intents.get(key)?.identity !== identity) return false;
         this.intents.delete(key);
@@ -96,6 +101,7 @@ export class EngineEditDraft {
 
 export function useEngineEditDraft<T extends Engine>(engine: T) {
     const [, save] = useAtom(enginesAtom);
+    const store = useStore();
     const { t } = useTranslation();
     const owner = useRef(new EngineEditDraft());
     const [, render] = useState(0);
@@ -109,6 +115,7 @@ export function useEngineEditDraft<T extends Engine>(engine: T) {
         (intent: EngineEditIntent) => {
             const draft = owner.current;
             const identity = draft.accept(intent);
+            if (identity === null) return;
             render((value) => value + 1);
             void (async () => {
                 try {
@@ -127,5 +134,12 @@ export function useEngineEditDraft<T extends Engine>(engine: T) {
         [engine.id, save, t],
     );
 
-    return { displayed: owner.current.display(engine), submit };
+    const readDisplayed = useCallback(
+        () =>
+            owner.current.display(
+                (store.get(enginesAtom)?.find((item) => item.id === engine.id) ?? engine) as T,
+            ),
+        [engine, store],
+    );
+    return { displayed: readDisplayed(), readDisplayed, submit };
 }
