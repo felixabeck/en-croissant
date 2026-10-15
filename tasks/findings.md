@@ -15963,7 +15963,7 @@ Root concurrency proof started the complete contract suite after native instrume
 
 ### Restored puzzle history selects index zero while its independently restored tree belongs to another puzzle
 
-* **ID:** f-20261014-01 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261014-01 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 88354097-6004-4014-a60b-919fe79440ef · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-88354097-6004-4014-a60b-919fe79440ef-1.jsonl
 * **Impact class:** ux
 * **Where:** src/components/puzzles/Puzzles.tsx:88-92,907, src/state/atoms.ts:743 currentPuzzleFamily, src/state/store/tree.ts:742 tree hydration.
@@ -15974,6 +15974,10 @@ Root concurrency proof started the complete contract suite after native instrume
 * **Proof required:** actual persisted history and real tab tree, select B, reload/remount and verify matching controls/playable owner, retain played progress and other tab data, legacy/ambiguous/invalid selection and write-refusal/retry cases. Use actual Puzzles/PuzzleBoard consumers.
 * **Related:** f-20260920-08 tracks unmanaged puzzle history lifetime and size in this component, no shared Root is asserted. f-20260922-13 owns current move/admission safety, this run preserves the saved puzzle-session format and defers this distinct ownership design.
 * **Found by:** Codex review-persisted-state D3 in the full interactive f-20261001-14 drain, confidence96,2026-10-14. Source traced by root, runtime reproduction pending. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Resolution, 2026-10-15:** The coherent session implementation for f-20260920-08 also resolves this exact restored-owner defect. Commits 746c7a41 and 9fd37266 persist stable selected-attempt identity with bounded history and the played tree, remove currentPuzzleFamily as an independent production owner, and restore ownership before interactive puzzle consumers mount. ef174975 preserves that same owner through duplication, including refused legacy source migration.
+* **Proof:** The root's 526-test Phase2 proof includes actual persisted Puzzles/PuzzleBoard consumers restoring selected B after A, repeated database row IDs, played progress, annotations and variations. Legacy unique, ambiguous, missing and incompatible owners preserve the saved tree, while explicit selection and refusal/retry remain covered. The 290-test Phase1 and 255-test Phase3 root proofs verify storage admission and independent complete copies. TypeScript and pre-review passed, including all three affected mutation packages at 100% in the final Phase3 proof. The source-only consumer reversion fails behaviorally and restoration passes. Browser and final push gates follow this committed implementation proof.
+* **Decision:** This shares the ownership design already reviewed for f-20260920-08 rather than introducing a second saved index or resetting the saved tree. Decisions d-20261015-21 through d-20261015-26 govern the implementation. No change to scoring, first-result timing or per-attempt tree archives was introduced. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"4aa3de0957a11e0f50f137fb2e4aebb65bdec3081daeb05209a38f86a3321d97","header_sha256":"9a5555a88f53bc20f2cfcd10b6931c97e2fc5c59b7121f02b234b6359402b024","header_status":"handled","input_sha256":"6797d39301a246be9b20ced98f43110bed0949c557a673cba26b01734430a735","kind":"mutation-receipt","operation":"f683664e33b8d3654ec0d9638bada1c7492594f965c3317a29e95202f74f1354","options":{"section":null},"request_id_sha256":null,"results":["f-20261014-01"],"target":"f-20261014-01","v":1} -->
 
 ---
 
