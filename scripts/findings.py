@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 2cd9c7c7e33dc3fe86209e9886ab34d251168df22df115d860b31bd96732803d
+# agent-kit-sha256: 6a0a9b6b860b77d86f47aa6bbc2502b25fd505ff06d1fdbd8653553a470be7b1
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -49,14 +49,15 @@ Subcommands
 ``record-decision`` append decisions through the decisions ledger lock
 ``set-trailer`` set decision supersession references, adding the trailer where an
                  entry predates it, and refresh their covering receipt
-``merge-driver`` git merge driver for the two ledgers (``%O %A %B %P``); appends merge
-                 block by block, everything else falls back to ``git merge-file``
+``merge-driver`` git merge driver for the two ledgers (``%O %A %B %P``): compatible
+                 edits and whole blocks merge, conflicts fall back to ``git merge-file``
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import errno
 import fcntl
 import functools
@@ -468,7 +469,7 @@ RECEIPT_PLACEHOLDER = "<!-- ledger-meta receipt-placeholder -->"
 # `check` installs it (`ensure_merge_driver`) and a fresh clone needs no hand.
 MERGE_DRIVER_NAME = "ledger-append"
 MERGE_DRIVER_COMMAND = "./scripts/findings.py merge-driver %O %A %B %P"
-MERGE_DRIVER_DESCRIPTION = "append-only ledger merge (findings.py merge-driver)"
+MERGE_DRIVER_DESCRIPTION = "validated ledger block merge (findings.py merge-driver)"
 MERGE_DRIVER_CONFIG_LOCK_NAME = "findings-merge-driver-config.lock"
 MERGE_DRIVER_LEDGERS = {
     "tasks/findings.md": "findings",
@@ -2080,32 +2081,55 @@ def _pure_insertions(base: list[str], side: list[str]) -> dict[int, list[str]] |
     return blocks
 
 
-def merge_appended_blocks(base: str, ours: str, theirs: str) -> str | None:
-    """Three-way merge of two pure-append sides, each block kept contiguous.
+def merge_ledger_blocks(base: str, ours: str, theirs: str) -> str | None:
+    """Merge independent base-relative edits, keeping insertion blocks whole.
 
     Git's own ``merge=union`` refines a conflict against the two sides' common
     lines, so two receipted effects that begin with the same line were folded
     into one and the second receipt lost its effect line (measured
     2026-09-12, f-20260907-04). Here every inserted block is emitted whole, ours
     before theirs at the same base index, and an identical block on both sides
-    is emitted once. ``None`` when either side is not a pure append; the caller
-    then leaves the file to git's ordinary text merge.
+    is emitted once. Pure insertions retain their original greedy alignment.
+    Other edits use line ranges in the base. Identical replacements appear once,
+    incompatible overlapping replacements and insertions inside a replaced range
+    return ``None`` for git's ordinary text merge. Boundary insertions survive.
     """
     base_lines = base.splitlines()
-    ours_blocks = _pure_insertions(base_lines, ours.splitlines())
-    theirs_blocks = _pure_insertions(base_lines, theirs.splitlines())
-    if ours_blocks is None or theirs_blocks is None:
-        return None
+
+    def edits(side: str) -> list[tuple[int, int, list[str]]]:
+        lines = side.splitlines()
+        blocks = _pure_insertions(base_lines, lines)
+        if blocks is not None:
+            return [(index, index, block) for index, block in blocks.items()]
+        return [
+            (start, end, lines[side_start:side_end])
+            for tag, start, end, side_start, side_end in difflib.SequenceMatcher(
+                None, base_lines, lines, autojunk=False
+            ).get_opcodes()
+            if tag != "equal"
+        ]
+
+    ours_edits, theirs_edits = edits(ours), edits(theirs)
+    for start, end, block in ours_edits:
+        for other_start, other_end, other_block in theirs_edits:
+            if (start, end, block) == (other_start, other_end, other_block):
+                continue
+            if (max(start, other_start) < min(end, other_end)
+                    or start < other_start < end
+                    or other_start < start < other_end):
+                return None
+
+    # Sorting puts insertions before replacements at their shared start. Python's
+    # stable order retains ours-before-theirs for distinct insertion blocks.
+    combined = sorted(ours_edits + [edit for edit in theirs_edits if edit not in ours_edits],
+                      key=lambda edit: (edit[0], edit[1]))
     merged: list[str] = []
-    for index in range(len(base_lines) + 1):
-        mine = ours_blocks.get(index)
-        other = theirs_blocks.get(index)
-        if mine is not None:
-            merged.extend(mine)
-        if other is not None and other != mine:
-            merged.extend(other)
-        if index < len(base_lines):
-            merged.append(base_lines[index])
+    cursor = 0
+    for start, end, block in combined:
+        merged.extend(base_lines[cursor:start])
+        merged.extend(block)
+        cursor = end
+    merged.extend(base_lines[cursor:])
     return "\n".join(merged) + "\n" if merged else ""
 
 
@@ -2238,8 +2262,8 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
                 merged = None
                 reason = "a side is a Controller-generated export"
             else:
-                merged = merge_appended_blocks(*sides)
-                reason = "a side changed existing lines instead of appending"
+                merged = merge_ledger_blocks(*sides)
+                reason = "the sides contain incompatible overlapping edits"
         if merged is not None:
             try:
                 # Beside the real ledger, not git's %A scratch: the name is one
@@ -2248,14 +2272,19 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
                     merged, cast(Path, REPO_ROOT) / args.path
                 ) as candidate:
                     valid = _ledger_snapshot_valid(candidate, ledger_kind)
+                    preserved = valid and _ledger_entry_ids_preserved(
+                        args.base, candidate, ledger_kind
+                    )
             except LedgerReadRefused:
                 raise
             except (LedgerError, OSError, UnicodeError) as exc:
                 valid = False
-                reason = f"the appended blocks could not be validated: {exc}"
+                reason = f"the merged blocks could not be validated: {exc}"
             else:
-                reason = "the appended blocks do not validate together"
-            if valid:
+                reason = "the merged blocks do not validate together"
+            if valid and not preserved:
+                reason = "the merged blocks removed entries from the merge base"
+            if valid and preserved:
                 args.ours.write_text(merged, encoding="utf-8")
                 return 0
     print(
