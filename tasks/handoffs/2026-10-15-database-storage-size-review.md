@@ -1018,3 +1018,119 @@ Round 1 adoption count: 2. No Skip, Defer, carried issue, withdrawal, quota wait
 review-plan, review-tests and the newly affected review-platform-semantics completed the scoped closure. All raw verdicts APPROVED. Each explicitly closed I1 against the existing cfg(test) native module, its exact proof and Linux-only WebKit claim. All three also confirmed I2's owned native consumer and assertion correction. No new finding or late observation. I1 and I2 are closed at revision r2, with no dependencies left unresolved. No Skip, Defer, carried issue, withdrawal or correction-created defect.
 
 Measured round elapsed: r1=192.307 seconds, r2=137.253 seconds. Adoptions r1=2 r2=0, unique issues 2 opened and 2 closed. No known quota or external dependency wait, active-only wall time unknown. Concurrent leaf durations are not summed. Complete cumulative history is in reviews-handoff.md beside this plan. Plan authorship and arbitration shared one context. Detection ran on the same Codex/OpenAI model family intended for implementation, in fresh read-only contexts. Planning approval is complete, source implementation and runtime proof remain unperformed.
+
+## Adopter cumulative diff review R1
+
+Reviewed through a1e3bcdf3dc3569ef9da5912407e94c3835fb24d, complete upstream merge-base range, with separate code and records diffs. Eleven launcher leaves completed. All resolved to gpt-6.1-sol at medium effort, code roles sensitive and records role mechanical. No retry, fallback, capacity wait or missing report. Wall through arbitration 335.6 seconds, measured from the first fresh R1 stream creation. Active-only wall unknown.
+
+Ten raw verdicts APPROVED. The persistence lens returned REVISE with one blocker. D1 is the pre-existing quota-refusal contract at database.ts:283, confidence 98. Root inspected the installed Zustand adapter, setter and openDatabase caller. The same defect and independent all-setters durable-admission design question are already open as f-20261010-01. Disposition Defer to that existing build finding under push-review-policy section4, with its existing source trace, review inheritance and proof obligations retained. The source and failure mechanism are unchanged by this diff, and O2 explicitly preserves the existing storage contract. No catch-only repair, duplicate entry or fabricated APPROVED verdict. The locked annotation links this review to the existing finding. Zero Fix, zero Skip, one Defer, zero unresolved adopted Fix.
+
+The PGN lens correctly returned NOT APPLICABLE because metadata representation changes no scanner, encoding or index mechanism. The platform lens limitation about GNU Windows compilation is resolved by both completed root pre-review logs, including windows-clippy exit0. No non-Linux Unix source probe was performed, and macOS/Windows runtime plus platform-matrix CI remain required. The records lens could not locate the root447-test rerun. Its exact log is gate-numeric-runtime-build.20AQ1D/log in the gate directory named by the execution record, which reports15 passed files and447 passed tests before the intentional source reversal. This is a named evidence limitation, not a finding.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family and model as the code, with fresh read-only sessions.
+
+### lens-code-quality-r1
+
+```text
+No readability or local-consistency findings at confidence ≥80. Review used the same Codex/OpenAI model family as implementation, in a fresh read-only session.
+
+VERDICT: APPROVED
+```
+
+### lens-correctness-r1
+
+```text
+No correctness defects found.
+
+Limitation: read-only review did not execute runtime verification or final gates (confidence: 100). Review used the same model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### lens-error-handling-r1
+
+```text
+No error-handling defects found. Native failures remain typed, metadata failures produce visible error records, and DS1/DS2 failures record diagnostics and force exit status 1.
+
+Limitation: runtime proof and final gates were not run in this read-only review (confidence: 100). Review used the implementation’s model family without family separation.
+
+VERDICT: APPROVED
+```
+
+### lens-ipc-contract-r1
+
+```text
+No IPC-contract defects found. Native serialization, the Specta binding, renderer facade, persistence and display consumers agree on decimal strings.
+
+Read-only review. Corrected runtime proof and final gates remain pending. Detection used the same model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### lens-minimalism-r1
+
+```text
+VERDICT: APPROVED
+```
+
+### lens-persisted-state-r1
+
+```text
+[blocker] src/state/store/database.ts:283 — Pre-existing since `93b366695`: `createJSONStorage` calls `sessionStorage.setItem` without handling quota failures. With large game tabs filling session storage, opening another database can throw after updating live state. `useDatabaseLibrary.tsx:162` then aborts before navigation, and reloading restores the previous selection because the write failed. No comprehensible storage error reaches the user. (confidence: 98)
+
+Limitation: source trace only, no runtime quota reproduction. The decimal-string writer and both persistence readers agree.
+
+VERDICT: REVISE
+```
+
+### lens-pgn-index-r1
+
+```text
+NOT APPLICABLE — The code diff changes database byte-count metadata serialization, formatting and verification. It changes no PGN scanning, game encoding, disk offsets, indexing or search paths.
+
+VERDICT: APPROVED
+```
+
+### lens-platform-semantics-r1
+
+```text
+No platform-semantics findings.
+
+Limitations: `pnpm rust:windows:check` and the non-Linux Unix source probe are not established by the supplied evidence. Windows/macOS runtime proof remains with `rust-windows-test` and `rust-macos-test`, with compilation coverage from `rust-platform`. Webview transport proof is Linux-only, and the corrected positive run remains pending.
+
+Read-only review. Same OpenAI model family as implementation, with no family separation.
+
+VERDICT: APPROVED
+```
+
+### lens-records-r1
+
+```text
+No findings. Source claims, decision receipts, inherited review evidence and negative-runtime results agree with the inspected records.
+
+Unverifiable: the independent root rerun of 447 tests claimed at execution handoff line 15. Retained logs confirm the leaf’s 447 and root’s 23/206/1326 results.
+
+VERDICT: APPROVED
+```
+
+### lens-root-cause-r1
+
+```text
+No root-cause or prior-fix regression findings. The native producer now emits exact decimal strings, aligning serialization, generated types and JSON persistence. Source-reversal evidence confirms the regressions detect the original mechanism. The prior large-database fix retains its full u64 range.
+
+Limitation: corrected positive application runtime proof and release gates remain pending (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+### lens-tests-r1
+
+```text
+No findings. Native and formatter revert logs show assertion failures. DS1 and DS2 independently detect numeric IPC and persisted values, with exit 1. Gate selectors include the regression tests.
+
+Limitation: corrected runtime proof, final gates and required remote CI remain pending (confidence: 100).
+
+Review used the same Codex/OpenAI model family as implementation, in a fresh context.
+
+VERDICT: APPROVED
+```
