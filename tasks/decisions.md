@@ -7920,3 +7920,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The adopted O3 and d-20261015-11 make the actual transaction result authoritative. Error-handling review found the helper violated that outcome for a successful import. Reversal path: change the shared helper and its committed-success regression if product intent later explicitly makes successful import completion depend on a library reload.
 * **Decided by:** Codex, full auto, push review C1 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f41c1fd9a9227eb23fdcdd59c3bf7c92ac40a8eda527123dddcefd81f578c7bc","input_sha256":"2924941dc5902343aa8c281526b30f8e141979ac38b7097a70bfc617959d5d02","kind":"mutation-receipt","operation":"cdc97be43806516fbfa9667191940212a235256f158f76a9173c2a162fc40744","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-15 — honest number binding or normalized bigint?
+
+* **Question:** honest number binding or normalized bigint?
+* **Governs:** f-20261001-20
+* **Chosen:** lossless decimal-string native DTO and JSON-safe string domain metadata.
+* **Rejected:** a numeric override with silent rounding, imposing a new native safe-integer rejection bound, and facade bigint normalization that recreates the persistence failure.
+* **Reason:** native file lengths have no existing safe-integer ceiling, and exact decimal transport follows d-20261008-23 without copying progress identity arithmetic into display metadata. Reversal path: a newly evidenced native bounded domain and a reviewed numeric wire contract with equivalent serialization and persistence proof.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2fbe31363123e84512726ed34dab6b2bdaa4291e52c81def4947325ae0c578e4","input_sha256":"f12de9d61e8f9f213f0817a6e66076a848958306f815225c1d853cd0182624c9","kind":"mutation-receipt","operation":"e8d4a8ab846a74d78a6962d09dfccf98be1776b25e58b02d98b5c59c09a30033","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-15"],"target":"decisions-ledger","v":1} -->
