@@ -7833,3 +7833,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The same domain policy must not drift between search, rendering and new input. UCI serialization stays unchanged, while its UI decoder agrees with the stored value. Reversal path: replace these boundaries only with equivalent boolean hydration/refusal, committed-versus-draft projection, sync admission and option-preservation proof.
 * **Decided by:** Codex, cumulative closure review arbitration, 2026-10-15. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"41114f3f453a30911a1d61d3bcf059f976bcf4d1816a6f12d69f2da61a3095b3","input_sha256":"aeb35f695f144fc0fac8b0e94630dd244e3796f55616688c72d06868ae2be87a","kind":"mutation-receipt","operation":"f1f6c5ca44ea7a887766c29a7cddf846b090409762db418219bcfab8c412b354","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-06 — What is the save boundary for one analysis settings action?
+
+* **Question:** Should the fields produced by one accepted analysis settings function save individually or as one candidate?
+* **Governs:** f-20261001-17, f-20261015-05
+* **Chosen:** Accept the action's bounded per-field/option draft identities together, merge its intents into one current engine record, and use one existing owner save and receipt. Different actions keep the existing ordered sequence and independent failure settlement.
+* **Rejected:** Separate saves for one action's reset/go or multiple option changes, a new persistence coordinator, or a second draft queue.
+* **Reason:** The previous writer saved the function's go/options snapshot together. Splitting it allows a refused member and a successful member to publish a partial action. One candidate preserves that granularity while retaining latest intent identity and committed reader authority. Reversal path: prove equivalent all-member refusal/publication and unrelated later-action independence before changing the boundary.
+* **Decided by:** Codex root source arbitration after round2, 2026-10-15. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b43b797989ee2caf9db6040682f416c464417e688da266b5204c56b4d12552fe","input_sha256":"f09fc4ffba107a9a627b39d6ecb79f3dd69ee9bde51687e3a95df54e757b09f4","kind":"mutation-receipt","operation":"5826d055a59375d83f914f01449a9b1b62a1e684c54825beab166c34f5d424cd","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-06"],"target":"decisions-ledger","v":1} -->
