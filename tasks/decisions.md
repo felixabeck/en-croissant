@@ -7940,3 +7940,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** both consumers display the same byte domain. Reversal path: an evidenced display contract requiring a different formatter, with all consumers changed together.
 * **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"81790b6f1fb1a074a1c866a86338ed06b511b2a95b6e98770c74710ab4ecd959","input_sha256":"91a8eea5ac385aff5e1bef88ab1f2985b89a0dd6a071439d1118b1af16769805","kind":"mutation-receipt","operation":"d77ccba71cbcfd6ca2d87f29116b3ce2d89f724fad69a61e77ff27e516708191","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-16"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-17 — migrate old sessionStorage metadata?
+
+* **Question:** migrate old sessionStorage metadata?
+* **Governs:** f-20261001-20
+* **Chosen:** retain its identity-only hydration and fresh-listing refresh.
+* **Rejected:** a persisted schema rewrite or clearing a valid old selection.
+* **Reason:** old display metadata is not authoritative. Reversal path: evidence that a consumer uses stored size before native refresh, addressed at that consumer boundary.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"10188e2cb88f5d2046b85ea7656e0abd8d47f42ab715bcab9d29251de911bb3a","input_sha256":"521c29922c9ce7137d0af35a306a0a5d2c9977688a6c51561b775c4fa63c967c","kind":"mutation-receipt","operation":"3db2f93def7c36583a25a460870ff43cd4988e8424f72a914bae574492e2d58d","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-17"],"target":"decisions-ledger","v":1} -->
