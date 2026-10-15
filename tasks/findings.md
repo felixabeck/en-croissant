@@ -16087,3 +16087,20 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof:** Real-store parent sync action exercises go/options together through one saved receipt, pending/refused isolation, deliberate retry and no partial publish. Source-only separate-save regression must fail the atomicity assertion and restore green.
 * **Related:** f-20261015-03 owns shared synced read derivation, this is a distinct write-granularity defect introduced in repair6a6d1e99. No shared Root is asserted.
 * **Found by:** Codex root arbitration after cumulative round2 parent-admission test gap. Source confirms the loop invokes separate saves for one function, and the existing owner contract permits refusal followed by a successful queued save. Runtime reproduction remains part of this repair. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-15 — filed through the inbox spool
+
+### Engines page clips local and cloud editors at 320px and 200% font scale
+
+* **ID:** f-20261015-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/engines/EnginesPage.tsx, fixed side-by-side page panels and editor child widths.
+* **Defect:** The installed engine list and settings editor retain side-by-side sizing at 320px and 200% German. Both local and cloud editors extend beyond the reachable viewport. The local configuration error is clipped, and the cloud Name field fails the existing reachable clipping assertion.
+* **Evidence:** Canonical browser job gate-browser-proof.DewIQf completed1 with45passed/3failed. Two failures are actual clipping assertions in e2e/async-errors.spec.ts, the third is a missing new desktop baseline. Failure screenshots were inspected, the local screenshot shows the editor squeezed beyond the right edge. No golden update can resolve this defect.
+* **Fix shape:** Use the existing font-aware responsive layout conventions to keep list and selected editor reachable, with bounded widths and owned scrolling. Preserve desktop behavior and engine save authority. Root traces child constraints before choosing the exact layout.
+* **Proof required:** Both existing narrow German editor journeys pass their unchanged reachable assertions in the canonical container, with inspected captures and no horizontal page overflow. Restore old source alone to reproduce the same failures.
+* **Related:** f-20260927-08 settled font-aware breakpoint scaling and f-20260829-02 handled earlier narrow layout breakage. Their presence does not establish a shared Root. f-20261001-17 currently edits this actual editor area, Fix now.
+* **Found by:** Root actual browser verification in the full interactive f-20261001-17 drain. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
