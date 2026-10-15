@@ -71,9 +71,11 @@ import AddEngine from "./AddEngine";
 import UpgradeEngineModal from "./UpgradeEngineModal";
 import classes from "./EnginesPage.module.css";
 
+const COMPACT_ENGINES_WIDTH_EM = 62;
+
 export default function EnginesPage() {
   const { t } = useTranslation();
-  const compact = useScaledMaxWidth(62);
+  const compact = useScaledMaxWidth(COMPACT_ENGINES_WIDTH_EM);
 
   const [engines] = useAtom(enginesAtom);
   const enginesList = useMemo(() => engines ?? [], [engines]);

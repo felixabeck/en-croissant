@@ -18,6 +18,15 @@ import {
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
 const germanListingCopy = germanCatalogue.translation;
 
+async function assertNativeTextValueReachable(input: Locator, expectedValue: string) {
+    await input.focus();
+    await input.press("End");
+    await expect.poll(() => input.evaluate((input) => input.scrollLeft)).toBeGreaterThan(0);
+    await input.press("Home");
+    await expect.poll(() => input.evaluate((input) => input.scrollLeft)).toBe(0);
+    await expect(input).toHaveValue(expectedValue);
+}
+
 test("engine editor: current configuration error at 320px and 200% German", async ({
     page,
     mockScenario,
@@ -86,12 +95,7 @@ test("engine editor: current configuration error at 320px and 200% German", asyn
         strictErrorMessage = error instanceof Error ? error.message : String(error);
     }
     expect(strictErrorMessage).toMatch(/content clipped/);
-    await name.focus();
-    await name.press("End");
-    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBeGreaterThan(0);
-    await name.press("Home");
-    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBe(0);
-    await expect(name).toHaveValue("Gespeicherte Engine");
+    await assertNativeTextValueReachable(name, "Gespeicherte Engine");
     await assertNothingClipped(name, { mode: "reachable" });
     const failure = page.getByRole("alert");
     await expect(failure).toContainText(germanListingCopy["Common.Error"]);
@@ -133,12 +137,7 @@ test("engine editor: refused cloud draft settles at 320px and 200% German", asyn
     await name.scrollIntoViewIfNeeded();
     await expect(name).toBeVisible();
     await expect(name).toHaveValue("Committed cloud");
-    await name.focus();
-    await name.press("End");
-    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBeGreaterThan(0);
-    await name.press("Home");
-    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBe(0);
-    await expect(name).toHaveValue("Committed cloud");
+    await assertNativeTextValueReachable(name, "Committed cloud");
     await assertNothingClipped(name, { mode: "reachable" });
     await expect(name).toBeEditable();
     await assertNoHorizontalOverflow();
