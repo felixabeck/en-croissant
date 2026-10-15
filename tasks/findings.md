@@ -16069,7 +16069,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### Stored false is rendered as checked for a default-true engine check option
 
-* **ID:** f-20261015-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** behaviour
 * **Where:** src/components/engines/EnginesPage.tsx:629, completeOptions check-option reader and setSetting.
@@ -16080,6 +16080,8 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof:** Real routed default-true disable persists false and remains unchecked after settlement/rehydration, with pending/refused state and a source-only old-predicate assertion failure/restoration. Retain an affected browser capture.
 * **Related:** f-20261001-17 owns the editor's durable publication, this is a distinct reader predicate with no shared Root.
 * **Found by:** review-correctness closure round2, confidence99, full interactive f-20261001-17 drain. Root confirmed String serialization and the truthiness reader. Same actual engine-editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Handled 2026-10-15:** Checkbox values decode boolean true and canonical string true explicitly, so stored false does not inherit a truthy default. Repair e6f8257b, decisiond-20261015-05. Actual routed pending/saved/hydrated/refused cases and actual browser unchecked pending/rehydrated and refused-restored-true captures pass. Source-only old predicate fails the retained assertion1 and restores0. Rejected generic truthiness, schema churn and hiding the valid false value. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"0248700ab9b0b7f80132a56936a12fc799309d324c094794f2a91bd7f6a8220b","header_sha256":"3ca4ac91b1b122b7fc57326b223be97390000ff06bf3b04a956732cf0e586d96","header_status":"handled","input_sha256":"45668f51452acc7915519da8f96f1b320e6ca87ece751fcd288e6473a261a24f","kind":"mutation-receipt","operation":"7befa509557b3b400afa6dab9db6f754ccb4530ddee0e8c3fb1b46f326f4e6d2","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-04"],"target":"f-20261015-04","v":1} -->
 
 ---
 
