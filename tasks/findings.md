@@ -16089,7 +16089,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### One synced settings action is split across separate saves and can publish only part of its snapshot
 
-* **ID:** f-20261015-05 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-05 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** behaviour
 * **Follow-up of:** f-20261001-17
@@ -16100,6 +16100,8 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof:** Real-store parent sync action exercises go/options together through one saved receipt, pending/refused isolation, deliberate retry and no partial publish. Source-only separate-save regression must fail the atomicity assertion and restore green.
 * **Related:** f-20261015-03 owns shared synced read derivation, this is a distinct write-granularity defect introduced in repair6a6d1e99. No shared Root is asserted.
 * **Found by:** Codex root arbitration after cumulative round2 parent-admission test gap. Source confirms the loop invokes separate saves for one function, and the existing owner contract permits refusal followed by a successful queued save. Runtime reproduction remains part of this repair. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Handled 2026-10-15:** The bounded edit draft accepts all intents from one analysis action together, reduces them into one current candidate and awaits one existing owner save/receipt. Independent later actions preserve their existing ordered settlement, missing/closed identities cannot recreate records. Repaire6f8257b, decisiond-20261015-06. Real child-parent-store tests demonstrate all-member refusal with no partial go/options publication, deliberate retry and unrelated later-action success. Source-only old separate saves produce meaningful atomicity assertion failure1 and exactrestore0. Rejected per-intent saves for one action and a second coordinator/queue. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"1b513ff119fe8741e1bdc0869647e7eb06b33ffac93530db1a58f2e2a63168a9","header_sha256":"435d03b4d431bcd500727624a2b31a7c6640d09ddc112c4c9177d021dfc7e83a","header_status":"handled","input_sha256":"130b63a77758f944e4d10ff40aecad5193ad8090ebdbdfa2b7912da09c877dd7","kind":"mutation-receipt","operation":"a6bba1f03b8c2dd2edd1aba045dc7dd4385677cef4acc1f0c786d046c1991f94","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-05"],"target":"f-20261015-05","v":1} -->
 
 ---
 
