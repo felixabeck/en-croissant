@@ -256,7 +256,7 @@ test("saved cleanup intents reject duplicate and non-history keys and survive ca
     }
 });
 
-test("cleanup reconciliation protects retained logical owners, uses UUID discovery and admits exactly 100 proven keys", () => {
+test("cleanup reconciliation protects retained logical owners and admits exactly 100 proven keys including UUIDs", () => {
     sessionStorage.clear();
     const retained = { ...legacyTab, value: "still-live" };
     const retainedKey = `${retained.value}-puzzles`;
@@ -264,13 +264,49 @@ test("cleanup reconciliation protects retained logical owners, uses UUID discove
     sessionStorage.setItem(retainedKey, "live history");
     expect(
         reconcileLegacyPuzzleRemovals([retainedKey], [retained.value, uuid, "retired"], [retained]),
-    ).toEqual(["retired-puzzles"]);
+    ).toEqual([`${uuid}-puzzles`, "retired-puzzles"]);
     expect(sessionStorage.getItem(retainedKey)).toBe("live history");
     const retired = Array.from({ length: 100 }, (_, i) => `old-${i}`);
     expect(reconcileLegacyPuzzleRemovals([], retired, [])).toEqual(
         retired.map((id) => `${id}-puzzles`),
     );
     expect(reconcileLegacyPuzzleRemovals([], [...retired, "overflow"], [])).toBeNull();
+});
+
+test("uncertain persisted workspace replays exact UUID intents without a tree and protects retained and unknown histories", async () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID(), type: "puzzles" as const };
+    const retired = crypto.randomUUID();
+    const retiredKey = `${retired}-puzzles`;
+    const retainedKey = `${retained.value}-puzzles`;
+    const unknownKey = `${crypto.randomUUID()}-puzzles`;
+    for (const key of [retiredKey, retainedKey, unknownKey, "foreign-puzzles"])
+        sessionStorage.setItem(key, "preserved until authorized");
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [retained],
+            activeTab: retained.value,
+            treeOwnershipUncertain: true,
+            treeOwnershipProtectedIds: [],
+            legacyPuzzleRemovalKeys: [retiredKey, retainedKey],
+        }),
+    );
+    const deny = denyStorageRemoval(retiredKey);
+    expect(loadStoredWorkspace().legacyPuzzleRemovalKeys).toEqual([retiredKey]);
+    expect(sessionStorage.getItem(retired)).toBeNull();
+    expect(sessionStorage.getItem(retainedKey)).toBe("preserved until authorized");
+    deny.mockRestore();
+    vi.resetModules();
+    const cold = await import("./workspace");
+    const restored = cold.loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(restored.treeOwnershipUncertain).toBe(true);
+    expect(restored.legacyPuzzleRemovalKeys).toBeUndefined();
+    expect(sessionStorage.getItem(retiredKey)).toBeNull();
+    for (const key of [retainedKey, unknownKey, "foreign-puzzles"])
+        expect(sessionStorage.getItem(key)).toBe("preserved until authorized");
+    expect(readStoredWorkspace()).not.toHaveProperty("legacyPuzzleRemovalKeys");
 });
 
 test("legacy cleanup capacity errors keep localized action text and the concrete refusal cause", () => {

@@ -72,6 +72,171 @@ function refuseWorkspaceWrites() {
         });
 }
 
+function backgroundPuzzleCloseFixture(treePresent = true) {
+    sessionStorage.clear();
+    const owner: Tab = {
+        name: "Unvisited puzzle",
+        value: crypto.randomUUID(),
+        treeKey: crypto.randomUUID(),
+        type: "puzzles",
+        gameOrigin: { kind: "none" },
+    };
+    const retained: Tab = { ...owner, name: "Retained puzzle", value: crypto.randomUUID() };
+    delete retained.treeKey;
+    const historyKey = `${owner.value}-puzzles`;
+    const retainedHistoryKey = `${retained.value}-puzzles`;
+    const unknownHistoryKey = `${crypto.randomUUID()}-puzzles`;
+    const physicalHistoryKey = `${owner.treeKey}-puzzles`;
+    const history = JSON.stringify([
+        {
+            id: 7,
+            fen: defaultTree().root.fen,
+            moves: ["e2e4", "e7e5"],
+            rating: 1200,
+            rating_deviation: 50,
+            popularity: 1,
+            nb_plays: 1,
+            completion: "incomplete",
+        },
+    ]);
+    sessionStorage.setItem(historyKey, history);
+    sessionStorage.setItem(retainedHistoryKey, history);
+    sessionStorage.setItem(unknownHistoryKey, "unknown UUID history");
+    sessionStorage.setItem(physicalHistoryKey, "unidentified physical suffix value");
+    sessionStorage.setItem("foreign-puzzles", "unidentified suffix value");
+    if (treePresent) tabStorage.seed(owner.treeKey!, defaultTree());
+    tabStorage.seed(retained.value, defaultTree());
+    const envelope = {
+        version: 1,
+        tabs: [retained, owner],
+        activeTab: retained.value,
+        treeOwnershipUncertain: true,
+        treeOwnershipProtectedIds: [owner.treeKey!, retained.value],
+    };
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(envelope));
+    return {
+        owner,
+        retained,
+        historyKey,
+        retainedHistoryKey,
+        unknownHistoryKey,
+        physicalHistoryKey,
+        history,
+        envelope,
+    };
+}
+
+test.each([true, false])(
+    "closing an unvisited background UUID puzzle persists exact authority with physical tree present: %s",
+    async (treePresent) => {
+        const fixture = backgroundPuzzleCloseFixture(treePresent);
+        vi.resetModules();
+        const fresh = await importFreshAtoms();
+        const store = createStore();
+        expect(store.get(fresh.tabsAtom)).toEqual(fixture.envelope.tabs);
+        expect(store.get(fresh.activeTabAtom)).toBe(fixture.retained.value);
+        const removalWorkspaces: unknown[] = [];
+        const remove = Storage.prototype.removeItem;
+        vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) {
+            if (key === fixture.historyKey || key === fixture.owner.treeKey) {
+                removalWorkspaces.push(
+                    readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY),
+                );
+            }
+            if (key === fixture.historyKey) throw new DOMException("denied", "SecurityError");
+            return remove.call(this, key);
+        });
+
+        expect(store.set(fresh.closeWorkspaceTabAtom, fixture.owner.value)).toBe(true);
+        expect(removalWorkspaces.length).toBeGreaterThan(0);
+        for (const workspace of removalWorkspaces)
+            expect(workspace).toMatchObject({
+                tabs: [fixture.retained],
+                legacyPuzzleRemovalKeys: [fixture.historyKey],
+            });
+        expect(store.get(fresh.tabsAtom)).toEqual([fixture.retained]);
+        expect(store.get(fresh.activeTabAtom)).toBe(fixture.retained.value);
+        expect(sessionStorage.getItem(fixture.owner.treeKey!)).toBeNull();
+        expect(sessionStorage.getItem(fixture.historyKey)).toBe(fixture.history);
+        expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+            legacyPuzzleRemovalKeys: [fixture.historyKey],
+        });
+        expect(persistError.reportPersistError).toHaveBeenCalled();
+
+        vi.resetModules();
+        const refusedCold = await importFreshAtoms();
+        expect(refusedCold.initializeWorkspace().legacyPuzzleRemovalKeys).toEqual([
+            fixture.historyKey,
+        ]);
+        expect(sessionStorage.getItem(fixture.historyKey)).toBe(fixture.history);
+        vi.restoreAllMocks();
+        vi.resetModules();
+        const cold = await importFreshAtoms();
+        const reloaded = cold.initializeWorkspace();
+        expect(reloaded.tabs).toEqual([fixture.retained]);
+        expect(reloaded.treeOwnershipUncertain).toBe(true);
+        expect(reloaded.legacyPuzzleRemovalKeys).toBeUndefined();
+        expect(sessionStorage.getItem(fixture.historyKey)).toBeNull();
+        expect(sessionStorage.getItem(fixture.retained.value)).not.toBeNull();
+        expect(sessionStorage.getItem(fixture.retainedHistoryKey)).toBe(fixture.history);
+        expect(sessionStorage.getItem(fixture.unknownHistoryKey)).toBe("unknown UUID history");
+        expect(sessionStorage.getItem(fixture.physicalHistoryKey)).toBe(
+            "unidentified physical suffix value",
+        );
+        expect(sessionStorage.getItem("foreign-puzzles")).toBe("unidentified suffix value");
+    },
+);
+
+test.each([
+    { failure: "workspace-write", causeMessage: "quota" },
+    { failure: "capacity", causeMessage: "Pending legacy puzzle removals exceeded 100" },
+] as const)(
+    "background UUID puzzle close preserves its owners on $failure refusal and retries",
+    async ({ failure, causeMessage }) => {
+        const fixture = backgroundPuzzleCloseFixture();
+        const pending = Array.from({ length: 100 }, () => `${crypto.randomUUID()}-puzzles`);
+        if (failure === "capacity") {
+            for (const key of pending) sessionStorage.setItem(key, "refused history");
+            sessionStorage.setItem(
+                WORKSPACE_STORAGE_KEY,
+                serializeStorageValue({ ...fixture.envelope, legacyPuzzleRemovalKeys: pending }),
+            );
+            denyStorageRemoval((key) => pending.includes(key));
+        }
+        vi.resetModules();
+        const fresh = await importFreshAtoms();
+        const store = createStore();
+        fresh.initializeWorkspace();
+        if (failure === "workspace-write") refuseWorkspaceWrites();
+        const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        const treeBytes = sessionStorage.getItem(fixture.owner.treeKey!);
+        persistError.reportPersistError.mockClear();
+
+        expect(store.set(fresh.closeWorkspaceTabAtom, fixture.owner.value)).toBe(false);
+        expect(store.get(fresh.tabsAtom)).toEqual(fixture.envelope.tabs);
+        expect(store.get(fresh.activeTabAtom)).toBe(fixture.retained.value);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
+        expect(sessionStorage.getItem(fixture.owner.treeKey!)).toBe(treeBytes);
+        expect(sessionStorage.getItem(fixture.historyKey)).toBe(fixture.history);
+        expect(persistError.reportPersistError).toHaveBeenCalled();
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                cause: expect.objectContaining({ message: causeMessage }),
+            }),
+        );
+
+        vi.restoreAllMocks();
+        expect(store.set(fresh.closeWorkspaceTabAtom, fixture.owner.value)).toBe(true);
+        expect(store.get(fresh.tabsAtom)).toEqual([fixture.retained]);
+        expect(sessionStorage.getItem(fixture.owner.treeKey!)).toBeNull();
+        expect(sessionStorage.getItem(fixture.historyKey)).toBeNull();
+        expect(sessionStorage.getItem(fixture.retainedHistoryKey)).toBe(fixture.history);
+        expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+            legacyPuzzleRemovalKeys: [fixture.historyKey],
+        });
+    },
+);
+
 type ReplacementFixture = {
     store: ReturnType<typeof createStore>;
     owner: Tab;

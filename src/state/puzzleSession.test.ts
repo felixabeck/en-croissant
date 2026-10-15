@@ -1,5 +1,9 @@
 import { INITIAL_FEN } from "chessops/fen";
-import { expect, test } from "vitest";
+import { createInstance } from "i18next";
+import { afterEach, expect, test, vi } from "vitest";
+import i18n from "@/i18n";
+import enUSCatalogue from "@/translation/en-US.json";
+import { catalogueI18n } from "@/tests/catalogues";
 import {
     boundPuzzleSession,
     emptyPuzzleSession,
@@ -11,6 +15,8 @@ import {
     type PuzzleAttempt,
     type PuzzleSession,
 } from "./puzzleSession";
+
+afterEach(() => vi.restoreAllMocks());
 
 function attempt(attemptId: string): PuzzleAttempt {
     return {
@@ -83,8 +89,8 @@ test("compressed retention evicts oldest other attempts below the count boundary
     expect(puzzleSessionBytes(retained)).toBeLessThanOrEqual(MAX_PUZZLE_SESSION_BYTES);
 });
 
-test("an individually oversized incoming attempt is refused without mutating the selected owner", () => {
-    const input: PuzzleSession = {
+function oversizedSession(): PuzzleSession {
+    return {
         version: 1,
         attempts: [
             attempt("selected"),
@@ -92,22 +98,44 @@ test("an individually oversized incoming attempt is refused without mutating the
         ],
         selectedAttemptId: "selected",
     };
-    expect(
-        puzzleSessionBytes({
-            ...input,
-            attempts: [input.attempts[1]],
-            selectedAttemptId: "incoming",
-        }),
-    ).toBeGreaterThan(MAX_PUZZLE_SESSION_BYTES);
-    expect(() => boundPuzzleSession(input)).toThrow("Puzzle attempt exceeds");
-    expect(input.attempts.map((row) => row.attemptId)).toEqual(["selected", "incoming"]);
-    // An old unselected legacy row may be evicted, after ownership has been inferred.
-    expect(boundPuzzleSession(input, []).attempts.map((row) => row.attemptId)).toEqual([
-        "selected",
-    ]);
-    expect(() => boundPuzzleSession({ ...input, selectedAttemptId: "incoming" }, [])).toThrow(
-        "Puzzle attempt exceeds",
+}
+
+test.each(["en-US", "de-DE"] as const)(
+    "an individually oversized incoming attempt is refused in %s without mutating the selected owner",
+    async (locale) => {
+        const translator = await catalogueI18n(locale);
+        vi.spyOn(i18n, "t").mockImplementation(translator.t);
+        const input = oversizedSession();
+        expect(
+            puzzleSessionBytes({
+                ...input,
+                attempts: [input.attempts[1]],
+                selectedAttemptId: "incoming",
+            }),
+        ).toBeGreaterThan(MAX_PUZZLE_SESSION_BYTES);
+        expect(() => boundPuzzleSession(input)).toThrow(
+            translator.t("Common.StorageQuotaExceeded"),
+        );
+        expect(input.attempts.map((row) => row.attemptId)).toEqual(["selected", "incoming"]);
+        // An old unselected legacy row may be evicted, after ownership has been inferred.
+        expect(boundPuzzleSession(input, []).attempts.map((row) => row.attemptId)).toEqual([
+            "selected",
+        ]);
+        expect(() => boundPuzzleSession({ ...input, selectedAttemptId: "incoming" }, [])).toThrow(
+            translator.t("Common.StorageQuotaExceeded"),
+        );
+    },
+);
+
+test("oversized admission before i18next initialization uses the deterministic English catalogue", () => {
+    const uninitialized = createInstance();
+    vi.spyOn(i18n, "t").mockImplementation(uninitialized.t);
+    const input = oversizedSession();
+    expect(uninitialized.isInitialized).not.toBe(true);
+    expect(() => boundPuzzleSession(input)).toThrow(
+        enUSCatalogue.translation["Common.StorageQuotaExceeded"],
     );
+    expect(input.attempts.map(({ attemptId }) => attemptId)).toEqual(["selected", "incoming"]);
 });
 
 test("selection derives from stable identity and unresolved selection never guesses zero", () => {

@@ -6,7 +6,12 @@ import { decodeCompressedOrJson, serializeStorageValue } from "./store/debounced
 import { createTabIdSchema, persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { getTabTreeKey, newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
-import { legacyPuzzleKey, removeLegacyPuzzleKey, restorePuzzleSession } from "./puzzleSession";
+import {
+    LEGACY_PUZZLE_SUFFIX,
+    legacyPuzzleKey,
+    removeLegacyPuzzleKey,
+    restorePuzzleSession,
+} from "./puzzleSession";
 import { defaultTree, type TreeState } from "@/utils/treeReducer";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
@@ -51,7 +56,9 @@ function createLiveWorkspaceSchema() {
         // Remove this legacy-only field and its replay when migration is retired and no
         // supported workspace carries outstanding history cleanup intents (d-20261015-24).
         legacyPuzzleRemovalKeys: z
-            .array(z.string().min(8).max(256).endsWith("-puzzles"))
+            .array(
+                z.string().min(LEGACY_PUZZLE_SUFFIX.length).max(256).endsWith(LEGACY_PUZZLE_SUFFIX),
+            )
             .max(MAX_PENDING_PUZZLE_REMOVALS)
             .refine((keys) => new Set(keys).size === keys.length)
             .optional(),
@@ -227,7 +234,7 @@ export function reconcileLegacyPuzzleRemovals(
     const keys = new Set(prior.filter((key) => !retained.has(key) && !removeLegacyPuzzleKey(key)));
     for (const id of retiredLogicalIds) {
         const key = legacyPuzzleKey(id);
-        if (!retained.has(key) && !createTabIdSchema().safeParse(id).success) keys.add(key);
+        if (!retained.has(key)) keys.add(key);
     }
     return keys.size <= MAX_PENDING_PUZZLE_REMOVALS ? [...keys] : null;
 }
@@ -242,9 +249,9 @@ export function sweepLegacyPuzzleKeys(workspace: Workspace) {
         const keys = Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i));
         for (const key of keys) {
             if (
-                key?.endsWith("-puzzles") &&
+                key?.endsWith(LEGACY_PUZZLE_SUFFIX) &&
                 !retained.has(key) &&
-                uuid.safeParse(key.slice(0, -8)).success
+                uuid.safeParse(key.slice(0, -LEGACY_PUZZLE_SUFFIX.length)).success
             )
                 removeLegacyPuzzleKey(key);
         }

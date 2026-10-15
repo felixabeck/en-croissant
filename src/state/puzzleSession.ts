@@ -1,4 +1,6 @@
 import { z } from "zod";
+import i18n from "@/i18n";
+import enUSCatalogue from "@/translation/en-US.json";
 import { getPuzzleProgress, validateMoveSequence } from "@/utils/puzzles";
 import {
     getBoardState,
@@ -13,23 +15,29 @@ import { reportPersistError } from "./persistError";
 
 export const MAX_PUZZLE_ATTEMPTS = 100;
 export const MAX_PUZZLE_SESSION_BYTES = 32_768;
+const MAX_PUZZLE_FEN_LENGTH = 256;
+const MAX_PUZZLE_MOVES = 512;
+const MAX_PUZZLE_THEMES = 128;
+const MAX_PUZZLE_THEME_LENGTH = 256;
+const MAX_PUZZLE_ATTEMPT_ID_LENGTH = 128;
+export const LEGACY_PUZZLE_SUFFIX = "-puzzles";
 
 /** Shared by native row admission, legacy migration and the persisted session. */
 export const puzzleSchema = z
     .object({
         id: z.number().int().nonnegative().safe(),
-        fen: z.string().min(1).max(256),
+        fen: z.string().min(1).max(MAX_PUZZLE_FEN_LENGTH),
         moves: z
             .array(z.string().regex(/^[a-h][1-8][a-h][1-8][qrbn]?$/))
             .min(1)
-            .max(512),
+            .max(MAX_PUZZLE_MOVES),
         rating: z.number().finite(),
         rating_deviation: z.number().finite(),
         popularity: z.number().finite(),
         nb_plays: z.number().int().nonnegative().safe(),
         completion: z.enum(["correct", "incorrect", "incomplete"]),
         timeSpent: z.number().finite().nonnegative().optional(),
-        themes: z.array(z.string().max(256)).max(128).optional(),
+        themes: z.array(z.string().max(MAX_PUZZLE_THEME_LENGTH)).max(MAX_PUZZLE_THEMES).optional(),
     })
     .superRefine((puzzle, context) => {
         if (!validateMoveSequence(puzzle.fen, puzzle.moves).success) {
@@ -39,7 +47,7 @@ export const puzzleSchema = z
 
 export type Puzzle = z.infer<typeof puzzleSchema>;
 export type Completion = Puzzle["completion"];
-const attemptIdSchema = z.string().min(1).max(128);
+const attemptIdSchema = z.string().min(1).max(MAX_PUZZLE_ATTEMPT_ID_LENGTH);
 export const puzzleAttemptSchema = z.object({
     attemptId: attemptIdSchema,
     puzzle: puzzleSchema,
@@ -86,6 +94,13 @@ export function selectedPuzzleIndex(session: PuzzleSession | undefined): number 
     );
 }
 
+function puzzleSessionQuotaError(): Error {
+    return new Error(
+        i18n.t("Common.StorageQuotaExceeded") ||
+            enUSCatalogue.translation["Common.StorageQuotaExceeded"],
+    );
+}
+
 /** Infer legacy ownership first. Migration passes [] because its rows are not new admissions. */
 export function boundPuzzleSession(
     value: PuzzleSession,
@@ -102,7 +117,7 @@ export function boundPuzzleSession(
                 selectedAttemptId: attempt.attemptId,
             }) > MAX_PUZZLE_SESSION_BYTES
         ) {
-            throw new Error("Puzzle attempt exceeds its retention budget");
+            throw puzzleSessionQuotaError();
         }
     }
     while (
@@ -112,13 +127,13 @@ export function boundPuzzleSession(
         const index = session.attempts.findIndex(
             (attempt) => attempt.attemptId !== session.selectedAttemptId,
         );
-        if (index === -1) throw new Error("Puzzle session exceeds its retention budget");
+        if (index === -1) throw puzzleSessionQuotaError();
         session.attempts.splice(index, 1);
     }
     return session;
 }
 
-export const legacyPuzzleKey = (logicalId: string) => `${logicalId}-puzzles`;
+export const legacyPuzzleKey = (logicalId: string) => `${logicalId}${LEGACY_PUZZLE_SUFFIX}`;
 
 /** The saved played path establishes ownership without replacing annotations or variations. */
 export function puzzleOwnsTree(puzzle: Puzzle, tree: TreeState): boolean {
