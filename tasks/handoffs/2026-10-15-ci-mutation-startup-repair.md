@@ -478,3 +478,76 @@ All report test identities and source, mutation identities and source match. Onl
 ```
 
 Source implementation and local proof are complete. Cumulative code/records review, clean-tree final gates, push, required hosted confirmation and install remain pending. Plan authorship and arbitration shared one context. Detection used the same model family and model as code in fresh sessions.
+
+
+## Cumulative code closure R3, complete raw reports
+
+### Code R3 correctness
+
+No correctness defects found. The fixture retains the same DTO shape and exact decimal value. Stryker converts the new allowance to 600,000 ms for the complete initial run, preserving individual test limits and mutant timeout calculation.
+
+Limitation: hosted sufficiency remains unverified (confidence: 100). No files changed or gates run. Review shares the author’s model and family, with fresh-session separation only.
+
+VERDICT: APPROVED
+
+### Code R3 root-cause
+
+No root-cause blocker or reintroduced prior defect found. The fixture removes the forbidden import directly. SDK tracing confirms the configuration changes the complete baseline allowance while preserving individual test and mutant timeout settings.
+
+Limitation — stryker.config.mjs:42: hosted failing-before/passing-after proof remains incomplete. Both configurations pass locally, so ten minutes remains a bounded repair candidate pending hosted confirmation (confidence: 100).
+
+Review used the same model family and model as the author, with fresh-session separation only. No files changed.
+
+VERDICT: APPROVED
+
+### Code R3 tests
+
+No findings. The persistence assertions still catch decimal coercion. The report comparison asserts `dryRunTimeoutMinutes` changes from 5 to 10 and would reject freshly generated reports after reverting the option.
+
+Named limitation (confidence: 100): local mutation runs pass with either allowance. They prove feasibility and preserved scope, not hosted sufficiency. Required hosted confirmation remains pending.
+
+Review shares the code author’s model family, with fresh-session separation only.
+
+VERDICT: APPROVED
+
+### Code R3 minimalism
+
+No bloat or duplication findings. The closure delta uses the existing public facade type and one SDK configuration option. No added code files, wrappers, extension points or redundant tests require deletion.
+
+Hosted sufficiency remains unverified until the required CI confirmation.
+
+VERDICT: APPROVED
+
+### Code R3 code-quality
+
+No readability or local-consistency defects found in the two-file closure delta. The timeout comment matches SDK behavior, and facade-derived typing follows an existing sibling convention.
+
+Review was read-only. Detection shares the code author’s model and family, with fresh-session separation only. Hosted confirmation remains pending.
+
+VERDICT: APPROVED
+
+### Code R3 error-handling
+
+No error-handling defects found.
+
+Deadline expiry still logs “Initial test run timed out!”, propagates nonzero, terminates sibling packages and retains the recovery fence if cleanup fails. The fixture’s type-only change adds no failure path.
+
+Limitation (confidence: 100): hosted sufficiency remains unverified. Local success does not establish it.
+
+Read-only review. No files changed. Detection used the author’s model and family in a fresh session.
+
+VERDICT: APPROVED
+
+### Code R3 ipc-contract
+
+NOT APPLICABLE: The closure delta changes only a test fixture’s type annotation and Stryker’s complete initial-suite allowance. Neither changes runtime IPC commands, payloads, events, subscriptions, capabilities or generated bindings. Previously reviewed storage implementation remains unchanged.
+
+VERDICT: APPROVED
+
+## Code R3 arbitration
+
+All seven verdicts are APPROVED, with IPC correctly not applicable to the two-file repair delta. No retained code finding or unresolved Fix remains. Six lenses explicitly retain the hosted-sufficiency limitation. The exact final source consists of fixture commit 515b555d and SDK configuration commit 1b2158ba, alongside the previously reviewed storage-size implementation 6e43269e. Known proof/history records were committed as 7e2999d9. The branch was fetched and rebase reported up to date against origin/master at BASE 45c7dd30.
+
+The primary hosted failure has not yet been confirmed repaired. Finding f-20261015-08 therefore remains open through the first source push. Its closure will follow actual hosted success through the normal records-only push route, not a premature completion claim. Local complete proof and code review permit the required repair attempt under the remote-red exception for its owning finding. Full clean-tree gates, records review, ordinary push, hosted confirmation and install remain pending. This section supersedes code-review-pending states, not those remaining release obligations.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family and model as code in fresh sessions. No family separation is claimed.

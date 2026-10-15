@@ -69,3 +69,8 @@ The initial serial scheduling trial did not establish its required benefit and w
 ## Corrected local CI proof complete
 
 The corrected full pre-review passed, including mutation 446.6 seconds. The complete constrained SDK run passed all three packages at 100%, with exact source/config postconditions and cleanup. Actual emitted reports confirm the sole configuration difference is the complete initial-suite allowance from 5 to 10 minutes. All retained test identities and sources, mutation identities and sources, initial-run counts and ignored counts match the published base. No local default-five-minute failure or speed benefit is claimed. Cumulative review, final gates, push, required hosted confirmation and installation remain pending.
+
+
+## Release repair code review complete
+
+Seven cumulative code lenses approved the fixture and SDK configuration repairs. No source finding or unresolved Fix remains. Finding f-20261015-08 remains open until actual hosted confirmation, with its closure planned through the ordinary records-only route afterward. Full clean-tree push gates, required hosted jobs and installation remain pending. Source data and earlier native/pixel proof are unchanged. Plan authorship and arbitration shared one context, and detection used the code's model family in fresh sessions.
