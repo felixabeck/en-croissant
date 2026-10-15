@@ -2659,6 +2659,38 @@ test("cold reopen after a refused unmount restores only durable elapsed", async 
   expect(storedPuzzles()[0].timeSpent).toBe(1000);
 });
 
+test("cold mount honors persisted tracking off before publishing a resumed timer", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(9000);
+  localStorage.setItem("track-puzzle-time", "false");
+  const atoms = createStore();
+  const memory = (await import("@/state/store/tree")).createTreeStore();
+  expect(memory.getState().makeMoves({ payload: ["e4"], changeHeaders: false }).success).toBe(true);
+  const initial = {
+    ...memory.getState(),
+    puzzleSession: testSession([puzzleRow({ timeSpent: 500 })]),
+  };
+  await renderPuzzles({ initial, atoms });
+  expect(trackingSwitch().checked).toBe(false);
+  expect(storedPuzzles()[0].timeSpent).toBe(500);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+  expect(treeStore.getState().root).toEqual(initial.root);
+  expect(treeStore.getState().position).toEqual([0]);
+  const bytes = sessionStorage.getItem("puzzles-test");
+  vi.setSystemTime(20_000);
+  expect(trackingSwitch().checked).toBe(false);
+  expect(storedPuzzles()[0].timeSpent).toBe(500);
+  expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
+  await act(async () => trackingSwitch().click());
+  expect(trackingSwitch().checked).toBe(true);
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(1500);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe("test-0");
+  expect(treeStore.getState().root).toEqual(initial.root);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
 test("UI history selection starts elapsed timing only when tracking is enabled", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(10_000);

@@ -656,7 +656,7 @@ function PuzzleSessionView() {
       live.puzzleSession === session
     ) {
       setTimer((current) =>
-        ownsSession() && current === timer
+        ownsSession() && current === timer && atomStore.get(trackPuzzleTimeAtom)
           ? activeTimer(
               attemptId,
               selectedTimer ? timerElapsed(selectedTimer) : savedElapsed,
@@ -676,6 +676,7 @@ function PuzzleSessionView() {
     timer,
     setTimer,
     selectedTimer,
+    atomStore,
   ]);
 
   useEffect(() => {
