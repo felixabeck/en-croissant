@@ -326,10 +326,8 @@ function PuzzleSessionView() {
     puzzle: Puzzle,
     existingAttemptId: string | null,
     {
-      resumeTimer = true,
       isCurrent = () => true,
     }: {
-      resumeTimer?: boolean;
       isCurrent?: () => boolean;
     } = {},
   ) {
@@ -354,12 +352,13 @@ function PuzzleSessionView() {
       const san = getNodeAtPath(opening.root, opening.position).san!;
       const selected = existingAttemptId ?? crypto.randomUUID();
       const previousTimer = atomStore.get(timerAtom);
+      const tracking = atomStore.get(trackPuzzleTimeAtom);
       const previousSession = store.getState().puzzleSession;
       let refused = false;
       try {
         const admitted = transition((draft) => {
           const history = draft.puzzleSession ?? emptyPuzzleSession();
-          if (previousTimer && trackTime) {
+          if (previousTimer && tracking) {
             const prior = history.attempts.find(
               (attempt) =>
                 attempt.attemptId === previousTimer.attemptId &&
@@ -382,9 +381,9 @@ function PuzzleSessionView() {
             ? live.puzzleSession.attempts.find((attempt) => attempt.attemptId === selected)
             : undefined;
         const ownsSession = live.capturePuzzleSessionOwner();
-        if (!refused && resumeTimer && live.puzzleSession !== previousSession && admitted) {
+        if (!refused && live.puzzleSession !== previousSession && admitted) {
           const nextTimer =
-            admitted.puzzle.completion === "incomplete"
+            atomStore.get(trackPuzzleTimeAtom) && admitted.puzzle.completion === "incomplete"
               ? { attemptId: selected, startedAt: Date.now() - (admitted.puzzle.timeSpent || 0) }
               : null;
           setTimer((current) =>
@@ -425,7 +424,7 @@ function PuzzleSessionView() {
 
     if (nextIndex !== -1 && !force) {
       const next = attempts[nextIndex];
-      admitPuzzle(next.puzzle, next.attemptId, { resumeTimer: trackTime, isCurrent: isOwned });
+      admitPuzzle(next.puzzle, next.attemptId, { isCurrent: isOwned });
       return;
     }
 
@@ -470,11 +469,7 @@ function PuzzleSessionView() {
       moves: puzzle.moves.split(" "),
       completion: "incomplete",
     };
-    if (
-      admitPuzzle(newPuzzle, null, { resumeTimer: trackTime, isCurrent }) &&
-      progressive &&
-      range !== ratingRange
-    )
+    if (admitPuzzle(newPuzzle, null, { isCurrent }) && progressive && range !== ratingRange)
       setRatingRange(range);
   }
 

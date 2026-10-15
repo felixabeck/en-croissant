@@ -2444,6 +2444,128 @@ test("timer close cleanup cannot recreate a retired physical tree", async () => 
   expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBe(newerTimer);
 });
 
+test("UI history selection starts elapsed timing only when tracking is enabled", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow(), { ...puzzleB(), timeSpent: 1000 }], -1);
+  await renderPuzzles({ initial });
+  expect(trackingSwitch().checked).toBe(false);
+  await selectIncomplete(1);
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  expect(selected).toBe("test-1");
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles()[1].timeSpent).toBe(1000);
+  vi.setSystemTime(20_000);
+  await act(async () => trackingSwitch().click());
+  expect(trackingSwitch().checked).toBe(true);
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[1].timeSpent).toBe(2000);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
+test("untracked B-to-A-to-B history revisits discard a retained running start", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow(), { ...puzzleB(), timeSpent: 1000 }], -1);
+  const atoms = await renderPuzzles({ initial });
+  await selectIncomplete(1);
+  // A retained transient value must not resume when its owner is revisited untracked.
+  await act(async () => atoms.set(puzzleTimerFamily("puzzles-test"), ownedTimer(9000)));
+  vi.setSystemTime(12_000);
+  await selectIncomplete(0);
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+  vi.setSystemTime(15_000);
+  await selectIncomplete(1);
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  expect(selected).toBe("test-1");
+  expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
+  expect(trackingSwitch().checked).toBe(false);
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([undefined, 1000]);
+  vi.setSystemTime(20_000);
+  await act(async () => trackingSwitch().click());
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles().map(({ timeSpent }) => timeSpent)).toEqual([undefined, 2000]);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
+test("deferred native admission uses tracking disabled before its response", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  const query = deferred<NativePuzzle>();
+  mocks.getPuzzle.mockReturnValueOnce(query.promise);
+  await renderPuzzles({ trackTime: true });
+  await newPuzzle();
+  expect(mocks.getPuzzle).toHaveBeenCalledOnce();
+  vi.setSystemTime(12_000);
+  await act(async () => trackingSwitch().click());
+  expect(trackingSwitch().checked).toBe(false);
+  vi.setSystemTime(15_000);
+  await act(async () => query.resolve({ ...puzzleB(), moves: "g1f3 d7d5" }));
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  expect(selected).not.toBeNull();
+  expect(storedPuzzles()).toHaveLength(1);
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(storedPuzzles()[0].timeSpent).toBeUndefined();
+  vi.setSystemTime(20_000);
+  await act(async () => trackingSwitch().click());
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[0].timeSpent).toBe(1000);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
+test("cached successor admission uses tracking disabled during completion metadata", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(10_000);
+  const initial = defaultTree();
+  initial.puzzleSession = testSession([puzzleRow(), { ...puzzleB(), timeSpent: 1000 }], -1);
+  const atoms = await renderPuzzles({ initial, trackTime: true });
+  await act(async () => atoms.set(jumpToNextPuzzleAtom, true));
+  await selectIncomplete(0);
+  const themes = deferred<string[]>();
+  mocks.getThemesForPuzzle.mockReturnValueOnce(themes.promise);
+  vi.setSystemTime(11_000);
+  await humanMove("e7", "e5");
+  expect(storedPuzzles()[0]).toMatchObject({ completion: "correct", timeSpent: 1000 });
+  vi.setSystemTime(12_000);
+  await act(async () => trackingSwitch().click());
+  expect(trackingSwitch().checked).toBe(false);
+  vi.setSystemTime(15_000);
+  await act(async () => themes.resolve(["fork"]));
+  const selected = treeStore.getState().puzzleSession!.selectedAttemptId;
+  const selectedTree = treeStore.getState().root;
+  expect(selected).toBe("test-1");
+  expect(treeStore.getState().currentNode().san).toBe("Nf3");
+  expect(mocks.getPuzzle).not.toHaveBeenCalled();
+  expect(storedPuzzles()[0]).toMatchObject({
+    completion: "correct",
+    timeSpent: 1000,
+    themes: ["fork"],
+  });
+  expect(storedPuzzles()[1].timeSpent).toBe(1000);
+  vi.setSystemTime(20_000);
+  await act(async () => trackingSwitch().click());
+  vi.setSystemTime(21_000);
+  await act(async () => window.dispatchEvent(new Event("pagehide")));
+  expect(storedPuzzles()[1].timeSpent).toBe(2000);
+  expect(treeStore.getState().puzzleSession!.selectedAttemptId).toBe(selected);
+  expect(treeStore.getState().root).toEqual(selectedTree);
+  expect(treeStore.getState().position).toEqual([0]);
+});
+
 test("UI history selection preserves elapsed across equal timer starts and a cold reopen", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(9000);
