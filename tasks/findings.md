@@ -16002,3 +16002,46 @@ This closes the measured ownership defect and its completed local proof contract
 
 * **Review accounting correction (2026-10-14, records r26):** The closure note's phrase eight applicable code lenses is superseded by seven applicable code lenses approved plus one database-indexing lens that explicitly returned NOT APPLICABLE and APPROVED. All eight code reports approve, but only seven are applicable. The proof and closure result are unchanged. The original note remains historical under the append-only ledger contract. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b244b485d1cac25a9a649a84548f609b3d36a68e1295b9d379a9ca27eac896ff","input_sha256":"5d5c7237d777ad041dcc15b657ea822d9ed8c9c909862aa2623950a9ba418685","kind":"mutation-receipt","operation":"3363bed01eea0f5bd491fa0b6b6e7e879624e0400a49beba9848edc7f8826551","options":{"section":null},"request_id_sha256":null,"results":["f-20261014-04"],"target":"f-20261014-04","v":1} -->
+
+---
+
+## 2026-10-15 — filed through the inbox spool
+
+### Engine configuration probe errors leave Advanced Settings empty without an explanation
+
+* **ID:** f-20261015-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/engines/EnginesPage.tsx:327-381, LocalSettings useSWRImmutable configuration read.
+* **Defect:** The configuration query retains its rejection in SWR, but LocalSettings destructures only data and renders an empty completeOptions fallback. No error is displayed or notified, and no production SWRConfig supplies a global handler.
+* **Failure scenario:** Open a registered local engine whose UCI configuration probe times out or returns a typed native failure. Name and other saved metadata still render, but Advanced Settings becomes empty without explaining the failed probe.
+* **Fix shape:** Expose the current handle-keyed query's normalized public failure through the editor's existing error UI conventions, preserving the authoritative engine and ordinary settings save behavior. Avoid stale-owner error presentation and repeated retry notifications.
+* **Proof required:** Real routed LocalSettings rejection shows the typed public error without changing the engine card or stored record, with owner/key replacement and successful recovery clearing the obsolete failure. Source-only fault of the error presentation must fail the visible-error assertion and restore green.
+* **Related:** f-20261001-17 owns ordinary engine publication in this component. This is a distinct pre-existing error surface, no common Root is asserted.
+* **Found by:** review-error-handling in cumulative diff round1 of the full interactive f-20261001-17 drain, confidence97, origin3afed0317. Root confirmed the data-only destructure, empty fallback and absence of a global SWR error handler. Same actual editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### Engine form exposes a newly picked binary before its configuration probe completes
+
+* **ID:** f-20261015-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/engines/EngineForm.tsx:69-84, binary selection callback and unguarded form submission.
+* **Defect:** A picker result updates handle immediately, before getEngineConfig resolves, while filename, name and defaults retain the previously detected engine. The populated old fields continue passing validation and submission is permitted.
+* **Failure scenario:** Detect binary A, select binary B, then submit while B's configuration read is delayed. The registration persists B's handle with A's name, filename and options. A failed B probe can leave the same inconsistent form.
+* **Fix shape:** Keep binary detection and form submission under one bounded active owner, block submission during detection and saving, and adopt a successful current binary/configuration coherently. Refusal preserves the previously valid form and reports the error.
+* **Proof:** Real EngineForm/LocalEngine native transport cases for A→B delayed detection, refusal and retry, double submit during delayed preparation, and unmount. Require no mixed saved registration or duplicate admission. Source-only production faults must fail the relevant assertions and restore green.
+* **Related:** f-20261001-17 exposes the submission path's save receipt, this pre-existing detector ownership defect is a distinct cause. No shared Root is asserted.
+* **Found by:** review-correctness round1, confidence97, full interactive f-20261001-17 drain. Root confirms the immediate handle assignment and later independent field assignments, with no detection/submission guard. Same actual engine editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### Synced engine search defaults stay stale while the analysis settings panel is unmounted
+
+* **ID:** f-20261015-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/panels/analysis/BestMoves.tsx:93-101, src/state/atoms.ts:935-961, src/components/boards/EvalListener.tsx:165-175, AnalysisPanel keepMounted=false.
+* **Defect:** BestMoves alone copies committed defaults into the cached per-tab settings atom. The family's identity ignores changing defaults. With BestMoves unmounted, EvalListener reads the old copied settings and accepts results under that obsolete fingerprint.
+* **Failure scenario:** Enable a synced engine at Depth10, select Report, navigate to Engines and save Depth20, then return to the board. The per-tab family remains Depth10 and the actual listener searches/accepts that configuration until the Engines panel mounts again.
+* **Fix shape:** Derive synced effective settings from the latest committed engine at the shared tab settings boundary, independently of visual component mount. Preserve enabled/synced tab flags, independent unsynced settings, absent-target behavior and tab-family disposal. Remove the redundant visual effect mirror.
+* **Proof:** Real store/listener with the BestMoves settings panel absent shows a saved defaults change updates search and fingerprint, refused/pending changes stay committed, and unsynced settings/other tabs remain independent. Source-only regression must fail these assertions and restore green.
+* **Related:** f-20261001-17 governs durable synced defaults publication. This is a distinct pre-existing reader/mirror defect in that actual analysis area, no shared Root is asserted.
+* **Found by:** review-engine-protocol round1, confidence97, full interactive f-20261001-17 drain. Root confirms constructor-only defaults, identity comparison, component-only effect and live listener read. Fix now under the engine-publication mandate. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
