@@ -1,5 +1,7 @@
 # Local PGN cancellation Phase 1 handoff
 
+This opening report is the preserved phase-1 checkpoint. Its unstaged and unverified statements describe that checkpoint only. The root completion receipts below supersede those pending obligations without changing the historical worker report.
+
 Working tree: `/home/felixb/Projekte/chessfable.worktrees/drain`
 HEAD: `4c72b111bd97fc496cdbdf285ceaad4df3def8ba`
 
@@ -100,3 +102,43 @@ For every row, record its exact FAIL message and observed exit 1 from that run. 
 New screenshot assertions are `conversion-active.png`, `conversion-cancel-pending.png`, `conversion-cancel-320-200.png` and `conversion-cancel-pending-320-200.png`. Inspect counters, source wrapping, spinner, accessible Cancel and disabled/pending state before container-only updates. No screenshot was generated or updated here.
 
 Root still owns browser execution, screenshot inspection/update, release build, real verify:app runs and assertion staging. The portable tests ran on Linux. Pre-review's Windows compilation/lint is not Windows runtime proof. Existing rust-windows-test and rust-macos-test runtime CI on the pushed SHA remain required. No other out-of-scope product defect was observed.
+
+## Root completion receipts — 2026-10-15
+
+Implementation is committed in `a98d07e5`. Cumulative review found C1, where a successful import followed by library reload failure left the new-import modal open. Root adopted Fix under O3 and d-20261015-11, recorded d-20261015-14, and delegated the repair. Commit `3151f2f0` retains the actual success result, safely reports the secondary reload error once, closes the modal and keeps Retry available. Failed and cancelled conversions retain their exact primary cause and notification ownership. The root independently removed only the helper source fix with all new tests retained, observed eight failures with exit 1, restored it without offsets, and observed 206 passing tests in ten files. Root pre-review passed, including mutation, Windows clippy, coverage mappings, format/lint and bundle. Its mutation lane took 563.8 seconds. Logs and the red witness are under `/tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635`, with completion record `gate-c1-proof.fzryKJ` in the drain gate directory.
+
+### Native assertion staging and restored positive run
+
+Root ran the unchanged verifier against disposable real inputs and a disposable producer in the owned staging checkout `cancel-native-staging-943062b9`. All three negative runs completed the full journey, exited 1 and cleaned their throwaway profiles. No installed binary or production data was changed. The restored staging source was clean and rebuilt successfully. The owned staging checkout and branch were subsequently removed through `kit worktree remove`.
+
+| Run | Direct observed evidence | Actual exit |
+| --- | --- | --- |
+| `native-fault.log` | Only `cancel_conversion` in the disposable native producer ignored cancellation and returned `Ok(true)`. A disposable 100-game PGN let the ignored requests settle within the existing probe budget. CC0 passed. CC1 failed with wrong reserved outcome `undefined`. CC2 failed with both running and queued results `success` despite cancellation acknowledgements. CC3 failed because count/revision 1/1 became 202/4. CC4 failed at count/revision 203/5. CC5 failed because the completed ticket remained active. Every CC1–CC5 failure was direct, not a setup refusal. | 1 |
+| `native-seed.log` | Restored correct producer, only the disposable seed PGN changed from one to two games. Direct CC0 failure reported count 2 and revision 1. CC1–CC5 dependency failures in this run do not count as direct staging. A separate existing freshness assertion missed its 1000 ms budget at 1052 ms under load. Its budget and logic were unchanged. | 1 |
+| `native-setup.log` | Restored correct producer, only a newly created disposable database occupied the harness target filename before setup. Each CC0–CC5 setup branch printed `FAIL CCn conversion setup unavailable` and `Conflict: database filename already exists`. This separately stages the setup-refusal branches. | 1 |
+| `gate-native-final.0qolvr/log` | Primary checkout after the C1 source repair, `pnpm build` followed by `pnpm verify:app --screenshot .../verify-ui/final.png`. Every CC0–CC5 assertion and the complete verifier passed. Root inspected the screenshot. Profile `/tmp/chessfable-verify-nedV5q` was absent after completion. | 0 |
+
+The negative logs and matching `.actual-exit` files live under `/tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635`. Their expected-negative wrappers were polled successfully as `gate-native-fault-proof.m3V2uL`, `gate-native-seed-proof.wOPyRu` and `gate-native-setup-proof.FONtzx` under `/home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-943062b9-1e23-42b1-83a0-e262a3eac635`. Those wrapper successes mean the actual native exit was the expected 1, not that the deliberately broken application passed. The normal final completion record was polled with status 0. Native GTK menus and file dialogs were not inspected and this change requires no new GTK chrome check. Windows/macOS runtime proof remains a required pushed-SHA CI obligation.
+
+### Co-located work and review provenance
+
+Commit `105d2ba2` handles f-20260929-08. It splits independent permission/abandonment matrix cases into separately discovered tests without removing assertions, and makes the test-only `BoundedHook` wait only on its first notification. Root timings moved from 12.63 to 3.10 seconds for permissions, 6.04 to 1.36 for the tail cases, and 10.12 to 0.09 for the copy test. A source-only hook reversal failed at the intended rendezvous, and exact restoration passed. Root pre-review passed. The helper is test-only and no production deadline changed.
+
+The co-located candidate f-20261013-01 was skipped because its `working-tree-files.mjs` fix is outside the anchor's edited files. It remains open for the findings queue. No new finding was deferred by this run.
+
+The adopted plan's preserved review history and cumulative code reports are in `tasks/handoffs/2026-10-15-f-20261001-19-review.md`. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code, with session separation only. The root adopted supplied plan-review provenance and did not independently reconstruct the planner's timing or model records.
+
+### Final browser artifacts and pre-review
+
+Commit `b2750010` records the native staging receipts in the verifier comment and these four new container baselines:
+
+- `e2e/database-files.spec.ts-snapshots/conversion-active-database-files.png`
+- `e2e/database-files.spec.ts-snapshots/conversion-cancel-pending-database-files.png`
+- `e2e/font-scaled-breakpoints.spec.ts-snapshots/conversion-cancel-320-200-font-scaled-breakpoints.png`
+- `e2e/font-scaled-breakpoints.spec.ts-snapshots/conversion-cancel-pending-320-200-font-scaled-breakpoints.png`
+
+Root ran the normal container tests before updating, inspected every actual/diff image, corrected only the test's scroll and pointer state, then updated only the predicted baselines through `pnpm test:e2e:update`. No unrelated baseline was rewritten. The final normal container rerun passed both affected journeys, with active/pending controls, exact-ticket forwarding, sibling isolation, navigation, accessibility and 320px/200% long-name reachability checks. All 13 native-harness unit tests passed. Root inspected the final active/pending images with both source labels, counters and controls unobscured.
+
+The final artifact proof was polled with status 0 at `gate-artifact-proof.DO61m7`. Its root pre-review passed format/lint, coverage mappings, Windows clippy, bundle and mutation. Mutation took 666.3 seconds. The earlier corrected browser run waited for shared heavy-gate capacity, overlapping C1 closure review. One leaf resume was mistakenly given an invalid handle and failed before editing anything. Root corrected the handle and resumed the same leaf. This was an orchestration typo, not a source failure or a fallback. The proof-artifact leaves used mechanical then normal Codex roles. No production behavior changed after C1's commit `3151f2f0`.
+
+The primary finding is closed in `82e6b1f6`, with final closure review and clean-tree push gates still required at this checkpoint. Required platform CI and installation results are recorded after delivery in this run's build-ledger row.
