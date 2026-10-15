@@ -8027,3 +8027,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** This preserves the existing transient timer and one active tree. Reversal requires a separate evidenced product requirement.
 * **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"a0f716c429511238b336460ded2b8d6cd44da68554962b543a9e3d4f849c656b","input_sha256":"14cba44eb2fc1838fd68122f8890fb972a0f9abd3ad414b94b1f1707c635d3f4","kind":"mutation-receipt","operation":"ce7745a31afe5bb309372c0f20b28ebb4cf441f4e4908f4d3b59300050697b70","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-21","d-20261015-22","d-20261015-23","d-20261015-24","d-20261015-25"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-26 — Where should legacy puzzle duplication restore complete ownership?
+
+* **Question:** How should Duplicate behave while the active puzzle tab's legacy-session migration is refused?
+* **Governs:** f-20260920-08, f-20261014-01
+* **Chosen:** Restore a complete session/tree candidate from the original logical history ID and physical tree inside the destination's pre-metadata seed boundary. Preserve original stored bytes, live ownership and recovery gates. Refuse history-read or destination-save failure without admitting metadata.
+* **Rejected:** Forcing migration or writing the original source as a side effect, allowing a tree-only duplicate, or copying raw history to another unmanaged key.
+* **Reason:** The active Duplicate menu remains available behind Puzzles' migration Retry gate. A smaller tree-only copy and workspace update can fit while a combined source migration cannot, leaving the new logical owner unable to reach original history. The independent source probe and six scoped plan lenses confirm the boundary, runtime regression proof remains mandatory. Target-side restoration reuses the existing coherent owner and avoids disrupting the source. Reversal requires equivalent complete-copy, storage-refusal, original-owner and recovery-gate proof.
+* **Decided by:** Codex, source trace and approved r4 O3a correction under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e1384efbf5e57f8f51252327384bf6a070862578fef83f52926cdaa1202da007","input_sha256":"f5e19205cb307726b237c7fdc3c0c2953ab3e3d617ffb31bd67833f7993ccfe0","kind":"mutation-receipt","operation":"8e642170112a64a5fac31071092cb9bd615380d1b3c24c5ac37690bbdde350ef","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-26"],"target":"decisions-ledger","v":1} -->
