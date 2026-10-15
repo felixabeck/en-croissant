@@ -16109,7 +16109,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### Engines page clips local and cloud editors at 320px and 200% font scale
 
-* **ID:** f-20261015-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-06 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** ux
 * **Where:** src/components/engines/EnginesPage.tsx, fixed side-by-side page panels and editor child widths.
@@ -16119,6 +16119,8 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof required:** Both existing narrow German editor journeys pass their unchanged reachable assertions in the canonical container, with inspected captures and no horizontal page overflow. Restore old source alone to reproduce the same failures.
 * **Related:** f-20260927-08 settled font-aware breakpoint scaling and f-20260829-02 handled earlier narrow layout breakage. Their presence does not establish a shared Root. f-20261001-17 currently edits this actual editor area, Fix now.
 * **Found by:** Root actual browser verification in the full interactive f-20261001-17 drain. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Handled 2026-10-15:** The existing font-aware breakpoint stacks installed list and selected local/cloud editor with owned vertical scrolling. Child fields, portrait, option grids, labels, cards and action buttons shrink/reflow. Compact h3 visual heading retains h1 semantics and leaves the complete current error in view. Desktop stays side by side, only inspected dialog transparent-boundary pixels changed. Decisiond-20261015-07. Old source fails two actual layout assertions, repaired canonical three-project browser matrix passes48 including unchanged clipping/nohorizontalpageoverflow and German320px/200% metadata/edit/refusal/removal journeys. All new/moved PNGs were inspected. Native input helper correction is separately handled by f-20261015-07. Rejected hiding panels, horizontal page scrolling, clipping controls and accepting broken baselines. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"a9edcf2bbd24ab33946c3692cb3946f771ee989cc42817823595c732adec6514","header_sha256":"4b3b85f4f5d20491826047b68271b67da2e88231f78d832ecf483fa47511b32b","header_status":"handled","input_sha256":"b0a2b7a653b579a6efdd0058bdb4c4f6eca3cd01f86f3348cc18db2ddc4de172","kind":"mutation-receipt","operation":"ea457bf1eae4165c556892ccf664e3761c53f92d48fe371edd8a6b3b2d682783","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-06"],"target":"f-20261015-06","v":1} -->
 
 ---
 
