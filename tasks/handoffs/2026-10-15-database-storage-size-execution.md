@@ -54,3 +54,18 @@ The root447-test rerun is directly located at gate-numeric-runtime-build.20AQ1D/
 Cumulative R1 review ran ten code lenses and one records lens over the complete source and record ranges. Ten raw verdicts were APPROVED. The persistence lens's REVISE and blocker D1 remain verbatim in the review handoff. Root disposition is Defer to existing open build finding f-20261010-01, whose independent all-setters durability/refusal design and proof requirements already own this unchanged failure. No Fix was adopted, no source repair or Skip occurred, and no quota-durability success is claimed for the byte-count fix. The locked annotation links D1 to that finding.
 
 The final phase pre-review also passed after the staging receipt was added. Code is committed as 6e43269e. Required full push gates, remote CI and installation remain release obligations after this verified implementation checkpoint.
+
+
+## Release-check checkpoint, 2026-10-15
+
+The initial full final push gate ended1 only on the fixture's direct generated-type import, all other lanes passed. The fixture now infers its raw DTO from the public facade, with84 tests and full contract gate0. Required upstream Linux CI also failed frontend mutation startup on the published base. Owning findingf-20261015-08 and conditional decisiond-20261015-19 were recorded. The separate CI repair handoff preserves full additional plan review and outstanding controlled proof. Storage-size native/pixel evidence is unchanged. Push, required hosted confirmation, install and final clean-tree gates remain pending. Plan authorship and arbitration shared one context, detection used the same model family as code.
+
+
+## Corrected CI repair checkpoint, 2026-10-15
+
+The initial serial scheduling trial did not establish its required benefit and will not land. Its source and test changes were restored to HEAD. Decision d-20261015-20 explicitly corrects the agent-authored blanket timeout restriction, preserving the historical finding and prior choice. Five reviewers approved the corrected plan, which changes only Stryker's whole-initial-suite allowance to ten minutes. All tests, scopes, thresholds and individual test/per-mutant settings remain. Existing 40 allocation and 106 runner checks pass. The independent facade type correction remains. Corrected full mutation proof, pre-review, code/records review, final gates, hosted confirmation, push and install are still pending. No hosted repair or timing improvement is claimed. The CI repair handoff preserves the complete new trace and raw review history.
+
+
+## Corrected local CI proof complete
+
+The corrected full pre-review passed, including mutation 446.6 seconds. The complete constrained SDK run passed all three packages at 100%, with exact source/config postconditions and cleanup. Actual emitted reports confirm the sole configuration difference is the complete initial-suite allowance from 5 to 10 minutes. All retained test identities and sources, mutation identities and sources, initial-run counts and ignored counts match the published base. No local default-five-minute failure or speed benefit is claimed. Cumulative review, final gates, push, required hosted confirmation and installation remain pending.
