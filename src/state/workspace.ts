@@ -30,6 +30,7 @@ export type Workspace = z.infer<ReturnType<typeof createLiveWorkspaceSchema>>;
 export const MAX_WORKSPACE_TABS = 100;
 export const MAX_PENDING_TREE_REMOVALS = 100;
 export const MAX_PENDING_PUZZLE_REMOVALS = 100;
+const MAX_LEGACY_PUZZLE_REMOVAL_KEY_LENGTH = 256;
 const MAX_ACTIVE_TAB_ID_LENGTH = 128;
 
 function createLiveWorkspaceSchema() {
@@ -57,7 +58,11 @@ function createLiveWorkspaceSchema() {
         // supported workspace carries outstanding history cleanup intents (d-20261015-24).
         legacyPuzzleRemovalKeys: z
             .array(
-                z.string().min(LEGACY_PUZZLE_SUFFIX.length).max(256).endsWith(LEGACY_PUZZLE_SUFFIX),
+                z
+                    .string()
+                    .min(LEGACY_PUZZLE_SUFFIX.length)
+                    .max(MAX_LEGACY_PUZZLE_REMOVAL_KEY_LENGTH)
+                    .endsWith(LEGACY_PUZZLE_SUFFIX),
             )
             .max(MAX_PENDING_PUZZLE_REMOVALS)
             .refine((keys) => new Set(keys).size === keys.length)
