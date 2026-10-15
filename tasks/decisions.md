@@ -7930,3 +7930,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** native file lengths have no existing safe-integer ceiling, and exact decimal transport follows d-20261008-23 without copying progress identity arithmetic into display metadata. Reversal path: a newly evidenced native bounded domain and a reviewed numeric wire contract with equivalent serialization and persistence proof.
 * **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2fbe31363123e84512726ed34dab6b2bdaa4291e52c81def4947325ae0c578e4","input_sha256":"f12de9d61e8f9f213f0817a6e66076a848958306f815225c1d853cd0182624c9","kind":"mutation-receipt","operation":"e8d4a8ab846a74d78a6962d09dfccf98be1776b25e58b02d98b5c59c09a30033","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-15"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-16 — where should string display conversion live?
+
+* **Question:** where should string display conversion live?
+* **Governs:** f-20261001-20
+* **Chosen:** existing shared formatBytes, fixing its zero and unit-range boundary behavior within O3.
+* **Rejected:** duplicate caller conversions or a new database-specific formatter.
+* **Reason:** both consumers display the same byte domain. Reversal path: an evidenced display contract requiring a different formatter, with all consumers changed together.
+* **Decided by:** Codex, autonomously adopting the reviewed full-auto plan · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"81790b6f1fb1a074a1c866a86338ed06b511b2a95b6e98770c74710ab4ecd959","input_sha256":"91a8eea5ac385aff5e1bef88ab1f2985b89a0dd6a071439d1118b1af16769805","kind":"mutation-receipt","operation":"d77ccba71cbcfd6ca2d87f29116b3ce2d89f724fad69a61e77ff27e516708191","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-16"],"target":"decisions-ledger","v":1} -->
