@@ -16051,3 +16051,21 @@ This closes the measured ownership defect and its completed local proof contract
 * **Found by:** review-engine-protocol round1, confidence97, full interactive f-20261001-17 drain. Root confirms constructor-only defaults, identity comparison, component-only effect and live listener read. Fix now under the engine-publication mandate. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"a5fb68d1f7d67022f7a6cb1349dc287fdbbdac30d215a172686db6a3556f4b46","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-03"],"target":"f-20261015-03","v":1} -->
+
+---
+
+## 2026-10-15 — filed through the inbox spool
+
+### Stored false is rendered as checked for a default-true engine check option
+
+* **ID:** f-20261015-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** behaviour
+* **Where:** src/components/engines/EnginesPage.tsx:629, completeOptions check-option reader and setSetting.
+* **Defect:** A changed check option is persisted as its UCI string value. The checkbox uses truthiness, so the string false renders checked. A default-true option disabled by the user therefore appears enabled again while its durable and native option value is false.
+* **Spotted outside diff:** cumulative closure round2, 8027657a7e97a924127c190a75971e503d77b2a0..6a6d1e997250c09d626e18af386e928e046de6b1. The pre-existing predicate originates f0f510ace and remains in the edited reader.
+* **Failure scenario:** An engine advertises an editable check option with default true. Uncheck it, wait for the ordinary saved receipt and reload. Its stored option is the string false, but the control remains checked.
+* **Fix shape:** Decode boolean defaults and canonical UCI true/false strings explicitly without changing the persisted engine schema or publication/receipt contract.
+* **Proof:** Real routed default-true disable persists false and remains unchecked after settlement/rehydration, with pending/refused state and a source-only old-predicate assertion failure/restoration. Retain an affected browser capture.
+* **Related:** f-20261001-17 owns the editor's durable publication, this is a distinct reader predicate with no shared Root.
+* **Found by:** review-correctness closure round2, confidence99, full interactive f-20261001-17 drain. Root confirmed String serialization and the truthiness reader. Same actual engine-editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
