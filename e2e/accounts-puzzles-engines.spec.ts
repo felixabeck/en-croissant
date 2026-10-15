@@ -349,6 +349,7 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
                 timestamp: null,
                 title: "download-player Chess.com",
                 description: null,
+                ticket: null,
             },
         },
     ]);
