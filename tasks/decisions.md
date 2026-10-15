@@ -8086,3 +8086,60 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Root L3 traces a refused stop retaining startedAt9000 across tracking disabled10000–20000, then saving12000 instead of2000 at21000. Fresh review-plan r6 confirms the trace and identifies PR6-1, actual unmount under refusal while the timer atom and cached tree survive. Fresh r7 closes the corrected specification at98 and approves mutually exclusive variants. Runtime reproduction and source-only reversal remain mandatory before implementation closure. This adds the paused failure state missing from d30 while retaining its single owner and existing retirement route. A mounted unload refusal still runs continuously. Reversal requires equivalent paused/refused/unmounted/remounted, first-result, admission, newer-owner and cold-reopen evidence.
 * **Decided by:** Codex, new source evidence and focused r6/r7 mechanism review under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e982e50d9a816ec95b71525c18ffd03d336761a8a6a9d1b539da0da1377f6096","input_sha256":"52473c2c1667a8a5a094b7af3c2698e34d581f8cbdfcbee2f6bee6f795c1496d","kind":"mutation-receipt","operation":"3fa55d0d3d1a8041eb40216d8a37908c6bebb2bf5a868963731b4a4717da6870","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-31"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-16 — recorded through the decisions lock
+
+### d-20261016-01 — When to collect?
+
+* **Question:** When to collect?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose a later trusted startup with session retention.
+* **Rejected:** immediate upgrade/shutdown collection and a new actor tree-lease registry.
+* **Reason:** Existing d-20260906-09/10 already require durable ownership and conservative session retention. Cost: disk is reclaimed at a later start. Reversal: runtime collection requires a reviewed lifetime protocol proving all old-game and resource consumers.
+* **Decided by:** Codex under full auto, adopting reviewed plan D1, 2026-10-16. **Superseded-by:** -
+
+### d-20261016-02 — What proves ownership?
+
+* **Question:** What proves ownership?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose native prepublication provenance plus a managed-content inventory.
+* **Rejected:** directory-name guessing, sweeping every workspace child and promoting existing adopted trees.
+* **Reason:** Existing roots can be user selected. Cost: validation reads managed content and legacy leftovers remain. Reversal: historical trees can become collectible only with independently verified provenance, not a path heuristic.
+* **Decided by:** Codex under full auto, adopting reviewed plan D2, 2026-10-16. **Superseded-by:** -
+
+### d-20261016-03 — Where does lifecycle state live?
+
+* **Question:** Where does lifecycle state live?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose an additive bounded collection in the existing registry.
+* **Rejected:** a second JSON journal, storage engine, timer or public cleanup command.
+* **Reason:** It removes the observed unbounded native install retention and reuses current durability/admission. Removal path: remove this collection and its startup/publication hooks together if catalog installs cease, preserving user trees.
+* **Decided by:** Codex under full auto, adopting reviewed plan D3, 2026-10-16. **Superseded-by:** -
+
+### d-20261016-04 — How to treat cleanup errors?
+
+* **Question:** How to treat cleanup errors?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose native background diagnostics and persisted retry without failing startup, preserving d-20261004-22's background record policy.
+* **Rejected:** claiming a failed deletion succeeded or adding new UI notifications.
+* **Reason:** Reversal: a demonstrated user recovery need can justify separately reviewed UI surfacing.
+* **Decided by:** Codex under full auto, adopting reviewed plan D4, 2026-10-16. **Superseded-by:** -
+
+### d-20261016-05 — What proves a previous process finished using a tree?
+
+* **Question:** What proves a previous process finished using a tree?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose durable per-session use markers cleared only by that session after confirmed successful shutdown.
+* **Rejected:** restart as proof of child death and portable PID/name guesses.
+* **Reason:** The MANDATE says never delete while an engine child may still execute, and the frozen threat model includes process interruption. Cost: a crash or unconfirmed shutdown conservatively retains affected trees indefinitely, within admission limits. Reversal: an independently proven cross-process lifetime mechanism can safely release these markers. Do not require Felix to inspect processes or clear records manually.
+* **Decided by:** Codex under full auto, adopting reviewed plan D5, 2026-10-16. **Superseded-by:** -
+
+### d-20261016-06 — Can an install adopt a partially deleted tree?
+
+* **Question:** Can an install adopt a partially deleted tree?
+* **Governs:** f-20261002-04
+* **Chosen:** Choose typed refusal until a later eligible startup durably completes cleanup.
+* **Rejected:** the existing existence-only adoption for a known cleanup-in-progress tree.
+* **Reason:** The MANDATE's safe deletion and existing D9 require preserving complete live trees, not reviving damaged ones. Cost: reinstall can require restarting after a removal failure. Reversal: a reviewed recovery path may finish the already-started cleanup before fresh publication, without adopting or replacing live files.
+* **Decided by:** Codex under full auto, adopting reviewed plan D6, 2026-10-16. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"ad2b4ce1f1601d2d39d4ebc72fb806a013ba0d93f3b23a79599c446184ac92e7","input_sha256":"bfe9293f32434ef65b05612e5f29aaba465a3ca047da311b5375941225e53b6d","kind":"mutation-receipt","operation":"41b37d79c3eda1ed0a39f269e84c3cf550a5fac9b65d9af24e8bb2df9533e54d","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-01","d-20261016-02","d-20261016-03","d-20261016-04","d-20261016-05","d-20261016-06"],"target":"decisions-ledger","v":1} -->
