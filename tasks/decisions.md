@@ -7863,3 +7863,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Both actual browser journeys reach the native value's end and start, then the geometry helper falsely rejects their internal value widths. This existing-checker correction removes observed blocked proof. Failure cost is accepting real clipping, so displaced-control and strict-mode negative cases remain. Removal path: delete the narrow exception when browser computed overflow expresses native value scrolling and the same journeys preserve equivalent proof.
 * **Decided by:** Codex root after measured native caret proof and unchanged clipping failure, 2026-10-15. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"be16578bcd9cd87532dae13d724782b4c04dd3dbaf45b3d135c69f75abe04079","input_sha256":"b5c348eb3243947f46412cb10df0c652a6a317ff6ba8cb313b3340f9c3537183","kind":"mutation-receipt","operation":"ca61497954f763bab9a89bf7aa5f3cc019d3e6129a1616a1e08599fc40c43f11","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-09 — Which native ticket family owns local conversion cancellation?
+
+* **Question:** Which native ticket family owns local conversion cancellation?
+* **Governs:** f-20261001-19
+* **Chosen:** Conversion-kind tickets in OperationRegistry, sharing prepared-to-accepted validation and lifecycle with downloads while retaining download-specific policies.
+* **Rejected:** Routing conversion cancellation through cancelDownloadJob or adding a second registry.
+* **Reason:** The existing bounded owner-bound registry already owns accepted work and shutdown. Reversal path: replace the conversion kind and command adapters if the native operation model unifies these jobs.
+* **Decided by:** Codex, full auto, adopting reviewed plan D1 · **Superseded-by:** -
+
+### d-20261015-10 — Who deletes a newly created database after a cancelled local import?
+
+* **Question:** Who deletes a newly created database after a cancelled local import?
+* **Governs:** f-20261001-19
+* **Chosen:** Preserve renderer deletion of only its newly created handle after failed or cancelled conversion, after native worker settlement. Existing Add games targets are retained.
+* **Rejected:** Native deletion inside convert_pgn, which also accepts existing databases and does not own target creation intent.
+* **Reason:** The creating renderer already owns this cleanup. Renderer disappearance can leave an unfinished target under the existing recovery limit. Reversal path: a separate target-creation and activation ownership contract.
+* **Decided by:** Codex, full auto, adopting reviewed plan D2 · **Superseded-by:** -
+
+### d-20261015-11 — Which result wins a cancellation-versus-commit race?
+
+* **Question:** Which result wins a cancellation-versus-commit race?
+* **Governs:** f-20261001-19
+* **Chosen:** The actual transaction result wins. Cancellation acknowledges a request, with no new commit barrier. A successful conversion retains its database even if cancellation was requested.
+* **Rejected:** Replacing committed success with Cancellation and deleting committed data.
+* **Reason:** Existing transaction cancellation checks determine rollback. Reversal path: new evidence that those checks violate the rollback contract.
+* **Decided by:** Codex, full auto, adopting reviewed plan D3 · **Superseded-by:** -
+
+### d-20261015-12 — Does cancellation change conversion concurrency or accepted-work ownership?
+
+* **Question:** Does cancellation change conversion concurrency or accepted-work ownership?
+* **Governs:** f-20261001-19
+* **Chosen:** Preserve distinct per-operation conversion IDs and own-entry retirement from d-20261004-06 and d-20261004-07. Same-target imports queue. Accepted imports survive request abandonment and renderer reload, and application shutdown cancels them.
+* **Rejected:** Per-target refusal or cancellation of accepted imports on webview destruction.
+* **Reason:** Cancellation adds an operation action without changing established ownership. Reversal path: an explicit product ownership decision.
+* **Decided by:** Codex, full auto, adopting reviewed plan D4 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"b6680cdc2ae99290cc85cce9289d6d3dd48d226f3b49f4dc22bf7d748ac4dbac","input_sha256":"8cfa6c7039a831fc9495edcfdd799f13e1dd35e8396cb8f1bda5235ddca20d1b","kind":"mutation-receipt","operation":"6e00bd0cea6ca25339306df9673d7ccabbb25cafb6dbc5b98e5fc375e5e50f7a","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-09","d-20261015-10","d-20261015-11","d-20261015-12"],"target":"decisions-ledger","v":1} -->
