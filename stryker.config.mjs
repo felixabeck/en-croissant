@@ -37,6 +37,9 @@ const config = {
     related: true,
   },
   coverageAnalysis: "perTest",
+  // CI's complete cold initial suite exhausted five minutes. This allowance is separate
+  // from individual test limits and per-mutant timeout settings.
+  dryRunTimeoutMinutes: 10,
   // Each worker receives the measured runner allowance after charging one Stryker parent to budget.
   concurrency: workerCount({
     perWorkerBytes: STRYKER_RUNNER_BYTES,
