@@ -95,6 +95,11 @@ test("settings-responsive: labels every accent colour at a wide viewport", async
 // The page-wide clipping check proves the 320px layout, so each of its rules is pinned here on a
 // synthetic page: one case per rule, so dropping any rule turns exactly its case red.
 const text = "<span style='white-space: nowrap'>An unbreakable line of text</span>";
+// Caret navigation reaches the native input value, while strict clipping still rejects its box.
+const nativeTextInputCase = {
+    name: "input narrower than its value",
+    html: `<input style="width: 50px" value="A value much longer than the field" />`,
+};
 type ClippingCase = { name: string; html: string; lost: boolean; scrollY?: number };
 const clippingCases: ClippingCase[] = [
     {
@@ -158,11 +163,7 @@ const clippingCases: ClippingCase[] = [
         lost: true,
         html: `<h1 style="white-space: nowrap; text-indent: -120px">Heading</h1>`,
     },
-    {
-        name: "input narrower than its value",
-        lost: true,
-        html: `<input style="width: 50px" value="A value much longer than the field" />`,
-    },
+    { ...nativeTextInputCase, lost: false },
     {
         name: "scroller squeezed to no height",
         lost: true,
@@ -243,6 +244,7 @@ const clippingCases: ClippingCase[] = [
 
 // The default mode is the Files columns' horizontal-only check, and must stay that.
 const defaultModeCases: ClippingCase[] = [
+    { ...nativeTextInputCase, lost: true },
     {
         name: "a scroll container",
         lost: true,
