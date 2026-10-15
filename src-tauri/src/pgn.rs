@@ -178,13 +178,12 @@ impl BoundedHook {
     }
 
     pub(crate) fn notify_and_wait(&self) {
-        if let Ok(mut guard) = self.entered.lock() {
-            if let Some(tx) = guard.take() {
-                let _ = tx.send(());
+        let entered = self.entered.lock().ok().and_then(|mut guard| guard.take());
+        if let Some(tx) = entered {
+            let _ = tx.send(());
+            if let Ok(guard) = self.release.lock() {
+                let _ = guard.recv_timeout(std::time::Duration::from_secs(5));
             }
-        }
-        if let Ok(guard) = self.release.lock() {
-            let _ = guard.recv_timeout(std::time::Duration::from_secs(5));
         }
     }
 }
@@ -1622,6 +1621,42 @@ mod tests {
         time::Duration,
     };
     use tauri::Manager;
+
+    #[tokio::test]
+    async fn bounded_hook_only_waits_for_its_first_invocation() {
+        let (hook, entered, release) = BoundedHook::new();
+        let (first_done_tx, first_done_rx) = std::sync::mpsc::sync_channel(1);
+        let first_hook = hook.clone();
+        let first = std::thread::spawn(move || {
+            first_hook.notify_and_wait();
+            first_done_tx.send(()).expect("first invocation completed");
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("first invocation entry timeout")
+            .expect("first invocation entered");
+
+        let (later_done_tx, later_done_rx) = std::sync::mpsc::sync_channel(1);
+        let later = std::thread::spawn(move || {
+            hook.notify_and_wait();
+            later_done_tx.send(()).expect("later invocation completed");
+        });
+        // A later invocation must finish while the first still owns the release handshake.
+        let later_result = later_done_rx.recv_timeout(Duration::from_secs(2));
+        let first_before_release = first_done_rx.try_recv();
+        release.send(()).expect("release only the first invocation");
+        first.join().expect("join first invocation");
+        later.join().expect("join later invocation");
+
+        later_result.expect("later invocation must not wait for another release");
+        assert!(matches!(
+            first_before_release,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        first_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first invocation finishes after its release");
+    }
 
     fn resolved_for(
         directory: &tempfile::TempDir,

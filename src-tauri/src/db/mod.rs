@@ -5661,7 +5661,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn commands_resolve_with_their_own_operation() {
+    fn commands_resolve_with_their_own_operation_read_permits_get_db_info() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseRead]);
         let state = app.state::<AppState>();
@@ -5673,6 +5673,14 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_games() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
         assert!(recorded_result(PathOperation::DatabaseRead, || {
             get_games_blocking(
                 &state.pgn_path_authority,
@@ -5683,7 +5691,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_latest_game_timestamp() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseRead]);
         let state = app.state::<AppState>();
@@ -5696,6 +5708,14 @@ mod tests {
         })
         .unwrap()
         .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_player() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
         assert!(recorded_result(PathOperation::DatabaseRead, || {
             get_player_blocking(
                 &state.pgn_path_authority,
@@ -5706,6 +5726,14 @@ mod tests {
         })
         .unwrap()
         .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_players() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
         let player_query = PlayerQuery {
             options: QueryOptions {
                 sort: PlayerSort::Name,
@@ -5727,6 +5755,14 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_tournaments() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
         let tournament_query = TournamentQuery {
             options: QueryOptions {
                 sort: TournamentSort::Name,
@@ -5747,6 +5783,14 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_permits_get_players_game_info() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
         assert!(recorded_result(PathOperation::DatabaseRead, || {
             get_players_game_info_blocking(
                 &state.pgn_path_authority,
@@ -5759,7 +5803,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_permits_convert_pgn() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseCreate]);
         let state = app.state::<AppState>();
@@ -5779,13 +5827,17 @@ mod tests {
             )
         })
         .is_ok());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_export_permits_export_to_pgn() {
         let (dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseExport]);
+        let state = app.state::<AppState>();
         let destination_path = dir.path().join("export.pgn");
         std::fs::write(&destination_path, b"").unwrap();
         let destination = grant_pgn_destination(&app, &destination_path);
-        let state = app.state::<AppState>();
         assert!(recorded_result(PathOperation::DatabaseExport, || {
             export_to_pgn_blocking(
                 &state.pgn_path_authority,
@@ -5796,7 +5848,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_create_indexes() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5809,6 +5865,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_delete_indexes() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5821,6 +5882,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_edit_db_info() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5836,6 +5902,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_delete_duplicated_games() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5849,6 +5920,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_delete_empty_games() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5862,6 +5938,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_delete_db_game() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5876,6 +5957,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_write_db_game() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5893,6 +5979,11 @@ mod tests {
             }),
             Err(Error::NoMovesFound)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_merge_players() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5910,6 +6001,11 @@ mod tests {
             }),
             Err(Error::InvalidInput(message)) if message == "source player 1 does not exist"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_generate_search_index() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5923,6 +6019,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_permits_delete_database() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseMutate]);
         let state = app.state::<AppState>();
@@ -5936,7 +6037,11 @@ mod tests {
             )
         })
         .is_ok());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_refuses_create_indexes() {
         let (_dir, app, handle, _database) =
             schema_database_case("games", vec![PathOperation::DatabaseRead]);
         let state = app.state::<AppState>();
@@ -5948,8 +6053,11 @@ mod tests {
                 &CancellationToken::new(),
             )
         }));
+    }
 
-        // The create-only handle rejects each read, export, and mutating database command.
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_db_info() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -5962,6 +6070,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_export_to_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseExport,
@@ -5978,6 +6091,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_create_indexes() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -5990,6 +6108,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_games() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6004,6 +6127,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_latest_game_timestamp() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6016,6 +6144,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_player() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6029,6 +6162,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_players() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6053,6 +6191,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_tournaments() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6076,6 +6219,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_get_players_game_info() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
@@ -6092,6 +6240,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_delete_indexes() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6104,6 +6257,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_edit_db_info() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6119,6 +6277,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_delete_duplicated_games() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6132,6 +6295,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_delete_empty_games() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6145,6 +6313,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_delete_db_game() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6159,6 +6332,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_write_db_game() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6174,6 +6352,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_merge_players() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6189,6 +6372,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_generate_search_index() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6202,6 +6390,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_create_refuses_delete_database() {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
@@ -6215,7 +6408,11 @@ mod tests {
                 )
             },
         );
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_export_refuses_convert_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseCreate,
@@ -6235,6 +6432,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_export_refuses_get_db_info() {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseRead,
@@ -6247,6 +6449,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_export_refuses_create_indexes() {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseMutate,
@@ -6259,7 +6466,11 @@ mod tests {
                 )
             },
         );
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_refuses_convert_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseCreate,
@@ -6279,6 +6490,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_refuses_get_db_info() {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseRead,
@@ -6291,6 +6507,11 @@ mod tests {
                 .map(|_| ())
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_mutate_refuses_export_to_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseExport,
@@ -6307,7 +6528,11 @@ mod tests {
                 )
             },
         );
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_refuses_convert_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseRead,
             PathOperation::DatabaseCreate,
@@ -6327,6 +6552,11 @@ mod tests {
                 )
             },
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation_read_refuses_export_to_pgn() {
         assert_refused_operation(
             PathOperation::DatabaseRead,
             PathOperation::DatabaseExport,
@@ -6504,36 +6734,56 @@ mod tests {
             .is_none());
     }
 
-    #[derive(Clone, Copy, Debug)]
-    enum DatabaseCommandCase {
-        ConvertPgn,
-        CreateIndexes,
-        DeleteIndexes,
-        EditDbInfo,
-        DeleteDatabase,
-        DeleteDuplicatedGames,
-        DeleteEmptyGames,
-        ExportToPgn,
-        DeleteDbGame,
-        WriteDbGame,
-        MergePlayers,
+    macro_rules! database_command_cases {
+        ($($variant:ident => $name:ident),+ $(,)?) => {
+            #[derive(Clone, Copy, Debug)]
+            enum DatabaseCommandCase {
+                $($variant),+
+            }
+
+            mod every_database_command_finishes_its_real_tail_after_caller_drop {
+                use super::*;
+
+                $(
+                    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                    async fn $name() {
+                        assert_database_command_finishes_its_real_tail_after_caller_drop(
+                            DatabaseCommandCase::$variant,
+                        ).await;
+                    }
+                )+
+            }
+
+            mod every_database_command_retires_its_error_tail_after_caller_drop {
+                use super::*;
+
+                $(
+                    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                    async fn $name() {
+                        assert_database_command_retires_its_error_tail_after_caller_drop(
+                            DatabaseCommandCase::$variant,
+                        ).await;
+                    }
+                )+
+            }
+        };
+    }
+
+    database_command_cases! {
+        ConvertPgn => convert_pgn,
+        CreateIndexes => create_indexes,
+        DeleteIndexes => delete_indexes,
+        EditDbInfo => edit_db_info,
+        DeleteDatabase => delete_database,
+        DeleteDuplicatedGames => delete_duplicated_games,
+        DeleteEmptyGames => delete_empty_games,
+        ExportToPgn => export_to_pgn,
+        DeleteDbGame => delete_db_game,
+        WriteDbGame => write_db_game,
+        MergePlayers => merge_players,
     }
 
     impl DatabaseCommandCase {
-        const ALL: [Self; 11] = [
-            Self::ConvertPgn,
-            Self::CreateIndexes,
-            Self::DeleteIndexes,
-            Self::EditDbInfo,
-            Self::DeleteDatabase,
-            Self::DeleteDuplicatedGames,
-            Self::DeleteEmptyGames,
-            Self::ExportToPgn,
-            Self::DeleteDbGame,
-            Self::WriteDbGame,
-            Self::MergePlayers,
-        ];
-
         fn label(self) -> &'static str {
             match self {
                 Self::ConvertPgn => "convert_pgn",
@@ -6692,230 +6942,227 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn every_database_command_finishes_its_real_tail_after_caller_drop() {
-        for case in DatabaseCommandCase::ALL {
-            let (dir, app, handle, database) = blocking_database_case();
-            let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
-            let index = get_index_path(&database);
-            std::fs::write(&index, b"matrix cache identity").unwrap();
-            let identity = crate::SearchIndexIdentity::for_test_database(
-                &database,
-                crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
-            )
-            .unwrap();
-            let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
-            app.state::<AppState>()
-                .search_cache
-                .insert_result(cache_key.clone(), (vec![], vec![]));
-            let (entered, release) = install_database_command_checkpoint(case.label(), &handle);
+    async fn assert_database_command_finishes_its_real_tail_after_caller_drop(
+        case: DatabaseCommandCase,
+    ) {
+        let (dir, app, handle, database) = blocking_database_case();
+        let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
+        let index = get_index_path(&database);
+        std::fs::write(&index, b"matrix cache identity").unwrap();
+        let identity = crate::SearchIndexIdentity::for_test_database(
+            &database,
+            crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        app.state::<AppState>()
+            .search_cache
+            .insert_result(cache_key.clone(), (vec![], vec![]));
+        let (entered, release) = install_database_command_checkpoint(case.label(), &handle);
 
-            let command_app = app.clone();
-            let command_handle = handle.clone();
-            let caller = tokio::spawn(async move {
-                run_database_command_case(case, command_app, command_handle, inputs).await
-            });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap_or_else(|_| panic!("{} worker did not enter its core", case.label()));
-            assert!(app
+        let command_app = app.clone();
+        let command_handle = handle.clone();
+        let caller = tokio::spawn(async move {
+            run_database_command_case(case, command_app, command_handle, inputs).await
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or_else(|_| panic!("{} worker did not enter its core", case.label()));
+        assert!(app
+            .state::<AppState>()
+            .operations
+            .outstanding_labels()
+            .unwrap()
+            .iter()
+            .any(|label| label == case.label()));
+        caller.abort();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !app
                 .state::<AppState>()
                 .operations
                 .outstanding_labels()
                 .unwrap()
-                .iter()
-                .any(|label| label == case.label()));
-            caller.abort();
-            release.send(()).unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !app
-                    .state::<AppState>()
-                    .operations
-                    .outstanding_labels()
-                    .unwrap()
-                    .is_empty()
-                {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{} did not retire", case.label()));
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{} did not retire", case.label()));
 
-            let state = app.state::<AppState>();
-            if case.invalidates_cache() {
-                assert!(
-                    state.search_cache.get_result(&cache_key).is_none(),
-                    "{} did not invalidate its exact cache identity",
-                    case.label()
-                );
-            } else {
-                assert!(
-                    state.search_cache.get_result(&cache_key).is_some(),
-                    "{} unexpectedly invalidated its cache identity",
-                    case.label()
+        let state = app.state::<AppState>();
+        if case.invalidates_cache() {
+            assert!(
+                state.search_cache.get_result(&cache_key).is_none(),
+                "{} did not invalidate its exact cache identity",
+                case.label()
+            );
+        } else {
+            assert!(
+                state.search_cache.get_result(&cache_key).is_some(),
+                "{} unexpectedly invalidated its cache identity",
+                case.label()
+            );
+        }
+        match case {
+            DatabaseCommandCase::ConvertPgn => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
+            }
+            DatabaseCommandCase::CreateIndexes => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert!(check_index_exists(&mut db).unwrap());
+            }
+            DatabaseCommandCase::DeleteIndexes => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert!(!check_index_exists(&mut db).unwrap());
+            }
+            DatabaseCommandCase::EditDbInfo => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(
+                    info::table
+                        .find("Title")
+                        .select(info::value)
+                        .first::<Option<String>>(&mut *db)
+                        .unwrap()
+                        .as_deref(),
+                    Some("Matrix")
                 );
             }
-            match case {
-                DatabaseCommandCase::ConvertPgn => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
-                }
-                DatabaseCommandCase::CreateIndexes => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert!(check_index_exists(&mut db).unwrap());
-                }
-                DatabaseCommandCase::DeleteIndexes => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert!(!check_index_exists(&mut db).unwrap());
-                }
-                DatabaseCommandCase::EditDbInfo => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(
-                        info::table
-                            .find("Title")
-                            .select(info::value)
-                            .first::<Option<String>>(&mut *db)
-                            .unwrap()
-                            .as_deref(),
-                        Some("Matrix")
-                    );
-                }
-                DatabaseCommandCase::DeleteDatabase => assert!(!database.exists()),
-                DatabaseCommandCase::DeleteDuplicatedGames => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
-                }
-                DatabaseCommandCase::DeleteEmptyGames => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
-                }
-                DatabaseCommandCase::ExportToPgn => {
-                    assert!(std::fs::read_to_string(dir.path().join("export.pgn"))
-                        .unwrap()
-                        .contains("[White \"White\"]"));
-                }
-                DatabaseCommandCase::DeleteDbGame => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
-                }
-                DatabaseCommandCase::WriteDbGame => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(
-                        games::table
-                            .select(games::ply_count)
-                            .first::<Option<i32>>(&mut *db)
-                            .unwrap(),
-                        Some(2)
-                    );
-                }
-                DatabaseCommandCase::MergePlayers => {
-                    let mut db = state
-                        .database_repository
-                        .connection(&test_target(&database), None)
-                        .unwrap();
-                    assert_eq!(
-                        players::table
-                            .find(1)
-                            .count()
-                            .get_result::<i64>(&mut *db)
-                            .unwrap(),
-                        0
-                    );
-                    assert_eq!(
-                        games::table
-                            .select(games::white_id)
-                            .first::<i32>(&mut *db)
-                            .unwrap(),
-                        2
-                    );
-                }
+            DatabaseCommandCase::DeleteDatabase => assert!(!database.exists()),
+            DatabaseCommandCase::DeleteDuplicatedGames => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
+            }
+            DatabaseCommandCase::DeleteEmptyGames => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
+            }
+            DatabaseCommandCase::ExportToPgn => {
+                assert!(std::fs::read_to_string(dir.path().join("export.pgn"))
+                    .unwrap()
+                    .contains("[White \"White\"]"));
+            }
+            DatabaseCommandCase::DeleteDbGame => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
+            }
+            DatabaseCommandCase::WriteDbGame => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(
+                    games::table
+                        .select(games::ply_count)
+                        .first::<Option<i32>>(&mut *db)
+                        .unwrap(),
+                    Some(2)
+                );
+            }
+            DatabaseCommandCase::MergePlayers => {
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                assert_eq!(
+                    players::table
+                        .find(1)
+                        .count()
+                        .get_result::<i64>(&mut *db)
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    games::table
+                        .select(games::white_id)
+                        .first::<i32>(&mut *db)
+                        .unwrap(),
+                    2
+                );
             }
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn every_database_command_retires_its_error_tail_after_caller_drop() {
-        for case in DatabaseCommandCase::ALL {
-            let (dir, app, _handle, database) = blocking_database_case();
-            let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
-            let index = get_index_path(&database);
-            std::fs::write(&index, b"matrix error cache identity").unwrap();
-            let identity = crate::SearchIndexIdentity::for_test_database(
-                &database,
-                crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
-            )
-            .unwrap();
-            let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
+    async fn assert_database_command_retires_its_error_tail_after_caller_drop(
+        case: DatabaseCommandCase,
+    ) {
+        let (dir, app, _handle, database) = blocking_database_case();
+        let inputs = prepare_database_command_case(case, dir.path(), &app, &database);
+        let index = get_index_path(&database);
+        std::fs::write(&index, b"matrix error cache identity").unwrap();
+        let identity = crate::SearchIndexIdentity::for_test_database(
+            &database,
+            crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        app.state::<AppState>()
+            .search_cache
+            .insert_result(cache_key.clone(), (vec![], vec![]));
+        let missing_handle = DatabaseHandle::new(crate::infra::path_authority::PathRef {
+            id: format!("missing-matrix-database-{}", case.label()),
+        });
+        let (entered, release) = install_database_command_checkpoint(case.label(), &missing_handle);
+
+        let command_app = app.clone();
+        let caller = tokio::spawn(async move {
+            run_database_command_case(case, command_app, missing_handle, inputs).await
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or_else(|_| panic!("{} error worker did not enter its core", case.label()));
+        caller.abort();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{} error tail did not retire", case.label()));
+
+        assert!(
+            database.exists(),
+            "{} error path mutated the database",
+            case.label()
+        );
+        assert!(
             app.state::<AppState>()
                 .search_cache
-                .insert_result(cache_key.clone(), (vec![], vec![]));
-            let missing_handle = DatabaseHandle::new(crate::infra::path_authority::PathRef {
-                id: format!("missing-matrix-database-{}", case.label()),
-            });
-            let (entered, release) =
-                install_database_command_checkpoint(case.label(), &missing_handle);
-
-            let command_app = app.clone();
-            let caller = tokio::spawn(async move {
-                run_database_command_case(case, command_app, missing_handle, inputs).await
-            });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap_or_else(|_| panic!("{} error worker did not enter its core", case.label()));
-            caller.abort();
-            release.send(()).unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !app
-                    .state::<AppState>()
-                    .operations
-                    .outstanding_labels()
-                    .unwrap()
-                    .is_empty()
-                {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{} error tail did not retire", case.label()));
-
-            assert!(
-                database.exists(),
-                "{} error path mutated the database",
-                case.label()
-            );
-            assert!(
-                app.state::<AppState>()
-                    .search_cache
-                    .get_result(&cache_key)
-                    .is_some(),
-                "{} error path published cache invalidation",
-                case.label()
-            );
-        }
+                .get_result(&cache_key)
+                .is_some(),
+            "{} error path published cache invalidation",
+            case.label()
+        );
     }
 
     fn insert_named_game(
