@@ -12666,12 +12666,17 @@ Correction 2026-09-30 (push review of `8b97e423`): the handled note above says t
 
 ### One 21 s Rust test sets the wall time of both backend test gates
 
-* **ID:** f-20260929-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260929-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` `commands_resolve_with_their_own_operation` (line ~5289); next slowest `file_workspace::tests::copy_workspace_file_refuses_a_destination_parent_moved_outside_the_workspace` (10.6 s), `db::tests::every_database_command_finishes_its_real_tail_after_caller_drop` (10.2 s), `db::tests::every_database_command_retires_its_error_tail_after_caller_drop` (10.1 s).
 * **Defect:** measured 2026-09-29 on atlas with `--report-time`: the 1,623 tests sum to 461 s of test time, which the harness spreads over 24 threads (~19 s ideal), but the run takes 23.7 s because this single test takes 21.1 s. `backend-test` and `backend-coverage` both execute it, so it bounds both gates.
 * **Why it matters:** after the push-gate parallelization, the backend lane is the critical path of every Rust-only push; this test is most of that lane's test time.
 * **Proposed fix:** find where the 21 s goes (it builds two `schema_database_case` fixtures and walks every read command; likely a fixed wait or a timeout path per command), remove the wait or split the per-command cases into separate `#[test]`s so the harness parallelizes them; same check for the three ~10 s tests. Keep every assertion.
 * **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29.
+
+Handled in the co-located slice of f-20261001-19. The permission matrix now exposes all 46 original assertions as separate tests, and one canonical variant list exposes the two eleven-case caller-abandonment matrices. The existing test-only BoundedHook now waits only for the invocation that consumes its one-shot notification, eliminating repeated five-second waits in the copy test. All original assertions and production behavior remain.
+
+Root proof: the permission filter passed 47 tests in 3.10 seconds, the tail filter passed 22 in 1.36 seconds, and the formerly ten-second copy test passed in 0.09 seconds. Before this change, root measured 12.63 seconds, 6.04 seconds and 10.12 seconds respectively. The new one-shot regression failed with exit 101 when only the hook fix was removed, then passed after exact source restoration. Root cargo formatting and pnpm checks:pre-review passed, including mutation and Windows clippy. Source-only test scheduling was chosen under d-20261015-13, rather than removing assertions or changing production deadlines. Implementation commit and full review evidence are carried by this run's cumulative push review.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"a80bf6457d15e121b35510f961c9580fb5d3c5a0fda0dcb9eea39cc9b7845a8c","header_sha256":"abd6593ffe9c09ca49ac29e207f08d4617c9bd4af152a522f96acbbbbfc76c1a","header_status":"handled","input_sha256":"0809601cffb4067cc6093114714dda03a49529ceec0cb6350a0dca41fa842069","kind":"mutation-receipt","operation":"8ed3d934f7bb00c4232d1c28a1608e12766bc4618dd4202b9b996fd696149dd0","options":{"section":null},"request_id_sha256":null,"results":["f-20260929-08"],"target":"f-20260929-08","v":1} -->
 
 ---
 
