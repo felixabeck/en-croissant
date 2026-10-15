@@ -16069,3 +16069,21 @@ This closes the measured ownership defect and its completed local proof contract
 * **Proof:** Real routed default-true disable persists false and remains unchecked after settlement/rehydration, with pending/refused state and a source-only old-predicate assertion failure/restoration. Retain an affected browser capture.
 * **Related:** f-20261001-17 owns the editor's durable publication, this is a distinct reader predicate with no shared Root.
 * **Found by:** review-correctness closure round2, confidence99, full interactive f-20261001-17 drain. Root confirmed String serialization and the truthiness reader. Same actual engine-editor area, Fix now. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+---
+
+## 2026-10-15 — filed through the inbox spool
+
+### One synced settings action is split across separate saves and can publish only part of its snapshot
+
+* **ID:** f-20261015-05 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
+* **Impact class:** behaviour
+* **Follow-up of:** f-20261001-17
+* **Where:** src/components/panels/analysis/BestMoves.tsx:131-138 and src/components/engines/engineEditDraft.ts:115-134.
+* **Defect:** One accepted settings function can produce a reset plus go change or several option changes. Each submit invokes a separate owner save. The prior single functional engine update saved those fields together, while the repaired path permits partial publication.
+* **Failure scenario:** Enable sync with global defaults absent and retained local go/options. Native preparation refuses the reset candidate, then the queued go-only candidate succeeds. Only go is published and persisted although the single action was copying both. An option/resource preparation refusal can affect only the candidate carrying that option, so the later candidate can be valid.
+* **Fix shape:** Retain the existing bounded per-key draft identities while saving all intents produced by one accepted settings action as one current-record candidate and one owner receipt. Use the existing coordinator, no second queue or mirror. Preserve independent later actions, missing targets, closed owners and failure settlement.
+* **Proof:** Real-store parent sync action exercises go/options together through one saved receipt, pending/refused isolation, deliberate retry and no partial publish. Source-only separate-save regression must fail the atomicity assertion and restore green.
+* **Related:** f-20261015-03 owns shared synced read derivation, this is a distinct write-granularity defect introduced in repair6a6d1e99. No shared Root is asserted.
+* **Found by:** Codex root arbitration after cumulative round2 parent-admission test gap. Source confirms the loop invokes separate saves for one function, and the existing owner contract permits refusal followed by a successful queued save. Runtime reproduction remains part of this repair. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
