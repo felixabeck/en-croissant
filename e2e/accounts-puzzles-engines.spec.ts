@@ -708,7 +708,7 @@ test("accounts-puzzles-engines: selected puzzle B survives reload, refused admis
     const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
     const row = { id: 7, fen, rating: 1200, rating_deviation: 50, popularity: 1, nb_plays: 1 };
     const a = { ...row, moves: "e7e6 d2d4" };
-    const b = { ...row, moves: "e7e5 g1f3 b8c6 f1c4" };
+    const b = { ...row, moves: "e7e5 g1f3 b8c6 b1c3" };
     await page.addInitScript(() => {
         localStorage.setItem("font-size", "100");
         localStorage.setItem("puzzle-db", JSON.stringify({ id: "session-puzzles" }));
@@ -793,7 +793,7 @@ test("accounts-puzzles-engines: selected puzzle B survives reload, refused admis
     await capture("puzzle-session-independent-copy");
     const copyBytes = await page.evaluate((key) => sessionStorage.getItem(key), copyKey);
     await refusePuzzleStorage(page, copyKey);
-    await playBoardMove(page, page.locator("cg-board"), "f1", "c4");
+    await playBoardMove(page, page.locator("cg-board"), "b1", "c3");
     const retry = page.getByRole("button", { name: "Retry", exact: true });
     await expect(retry).toBeVisible();
     expect(await page.evaluate((key) => sessionStorage.getItem(key), copyKey)).toBe(copyBytes);
