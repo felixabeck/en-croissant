@@ -8037,3 +8037,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The active Duplicate menu remains available behind Puzzles' migration Retry gate. A smaller tree-only copy and workspace update can fit while a combined source migration cannot, leaving the new logical owner unable to reach original history. The independent source probe and six scoped plan lenses confirm the boundary, runtime regression proof remains mandatory. Target-side restoration reuses the existing coherent owner and avoids disrupting the source. Reversal requires equivalent complete-copy, storage-refusal, original-owner and recovery-gate proof.
 * **Decided by:** Codex, source trace and approved r4 O3a correction under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e1384efbf5e57f8f51252327384bf6a070862578fef83f52926cdaa1202da007","input_sha256":"f5e19205cb307726b237c7fdc3c0c2953ab3e3d617ffb31bd67833f7993ccfe0","kind":"mutation-receipt","operation":"8e642170112a64a5fac31071092cb9bd615380d1b3c24c5ac37690bbdde350ef","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-27 — Which retired UUID puzzle histories retain exact cleanup authority?
+
+* **Question:** Does a known retired logical owner need durable legacy-history authority when its ID is a UUID?
+* **Governs:** f-20260920-08
+* **Chosen:** Reuse the existing bounded exact-key cleanup intents for every proven retired logical owner, including UUIDs. Save authority before retirement and replay it even while global tree ownership remains uncertain. Retained owners and unidentified values remain protected.
+* **Rejected:** Relying solely on UUID orphan discovery during uncertain ownership, widening unknown-key sweeping, or adding a second cleanup registry or policy switch.
+* **Reason:** Cumulative review D2 traces a background UUID puzzle tab closed under treeOwnershipUncertain. The existing UUID exclusion drops its exact authority while the global uncertainty guard correctly blocks discovery across reload. This new evidence extends d-20261015-24 without reversing its bounded authority and capacity-refusal contract. One canonical reconciliation route avoids a second conditional policy. Refused cleanup can consume the existing 100-intent capacity, overflow preserves the previous owner. Reversal requires equivalent cold-document removal/refusal proof, or retirement of legacy migration and all outstanding intents. The existing legacy-field removal path remains.
+* **Decided by:** Codex, source trace and cumulative review D2 under full auto · **Superseded-by:** -
+
+### d-20261015-28 — Where should puzzle opening assembly share move semantics?
+
+* **Question:** How should puzzle admission avoid a second move-to-tree implementation while saving its complete candidate before publication?
+* **Governs:** f-20260920-08
+* **Chosen:** Expose and reuse the existing canonical draft move mutation in src/state/store/tree.ts for both store actions and plain puzzle candidates. Its data-state input needs no store methods. Puzzle admission disables sound and header-result changes while constructing the candidate, then plays sound only after durable success.
+* **Rejected:** Retaining the component's manual SAN/FEN/node/cursor construction, creating another move implementation, or introducing a new store or service solely for candidate construction.
+* **Reason:** Cumulative minimalism M1 identifies the same move-to-tree concept in Puzzles.tsx and the canonical makeMove mutation. The existing mutation already owns legal move, halfmove, cursor, variation and result semantics. Sharing it removes the duplicated component construction without expanding the module layout. Reversal requires equivalent shared semantics and real admission/store proof for nonstandard starts, move variants, header preservation, refusal and sound order.
+* **Decided by:** Codex, traced existing draft mutation and cumulative review M1 under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"d4cbaf4610da5de15fd03c351bd24e3276f798bc8f197abffdf6aa2a49140445","input_sha256":"34f6e644ae0950b6499841f00dffa131d33736c7dcde9141c9975c2db17c8b7a","kind":"mutation-receipt","operation":"ec9ac55dce5b96dbda71d3a50a5d16dbe02f731454d53d230e9cec975fd46a5f","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-27","d-20261015-28"],"target":"decisions-ledger","v":1} -->
