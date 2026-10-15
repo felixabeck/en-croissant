@@ -7843,3 +7843,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The previous writer saved the function's go/options snapshot together. Splitting it allows a refused member and a successful member to publish a partial action. One candidate preserves that granularity while retaining latest intent identity and committed reader authority. Reversal path: prove equivalent all-member refusal/publication and unrelated later-action independence before changing the boundary.
 * **Decided by:** Codex root source arbitration after round2, 2026-10-15. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b43b797989ee2caf9db6040682f416c464417e688da266b5204c56b4d12552fe","input_sha256":"f09fc4ffba107a9a627b39d6ecb79f3dd69ee9bde51687e3a95df54e757b09f4","kind":"mutation-receipt","operation":"5826d055a59375d83f914f01449a9b1b62a1e684c54825beab166c34f5d424cd","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261015-07 — How should narrow engine editors remain reachable?
+
+* **Question:** How should the existing installed list and selected engine editor fit a narrow viewport at enlarged app font scales?
+* **Governs:** f-20261015-06
+* **Chosen:** Reuse the existing font-aware breakpoint hook. Compact mode stacks the list above the selected editor with vertical scrolling, shrinking and wrapping their child controls to available width. Desktop keeps the side-by-side arrangement. Preserve keyed engine/editor ownership and every save boundary.
+* **Rejected:** Hiding the list or editor, horizontal page scrolling, clipping overflowing controls, refreshing broken screenshots, or another breakpoint-scaling implementation.
+* **Reason:** Both existing editor journeys fail actual reachable clipping assertions at320px/200% German. The shared responsive policy already exists. Local reflow restores access without changing what actions save or promise. Reversal path: replace the layout only with equivalent local/cloud reachability and unchanged desktop proof through canonical browser verification.
+* **Decided by:** Codex root after actual browser failures, 2026-10-15. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fd8b3d624a1f898dedffe677828c6adad210afb280bdb7dec91b410f3007e60e","input_sha256":"83ab2cdfeb3060cca09205ec4ef3d952465de30692619e053dc5d02f979f958a","kind":"mutation-receipt","operation":"f8cc5b7ad9c0bdc3451afdbae434d1d5ccc03feb0dfff2326e958abde74f8df7","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-07"],"target":"decisions-ledger","v":1} -->
