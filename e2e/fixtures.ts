@@ -235,6 +235,16 @@ export async function assertNothingClipped(
         };
         const contentLost = (node: Element, axis: Axis) => {
             if (!reachableMode) return axis.name === "x";
+            // Native caret navigation owns a visible text input's private value scroll even when
+            // computed overflow clips it. The actual engine Name End/Home journeys prove access.
+            if (
+                axis.name === "x" &&
+                node instanceof HTMLInputElement &&
+                node.type === "text" &&
+                node.value !== "" &&
+                node.clientWidth > 0
+            )
+                return false;
             const overflow = overflowOf(node, axis);
             // Scrolling reaches what a scroller holds only if it has room to show some of it: one
             // squeezed to nothing (a stacked panel's list) hides its content entirely.

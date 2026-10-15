@@ -60,6 +60,7 @@ import {
 } from "@/utils/engines";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { errorUnlessCancelled } from "@/platform/errors";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import GoModeInput from "../common/GoModeInput";
@@ -68,9 +69,11 @@ import OpenFolderButton from "../common/OpenFolderButton";
 import LinesSlider from "../panels/analysis/LinesSlider";
 import AddEngine from "./AddEngine";
 import UpgradeEngineModal from "./UpgradeEngineModal";
+import classes from "./EnginesPage.module.css";
 
 export default function EnginesPage() {
   const { t } = useTranslation();
+  const compact = useScaledMaxWidth(62);
 
   const [engines] = useAtom(enginesAtom);
   const enginesList = useMemo(() => engines ?? [], [engines]);
@@ -108,19 +111,26 @@ export default function EnginesPage() {
   const hasEngines = enginesList.length > 0;
 
   return (
-    <Stack h="100%">
+    <Stack h="100%" className={classes.page} data-compact={compact || undefined}>
       <AddEngine opened={opened} setOpened={setOpened} />
-      <Group align="baseline" py="sm" pl="lg">
-        <Title>{t("Engines.Title")}</Title>
+      <Group align="baseline" py="sm" pl={compact ? "xs" : "lg"}>
+        <Title size={compact ? "h3" : undefined}>{t("Engines.Title")}</Title>
         <OpenFolderButton />
       </Group>
-      <Group grow flex={1} style={{ overflow: "hidden" }} align="start" px="md" pb="md">
-        <Paper withBorder style={{ borderWidth: 2 }} h="100%">
-          <Stack gap={0} h="100%" style={{ overflow: "hidden" }}>
+      <Group
+        grow={!compact}
+        flex={1}
+        className={classes.panels}
+        align="start"
+        px={compact ? "xs" : "md"}
+        pb="md"
+      >
+        <Paper withBorder style={{ borderWidth: 2 }} className={classes.listPanel}>
+          <Stack gap={0} h="100%" mih={0}>
             <Group p="xs" gap="xs">
               <Input
                 size="sm"
-                style={{ flexGrow: 1 }}
+                style={{ flexGrow: 1, minWidth: 0 }}
                 leftSection={<IconSearch size="1rem" />}
                 placeholder={t("Common.Search")}
                 value={search}
@@ -136,7 +146,7 @@ export default function EnginesPage() {
               </IconAction>
             </Group>
             <Divider />
-            <ScrollArea flex={1}>
+            <ScrollArea flex={1} mih={0} scrollbars="y">
               <SimpleGrid cols={{ base: 1, md: 2 }} spacing={{ base: "md", md: "sm" }} p="xs">
                 {filteredEngines.map(({ item, index }) => {
                   const stats =
@@ -161,7 +171,7 @@ export default function EnginesPage() {
                       isSelected={selected === index}
                       setSelected={setSelected}
                       error={undefined}
-                      Header={<EngineName engine={item} />}
+                      Header={<EngineName engine={item} compact={compact} />}
                       stats={stats}
                     />
                   );
@@ -188,7 +198,12 @@ export default function EnginesPage() {
           </Stack>
         </Paper>
         {!selectedEngine || selected === undefined ? (
-          <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
+          <Paper
+            withBorder
+            style={{ borderWidth: 2 }}
+            p={compact ? "xs" : "md"}
+            className={classes.editor}
+          >
             <Center h="100%">
               <Stack align="center" gap="sm">
                 <ThemeIcon size={80} radius="100%" variant="light" color="gray">
@@ -201,16 +216,23 @@ export default function EnginesPage() {
             </Center>
           </Paper>
         ) : (
-          <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
+          <Paper
+            withBorder
+            style={{ borderWidth: 2 }}
+            p={compact ? "xs" : "md"}
+            className={classes.editor}
+          >
             {selectedEngine.type === "local" ? (
               <EngineSettings
                 key={selectedEngine.id}
+                compact={compact}
                 selected={selected}
                 setSelected={setSelected}
               />
             ) : (
               <CloudSettings
                 key={selectedEngine.id}
+                compact={compact}
                 engine={selectedEngine}
                 setSelected={setSelected}
               />
@@ -225,9 +247,11 @@ export default function EnginesPage() {
 function CloudSettings({
   engine,
   setSelected,
+  compact,
 }: {
   engine: Engine;
   setSelected: (v: number | null) => void;
+  compact: boolean;
 }) {
   const { t } = useTranslation();
   const [, save] = useAtom(enginesAtom);
@@ -241,66 +265,70 @@ function CloudSettings({
     };
   }, []);
   return (
-    <Stack>
-      <Divider variant="dashed" label={t("Common.GeneralSettings")} />
-      <TextInput
-        w="50%"
-        label={t("Common.Name")}
-        value={displayed.name}
-        onChange={(e) => submit({ kind: "field", field: "name", value: e.currentTarget.value })}
-      />
-      <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
-      <Stack w="50%">
-        <Text fw="bold">{t("Engines.Settings.NumOfLines")}</Text>
-        <LinesSlider
-          value={
-            Number(
-              engineOptionValue(
-                displayed.settings?.find((setting) => setting.name === "MultiPV") ?? {
-                  type: "string",
-                  name: "MultiPV",
-                  value: "1",
-                },
-              ),
-            ) || 1
-          }
-          setValue={(value) => submit({ kind: "option", name: "MultiPV", value: String(value) })}
+    <ScrollArea h={compact ? "auto" : "100%"} scrollbars="y" offsetScrollbars="present">
+      <Stack>
+        <Divider variant="dashed" label={t("Common.GeneralSettings")} />
+        <TextInput
+          w={compact ? "100%" : "50%"}
+          label={t("Common.Name")}
+          value={displayed.name}
+          onChange={(e) => submit({ kind: "field", field: "name", value: e.currentTarget.value })}
         />
+        <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
+        <Stack w={compact ? "100%" : "50%"} className={classes.cloudLines}>
+          <Text fw="bold">{t("Engines.Settings.NumOfLines")}</Text>
+          <LinesSlider
+            value={
+              Number(
+                engineOptionValue(
+                  displayed.settings?.find((setting) => setting.name === "MultiPV") ?? {
+                    type: "string",
+                    name: "MultiPV",
+                    value: "1",
+                  },
+                ),
+              ) || 1
+            }
+            setValue={(value) => submit({ kind: "option", name: "MultiPV", value: String(value) })}
+          />
+        </Stack>
+        <Group justify="right">
+          <Button
+            color="red"
+            onClick={() => {
+              void (async () => {
+                try {
+                  const receipt = await save((current) =>
+                    current.filter((item) => item.id !== engine.id),
+                  );
+                  if (
+                    receipt.saved &&
+                    alive.current &&
+                    !store.get(enginesAtom)?.some((item) => item.id === engine.id)
+                  )
+                    setSelected(null);
+                } catch (error) {
+                  notifyUnlessCancelled(t("Common.Error"), error);
+                }
+              })();
+            }}
+          >
+            {t("Common.Remove")}
+          </Button>
+        </Group>
       </Stack>
-      <Group justify="right">
-        <Button
-          color="red"
-          onClick={() => {
-            void (async () => {
-              try {
-                const receipt = await save((current) =>
-                  current.filter((item) => item.id !== engine.id),
-                );
-                if (
-                  receipt.saved &&
-                  alive.current &&
-                  !store.get(enginesAtom)?.some((item) => item.id === engine.id)
-                )
-                  setSelected(null);
-              } catch (error) {
-                notifyUnlessCancelled(t("Common.Error"), error);
-              }
-            })();
-          }}
-        >
-          {t("Common.Remove")}
-        </Button>
-      </Group>
-    </Stack>
+    </ScrollArea>
   );
 }
 
 function EngineSettings({
   selected,
   setSelected,
+  compact,
 }: {
   selected: number;
   setSelected: (v: number | null) => void;
+  compact: boolean;
 }) {
   const { t } = useTranslation();
   const errorTitle = t("Common.Error");
@@ -439,14 +467,21 @@ function EngineSettings({
   const [jsonModal, toggleJSONModal] = useToggle();
 
   return (
-    <ScrollArea h="100%" offsetScrollbars>
+    <ScrollArea
+      h={compact ? "auto" : "100%"}
+      offsetScrollbars={compact ? "present" : true}
+      scrollbars="y"
+    >
       <Stack>
         <Divider variant="dashed" label={t("Common.GeneralSettings")} />
-        <Group grow align="start" wrap="nowrap">
-          <Stack>
-            <Group wrap="nowrap" w="100%">
+        <Group grow={!compact} align="start" wrap="nowrap" className={classes.general}>
+          <Stack miw={0} w={compact ? "100%" : undefined}>
+            <Group wrap={compact ? "wrap" : "nowrap"} w="100%">
               <TextInput
                 flex={1}
+                miw={0}
+                w={compact ? "100%" : undefined}
+                style={compact ? { flexBasis: "100%" } : undefined}
                 label={t("Common.Name")}
                 value={displayed.name}
                 onChange={(e) =>
@@ -455,7 +490,7 @@ function EngineSettings({
               />
               <TextInput
                 label={t("Common.Version")}
-                w="5rem"
+                w={compact ? "100%" : "5rem"}
                 value={displayed.version}
                 placeholder="?"
                 onChange={(e) =>
@@ -479,7 +514,7 @@ function EngineSettings({
               />
             </Group>
           </Stack>
-          <Center>
+          <Center className={classes.portrait} w={compact ? "100%" : undefined}>
             {engine.imageHandle ? (
               <UnstyledButton
                 type="button"
@@ -512,10 +547,12 @@ function EngineSettings({
           </Center>
         </Group>
         <Divider variant="dashed" label={t("Engines.Settings.SearchSettings")} />
-        <GoModeInput
-          goMode={displayed.go || null}
-          setGoMode={(v) => submit({ kind: "field", field: "go", value: v })}
-        />
+        <div className={classes.goMode}>
+          <GoModeInput
+            goMode={displayed.go || null}
+            setGoMode={(v) => submit({ kind: "field", field: "go", value: v })}
+          />
+        </div>
 
         <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
         {configFailure && (
@@ -523,7 +560,7 @@ function EngineSettings({
             {configFailure.message}
           </Alert>
         )}
-        <SimpleGrid cols={2}>
+        <SimpleGrid cols={compact ? 1 : 2}>
           {completeOptions
             .filter((option: { type: string }) => option.type !== "check")
             .map((option: any) => {
@@ -554,9 +591,11 @@ function EngineSettings({
                 .with({ type: "string", value: P.select() }, (v: any) => {
                   if (isEngineResourcePathOptionName(v.name)) {
                     return (
-                      <Group key={v.name} align="end" wrap="nowrap">
+                      <Group key={v.name} align="end" wrap={compact ? "wrap" : "nowrap"}>
                         <TextInput
                           flex={1}
+                          miw={0}
+                          style={compact ? { flexBasis: "100%" } : undefined}
                           label={v.name}
                           placeholder={t("Engines.Settings.SyzygyPathPlaceholder", {
                             separator: ":",
@@ -618,7 +657,7 @@ function EngineSettings({
                 .otherwise(() => null);
             })}
         </SimpleGrid>
-        <SimpleGrid cols={2}>
+        <SimpleGrid cols={compact ? 1 : 2}>
           {completeOptions
             .filter((option) => option.type === "check")
             .map((o) => {
@@ -823,7 +862,7 @@ function JSONModal({
   );
 }
 
-export function EngineName({ engine }: { engine: Engine }) {
+export function EngineName({ engine, compact = false }: { engine: Engine; compact?: boolean }) {
   const { t } = useTranslation();
   const { data: fileExists, error } = useSWRImmutable(
     ["file-exists", engine.type === "local" ? capabilityKey(engine.handle) : null],
@@ -844,7 +883,7 @@ export function EngineName({ engine }: { engine: Engine }) {
       : "";
 
   return (
-    <Group wrap="nowrap">
+    <Group wrap={compact ? "wrap" : "nowrap"} miw={0} className={classes.engineName}>
       {engine.imageHandle ? (
         <LocalImage
           image={engine.imageHandle}
@@ -858,11 +897,21 @@ export function EngineName({ engine }: { engine: Engine }) {
       ) : (
         <IconCpu size="2.5rem" />
       )}
-      <Stack gap={0}>
-        <Text fw="bold" lineClamp={1} c={hasError ? "red" : undefined}>
+      <Stack gap={0} miw={0}>
+        <Text
+          fw="bold"
+          lineClamp={compact ? undefined : 1}
+          style={{ overflowWrap: "anywhere" }}
+          c={hasError ? "red" : undefined}
+        >
           {engine.name} {status}
         </Text>
-        <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }} lineClamp={1}>
+        <Text
+          size="xs"
+          c="dimmed"
+          style={{ overflowWrap: "anywhere" }}
+          lineClamp={compact ? undefined : 1}
+        >
           {engine.type === "local" ? engine.filename : engine.url}
         </Text>
       </Stack>

@@ -43,6 +43,7 @@ vi.mock("@/components/files/notifyError", () => ({
 import EnginesPage, { EngineName } from "./EnginesPage";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
+vi.mock("@/hooks/useScaledMaxWidth", () => ({ useScaledMaxWidth: () => false }));
 vi.mock("@/routes/engines", () => ({
   Route: { useSearch: () => ({ selected: mocks.selected }) },
 }));

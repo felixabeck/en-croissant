@@ -59,10 +59,45 @@ test("engine editor: current configuration error at 320px and 200% German", asyn
     const name = page.getByRole("textbox", { name: "Name", exact: true });
     await expect(name).toHaveValue("Gespeicherte Engine");
     await expect(name).toBeEditable();
+    await name.scrollIntoViewIfNeeded();
+    const originalNameStyle = await name.getAttribute("style");
+    try {
+        await name.evaluate((input) => {
+            input.style.transform = "translateX(500px)";
+        });
+        let displacedErrorMessage = "";
+        try {
+            await assertNothingClipped(name, { mode: "reachable" });
+        } catch (error) {
+            displacedErrorMessage = error instanceof Error ? error.message : String(error);
+        }
+        expect(displacedErrorMessage).toMatch(/content clipped/);
+    } finally {
+        await name.evaluate((input, style) => {
+            if (style === null) input.removeAttribute("style");
+            else input.setAttribute("style", style);
+        }, originalNameStyle);
+    }
+    expect(await name.getAttribute("style")).toBe(originalNameStyle);
+    let strictErrorMessage = "";
+    try {
+        await assertNothingClipped(name);
+    } catch (error) {
+        strictErrorMessage = error instanceof Error ? error.message : String(error);
+    }
+    expect(strictErrorMessage).toMatch(/content clipped/);
+    await name.focus();
+    await name.press("End");
+    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBeGreaterThan(0);
+    await name.press("Home");
+    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBe(0);
+    await expect(name).toHaveValue("Gespeicherte Engine");
+    await assertNothingClipped(name, { mode: "reachable" });
     const failure = page.getByRole("alert");
     await expect(failure).toContainText(germanListingCopy["Common.Error"]);
     await expect(failure).toContainText("Engine configuration timed out.");
     await failure.scrollIntoViewIfNeeded();
+    await expect(failure).toBeInViewport({ ratio: 1 });
     await assertNothingClipped(failure, { mode: "reachable" });
     await assertNoHorizontalOverflow();
     await capture("engine-config-error-320-200-de");
@@ -73,6 +108,7 @@ test("engine editor: refused cloud draft settles at 320px and 200% German", asyn
     page,
     mockScenario,
     capture,
+    assertNoHorizontalOverflow,
 }) => {
     await page.setViewportSize({ width: 320, height: 900 });
     await page.addInitScript(() =>
@@ -96,7 +132,16 @@ test("engine editor: refused cloud draft settles at 320px and 200% German", asyn
     const name = page.getByRole("textbox", { name: "Name", exact: true });
     await name.scrollIntoViewIfNeeded();
     await expect(name).toBeVisible();
+    await expect(name).toHaveValue("Committed cloud");
+    await name.focus();
+    await name.press("End");
+    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBeGreaterThan(0);
+    await name.press("Home");
+    await expect.poll(() => name.evaluate((input) => input.scrollLeft)).toBe(0);
+    await expect(name).toHaveValue("Committed cloud");
     await assertNothingClipped(name, { mode: "reachable" });
+    await expect(name).toBeEditable();
+    await assertNoHorizontalOverflow();
     const bytes = await page.evaluate(() => localStorage.getItem("engines"));
     await page.evaluate(() => {
         const original = Storage.prototype.setItem;
@@ -125,6 +170,7 @@ test("engine editor: refused cloud draft settles at 320px and 200% German", asyn
         const remove = page.getByRole("button", { name: "Entfernen", exact: true });
         await remove.scrollIntoViewIfNeeded();
         await assertNothingClipped(remove, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
         await remove.click();
         await expect(page.getByText("Committed cloud", { exact: true })).toBeVisible();
         expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);

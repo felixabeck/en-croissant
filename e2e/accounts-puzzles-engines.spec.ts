@@ -42,6 +42,9 @@ test("accounts-puzzles-engines: default-true check stays disabled after save and
     await ponder.uncheck();
     await expect(ponder).not.toBeChecked();
     expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);
+    await expect(ponder.locator("..").locator("svg")).toHaveCSS("opacity", "0");
+    await expect(ponder).not.toBeChecked();
+    expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(bytes);
     await capture("engine-check-false-pending");
     await expect.poll(() => page.evaluate(() => localStorage.getItem("engines"))).not.toBe(bytes);
     await expect(ponder).not.toBeChecked();
@@ -455,6 +458,7 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
             is_bmi2_compatible: { result: false },
             file_exists: { result: true },
             verify_signed_bytes: { result: null },
+            get_progress: { result: null },
             get_engine_config: {
                 result: {
                     name: "Stockfish 18",
@@ -484,11 +488,13 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
     await capture("engine-upgrade-modal");
     await expect(dialog).toHaveScreenshot("engine-upgrade-modal.png");
     await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
 
     await page.evaluate(() =>
         window.__E2E_TAURI__.configure({
             commands: {
                 file_exists: { result: true },
+                get_progress: { result: null },
                 reconcile_engine_attachments: { result: null, delay: 700 },
                 retire_engine: { result: null },
             },
@@ -502,6 +508,7 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
     await expect(card).toBeVisible();
     await expect(card).toHaveText("Stockfish 18");
     expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(before);
+    await expect(page.getByText(/Unexpected Tauri IPC command/)).toHaveCount(0);
     await capture("engine-publication-pending-draft");
     await expect(card).toHaveText("Saved publication");
     await expect.poll(() => page.evaluate(() => localStorage.getItem("engines"))).not.toBe(before);

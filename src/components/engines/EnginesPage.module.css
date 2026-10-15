@@ -1,0 +1,122 @@
+.page {
+  min-width: 0;
+  min-height: 0;
+}
+
+.page :where(:global(.mantine-Title-root), :global(.mantine-Text-root)) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.panels {
+  min-width: 0;
+  min-height: 0;
+  flex-wrap: nowrap;
+}
+
+.listPanel,
+.editor {
+  min-width: 0;
+  height: 100%;
+}
+
+.page :global(.mantine-ScrollArea-content) {
+  min-width: 0;
+}
+
+.editor
+  :where(
+    :global(.mantine-Stack-root),
+    :global(.mantine-Group-root),
+    :global(.mantine-InputWrapper-root)
+  ) {
+  min-width: 0;
+}
+
+.editor :global(.mantine-Divider-label) {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.editor
+  :where(
+    :global(.mantine-InputWrapper-label),
+    :global(.mantine-Checkbox-label),
+    :global(.mantine-Alert-message),
+    :global(.mantine-Alert-label)
+  ) {
+  overflow-wrap: anywhere;
+}
+
+.page[data-compact] .panels {
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.page[data-compact] .panels > * {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+.page[data-compact] .listPanel {
+  height: min(20rem, 60vh);
+}
+
+.page[data-compact] .engineName :where(svg, img) {
+  max-width: 100%;
+}
+
+.page[data-compact] .general {
+  flex-direction: column;
+}
+
+.page[data-compact] .portrait button {
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.page[data-compact] .goMode > :global(.mantine-Group-root) {
+  flex-wrap: wrap;
+}
+
+.page[data-compact] .goMode > :global(.mantine-Group-root) > * {
+  min-width: 0;
+  flex: 1 0 100%;
+}
+
+.page[data-compact] .cloudLines :global(.mantine-SegmentedControl-root) {
+  width: 100%;
+  min-width: 0;
+}
+
+.page[data-compact] .cloudLines :global(.mantine-SegmentedControl-label) {
+  padding: 0.25rem 0;
+}
+
+.page[data-compact] .editor :global(.mantine-Alert-root) {
+  padding: 0.5rem;
+}
+
+.page[data-compact] .editor :global(.mantine-Alert-wrapper) {
+  flex-direction: column;
+  gap: var(--mantine-spacing-xs);
+}
+
+.page[data-compact] .editor :global(.mantine-Button-root) {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: var(--button-height);
+  padding: 0.5rem;
+}
+
+.page[data-compact] .editor :global(.mantine-Button-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
