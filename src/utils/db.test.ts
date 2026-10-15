@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle, GameQuery } from "@/bindings";
-import type { DatabaseInfo as NativeDatabaseInfo } from "@/bindings/generated";
+import type { tauri } from "@/platform/tauri";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import i18n from "i18next";
 import { supportedLocales } from "@/i18n";
@@ -89,7 +89,7 @@ describe("database capability UI mapping", () => {
 
 describe("production database metadata pipeline", () => {
     it("persists and rehydrates exact native decimal metadata through the facade and plain JSON", async () => {
-        const metadata: NativeDatabaseInfo = {
+        const metadata: Awaited<ReturnType<typeof tauri.getDbInfo>> = {
             filename: "exact.db3",
             title: "Exact byte count",
             description: "",
