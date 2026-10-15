@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
 import { databaseConversionStateAtom, databaseConversionRefreshFailedAtom } from "@/state/atoms";
@@ -81,7 +81,8 @@ vi.mock("@/i18n", async (original) => ({
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("../common/AppModal", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  default: ({ children, opened }: { children: React.ReactNode; opened: boolean }) =>
+    opened ? <div>{children}</div> : null,
 }));
 vi.mock("../common/FileInput", () => ({
   default: ({ onClick, filename }: { onClick: () => void; filename: string | null }) => (
@@ -587,6 +588,56 @@ function setupLocalImport() {
   mocks.createWorkspaceDatabase.mockResolvedValue(importHandle);
 }
 
+test.each(["getDatabases", "setDatabases"])(
+  "a committed import closes its mounted modal after %s fails and cannot resubmit the original form",
+  async (refreshFailure) => {
+    setupLocalImport();
+    mocks.convertPgn.mockResolvedValueOnce(undefined);
+    const failure = new Error("reload denied at /private/import.db3");
+    const setDatabases = vi.fn().mockResolvedValue(undefined);
+    if (refreshFailure === "getDatabases") mocks.getDatabases.mockRejectedValueOnce(failure);
+    else setDatabases.mockRejectedValueOnce(failure);
+    const setOpened = vi.fn();
+    function MountedImport() {
+      const [opened, updateOpened] = useState(true);
+      return (
+        <AddDatabase
+          databases={[]}
+          opened={opened}
+          setOpened={(value) => {
+            setOpened(value);
+            updateOpened(value);
+          }}
+          disableLocalConversion={false}
+          setDatabases={setDatabases}
+        />
+      );
+    }
+    await act(async () => root.render(<MountedImport />));
+    const originalForm = host.querySelector("form")!;
+    const originalSubmit = originalForm.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    await submitLocalImport();
+
+    expect(setOpened).toHaveBeenCalledExactlyOnceWith(false);
+    expect(host.querySelector("form")).toBeNull();
+    expect(originalForm.isConnected).toBe(false);
+    await act(async () => originalSubmit.click());
+    expect(mocks.createWorkspaceDatabase).toHaveBeenCalledOnce();
+    expect(mocks.convertPgn).toHaveBeenCalledOnce();
+    expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
+    expect(getDefaultStore().get(databaseConversionRefreshFailedAtom)).toBe(true);
+    expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+      "Failed import database refresh failed: reload denied at [path]",
+    );
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "reload denied at [path]",
+    });
+  },
+);
+
 test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshLogger"])(
   "failed conversion preserves the backend message and clears state with %s failure",
   async (secondaryFailure) => {
@@ -807,7 +858,7 @@ test.each([false, true])(
     expect(mocks.deleteDatabase).not.toHaveBeenCalled();
     expect(mocks.getDatabases).toHaveBeenCalledOnce();
     expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
-    expect(setOpened.mock.calls).toEqual(refreshFails ? [] : [[false]]);
+    expect(setOpened.mock.calls).toEqual([[false]]);
     expect(setDatabases.mock.calls).toEqual(refreshFails ? [] : [[[]]]);
     expect(mocks.notify.mock.calls).toEqual(
       refreshFails

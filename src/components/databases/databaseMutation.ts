@@ -18,34 +18,29 @@ export async function refreshAfterDatabaseConversion<T>(
     setRefreshFailed: (failed: boolean) => void,
     notifyTitle: string,
 ): Promise<T> {
-    const reload = async () => {
+    const reload = async (notifyFailure: boolean) => {
         try {
             await refresh();
             setRefreshFailed(false);
         } catch (cause) {
             setRefreshFailed(true);
-            throw cause;
+            const primaryFailure = safeFailureContext(cause);
+            await logFailureSafely(
+                `Failed import database refresh failed: ${primaryFailure.message}`,
+                { operation: "failed import database refresh", primaryFailure },
+                "Import refresh logging failed",
+            );
+            if (notifyFailure) notifyUnlessCancelled(notifyTitle, cause, "database");
         }
     };
     let result: T;
     try {
         result = await convert();
     } catch (cause) {
-        try {
-            await reload();
-        } catch (refreshCause) {
-            const primaryFailure = safeFailureContext(refreshCause);
-            await logFailureSafely(
-                `Failed import database refresh failed: ${primaryFailure.message}`,
-                { operation: "failed import database refresh", primaryFailure },
-                "Import refresh logging failed",
-            );
-            if (!errorUnlessCancelled(cause))
-                notifyUnlessCancelled(notifyTitle, refreshCause, "database");
-        }
+        await reload(!errorUnlessCancelled(cause));
         throw cause;
     }
-    await reload();
+    await reload(true);
     return result;
 }
 

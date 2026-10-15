@@ -3,6 +3,7 @@ import type { DatabaseHandle } from "@/bindings";
 import { createStore } from "jotai";
 import { databaseConversionStateAtom, runDatabaseConversion } from "@/state/atoms";
 import { TauriCommandError } from "@/platform/tauri";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import { type Arguments, type ScopedMutator, type State, unstable_serialize } from "swr";
 import {
     deleteDatabaseAndInvalidate,
@@ -10,13 +11,156 @@ import {
     runAddGamesToDatabase,
     runPgnExport,
     refreshDatabaseGameQueries,
+    refreshAfterDatabaseConversion,
     type DatabaseRemovalState,
 } from "./databaseMutation";
 
 const notify = vi.hoisted(() => vi.fn());
+const logError = vi.hoisted(() => vi.fn());
 vi.mock("@mantine/notifications", () => ({ notifications: { show: notify } }));
+vi.mock("@/platform/native", () => ({ error: logError }));
+vi.mock("@/i18n", async (original) => ({
+    ...(await original<typeof import("@/i18n")>()),
+    default: {
+        t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+    },
+}));
 
 const database = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
+
+describe("database conversion refresh outcome", () => {
+    beforeEach(() => {
+        notify.mockClear();
+        logError.mockReset().mockResolvedValue(undefined);
+    });
+
+    it.each([false, true])(
+        "returns the committed result after reload fails even when logger failure is %s",
+        async (loggerFails) => {
+            const result = database("committed");
+            const refresh = vi
+                .fn()
+                .mockRejectedValue(new Error("reload denied at /private/db.db3"));
+            const setRefreshFailed = vi.fn();
+            const fallback = vi.spyOn(console, "error").mockImplementation(() => {});
+            if (loggerFails)
+                logError.mockRejectedValueOnce(new Error("logger denied at /private/log"));
+            try {
+                await expect(
+                    refreshAfterDatabaseConversion(
+                        async () => result,
+                        refresh,
+                        setRefreshFailed,
+                        "Common.Error",
+                    ),
+                ).resolves.toBe(result);
+                expect(refresh).toHaveBeenCalledOnce();
+                expect(setRefreshFailed).toHaveBeenCalledExactlyOnceWith(true);
+                expect(logError).toHaveBeenCalledExactlyOnceWith(
+                    "Failed import database refresh failed: reload denied at [path]",
+                );
+                expect(notify).toHaveBeenCalledExactlyOnceWith({
+                    color: "red",
+                    title: "Common.Error",
+                    message: "reload denied at [path]",
+                });
+                expect(fallback.mock.calls).toEqual(
+                    loggerFails
+                        ? [
+                              [
+                                  "Import refresh logging failed",
+                                  {
+                                      operation: "failed import database refresh",
+                                      primaryFailure: {
+                                          category: "permission",
+                                          message: "reload denied at [path]",
+                                      },
+                                      loggerFailure: {
+                                          category: "permission",
+                                          message: "logger denied at [path]",
+                                      },
+                                  },
+                              ],
+                          ]
+                        : [],
+                );
+            } finally {
+                fallback.mockRestore();
+            }
+        },
+    );
+
+    it("retains success and clears an earlier refresh failure after a successful reload", async () => {
+        const result = database("committed");
+        const setRefreshFailed = vi.fn();
+        await expect(
+            refreshAfterDatabaseConversion(
+                async () => result,
+                async () => undefined,
+                setRefreshFailed,
+                "Common.Error",
+            ),
+        ).resolves.toBe(result);
+        expect(setRefreshFailed).toHaveBeenCalledExactlyOnceWith(false);
+        expect(notify).not.toHaveBeenCalled();
+        expect(logError).not.toHaveBeenCalled();
+    });
+
+    it("maps a post-success reload root failure to the existing database notification", async () => {
+        const result = database("committed");
+        await expect(
+            refreshAfterDatabaseConversion(
+                async () => result,
+                async () => {
+                    throw new TauriCommandError({
+                        tag: "backend-error",
+                        category: "io",
+                        message: "missing database root at /private/databases",
+                        rootFailure: "missing",
+                    });
+                },
+                vi.fn(),
+                "Common.Error",
+            ),
+        ).resolves.toBe(result);
+        expect(notify).toHaveBeenCalledExactlyOnceWith({
+            color: "red",
+            title: "Common.Error",
+            message: "This database folder is no longer available. Choose another.",
+        });
+    });
+
+    it.each(["convert failed", "Cancellation"])(
+        "rethrows the exact %s cause and leaves primary notification ownership with the caller",
+        async (message) => {
+            const cause = new Error(message);
+            const refreshCause = new Error("reload denied at /private/db.db3");
+            const setRefreshFailed = vi.fn();
+            const conversion = refreshAfterDatabaseConversion(
+                async () => {
+                    throw cause;
+                },
+                async () => {
+                    throw refreshCause;
+                },
+                setRefreshFailed,
+                "Common.Error",
+            );
+            await expect(conversion).rejects.toBe(cause);
+            expect(notify).toHaveBeenCalledTimes(message === "Cancellation" ? 1 : 0);
+            await runUnlessCancelled("Common.Error", () => conversion);
+            expect(setRefreshFailed).toHaveBeenCalledExactlyOnceWith(true);
+            expect(logError).toHaveBeenCalledExactlyOnceWith(
+                "Failed import database refresh failed: reload denied at [path]",
+            );
+            expect(notify).toHaveBeenCalledExactlyOnceWith({
+                color: "red",
+                title: "Common.Error",
+                message: message === "Cancellation" ? "reload denied at [path]" : message,
+            });
+        },
+    );
+});
 
 describe("database game query refresh", () => {
     it("observes original same-database view keys without mutating during collection", async () => {

@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
   convertProgress: vi.fn(),
   progress: vi.fn(),
   notify: vi.fn(),
+  logError: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -88,6 +89,7 @@ vi.mock("@/utils/files", async () => {
 vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
 vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("react-i18next", () => {
   const t = (key: string, options?: { number?: number }) =>
     options?.number === undefined ? key : `${key}:${options.number}`;
@@ -664,6 +666,50 @@ test.each(["delete", "refresh", "both"])(
     ).toBe(failure !== "refresh");
     expect(Boolean(buttonByText("Common.Delete"))).toBe(failure !== "refresh");
     expect(buttonByText("Databases.Settings.Explore")).toBeUndefined();
+  },
+);
+
+test.each(["new import", "add games"])(
+  "a committed %s keeps its database after reload failure and Retry recovers",
+  async (route) => {
+    await renderRoute();
+    if (route === "new import") await startAddDatabase();
+    else {
+      await selectExistingDatabase();
+      await startAddGames();
+    }
+    const target = route === "new import" ? handleA : handleB;
+    expect(convertCalls[0].args[2]).toEqual(target);
+    mocks.getDatabases.mockRejectedValueOnce(new Error("reload denied at /private/import.db3"));
+    await act(async () => convertCalls[0].resolve());
+
+    expect(conversionState()).toEqual([]);
+    expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+    expect(store.get(databaseConversionRefreshFailedAtom)).toBe(true);
+    expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+      "Failed import database refresh failed: reload denied at [path]",
+    );
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "reload denied at [path]",
+    });
+    expect(Boolean(buttonByText("Databases.Settings.AddGames"))).toBe(route === "add games");
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeTruthy();
+    const retry = buttonByText("Databases.LoadRetry")!;
+    expect(retry).toBeTruthy();
+    const refreshed = [successDatabase(handleB, "Existing")];
+    if (route === "new import") refreshed.push(successDatabase(handleA, "Imported"));
+    mocks.getDatabases.mockResolvedValue(refreshed);
+    await act(async () => retry.click());
+
+    expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
+    expect(buttonByText("Databases.LoadRetry")).toBeUndefined();
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(target)}']`)).toBeTruthy();
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(4);
+    expect(mocks.convertPgn).toHaveBeenCalledOnce();
+    expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+    expect(mocks.notify).toHaveBeenCalledOnce();
   },
 );
 
