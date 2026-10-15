@@ -584,3 +584,13 @@ All three emitted SDK configurations use the reviewed10-minute whole-initial-sui
 The owned ci-mutation-budget probe was removed safely with kit after all baseline, serial-trial and corrected SDK reports were archived outside it. Its sole owned config patch was verified and restored before removal. The drain worktree remains intact.
 
 f-20261015-08 can now close with actual hosted confirmation. f-20261001-20 was already closed with its source and real-app proof. Local installation and the normal records-only release remain upcoming at this checkpoint. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+## Hosted closure records review R4
+
+One canonical read-only records lens, role mechanical, gpt-6.1-sol/medium, reviewed the normal records-only closure through0c5cdd17. Raw verdict APPROVED, no findings and no adopted Fix. Source was unchanged from the full green source CI commitfd885f18. Root adopts the report after checking the actual CI snapshot, SDK reports and both native logs. This append contains only the raw review result and its arbitration. No fallback or retry. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+```text
+No findings. Records match the retained CI, SDK reports, native logs, source history and ledger contract. No files changed.
+
+VERDICT: APPROVED
+```
