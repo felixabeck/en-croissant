@@ -663,7 +663,16 @@ async fn reconcile_startup_path_owners<'a>(
             authority.with_mut(|authority| {
                 crate::infra::path_authority::require_durable(
                     authority.reconcile_startup_owners(owners)?,
-                )
+                )?;
+                // Owner reconciliation already committed. Maintenance failure must retain retry
+                // state without rejecting unrelated startup ownership work.
+                if let Err(error) = authority.collect_catalog_installs() {
+                    log::warn!(
+                        "catalog install startup cleanup failed: {}",
+                        error.diagnostic()
+                    );
+                }
+                Ok(())
             })?
         },
     )
@@ -1886,6 +1895,42 @@ where
     }
 }
 
+/// One process-wide deadline includes the post-teardown durable catalog clear. A false,
+/// timed-out or panicked teardown never invokes it. Cancel queued native access on every exit.
+async fn shutdown_with_catalog_clear<T, C, F>(teardown: T, clear: F, budget: Duration) -> bool
+where
+    T: std::future::Future<Output = bool>,
+    C: std::future::Future<Output = Result<(), Error>>,
+    F: FnOnce(tokio_util::sync::CancellationToken) -> C,
+{
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_exit = cancellation.clone().drop_guard();
+    let mut phase = "teardown";
+    let cleanup = async {
+        if !teardown.await {
+            return false;
+        }
+        phase = "catalog install session clear";
+        match clear(cancellation).await {
+            Ok(()) => true,
+            Err(error) => {
+                log::error!(
+                    "catalog install session clear failed: {}",
+                    error.diagnostic()
+                );
+                false
+            }
+        }
+    };
+    match tokio::time::timeout(budget, cleanup).await {
+        Ok(success) => success,
+        Err(error) => {
+            log::error!("shutdown {phase} exceeded {budget:?}: {error}");
+            false
+        }
+    }
+}
+
 async fn shutdown_engine_launch_root(
     authority: crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<(), Error> {
@@ -2384,22 +2429,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let app_handle = app_handle.clone();
                     async move {
                         let state = app_handle.state::<AppState>();
-                        shutdown_backend_with_attachments(
-                            state.engine_supervisor.as_ref(),
-                            &state.game_manager,
-                            app_handle.try_state::<SoundServerLifecycle>().as_deref(),
-                            &state.operations,
-                            async {
-                                shutdown_engine_attachments(app_handle.clone())
-                                    .await
-                                    .map_err(|error| error.diagnostic())
-                            },
-                            {
-                                let authority = state.pgn_path_authority.clone();
-                                async move {
-                                    shutdown_engine_launch_root(authority)
+                        shutdown_with_catalog_clear(
+                            shutdown_backend_with_attachments(
+                                state.engine_supervisor.as_ref(),
+                                &state.game_manager,
+                                app_handle.try_state::<SoundServerLifecycle>().as_deref(),
+                                &state.operations,
+                                async {
+                                    shutdown_engine_attachments(app_handle.clone())
                                         .await
                                         .map_err(|error| error.diagnostic())
+                                },
+                                {
+                                    let authority = state.pgn_path_authority.clone();
+                                    async move {
+                                        shutdown_engine_launch_root(authority)
+                                            .await
+                                            .map_err(|error| error.diagnostic())
+                                    }
+                                },
+                                SHUTDOWN_BUDGET,
+                            ),
+                            |cancellation| {
+                                let authority = state.pgn_path_authority.clone();
+                                async move {
+                                    BLOCKING_GATEWAY
+                                        .spawn(move || {
+                                            authority.with_mut_cancellable(
+                                                &cancellation,
+                                                |authority| {
+                                                    if cancellation.is_cancelled() {
+                                                        return Err(Error::Cancellation);
+                                                    }
+                                                    authority.clear_catalog_session_use()
+                                                },
+                                            )??
+                                        })
+                                        .await
                                 }
                             },
                             SHUTDOWN_BUDGET,
@@ -3236,6 +3302,125 @@ mod tests {
                 assert_eq!(std::fs::read(path).unwrap(), b"owned export");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_install_shutdown_clear_runs_after_complete_success() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let operations = OperationRegistry::default();
+        let order = std::cell::RefCell::new(Vec::new());
+        assert!(
+            shutdown_with_catalog_clear(
+                async {
+                    let success = shutdown_backend_with_attachments(
+                        &supervisor,
+                        &games,
+                        None,
+                        &operations,
+                        std::future::ready(Ok(())),
+                        std::future::ready(Ok(())),
+                        Duration::from_secs(1),
+                    )
+                    .await;
+                    order.borrow_mut().push("teardown complete");
+                    success
+                },
+                |_| async {
+                    assert_eq!(*order.borrow(), vec!["teardown complete"]);
+                    assert!(operations.prepare_download("sealed").is_err());
+                    order.borrow_mut().push("clear complete");
+                    Ok(())
+                },
+                Duration::from_secs(1)
+            )
+            .await
+        );
+        assert_eq!(*order.borrow(), vec!["teardown complete", "clear complete"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_install_shutdown_false_teardown_never_clears() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let operations = OperationRegistry::default();
+        assert!(
+            !shutdown_with_catalog_clear(
+                shutdown_backend_with_attachments(
+                    &supervisor,
+                    &games,
+                    None,
+                    &operations,
+                    std::future::ready(Err("catalog teardown refusal".into())),
+                    std::future::ready(Ok(())),
+                    Duration::from_secs(1),
+                ),
+                |_| async { panic!("false teardown cannot clear markers") },
+                Duration::from_secs(1)
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_install_shutdown_pending_clear_is_bounded_and_cancels_access() {
+        let token = std::cell::RefCell::new(None);
+        let capture = crate::error::LogCaptureScope::start();
+        let success = tokio::time::timeout(
+            Duration::from_secs(1),
+            shutdown_with_catalog_clear(
+                std::future::ready(true),
+                |cancellation| {
+                    *token.borrow_mut() = Some(cancellation);
+                    std::future::pending::<Result<(), Error>>()
+                },
+                Duration::from_millis(20),
+            ),
+        )
+        .await
+        .expect("pending clear cannot prevent exit");
+        assert!(!success);
+        assert!(token.borrow().as_ref().unwrap().is_cancelled());
+        assert!(capture.records().iter().any(|record| record
+            .message
+            .contains("catalog install session clear exceeded")));
+    }
+
+    #[tokio::test]
+    async fn catalog_install_shutdown_clear_failure_is_returned_and_logged() {
+        let capture = crate::error::LogCaptureScope::start();
+        assert!(
+            !shutdown_with_catalog_clear(
+                std::future::ready(true),
+                |_| async { Err(Error::InvalidInput("catalog-clear-proof-failure".into())) },
+                Duration::from_secs(1)
+            )
+            .await
+        );
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.message.contains("catalog-clear-proof-failure")));
+    }
+
+    #[tokio::test]
+    async fn catalog_install_shutdown_timed_out_or_panicked_teardown_never_clears() {
+        assert!(
+            !shutdown_with_catalog_clear(
+                std::future::pending::<bool>(),
+                |_| async { panic!("timed-out teardown cannot clear markers") },
+                Duration::from_millis(20)
+            )
+            .await
+        );
+        let panic = tokio::spawn(shutdown_with_catalog_clear(
+            async { panic!("catalog teardown panic") },
+            |_| async { panic!("panicked teardown cannot clear markers") },
+            Duration::from_secs(1),
+        ))
+        .await
+        .unwrap_err();
+        assert!(panic.is_panic());
     }
 
     #[tokio::test]

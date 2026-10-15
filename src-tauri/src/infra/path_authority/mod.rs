@@ -41,6 +41,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod catalog_install;
 mod shared;
 pub use shared::{AuthorityUnavailable, SharedPathAuthority};
 
@@ -519,6 +520,7 @@ mod windows_tests {
             pending_artifacts: vec![],
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
+            catalog_installs: BTreeMap::new(),
         };
         fs::write(&registry, serde_json::to_vec(&registry_value).unwrap()).unwrap();
         let capture = crate::error::LogCaptureScope::start();
@@ -4145,6 +4147,8 @@ struct Registry {
     /// authority entries and therefore cannot resolve after restart.
     #[serde(default)]
     image_cleanup: Vec<StoredEntry>,
+    #[serde(default)]
+    catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
 }
 /// Durable intent recorded before an atomic download replacement. It lets a restarted authority
 /// either activate the newly installed exact file or discard an intent whose replacement never
@@ -4328,6 +4332,10 @@ pub struct PathAuthority {
     provisional_attachments: BTreeSet<String>,
     retired_attachments: BTreeMap<String, Entry>,
     image_cleanup: BTreeMap<String, StoredEntry>,
+    catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
+    catalog_session: String,
+    catalog_protected: BTreeSet<String>,
+    catalog_uses: BTreeMap<PathBuf, bool>,
     attachments_sealed: bool,
     registry_durability_pending: bool,
     active_image_issuances: Arc<ActiveImageIssuances>,
@@ -4944,6 +4952,7 @@ impl PathAuthority {
             pending_artifacts,
             provisional_attachments,
             image_cleanup,
+            catalog_installs,
         ) = if registry_path.exists() {
             let file = fs::File::open(&registry_path)?;
             let bytes = read_registry_bytes(file)?;
@@ -4956,6 +4965,7 @@ impl PathAuthority {
                 )));
             }
             let image_cleanup_records = registry.image_cleanup;
+            catalog_install::validate_records(&registry.catalog_installs)?;
             let provisional_attachments = registry.provisional_attachments.clone();
             let mut loaded = BTreeMap::new();
             for mut stored in registry.entries {
@@ -5050,6 +5060,7 @@ impl PathAuthority {
                 registry.pending_artifacts,
                 provisional_attachments,
                 image_cleanup,
+                registry.catalog_installs,
             )
         } else {
             (
@@ -5059,6 +5070,7 @@ impl PathAuthority {
                 None,
                 Vec::new(),
                 BTreeSet::new(),
+                BTreeMap::new(),
                 BTreeMap::new(),
             )
         };
@@ -5104,6 +5116,10 @@ impl PathAuthority {
             provisional_attachments,
             retired_attachments: BTreeMap::new(),
             image_cleanup,
+            catalog_installs,
+            catalog_session: Uuid::new_v4().to_string(),
+            catalog_protected: BTreeSet::new(),
+            catalog_uses: BTreeMap::new(),
             attachments_sealed: false,
             registry_durability_pending: false,
             active_image_issuances: Arc::new(ActiveImageIssuances::new()),
@@ -6310,6 +6326,14 @@ impl PathAuthority {
             None,
             RegistrationDoor::ExplicitReauthorization,
         )?;
+        let registered = self
+            .persistent
+            .get(&commit.id.id)
+            .ok_or_else(|| Error::Conflict("registered engine authority disappeared".into()))?
+            .stored
+            .path
+            .to_path()?;
+        self.protect_catalog_path(&registered, false, false)?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineHandle::new(commit.id),
@@ -7778,6 +7802,20 @@ impl PathAuthority {
             components,
             operation,
         );
+        if let Ok(resolved) = &resolved {
+            if let Some(target) = resolved.target() {
+                let recursive = entry.stored.purpose == Some(EntryPurpose::EngineResource)
+                    && entry.stored.target_is_dir;
+                let child_use = matches!(
+                    operation,
+                    PathOperation::EngineExecute
+                        | PathOperation::EngineConfigure
+                        | PathOperation::EngineResourceRead
+                ) || (operation == PathOperation::EngineInstall
+                    && resolved.is_regular_file());
+                self.protect_catalog_path(target, recursive, child_use)?;
+            }
+        }
         if resolved.is_ok() && self.persistent.contains_key(&id.id) {
             self.session_protected_ids.insert(id.id.clone());
         }
@@ -8696,20 +8734,22 @@ impl PathAuthority {
             pending_artifacts: pending_artifacts.to_vec(),
             provisional_attachments: provisional.clone(),
             image_cleanup: cleanup.values().cloned().collect(),
+            catalog_installs: self.catalog_installs.clone(),
         })
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
         Ok(RegistryAdmissionSnapshot {
             bytes: bytes.len(),
             serialized: bytes,
-            unique_ids: unique_registry_id_count(
-                entries.keys().map(String::as_str).collect(),
-                retired.keys().map(String::as_str).collect(),
-                cleanup.keys().map(String::as_str).collect(),
-                pending_artifacts
-                    .iter()
-                    .map(|pending| pending.id.id.as_str())
-                    .collect(),
-            ),
+            unique_ids: self.catalog_admission_count()
+                + unique_registry_id_count(
+                    entries.keys().map(String::as_str).collect(),
+                    retired.keys().map(String::as_str).collect(),
+                    cleanup.keys().map(String::as_str).collect(),
+                    pending_artifacts
+                        .iter()
+                        .map(|pending| pending.id.id.as_str())
+                        .collect(),
+                ),
             // This is deliberately a separate admission dimension. A pending artifact can
             // carry an already-counted ID; its number of recovery records is still bounded.
             pending_count: pending_artifacts.len(),
@@ -9165,18 +9205,19 @@ fn unique_registry_id_count(
 
 impl PathAuthority {
     fn registry_unique_id_count(&self) -> usize {
-        unique_registry_id_count(
-            self.persistent.keys().map(String::as_str).collect(),
-            self.retired_attachments
-                .keys()
-                .map(String::as_str)
-                .collect(),
-            self.image_cleanup.keys().map(String::as_str).collect(),
-            self.pending_artifacts
-                .iter()
-                .map(|pending| pending.id.id.as_str())
-                .collect(),
-        )
+        self.catalog_admission_count()
+            + unique_registry_id_count(
+                self.persistent.keys().map(String::as_str).collect(),
+                self.retired_attachments
+                    .keys()
+                    .map(String::as_str)
+                    .collect(),
+                self.image_cleanup.keys().map(String::as_str).collect(),
+                self.pending_artifacts
+                    .iter()
+                    .map(|pending| pending.id.id.as_str())
+                    .collect(),
+            )
     }
 }
 
@@ -17908,6 +17949,7 @@ mod tests {
                 pending_artifacts: vec![pending],
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
+                catalog_installs: BTreeMap::new(),
             },
         );
         let capture = crate::error::LogCaptureScope::start();
@@ -17983,6 +18025,7 @@ mod tests {
                 pending_artifacts: vec![pending],
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
+                catalog_installs: BTreeMap::new(),
             },
         );
         let authority = PathAuthority::open(registry, vec![]).unwrap();
@@ -21751,6 +21794,7 @@ mod tests {
                 pending_artifacts: vec![],
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
+                catalog_installs: BTreeMap::new(),
             },
         );
     }
@@ -22414,6 +22458,7 @@ mod tests {
             pending_artifacts: vec![],
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
+            catalog_installs: BTreeMap::new(),
         })
         .unwrap();
         for entry in json["entries"].as_array_mut().unwrap() {
@@ -22477,6 +22522,7 @@ mod tests {
             pending_artifacts: vec![],
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
+            catalog_installs: BTreeMap::new(),
         };
         fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
         let mut authority = PathAuthority::open(registry_path.clone(), vec![]).unwrap();
@@ -22942,6 +22988,7 @@ mod tests {
                 pending_artifacts: vec![pending],
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
+                catalog_installs: BTreeMap::new(),
             })
             .unwrap(),
         )
@@ -23859,6 +23906,7 @@ mod tests {
             pending_artifacts: vec![],
             provisional_attachments: BTreeSet::from(["unknown".into()]),
             image_cleanup: vec![],
+            catalog_installs: BTreeMap::new(),
         })
         .unwrap();
         fs::write(&registry, serde_json::to_vec(&invalid_provisional).unwrap()).unwrap();

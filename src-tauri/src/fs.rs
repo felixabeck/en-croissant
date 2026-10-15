@@ -3,7 +3,6 @@ use std::{
     future::Future,
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
     time::Duration,
 };
 
@@ -1363,8 +1362,17 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
 ) -> Result<(), Error> {
     let result = async {
         let directory_name = std::ffi::OsString::from(directory_name);
-        let (op, resolved) =
-            resolve_engine_archive_destination(&state, &destination, &directory_name)?;
+        let resolution_state = state.clone();
+        let resolution_destination = destination.clone();
+        let (op, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(move || {
+                resolve_engine_archive_destination(
+                    &resolution_state,
+                    &resolution_destination,
+                    &directory_name,
+                )
+            })
+            .await?;
         validate_integrity(op, &url, &integrity)?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
@@ -1433,10 +1441,16 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
             return Err(error);
         }
         let commit_gate = commit_gate.clone();
+        let publication_authority = state.pgn_path_authority.clone();
         let install_result = crate::infra::blocking::BLOCKING_GATEWAY
             .spawn(move || {
                 commit_gate.begin_commit()?;
-                publish_engine_archive_tree(&resolved, staging.path())
+                publish_engine_archive_tree(
+                    &publication_authority,
+                    &destination,
+                    &resolved,
+                    staging.path(),
+                )
             })
             .await;
         if let Err(error) = install_result {
@@ -1454,22 +1468,14 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
 /// from `download_engine_archive` so the staging-parent contract (`private_tempdir_in` in the
 /// destination's own parent) can be stated once and pinned without driving a download.
 pub(crate) fn publish_engine_archive_tree(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    destination: &crate::infra::path_authority::PathRef,
     resolved: &crate::infra::path_authority::ResolvedPath,
     staging_dir: &Path,
 ) -> Result<(), Error> {
-    // Serialize the existence check with publication so concurrent installs of the same
-    // verified artefact adopt the first tree instead of replacing its registered executable.
-    static PUBLICATION: Mutex<()> = Mutex::new(());
-    let _publication = PUBLICATION
-        .lock()
-        .map_err(|_| Error::Conflict("engine archive publication lock was poisoned".into()))?;
-    let target = resolved.target().ok_or_else(|| {
-        Error::InvalidInput("archive destination needs a target directory".into())
-    })?;
-    if crate::infra::fs::archive_destination_directory_exists(target)? {
-        return Ok(());
-    }
-    resolved.atomic_install_download_dir(staging_dir)
+    authority.with_mut(|authority| {
+        authority.publish_catalog_install(destination, resolved, staging_dir)
+    })?
 }
 
 #[tauri::command]
@@ -2189,6 +2195,7 @@ mod tests {
         let root = authority
             .get_or_create_engine_root(&engine_root, "Engines", None)
             .unwrap();
+        let engine_root = authority.engine_root_path(&root).unwrap();
         let destination = authority.engine_archive_destination(&root).unwrap();
         (authority, destination, engine_root, root)
     }
@@ -2416,21 +2423,28 @@ mod tests {
     #[test]
     fn publish_engine_archive_tree_installs_a_sibling_staging_dir() {
         let root = tempfile::tempdir().expect("tempdir");
-        let destination = root.path().join("installed");
-        let staging = root.path().join("staging");
+        let (authority, destination, engine_root, _) = engine_destination(&root);
+        let state = AppState::default();
+        state.pgn_path_authority.install(authority).unwrap();
+        let staging = engine_root.join("staging");
         std::fs::create_dir(&staging).expect("staging");
         std::fs::write(staging.join("engine"), b"staged").expect("staged file");
-        let resolved =
-            crate::infra::path_authority::ResolvedPath::download_archive_test(destination.clone());
+        let (_, resolved) = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .unwrap();
 
-        publish_engine_archive_tree(&resolved, &staging).expect("publish");
+        publish_engine_archive_tree(&state.pgn_path_authority, &destination, &resolved, &staging)
+            .expect("publish");
 
         assert!(
             !staging.exists(),
             "the staging name is consumed by the install"
         );
         assert_eq!(
-            std::fs::read(destination.join("engine")).expect("installed tree"),
+            std::fs::read(engine_root.join("installed/engine")).expect("installed tree"),
             b"staged"
         );
     }
@@ -4381,6 +4395,156 @@ mod tests {
         assert_eq!(error.to_string(), archive_payload_required().to_string());
         assert!(!target.exists());
         assert_eq!(leaves(dir.path()), vec!["archive.gz"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_install_publication_retains_provenance_without_registration() {
+        use tauri::Manager;
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
+        let payload = gzip_tar_payload(b"unregistered executable");
+        let integrity = unsigned_test_integrity(&payload);
+        let directory = format!("engine.tar.gz-{}", integrity.sha256);
+        let state = AppState {
+            http_transport: Arc::new(zip_response(payload)),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        app.manage(state.clone());
+        let (job, lease) = test_download_lease(&state);
+        download_engine_archive_core(
+            directory.clone(),
+            "https://example.com/engine.tar.gz".into(),
+            destination,
+            directory.clone(),
+            job,
+            integrity,
+            app.handle().clone(),
+            state.clone(),
+            lease.token(),
+            lease.commit_gate(),
+            Box::new(accept_any_integrity),
+        )
+        .await
+        .unwrap();
+        assert!(engine_root
+            .join(&directory)
+            .join("stockfish/engine")
+            .exists());
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("path-authority.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            registry["catalog_installs"]
+                .as_object()
+                .map(serde_json::Map::len),
+            Some(1),
+            "published bytes need durable native ownership even without registration"
+        );
+        drop(lease);
+        state
+            .pgn_path_authority
+            .install(test_path_authority(&dir))
+            .unwrap();
+        crate::reconcile_startup_path_owners(
+            crate::infra::path_authority::StartupPathOwners {
+                retained_ids: vec![],
+                trusted_families: vec![crate::infra::path_authority::PathOwnerFamily::Engines],
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !engine_root.join(directory).exists(),
+            "discarded installation is collected on trusted restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_install_committed_cancel_and_refused_save_are_collected_by_startup_command() {
+        use tauri::Manager;
+        for committed_cancel in [false, true] {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, root) = engine_destination(&dir);
+            let payload = gzip_tar_payload(b"discarded executable");
+            let integrity = unsigned_test_integrity(&payload);
+            let directory = format!("discarded-{}", integrity.sha256);
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload)),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            app.manage(state.clone());
+            let (job, lease) = test_download_lease(&state);
+            if committed_cancel {
+                let operations = state.operations.clone();
+                let ticket = job.clone();
+                crate::infra::operations::arm_commit_after_hook(
+                    job.clone(),
+                    Box::new(move || {
+                        assert!(
+                            !operations.cancel_download(&ticket, "test").unwrap(),
+                            "committed download cannot be canceled"
+                        );
+                    }),
+                );
+            }
+            let cancellation = lease.token();
+            let commit_gate = lease.commit_gate();
+            crate::infra::operations::run_native_operation(
+                lease,
+                "catalog discard proof",
+                download_engine_archive_core(
+                    directory.clone(),
+                    "https://example.com/engine.tar.gz".into(),
+                    destination,
+                    directory.clone(),
+                    job,
+                    integrity,
+                    app.handle().clone(),
+                    state.clone(),
+                    cancellation,
+                    commit_gate,
+                    Box::new(accept_any_integrity),
+                ),
+            )
+            .await
+            .unwrap();
+            if !committed_cancel {
+                // Native registration happened, but no renderer owner was durably saved.
+                state
+                    .pgn_path_authority
+                    .with_mut(|authority| {
+                        authority
+                            .register_installed_engine(
+                                &root,
+                                &format!("{directory}/stockfish/engine"),
+                            )
+                            .unwrap();
+                        authority.clear_catalog_session_use()
+                    })
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(engine_root.join(&directory).exists());
+            state
+                .pgn_path_authority
+                .install(test_path_authority(&dir))
+                .unwrap();
+            crate::reconcile_startup_path_owners(
+                crate::infra::path_authority::StartupPathOwners {
+                    retained_ids: vec![],
+                    trusted_families: vec![crate::infra::path_authority::PathOwnerFamily::Engines],
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .unwrap();
+            assert!(!engine_root.join(&directory).exists());
+        }
     }
 
     #[tokio::test]

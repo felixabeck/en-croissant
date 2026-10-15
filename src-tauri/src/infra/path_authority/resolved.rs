@@ -702,11 +702,9 @@ impl ResolvedPath {
         }
     }
 
-    /// Builds a `DownloadArchive` capability directly for the sibling-staging test. Its fields
-    /// are private to this module, and `publish_engine_archive_tree` needs a resolved destination
-    /// without driving a full authority walk; this is the narrower counterpart to `windows_test`
-    /// and is the only constructor that carries a `target`.
-    #[cfg(test)]
+    /// Builds an archive destination without a retained parent for the Unix registration-boundary
+    /// test, proving that parent identity cannot be inferred from the target pathname.
+    #[cfg(all(test, unix))]
     pub(crate) fn download_archive_test(target: PathBuf) -> Self {
         Self {
             operation: PathOperation::DownloadArchive,

@@ -1750,7 +1750,7 @@ mod unix {
     }
 
     #[cfg(target_os = "linux")]
-    fn mount_crossing(parent: &File, child: &File) -> Result<bool, Error> {
+    pub(super) fn mount_crossing(parent: &File, child: &File) -> Result<bool, Error> {
         let mount_root = fs::StatxAttributes::MOUNT_ROOT.bits();
         match statx_mount_attributes(child) {
             Ok((mask, attributes)) if mask & mount_root != 0 => {
@@ -5030,6 +5030,23 @@ pub(crate) fn rename_optional_regular_at(
     target: &OsStr,
 ) -> Result<bool, Error> {
     win::rename_optional_regular_at(source_parent, source, target_parent, target)
+}
+
+/// The catalog authority validates its complete inventory before invoking recursive removal.
+/// Use the remover's mount proof during that validation, before any entry can be unlinked.
+pub(crate) fn open_removal_directory_at(
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+) -> Result<VerifiedDir, Error> {
+    let child = VerifiedDir::new(open_directory_at(parent, name, false)?, expected)?;
+    #[cfg(unix)]
+    if unix::mount_crossing(parent, child.as_file())? {
+        return Err(Error::InvalidInput(
+            "directory cleanup refuses to cross a mount".into(),
+        ));
+    }
+    Ok(child)
 }
 
 #[cfg(unix)]
