@@ -103,12 +103,18 @@ impl super::PathAuthority {
                     "download root disappeared before artifact activation".into(),
                 )
             })?;
-        let root_path = root.stored.path.to_path()?;
-        let root_identity =
-            super::validate_target(&root_path, super::PathClass::PersistentCustomRoot)?;
-        if root_identity != root.stored.identity
-            || pending.root_identity.as_ref() != Some(&root_identity)
-        {
+        let acquired = super::acquire_stored_target(
+            &root.stored,
+            super::AcquireShape::Root {
+                parent_access: super::parent_access_for_operations(&[
+                    super::PathOperation::DownloadFile,
+                ]),
+            },
+            "download root changed before artifact activation",
+        )?;
+        let root_path = acquired.path;
+        let root_identity = acquired.identity;
+        if pending.root_identity.as_ref() != Some(&root_identity) {
             return Err(super::Error::Conflict(
                 "download root changed before artifact activation".into(),
             ));

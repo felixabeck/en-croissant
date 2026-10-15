@@ -4112,6 +4112,21 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
     }
 }
 
+/// Re-proves the stored object under its canonical spelling. Identity alone permits an
+/// ancestor renamed and replaced by a symlink to the same object under a different path.
+fn acquire_stored_target(
+    stored: &StoredEntry,
+    shape: AcquireShape,
+    changed_message: &str,
+) -> Result<AcquiredTarget, Error> {
+    let path = stored.path.to_path()?;
+    let acquired = acquire_target(&path, shape)?;
+    if acquired.identity != stored.identity || acquired.path != path {
+        return Err(Error::Conflict(changed_message.into()));
+    }
+    Ok(acquired)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredEntry {
     id: PathRef,
@@ -7228,22 +7243,14 @@ impl PathAuthority {
             ));
         }
         let stored = entry.stored;
-        let path = stored.path.to_path()?;
         let expected = (stored.identity.a, stored.identity.b);
-        let acquired = acquire_target(
-            &path,
+        let acquired = acquire_stored_target(
+            &stored,
             AcquireShape::File {
                 parent_access: parent_access_for_operations(&[operation]),
             },
+            "workspace entry is unavailable because its object changed",
         )?;
-        // Identity alone is not enough: an ancestor swapped for a symlink to a same-inode
-        // directory re-acquires the stored object under a different pathname, and a carrier
-        // bound there would put SQLite and its sidecars outside the authorised directory.
-        if acquired.identity != stored.identity || acquired.path != path {
-            return Err(Error::Conflict(
-                "workspace entry is unavailable because its object changed".into(),
-            ));
-        }
         let (parent, leaf) = acquired
             .parent_and_leaf
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
@@ -7900,21 +7907,13 @@ impl PathAuthority {
                 "workspace does not permit this operation".into(),
             ));
         }
-        let root = entry.stored.path.to_path()?;
-        // Acquire rather than merely validate: `validate_target` follows ancestors, so a root
-        // whose ancestor was swapped would be committed here and then refused by every
-        // descriptor-relative `resolve`. The re-acquired pathname must be the stored one.
-        let acquired = acquire_target(
-            &root,
+        let acquired = acquire_stored_target(
+            &entry.stored,
             AcquireShape::Root {
                 parent_access: parent_access_for_operations(&[operation]),
             },
+            "workspace is unavailable because its root changed",
         )?;
-        if acquired.identity != entry.stored.identity || acquired.path != root {
-            return Err(Error::Conflict(
-                "workspace is unavailable because its root changed".into(),
-            ));
-        }
         self.session_protected_ids
             .insert(workspace.path_ref().id.clone());
         Ok(acquired.path)
@@ -8112,13 +8111,15 @@ impl PathAuthority {
                 "capability is not a download root".into(),
             ));
         }
-        let root_path = root_entry.stored.path.to_path()?;
-        let root_identity = validate_target(&root_path, PathClass::PersistentCustomRoot)?;
-        if root_identity != root_entry.stored.identity {
-            return Err(Error::Conflict(
-                "download root changed before artifact reservation".into(),
-            ));
-        }
+        let acquired = acquire_stored_target(
+            &root_entry.stored,
+            AcquireShape::Root {
+                parent_access: parent_access_for_operations(&[PathOperation::DownloadFile]),
+            },
+            "download root changed before artifact reservation",
+        )?;
+        let root_path = acquired.path;
+        let root_identity = acquired.identity;
         let path = root_path.join(&filename);
         let baseline = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -8213,10 +8214,16 @@ impl PathAuthority {
                 "download root changed before artifact activation".into(),
             ));
         }
-        let root_path = root.stored.path.to_path()?;
-        let root_identity = validate_target(&root_path, PathClass::PersistentCustomRoot)?;
-        if root_identity != root.stored.identity
-            || verified.pending.root_identity.as_ref() != Some(&root_identity)
+        let acquired = acquire_stored_target(
+            &root.stored,
+            AcquireShape::Root {
+                parent_access: parent_access_for_operations(&[PathOperation::DownloadFile]),
+            },
+            "download root changed before artifact activation",
+        )?;
+        let root_path = acquired.path;
+        let root_identity = acquired.identity;
+        if verified.pending.root_identity.as_ref() != Some(&root_identity)
             || root_identity != verified.root_identity
             || root_path != verified.root_path
         {
@@ -8298,6 +8305,15 @@ impl PathAuthority {
             .filter(|pending| pending.id != verified.pending.id)
             .cloned()
             .collect();
+        // Verification and the retained-descriptor checkpoint can outlive the earlier proof.
+        // Re-prove the stored spelling immediately before publishing the capability.
+        acquire_stored_target(
+            &root.stored,
+            AcquireShape::Root {
+                parent_access: parent_access_for_operations(&[PathOperation::DownloadFile]),
+            },
+            "download root changed before artifact activation",
+        )?;
         let durability = self.commit_registry(
             candidate,
             self.active_database_root.clone(),
@@ -8446,29 +8462,26 @@ impl PathAuthority {
         operation: PathOperation,
     ) -> Result<PathBuf, Error> {
         let entry = self.persistent_entry_for(handle, operation)?;
-        let class = if entry.stored.target_is_dir {
-            PathClass::PersistentCustomRoot
+        let parent_access = parent_access_for_operations(&[operation]);
+        let shape = if entry.stored.target_is_dir {
+            AcquireShape::Root { parent_access }
         } else {
-            PathClass::PersistentFile
+            AcquireShape::File { parent_access }
         };
-        let path = entry.stored.path.to_path()?;
-        if validate_target(&path, class)? != entry.stored.identity {
-            return Err(Error::Conflict(
-                "workspace entry is unavailable because its object changed".into(),
-            ));
-        }
-        let (parent, _) = crate::infra::fs::open_verified_parent(
-            &path,
-            (entry.stored.identity.a, entry.stored.identity.b),
-            entry.stored.target_is_dir,
-            parent_access_for_operations(&[operation]),
+        let acquired = acquire_stored_target(
+            &entry.stored,
+            shape,
+            "workspace entry is unavailable because its object changed",
         )?;
+        let (parent, _) = acquired
+            .parent_and_leaf
+            .ok_or_else(|| Error::InvalidInput("workspace entry needs a leaf name".into()))?;
         if !entry.stored.target_is_dir {
             verify_parent_identity(&parent, entry.stored.parent_identity.as_ref())?;
         }
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
-        Ok(path)
+        Ok(acquired.path)
     }
 
     /// Resolves an opaque workspace capability into retained no-follow descriptors.  This is the
@@ -16684,16 +16697,34 @@ mod tests {
         }
 
         fn uncommitted(dir: &Path, payload: &[u8]) -> Self {
-            let root_path = dir.join("downloads");
+            Self::uncommitted_at(dir, payload, dir.join("downloads"), true)
+        }
+
+        fn uncommitted_at(dir: &Path, payload: &[u8], root_path: PathBuf, app_owned: bool) -> Self {
             fs::create_dir_all(&root_path).unwrap();
-            let app_root = AppOwnedRoot::new(
+            let mut app_root = AppOwnedRoot::new(
                 "downloads",
                 root_path.clone(),
                 vec![PathOperation::DownloadFile],
             );
             let registry_path = dir.join("registry.json");
-            let mut authority =
-                PathAuthority::open(registry_path.clone(), vec![app_root.clone()]).unwrap();
+            let roots = if app_owned {
+                vec![app_root.clone()]
+            } else {
+                vec![]
+            };
+            let mut authority = PathAuthority::open(registry_path.clone(), roots).unwrap();
+            if !app_owned {
+                app_root.id = authority
+                    .migrate_legacy_os_path(
+                        root_path.clone().into_os_string(),
+                        "downloads",
+                        PathClass::PersistentCustomRoot,
+                        vec![PathOperation::DownloadFile],
+                    )
+                    .unwrap()
+                    .id;
+            }
             let staged = dir.join("staged.pgn");
             fs::write(&staged, payload).unwrap();
             let reservation = authority
@@ -16747,6 +16778,273 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => panic!("verify must succeed: {e:?}"),
             }
+        }
+    }
+
+    fn canonical_spelling_fixture(dir: &Path, app_owned: bool) -> InstalledArtifactFixture {
+        let mut fixture = InstalledArtifactFixture::uncommitted_at(
+            dir,
+            b"1. e4 e5",
+            dir.join("real/downloads"),
+            app_owned,
+        );
+        fixture.mark_committed();
+        fixture
+    }
+
+    fn swap_canonical_spelling(dir: &Path) {
+        let real = dir.join("real");
+        let moved = dir.join("moved");
+        fs::rename(&real, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &real).unwrap();
+    }
+
+    fn assert_canonical_spelling_activation_refused(
+        fixture: &InstalledArtifactFixture,
+        pending_before: &serde_json::Value,
+        registry_before: &[u8],
+    ) {
+        assert!(!fixture
+            .authority
+            .persistent
+            .contains_key(&fixture.reservation.id.id));
+        assert!(!fixture
+            .authority
+            .session_protected_ids
+            .contains(&fixture.reservation.id.id));
+        assert_eq!(
+            serde_json::to_value(&fixture.authority.pending_artifacts).unwrap(),
+            *pending_before
+        );
+        assert_eq!(fs::read(&fixture.registry_path).unwrap(), registry_before);
+    }
+
+    #[test]
+    fn canonical_spelling_accepts_custom_and_app_owned_artifacts_and_entries() {
+        for app_owned in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+            assert_eq!(
+                fixture
+                    .authority
+                    .workspace_entry_path(
+                        &FileWorkspaceHandle::new(fixture.app_root.id.clone()),
+                        PathOperation::DownloadFile,
+                    )
+                    .unwrap(),
+                fixture.app_root.path
+            );
+            let publication = fixture
+                .authority
+                .activate_download_artifact(&fixture.reservation)
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .authority
+                    .workspace_entry_path(&publication.handle, PathOperation::ReadPgn)
+                    .unwrap(),
+                fixture.target_path
+            );
+            assert!(fixture.authority.pending_artifacts.is_empty());
+            assert!(fixture
+                .authority
+                .persistent
+                .contains_key(&fixture.reservation.id.id));
+            let mut resolved = fixture
+                .authority
+                .resolve(publication.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .unwrap();
+            assert_eq!(resolved.read_bytes().unwrap(), b"1. e4 e5");
+        }
+    }
+
+    #[test]
+    fn canonical_spelling_reservation_refuses_same_inode_ancestor_before_journaling() {
+        for app_owned in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+            let pending_before =
+                serde_json::to_value(&fixture.authority.pending_artifacts).unwrap();
+            let registry_before = fs::read(&fixture.registry_path).unwrap();
+            let stored_identity = identity(&fixture.app_root.path).unwrap();
+            swap_canonical_spelling(dir.path());
+            assert_eq!(identity(&fixture.app_root.path).unwrap(), stored_identity);
+            let result = fixture.authority.reserve_download_artifact(
+                &fixture.app_root.id,
+                OsString::from("other.pgn"),
+                (
+                    fixture.reservation.payload_size,
+                    fixture.reservation.payload_sha256.clone(),
+                ),
+                "other.pgn",
+                vec![PathOperation::ReadPgn],
+            );
+            assert!(
+                matches!(result, Err(Error::Conflict(_))),
+                "reservation must refuse changed canonical spelling"
+            );
+            assert_canonical_spelling_activation_refused(
+                &fixture,
+                &pending_before,
+                &registry_before,
+            );
+            assert!(!fixture.app_root.path.join("other.pgn").exists());
+        }
+    }
+
+    #[test]
+    fn canonical_spelling_prepare_refuses_same_inode_ancestor_without_publication() {
+        for app_owned in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+            let pending_before =
+                serde_json::to_value(&fixture.authority.pending_artifacts).unwrap();
+            let registry_before = fs::read(&fixture.registry_path).unwrap();
+            swap_canonical_spelling(dir.path());
+            let result = fixture
+                .authority
+                .prepare_download_artifact(&fixture.reservation);
+            assert!(
+                matches!(result, Err(Error::Conflict(_))),
+                "prepare must refuse changed canonical spelling"
+            );
+            assert_canonical_spelling_activation_refused(
+                &fixture,
+                &pending_before,
+                &registry_before,
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_spelling_commit_refuses_ancestor_swapped_after_prepare_or_verify() {
+        for app_owned in [false, true] {
+            for after_verify in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+                let pending_before =
+                    serde_json::to_value(&fixture.authority.pending_artifacts).unwrap();
+                let registry_before = fs::read(&fixture.registry_path).unwrap();
+                let prepared = fixture
+                    .authority
+                    .prepare_download_artifact(&fixture.reservation)
+                    .unwrap();
+                let verified = if after_verify {
+                    let verified = prepared.verify().unwrap();
+                    swap_canonical_spelling(dir.path());
+                    verified
+                } else {
+                    swap_canonical_spelling(dir.path());
+                    prepared.verify().unwrap()
+                };
+                let result = fixture.authority.commit_download_artifact(verified);
+                assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+                assert_canonical_spelling_activation_refused(
+                    &fixture,
+                    &pending_before,
+                    &registry_before,
+                );
+            }
+        }
+    }
+
+    struct CanonicalSpellingCommitSwapObserver {
+        dir: PathBuf,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl ActivationObserver for CanonicalSpellingCommitSwapObserver {
+        fn observe(&self, stage: ActivationObserverStage) {
+            if stage == ActivationObserverStage::CommitBeforeRetainedDescriptorValidation
+                && !self.fired.swap(true, Ordering::SeqCst)
+            {
+                swap_canonical_spelling(&self.dir);
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_spelling_commit_refuses_ancestor_swapped_at_retained_descriptor_check() {
+        for app_owned in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+            let observer = Arc::new(CanonicalSpellingCommitSwapObserver {
+                dir: dir.path().to_path_buf(),
+                fired: std::sync::atomic::AtomicBool::new(false),
+            });
+            fixture
+                .authority
+                .set_activation_observer(Some(observer.clone()));
+            let verified = fixture.prepare_and_verify();
+            let pending_before =
+                serde_json::to_value(&fixture.authority.pending_artifacts).unwrap();
+            let registry_before = fs::read(&fixture.registry_path).unwrap();
+            let result = fixture.authority.commit_download_artifact(verified);
+            assert!(observer.fired.load(Ordering::SeqCst));
+            assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+            assert_canonical_spelling_activation_refused(
+                &fixture,
+                &pending_before,
+                &registry_before,
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_spelling_workspace_entry_refuses_same_inode_ancestor_for_files_and_directories() {
+        for app_owned in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = canonical_spelling_fixture(dir.path(), app_owned);
+            let subdir = fixture.app_root.path.join("subdir");
+            fs::create_dir(&subdir).unwrap();
+            let mut entries = vec![(
+                FileWorkspaceHandle::new(fixture.app_root.id.clone()),
+                PathOperation::DownloadFile,
+                fixture.app_root.path.clone(),
+            )];
+            for (path, class) in [
+                (fixture.target_path.clone(), PathClass::PersistentFile),
+                (subdir, PathClass::PersistentCustomRoot),
+            ] {
+                let entry = fixture
+                    .authority
+                    .migrate_legacy_os_path(
+                        path.clone().into_os_string(),
+                        "entry",
+                        class,
+                        vec![PathOperation::ReadPgn],
+                    )
+                    .unwrap();
+                entries.push((
+                    FileWorkspaceHandle::new(entry.id),
+                    PathOperation::ReadPgn,
+                    path,
+                ));
+            }
+            for (handle, operation, path) in &entries {
+                assert_eq!(
+                    fixture
+                        .authority
+                        .workspace_entry_path(handle, *operation)
+                        .unwrap(),
+                    *path
+                );
+                fixture
+                    .authority
+                    .session_protected_ids
+                    .remove(&handle.path_ref().id);
+            }
+            let registry_before = fs::read(&fixture.registry_path).unwrap();
+            swap_canonical_spelling(dir.path());
+            for (handle, operation, _) in &entries {
+                let result = fixture.authority.workspace_entry_path(handle, *operation);
+                assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+                assert!(!fixture
+                    .authority
+                    .session_protected_ids
+                    .contains(&handle.path_ref().id));
+            }
+            assert_eq!(fs::read(&fixture.registry_path).unwrap(), registry_before);
         }
     }
 
