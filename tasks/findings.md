@@ -16047,7 +16047,7 @@ This closes the measured ownership defect and its completed local proof contract
 
 ### Synced engine search defaults stay stale while the analysis settings panel is unmounted
 
-* **ID:** f-20261015-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261015-03 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 522d017b-b76c-4165-9ad7-d26f07bd0100 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-522d017b-b76c-4165-9ad7-d26f07bd0100-1.jsonl
 * **Impact class:** ux
 * **Where:** src/components/panels/analysis/BestMoves.tsx:93-101, src/state/atoms.ts:935-961, src/components/boards/EvalListener.tsx:165-175, AnalysisPanel keepMounted=false.
@@ -16059,6 +16059,9 @@ This closes the measured ownership defect and its completed local proof contract
 * **Found by:** review-engine-protocol round1, confidence97, full interactive f-20261001-17 drain. Root confirms constructor-only defaults, identity comparison, component-only effect and live listener read. Fix now under the engine-publication mandate. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Spotted outside diff:** cumulative review round1, 8027657a7e97a924127c190a75971e503d77b2a0..f232389caca0b8195eea50c83119d5ef99a269bd. The concrete failure scenario is preserved in this entry. Same actual engine-editor/analysis area, Fix now in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fa93b0327ad64458b2d63949b0c60294cffadb47fc37ff96a9ff6250186abd26","input_sha256":"a98688033fe3259c7890981fbe5a83d2ab26f287b3e357a37f3aaf910e1df3a7","kind":"mutation-receipt","operation":"a5fb68d1f7d67022f7a6cb1349dc287fdbbdac30d215a172686db6a3556f4b46","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-03"],"target":"f-20261015-03","v":1} -->
+
+* **Handled 2026-10-15:** One pure shared analysis-settings projection derives committed synced options at the atom read boundary, with local current drafts passed separately to the same policy. Unmounted analysis no longer leaves committed synced defaults stale. Repairs6a6d1e99/e6f8257b, decisionsd-20261015-03/05. Real-store reads without mounted BestMoves and real child-to-parent sync admission cover retained go/options when globals are absent. Source-only stale-mirror/admission witnesses red1 and exactrestore0, combined389/1919 tests0. Rejected another mounted-only writer/mirror and duplicate read policy. Verified current source commit b7f4511de05950f2f72bfbdb1fe65caa5e6ea60b. Full tracked evidence and honest transport/picker limits: tasks/handoffs/2026-10-15-f-20261001-17-review.md. Final clean-tree gates and push follow closure review. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"7a92c7483d1f7daea22557b3d407f353b6e9f6a268f659f56d6c8d57eafdfc98","header_sha256":"765acaccf592dd0d5b1412c1b9f3725bab24e50bd2a1a34ca8f71486faf0e503","header_status":"handled","input_sha256":"be6b1f1f9d0e2a5e7cf668062e2aed16e6b2ba73e8550ee0d4888eb324307bfc","kind":"mutation-receipt","operation":"eff18352285af8a95da80a1666791a0371ff3d6b294ff2ab0a4ccce9f7f2cb5c","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-03"],"target":"f-20261015-03","v":1} -->
 
 ---
 
