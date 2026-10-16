@@ -1488,6 +1488,234 @@ Reviewed all seven production files and direct consumers. No files changed or te
 VERDICT: APPROVED
 ```
 
+### Focused CR6 mechanism judgment
+
+Before another source patch, the root requested focused fresh-context review-plan judgment under push-review-policy 4a. The first candidate had two gaps, identity disambiguation of replacement roots/trees and explicit durable-marker proof for uncertainty. The revised candidate closed both gaps and was APPROVED. These are private correction-mechanism checks, not additional rounds in the inherited frozen-plan lineage. CR6 implementation closure remains pending. Decision d-20261016-08 records the distinction between uncertainty retention and confirmed cleaning membership, with rejected alternatives and reversal evidence. No runtime behavior is inferred from these read-only judgments. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+#### mechanism-cr6-v1.md
+
+```text
+# CR6 mechanism correction
+
+Current revision is 1bb27a0b, with code repair in 1824eb56. The frozen O1–O4 plan remains tasks/plans/2026-10-16-catalog-engine-retention.md. CR1–CR5 were closed by round 2. Its error-handling lens found a correction-created defect in CR4's uncertainty handling.
+
+The shared reaches boolean currently maps any filesystem binding error to true. This correctly retains uncertain trees during collection, but protect_catalog_path also interprets true as positive tree membership and refuses every matched cleaning record. Moving or disconnecting one cleaning root therefore prevents resolution of an independently installed engine elsewhere. The source path is resolve to protect_catalog_path to its cleaning guard. No runtime reproduction is claimed yet.
+
+Proposed correction keeps the shared filesystem binding relation but represents confirmed reachability, confirmed disjointness and uncertainty separately. Collection treats uncertainty as retention. Session protection and durable use markers conservatively include uncertainty, preserving before-handoff durability. Cleaning adoption refusal requires positive membership evidence instead of a failed lookup of some other tree. For direct executable or resource descendants whose provenance locator is no longer reachable, compare the record's already known directory identity with the successfully acquired path's actual ancestor identities to confirm membership. Preserve the recorded root locator, no-follow cleanup and full inventory checks. Do not infer absence from canonicalization failure or use global case folding. No new registry, timer or actor lease.
+
+The private helper arrangement remains an implementation detail. The behavioral boundary is that one unavailable cleaning root cannot prevent unrelated engine resolution, yet actual cleaning-tree adoption remains refused under lexical and filesystem-alias relationships, including a moved tree where its identity can be proven. Uncertain trees remain retained and successful child handoff still requires durable conservative use evidence.
+
+Required proof adds an actual missing or renamed cleaning root alongside an independently installed executable, verifies successful unrelated resolution and preserved cleaning provenance, and verifies actual moved or aliased cleaning descendants remain refused. Existing retained, session, prepublication alias, retry, admission, modified partial-tree and shutdown tests remain green. New regressions must fail behaviorally with only their source fix removed. Windows/macOS runtime remains hosted proof.
+
+This is a focused mechanism judgment required by push-review-policy 4a before another patch. It is not a new product requirement, a new build lineage or a repetition of settled plan review. Recommend the simplest faithful representation against the actual consumers, and identify any missing obligation or unsafe inference before writing resumes. Plan authorship and arbitration shared one context. Detection uses the same model family as the code.
+```
+
+#### probe-cr6-mechanism.txt
+
+```text
+Optimal: one relation that preserves confirmed membership, disjointness and uncertainty → I recommend that mechanism, with conservative retention/use marking and cleaning refusal based on confirmed membership. Two gaps remain.
+
+[blocker] /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/mechanism-cr6.md:9 — CR6’s isolation boundary conflicts with treating lexical containment as confirmed membership. Rename a cleaning root, recreate its old pathname as an independent root, then resolve an executable under the same destination spelling. `catalog_install.rs:123` still matches lexically, and `:355` refuses it despite the different root identity. The existing replacement-root case at `src-tauri/src/infra/path_authority/catalog_install.rs:1282` establishes that identical spellings can represent independent installations. Require identity evidence to distinguish this replacement for cleaning refusal while retaining the original provenance. The proposed fallback only addresses unreachable locators, missing this reachable substitute (confidence: 92).
+
+[blocker] /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/mechanism-cr6.md:11 — The proposed proof does not establish conservative durable use on the new uncertainty branch. Unrelated resolution and preserved provenance can pass even if uncertain records receive no session marker. Existing marker-failure coverage at `src-tauri/src/infra/path_authority/catalog_install.rs:1178` uses a reachable managed tree, while uncertainty coverage at `:1027` only asserts a boolean. Require behavioral proof that uncertain membership persists a durable marker before handoff, refuses handoff on persistence failure, and survives reopen. Otherwise the obligation at candidate line 7 can be broken with the stated tests green (confidence: 96).
+
+Unsafe inference: `filesystem_reaches(...).is_ok_and(true)` would not establish positive membership. `src-tauri/src/infra/path_authority/catalog_install.rs:179` returns `true` conservatively for two missing leaves sharing a parent binding. That outcome must remain uncertainty.
+
+Limitation: source-derived judgment at `1bb27a0b`, without runtime reproduction or Windows/macOS execution (confidence: 100). No writes, tests, gates or compilers ran. Review and code share the same model family.
+
+VERDICT: REVISE
+```
+
+#### mechanism-cr6-v2.diff
+
+Exact candidate delta retained at /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/mechanism-cr6-v2.diff, SHA256 534722ea5612999ee596db183c106d54e61a8ef9de49b0982f7d10c534e81b82. The full before/after candidates are preserved above and below. The patch is referenced rather than embedded because its blank context lines carry a space that the repository diff check rejects.
+
+#### mechanism-cr6.md
+
+```text
+# CR6 mechanism correction
+
+Current revision is 1bb27a0b, with code repair in 1824eb56. The frozen O1–O4 plan remains tasks/plans/2026-10-16-catalog-engine-retention.md. CR1–CR5 were closed by round 2. Its error-handling lens found a correction-created defect in CR4's uncertainty handling.
+
+The shared reaches boolean currently maps any filesystem binding error to true. This correctly retains uncertain trees during collection, but protect_catalog_path also interprets true as positive tree membership and refuses every matched cleaning record. Moving or disconnecting one cleaning root therefore prevents resolution of an independently installed engine elsewhere. The source path is resolve to protect_catalog_path to its cleaning guard. No runtime reproduction is claimed yet.
+
+Proposed correction keeps the shared filesystem binding relation but represents confirmed reachability, confirmed disjointness and uncertainty separately. Collection treats uncertainty as retention. Session protection and durable use markers conservatively include uncertainty, preserving before-handoff durability. Cleaning adoption refusal requires positive membership evidence instead of a failed lookup of some other tree. For direct executable or resource descendants whose provenance locator is no longer reachable, compare the record's already known directory identity with the successfully acquired path's actual ancestor identities to confirm membership. Preserve the recorded root locator, no-follow cleanup and full inventory checks. Do not infer absence from canonicalization failure or use global case folding. No new registry, timer or actor lease.
+
+The private helper arrangement remains an implementation detail. The behavioral boundary is that one unavailable cleaning root cannot prevent unrelated engine resolution, yet actual cleaning-tree adoption remains refused under identity-confirmed lexical and filesystem-alias relationships, including a moved tree where its identity can be proven. Lexical containment alone is never confirmed physical membership for the cleaning guard. A replacement root or tree at the identical spelling is an independent binding, distinguished from the recorded root and tree identities. Preserve the predecessor's exact provenance. Where the target is absent, the same verified root identity plus exact recorded destination binding still identifies its pending cleaning reservation and refuses its premature reuse. Different missing leaf spellings under the same parent remain uncertain, never confirmed aliases. Uncertain trees remain retained and successful child handoff still requires durable conservative use evidence.
+
+Required proof adds an actual missing or renamed cleaning root alongside an independently installed executable, verifies successful unrelated resolution and preserved cleaning provenance, and verifies actual moved or aliased cleaning descendants remain refused. Cover an independent replacement root and replacement tree at the old spelling, plus a genuinely missing cleaning target under its original verified root. Explicitly prove that uncertainty durably marks current session use before handoff, survives registry reopen and refuses handoff when marker persistence fails. Two absent different leaves under a shared parent must not become a positive cleaning match. Existing retained, session, prepublication alias, retry, admission, modified partial-tree and shutdown tests remain green. New regressions must fail behaviorally with only their source fix removed. Windows/macOS runtime remains hosted proof.
+
+This is a focused mechanism judgment required by push-review-policy 4a before another patch. It is not a new product requirement, a new build lineage or a repetition of settled plan review. Recommend the simplest faithful representation against the actual consumers, and identify any missing obligation or unsafe inference before writing resumes. Plan authorship and arbitration shared one context. Detection uses the same model family as the code.
+```
+
+#### probe-cr6-mechanism-v2.txt
+
+```text
+CR6 replacement-binding gap CLOSED in the final candidate — `mechanism-cr6.md:9` requires physical identity to distinguish replacement roots and trees, preserves predecessor provenance, and retains refusal for an absent destination under its verified original root. Existing record identities support this distinction at `src-tauri/src/infra/path_authority/catalog_install.rs:11` (confidence: 95).
+
+CR6 uncertainty-proof gap CLOSED in the final candidate — `mechanism-cr6.md:11` explicitly requires durable marking before handoff, persistence-failure refusal and registry reopen. These exercise the affected marker path at `src-tauri/src/infra/path_authority/catalog_install.rs:369`, beyond the existing reachable-tree test at `:1178` (confidence: 98).
+
+Optimal: one shared relation distinguishing confirmed membership, disjointness and uncertainty → I recommend this mechanism. Conservative retention and use marking include uncertainty. Cleaning refusal requires identity-confirmed membership or the exact missing-destination reservation. Existing cleanup identity and inventory checks remain authoritative at `src-tauri/src/infra/path_authority/catalog_install.rs:542`.
+
+Unsafe inference to avoid: neither lexical overlap nor the existing `filesystem_reaches` returning `Ok(true)` establishes physical membership. Its missing-leaf branch at `src-tauri/src/infra/path_authority/catalog_install.rs:179` treats equal parent identities conservatively. The candidate now explicitly preserves that distinction.
+
+Limitation: this approves the mechanism correction, not implementation closure of CR6. Source remains unchanged at `1bb27a0b`. No writes, tests, gates or compilers ran. Runtime behavior, including Windows/macOS, remains unverified (confidence: 100). Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+### CR6 implementation proof
+
+The same sensitive Codex write leaf implemented the approved three-way relation only in catalog_install.rs. The root inspected the complete diff. Member requires physical identity or the verified original missing-destination reservation. Disjoint requires resolved evidence. Uncertainty preserves trees and durable session use, while the cleaning guard refuses confirmed membership only. All retained-owner, session-use and prepublication consumers share the relation. Independent replacement bindings remain distinct and the predecessor's exact provenance is preserved. Main.rs and mod.rs stayed byte-identical.
+
+Eight new production-entrypoint tests exercise unavailable cleaning roots with independent engines, conservative markers and registry reopen, marker write/sync failure, replacement roots and trees, moved/aliased cleaning descendants, original missing reservations, distinct absent leaves, retained uncertainty and unavailable prepublication resources. Red-first compiled with five behavioral failures. An additional prepublication regression exposed a missing-path branch in the first implementation and was repaired. The final source-only Git-derived reversal compiled with six intended behavioral failures and two passing controls, all new tests intact. Exact byte restoration matched source and test-module hashes.
+
+Root independently passed 50 catalog, 284 authority, 214 filesystem tests with one existing isolated-namespace test ignored, and 39 shutdown tests, plus formatting and global diff checks. The sha256 selector still matched zero tests, with actual hash cancellation and activation coverage in the authority suite. Complete checks:pre-review passed including Windows GNU compilation/clippy. Canonical root proof records are gate-review-cr6-proof.t17kv8 and gate-review-cr6-prereview.N7Zn4v. Complete leaf evidence is /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/review-cr6-evidence.md with logs, source-only patch and hash manifests.
+
+The leaf correctly reported a global diff-check failure in the root-owned handoff. Its embedded candidate patch had blank context lines containing one space. Root replaced only that patch excerpt with its exact artifact path and SHA256, preserving both full candidate texts and raw review reports. The global check then passed and the complete root proof followed. This record-formatting repair changes no source behavior.
+
+Local runtime proof remains Linux only. Windows cleaning-state fixtures seed the persisted retry state privately while Unix additionally uses the existing production removal fault injector. Real Windows case-renames and other native platform behavior remain pending hosted jobs. CR6 awaits cumulative reviewer closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### Cumulative diff review round 2
+
+REVIEWED_THROUGH=1bb27a0b9ed12bd32ab844cb2f0c0c2c2c05ff2f. All eleven read-only lenses completed and all reports were read. Elapsed through arbitration: 300.633 seconds. CR1–CR5 are CLOSED with explicit originating-lens evidence. One adopted finding opens CR6, a correction-created defect of CR4 at 1824eb56. diff_adopted_per_round: r1=6 r2=1. Six unique corrections total, five closed and one open. No Skip or Defer. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+CR6 Fix: an unavailable cleaning root maps uncertainty to positive membership and blocks unrelated engine resolution. Retention uncertainty and confirmed cleaning-tree membership must be distinguished without weakening durable child-use protection or cleanup authority. A focused fresh-context mechanism judgment is requested before another patch. No source-derived Windows behavior is claimed as local runtime proof.
+
+#### Round 2 correctness
+
+```text
+CR4 CLOSED — `catalog_install.rs:122–200` supplements lexical reachability with canonical bindings and ancestor object identities. Retained owners, current-session uses and prepublication resources share this relation. Uncertainty retains trees. Exact deletion authority remains unchanged.
+
+No concrete correctness defects found in the correction delta or inspected dependencies. Shutdown ordering, hashing cancellation, inventory limits and overflow accounting remain consistent.
+
+Limitation: Windows/macOS runtime behavior remains unverified here (confidence: 100). No files changed or tests run. Reviewer and code author share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 root-cause
+
+```text
+CR1 CLOSED — `main.rs:1935` shares the real shutdown clear with the durable integration test. Source-only reversal leaves the session marker behind. Restoration passes and permits next-start collection.
+
+CR4 CLOSED — `catalog_install.rs:122` supplements lexical reachability with filesystem bindings across all three consumers. This fixes alias-induced ownership misses while preserving deletion authority. Inspected reversals fail all three relation/use regressions, and restoration passes.
+
+No symptom-only fix or reintroduced prior defect found. Hashing retains the earlier cancellation and descriptor checks.
+
+Limitation: Windows/macOS runtime proof remains pending (confidence: 100). Review and code authors share the Codex model family. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 tests
+
+```text
+CR1 CLOSED — `catalog_install.rs:848` exercises the shared production shutdown helper, reopens the registry, and asserts marker removal plus next-startup collection only after success. Failure and timeout retain both. The source-only reversal log shows the durable-marker assertion failing with exit 101.
+
+No additional findings.
+
+Limitation: Windows/macOS runtime and real-app verification remain pending, as disclosed (confidence: 100). Review was read-only and used the code author’s model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 error-handling
+
+```text
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:127 — After deletion fails and persists `cleaning=true`, disconnecting or moving that catalog root makes reachability resolution fail. `unwrap_or(true)` then marks unrelated paths as affected. Through `resolve` → `protect_catalog_path`, launching an independently installed engine fails with “catalog install cleanup is in progress,” hiding the unavailable-root cause. Retaining uncertain trees must not turn one cleanup failure into refusal of unrelated resources (confidence: 94).
+
+Limitation: source review only, with no runtime reproduction. Windows/macOS failure behavior remains unverified (confidence: 100). Reviewer and code authors share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 minimalism
+
+```text
+CR2 CLOSED — `mod.rs:3627` provides one `sha256_read_core`, used by cancellable payload hashing, activation descriptor hashing and catalog inventory hashing. Caller hooks preserve cancellation, observers and cumulative inventory limits (confidence: 98).
+
+No further bloat or duplication findings. The smallest sufficient implementation retains the catalog lifecycle module and replaces its separate hashing loop with the shared core, as corrected. No new file was added by the correction delta.
+
+Review was read-only. No tests or gates were run. Reviewer, authors and orchestrator share the Codex model family, including plan arbitration.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 code-quality
+
+```text
+CR3 CLOSED — `src-tauri/src/infra/path_authority/mod.rs:4365` now documents the boolean’s recursive reachability meaning and the map’s process-session lifetime, matching insertion and publication consumers (confidence: 99).
+
+No additional readability or local-consistency defects found.
+
+Read-only review. No files changed or tests run. Reviewer and code author share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 engine-protocol
+
+```text
+No confirmed engine supervision, UCI state-machine or result-routing defects found in the correction delta and connected launch/shutdown paths.
+
+Marker clearing remains gated on successful teardown. Alias checks conservatively add retention.
+
+Read-only source review. Windows/macOS runtime behavior remains unverified. Reviewer and author share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 ipc-contract
+
+```text
+No IPC contract defects found. Affected commands still agree with renderer callers and generated bindings. No new commands, events, binding edits or capability changes.
+
+No prior IPC findings required CR closure. Review was read-only. No files changed or tests run. Reviewer and code author share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 tauri-security
+
+```text
+CR4 CLOSED — `src-tauri/src/infra/path_authority/catalog_install.rs:122` supplements lexical reachability with canonical filesystem bindings and ancestor identity comparisons. Retained owners, session use and prepublication resources share this relation. Uncertainty retains trees. Deletion authority remains independently identity-bound and no-follow.
+
+No additional security defects found.
+
+Limits: Windows/macOS runtime proof remains pending. Credential/session storage is unchanged, with no refresh-token flow introduced. Read-only review, no files changed or tests run. Review shares the implementation’s model family, and plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 platform-semantics
+
+```text
+CR4 CLOSED — `catalog_install.rs:123–194` adds canonical filesystem bindings and ancestor identity comparisons to the shared retention relation. Uncertainty retains trees. Retained owners, session use and prepublication resources all use this relation. Exact deletion authority remains unchanged. Linux alias regressions and Windows case-rename tests cover the correction.
+
+No additional platform defects established.
+
+Proof limits: supplied evidence reports Windows GNU compilation/clippy passed. Windows/macOS runtime remains pending in `rust-windows-test` and `rust-macos-test`. `rust-platform` provides compile/lint evidence only. No non-Linux Unix source-probe result was supplied.
+
+Read-only review. No files changed or checks run. Reviewer and implementation share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 2 records
+
+```text
+CR5 CLOSED — `tasks/decisions.md:3347` now points to d-20261016-07 at line 8147. Historical prose is preserved. The clarification retains failure handling and follows d-20260918-18 for strict spelling, matching the implementation.
+
+No records findings. All eleven copied review reports match their originals. Supplied logs support the correction test counts, behavioral failures, hash restoration and successful reruns.
+
+Unverifiable: historical timing claims without original timing records. Windows/macOS runtime proof remains pending as recorded.
+
+Read-only review, with no tests or writes. Reviewer and implementation share the same model family.
+
+VERDICT: APPROVED
+```
+
 #### Round 1 root-cause
 
 ```text
