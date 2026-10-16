@@ -172,7 +172,7 @@ pub enum Error {
     TauriOpener(#[source] Box<tauri_plugin_opener::Error>),
 
     #[error("network failure")]
-    Reqwest(Box<reqwest::Error>),
+    Reqwest(#[source] Box<reqwest::Error>),
 
     #[error(transparent)]
     ChessPosition(Box<shakmaty::PositionError<Chess>>),
@@ -1515,6 +1515,41 @@ mod tests {
 
         let unchanged = Error::with_cleanup(Error::Cancellation, Ok(()));
         assert!(matches!(unchanged, Error::Cancellation));
+    }
+
+    #[test]
+    fn diagnostic_reqwest_preserves_builder_cause_without_changing_payload() {
+        const URL: &str = "file:///diagnostic-reqwest-url-marker/catalog.json";
+        let reqwest_error = reqwest::Client::new()
+            .get(URL)
+            .build()
+            .expect_err("file URL must fail request construction without sending a request");
+        assert!(reqwest_error.is_builder());
+        let native_message = reqwest_error.to_string();
+        assert!(native_message.contains(URL));
+        let native_cause = std::error::Error::source(&reqwest_error)
+            .expect("builder error must retain its native cause")
+            .to_string();
+        assert_eq!(native_cause, "URL scheme is not allowed");
+
+        let error = Error::from(reqwest_error);
+        let diagnostic = error.diagnostic();
+        assert!(diagnostic.contains(&native_message));
+        assert!(diagnostic.contains(&native_cause));
+        assert_eq!(error.to_string(), "network failure");
+        assert_eq!(error.category(), ErrorCategory::Network);
+        let serialized = serde_json::to_string(&error).expect("serialize network error");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "tag": "backend-error",
+                "category": "network",
+                "message": "network failure"
+            })
+        );
+        assert!(!serialized.contains(URL));
+        assert!(!serialized.contains(&native_cause));
     }
 
     #[test]
