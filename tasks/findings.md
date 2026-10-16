@@ -16653,7 +16653,7 @@ This supersedes all earlier implementation/review/native-pending status for this
 ## 2026-10-16 — filed through the inbox spool
 
 ### ChessBase extended drawing colors suppress every arrow in a mixed PGN annotation
-* **ID:** f-20261016-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261016-02 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b
 * **Impact class:** behaviour
 * **Where:** src/utils/pgnComment.ts, src/utils/chess.ts, src/components/boards/continuationArrows.ts.
@@ -16663,6 +16663,12 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Proof:** parseComment on the exact 10.Ne4 cal command yields zero shapes and leaves the command text, while the 11.Nxe5 command yields two shapes.
 * **Found by:** Felix reported missing arrows in his screenshots. Codex confirmed the parser cause by source tracing and the exact mixed-color command reproduction.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1320b4c8d78b93d97b7abfce8fb5e709353fe785967c992532b7c23f29d789fd","input_sha256":"3f81ea8017a4406e4758645fa5101db2cda0ddbfae44e57159997cff4437fe86","kind":"mutation-receipt","operation":"e66320de68f5b9d73c2020ff6e581888dfc6531e1d3ff266b130cda7e99c5706","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-02"],"target":"f-20261016-02","v":1} -->
+
+* **Handled in source:** f93aab8d with endpoint proof correction cb078a6c. Six named drawing colors share one import/export/palette mapping, individual malformed entries no longer suppress valid neighbors, square markings serialize as csl and legacy/current saved tabs recover drawings while retaining unreadable raw payloads.
+* **Proof:** root fix-revert with new parser tests retained produced five assertion failures and one two-red-arrow control pass on pre-fix code, exit 1, then six selected regressions passed after byte-verified restoration. Full focused suite passed 260 tests. Post-repair pre-review passed, selected mutation packages 100%. Browser command pnpm test:e2e:container --project=board-keyboard passed 6/6, root inspected six arrows and six square markings in all six colors. Original user PGNs were read-only.
+* **Review:** tasks/handoffs/2026-10-16-chessbase-six-colors-review.md retains all plan and diff findings, raw reports, corrections and closure. Three adopted plan findings and three adopted diff findings are closed. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Delivery checkpoint:** code and scoped verification are complete. Final clean-tree gates and upstream CI/push/install are still required, no release or installed-app claim is made here.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"be23425bffb57f8809c7cc3c4b073e6febad7c9a337a644246c50bf89c742d5c","header_sha256":"713a017a91cf175fe5a976eace9f84c5860c11623c44ca8f0c4c06a1660d2dc8","header_status":"handled","input_sha256":"9a8defc6327321cf9154576948ced30ce7d57b16a466eaa1a049ea9f9d591499","kind":"mutation-receipt","operation":"7bf3aba0581d78e0a9539dd03996dc2115a3ffc30e0d86e45fdf64c9b68134d7","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-02"],"target":"f-20261016-02","v":1} -->
 
 ---
 
