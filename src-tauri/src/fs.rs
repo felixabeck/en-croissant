@@ -1173,6 +1173,13 @@ pub(crate) async fn install_staged_pgn_artifact(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    let resolved = state.pgn_path_authority.with_mut(|authority| {
+        authority.resolve(
+            &destination,
+            crate::infra::path_authority::PathOperation::DownloadFile,
+            std::slice::from_ref(&filename),
+        )
+    })??;
     let reservation = state.pgn_path_authority.with_mut(|authority| {
         authority.reserve_download_artifact(
             &destination,
@@ -1180,13 +1187,6 @@ pub(crate) async fn install_staged_pgn_artifact(
             payload,
             filename.to_string_lossy().into_owned(),
             vec![crate::infra::path_authority::PathOperation::ReadPgn],
-        )
-    })??;
-    let resolved = state.pgn_path_authority.with_mut(|authority| {
-        authority.resolve(
-            &destination,
-            crate::infra::path_authority::PathOperation::DownloadFile,
-            std::slice::from_ref(&filename),
         )
     })??;
     let installation_reservation = reservation.clone();
@@ -4402,6 +4402,91 @@ mod tests {
         .is_err());
     }
 
+    #[tokio::test]
+    async fn signed_raw_locator_uses_parsed_transport_and_rejects_wrong_digest_before_install() {
+        // Public material from a disposable fixture key, never the release signing key.
+        const KEY: &str = "RWTPLwEhRnUczKLsSeZvViQVJoMnBvfhEm4fMiur2aMd3MVDtDVi/4dD";
+        const SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRUTPLwEhRnUczFrYr8HpA/wuyHb59AIYxeK4n4Jcs6Ozt20wH/nR3dD28fzhLt0ENk25RrE7VSgJSJZZ9Sf/vOSKwcyBJ161DA4=\ntrusted comment: disposable signed locator regression fixture\n/MC4ktvIlO3Cq70Qc4Tb4/RgIil7pgnHIWNzhjHUUhifd9PyiUZWi4c8uYG7xFUbEO9mxUU6yExpp6OJrCw7DQ==\n";
+        let raw_url = "https://EXAMPLE.com:443/engine.zip";
+        let parsed_url = reqwest::Url::parse(raw_url).unwrap();
+        assert_ne!(raw_url, parsed_url.as_str());
+        let integrity = ArtifactIntegrity {
+            sha256: "AB".repeat(32),
+            signature: SIGNATURE.into(),
+        };
+        let verify =
+            |payload: &[u8], signature: &str| verify_minisign_signature(KEY, payload, signature);
+        validate_artifact_integrity_with(OpClass::Engine, raw_url, Some(&integrity), verify)
+            .unwrap();
+        let normalized_signature_error = validate_artifact_integrity_with(
+            OpClass::Engine,
+            parsed_url.as_str(),
+            Some(&integrity),
+            verify,
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalized_signature_error.to_string(),
+            "Invalid input: artifact manifest signature verification failed",
+            "the signature must authenticate raw locator text, not its parsed replacement"
+        );
+
+        let dir = tempdir().unwrap();
+        let staging = private_tempdir_in(".archive", dir.path()).unwrap();
+        let sentinel = staging.path().join("previous");
+        std::fs::write(&sentinel, b"previous installation").unwrap();
+        let payload = zip_payload();
+        assert_ne!(
+            format!("{:x}", Sha256::digest(&payload)),
+            integrity.sha256.to_ascii_lowercase()
+        );
+        let transport = zip_response(payload);
+        let redirect = "https://CDN.example.com:443/engine.zip";
+        let mut redirect_headers = HeaderMap::new();
+        redirect_headers.insert(
+            reqwest::header::LOCATION,
+            HeaderValue::from_static(redirect),
+        );
+        transport.responses.lock().unwrap().insert(
+            0,
+            Ok(DownloadResponse {
+                status: 302,
+                headers: redirect_headers,
+                content_length: None,
+                stream: Box::pin(futures_util::stream::empty()),
+            }),
+        );
+        let error = download_file_core_control_with_integrity(
+            OpClass::Engine,
+            raw_url,
+            staging.path(),
+            Some(staging.path().to_path_buf()),
+            &transport,
+            None,
+            None,
+            CancellationToken::new(),
+            Some(&integrity.sha256),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        let requests = transport.requests_seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, parsed_url.as_str());
+        assert_eq!(requests[1].0, parsed_url.join(redirect).unwrap().as_str());
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: artifact SHA-256 mismatch"
+        );
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"previous installation");
+        assert_eq!(leaves(staging.path()), vec!["previous"]);
+        assert_eq!(
+            leaves(dir.path()).len(),
+            1,
+            "temporary payload must be cleaned up"
+        );
+    }
+
     #[test]
     fn catalog_minisign_production_verifies_committed_engine_catalog() {
         let public_key_file = include_str!("../keys/release.minisign.pub");
@@ -6329,6 +6414,86 @@ mod tests {
         assert_eq!(
             std::fs::read(download_root.join("games.pgn")).unwrap(),
             pgn_content
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn staged_artifact_resolution_refusal_leaves_no_additional_pending_state() {
+        use crate::infra::path_authority::{set_resolve_pre_root_open_hook, PathOperation};
+
+        struct ResetResolveHook;
+        impl Drop for ResetResolveHook {
+            fn drop(&mut self) {
+                set_resolve_pre_root_open_hook(None);
+            }
+        }
+        let _hook_owner = ResetResolveHook;
+        let dir = tempdir().unwrap();
+        let (mut authority, destination, download_root) = test_downloads_destination(&dir);
+        authority
+            .reserve_download_artifact(
+                &destination,
+                "existing.pgn".into(),
+                (8, format!("{:x}", Sha256::digest(b"existing"))),
+                "existing",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let registry = dir.path().join("path-authority.json");
+        let before = std::fs::read(&registry).unwrap();
+        let state = AppState::default();
+        state.pgn_path_authority.install(authority).unwrap();
+        let mut staged = tempfile::NamedTempFile::new().unwrap();
+        staged.write_all(b"1. e4 e5 *").unwrap();
+
+        let retained = dir.path().join("retained-downloads");
+        let hook_root = download_root.clone();
+        let hook_retained = retained.clone();
+        let reached = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_reached = reached.clone();
+        set_resolve_pre_root_open_hook(Some(Box::new(move || {
+            // Identity validation has passed. Native root opening must reject the substitute.
+            std::fs::rename(&hook_root, hook_retained).unwrap();
+            std::fs::create_dir(&hook_root).unwrap();
+            hook_reached.set(true);
+        })));
+        let result = install_staged_pgn_artifact(
+            destination,
+            "refused.pgn".into(),
+            staged,
+            &state,
+            &CancellationToken::new(),
+            None,
+        )
+        .await;
+        assert!(
+            reached.get(),
+            "the real resolution boundary must be reached"
+        );
+        std::fs::remove_dir(&download_root).unwrap();
+        std::fs::rename(&retained, &download_root).unwrap();
+        assert!(
+            matches!(result, Err(Error::Conflict(ref message)) if message == "root changed concurrently"),
+            "expected native root identity refusal, got {result:?}"
+        );
+        let live_pending = state
+            .pgn_path_authority
+            .with_mut(|authority| {
+                assert!(authority.has_pending_artifact_filename(Path::new("existing.pgn")));
+                authority.has_pending_artifact_filename(Path::new("refused.pgn"))
+            })
+            .unwrap();
+        let disk_unchanged = std::fs::read(&registry).unwrap() == before;
+        let reopened = test_path_authority(&dir);
+        assert!(reopened.has_pending_artifact_filename(Path::new("existing.pgn")));
+        let reopened_pending = reopened.has_pending_artifact_filename(Path::new("refused.pgn"));
+        assert!(
+            !live_pending && disk_unchanged && !reopened_pending,
+            "RESOLVE_BEFORE_RESERVE: refusal must add no pending state: live_pending={live_pending}, disk_unchanged={disk_unchanged}, reopened_pending={reopened_pending}"
+        );
+        assert!(
+            leaves(&download_root).is_empty(),
+            "refusal must not publish a PGN"
         );
     }
 

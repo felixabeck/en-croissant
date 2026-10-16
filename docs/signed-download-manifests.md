@@ -42,7 +42,16 @@ The signed payload is the UTF-8 byte sequence below, with no trailing newline:
 ${downloadLink}\n${sha256.toLowerCase()}
 ```
 
-The URL must match `downloadLink` byte-for-byte, including escaping and redirects chosen by the manifest publisher. The application validates the manifest schema before showing an entry, verifies the Minisign signature before starting the transfer, streams the payload through SHA-256, and commits it only when the downloaded digest matches.
+The signature authenticates the exact raw `downloadLink` text, including its spelling and escaping,
+before URL parsing. It does not authenticate a canonicalized replacement. The initial transport
+request uses the representation produced by `reqwest::Url` parsing, which can normalize that text,
+for example by removing an explicit default port or lowercasing the hostname. Redirect locations
+are resolved against the current parsed URL, individually checked against the download URL policy,
+and followed within the redirect limit. Redirect targets are not separately signed by the entry
+signature. The application validates the manifest schema before showing an entry, verifies the
+Minisign signature before starting the transfer, streams the final response payload through SHA-256,
+and commits it only when the downloaded digest matches the authenticated digest. These parser and
+redirect behaviors do not change the signed payload or require existing catalogs to be re-signed.
 
 Existing manifest fields remain required by their consumers. In addition to `sha256` and `signature`:
 

@@ -1338,6 +1338,13 @@ fn reject_disagreeing_expected_identity(
     Ok(())
 }
 
+// Remove this accessor with its last cross-module consumer when existing refusal fixtures
+// cover the staged PGN installer's resolution-before-reservation boundary.
+#[cfg(test)]
+pub(crate) fn set_resolve_pre_root_open_hook(hook: Option<Box<dyn FnOnce()>>) {
+    RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
 #[cfg(all(test, unix))]
 pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<WorkspaceMetadataPostOpenHook>) {
     WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
