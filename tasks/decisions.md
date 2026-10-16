@@ -8314,3 +8314,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, adopted reviewed plan 2026-10-16-real-catalog-engines, rounds 1–3. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b145cb9cbc2987dbf74081f5dd0a67cb5ec11257c65b54540b8b9cef0833a3bb","input_sha256":"e851ae6439b6eb6945bd5598e43f1d42d3318b808659c9ea1b02112b63f971dc","kind":"mutation-receipt","operation":"6611bb590d10fd7ac1a3f1997ce33bd0de05343d085f4761fcb82ef54208784c","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-24"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-25 — Scheduling real catalog engine verification
+
+* **Question:** When should the native real catalog check run automatically?
+* **Governs:** f-20261002-08
+* **Chosen:** One separate workflow on catalog and exercised implementation changes, weekly schedule and manual dispatch, with native Linux, Windows and macOS jobs.
+* **Rejected:** Every-push network gating, which adds unrelated network dependency. Manual-only checking, which leaves changed or vanished artifacts undetected.
+* **Reason:** Catalog changes require runtime evidence and periodic runs detect upstream drift. Failures remain red without changing coverage floors. Reversal path: change triggers while retaining the repeatable manual command.
+* **Decided by:** Codex, full auto, adopted reviewed plan 2026-10-16-real-catalog-engines, rounds 1–3. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"96793d7e4b0f0ca019aa3e7d14161a3abd6ea1897e3737670aa04e82ff70367b","input_sha256":"75499822f9bfc2d4a1da5bba9772023ac56598ede4f3ec593fcde3c662eb8149","kind":"mutation-receipt","operation":"540cd3e341a23b1d35ac92ad76a49385cd30311343d66451d3d6c363b5b90439","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-25"],"target":"decisions-ledger","v":1} -->
