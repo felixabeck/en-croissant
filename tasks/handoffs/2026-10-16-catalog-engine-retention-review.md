@@ -1488,6 +1488,369 @@ Reviewed all seven production files and direct consumers. No files changed or te
 VERDICT: APPROVED
 ```
 
+### P4 integration review — CR11 and CR12
+
+P4 initially completed its assigned durable-state work in two source files with 65 catalog, 284 authority, 214 filesystem tests plus one existing ignore, 39 shutdown and one inherited-directory child test green. Formatting and diff checks passed. Source-only serialization reversal reproduced three-session child-data loss. Shared-admission and pre-mutation-baseline reversals each admitted a new binding at 4098 instead of refusing at 4096. Exact restoration and green reruns are indexed in phase4-implementation-evidence.md. These are leaf proofs pending the final root proof and pre-review. No P4 source commit was made because integration review found further in-mandate gaps.
+
+Two focused integration findings are adopted as CR11 Fix and CR12 Fix, separately from the completed cumulative diff-round counts. CR11 is an omitted eligibility consumer, not automatically attributed as created by durability. CR12 is a false-retention consequence of P4 durable use projection through the unchanged ambiguous file/context relation. Both were judged against an immutable source snapshot while P4 wrote, then a concrete correction was approved against a hash-verified completed-P4 snapshot. Twelve unique corrections total. CR1–CR8 remain closed, CR9/10 have initial local proof but await coherent P4 closure, and CR11/12 remain open. No Skip or Defer.
+
+CR11 requires current startup eligibility to consult unresolved durable uses, because completed ancestor substitution can change recursive reachability after publication without changing deletion identities or inventory. CR12 separates object-only use from recursive directory scope and records an executable working-directory object independently. Complete native inventory identities can prove node disjointness without dropping real cwd use. The approved object-only cwd boundary follows exact O2 and does not grant every ambient ancestor recursive ownership. Decision d-20261016-11 records this. The observed 52-second capacity setup is replaced with one validated fixture candidate while preserving the actual API boundary and source-reversal witnesses. No new tool or limit is added.
+
+This is P4 bounded integration repair1 by the same sensitive persistent leaf. The original 65-test report, JSONL, code and hashes remain preserved, and new evidence uses phase4-context1 names. These private mechanism checks are not new rounds in the inherited frozen-plan lineage. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+#### durable-use-eligibility-questions.md
+
+```text
+# Durable-use eligibility questions
+
+P4 is implementing the approved durable bound-use collection. Its source is being edited by another leaf, so this judgment must use committed source 026ba3db through the supplied immutable snapshot, plus the immutable approved candidate mechanism-durable-prepublication-use.md. Do not inspect mutable source files. These are questions for examination, not measured defects or permission to expand the mandate.
+
+Q2: does startup eligibility need to reevaluate every unresolved durable use, in addition to publication projecting matching sessions into per-install users? Consider an app-owned child A with an explicit recursive directory lease for /foo. A's unconfirmed exit leaves its use unresolved. B publishes a managed tree at /bar/root/version while /foo is unrelated, so publication legitimately finds no A membership. After B's clean exit, ordinary completed directory moves put the same root object R, with unchanged managed tree and inventory, under A's directory while restoring R's original pathname: move R aside, replace /bar with the original /foo directory object, move R back as /bar/root. The native recorded root R and tree identities, pathname and inventory remain unchanged. At C startup the old child can now read root/version through its retained directory descriptor. Its authority has retired. Publication-time derived markers did not contain A. The collector in committed code reads only per-install users, retained authority and process protection, not a global use collection. Would the frozen explicit-ancestor/filesystem-substitution contract require reevaluating durable bound uses through the shared relation at eligibility, or does an exact exclusion cover this same-profile native-child scenario? No continuous mutation during validation, independent execution or cross-profile sharing is involved.
+
+Q3: can persisting all historical file uses cause unrelated future catalog trees to stay retained indefinitely? A leases a single NNUE file as a File resource, then exits unconfirmed. Its file pathname is later deleted or replaced, while its real file lease still identifies the original object. B publishes an unrelated new catalog tree whose complete managed inventory contains none of that file identity. The current relation treats the stale pathname as Uncertain. A durable collection could therefore project A into every future record and B cannot clear it. Ask whether complete native inventory plus nonrecursive object semantics can establish disjointness safely, rather than relying on the replacement pathname. Distinguish an explicit file resource from an executable's working-directory context and an explicit recursive directory. If existing metadata cannot distinguish necessary contexts, identify the smallest faithful bound-use representation or additional bound object, without another actor registry. Any negative classification must preserve actual native child use, cleaning refusal and the independent complete-inventory deletion boundary.
+
+Judge these against frozen O2/D5 and the stated migration/independent-execution exclusions, not a desire to add features. If in scope, recommend the simplest shared predicate/consumer correction and exact behavior tests. If prevented or excluded, cite the specific producer or contract. No implementation or runtime proof is requested in this read-only judgment. The physical descriptor-survival premises have production regression witnesses, while these combinations remain source-derived until tested. CR9 and CR10's already approved durability/admission work remains valid. Plan authorship and arbitration shared one context. Detection uses the same model family as code.
+```
+
+#### probe-use-eligibility.txt
+
+```text
+All source citations below refer to the immutable `source-026ba3db/` snapshot.
+
+[blocker] /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/mechanism-durable-prepublication-use.md:9 — Q2 exposes an eligibility consumer missing from the correction. Publication-time projection cannot cover relationships formed afterward. The collector checks per-install users, process protection and retained authorities, but never historical uses (`src-tauri/src/infra/path_authority/catalog_install.rs:606,613,617`). Completed ancestor substitution can leave the recorded root identity, pathname, tree and inventory unchanged, so deletion validation at `:645–689` does not reject the case. Linux children inherit directory descriptors (`mod.rs:1940`, `engine/process.rs:3775`), and the existing regression demonstrates access after directory rename and replacement (`engine/process.rs:6899–6918`). No producer prevents the proposed combination. Frozen O2 explicitly covers recursive ancestors and preserves reachability evidence until eligibility (`tasks/plans/2026-10-16-catalog-engine-retention.md:51,55,57`). Same-profile app-owned child use falls outside neither exclusion at `:23,96`. This extends CR10’s mechanism without invalidating its durability correction (confidence: 96).
+
+Optimal: reevaluate unresolved durable bindings at startup eligibility through the shared relation → I recommend this correction. Publication projection remains useful derived evidence, but cannot be the sole consumer. Under authority serialization, any unresolved binding classified Member or Uncertain retains the installation. Only the originating session’s proven shutdown clears that binding.
+
+The proof must publish while A’s directory is demonstrably unrelated, complete B’s successful clear, perform the completed ancestor substitution while restoring the recorded root pathname and identity, then reopen C and run trusted production reconciliation. Assert retention and actual child readability. The candidate’s current test at line 13 publishes beneath A’s directory immediately, so it cannot detect this omission.
+
+[blocker] /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/mechanism-durable-prepublication-use.md:5 — Q3 exposes a false-retention consequence of persisting every use through the unchanged relation. A missing or replaced historical file pathname becomes Uncertain (`src-tauri/src/infra/path_authority/catalog_install.rs:240–244,257–261`), which protects every unrelated future record despite its inventory containing no such object. The newer session cannot clear A’s projected markers. An explicit File resource hands over one file descriptor (`mod.rs:6432–6442`), not recursive directory ownership. However, the proposed pathname/identity/recursion representation cannot distinguish that file-only use from executable context, because both currently receive `recursive=false` (`mod.rs:7829–7837`). Executables additionally establish their parent as the child’s working directory (`mod.rs:6736`, `engine/process.rs:3766`). Treating both identically either retains unrelated installations indefinitely or weakens executable protection (confidence: 95).
+
+Optimal: represent object-only file use separately from recursive directory context → I recommend that distinction within the existing collection. For an explicit file, absence of its bound identity from the complete native managed inventory can establish disjointness from an unchanged deletion-eligible tree. Preserve actual membership detection, cleaning refusal and the independent complete-inventory deletion check (`catalog_install.rs:670–689`). Executable use must retain its working-directory context separately, using the validated parent binding available at `resolved.rs:147`, rather than applying file-only exclusion to it. Unprovable directory relationships remain Uncertain. Arbitrary filesystem permissions establish no additional ownership.
+
+Proof must cover deleted and replaced file spellings across restart, verify that unrelated installations receive no A marker and remain collectible, and confirm the original leased file remains readable. Positive controls must preserve actual file membership, recursive-directory protection, executable working-directory protection and cleaning refusal.
+
+Limitation: both combined scenarios remain source-derived, not runtime reproductions (confidence: 100). No writes, tests, gates, compilers or live queries ran. CR1–CR8 remain closed. CR9/CR10 implementation closure was not assessed. Review used the code’s model family.
+
+VERDICT: REVISE
+```
+
+#### mechanism-use-context-and-eligibility.md
+
+```text
+# Use contexts and current eligibility correction
+
+P4 source is complete but remains uncommitted. It passes 65 catalog tests and the requested native suites. Its final source hashes are phase4-source-hashes-final.json and its report is phase-4.txt. Focused immutable-source/candidate judgment identified two further in-mandate integration gaps, CR11 from Q2 and CR12 from Q3. CR9/CR10's durable-state implementation remains valid, but P4 cannot be committed until these consumers and semantics are corrected. CR1–CR8 stay closed.
+
+CR11: under authority serialization, startup eligibility must consult all unresolved durable bound uses through the same reachability relation used by publication and handoff. Per-install user markers are conservative derived evidence, not the only liveness source. Relationships can form after publication through a completed ancestor substitution without changing the recorded root, managed tree identity, pathname or inventory. A matching Member or Uncertain originating-session use retains the tree. Only the original session can clear it after the existing shutdown proof. Do not add a watcher, timer, scan for processes or second journal. Preserve exact-root/no-follow/inventory deletion boundaries and the frozen external-mutation limits.
+
+CR12: distinguish object-only use from explicitly recursive directory use within the existing collection. A false recursion flag means the bound object itself, a true flag includes directory contents. Use the recorded tree identity and complete native inventory identities as membership evidence for an object. Preserve current physical membership detection and cleaning refusal for user-added objects. If a known object-only identity is absent from that complete managed set, a missing or replaced old pathname alone cannot make it own unrelated managed objects. Negative object classification remains coupled to the independent deletion rule that any added or changed tree content prevents collection. Do not infer disjointness of an unprovable recursive directory.
+
+An executable consumes both its image and its working-directory context. Capture the validated working-directory object separately from the retained parent descriptor, in addition to the terminal image identity. Record that directory as an object context that protects an install when the working directory is the tree or a descendant. This does not make a selected or ambient ancestor directory own every child installation. Explicit EngineResource directory reads retain recursive scope, determined from the actual successfully resolved terminal directory and resource-read operation, rather than substituting a root entry's shape for a child. If this object-context boundary conflicts with the frozen contract, identify the exact obligation before implementation. All contexts for one handoff enter the same atomic lifecycle candidate, preserving initial zero-install durability, retry, admission and originating sessions. No new registry or persistent schema category is required if the existing node/recursive representation suffices.
+
+Required CR11 proof isolates the resource relationship from executable placement. A native child leases an explicit directory that is unrelated to the install at publication. Its executable/working directory must not accidentally protect that install. Retire its authority, publish, complete the newer session's successful clear, then perform completed ancestor substitution before the next startup. Keep the root's absolute pathname, object identity, immediate parent identity, tree identity and inventory unchanged, for example move an unchanged intermediate container beneath the leased ancestor while restoring its pathname. Assert no original-session derived marker existed before substitution, then actual child readability and retention after trusted startup eligibility. Always reap on red.
+
+Required CR12 proof retains a real explicit file-resource lease across restart, deletes or replaces its old pathname, and publishes an unrelated managed tree. Assert no original-session marker is projected into that independent install, a newer clean clear cannot erase the old use evidence, the unrelated tree remains collectible, and the original file lease still reads its bytes. Positive controls preserve actual file members, explicit recursive ancestors, cleaning refusal and executable working-directory protection. The latter must not be masked by a separate directory-resource lease. A useful boundary is an actual image started from staging, its image removed before provenance inventory, and publication of the unchanged working-directory object as the managed tree. The child must retain readable relative managed data through reopen, despite its image identity being absent from the inventory.
+
+The CR9 capacity test now measures about 52 seconds in the local focused/full catalog run because it durably writes every setup binding. Remove that observed recurring proof cost using one valid bounded registry candidate for fixture setup, then keep the actual production new-binding ResourceLimit, existing-binding usable-contents assertions and source-only admission/baseline reversal witnesses. Use existing private fixture/commit capabilities, no test framework, new tool or lowered limit. The behavioral bound, not thousands of redundant setup fsyncs, is the proof.
+
+New regressions need compiled source-only red/green, tests intact and exact source restoration, then all native proofs and pre-review before committed-delta closure. This is P4's bounded integration repair under the same frozen O1–O4 contract. Plan authorship and arbitration shared one context. Detection uses the same model family as code.
+```
+
+#### probe-use-context-final.txt
+
+```text
+Source citations below refer exclusively to the hash-verified `source-phase4/` snapshot.
+
+CR11 mechanism/proof specification CLOSED — `mechanism-use-context-and-eligibility.md:5,11` adds the missing eligibility consumer and isolates it from publication markers and executable placement. The current collector omits durable bindings at `catalog_install.rs:725–742`. The proposed substitution preserves deletion identities while changing recursive reachability, so the regression can detect that omission (confidence: 97).
+
+CR12 mechanism/proof specification CLOSED — candidate `:7,9,13` distinguishes object membership from explicit recursive scope. Complete inventory identities support object disjointness, while physical membership still protects added objects and triggers cleaning refusal. Independent inventory validation remains necessary at `catalog_install.rs:789–808` (confidence: 96).
+
+Object-only working-directory context satisfies exact O2 at `tasks/plans/2026-10-16-catalog-engine-retention.md:51`. Native launch sets the executable’s parent as cwd (`mod.rs:6743`, `engine/process.rs:3766`), and its validated identity is available from the retained parent (`resolved.rs:147`). Recording that directory separately covers the removed-image case. Neither cwd ancestry nor ordinary filesystem permissions establish explicit recursive resource ownership. No additional context mode is required by the supplied contract (confidence: 95).
+
+CR9/CR10 dependent mechanism/proof specifications remain CLOSED — candidate `:9,15,17` preserves atomic multi-context durability, originating sessions, retry and admission. One valid setup candidate retains meaningful production overflow/reuse assertions and admission-baseline reversals. Existing lifecycle support is at `catalog_install.rs:516–605,699–709`. Cleaning refusal must continue to require confirmed membership, preserving `:572` (confidence: 97).
+
+Limitation: this closes the correction design and proof specifications, not implementation or runtime verification. The frozen P4 snapshot predates these corrections. No writes, tests, gates, compilers or live queries ran. Windows/macOS runtime remains unverified here. Review used the code’s model family (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+### Continued round 4 arbitration — CR10
+
+This continuation supersedes the initial round-4 adoption count and timing above. Q1 was confirmed by focused mandate/source judgment as an in-mandate CR10 Fix. The repeated CR9 observation in that judgment confirms the already adopted proof obligation and adds no new Fix. Final round-4 adoptions are 2, one capacity witness and one lifetime-boundary witness. diff_adopted_per_round: r1=6 r2=1 r3=3 r4=2. Round-4 elapsed through this completed continuation arbitration is 1595.622 seconds, including the focused judgment. The earlier 328.607-second initial snapshot remains historical evidence. Ten unique corrections total, CR1–CR8 closed, CR9 and CR10 open. No Skip or Defer.
+
+CR10 is the missing durable use boundary before any install exists. General owner reconciliation preserves resource entries, but production attachment reconciliation can retire unowned resources into process-local retired_attachments, excluded from registry serialization. A later publisher therefore cannot recover earlier in-memory-only use. The frozen O2/D5 includes same-profile surviving children, explicit recursive ancestors and prepublication resources. This is not deliberate cross-profile sharing or independent manual execution. A concrete durable correction candidate was APPROVED before implementation, with three-session live-child proof and initial zero-install fault/retry coverage. Decision d-20261016-10 completes d-20261016-09 identity capture without reversing it.
+
+The overlooked lifetime obligation is assigned as P4 to the same persistent sensitive Codex leaf, plus the dependent CR9 capacity proof. Existing bound-use evidence becomes durable and originating-session-owned in the same registry. No second journal, actor registry or ownership grant is introduced. These focused private-mechanism judgments are not additional rounds in the inherited frozen-plan lineage. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+#### lifetime-boundary-question.md
+
+```text
+# Prepublication interruption boundary for examination
+
+Source 026ba3db, code 70688b60. Round 4 closed CR6–CR8 and found one at-capacity proof gap, CR9. This note raises a source-derived question, not a measured defect verdict or authority to expand the frozen mandate.
+
+The frozen O2/D5 contract covers surviving children after an unconfirmed shutdown and resources resolved before provenance publication. Current catalog_uses is an in-memory map, reset by PathAuthority::open. Only CatalogInstall.users is persisted. Before any install exists, resolving an explicit recursive directory resource cannot add a session marker to an install record. EngineRuntime's kill_on_drop cannot help on process death, as process.rs:3771 explains, and Linux pre_exec only preserves descriptors, not a parent-death kill guarantee.
+
+Candidate counterexample: session A hands the engine workspace directory to a real child as an explicit recursive resource while no catalog install is present. A stops unconfirmed before any install provenance exists. Child A can survive, still holding the directory. Session B opens the same registry, whose process-use map is empty, and trusted reconciliation may prune the now-unowned resource authority. B publishes a later catalog install under that directory, then cancels its save. B exits cleanly and clears only its own markers. Session C trusts its owner snapshot and collects the unowned new install. Does this delete underneath the earlier child despite O2, or does a specific frozen threat-model exclusion or actual lifecycle producer prevent this scenario?
+
+Read actual plan wording and actual producers before judging. Do not assume every engine exits on stdin EOF, because D5 explicitly refuses restart as proof that children exited. No source claim that old processes can be safely guessed absent. Directory resources are explicit recursive ownership, distinct from arbitrary filesystem permissions or an incidental executable working directory. This is the same profile, no deliberate cross-profile/manual sharing of a managed install tree.
+
+If this is within the frozen obligation, examine the simplest faithful correction: unresolved prepublication recursive-resource use must have durable bounded evidence before handoff even when there is no install record yet. Keep it in the existing registry, never a second journal or per-actor lease system, retain actual terminal binding and session, clear only the originating session after proven shutdown, and have future publication account for prior unresolved uses. Consider whether existing native authority state can hold that evidence without a second implementation of use ownership, and whether per-install markers can share a single mechanism. Do not write code or silently impose a new scope. Explain the minimum contract change and concrete proof needed, or identify the exact source/decision that makes the counterexample impossible or out of mandate.
+
+CR9 remains an independent accepted test gap, do not lose it. Required future proof for this question, if in scope, would retain a real inherited directory lease across registry reopen BEFORE publication, then publish and perform a later trusted reopen after the newer session clears its own markers, with the original child still alive and reaped safely. No actual process abort is needed to model the durable-state boundary. Plan authorship and arbitration shared one context. Detection uses the same model family as code.
+```
+
+#### probe-lifetime-boundary.txt
+
+```text
+[blocker] tasks/plans/2026-10-16-catalog-engine-retention.md:55 — Q1 requires correction under existing O2/D5. Before any install exists, `protect_catalog_path` records use only in memory (`src-tauri/src/infra/path_authority/catalog_install.rs:455`). With no affected record, no durable marker is written. Reopen resets that map (`mod.rs:5152`), and publication consults only the new session’s map (`catalog_install.rs:544`). The counterexample is therefore not prevented (confidence: 97).
+
+The precise retirement path is attachment reconciliation. General owner reconciliation preserves EngineResource entries (`mod.rs:2381`), but attachment reconciliation removes unowned resources into process-local `retired_attachments` (`mod.rs:7600`). Registry serialization excludes those retired entries (`mod.rs:8770`). Consequently, B can publish without A’s marker, exit cleanly, and leave C with neither A’s use evidence nor its resource authority. Collection then finds no protection (`catalog_install.rs:606`).
+
+This is within the frozen mandate. Explicit recursive ancestors protect their contents at plan line 51, prepublication resources are expressly covered at line 55, and D5 rejects restart as child-death evidence at line 89. The exclusions at lines 23 and 96 concern independent/manual execution and deliberate cross-profile sharing. They do not exclude this same-profile application-owned child. Production shutdown permits exit after failed cleanup (`main.rs:2490`), and kill-on-drop explicitly provides no process-exit guarantee (`engine/process.rs:3771`).
+
+Optimal: make the existing bound-use collection durable and session-owned → I recommend that mechanism. Preserve terminal identity, pathname, recursion and originating session independently of install existence. Reuse registry validation, byte/admission limits and atomic durability. Publication must account for every unresolved originating session through the shared reachability relation. Per-install markers can remain derived evidence, but marking and clearing must share one lifecycle implementation. Authority retirement must not erase use evidence. This corrects d-20261016-09’s cross-process assumption without expanding O1–O4.
+
+Required proof must cross the missing boundary:
+
+- Keep a real inherited-directory child alive, reopen **before publication**, retire its unowned resource through production attachment reconciliation, then publish.
+- Complete B’s successful shutdown clear, reopen as C, reconcile trusted owners, and assert A’s session evidence and the child’s readable contents survive.
+- Prove initial handoff refuses write failure or uncertain durability even with zero installs, including retry of the same binding.
+- Demonstrate behavioral failure with only the correction reverted. Always reap the child before propagating test failure.
+
+The existing child test publishes before reopening (`catalog_install.rs:1429`, `:1448`), so it cannot detect Q1.
+
+[should-fix] tasks/plans/2026-10-16-catalog-engine-retention.md:77 — CR9 NOT CLOSED. The distinct-binding test asserts two entries and deduplication (`src-tauri/src/infra/path_authority/catalog_install.rs:1228`), but never exercises the overflow guard at line 461. Require actual at-capacity `engine_resource` refusal with `ResourceLimit`, plus successful existing-binding reuse (confidence: 99).
+
+Limitation: the complete three-session counterexample remains source-derived, without runtime reproduction in this read-only check (confidence: 100). No writes, tests, gates or compilers ran. Review used the code’s model family. CR1–CR8 are not reopened.
+
+VERDICT: REVISE
+```
+
+#### mechanism-durable-prepublication-use.md
+
+```text
+# Durable prepublication use correction
+
+Last reviewed source 026ba3db, implementation 70688b60. Q1 was confirmed by focused mandate/source judgment as CR10 under existing O2/D5, not an extra product requirement. CR1–CR8 remain closed, CR9 admission proof and CR10 are open. The original candidate question and full judgment remain in the run evidence and will be preserved in the handoff. The precise escape is production attachment reconciliation retiring the old unowned EngineResource entry into process-local state that is not serialized.
+
+Make the existing bounded bound-use collection durable and owned by originating session in the existing Registry. Keep pathname, actual terminal identity, recursion and originating session independently of install existence. The executor chooses the smallest private serializable shape, using the existing native path representation, validation, byte limits, admission and atomic commit. Preserve distinct bindings at reused spellings and deduplicate repeated use by the same session. Every binding and session marker is bounded. No second journal, actor registry, PID scan, TTL, public command or deletion authority is introduced.
+
+Before returning any child-use resolution, its new or broadened binding must be durably recorded even with zero catalog install records. Capture terminal identity from the existing held descriptor or validated resolution as P3 does, never reopen the path. A write failure or uncertain durability refuses handoff. Repeating the same binding after such an error must retry durability, not trust an in-memory cached insertion. Already durable reuse can proceed without allocating a new binding. Keep use evidence through authority retirement, owner pruning and process restart. Legacy registries default to no prepublication use evidence, with existing per-install unresolved markers preserved conservatively. Malformed or oversized new evidence is refused rather than interpreted as absence.
+
+Publication projects every matching unresolved originating session through the same historical-binding relation into the install's durable protection. A newer publisher must preserve session A's identity, never relabel A's use as B's. Existing per-install users can remain derived evidence for compatibility, but marking and clearing share one atomic lifecycle implementation so no separate journal or fractured commit appears. The use collection itself never claims ownership of arbitrary files and never permits deletion of a resource tree.
+
+Only the originating session can clear its own durable scope uses and per-install markers, after the existing production shutdown wrapper proves sealed admission, drained work and reaped children. Clear both as one durable registry candidate. Newer session B's successful clear leaves A's unresolved use intact. Failed or uncertain clear retains conservative state and retry semantics. Preserve the deadline/cancellation behavior, confirmed cleaning refusal, unrelated-engine isolation, exact missing reservations, root locators, inventory/no-follow deletion checks and all existing admission ratchets.
+
+CR10 proof uses a real inherited-directory child and three authority sessions. A leases an explicit recursive directory before any catalog provenance exists. Reopen B BEFORE publication, retire A's unowned resource with production attachment reconciliation, publish under that directory and finish B's own successful shutdown clear. Reopen C with trusted owners and assert A's durable session evidence plus the child's readable new contents survive. Always reap the child before propagating red assertions. Test write and parent-sync uncertainty on the initial handoff with zero installs, same-binding retry, failed/uncertain clear, owner retirement, legacy load, malformed evidence and capacity. A source-only reversal must compile and fail this missing-boundary behavior, with tests intact and exact restoration.
+
+CR9 proof pre-registers valid handles, fills actual shared use admission to capacity, requires production engine_resource for a new binding to return ResourceLimit and proves an already durable binding remains reusable. The test asserts the behavioral bound, not reliance on one particular local guard. Do not weaken tests, limits or coverage. Root repeats native proofs and pre-review before committed-delta closure, then app proof, final gates, push, hosted jobs and installation.
+
+This is a focused correction candidate for the existing frozen O1–O4 contract, not an extra inherited-plan round. A new native implementation phase is needed for the overlooked durability boundary. Plan authorship and arbitration shared one context. Detection uses the same model family as the code.
+```
+
+#### probe-durable-prepublication-use.txt
+
+```text
+CR10 mechanism CLOSED — `mechanism-durable-prepublication-use.md:5–11` addresses the actual escape: use is currently process-local (`catalog_install.rs:455`), reopen resets it (`mod.rs:5152`), and retired attachments are excluded from serialization (`mod.rs:8783`). Durable originating-session bindings, publication projection and atomic own-session clearing satisfy existing O2/D5 (`tasks/plans/2026-10-16-catalog-engine-retention.md:55,89`). Terminal identity capture remains valid at `mod.rs:7841`. No mandate expansion is required (confidence: 97).
+
+CR10 proof specification CLOSED — candidate line 13 crosses the missing boundary with reopen before publication, production attachment retirement, B’s successful shutdown clear and C’s trusted reconciliation while A’s child remains readable. Initial zero-install persistence faults and same-binding retry cover the current no-write and cached-insertion hazards. The existing child test publishes before reopening (`catalog_install.rs:1429,1448`) (confidence: 98).
+
+CR9 proof specification CLOSED — candidate line 15 requires actual shared admission capacity, production `engine_resource` refusal with `ResourceLimit`, and durable-binding reuse. This replaces the insufficient two-entry counting assertions at `catalog_install.rs:1228` with behavioral boundary proof (confidence: 99).
+
+No additional mechanism defects found. Implementation closure remains pending against unchanged source `026ba3db`, including the required compiled source-only reversal. CR1–CR8 remain closed. Read-only review inspected the five supplied source paths, candidate, probe, plan, history and named rules. No writes, tests, gates or compilers ran. Windows/macOS runtime remains unverified. Review used the code’s model family.
+
+VERDICT: APPROVED
+```
+
+### Cumulative diff review round 4
+
+REVIEWED_THROUGH=026ba3dbe4f807485cd7d06503ff3a3ae7c2adf8. All eleven read-only lenses completed and every report was read. Elapsed through arbitration: 328.607 seconds. CR6–CR8 explicitly CLOSED. One adopted tests witness opens CR9, the missing at-capacity refusal/reuse assertion. diff_adopted_per_round: r1=6 r2=1 r3=3 r4=1. Nine unique corrections total, eight closed and CR9 open. No Skip or Defer. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+CR9 Fix: exercise actual ResourceLimit for a new binding at the session-use admission cap and successful reuse of an existing binding. Root also raised Q1 for examination, the interruption-before-first-provenance boundary. Q1 is not a measured defect or an accepted new requirement. A focused fresh-context mandate/source judgment will determine whether existing lifecycle evidence closes it or the frozen O2/D5 contract requires durable prepublication scope-use evidence. No source repair starts before that shared mechanism question is settled.
+
+#### Round 4 correctness
+
+```text
+CR6 CLOSED — `catalog_install.rs:447` refuses cleaning access only for confirmed membership. Uncertainty still retains trees and durably marks child use.
+
+CR7 CLOSED — `mod.rs:7841` captures terminal descriptor identity. Distinct historical bindings survive pathname reuse and feed publication protection at `catalog_install.rs:544`. Inspected reversal logs show six behavioral failures, followed by 58 passing catalog tests after restoration.
+
+CR8 CLOSED — `catalog_install.rs:1371` asserts typed Conflict for an existing cleaning tree’s recursive ancestor. Its source reversal fails exactly that assertion.
+
+CR4 remains CLOSED. Cleanup fixture changes correctly retire the stale selected workspace through native ownership APIs before testing collection.
+
+No additional correctness defects found.
+
+Limitation: read-only source and saved-evidence review. Windows/macOS runtime remains unverified (confidence: 100). Review and implementation share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 root-cause
+
+```text
+CR6 CLOSED — uncertainty retains trees and durable use markers without refusing unrelated engines. Confirmed membership still blocks access to cleaning trees.
+
+CR7 CLOSED — resolution captures terminal descriptor identity before handoff. Distinct historical bindings survive pathname reuse and feed both publication marking and retained-owner checks. Source-only reversal produced six behavioral failures, restoration passed all 58 catalog tests.
+
+CR8 CLOSED — the production `engine_resource` regression asserts recursive-ancestor Conflict. Reversing that classification fails precisely this assertion.
+
+Impacted CR1/CR4 fixes remain intact. The fixture changes correctly retire workspace ownership before testing cleanup. No root-cause or prior-fix regression findings.
+
+Limitation: runtime evidence is Linux-only. Windows/macOS runtime remains pending (confidence: 100). Review used the same model family as the code in a separate session.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 tests
+
+```text
+CR6 CLOSED — unrelated-engine handoff, durable uncertainty markers and confirmed cleaning refusal retain concrete regression assertions.
+
+CR7 CLOSED — historical-binding reversal compiled and failed six tests. Assertions cover durable markers, retained files after reopen and inherited-directory child access. Terminal-identity substitution separately fails the sibling-marker assertion.
+
+CR8 CLOSED — the new production `engine_resource` assertion requires `Conflict` for a recursive ancestor of an existing cleaning tree. Its source-only reversal fails exactly that test.
+
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:1228 — The distinct-binding admission test checks two entries and an internal count, but never reaches capacity. Removing the session-use overflow guard at line 461 would leave these assertions green and permit an additional unrecorded resource handoff beyond the bound. Add an at-capacity `engine_resource` assertion requiring `ResourceLimit`, while confirming an existing binding remains reusable. (confidence: 94)
+
+Tests are reachable through the full backend gate. Hosted Windows/macOS runtime proof remains pending. Review was read-only and shares the code author’s model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 error-handling
+
+```text
+CR6 CLOSED — `catalog_install.rs:446` refuses cleaning access only for confirmed membership. Uncertainty retains protection and durable markers. Marker persistence failures propagate before handoff, preserving unrelated-engine isolation (confidence: 96).
+
+CR7 CLOSED within this lens — `mod.rs:7841` captures terminal descriptor identity. Historical bindings reach publication’s durable marker commit, and write or durability failures refuse publication or handoff. Inspected source-reversal logs show six failures, followed by 58 passing catalog tests after restoration (confidence: 95).
+
+CR8 CLOSED — the recursive-ancestor regression requires production `engine_resource` to return typed `Conflict`. Weakening membership to uncertainty produces exactly that assertion failure in the supplied reversal log (confidence: 98).
+
+No additional error-handling defects found.
+
+Limitation: read-only source and supplied Linux evidence review. No checks executed or files changed. Windows/macOS runtime verification remains pending (confidence: 100). Reviewer and code authors share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 minimalism
+
+```text
+CR2 CLOSED — all three hashing callers still use `sha256_read_core`, preserving cancellation, observers and inventory limits.
+
+CR6 CLOSED — cleaning refusal still requires confirmed membership. Uncertainty retains trees and persists session markers through the shared relation.
+
+No new bloat or duplication defects found. Historical bindings extend the existing bounded map, and retained owners, handoffs and publication share one reachability implementation. The correction tests exercise distinct cases.
+
+Minimum-diff counterfactual: no implementation file was added this round. Inlining the cumulative catalog module would relocate required lifecycle code without removing required behavior.
+
+Read-only source review. No files changed or tests run. Reviewer and code author share the Codex model family in separate sessions. Platform runtime proof remains pending.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 code-quality
+
+```text
+CR3 CLOSED — `mod.rs:4365` documents the session-use map’s lifetime, terminal identity key and recursive flag, matching its consumers (confidence: 99).
+
+CR6 CLOSED within this lens — `catalog_install.rs:123,443` clearly distinguishes confirmed membership from uncertainty. Cleaning refusal uses `Member`, while retention and durable markers use `protects()` consistently (confidence: 97).
+
+No additional readability or local-consistency defects found in the correction and affected consumers.
+
+Read-only review. No files changed or tests run. Reviewer and code author share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 engine-protocol
+
+```text
+CR6 CLOSED — `catalog_install.rs:446` refuses cleaning-tree access only for confirmed membership. Uncertainty still retains trees and requires durable session markers without blocking unrelated engines.
+
+CR7 CLOSED — `mod.rs:7838` captures the validated terminal descriptor identity before handoff. `catalog_install.rs:460` retains distinct historical bindings, and `:544` checks them before durable publication. Renaming a leased directory and recreating its old pathname no longer loses protection. Inspected source-reversal logs show six behavioral failures, followed by 58 passing catalog tests after restoration.
+
+CR8 CLOSED — `catalog_install.rs:1371` exercises the actual `engine_resource` recursive-ancestor Conflict path. The supplied classification reversal produces exactly that assertion failure.
+
+No additional confirmed engine supervision, UCI state-machine or result-routing defects found. Shutdown marker clearing remains conditional on successful operation drain and engine/game teardown. The fixture changes retire the selected workspace through native APIs before testing cleanup eligibility.
+
+Read-only source and saved-evidence review. No files changed or tests run. Windows/macOS runtime remains unverified. Reviewer and implementation share the Codex model family, with no family separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 ipc-contract
+
+```text
+CR6 CLOSED within this lens — `catalog_install.rs:445` refuses cleaning access only for confirmed membership. Uncertainty retains protection and durable session markers.
+
+No IPC-contract defects found. Rust signatures, generated invoke keys and renderer callers agree. Progress remains registered, correlated and percentage-based. No new public command, event, binding edit or capability scope.
+
+Read-only review. No files changed or tests run. Reviewer and code share the same model family in separate sessions. Windows/macOS runtime verification remains pending.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 tauri-security
+
+```text
+CR6 CLOSED — `catalog_install.rs:446` refuses cleaning only for confirmed membership. Uncertainty retains protection and requires durable session markers before handoff, preserving unrelated-engine isolation.
+
+CR7 CLOSED — `mod.rs:7842` captures terminal descriptor identity. `catalog_install.rs:460` retains distinct historical bindings, and `:544` uses them before publication. Inspected source-reversal logs show six behavioral failures, including missing durable markers and deletion of a retained tree. Restoration passes all 58 catalog tests.
+
+CR8 CLOSED — `catalog_install.rs:1371` asserts typed `Conflict` through actual ancestor-directory `engine_resource` resolution. Replacing confirmed recursive membership with uncertainty produces exactly this failure, with 57 tests passing.
+
+Prior CR4 closure remains intact. Retention uses filesystem identity, while deletion separately requires the recorded root, no-follow tree identity and matching inventory.
+
+No additional in-scope security defects found.
+
+Limitations: read-only review, no files changed or tests executed. Windows/macOS runtime proof remains pending. Credential/session storage is unchanged, and no refresh-token flow is introduced. Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 platform-semantics
+
+```text
+CR4 CLOSED — filesystem identity and ancestor checks preserve alias reachability across retained owners, session uses and publication.
+
+CR6 CLOSED — cleaning refusal requires confirmed membership. Uncertainty preserves retention and durable markers without refusing unrelated engines.
+
+CR7 CLOSED — terminal identity is captured before handoff at `mod.rs:7838`. Distinct historical bindings survive pathname replacement. Supplied source-only reversal produced six behavioral failures, restoration passed all 58 catalog tests.
+
+CR8 CLOSED — `catalog_install.rs:1371` asserts actual recursive-ancestor `engine_resource` refusal. Supplied classification reversal failed only that assertion.
+
+No additional platform defects established. The workspace-retirement fixture changes preserve historical ownership semantics.
+
+Proof limits: supplied Windows GNU compilation/clippy passed. Windows/macOS runtime remains pending in `rust-windows-test` and `rust-macos-test`. `rust-platform` supplies compile/lint evidence only. No non-Linux Unix source-probe result was supplied.
+
+Read-only review, no files changed or checks run. Reviewer and implementation share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 4 records
+
+```text
+CR5 CLOSED — d-20260918-02 points to d-20261016-07. Historical prose is preserved, and the clarification matches current canonical-spelling behavior.
+
+CR6 CLOSED within this lens — source and saved evidence support uncertainty retention, durable markers and confirmed-membership cleaning refusal. The fixture workspace transitions preserve the original cleanup assertions.
+
+CR7 CLOSED within records scope — historical binding, terminal identity and inherited-child claims match source, reversal logs and restored hashes.
+
+CR8 CLOSED within records scope — the production recursive-ancestor Conflict assertion exists. Its source-only reversal produced exactly one failure with 57 catalog tests passing.
+
+No records findings. All eleven copied round-3 reports match their originals. Root completion records support the stated test counts and pre-review success.
+
+Unverifiable: historical timings without original timing records. Windows/macOS runtime, real-app verification and final gates remain pending as recorded.
+
+Read-only review. No writes, tests, gates or live queries performed. Review and implementation share the same model family.
+
+VERDICT: APPROVED
+```
+
 ### Focused historical-use judgment and P3 assignment
 
 The root paused another source patch and obtained focused fresh-context review-plan judgment for the repeated relation mechanism. The candidate was APPROVED with explicit warnings about actual terminal descriptor identity and stale pathname replacements. Decision d-20261016-09 records the correction. The overlooked O2 historical-binding obligation is assigned as P3 to the same persistent sensitive write leaf. CR8 joins its proof because it exercises the same relation. These are private implementation obligations under the frozen plan, not a new product requirement or a new inherited-plan review round. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
@@ -2010,4 +2373,261 @@ VERDICT: REVISE
 Unverifiable: recorded test counts, gate outcomes, timings and fix-revert results without their original execution logs. No writes, tests or live queries performed.
 
 VERDICT: REVISE
+```
+
+
+### P4 durable-use implementation, integration repair and root proof
+
+
+P4 final pre-review gate-p4-prereview.oIXa98 returned status 0, including Windows GNU compilation and clippy. The first attempt gate-p4-prereview.gxsSRd returned 101 for redundant_pattern_matching in one new legacy test. The same worker changed only that assertion to is_err, preserving production bytes and test semantics, then passed its targeted test, formatting and diff checks. The earlier source-only reversals used the unchanged equivalent assertion form. The final catalog test-suffix hash is cbd0a0b2c12135f6a48068a3fb16e70eb245f59aa1f3f94e77d43128c4748744, so the earlier whole-test suffix restoration manifest describes the pre-clippy snapshot rather than the committed test bytes. No gate failure is discarded.
+
+#### P4 exact clippy cleanup report
+
+````text
+Changed only the assertion in [catalog_install.rs:2337](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/catalog_install.rs:2337):
+
+```diff
+-        assert!(matches!(
+-            f.authority
+-                .engine_executable(&engine, PathOperation::EngineExecute),
+-            Err(_)
+-        ));
++        assert!(f
++            .authority
++            .engine_executable(&engine, PathOperation::EngineExecute)
++            .is_err());
+```
+
+All requested checks returned **0**:
+
+- Formatting check
+- Targeted legacy-absence test, 1 passed
+- `git diff --check`
+
+Hash verification confirms every other byte is unchanged. Changes remain unstaged. Previous evidence and foreign work were preserved.
+
+Final test-suffix SHA256:
+`cbd0a0b2c12135f6a48068a3fb16e70eb245f59aa1f3f94e77d43128c4748744`
+````
+
+P4 addresses CR9 and CR10 from cumulative round 4, then CR11 and CR12 from the focused precommit integration check. The latter two are separate private implementation findings, not new rounds in the inherited frozen-plan history. d-20261016-10 and d-20261016-11 record the approved contracts. No Skip or Defer. Cumulative reviewer closure remains pending.
+
+Root inspected both allowed-source diffs and the execution trace. Native contexts enter one durable candidate, startup eligibility reads durable uses, and independent exact-locator inventory checks remain the deletion authority. Root independently passed 72 catalog, 284 authority, 214 filesystem with one existing ignore, 39 shutdown and one inherited-directory child test, plus formatting and global diff checks. Canonical gate-p4-proof.FrFDmF has completion status 0. The final allowed-source hashes match the worker restoration manifest.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### phase4-before-context.txt
+
+```text
+Implemented CR9/CR10 in [catalog_install.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/catalog_install.rs) and [mod.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/mod.rs). Changes remain unstaged. Foreign work was preserved.
+
+Bound uses now persist terminal identity, recursion and originating sessions in the existing Registry before handoff, including zero-install use. Reopen and attachment retirement preserve them. Publication projects all unresolved sessions. One atomic lifecycle handles marking and own-session clearing, with conservative failure handling and admission measured before mutation.
+
+Final verification returned status 0 throughout:
+
+| Selector/check | Result |
+|---|---:|
+| `catalog_install` | 65 passed |
+| `infra::path_authority::tests` | 284 passed |
+| `fs::tests` | 214 passed, 1 existing ignore |
+| `shutdown_` | 39 passed |
+| Inherited-directory child | 1 passed |
+| Formatting and diff checks | Passed |
+
+Source-only reversals compiled and failed behaviorally with tests unchanged. Removing serialization reproduced the three-session child-data loss. Removing either admission enforcement or the new pre-mutation baseline admitted a binding at 4,098 units. Exact bytes were restored and all corresponding green reruns passed. Children were reaped before failure propagation.
+
+[Full evidence, implementation trace, commands, logs, patches and hash manifests](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/phase4-implementation-evidence.md).
+
+Runtime proof is Linux-only native session-state proof. No actual crash, browser or completed-game claim. Hosted Windows/macOS proof and cumulative closure remain root obligations. No scope deviation.
+```
+
+#### phase4-implementation-evidence.md
+
+```text
+CR9 and CR10 bounded implementation evidence
+
+Only `src-tauri/src/infra/path_authority/catalog_install.rs` and `src-tauri/src/infra/path_authority/mod.rs` changed in the workspace. Both remain unstaged. The pre-existing handoff change belongs to root and was preserved. No main, resolved, process, renderer, manifest, generated, rule, plan or ledger edits were made. No skills, agents, external messages, stage, commit or push operations were used.
+
+The supplied four rules, frozen O1–O4 plan and final approved durable-prepublication mechanism govern this correction. No contract question remained unresolved. There is no implementation scope deviation. The additional admission-baseline reversal is focused evidence for the required pre-mutation baseline.
+
+Data and lifecycle trace
+
+- `catalog_install.rs:10` retains the single bound-use collection. Its key is native pathname plus terminal identity pair. Each value maps originating session UUID to a boolean. True includes recursive contents. Different identities at one spelling remain separate, repeated same-session use deduplicates, and recursion only broadens.
+- `catalog_install.rs:14` gives that collection a private serializable view, using the existing NativePath and Identity shapes. `mod.rs:4181` adds the default-empty field to the existing Registry. This is evidence of unresolved use, not a path capability or deletion authority.
+- `catalog_install.rs:20` validates absolute native paths and components, nonzero identity pairs, nonempty valid UUID sessions and unique bindings. Count and byte validation reject oversized use evidence. Each binding and each session marker contributes to shared identifier admission at `catalog_install.rs:500`. Derived install users are also counted. Existing 4,096 identifier, 16 MiB write and 64 MiB legacy read limits remain unchanged, including the existing non-growing legacy allowance.
+- The existing successful-resolution capture at `mod.rs:7849` remains unchanged. It obtains the actual terminal identity from the validated held file or directory descriptor, with the retained Unix observed identity fallback. It never reopens a pathname to recover use identity and does not substitute the root entry identity for resolved child components.
+- Before resolve returns a child-use value, `protect_catalog_path` at `catalog_install.rs:562` clones and broadens the originating session's evidence and relevant derived markers. `commit_catalog_state` at line 516 captures admission before either live collection changes, validates the candidate and commits both through existing Registry atomic replacement. This applies with zero install records.
+- Write failure restores both collections. Uncertain marking retains conservative candidate evidence and the existing pending-durability flag, but returns an error. Same-binding retry sees that flag and must establish durability. An already durable unchanged binding does not consume capacity or require an additional use insertion.
+- `mod.rs:5003` validates and reloads all original sessions. Existing production attachment reconciliation around line 7606 retires unowned resources into process-local `retired_attachments`. Registry serialization around line 8779 excludes those retired authority entries but independently serializes the scope uses at line 8791. Owner reconciliation and retirement never remove scope use.
+- Publication at `catalog_install.rs:664` projects every matching unresolved originating session through the unchanged shared historical-binding relation into the new install's users. Publisher B does not replace A. Membership and uncertainty conservatively protect. Confirmed membership alone triggers cleaning refusal. Identity-distinct replacements, moved aliases and exact missing reservations retain their earlier semantics.
+- `clear_catalog_session_use` at `catalog_install.rs:699` removes only the current UUID from both the scope collection and derived install users in one lifecycle candidate. Failed or uncertain clearing restores conservative in-memory evidence for both collections. Successful clearing durably removes both. The unchanged production shutdown wrapper provides teardown, cancellation and deadline ordering.
+- The process-local catalog protection cache remains a subset of bounded install records. No second registry, journal, timer, actor lease, PID scan, new IPC or pathname deletion authority was introduced. Exact root, descriptor, no-follow and inventory cleanup authority remains unchanged.
+
+Behavioral additions
+
+Seven new phase4 tests remain in the source. The prior phase3 inherited-directory child setup and reaping were extracted into one shared Linux fixture at `catalog_install.rs:1502`. The UCI loop and native descriptor handoff are not copied.
+
+- Three authority sessions cross the missing boundary. A hands a real directory lease to a real EngineActor child before any provenance exists. B opens before publication, runs production startup attachment reconciliation, proves the resource left persistent authority and serialized entries, publishes, and completes its real successful shutdown wrapper. C opens with trusted owner reconciliation and proves the new data remains readable through A's inherited descriptor and A's marker survives without B's marker. The parent reaps the child before propagating worker assertion failures.
+- Initial zero-install write and parent-sync failures refuse handoff twice, followed by successful same-binding retry, reopen and publication under the original session.
+- Nonrecursive use broadens durably to recursive use. Write failure and sync uncertainty refuse broadened handoff. Later narrower use cannot shrink protection or allocate another binding.
+- A and B use one binding. Failed and uncertain B clear retain conservative in-memory scope and derived state, while the on-disk candidate keeps the two evidence forms coherent. Successful B clear and later C clear preserve A through pruning and reopen.
+- Legacy missing scope evidence defaults empty, preserves unresolved per-install users and does not recreate retired executable authority.
+- Production Registry open rejects relative paths, parent traversal, zero identity, invalid session, empty session set, invalid native encoding or platform, duplicate binding, excessive sessions, excessive bindings and oversized encoded evidence.
+- Pre-registered valid handles fill real shared admission through successful production resource resolutions. At 4,096 units, a new binding returns ResourceLimit while an already durable binding returns a lease whose native contents are read successfully. Both bindings and their session markers count. The older distinct-reused-path assertion now counts the binding and its session separately.
+
+Red-first and source-only reversal evidence
+
+`phase4-red-first.log` and `.exit` preserve the initial compiled run before the durable source implementation. Status 101 reports one capacity control passed and two behavioral failures. The zero-install handoff wrongly succeeded under an injected persistence fault. The three-session child's second read returned empty contents after C collected the new data. Reaping confirmation preceded propagation of the captured worker failure. `phase4-tests-only.diff`, the two tests-only source snapshots and `phase4-source-hashes-tests-only.json` retain that starting point.
+
+Each later reversal keeps all tests byte-identical. Patches were generated with Git diff against a source-only mutant, then applied with `git apply --reverse --check` and `git apply --reverse`. Exact forward checks and applications restored the source. No offset application occurred. The command logs, actual reversed hashes, mutant manifests, restored manifests and `phase4-proof-hash-audit.json` preserve the sequence.
+
+| Reversal | Source delta removed | Compiled behavioral red | Exact restored green |
+| --- | --- | --- | --- |
+| CR10 | Registry emits empty scope evidence instead of serializing the bound-use collection | Three-session test status 101, child sees empty contents after C reconciliation, child reaped | One test passed, status 0 |
+| CR9 shared guard | Shared identifier growth enforcement disabled temporarily | Capacity test status 101, real new binding admitted at 4,098 | One test passed, status 0 |
+| CR9 phase4 baseline | New lifecycle passes no pre-mutation admission baseline, leaving shared guard enabled | Capacity test status 101, real new binding admitted at 4,098 | One test passed, status 0 |
+
+The CR10 artifacts are `phase4-cr10-source-fix.patch`, `phase4-cr10-reversal-commands.log`, `phase4-cr10-reversed-red.log` and `phase4-cr10-restored-green.log`, with matching `.exit` files. The CR9 shared-guard artifacts use the same suffixes under `phase4-cr9-`. The baseline artifacts use `phase4-cr9-baseline-`, with its commands included in `phase4-baseline-and-final-commands.log`. The baseline mutant emitted an unused-variable warning but compiled and failed on the capacity assertion. No compile failure is counted as regression proof.
+
+`phase4-source-hashes-before-reversals.json` and `phase4-source-hashes-final.json` are identical. They include both changed sources and their test suffixes, plus unchanged main, resolved and process source hashes. All three restored manifests match. The final scoped patch is `phase4-final-scoped.diff`.
+
+Final verification
+
+All five test commands use `cargo test --manifest-path src-tauri/Cargo.toml --locked SELECTOR -- --nocapture`. Exact commands, results, statuses and log names are also recorded in `phase4-verification-statuses.json`. Every command below returned status 0.
+
+| Selector or check | Final result | Full log |
+| --- | --- | --- |
+| catalog_install | 65 passed | phase4-green-catalog_install.log |
+| infra::path_authority::tests | 284 passed | phase4-green-infra-path_authority-tests.log |
+| fs::tests | 214 passed, 1 ignored | phase4-green-fs-tests.log |
+| shutdown_ | 39 passed | phase4-green-shutdown_.log |
+| spawned_engine_reads_a_directory_resource_through_the_authorized_value | 1 passed | phase4-green-spawned_engine_reads_a_directory_resource_through_the_authorized_value.log |
+| cargo fmt --manifest-path src-tauri/Cargo.toml -- --check | Passed | phase4-green-fmt.log |
+| git diff --check | Passed | phase4-green-diff-check.log |
+
+The existing ignored filesystem test requires an isolated user and mount namespace. Initial green runs are retained separately in `phase4-focused.log`, `phase4-catalog-first.log` and `phase4-initial-*.log`. No failed runtime fixture or compile attempt was discarded. An early patch-construction attempt was rejected before applying source changes and was corrected. It was not regression evidence. An earlier progress message misstated the filesystem test count as 106, corrected to 214 passed and one ignored. This report and final status JSON use the actual log counts.
+
+Platform and proof limits
+
+Runtime proof was Linux only, using real filesystem objects, production authority entrypoints, EngineActor and Supervisor, and the actual inherited-directory descriptor behavior. Authority reopen models the durable native session-state boundary without killing the test process. No actual application crash, browser run or completed game is claimed. Existing Windows case-alias tests remain present but did not run on Linux. Hosted Windows and macOS execution, root cumulative review, full pre-review, app verification, release gates and installation remain root obligations.
+
+All phase4 artifacts reside in this run scratch. Earlier phase and review artifacts were not overwritten. `phase4-final-git-status.txt` records only the two permitted source changes plus root's preserved foreign handoff change, all unstaged.
+```
+
+#### phase-4.txt
+
+```text
+Implemented CR11/CR12 in [mod.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/mod.rs:7836) and [catalog_install.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/catalog_install.rs:242). Changes remain unstaged. Foreign handoff work is preserved.
+
+Executable image and validated cwd identities now enter one atomic handoff candidate. Directory resource recursion follows the actual terminal descriptor. The shared predicate combines physical membership with complete inventory identities, excludes unrelated stale nodes, and preserves recursive uncertainty. Collection now consults unresolved durable uses directly.
+
+All required commands returned status 0:
+
+| Check | Result |
+|---|---:|
+| `catalog_install` | 72 passed |
+| Path authority | 284 passed |
+| Filesystem | 214 passed, 1 existing ignore |
+| Shutdown | 39 passed |
+| Inherited-directory child | 1 passed |
+| Formatting and diff checks | Passed |
+
+Seven source-only reversals compiled and failed behaviorally, including eligibility, stale-node retention, cwd capture and refreshed CR9/CR10 witnesses. Tests stayed unchanged during each reversal. Exact restoration and green reruns passed. Children were reaped before failure propagation.
+
+The capacity test fell from **50.93 seconds to 0.18 seconds**, retaining real native bindings and production overflow/reuse assertions.
+
+[Complete trace, logs, preserved failures, patches, hashes and fixture adjustments](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/phase4-context1-evidence.md).
+
+No scope deviation. Runtime proof is Linux-only. Hosted platform proof and cumulative closure remain root obligations.
+```
+
+#### phase4-context1-evidence.md
+
+```text
+P4 root integration repair1 evidence for CR11 and CR12
+
+The approved final use-context and eligibility mechanism was implemented within the frozen O1–O4 contract. Only `src-tauri/src/infra/path_authority/catalog_install.rs` and `src-tauri/src/infra/path_authority/mod.rs` changed. Both remain unstaged. Root's foreign handoff changes were preserved. No helper submodule, persistent category, registry, timer, process scan, actor lease, IPC or deletion authority was added. Main, resolved, process, renderer, tasks, scripts, manifests, gates and generated files were not edited. No skills, agents, messages, ledger, stage, commit or push operations were used. No unresolved contract question or scope deviation remains.
+
+Shared capture, predicate and lifecycle trace
+
+- `mod.rs:7836` derives explicit recursive resource use from EngineResourceRead plus the actual resolved directory descriptor. It no longer substitutes the stored root's purpose or shape for the successfully resolved terminal object.
+- Terminal identity still comes from the validated retained file or directory descriptor, with the existing retained Unix observed-file identity fallback. Executable contexts additionally capture `resolved.parent_identity()` at `mod.rs:7870`. That accessor reads the already retained validated parent descriptor. The parent's pathname is only the locator. Identity is never recovered by reopening it.
+- Execution and configuration, plus the existing regular-file EngineInstall use boundary, supply image and cwd as separate node contexts. Cwd does not recursively own sibling installations. Explicit directory resources remain recursive. No new context mode or persistent schema category was needed.
+- `protect_catalog_path` at `catalog_install.rs:583` delegates to the same `protect_catalog_contexts` implementation at line 593. All contexts are classified before mutation. Confirmed membership in cleaning state refuses with typed Conflict. Affected records are deduplicated, then all bound uses and derived markers enter one candidate.
+- The existing `commit_catalog_state` at line 537 captures admission before live-state mutation and atomically commits the scope collection plus install markers. Initial zero-install durability, same-binding retry after uncertainty, monotonic recursion, distinct reused-path identities, original-session ownership, rollback and own-session clear remain shared. One executable handoff test counts one atomic write containing both image and cwd, and verifies write and parent-sync refusal plus retry.
+- The shared `reaches` predicate at `catalog_install.rs:242` first preserves actual filesystem membership, including added objects. Recorded tree identity and every complete managed-inventory identity provide positive object membership. A known node absent from that complete managed identity set is Disjoint even if its old spelling vanished or rebound. This does not infer disjointness for unprovable recursive directory use.
+- Negative node evidence cannot authorize deletion. Collection still independently opens the exact recorded root and tree, verifies identity and the complete current inventory, and preserves changed or added content. The new hard-link addition test proves that node exclusion can permit eligibility while the independent inventory check preserves the user data and original managed contents.
+- Publication at line 696 still projects matching historical uses under their originating sessions. Existing per-install users remain conservative and are never reclassified away. `clear_catalog_session_use` at line 731 still clears only the current session in the same atomic lifecycle.
+- Collection at lines 744 and 768 now reevaluates all unresolved durable binding/session uses through the shared relation when determining eligibility. Member or Uncertain retains. This runs under the existing serialized authority boundary and covers relationships formed after publication. Retained native authorities and process protection remain additional conservative consumers.
+- Exact missing reservations, replacement-root identity isolation, canonical spelling, supplemental aliases, no-follow cleanup, inventory checks, partial-cleanup retry and typed adoption refusal remain in place. Earlier catalog, shutdown and filesystem regressions pass.
+
+Native regressions
+
+Seven new context1 tests remain, bringing the catalog selector from 65 to 72 tests.
+
+- `catalog_install_context1_eligibility_rechecks_completed_ancestor_substitution` uses the app-owned real inherited-directory child. Its image and cwd are in a separate probe directory. A's explicit resource is unrelated at publication, with no A-derived marker and every A use classified Disjoint then. B retires the resource through production attachment reconciliation and completes the real successful shutdown wrapper. A completed substitution moves an unchanged intermediate container under the leased directory and restores the original absolute root path. The test proves unchanged root identity, immediate-parent identity, tree identity and complete inventory. C opens afterward, trusts startup owners and retains data the child reads through its real inherited descriptor.
+- `catalog_install_context1_stale_file_nodes_do_not_own_unrelated_installs` covers both deleted and independently replaced file spellings. A's real explicit File lease stays open across reopen and authority retirement. B publishes an independent tree and clears successfully. C collects that tree, no A marker was projected, A's durable scope survives and the original lease still reads original bytes.
+- `catalog_install_context1_removed_image_cwd_keeps_relative_data_without_resource` starts a real image from staging with native cwd and no directory-resource lease. The image is removed before inventory. That same cwd object becomes the managed tree. Reopen and attachment retirement leave relative data readable. The image identity is absent from inventory, while cwd is recorded separately as a node. Removing only cwd capture makes the child lose its relative data.
+- `catalog_install_context1_added_file_membership_still_refuses_cleaning` confirms physical membership and typed Conflict for a user-added file absent from managed inventory.
+- `catalog_install_context1_image_and_cwd_are_one_durable_handoff` proves one atomic write for both contexts, persisted native identities, zero-install evidence, and write/sync failure refusal with same-binding retries.
+- `catalog_install_context1_directory_read_uses_actual_terminal_scope` resolves a directory component through a transient grant without EngineResource root purpose. The selected terminal directory owns nested contents recursively while an unselected sibling remains independent.
+- `catalog_install_context1_node_exclusion_still_preserves_changed_inventory` adds a hard link into a published tree, then removes the old node spelling. The node relation is Disjoint, but the independent inventory check preserves both the added bytes and original managed bytes, relinquishing provenance without deleting the changed tree.
+
+The existing inherited-directory probe is shared across old and new tests. Its single UCI loop supports either an explicit resource or actual cwd. The real Actor and Supervisor perform native startup and reaping. Worker failures are captured, and the parent confirms physical reaping before propagating them. A shared Linux-only successful-session helper uses the actual production teardown and catalog-clear wrapper.
+
+Fixture adaptations and retained failures
+
+`phase4-context1-red-first.log` compiled and returned status 101 with one positive control passed and three intended failures. These exposed missing eligibility lookup, stale-node projection and missing cwd evidence. Child reaping was confirmed before captured failures propagated.
+
+`phase4-context1-first-green.log` is retained despite its name. It returned status 101 with 64 passed and five failed. Four failures were old assumptions superseded by the approved node/resource semantics. The fifth was a new clean-session fixture timeout under concurrent load. None is presented as source-reversal proof.
+
+The CR6 unrelated-engine tests now require durable image/cwd scope evidence without falsely projecting those nodes into an unrelated unavailable cleaning tree. The explicit cleanup helper reports its genuine missing-root I/O error and preserves provenance. Retained recursive uncertainty is still tested using an explicit directory resource. The monotonic-broadening test now starts from an actual executable cwd node, then broadens that same directory to recursive resource use. It retains write/sync refusal and retry assertions. These are faithful fixture adjustments to the approved semantics, not removal of failure isolation or recursive protection.
+
+The shared successful-session fixture budget changed from 5 to 20 seconds to accommodate concurrent test work. Production deadline and cancellation code were untouched. Existing bounded timeout and shutdown tests remain green. The shared helper is Linux-gated to match all its callers. After that final test-only portability annotation, every reversal and the full required verification were repeated against the final exact bytes. Earlier preparation and verification artifacts remain available. One apply_patch context attempt failed before applying edits and was corrected. No compile failure is counted as behavioral proof.
+
+Capacity proof and measured cost
+
+The existing CR9 fixture now creates actual native directory bindings and commits one valid bounded candidate through existing registry machinery. It reopens the persisted setup and compares all use evidence and actual shared admission. There are 2,046 real bindings, their session markers and four pre-registered native authority entries, totaling 4,096 units. No bound or count is fabricated or lowered.
+
+Production `engine_resource` must reject a new binding with ResourceLimit while returning an already durable binding whose native contents are read successfully. Both shared-guard removal and pre-mutation-baseline removal still admit a real binding at 4,098 and fail the unchanged assertion.
+
+`phase4-context1-performance.json` links the measured logs. The prior focused capacity test took 50.93 seconds. The final focused capacity green took 0.18 seconds, with 147.48 ms setup. Setup under the final full catalog run took 249.16 ms. The full 72-test catalog selector took 2.93 seconds. The first concurrent repair attempt's 8.50-second fixture setup and timeout remain honestly preserved in its log.
+
+Source-only reversal evidence
+
+The final evidence uses the `phase4-context1-platform-` prefix. `reversal-plan.json` names every selector, changed source, Git-derived patch, mutant source hash and unchanged test-suffix hash. Each patch was reverse-checked and reverse-applied without offsets, then forward-checked and applied for exact restoration. Actual reversed manifests and restored manifests are retained per case. `phase4-context1-proof-audit.json` verifies compiled behavioral failures, unchanged tests, child reaping where applicable and exact restoration across both allowed sources plus unchanged main, resolved and process files.
+
+| Case | Removed source behavior | Behavioral red | Restored green |
+| --- | --- | --- | --- |
+| eligibility | Durable-use lookup at collection | Child reads empty data after completed substitution | 1 passed |
+| node | Object-only exclusion using complete managed identities | Independent managed tree remains retained by a stale file node | 1 passed |
+| cwd | Only cwd context capture | Resource-free child loses relative data after reopen | 1 passed |
+| cr9-guard | Shared identifier growth guard | Real handoff crosses capacity at 4,098 | 1 passed |
+| cr9-baseline | Passing the pre-mutation baseline | Same real overflow while shared guard stays enabled | 1 passed |
+| cr10 | Serialization of durable prepublication uses | Three-session child loses data after C reconciliation | 1 passed |
+| directory | Actual-terminal directory recursion | Transient-directory resource scope is wrongly nonrecursive | 1 passed |
+
+Every red returned status 101 after successful compilation with one behavioral test failed. Every restored green returned status 0. Temporary cwd and baseline mutants emitted unused-variable warnings, but failures were behavioral assertions. Logs follow `phase4-context1-platform-CASE-red.log` and `-green.log`, with corresponding `.exit`, `-source-fix.patch`, `-reversed-hashes.json` and `-restored-hashes.json` files. `phase4-context1-platform-proof-commands.log` retains all exact commands. The earlier seven-case pass before the final Linux-only test-helper annotation is retained separately under `phase4-context1-CASE-*`.
+
+`phase4-context1-platform-hashes-before-reversals.json` equals `phase4-context1-platform-final-hashes.json`. Final allowed source hashes are mod.rs `906b8f25152ffb030f26b3f54d682ea93c98c536d8b3cc370767e5f1a804f4d8` and catalog_install.rs `ef7eca0e803466dad0629947681680b1ff2f60b960293fd1e1265172f9e1f8d9`. Test suffix hashes and untouched boundary files are included in those manifests.
+
+Final required verification
+
+All test commands use `cargo test --manifest-path src-tauri/Cargo.toml --locked SELECTOR -- --nocapture`. Exact commands, results, statuses and full log names are in `phase4-context1-verification-statuses.json`. All commands returned status 0.
+
+| Selector/check | Result | Full log suffix after phase4-context1-platform-final- |
+| --- | --- | --- |
+| catalog_install | 72 passed | catalog_install.log |
+| infra::path_authority::tests | 284 passed | infra-path_authority-tests.log |
+| fs::tests | 214 passed, 1 existing ignore | fs-tests.log |
+| shutdown_ | 39 passed | shutdown_.log |
+| spawned_engine_reads_a_directory_resource_through_the_authorized_value | 1 passed | spawned_engine_reads_a_directory_resource_through_the_authorized_value.log |
+| cargo fmt --manifest-path src-tauri/Cargo.toml -- --check | Passed | fmt.log |
+| git diff --check | Passed | diff-check.log |
+
+The ignored filesystem test requires an isolated user and mount namespace. Root's foreign handoff remains preserved in `phase4-context1-final-git-status.txt`. The cumulative allowed-source patch is `phase4-context1-final-scoped.diff`, with the incremental change from the immutable P4 snapshot in `phase4-context1-incremental-from-phase4.diff`. All older phase4 and review artifacts were preserved.
+
+Platform limits
+
+Runtime witnesses were Linux only, with real filesystem identities, real descriptor inheritance, actual native cwd and app-owned EngineActor children. Authority reopen models native durable session boundaries. No actual process crash, browser session or completed game is claimed. Windows/macOS compilation and runtime execution were not performed by this leaf. Existing platform-specific alias tests remain present. Hosted jobs, cumulative review, pre-review, app verification, gates, commit and release remain root obligations.
 ```
