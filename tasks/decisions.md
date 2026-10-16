@@ -8380,3 +8380,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, cumulative tests-review arbitration. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"102580467fddfe92bbee963de3dc4e0196ae052889a42dc46f46f5365455fb38","input_sha256":"6ffe9259fafa277666cc11588438eb6d9e4cde6703867d0015810452878e8f70","kind":"mutation-receipt","operation":"96d9891c30b71acfcb29307a6932072a2b073d06c6b2c976bc871fdd10b9dc01","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-30"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-17 — recorded through the decisions lock
+
+### d-20261017-01 — Normalize conversion screenshot scroll position
+
+* **Question:** How should the conversion progress journey produce one valid screenshot after navigation leaves different visible inner-scroll offsets?
+* **Governs:** f-20261017-01
+* **Chosen:** Unconditionally center the existing second conversion row with instant DOM scrolling before its capture, using the existing journey and pixel assertions. Exercise the same target from two distinct prior offsets and require identical visible results. Preserve product code, both cancellation captures and existing snapshots when the canonical position matches them.
+* **Rejected:** Refreshing a snapshot to an incidental offset, fixed sleeps, weaker pixel tolerance, deleting required pixel proof or changing product scrolling for a harness. A second capture program is unnecessary.
+* **Reason:** Actual CI expected/actual images show identical content translated vertically by about 46 pixels, producing 19,033 different pixels. Conditional scrollIntoViewIfNeeded can leave either already-visible position intact. A specific alignment establishes the missing input contract. This differs from d-20261004-10's measured fading-thumb defect, so its earlier decision is not reversed. Reversal path: remove explicit alignment if a shared existing harness later guarantees the same deterministic capture position, retaining the two-position regression.
+* **Decided by:** Codex, full auto, hosted red-gate repair. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"9121373c20ec930df342f9c15ee251c3d578e19021126f4e45b9ca4996c3f4f2","input_sha256":"b8d6d26d2080e0e2682cead139da486e9afdf17bfa738a9e5696965f3f7dba1c","kind":"mutation-receipt","operation":"626bdf3879dab083f4a2f8fe46856deb103cf1dbb170b04ee35c3b975cd02352","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-01"],"target":"decisions-ledger","v":1} -->
