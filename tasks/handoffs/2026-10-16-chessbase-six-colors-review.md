@@ -143,7 +143,7 @@ Read-only corpus inventory: 11,531 cal/csl entries across the repertoire PGNs, a
 
 The third root pre-review waited for shared heavy-gate capacity, then passed with canonical completion record 0 pre-review-r3 a570e94959eb2f559433cacf06325fe15ac209af in /tmp/build-chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b/gate-pre-review-r3.PGPmW9. Build, format/lint, coverage mapping and bundle passed. Workspace-storage mutation passed 100%, 1,233 killed, zero timeouts or survivors. Tree/path passed 100% with seven timeouts and no survivors. No numeric baseline or floor changed.
 
-Source was committed as aac25666 before cumulative review, then rebased without content changes to f93aab8d. The first full reviewed HEAD is 954167dd56f759568cf5ba52e62e8a88dcd38860. At the first review checkpoint all eight code lenses approved, with test correction T1 adopted. Records requested corrections R1/R2. Those repairs are implemented and await closure review. Browser execution remains pending until that closure.
+Source was committed as aac25666 before cumulative review, then rebased without content changes to f93aab8d. The first full reviewed HEAD is 954167dd56f759568cf5ba52e62e8a88dcd38860. At that checkpoint all eight code lenses approved, with T1 and records R1/R2 corrections adopted. All three corrections are now closed by round 2 and browser verification passed.
 
 ## Cumulative review round 1 arbitration
 
@@ -245,3 +245,55 @@ VERDICT: APPROVED
 Limitation: Original repertoire provenance and detailed color counts were not independently verifiable from available files. External historical observations rely on caller-supplied evidence. Review used the same model family as the author.
 
 VERDICT: REVISE
+
+## Cumulative review round 2 and browser proof
+
+Reviewed repair delta 954167dd56f759568cf5ba52e62e8a88dcd38860..cb078a6c5000f270b3c51b05b0438138e6bc36a1 with the whole published range as context. Tests, correctness, root-cause and records all APPROVED. T1, R1 and R2 explicitly CLOSED. No additional findings. Diff adoptions r1=3 r2=0, three unique adopted issues, all closed. Plan adoptions remain r1=3 r2=0, three unique issues, all closed.
+
+A first closure prompt preparation failed before any leaf launched because of a Python indentation error. The four launcher refusals printed no JSONL path. Corrected prompts and actual successful round-2 launcher evidence are retained in the separate closure-r2 directory. Refused preparations are not counted as completed reviews.
+
+Browser proof: pnpm test:e2e:container --project=board-keyboard passed 6/6 at cb078a6c. The new test uses the real comment parser and Chessground after a mocked native PGN read, asserting six SVG arrows, six SVG circles and literal expected stroke colors, with malformed neighbors preserved rather than shown. Root inspected board-six-color-pgn-drawings.png, all six color identities and both marking kinds are visible within the board. Screenshot copied to the run directory as verified-six-color-board.png. Existing committed screenshots did not move. The wrapper cleaned its preview server and container, port 4173 was free afterward. No native GTK surface changed and no native dialog check is required.
+
+Current status: implementation, review, remediation and scoped browser proof complete. Final clean-tree frontend gates and upstream CI/push/install remain. The source code is still f93aab8d, with endpoint test correction cb078a6c. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+## Raw cumulative review round 2 reports
+
+### Diff round 2: tests
+
+T1 CLOSED — `src/utils/drawings.test.ts:29` now asserts exact parsed endpoints, including `Cf2f4 → f2/f4`, and serializes those parsed shapes. Collapsing the destination to `f2` fails both endpoint and export assertions. Vitest’s selector includes this test. (confidence: 100)
+
+No verification defects introduced by the delta. No tests or gates run during this review. Browser execution remains pending.
+
+Review used the same model family as the code, without family separation.
+
+VERDICT: APPROVED
+
+### Diff round 2: correctness
+
+T1 CLOSED. The test asserts exact parsed endpoints and serializes `parsed.shapes.map(toDrawShape)`.
+
+NOT APPLICABLE: The repair delta changes only test assertions. No production correctness changes are present.
+
+VERDICT: APPROVED
+
+### Diff round 2: root-cause
+
+T1 CLOSED — src/utils/drawings.test.ts:25–33 now asserts exact parsed endpoints and serializes those parsed shapes. This removes the hard-coded-input gap. Supplied mutation evidence confirms the wrong destination fails (confidence: 99).
+
+No root-cause defects or prior-fix reintroductions found in the repair delta. No tests or gates run.
+
+Review used the same model family as the author, without family separation.
+
+VERDICT: APPROVED
+
+### Diff round 2: records
+
+R1 CLOSED — Both findings include Found by. The preview finding includes Defect and Proof, with a verified source trace and an explicitly proposed browser regression.
+
+R2 CLOSED — D1’s earlier underway status is explicitly historical. T1 completion and pending closure are recorded consistently.
+
+No new record defects found in the repair.
+
+Limitation: Original screenshots, repertoire provenance and live CI history were not independently verified. No files changed. Review used the same model family as the code.
+
+VERDICT: APPROVED
