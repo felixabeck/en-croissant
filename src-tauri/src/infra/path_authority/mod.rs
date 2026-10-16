@@ -4362,9 +4362,10 @@ pub struct PathAuthority {
     catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
     catalog_session: String,
     catalog_protected: BTreeSet<String>,
-    /// Current-process session uses retained until exit, including resources used before
-    /// provenance publication. The boolean grants recursive reachability for directory uses.
-    catalog_uses: BTreeMap<PathBuf, bool>,
+    /// Current-process uses retained until exit, including bindings used before provenance.
+    /// Keys retain every distinct (pathname, terminal identity a, terminal identity b) binding
+    /// captured from successful resolution. The boolean includes recursive directory contents.
+    catalog_uses: BTreeMap<(PathBuf, u64, u64), bool>,
     attachments_sealed: bool,
     registry_durability_pending: bool,
     active_image_issuances: Arc<ActiveImageIssuances>,
@@ -6362,7 +6363,7 @@ impl PathAuthority {
             .stored
             .path
             .to_path()?;
-        self.protect_catalog_path(&registered, false, false)?;
+        self.protect_catalog_path(&registered, false, false, None)?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineHandle::new(commit.id),
@@ -7834,7 +7835,25 @@ impl PathAuthority {
                         | PathOperation::EngineResourceRead
                 ) || (operation == PathOperation::EngineInstall
                     && resolved.is_regular_file());
-                self.protect_catalog_path(target, recursive, child_use)?;
+                // Components may select a different object from the stored root. Capture
+                // the validated terminal descriptor before any child handoff, never reopen
+                // the pathname to recover this use's identity.
+                let terminal = if let Some(file) = resolved.file() {
+                    Some(opened_file_identity(file)?)
+                } else if let Some(directory) = resolved.directory() {
+                    Some(opened_file_identity(directory)?)
+                } else {
+                    #[cfg(unix)]
+                    {
+                        resolved.observed_file_identity()
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        None
+                    }
+                }
+                .map(|(a, b)| Identity { a, b });
+                self.protect_catalog_path(target, recursive, child_use, terminal.as_ref())?;
             }
         }
         if resolved.is_ok() && self.persistent.contains_key(&id.id) {

@@ -133,7 +133,12 @@ impl Reachability {
 }
 
 // Workspace ancestors do not own their children. Explicit directory resources do.
-fn reaches(record: &CatalogInstall, path: &Path, recursive: bool) -> Result<Reachability, Error> {
+fn reaches(
+    record: &CatalogInstall,
+    path: &Path,
+    recursive: bool,
+    bound_identity: Option<&Identity>,
+) -> Result<Reachability, Error> {
     // Inspection failure requires conservative retention and durable use, but is never
     // positive membership for cleaning refusal. None of these views authorize deletion.
     Ok(filesystem_reaches(
@@ -142,6 +147,7 @@ fn reaches(record: &CatalogInstall, path: &Path, recursive: bool) -> Result<Reac
         &record.root.identity,
         path,
         recursive,
+        bound_identity,
     )
     .unwrap_or(Reachability::Uncertain))
 }
@@ -198,14 +204,48 @@ fn filesystem_reaches(
     expected_root: &Identity,
     path: &Path,
     recursive: bool,
+    bound_identity: Option<&Identity>,
 ) -> Result<Reachability, Error> {
-    let path = ReachabilityBinding::resolve(path)?;
-    if path.has_ancestor(expected_tree)? {
+    let current = ReachabilityBinding::resolve(path);
+    let current_identity = match &current {
+        Ok(binding) if binding.existing => identity(&binding.path).map(Some),
+        _ => Ok(None),
+    };
+    let actual = current_identity.as_ref().ok().and_then(Option::as_ref);
+    let binding = bound_identity.or(actual);
+    let current_matches = bound_identity.is_none() || actual == bound_identity;
+    if binding == Some(expected_tree) {
         return Ok(Reachability::Member);
     }
+    if current_matches {
+        if let Ok(path) = &current {
+            if path.has_ancestor(expected_tree)? {
+                return Ok(Reachability::Member);
+            }
+        }
+    }
     let tree = ReachabilityBinding::resolve(tree)?;
+    let original_target = if tree.existing {
+        identity(&tree.path)? == *expected_tree
+    } else {
+        identity(tree.path.parent().ok_or_else(invalid_record)?)? == *expected_root
+    };
+    if original_target && recursive {
+        if let Some(binding) = binding {
+            if tree.has_ancestor(binding)? {
+                return Ok(Reachability::Member);
+            }
+        }
+    }
+    // A different object at the old pathname says nothing about the historical binding.
+    // Only the positive identity evidence above can confirm a relocated recursive use.
+    if bound_identity.is_some() && !current_matches {
+        return Ok(Reachability::Uncertain);
+    }
+    let path = current?;
+    current_identity?;
     if tree.existing {
-        if identity(&tree.path)? != *expected_tree {
+        if !original_target {
             // Identical spellings can name an independent replacement root or tree.
             // A recursive resource could still contain the displaced original elsewhere.
             return Ok(if recursive || !path.existing {
@@ -214,17 +254,13 @@ fn filesystem_reaches(
                 Reachability::Disjoint
             });
         }
-        if recursive && path.existing && tree.has_ancestor(&identity(&path.path)?)? {
-            return Ok(Reachability::Member);
-        }
         return Ok(if path.existing {
             Reachability::Disjoint
         } else {
             Reachability::Uncertain
         });
     }
-    let parent = tree.path.parent().ok_or_else(invalid_record)?;
-    if identity(parent)? != *expected_root {
+    if !original_target {
         return Ok(if recursive || !path.existing {
             Reachability::Uncertain
         } else {
@@ -232,11 +268,7 @@ fn filesystem_reaches(
         });
     }
     if path.existing {
-        return Ok(if recursive && tree.has_ancestor(&identity(&path.path)?)? {
-            Reachability::Member
-        } else {
-            Reachability::Disjoint
-        });
+        return Ok(Reachability::Disjoint);
     }
     if identity(path.path.parent().ok_or_else(invalid_record)?)? == *expected_root {
         // An absent destination at its verified original root remains a pending reservation.
@@ -257,6 +289,7 @@ fn entry_reaches(record: &CatalogInstall, entry: &StoredEntry) -> Result<Reachab
         record,
         &entry.path.to_path()?,
         entry.target_is_dir && entry.purpose == Some(EntryPurpose::EngineResource),
+        Some(&entry.identity),
     )
 }
 
@@ -405,10 +438,11 @@ impl PathAuthority {
         path: &Path,
         recursive: bool,
         child_use: bool,
+        bound_identity: Option<&Identity>,
     ) -> Result<(), Error> {
         let mut affected = Vec::new();
         for (id, record) in &self.catalog_installs {
-            let relation = reaches(record, path, recursive)?;
+            let relation = reaches(record, path, recursive, bound_identity)?;
             if record.cleaning && relation == Reachability::Member {
                 return Err(Error::Conflict(
                     "catalog install cleanup is in progress".into(),
@@ -418,14 +452,21 @@ impl PathAuthority {
                 affected.push(id.clone());
             }
         }
-        if child_use && (recursive || !affected.is_empty()) && !self.catalog_uses.contains_key(path)
-        {
-            if self.registry_unique_id_count() >= MAX_AUTHORITY_IDS {
-                return Err(Error::ResourceLimit(
-                    "catalog session use limit reached".into(),
-                ));
+        if child_use {
+            let binding = bound_identity.ok_or_else(|| {
+                Error::Conflict("resolved child use has no terminal binding".into())
+            })?;
+            let key = (path.to_path_buf(), binding.a, binding.b);
+            if !self.catalog_uses.contains_key(&key) {
+                if self.registry_unique_id_count() >= MAX_AUTHORITY_IDS {
+                    return Err(Error::ResourceLimit(
+                        "catalog session use limit reached".into(),
+                    ));
+                }
+                self.catalog_uses.insert(key, recursive);
+            } else if recursive {
+                self.catalog_uses.insert(key, true);
             }
-            self.catalog_uses.insert(path.to_path_buf(), recursive);
         }
         if child_use
             && affected.iter().any(|id| {
@@ -458,7 +499,7 @@ impl PathAuthority {
         staging: &Path,
     ) -> Result<(), Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
-        self.protect_catalog_path(path, false, false)?;
+        self.protect_catalog_path(path, false, false, None)?;
         if crate::infra::fs::archive_destination_directory_exists(path)? {
             return Ok(());
         }
@@ -500,8 +541,9 @@ impl PathAuthority {
             users: BTreeSet::new(),
         };
         // A recursive resource may have been handed to a child before provenance existed.
-        for (used, recursive) in &self.catalog_uses {
-            if reaches(&record, used, *recursive)?.protects() {
+        for ((used, a, b), recursive) in &self.catalog_uses {
+            let binding = Identity { a: *a, b: *b };
+            if reaches(&record, used, *recursive, Some(&binding))?.protects() {
                 record.users.insert(self.catalog_session.clone());
                 break;
             }
@@ -1070,7 +1112,11 @@ mod tests {
             .unwrap();
         f.root = f.authority.engine_root_path(&f.handle).unwrap();
         f.authority.set_active_engine_root(&f.handle).unwrap();
-        assert!(f.authority.catalog_uses.contains_key(&original_root));
+        assert!(f
+            .authority
+            .catalog_uses
+            .keys()
+            .any(|(path, _, _)| path == &original_root));
         f.install("later");
         let session = f.authority.catalog_session.clone();
         assert!(f
@@ -1086,6 +1132,348 @@ mod tests {
             .values()
             .all(|record| record.users.contains(&session)));
         assert!(f.root.join("later/data/network").exists());
+    }
+
+    fn phase3_select_root(f: &mut Fixture, path: &Path) {
+        let binding = identity(path).unwrap();
+        f.handle = f
+            .authority
+            .get_or_create_engine_root(
+                path,
+                "Moved root",
+                Some(VerifiedIdentity::from_pair((binding.a, binding.b))),
+            )
+            .unwrap();
+        f.root = f.authority.engine_root_path(&f.handle).unwrap();
+        f.authority.set_active_engine_root(&f.handle).unwrap();
+    }
+
+    fn select_unrelated_workspace_for_cleanup(f: &mut Fixture) {
+        // These locator tests must not retain a selected workspace's displaced historical
+        // binding. Retire that selection natively, then let startup prune its unowned entry.
+        let selected = f.temp.path().join("selected-workspace");
+        fs::create_dir(&selected).unwrap();
+        let handle = f
+            .authority
+            .get_or_create_engine_root(&selected, "Selected workspace", None)
+            .unwrap();
+        f.authority.set_active_engine_root(&handle).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_install_phase3_historical_directory_lease_retains_later_publication() {
+        let mut f = Fixture::new();
+        let original = f.root.clone();
+        let resource = f.resource(&original, true);
+        let lease = f.authority.engine_resource(&resource).unwrap();
+        let leased = PathBuf::from(lease.uci_value().unwrap());
+        let moved = f.temp.path().join("moved-root");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        phase3_select_root(&mut f, &moved);
+        f.install("later");
+        assert_eq!(
+            fs::read(leased.join("later/data/network")).unwrap(),
+            b"managed network"
+        );
+        let session = f.authority.catalog_session.clone();
+        let persisted = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+        assert!(persisted
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        drop(persisted);
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert_eq!(
+            fs::read(leased.join("later/data/network")).unwrap(),
+            b"managed network"
+        );
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_install_phase3_repeated_path_bindings_are_distinct_and_admitted() {
+        let mut f = Fixture::new();
+        let spelling = f.root.clone();
+        let first = f.resource(&spelling, true);
+        let first_lease = f.authority.engine_resource(&first).unwrap();
+        let first_moved = f.temp.path().join("first-root");
+        fs::rename(&spelling, &first_moved).unwrap();
+        fs::create_dir(&spelling).unwrap();
+        let binding = identity(&spelling).unwrap();
+        let id = f
+            .authority
+            .get_or_create_root(
+                &spelling,
+                "Second binding",
+                vec![PathOperation::EngineResourceRead],
+                "resource",
+                Some(VerifiedIdentity::from_pair((binding.a, binding.b))),
+            )
+            .unwrap();
+        let second = EngineResourceHandle::new(
+            id,
+            EngineResourceHandleKind::Directory,
+            "Second binding".into(),
+        );
+        let before = f.authority.registry_unique_id_count();
+        let second_lease = f.authority.engine_resource(&second).unwrap();
+        assert_eq!(f.authority.catalog_uses.len(), 2);
+        assert_eq!(f.authority.registry_unique_id_count(), before + 1);
+        drop(f.authority.engine_resource(&second).unwrap());
+        assert_eq!(
+            f.authority.catalog_uses.len(),
+            2,
+            "same binding is deduplicated"
+        );
+        let second_moved = f.temp.path().join("second-root");
+        fs::rename(&spelling, &second_moved).unwrap();
+        fs::create_dir(&spelling).unwrap();
+        phase3_select_root(&mut f, &first_moved);
+        f.install("first");
+        phase3_select_root(&mut f, &second_moved);
+        f.install("second");
+        let session = f.authority.catalog_session.clone();
+        assert_eq!(f.authority.catalog_installs.len(), 2);
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(PathBuf::from(first_lease.uci_value().unwrap())
+            .join("first/engine")
+            .exists());
+        assert!(PathBuf::from(second_lease.uci_value().unwrap())
+            .join("second/engine")
+            .exists());
+    }
+
+    #[test]
+    fn catalog_install_phase3_terminal_component_identity_does_not_protect_sibling() {
+        let mut f = Fixture::new();
+        let root = f.root.clone();
+        fs::create_dir(root.join("selected")).unwrap();
+        let resource = f.resource(&root, true);
+        let resolved = f
+            .authority
+            .resolve(
+                resource.path_ref(),
+                PathOperation::EngineResourceRead,
+                &[OsString::from("selected")],
+            )
+            .unwrap();
+        assert_eq!(
+            opened_file_identity(resolved.directory().unwrap()).unwrap(),
+            {
+                let binding = identity(&root.join("selected")).unwrap();
+                (binding.a, binding.b)
+            }
+        );
+        f.install("sibling");
+        assert!(
+            f.authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.is_empty()),
+            "terminal directory use does not recursively own its workspace ancestor"
+        );
+    }
+
+    #[test]
+    fn catalog_install_phase3_file_resource_used_before_publication_gets_marker() {
+        let mut f = Fixture::new();
+        let stage = f.stage();
+        let resource = f.resource(&stage.path().join("engine"), false);
+        drop(f.authority.engine_resource(&resource).unwrap());
+        f.publish_stage("later", stage.path()).unwrap();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+    }
+
+    #[test]
+    fn catalog_install_phase3_retained_binding_survives_path_replacement() {
+        let mut f = Fixture::new();
+        let original = f.root.clone();
+        let resource = f.resource(&original, true);
+        let moved = f.temp.path().join("moved-root");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        phase3_select_root(&mut f, &moved);
+        f.install("later");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.is_empty()));
+        f.reopen();
+        f.reconcile(vec![resource.path_ref().clone()], true)
+            .unwrap();
+        assert!(f.root.join("later/data/network").exists());
+        assert_eq!(f.authority.catalog_installs.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_install_phase3_historical_marker_failure_refuses_new_handoff() {
+        for uncertain in [false, true] {
+            let mut f = Fixture::new();
+            let original = f.root.clone();
+            let resource = f.resource(&original, true);
+            let lease = f.authority.engine_resource(&resource).unwrap();
+            let moved = f.temp.path().join("moved-root");
+            fs::rename(&original, &moved).unwrap();
+            fs::create_dir(&original).unwrap();
+            phase3_select_root(&mut f, &moved);
+            f.install("later");
+            let origin = f.authority.catalog_session.clone();
+            f.reopen();
+            let nested = f.resource(&moved.join("later/data"), true);
+            let fault: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(ParentSyncFault("historical marker sync"))
+            } else {
+                Arc::new(FileFault(AtomicFileFaultPoint::Write))
+            };
+            let guard = install_test_atomic_file_injector(fault);
+            for _ in 0..2 {
+                assert!(matches!(
+                    f.authority.engine_resource(&nested),
+                    Err(Error::Io(_) | Error::CommittedDurabilityUncertain(_))
+                ));
+            }
+            drop(guard);
+            drop(f.authority.engine_resource(&nested).unwrap());
+            let current = f.authority.catalog_session.clone();
+            f.reopen();
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&origin) && record.users.contains(&current)));
+            assert!(PathBuf::from(lease.uci_value().unwrap())
+                .join("later/engine")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn catalog_install_phase3_existing_cleaning_tree_refuses_recursive_ancestor() {
+        let mut f = cr6_cleaning_fixture();
+        let root = f.root.clone();
+        let resource = f.resource(&root, true);
+        assert!(f.root.join("managed/engine").exists());
+        assert!(
+            matches!(f.authority.engine_resource(&resource), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_phase3_inherited_resource_child_survives_publication_and_restart() {
+        use crate::engine::{EngineActor, EngineDeadlines, EngineKey, EngineSupervisor};
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = Fixture::new();
+        let original = f.root.clone();
+        let resource = f.resource(&original, true);
+        let lease = Arc::new(f.authority.engine_resource(&resource).unwrap());
+        let value = lease.uci_value().unwrap();
+        let script = f.temp.path().join("resource-child");
+        fs::write(&script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value/later/data/network\"; echo;; quit) exit 0;; esac; done\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let engine = f
+            .authority
+            .register_engine_file(&script, "Resource child")
+            .unwrap();
+        let executable = f
+            .authority
+            .engine_executable(&engine, PathOperation::EngineExecute)
+            .unwrap()
+            .with_resource_leases(vec![lease]);
+        let key = EngineKey::new("historical-resource".into(), "child".into()).unwrap();
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let actor = Arc::new(
+            EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+                .await
+                .unwrap(),
+        );
+        // The parent always observes and reaps this actor before propagating a worker panic,
+        // including the intentional source-revert marker assertion failure.
+        let outcome = tokio::spawn({
+            let actor = actor.clone();
+            let supervisor = supervisor.clone();
+            async move {
+                supervisor
+                    .replace_handle(
+                        key,
+                        actor.clone(),
+                        "child".into(),
+                        engine.path_ref().clone(),
+                    )
+                    .await
+                    .unwrap();
+                let moved = f.temp.path().join("moved-root");
+                fs::rename(&original, &moved).unwrap();
+                fs::create_dir(&original).unwrap();
+                phase3_select_root(&mut f, &moved);
+                f.install("later");
+                actor
+                    .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(2), actor.next_configuration_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .as_deref(),
+                    Some("managed network")
+                );
+                let session = f.authority.catalog_session.clone();
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|record| record.users.contains(&session)));
+                f.reopen();
+                f.reconcile(vec![], true).unwrap();
+                actor
+                    .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(2), actor.next_configuration_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .as_deref(),
+                    Some("managed network")
+                );
+            }
+        })
+        .await;
+        let cleanup = supervisor.terminate_all().await;
+        let fallback = actor.terminate().await;
+        assert!(
+            cleanup.is_ok(),
+            "supervised child must be reaped: {cleanup:?}"
+        );
+        assert!(
+            fallback.is_ok(),
+            "actor reap must be confirmed: {fallback:?}"
+        );
+        eprintln!("historical-resource child reaping confirmed before propagating test outcome");
+        outcome.unwrap();
     }
 
     #[test]
@@ -1372,7 +1760,7 @@ mod tests {
         let relation = |tree: &Path, path: &Path, recursive| {
             let expected_tree = identity(tree).unwrap_or(Identity { a: 0, b: 0 });
             let expected_root = identity(tree.parent().unwrap()).unwrap();
-            filesystem_reaches(tree, &expected_tree, &expected_root, path, recursive)
+            filesystem_reaches(tree, &expected_tree, &expected_root, path, recursive, None)
                 .unwrap_or(Reachability::Uncertain)
         };
         if !upper.exists() {
@@ -1687,6 +2075,7 @@ mod tests {
         assert!(detached.join("same/engine").exists());
         fs::remove_dir(&f.root).unwrap();
         fs::rename(detached, &f.root).unwrap();
+        select_unrelated_workspace_for_cleanup(&mut f);
         f.reopen();
         f.reconcile(vec![], true).unwrap();
         assert!(!f.root.join("same").exists());
@@ -1702,6 +2091,7 @@ mod tests {
         fs::create_dir(&f.root).unwrap();
         fs::create_dir(f.root.join("managed")).unwrap();
         fs::write(f.root.join("managed/foreign"), b"foreign").unwrap();
+        select_unrelated_workspace_for_cleanup(&mut f);
         f.reopen();
         assert!(f.reconcile(vec![], true).is_err());
         assert_eq!(f.authority.catalog_installs.len(), 1);
