@@ -1072,17 +1072,24 @@ pub(super) fn resolve_windows(
         // archive destination" into a typed refusal instead of an `Io` error from a
         // non-directory open.
         let download_dir_leaf = last && operation == PathOperation::DownloadArchive;
+        let kind = if !last || download_dir_leaf {
+            super::WindowsChildKind::Directory
+        } else if root_is_dir && operation == PathOperation::EngineResourceRead {
+            super::WindowsChildKind::FileOrDirectory
+        } else {
+            super::WindowsChildKind::NonDirectory
+        };
         // Every operation that can yield an EngineExecutable is kept open
         // without FILE_SHARE_DELETE until CreateProcess has opened it. This
         // seals the authority-validated path against replacement in the
         // otherwise unavoidable Windows path-based launch API.
-        let file = match super::open_windows_child(
+        let file = match super::open_windows_child_with_kind(
             &handle,
             name,
             FILE_OPEN,
             if last { access } else { parent_access },
             null(),
-            !last || download_dir_leaf,
+            kind,
             super::allows_delete_sharing_for_operation(operation, last),
         ) {
             Ok(file) => file,

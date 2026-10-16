@@ -357,6 +357,101 @@ mod windows_tests {
     }
 
     #[test]
+    fn windows_engine_resource_file_root_refuses_directory_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let resource = dir.path().join("network");
+        fs::write(&resource, b"authorized network").unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog(
+                &resource,
+                "network",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let handle = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "network")
+            .unwrap();
+        {
+            let lease = authority.engine_resource(&handle).unwrap();
+            assert_eq!(
+                fs::read(lease.uci_value().unwrap()).unwrap(),
+                b"authorized network"
+            );
+        }
+        fs::rename(&resource, dir.path().join("original-network")).unwrap();
+        fs::create_dir(&resource).unwrap();
+        fs::write(resource.join("substituted"), b"unrelated directory").unwrap();
+        assert!(authority.engine_resource(&handle).is_err());
+    }
+
+    #[test]
+    fn windows_engine_resource_nested_objects_refuse_reparse_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let tables = dir.path().join("tables");
+        fs::create_dir_all(tables.join("nested")).unwrap();
+        fs::write(tables.join("nested/network"), b"nested network").unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog(
+                &tables,
+                "tables",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let handle = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "tables")
+            .unwrap();
+        {
+            let directory = authority
+                .resolve(
+                    handle.path_ref(),
+                    PathOperation::EngineResourceRead,
+                    &[OsString::from("nested")],
+                )
+                .unwrap();
+            assert!(directory.directory().unwrap().metadata().unwrap().is_dir());
+            let file = authority
+                .resolve(
+                    handle.path_ref(),
+                    PathOperation::EngineResourceRead,
+                    &[OsString::from("nested"), OsString::from("network")],
+                )
+                .unwrap();
+            let mut bytes = Vec::new();
+            file.file()
+                .unwrap()
+                .try_clone()
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            assert_eq!(bytes, b"nested network");
+        }
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("network"), b"outside network").unwrap();
+        windows_test_junction(&tables.join("junction"), outside.path());
+        for components in [
+            vec![OsString::from("junction")],
+            vec![OsString::from("junction"), OsString::from("network")],
+        ] {
+            assert!(matches!(
+                authority.resolve(
+                    handle.path_ref(),
+                    PathOperation::EngineResourceRead,
+                    &components
+                ),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
     fn registry_save_entries_persists_on_windows() {
         let dir = tempfile::tempdir().unwrap();
         let registry = dir.path().join("registry.json");
@@ -2516,6 +2611,16 @@ pub struct AppOwnedRoot {
 }
 impl AppOwnedRoot {
     #[cfg(test)]
+    pub(crate) fn canonical_for_test(
+        display_name: impl Into<String>,
+        path: &Path,
+        operations: Vec<PathOperation>,
+    ) -> Self {
+        let directory = AppDataDir::for_test(path);
+        Self::new(display_name, directory.as_path().to_path_buf(), operations)
+    }
+
+    #[cfg(test)]
     pub fn new(
         display_name: impl Into<String>,
         path: PathBuf,
@@ -3825,6 +3930,31 @@ pub(crate) fn open_windows_child(
     directory: bool,
     allow_delete_share: bool,
 ) -> Result<fs::File, Error> {
+    open_windows_child_with_kind(
+        dir,
+        name,
+        disposition,
+        access,
+        security_descriptor,
+        if directory {
+            WindowsChildKind::Directory
+        } else {
+            WindowsChildKind::NonDirectory
+        },
+        allow_delete_share,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn open_windows_child_with_kind(
+    dir: &fs::File,
+    name: &OsStr,
+    disposition: u32,
+    access: u32,
+    security_descriptor: *const windows_sys::Win32::Security::SECURITY_DESCRIPTOR,
+    kind: WindowsChildKind,
+    allow_delete_share: bool,
+) -> Result<fs::File, Error> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
@@ -3835,7 +3965,7 @@ pub(crate) fn open_windows_child(
             disposition,
             access,
             security_descriptor,
-            directory,
+            kind,
             share_access: FILE_SHARE_READ
                 | FILE_SHARE_WRITE
                 | if allow_delete_share {
@@ -3848,11 +3978,18 @@ pub(crate) fn open_windows_child(
 }
 
 #[cfg(windows)]
+pub(crate) enum WindowsChildKind {
+    Directory,
+    NonDirectory,
+    FileOrDirectory,
+}
+
+#[cfg(windows)]
 pub(crate) struct WindowsChildRequest {
     pub(crate) disposition: u32,
     pub(crate) access: u32,
     pub(crate) security_descriptor: *const windows_sys::Win32::Security::SECURITY_DESCRIPTOR,
-    pub(crate) directory: bool,
+    pub(crate) kind: WindowsChildKind,
     pub(crate) share_access: u32,
 }
 
@@ -3914,10 +4051,10 @@ pub(crate) fn nt_create_windows_child(
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
     let options = FILE_OPEN_REPARSE_POINT
         | FILE_SYNCHRONOUS_IO_NONALERT
-        | if request.directory {
-            FILE_DIRECTORY_FILE
-        } else {
-            FILE_NON_DIRECTORY_FILE
+        | match request.kind {
+            WindowsChildKind::Directory => FILE_DIRECTORY_FILE,
+            WindowsChildKind::NonDirectory => FILE_NON_DIRECTORY_FILE,
+            WindowsChildKind::FileOrDirectory => 0,
         };
     let result = unsafe {
         NtCreateFile(

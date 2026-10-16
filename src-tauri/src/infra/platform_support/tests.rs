@@ -968,7 +968,7 @@ fn windows_temporary_creation_descriptor_and_share_mask_are_restrictive() {
             && body.contains("disposition:FILE_CREATE,")
             && body.contains("access:TEMP_ACCESS,")
             && body.contains("security_descriptor:security_descriptor.as_ptr(),")
-            && body.contains("directory:false,")
+            && body.contains("kind:WindowsChildKind::NonDirectory,")
             && body.contains("share_access:FILE_SHARE_PRIVATE_TEMP,"),
         "private temporary must delegate with its create, access, descriptor and share request"
     );
@@ -1332,7 +1332,17 @@ fn windows_traversal_child_preserves_its_share_mask() {
         Literals::Keep,
     ));
     assert!(
+        body.contains("open_windows_child_with_kind(dir,name,disposition,access,security_descriptor,ifdirectory{WindowsChildKind::Directory}else{WindowsChildKind::NonDirectory},allow_delete_share,)")
+            && !body.contains("FILE_SHARE_"),
+        "definite traversal kinds must delegate to the shared kind-aware share policy"
+    );
+    let body = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn open_windows_child_with_kind(")],
+        Literals::Keep,
+    ));
+    assert!(
         body.contains("nt_create_windows_child(dir,name,WindowsChildRequest{")
+            && body.contains("kind,")
             && body.contains("share_access:FILE_SHARE_READ|FILE_SHARE_WRITE|ifallow_delete_share{FILE_SHARE_DELETE}else{0},"),
         "traversal delegation must preserve read/write sharing and gate delete sharing"
     );
@@ -1638,7 +1648,7 @@ fn windows_nt_create_sites_open_synchronous_file_objects() {
         Literals::Keep,
     ));
     assert!(
-        body.contains("letoptions=FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|ifrequest.directory{FILE_DIRECTORY_FILE}else{FILE_NON_DIRECTORY_FILE};")
+        body.contains("letoptions=FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|matchrequest.kind{WindowsChildKind::Directory=>FILE_DIRECTORY_FILE,WindowsChildKind::NonDirectory=>FILE_NON_DIRECTORY_FILE,WindowsChildKind::FileOrDirectory=>0,};")
             && body.contains("NtCreateFile(&muthandle,request.access,&attributes,&mutstatus,null_mut(),0,request.share_access,request.disposition,options,null_mut(),0,)"),
         "NT child primitive must pass synchronous CreateOptions to NtCreateFile"
     );

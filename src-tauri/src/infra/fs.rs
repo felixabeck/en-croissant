@@ -2281,7 +2281,7 @@ mod win {
     use super::*;
     use crate::infra::path_authority::{
         is_reparse_point, nt_create_windows_child, open_windows_child, opened_file_identity,
-        windows_open_status_error, WindowsChildRequest,
+        windows_open_status_error, WindowsChildKind, WindowsChildRequest,
     };
     use std::{
         ffi::OsStr,
@@ -2722,7 +2722,7 @@ mod win {
                 disposition: FILE_CREATE,
                 access: TEMP_ACCESS,
                 security_descriptor: security_descriptor.as_ptr(),
-                directory: false,
+                kind: WindowsChildKind::NonDirectory,
                 share_access: FILE_SHARE_PRIVATE_TEMP,
             },
         )
@@ -3774,6 +3774,8 @@ mod win {
             let Some(original) = original else {
                 // No existing target: one no-replace rename suffices, so there is nothing to
                 // roll back and nothing for the caller to clean up.
+                #[cfg(test)]
+                inject_atomic_dir(AtomicDirFaultPoint::InstallRename)?;
                 rename_child(parent, &mut source, source_name, target_name, false)?;
                 return Ok(None);
             };

@@ -5204,13 +5204,12 @@ mod tests {
         crate::infra::path_authority::PathRef,
         PathBuf,
     ) {
-        let download_root = dir.path().join("downloads");
-        std::fs::create_dir(&download_root).unwrap();
-        let app_root = crate::infra::path_authority::AppOwnedRoot::new(
+        let app_root = crate::infra::path_authority::AppOwnedRoot::canonical_for_test(
             "downloads",
-            download_root.clone(),
+            &dir.path().join("downloads"),
             vec![crate::infra::path_authority::PathOperation::DownloadFile],
         );
+        let download_root = app_root.path.clone();
         let root_id = app_root.id.clone();
         let authority = crate::infra::path_authority::PathAuthority::open(
             dir.path().join("path-authority.json"),

@@ -1296,6 +1296,7 @@ mod tests {
         drop(f.authority.engine_resource(&resource).unwrap());
         let moved = f.temp.path().join("moved-root");
         fs::rename(&f.root, &moved).unwrap();
+        let moved = canonical_binding(&moved).unwrap();
         let binding = identity(&moved).unwrap();
         f.handle = f
             .authority
@@ -1330,11 +1331,12 @@ mod tests {
     }
 
     fn phase3_select_root(f: &mut Fixture, path: &Path) {
-        let binding = identity(path).unwrap();
+        let path = canonical_binding(path).unwrap();
+        let binding = identity(&path).unwrap();
         f.handle = f
             .authority
             .get_or_create_engine_root(
-                path,
+                &path,
                 "Moved root",
                 Some(VerifiedIdentity::from_pair((binding.a, binding.b))),
             )
@@ -2497,42 +2499,84 @@ mod tests {
         let mut cases = Vec::new();
         let mut record = template.clone();
         record.path = NativePath::from_path(Path::new("relative"));
-        cases.push(vec![record]);
+        cases.push(("relative native path", vec![record]));
         let mut record = template.clone();
-        record.path = NativePath::from_path(&f.root.join("../elsewhere"));
-        cases.push(vec![record]);
+        let mut traversal = f.root.as_os_str().to_os_string();
+        traversal.push(format!("{0}..{0}elsewhere", std::path::MAIN_SEPARATOR));
+        record.path = NativePath::from_path(Path::new(&traversal));
+        assert!(record
+            .path
+            .to_path()
+            .unwrap()
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir)));
+        cases.push(("raw native traversal", vec![record]));
         let mut record = template.clone();
         record.identity = Identity { a: 0, b: 0 };
-        cases.push(vec![record]);
+        cases.push(("zero identity", vec![record]));
         let mut record = template.clone();
         record.sessions = BTreeMap::from([("invalid-session".into(), true)]);
-        cases.push(vec![record]);
+        cases.push(("invalid session UUID", vec![record]));
         let mut record = template.clone();
         record.sessions.clear();
-        cases.push(vec![record]);
+        cases.push(("empty sessions", vec![record]));
+        #[cfg(unix)]
+        {
+            let mut record = template.clone();
+            record.path = NativePath::Unix {
+                bytes: "invalid!".into(),
+            };
+            cases.push(("invalid native base64 encoding", vec![record]));
+        }
         let mut record = template.clone();
-        record.path = NativePath::Unix {
-            bytes: "invalid!".into(),
-        };
-        cases.push(vec![record]);
-        cases.push(vec![template.clone(), template.clone()]);
+        let mut invalid_contents = f.root.as_os_str().to_os_string();
+        invalid_contents.push(std::path::MAIN_SEPARATOR_STR);
+        invalid_contents.push("invalid\0contents");
+        record.path = NativePath::from_path(Path::new(&invalid_contents));
+        cases.push(("invalid native NUL contents", vec![record]));
+        let mut record = template.clone();
+        #[cfg(windows)]
+        {
+            record.path = NativePath::Unix {
+                bytes: "invalid!".into(),
+            };
+        }
+        #[cfg(unix)]
+        {
+            record.path = NativePath::Windows {
+                utf16: vec![b'C' as u16, b':' as u16, b'\\' as u16],
+            };
+        }
+        cases.push(("foreign platform encoding", vec![record]));
+        cases.push((
+            "duplicate binding",
+            vec![template.clone(), template.clone()],
+        ));
         let mut record = template.clone();
         record.sessions = (0..MAX_AUTHORITY_IDS)
             .map(|_| (Uuid::new_v4().to_string(), true))
             .collect();
-        cases.push(vec![record]);
-        cases.push(vec![template.clone(); MAX_AUTHORITY_IDS + 1]);
+        cases.push(("excess session count", vec![record]));
+        cases.push((
+            "excess record count",
+            vec![template.clone(); MAX_AUTHORITY_IDS + 1],
+        ));
         let mut record = template;
         record.path = NativePath::from_path(&f.root.join("x".repeat(MAX_REGISTRY_BYTES)));
-        cases.push(vec![record]);
-        for records in cases {
+        cases.push(("excess encoded bytes", vec![record]));
+        for (label, records) in cases {
             let mut registry = original.clone();
             registry["catalog_uses"] = serde_json::to_value(records).unwrap();
             fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
-            assert!(matches!(
-                PathAuthority::open(registry_path.clone(), vec![]),
-                Err(Error::InvalidInput(_) | Error::ResourceLimit(_))
-            ));
+            let result = PathAuthority::open(registry_path.clone(), vec![]);
+            assert!(
+                matches!(
+                    &result,
+                    Err(Error::InvalidInput(_) | Error::ResourceLimit(_))
+                ),
+                "{label}: {:?}",
+                result.as_ref().err()
+            );
         }
     }
 

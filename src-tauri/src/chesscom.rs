@@ -563,13 +563,12 @@ mod tests {
         tauri::App<tauri::test::MockRuntime>,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let download_root = dir.path().join("downloads");
-        std::fs::create_dir(&download_root).unwrap();
-        let app_root = crate::infra::path_authority::AppOwnedRoot::new(
+        let app_root = crate::infra::path_authority::AppOwnedRoot::canonical_for_test(
             "downloads",
-            download_root.clone(),
+            &dir.path().join("downloads"),
             vec![crate::infra::path_authority::PathOperation::DownloadFile],
         );
+        let download_root = app_root.path.clone();
         let destination = app_root.id.clone();
         let authority = crate::infra::path_authority::PathAuthority::open(
             dir.path().join("path-authority.json"),
