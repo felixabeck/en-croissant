@@ -23,6 +23,24 @@ The eight-arrow command is [%cal Bc5b4,Be4d6,Rc7b6,Rd1e2,Oe8g8,Oe4c5,Ob6c5,Ob2b3
 
 ## Separate observations
 
+### Final delivery checkpoint
+
+All frontend push gates passed on clean `8b6e4657dc84a1ac58f264361bd3bed4edf7b98f`. Canonical completion `/tmp/build-chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b/gate-push-gate.mW9Wea/completion.record` is `0 push-gate 8b6e4657dc84a1ac58f264361bd3bed4edf7b98f`. This supersedes the earlier pending final-gates checkpoints below. All seven lanes passed, including 4,121 tests, 133 browser scenarios, coverage and bundle ratchets, and three mutation packages at 100% with no survivors. Tree-path had seven mutation timeouts. Lane logs are in `artifacts/gates/20261016T153004282Z-3130089/`. The run waited about 25 minutes for a shared gate slot, active wall for the whole task is unknown.
+
+Delivery remains blocked. Repeated `pnpm ci:remote:check` calls exited 1 for existing `rust-windows-test` failure, Test run 38851003688, job 116811964157 at upstream `1a4305ed99259c861c266d85284aebbe048634c9`. No push or install was attempted. The separate drain owns f-20261016-01. Keep this worktree and local commits. Once upstream CI is green, fetch and rebase onto `origin/master`, compare the owned commit range with the reviewed range, close any changed-commit review, and rerun final affected gates after a rebase. Then follow the push skill through exact master push, required remote jobs and installation. Never push the build branch or bypass the remote prerequisite.
+
+The run row is a separate local delivery record after the verified source tree. It does not claim successful delivery. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+Blocked-delivery records review, no adopted findings:
+
+> No findings. Both record changes match the local gate logs, completion record and closure reports. Earlier pending checkpoints are explicitly superseded.
+>
+> Live CI status, repeated remote-precheck results and executor provenance remain independently unverifiable. Review used the same model family as the code. No files changed or gates run.
+>
+> VERDICT: APPROVED
+
+Cleanup is deferred until every owned commit is delivered. After successful delivery and lock release, from the original checkout use `kit worktree remove /home/felixb/Projekte/chessfable.worktrees/chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b`. Do not run that command while these commits remain unpushed.
+
 f-20261016-03 records the pre-existing library preview omission of all saved graphical annotations. It is a separate product surface with an open preview presentation question, deferred to its own build. This task changes main-board drawing import/display and shared palette, without changing preview presentation.
 
 Upstream Windows CI was red before implementation, Test run 38851003688 at 1a4305ed. The existing drain owns f-20261016-01 for that failure. Source work continues, but release remains subject to the remote-CI gate.
