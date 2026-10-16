@@ -1488,6 +1488,200 @@ Reviewed all seven production files and direct consumers. No files changed or te
 VERDICT: APPROVED
 ```
 
+### Focused historical-use judgment and P3 assignment
+
+The root paused another source patch and obtained focused fresh-context review-plan judgment for the repeated relation mechanism. The candidate was APPROVED with explicit warnings about actual terminal descriptor identity and stale pathname replacements. Decision d-20261016-09 records the correction. The overlooked O2 historical-binding obligation is assigned as P3 to the same persistent sensitive write leaf. CR8 joins its proof because it exercises the same relation. These are private implementation obligations under the frozen plan, not a new product requirement or a new inherited-plan review round. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+#### mechanism-historical-use.md
+
+```text
+# Historical resource binding correction
+
+Source revision 540f3a23, last cumulative review round 3. CR1–CR5 remain closed. CR6 failure isolation works, but its closure depends on a newly evidenced historical-use gap, CR7. Root-cause and engine-protocol supplied duplicate blocker witnesses. CR8 is the tests lens's missing cleaning recursive-ancestor assertion. Frozen O1–O4 and d-20261016-08 remain the behavioral authority.
+
+CR7: resolve successfully leases directory /engines, which a child can access through its inherited descriptor on Linux. The directory moves to /moved and an independent replacement occupies /engines. A later install publishes under /moved. catalog_uses currently stores only /engines plus recursive=true, so prepublication re-resolves the replacement and concludes Disjoint. No durable marker protects the new install, although the original directory lease can reach it. Failed shutdown followed by trusted restart could delete beneath that child. Existing engine_resource_leases_pin_files_and_directories and spawned_engine_reads_a_directory_resource_through_the_authorized_value establish the actual lease model. The reported combined scenario is source-derived until the regression runs.
+
+Proposed simplest correction enriches the existing bounded in-memory catalog_uses entry with the identity bound by successful resource resolution. Capture it from the validated authority entry or held descriptor before handoff, never by reopening a pathname after proof. Retain all distinct bindings when the same pathname is used for successive independent objects in one session, with every binding counted under existing admission. Recursion remains part of that use. No actor leases, second registry, persistence format or process scans. Durable per-install session markers remain the cross-process evidence.
+
+Use the shared relation for retained authority bindings and session uses. When known historical identity exists, it participates in physical membership and disjointness. Match a recursive resource identity against actual target ancestor identities, including the target's verified parent before publication. If its current pathname is missing or resolves to another identity, that replacement cannot establish disjointness of the original use. Preserve uncertainty unless positive actual binding evidence establishes membership or disjointness. Do not convert such uncertainty into cleaning refusal. Preserve CR6's identity-distinct replacements, exact absent cleaning reservation, unrelated engine isolation, marker persistence refusal and all deletion boundaries. No unchecked pathname becomes deletion authority.
+
+Proof must use real directory leases, rename and recreation at the old pathname, then install under the moved directory. Assert marker durability and reopen retention after unconfirmed shutdown while that lease remains usable. Where existing process fixtures permit, carry the real resource into a native child rather than a pathname-only stand-in. Add a repeated use at the same spelling with different identity and prove both historical bindings remain protected and admitted. Exercise persistence failure before handoff. Keep existing alias, unavailable-path, clean shutdown and retry proofs. Linux supplies local descriptor behavior, Windows/macOS retain hosted runtime limits.
+
+CR8 adds a production engine_resource assertion for an explicit recursive ancestor of an existing cleaning tree, requiring typed Conflict. A source-only mutation of the positive recursive-ancestor classification to uncertainty must make that new assertion fail. Both CR7 and CR8 need compiled behavioral red/green with only source reverted, test code intact, exact source restoration and the complete native proof afterward.
+
+This is focused fresh-context judgment under policy 4a for a repeated relation mechanism, before another patch. Judge the simplest faithful bounded-use representation and unsafe inferences against actual callers. It is not a new product requirement or a new frozen-plan lineage. Plan authorship and arbitration shared one context. Detection uses the same model family as the code.
+```
+
+#### probe-historical-use.txt
+
+```text
+Optimal: retain distinct `(pathname, resolved identity, recursive)` uses in the existing bounded collection → I recommend this mechanism. Count each retained binding toward admission. The candidate at `mechanism-historical-use.md:7–9` addresses the pathname-only gap at `src-tauri/src/infra/path_authority/catalog_install.rs:428,503` without another registry or actor leases.
+
+No concrete defect found in the proposed mechanism. Its proofs at `mechanism-historical-use.md:11–13` cover durable historical-use protection and CR8’s missing recursive-ancestor refusal.
+
+Unsafe inferences to avoid:
+
+- A replacement at the old pathname cannot establish disjointness of the original leased object. The existing lease regression demonstrates that distinction at `src-tauri/src/infra/path_authority/mod.rs:14959`.
+- A stored root identity is not necessarily the resolved terminal identity when components are supplied. Capture the terminal binding from the retained descriptor in that case. Resolution supports component traversal at `src-tauri/src/infra/path_authority/resolved.rs:817`.
+- Uncertainty must retain and mark use without triggering cleaning refusal. Preserve the confirmed-membership guard at `src-tauri/src/infra/path_authority/catalog_install.rs:412`.
+
+Limitation: this approves the mechanism only. CR6–CR8 remain open pending implementation and behavioral proof against `540f3a23`. No files changed, tests, gates or compilers ran. Windows/macOS runtime remains unverified (confidence: 100). Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+### P3 implementation and root proof
+
+The same persistent sensitive Codex leaf implemented the approved bound-use mechanism in mod.rs and catalog_install.rs. Root inspected the complete diff. Resolution captures terminal identity from the retained descriptor or validated Unix observed identity before handoff. Existing session-use keys retain pathname plus both identity parts, deduplicate the same binding, preserve recursive reachability and count every distinct binding under existing admission. All child uses are tracked, including file resources before provenance. Retained authority entries and prepublication uses supply their historical identity to the shared three-way relation. No persistent schema, actor lease registry or new public API was added.
+
+Eight new tests include actual Linux directory leases after rename/replacement, repeated bindings and admission, terminal child-component identity, file-resource use before publication, retained historical authority, marker write/sync failure, recursive-ancestor cleaning refusal and a real inherited-resource UCI child. The child reads the managed network through its inherited descriptor before and after trusted registry reopen. It is always reaped before worker failures propagate. This is native EngineActor/EngineSupervisor proof, not a browser game-completion claim.
+
+Red-first compiled with six behavioral failures and two passing controls. An initial stale-capability fixture refusal is retained separately and not counted as regression evidence. The first full implementation run passed 56 tests and failed two locator fixtures. Their native selected-workspace transition now releases the stale historical selection before asserting cleanup, preserving all existing locator, retry, foreign-content and deletion assertions. This follows historical-binding retention rather than weakening it.
+
+Three source-only Git-derived reversals retained all tests and compiled. Historical-use reversal failed six cases, recursive-ancestor weakening failed exactly the new cleaning refusal with 57 other catalog tests green, and substituting root identity for terminal identity failed its component regression. Exact source and complete test-module hashes were restored after each reversal. Complete evidence, variants, patches and logs are in /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/phase3-evidence.md.
+
+Root independently passed 58 catalog tests, 284 authority tests, 214 filesystem tests with one existing isolated-namespace test ignored, 39 shutdown tests and the existing inherited-directory child test. Formatting and global diff checks passed. Full checks:pre-review passed including Windows GNU compilation/clippy. Canonical root completion records are gate-p3-proof.0dT4ao and gate-p3-prereview.swCoVY. Windows/macOS runtime remains hosted proof. CR6–CR8 await cumulative closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### Cumulative diff review round 3
+
+REVIEWED_THROUGH=540f3a23b502e7474dcc9941a8428d473d79076e. All eleven read-only lenses completed and all reports were read. Elapsed through arbitration: 275.002 seconds. Three adopted witnesses identify two new corrections. diff_adopted_per_round: r1=6 r2=1 r3=3. Eight unique corrections total. CR1–CR5 closed. CR6 closure remains open through CR7, plus CR8 open. No Skip or Defer. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+CR7 Fix, duplicate root-cause and engine-protocol witnesses: historical resource use stores a pathname without the leased object identity. Moving the directory and recreating its pathname can hide use from prepublication marking. This is a newly evidenced original lifetime obligation omission, not automatically attributed as created by the latest correction. CR8 Fix, tests: add actual recursive-ancestor cleaning refusal coverage. CR6 failure isolation itself is supported by the other closure reports, but the whole lifetime relation remains unclosed. A focused mechanism judgment precedes another patch.
+
+#### Round 3 correctness
+
+```text
+CR6 CLOSED — uncertainty preserves retention and durable session markers without triggering cleaning refusal. Identity-confirmed moved descendants and exact missing reservations remain refused. Source and supplied red/green evidence support closure (confidence: 96).
+
+No correctness defects found in the correction delta.
+
+Limitation: Windows/macOS runtime remains unverified here (confidence: 100). Review and code share the same model family. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 root-cause
+
+```text
+CR6 NOT CLOSED — the unrelated-engine refusal is corrected, but prepublication resource protection still loses historical identity.
+
+[blocker] src-tauri/src/infra/path_authority/catalog_install.rs:503 — A previously leased directory is tracked only by pathname in `catalog_uses`. On Linux, lease the engine root as a recursive resource, rename it, recreate an independent directory at its old pathname, then publish an install under the moved root. `filesystem_reaches` resolves the replacement directory and returns `Disjoint` at line 238, so publication omits the session marker. After an interrupted process and trusted restart, collection can delete that installation while the surviving child still accesses the moved directory through its inherited descriptor. The existing `engine_resource_leases_pin_files_and_directories` test establishes that leases survive this rename-and-replacement scenario. The new prepublication regression covers an absent old pathname, leaving this replacement case uncovered. The underlying cause remains pathname-only tracking of prior resource use (confidence: 93).
+
+Inspected reversal logs confirm six behavioral failures and restoration to 50 passing catalog tests. Limitation: this additional combined scenario was source-traced, not executed under the read-only assignment. Windows/macOS runtime proof remains pending. Review shares the code author’s model family.
+
+VERDICT: REVISE
+```
+
+#### Round 3 tests
+
+```text
+CR6 CLOSED — the unrelated-engine handoff regression has a concrete failing assertion and compiled source-revert evidence.
+
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:958 — Cleaning refusal lacks a recursive-ancestor assertion. This test selects the managed tree itself. Changing the existing-tree recursive-ancestor result from `Member` to `Uncertain` would preserve existing retention/marker assertions while allowing an ancestor resource handoff over a cleaning tree. Add a production `engine_resource` assertion requiring `Conflict` for that case. (confidence: 94)
+
+Review was read-only and same-family. Hosted Windows/macOS runtime proof remains pending.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 error-handling
+
+```text
+CR6 CLOSED — uncertain reachability preserves retention and durable session markers without triggering cleaning refusal. Marker write failures and uncertain durability propagate before handoff. Confirmed moved descendants and exact missing reservations still return typed Conflict errors. Source tracing and supplied regression logs support closure (confidence: 95).
+
+No additional error-handling defects found.
+
+Limitation: inspected Linux proof only. Windows/macOS runtime verification remains pending (confidence: 100). Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 minimalism
+
+```text
+CR6 CLOSED — confirmed membership alone triggers cleaning refusal. Uncertainty still preserves retention and durable session markers through the shared relation.
+
+No bloat or duplication defects found. The catalog module owns required lifecycle behavior and reuses existing registry, hashing and removal primitives. Inlining it would move code without removing required work. The correction tests cover distinct failure cases.
+
+Review was read-only. Same model family as the code author, in a separate session. Platform runtime verification remains outside this review.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 code-quality
+
+```text
+CR6 CLOSED for this lens — `Reachability` clearly separates confirmed membership from uncertainty. Cleanup refusal checks `Member`, while retention and durable-use consumers consistently call `protects()` (`catalog_install.rs:123,414,504,580`). Regression names and comments match their scenarios (confidence: 96).
+
+No readability or local-consistency defects found.
+
+Limitation: source and supplied evidence review only. No runtime checks performed (confidence: 100). Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 engine-protocol
+
+```text
+CR6 NOT CLOSED — prepublication protection can still lose the identity of a directory already handed to a live engine.
+
+[blocker] src-tauri/src/infra/path_authority/catalog_install.rs:234 — Session uses retain only pathname plus recursion (`:428`). On Linux, start an engine with directory resource `/engines`, rename that directory to `/moved`, recreate an independent `/engines`, then select `/moved` as the engine workspace and publish a catalog tree there. The child still accesses the original directory through its retained descriptor (`mod.rs:1585`, existing process test at `process.rs:6855`). Prepublication lookup at `:503` instead resolves the replacement `/engines`, classifies it Disjoint here, and publishes without the session marker. After interrupted or failed shutdown, trusted restart can delete the unowned tree beneath the surviving child’s resource directory. The new prepublication regression covers a missing original pathname, but misses its replacement by another directory (confidence: 94).
+
+Source-derived finding. No writes or runtime commands performed. Review and implementation share the same model family.
+
+VERDICT: REVISE
+```
+
+#### Round 3 ipc-contract
+
+```text
+CR6 CLOSED within this lens — cleaning refusal requires confirmed membership. Uncertainty retains protection and durable session markers without refusing unrelated engines.
+
+No IPC-contract defects found. Rust command parameters, generated invoke keys and renderer callers agree. Progress remains registered, correlated and percentage-based. No new public cleanup command, event or capability scope appears.
+
+Read-only review. Supplied regression logs were inspected, not rerun. Windows/macOS runtime verification remains pending. Review used the same model family as the code, in a separate session.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 tauri-security
+
+```text
+CR6 CLOSED — `src-tauri/src/infra/path_authority/catalog_install.rs:412` refuses cleaning only for confirmed membership. Uncertainty still protects retention and persists session-use markers before handoff. Publication and collection share that relation, while deletion retains separate no-follow identity and inventory checks.
+
+Inspected regression evidence shows source-only reversal failed six cases and restoration passed all 50 catalog tests. No additional in-scope security defects found.
+
+Limitations: read-only review, no tests executed. Windows/macOS runtime proof remains pending. Review and code share the same model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 platform-semantics
+
+```text
+CR6 CLOSED — `catalog_install.rs:413` refuses cleaning-tree access only for confirmed membership. Uncertainty still protects retention and requires durable session markers. Ancestor identity checks recognize moved descendants before consulting unavailable or substituted locators. Supplied source-reversal evidence shows six behavioral failures, followed by 50 passing catalog tests after restoration.
+
+No additional platform defects established.
+
+Proof limits: supplied pre-review evidence reports Windows GNU compilation/clippy passed through `pnpm rust:windows:check`. Windows/macOS runtime remains pending in `rust-windows-test` and `rust-macos-test`. `rust-platform` provides compilation/lint evidence only. No non-Linux Unix source-probe result was supplied.
+
+Read-only review across the seven named source files and connected consumers. No files changed or checks run. Reviewer and implementation share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 3 records
+
+```text
+CR6 CLOSED — source and saved evidence support uncertainty retention, durable markers, identity-based refusal and unrelated-engine isolation.
+
+No records findings.
+
+Unverifiable: historical timings without original timing records. Windows/macOS runtime proof remains pending as recorded. Read-only review, no writes or tests. Reviewer and implementation share the same model family.
+
+VERDICT: APPROVED
+```
+
 ### Focused CR6 mechanism judgment
 
 Before another source patch, the root requested focused fresh-context review-plan judgment under push-review-policy 4a. The first candidate had two gaps, identity disambiguation of replacement roots/trees and explicit durable-marker proof for uncertainty. The revised candidate closed both gaps and was APPROVED. These are private correction-mechanism checks, not additional rounds in the inherited frozen-plan lineage. CR6 implementation closure remains pending. Decision d-20261016-08 records the distinction between uncertainty retention and confirmed cleaning membership, with rejected alternatives and reversal evidence. No runtime behavior is inferred from these read-only judgments. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
