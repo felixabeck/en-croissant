@@ -16661,3 +16661,18 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Open question:** How to preserve and display all six exported colors while retaining unfamiliar entries without suppressing supported neighbors?
 * **Authority:** Felix approved six-color support, per-entry parsing, original color-code preservation and real-repertoire round-trip verification, full auto executor Codex, in a separate worktree.
 * **Proof:** parseComment on the exact 10.Ne4 cal command yields zero shapes and leaves the command text, while the 11.Nxe5 command yields two shapes.
+
+---
+
+## 2026-10-16 — filed through the inbox spool
+
+### Library game previews ignore imported graphical annotations even for supported colors
+* **ID:** f-20261016-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b
+* **Impact class:** behaviour
+* **Where:** src/components/databases/GamePreview.tsx, PreviewBoard around line 209.
+* **Spotted outside diff:** six-color drawing import investigation at 1a4305ed, before implementation.
+* **Failure scenario:** Select a PGN game containing a supported red arrow, navigate to its annotated move in the library preview, then open the same game in analysis. The preview passes only chooserArrows(choice) into Chessground autoShapes and ignores node.shapes, whereas Board.tsx appends currentNode.shapes and PuzzleBoard.tsx appends boardShapes. Consequently the preview hides all stored annotations while analysis displays them.
+* **Open question:** Should read-only library previews display the same saved graphical commentary as the main board, and what preview visual proof covers annotation and continuation overlap?
+* **Boundary:** The authorized six-color parser/main-board fix does not change preview behavior. Preview presentation is a separate product surface and needs its own cohesive specification.
+* **Related:** f-20261016-02 addresses mixed-color parser rejection, not this independently pre-existing rendering omission.
