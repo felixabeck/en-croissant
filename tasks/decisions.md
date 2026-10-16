@@ -8369,3 +8369,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, cumulative review arbitration. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"fcca8a9cbb8c2b6c2cf00e969cc1da2eb75fc68ede44947a4f76c758238301e2","input_sha256":"f1cdec6b53576cabd9a866800a687156143a4d5bc6f5a6bd55d88022bca11477","kind":"mutation-receipt","operation":"c39992cd7a3ecc2b48960221fdfffb7f5849e64e4009db643e11976157bbb0cd","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-29"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-30 — Automatically select catalog cleanup regressions
+
+* **Question:** How does the real-catalog command keep its feature-only cleanup regressions active in CI?
+* **Governs:** f-20261002-08
+* **Chosen:** The existing command discovers and executes the intended feature module suite, with explicit expected runnable names for the single real network test, cleanup-owner regression and cleanup-status regression. Require all intended tests passed and zero ignored tests through the same bounded supervisor route.
+* **Rejected:** Keeping the ownership regression manual-only, which lets removal of retention pass every automated check. Adding a second launcher or workflow verification path. Compiling the network support into default coverage to obtain automatic test selection.
+* **Reason:** Round-2 tests review observed the new guard excluded by the existing exact network-only selector. Selecting the complete intended feature suite removes that measured gap without new machinery. The childless ownership fixture retains three fixed test states, distinct from the real verifier's at-most-one retained native state per distinct selected executable. Reversal path: simplify the selector when an existing automatic route covers every feature-only regression and the real network check with nonzero discovery proof.
+* **Decided by:** Codex, full auto, cumulative tests-review arbitration. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"102580467fddfe92bbee963de3dc4e0196ae052889a42dc46f46f5365455fb38","input_sha256":"6ffe9259fafa277666cc11588438eb6d9e4cde6703867d0015810452878e8f70","kind":"mutation-receipt","operation":"96d9891c30b71acfcb29307a6932072a2b073d06c6b2c976bc871fdd10b9dc01","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-30"],"target":"decisions-ledger","v":1} -->
