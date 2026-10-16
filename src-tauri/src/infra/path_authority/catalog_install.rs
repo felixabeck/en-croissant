@@ -114,11 +114,21 @@ pub(super) fn decode_uses(records: Vec<CatalogUse>) -> Result<CatalogUses, Error
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Publication {
+    Pending,
+    Confirmed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CatalogInstall {
     root: StoredEntry,
     destination: NativePath,
     identity: Identity,
     inventory: Vec<ManagedEntry>,
+    /// Absence is older provenance, which still needs exact proof before confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<Publication>,
     #[serde(default)]
     cleaning: bool,
     /// User changes after partial cleanup end automatic deletion, but cannot make the damaged
@@ -162,6 +172,7 @@ pub(super) fn validate_records(records: &BTreeMap<String, CatalogInstall>) -> Re
     for (id, record) in records {
         if Uuid::parse_str(id).is_err()
             || (record.preserved && !record.cleaning)
+            || (record.cleaning && record.publication == Some(Publication::Pending))
             || record.inventory.len() > MAX_INVENTORY_ENTRIES
             || record.users.len() > MAX_AUTHORITY_IDS
             || record
@@ -518,6 +529,216 @@ fn walk(
 }
 
 impl PathAuthority {
+    fn catalog_destination_root(
+        &self,
+        destination: &PathRef,
+        path: &Path,
+    ) -> Result<StoredEntry, Error> {
+        let root = self
+            .persistent
+            .get(&destination.id)
+            .ok_or_else(invalid_record)?
+            .stored
+            .clone();
+        if root.purpose != Some(EntryPurpose::EngineRoot)
+            || path.parent() != Some(root.path.to_path()?.as_path())
+        {
+            return Err(invalid_record());
+        }
+        Ok(root)
+    }
+
+    /// The single publication-state transition used by publication, adoption and collection.
+    /// A failed proof retains the original pending fence and never gains deletion authority.
+    fn confirm_catalog_install(
+        &mut self,
+        id: &str,
+        retained_root: Option<&fs::File>,
+    ) -> Result<bool, Error> {
+        let record = self
+            .catalog_installs
+            .get(id)
+            .ok_or_else(invalid_record)?
+            .clone();
+        if record.publication == Some(Publication::Confirmed) || record.cleaning {
+            return Ok(true);
+        }
+        let present = (|| {
+            let opened_root;
+            let root = if let Some(root) = retained_root {
+                if opened_file_identity(root)? != (record.root.identity.a, record.root.identity.b) {
+                    return Err(Error::Conflict("catalog publication root changed".into()));
+                }
+                root
+            } else {
+                opened_root = open_verified_directory(
+                    &record.root.path.to_path()?,
+                    (record.root.identity.a, record.root.identity.b),
+                )?
+                .into_file();
+                &opened_root
+            };
+            let leaf = relative_path(&record.destination)?;
+            let entries = read_directory_entries_at(
+                root,
+                &CancellationToken::new(),
+                Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
+                &mut |name| name == leaf.as_os_str(),
+            )?;
+            let Some(entry) = entries.first() else {
+                return Ok(false);
+            };
+            if entry.identity != (record.identity.a, record.identity.b)
+                || entry.kind != DirectoryEntryKind::Directory
+            {
+                return Err(Error::Conflict(
+                    "catalog publication could not be confirmed".into(),
+                ));
+            }
+            let directory =
+                open_removal_directory_at(root, leaf.as_os_str(), entry.identity)?.into_file();
+            let observed = inventory(&directory, record.root.identity.a)?;
+            if observed.len() != record.inventory.len()
+                || !observed
+                    .iter()
+                    .all(|entry| record.inventory.contains(entry))
+            {
+                return Err(Error::Conflict(
+                    "catalog publication could not be confirmed".into(),
+                ));
+            }
+            assert_entry_identity(root, leaf.as_os_str(), entry.identity, true)?;
+            // Recovery may observe a rename whose producer never reached its parent sync.
+            // Only after exact proof may this failure be described as applied uncertainty.
+            root.sync_all().map_err(|error| {
+                log::warn!("catalog publication parent sync failed: {error}");
+                Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::DirectoryInstall)
+            })?;
+            Ok(true)
+        })()
+        .map_err(|error| match error {
+            Error::ResourceLimit(_) | Error::CommittedDurabilityUncertain(_) => error,
+            _ => Error::Conflict("catalog publication could not be confirmed".into()),
+        })?;
+        if !present {
+            return Ok(false);
+        }
+        let previous = self.catalog_installs.clone();
+        let mut records = previous.clone();
+        records.get_mut(id).ok_or_else(invalid_record)?.publication = Some(Publication::Confirmed);
+        if let Err(error) = self.commit_catalog(records) {
+            // An uncertain registry commit is not positive in-memory confirmation. Its old
+            // durable pending candidate remains the conservative recovery interpretation.
+            self.catalog_installs = previous;
+            log::warn!(
+                "catalog publication confirmation persistence failed: {}",
+                error.diagnostic()
+            );
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement,
+            ));
+        }
+        Ok(true)
+    }
+
+    fn confirm_catalog_destination(
+        &mut self,
+        root: &StoredEntry,
+        path: &Path,
+        retained_root: Option<&fs::File>,
+    ) -> Result<bool, Error> {
+        let opened_root;
+        let directory = if let Some(directory) = retained_root {
+            directory
+        } else {
+            opened_root =
+                open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
+                    .into_file();
+            &opened_root
+        };
+        if opened_file_identity(directory)? != (root.identity.a, root.identity.b) {
+            return Err(Error::Conflict("catalog publication root changed".into()));
+        }
+        let leaf = path.file_name().ok_or_else(invalid_record)?;
+        let current = crate::infra::fs::entry_identity_at(directory, leaf, true).ok();
+        let mut ids = Vec::new();
+        for (id, record) in &self.catalog_installs {
+            if record.root.identity != root.identity {
+                continue;
+            }
+            let recorded_leaf = relative_path(&record.destination)?;
+            // Root spelling is diagnostic here. Only the authorized physical root and leaf
+            // define scope. Existing filesystem aliases add scope without global case folding.
+            let same_leaf = recorded_leaf.as_os_str() == leaf
+                || current.is_some_and(|identity| {
+                    crate::infra::fs::entry_identity_at(directory, recorded_leaf.as_os_str(), true)
+                        .is_ok_and(|recorded| recorded == identity)
+                });
+            if same_leaf {
+                ids.push(id.clone());
+            }
+        }
+        let mut confirmed = true;
+        for id in ids {
+            confirmed &= self.confirm_catalog_install(&id, Some(directory))?;
+        }
+        Ok(confirmed)
+    }
+
+    pub(crate) fn catalog_archive_destination_exists(
+        &mut self,
+        destination: &PathRef,
+        resolved: &ResolvedPath,
+    ) -> Result<bool, Error> {
+        let path = resolved.target().ok_or_else(invalid_record)?;
+        let root = self.catalog_destination_root(destination, path)?;
+        self.protect_catalog_path(path, false, false, None)?;
+        let confirmed = self.confirm_catalog_destination(&root, path, None)?;
+        let directory =
+            open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
+                .into_file();
+        let leaf = path.file_name().ok_or_else(invalid_record)?;
+        let entries = read_directory_entries_at(
+            &directory,
+            &CancellationToken::new(),
+            Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
+            &mut |name| name == leaf,
+        )?;
+        match entries.first() {
+            None => Ok(false),
+            Some(entry) if entry.kind == DirectoryEntryKind::Directory && confirmed => Ok(true),
+            _ => Err(Error::Conflict(
+                "archive destination is not a directory".into(),
+            )),
+        }
+    }
+
+    pub(super) fn confirm_catalog_engine_registration(
+        &mut self,
+        root: &EngineRootHandle,
+        components: &[OsString],
+    ) -> Result<(), Error> {
+        let stored = self
+            .persistent
+            .get(&root.id.id)
+            .ok_or_else(invalid_record)?
+            .stored
+            .clone();
+        let path = stored
+            .path
+            .to_path()?
+            .join(components.first().ok_or_else(invalid_record)?);
+        let stored = self.catalog_destination_root(root.path_ref(), &path)?;
+        self.protect_catalog_path(&path, false, false, None)?;
+        if self.confirm_catalog_destination(&stored, &path, None)? {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "catalog publication could not be confirmed".into(),
+            ))
+        }
+    }
+
     pub(super) fn catalog_admission_count(&self) -> usize {
         self.catalog_installs.len()
             + self.catalog_uses.len()
@@ -651,8 +872,7 @@ impl PathAuthority {
         staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
-        self.protect_catalog_path(path, false, false, None)?;
-        if crate::infra::fs::archive_destination_directory_exists(path)? {
+        if self.catalog_archive_destination_exists(destination, resolved)? {
             return Err(Error::Conflict(
                 "directory target was created concurrently".into(),
             ));
@@ -681,11 +901,12 @@ impl PathAuthority {
         let identity = Identity { a, b };
         let directory = staging.directory()?;
         let mut record = CatalogInstall {
-            root,
+            root: root.clone(),
             destination: NativePath::from_path(Path::new(
                 path.file_name().ok_or_else(invalid_record)?,
             )),
             inventory: inventory(directory, identity.a)?,
+            publication: Some(Publication::Pending),
             identity: identity.clone(),
             cleaning: false,
             preserved: false,
@@ -705,7 +926,9 @@ impl PathAuthority {
         for (id, existing) in &records {
             // A replacement root at this spelling is a different cleanup locator. Preserve its
             // predecessor's exact binding even if the native root entry has been retired.
-            if existing.root.identity == record.root.identity && target(existing)? == path {
+            if existing.root.identity == record.root.identity
+                && existing.destination == record.destination
+            {
                 replaced.push(id.clone());
             }
         }
@@ -716,9 +939,16 @@ impl PathAuthority {
         let id = Uuid::new_v4().to_string();
         records.insert(id.clone(), record);
         self.commit_catalog(records)?;
-        self.catalog_protected.insert(id);
+        self.catalog_protected.insert(id.clone());
         assert_entry_identity(&root_directory, source_leaf, (identity.a, identity.b), true)?;
-        resolved.atomic_install_download_dir(staging)
+        resolved.atomic_install_download_dir(staging)?;
+        self.confirm_catalog_install(&id, Some(&root_directory))?;
+        if !self.confirm_catalog_destination(&root, path, Some(&root_directory))? {
+            return Err(Error::Conflict(
+                "catalog publication could not be confirmed".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The caller must first prove sealed admission, drained operations and successful reaping.
@@ -796,6 +1026,15 @@ impl PathAuthority {
     }
 
     fn collect_catalog_install(&mut self, id: &str, record: &CatalogInstall) -> Result<(), Error> {
+        match self.confirm_catalog_install(id, None) {
+            Ok(false) => return self.forget_catalog_install(id),
+            Err(Error::Conflict(_)) => {
+                log::warn!("catalog install {id} retained without confirmed publication");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+            Ok(true) => {}
+        }
         let root = open_verified_directory(
             &record.root.path.to_path()?,
             (record.root.identity.a, record.root.identity.b),
@@ -939,6 +1178,28 @@ mod tests {
             self.publish_stage(name, &mut stage).unwrap();
         }
 
+        fn pending_install(&mut self, name: &str) {
+            let mut stage = self.stage();
+            set_test_atomic_dir_injector(Some(Box::new(DirFault(AtomicDirFaultPoint::ParentSync))));
+            let result = self.publish_stage(name, &mut stage);
+            set_test_atomic_dir_injector(None);
+            drop(stage);
+            assert!(matches!(
+                result,
+                Err(Error::CommittedDurabilityUncertain(_))
+            ));
+        }
+
+        fn adopt(&mut self, name: &str) -> Result<bool, Error> {
+            let resolved = self.authority.resolve(
+                self.handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &[OsString::from(name)],
+            )?;
+            self.authority
+                .catalog_archive_destination_exists(self.handle.path_ref(), &resolved)
+        }
+
         fn engine(&mut self, name: &str) -> EngineHandle {
             self.authority
                 .register_installed_engine(&self.handle, &format!("{name}/engine"))
@@ -1011,6 +1272,438 @@ mod tests {
                 Err(std::io::Error::other("catalog registry fault"))
             } else {
                 Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_valid_pending_recovers_durably() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        f.reopen();
+        assert!(f.adopt("managed").unwrap());
+        let engine = f.engine("managed");
+        f.reopen();
+        f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.publication == Some(Publication::Confirmed)));
+        assert_eq!(
+            fs::read(f.root.join("managed/engine")).unwrap(),
+            b"managed engine"
+        );
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_observation_error_is_hard_and_retryable() {
+        struct ObservationFault;
+        impl AtomicDirInjector for ObservationFault {
+            fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+                if point == AtomicDirFaultPoint::InstallRename {
+                    crate::infra::fs::set_entry_observation_fault(Some(Error::Io(Box::new(
+                        std::io::Error::other("postcommit observation unavailable"),
+                    ))));
+                }
+                Ok(())
+            }
+        }
+        let mut f = Fixture::new();
+        let mut stage = f.stage();
+        set_test_atomic_dir_injector(Some(Box::new(ObservationFault)));
+        let result = f.publish_stage("managed", &mut stage);
+        set_test_atomic_dir_injector(None);
+        crate::infra::fs::set_entry_observation_fault(None);
+        drop(stage);
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "unconfirmable native commit must not be applied: {result:?}"
+        );
+        assert_eq!(
+            fs::read(f.root.join("managed/engine")).unwrap(),
+            b"managed engine"
+        );
+        f.reopen();
+        assert!(f.adopt("managed").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_missing_after_commit_is_hard() {
+        use std::os::unix::fs::MetadataExt;
+
+        struct MoveInstalled {
+            installed: PathBuf,
+            moved: PathBuf,
+            moves: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl AtomicDirInjector for MoveInstalled {
+            fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+                if point == AtomicDirFaultPoint::ParentSync {
+                    fs::rename(&self.installed, &self.moved)?;
+                    self.moves.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+
+        let mut f = Fixture::new();
+        let mut stage = f.stage();
+        let accepted = stage.owner.binding().2;
+        // Moving back to the former staging leaf makes disarming observable. An armed
+        // owner would still recognize this exact original and delete it when dropped.
+        let moved = stage.path().to_path_buf();
+        let installed = f.root.join("managed");
+        let moves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        set_test_atomic_dir_injector(Some(Box::new(MoveInstalled {
+            installed: installed.clone(),
+            moved: moved.clone(),
+            moves: moves.clone(),
+        })));
+        let result = f.publish_stage("managed", &mut stage);
+        set_test_atomic_dir_injector(None);
+        drop(stage);
+
+        let identity_after_owner_drop =
+            fs::metadata(&moved).map(|metadata| (metadata.dev(), metadata.ino()));
+        let engine_after_owner_drop = fs::read(moved.join("engine"));
+        let network_after_owner_drop = fs::read(moved.join("data/network"));
+        f.reopen();
+        let pending_after_reopen = f.authority.catalog_installs.len() == 1
+            && f.authority.catalog_installs.values().all(|record| {
+                record.publication == Some(Publication::Pending)
+                    && (record.identity.a, record.identity.b) == accepted
+            });
+        let untrusted = f.reconcile(vec![], false);
+        let retained_without_trusted_absence = f.authority.catalog_installs.len() == 1;
+        let trusted = f.reconcile(vec![], true);
+        let retired_after_trusted_absence = f.authority.catalog_installs.is_empty();
+        let final_engine = fs::read(moved.join("engine"));
+        let final_network = fs::read(moved.join("data/network"));
+        let final_identity = fs::metadata(&moved).map(|metadata| (metadata.dev(), metadata.ino()));
+        let target_absent = !installed.exists();
+        let move_count = moves.load(Ordering::SeqCst);
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        temp.close().unwrap();
+        eprintln!(
+            "MISSING_PUBLICATION_PROBE result={result:?} accepted={accepted:?} moves={move_count} identity_after_owner_drop={identity_after_owner_drop:?} final_identity={final_identity:?} pending_after_reopen={pending_after_reopen} retained_without_trusted_absence={retained_without_trusted_absence} retired_after_trusted_absence={retired_after_trusted_absence} target_absent={target_absent} all native cleanup completed before assertions"
+        );
+
+        assert!(matches!(result, Err(Error::Conflict(_))),
+            "MISSING_PUBLICATION_MUST_NOT_SUCCEED: absent publication must be a hard conflict, never success or applied uncertainty: {result:?}");
+        assert_eq!(move_count, 1);
+        assert_eq!(identity_after_owner_drop.unwrap(), accepted);
+        assert_eq!(engine_after_owner_drop.unwrap(), b"managed engine");
+        assert_eq!(network_after_owner_drop.unwrap(), b"managed network");
+        assert!(pending_after_reopen);
+        untrusted.unwrap();
+        assert!(retained_without_trusted_absence);
+        trusted.unwrap();
+        assert!(retired_after_trusted_absence);
+        assert!(target_absent);
+        assert_eq!(final_identity.unwrap(), accepted);
+        assert_eq!(final_engine.unwrap(), b"managed engine");
+        assert_eq!(final_network.unwrap(), b"managed network");
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_absent_pending_attempt_retires() {
+        let mut f = Fixture::new();
+        let mut stage = f.stage();
+        set_test_atomic_dir_injector(Some(Box::new(DirFault(AtomicDirFaultPoint::InstallRename))));
+        let result = f.publish_stage("managed", &mut stage);
+        set_test_atomic_dir_injector(None);
+        drop(stage);
+        assert!(result.is_err());
+        assert!(!f.root.join("managed").exists());
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.authority.catalog_installs.is_empty());
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_pending_and_legacy_mismatch_survive_startup() {
+        for legacy in [false, true] {
+            for alteration in ["replacement", "modified", "incomplete"] {
+                let mut f = Fixture::new();
+                f.pending_install("managed");
+                if legacy {
+                    let path = f.temp.path().join("registry.json");
+                    let mut registry: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    for record in registry["catalog_installs"]
+                        .as_object_mut()
+                        .unwrap()
+                        .values_mut()
+                    {
+                        record.as_object_mut().unwrap().remove("publication");
+                    }
+                    fs::write(path, serde_json::to_vec(&registry).unwrap()).unwrap();
+                }
+                match alteration {
+                    "replacement" => {
+                        fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
+                        fs::create_dir(f.root.join("managed")).unwrap();
+                        fs::write(f.root.join("managed/engine"), b"foreign engine").unwrap();
+                    }
+                    "modified" => {
+                        fs::write(f.root.join("managed/engine"), b"foreign engine").unwrap()
+                    }
+                    _ => fs::remove_file(f.root.join("managed/data/network")).unwrap(),
+                }
+                f.reopen();
+                f.reconcile(vec![], true).unwrap();
+                assert_eq!(
+                    f.authority.catalog_installs.len(),
+                    1,
+                    "pending mismatch fence must survive {alteration}"
+                );
+                assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
+                assert!(matches!(
+                    f.authority
+                        .register_installed_engine(&f.handle, "managed/engine"),
+                    Err(Error::Conflict(_))
+                ));
+                assert!(f.root.join("managed/engine").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_registry_failure_keeps_pending_retry() {
+        struct ConfirmationFault {
+            point: AtomicFileFaultPoint,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl AtomicWriterInjector for ConfirmationFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == self.point && self.calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    return Err(std::io::Error::other("confirmation persistence fault"));
+                }
+                Ok(())
+            }
+        }
+        for point in [
+            AtomicFileFaultPoint::Write,
+            AtomicFileFaultPoint::ParentSync,
+        ] {
+            let mut f = Fixture::new();
+            let mut stage = f.stage();
+            let fault = install_test_atomic_file_injector(Arc::new(ConfirmationFault {
+                point,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }));
+            let result = f.publish_stage("managed", &mut stage);
+            drop(fault);
+            drop(stage);
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::CommittedDurabilityUncertain(
+                        crate::error::DurabilityStage::RegistryReplacement
+                    ))
+                ),
+                "{point:?}: {result:?}"
+            );
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.publication == Some(Publication::Pending)));
+            assert_eq!(
+                fs::read(f.root.join("managed/engine")).unwrap(),
+                b"managed engine"
+            );
+            assert!(f.adopt("managed").unwrap());
+            f.reopen();
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.publication == Some(Publication::Confirmed)));
+        }
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_legacy_exact_and_malformed_state() {
+        let mut f = Fixture::new();
+        f.install("managed");
+        let path = f.temp.path().join("registry.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for invalid in [
+            serde_json::json!("unknown"),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(false),
+        ] {
+            let mut value = original.clone();
+            for record in value["catalog_installs"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                record["publication"] = invalid.clone();
+            }
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(
+                PathAuthority::open(path.clone(), vec![]).is_err(),
+                "malformed publication {invalid}"
+            );
+        }
+        let mut value = original;
+        for record in value["catalog_installs"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            record.as_object_mut().unwrap().remove("publication");
+        }
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        f.reopen();
+        assert!(f.adopt("managed").unwrap());
+        f.reopen();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.publication == Some(Publication::Confirmed)));
+        let mut malformed = f.authority.catalog_installs.clone();
+        let record = malformed.values_mut().next().unwrap();
+        record.publication = Some(Publication::Pending);
+        record.cleaning = true;
+        assert!(validate_records(&malformed).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_absent_retry_carries_prior_users() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let resource = f.resource(&f.root.join("managed/engine"), false);
+        let lease = f.authority.engine_resource(&resource).unwrap();
+        let session = f.authority.catalog_session.clone();
+        fs::remove_dir_all(f.root.join("managed")).unwrap();
+        f.reopen();
+        f.install("managed");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("managed/engine").exists());
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            fs::read(lease.uci_value().unwrap()).unwrap(),
+            b"managed engine"
+        );
+        drop(lease);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_same_root_spelling_keeps_fence() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        fs::write(f.root.join("managed/engine"), b"modified pending tree").unwrap();
+        let moved = f.temp.path().join("moved-root");
+        fs::rename(&f.root, &moved).unwrap();
+        phase3_select_root(&mut f, &moved);
+        let result = f.adopt("managed");
+        assert!(matches!(result, Err(Error::Conflict(_))),
+            "PHYSICAL_ROOT_PENDING_FENCE: a different spelling of the same authorized root cannot adopt a modified pending tree: {result:?}");
+        assert!(matches!(
+            f.authority
+                .register_installed_engine(&f.handle, "managed/engine"),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn catalog_install_publication_confirmation_existing_leaf_alias_keeps_fence() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let alias = f.root.join("MANAGED");
+        if !alias.exists() {
+            eprintln!(
+                "actual filesystem has distinct case-sensitive leaves, alias branch not applicable"
+            );
+            return;
+        }
+        fs::write(f.root.join("managed/engine"), b"modified pending tree").unwrap();
+        assert!(
+            matches!(f.adopt("MANAGED"), Err(Error::Conflict(_))),
+            "actual existing filesystem aliases must consume the same pending fence"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_old_root_does_not_block_new_binding() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let root = f.root.clone();
+        fs::rename(&root, f.temp.path().join("old-root")).unwrap();
+        fs::create_dir(&root).unwrap();
+        phase3_select_root(&mut f, &root);
+        f.install("managed");
+        assert_eq!(f.authority.catalog_installs.len(), 2);
+        assert!(f.adopt("managed").unwrap());
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .any(|record| record.publication == Some(Publication::Pending)));
+        assert!(f.temp.path().join("old-root/managed/engine").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_legacy_cleaning_keeps_partial_retry() {
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
+        for modified in [false, true] {
+            let mut f = Fixture::new();
+            f.install("managed");
+            f.reopen();
+            let fault = scoped_test_removal_injector(Arc::new(RemovalFault(
+                RemovalFaultPoint::AfterEntryRemoved,
+            )));
+            assert!(f.reconcile(vec![], true).is_err());
+            drop(fault);
+            let path = f.temp.path().join("registry.json");
+            let mut registry: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            for record in registry["catalog_installs"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                record.as_object_mut().unwrap().remove("publication");
+            }
+            fs::write(path, serde_json::to_vec(&registry).unwrap()).unwrap();
+            if modified {
+                fs::write(f.root.join("managed/foreign"), b"preserve").unwrap();
+            }
+            f.reopen();
+            assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
+            f.reconcile(vec![], true).unwrap();
+            assert_eq!(f.root.join("managed").exists(), modified);
+            if modified {
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|record| record.cleaning && record.preserved));
+                assert_eq!(
+                    fs::read(f.root.join("managed/foreign")).unwrap(),
+                    b"preserve"
+                );
             }
         }
     }

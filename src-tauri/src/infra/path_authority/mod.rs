@@ -6858,6 +6858,7 @@ impl PathAuthority {
             return Err(Error::InvalidInput("engine path is required".into()));
         }
         validate_components(&components)?;
+        self.confirm_catalog_engine_registration(root, &components)?;
         let resolved = self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
         if resolved.file().is_none() {
             return Err(Error::InvalidInput(

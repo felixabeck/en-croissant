@@ -373,6 +373,7 @@ pub(crate) enum ParentAccess {
 }
 
 /// Checks whether an archive destination can be adopted without following its leaf link.
+#[cfg(test)]
 pub(crate) fn archive_destination_directory_exists(path: &Path) -> Result<bool, Error> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
@@ -778,6 +779,7 @@ trait DirInstallAdapter {
         parent: &File,
         source_name: &OsStr,
         target_name: &OsStr,
+        source: &mut Self::Entry,
         original: Option<&Self::Entry>,
     ) -> Result<Option<OsString>, Error>;
     /// Identity-bound removal of the displaced tree at `name`.
@@ -823,11 +825,13 @@ fn install_dir_driver<A: DirInstallAdapter>(
     };
     install_dir_at_driver(
         adapter,
-        &parent,
-        source_name,
-        None,
-        target_name,
-        DirectoryInstallPolicy::Replace,
+        DirectoryInstall {
+            parent: &parent,
+            source_name,
+            expected_source: None,
+            target_name,
+            policy: DirectoryInstallPolicy::Replace,
+        },
         &revalidate_parent,
         &mut false,
     )
@@ -840,23 +844,33 @@ pub(crate) enum DirectoryInstallPolicy {
     Absent,
 }
 
+struct DirectoryInstall<'a> {
+    parent: &'a File,
+    source_name: &'a OsStr,
+    expected_source: Option<(u64, u64)>,
+    target_name: &'a OsStr,
+    policy: DirectoryInstallPolicy,
+}
+
 /// The held-parent body of [`install_dir_driver`]: both leaves are names under the one open
 /// `parent`, so same-parent is structural. `expected_source` pins the staged leaf to an identity
 /// captured earlier. `revalidate_parent` runs immediately before the commit revalidation.
 /// `committed` is set once the platform commit has returned `Ok`, so a caller can tell a
 /// pre-commit failure from `CommittedDurabilityUncertain`.
-#[allow(clippy::too_many_arguments)]
 fn install_dir_at_driver<A: DirInstallAdapter>(
     adapter: &A,
-    parent: &File,
-    source_name: &OsStr,
-    expected_source: Option<(u64, u64)>,
-    target_name: &OsStr,
-    policy: DirectoryInstallPolicy,
+    install: DirectoryInstall<'_>,
     revalidate_parent: &dyn Fn() -> Result<(), Error>,
     committed: &mut bool,
 ) -> Result<(), Error> {
-    let source_entry = adapter
+    let DirectoryInstall {
+        parent,
+        source_name,
+        expected_source,
+        target_name,
+        policy,
+    } = install;
+    let mut source_entry = adapter
         .target_stat(parent, source_name)?
         .ok_or_else(|| Error::InvalidInput("directory staging source does not exist".into()))?;
     if expected_source.is_some_and(|expected| adapter.entry_identity(&source_entry) != expected) {
@@ -918,7 +932,13 @@ fn install_dir_at_driver<A: DirInstallAdapter>(
         }
     }
     let displaced = adapter
-        .commit(parent, source_name, target_name, original.as_ref())
+        .commit(
+            parent,
+            source_name,
+            target_name,
+            &mut source_entry,
+            original.as_ref(),
+        )
         .map_err(|error| match error {
             Error::Io(ref cause)
                 if matches!(policy, DirectoryInstallPolicy::Absent)
@@ -929,6 +949,13 @@ fn install_dir_at_driver<A: DirInstallAdapter>(
             other => other,
         })?;
     *committed = true;
+    if !matches!(entry_identity_at(parent, target_name, true),
+        Ok(actual) if actual == adapter.entry_identity(&source_entry))
+    {
+        return Err(Error::Conflict(
+            "directory publication could not be confirmed".into(),
+        ));
+    }
     #[cfg(test)]
     if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
         log::warn!("directory installation parent sync failed: {error}");
@@ -2246,6 +2273,7 @@ mod unix {
             parent: &File,
             source_name: &OsStr,
             target_name: &OsStr,
+            _source: &mut Self::Entry,
             original: Option<&Self::Entry>,
         ) -> Result<Option<OsString>, Error> {
             // Unix `BackupRename` names the point immediately before the single `EXCHANGE`; no
@@ -2299,11 +2327,13 @@ mod unix {
     ) -> Result<(), Error> {
         install_dir_at_driver(
             &UnixDirInstallAdapter,
-            parent,
-            source_name,
-            Some(expected_source),
-            target_name,
-            policy,
+            DirectoryInstall {
+                parent,
+                source_name,
+                expected_source: Some(expected_source),
+                target_name,
+                policy,
+            },
             &|| Ok(()),
             committed,
         )
@@ -3796,23 +3826,17 @@ mod win {
             parent: &File,
             source_name: &OsStr,
             target_name: &OsStr,
+            source: &mut Self::Entry,
             original: Option<&Self::Entry>,
         ) -> Result<Option<OsString>, Error> {
-            let mut source = open_windows_child(
-                parent,
-                source_name,
-                FILE_OPEN,
-                child_delete_access(true),
-                null(),
-                true,
-                true,
-            )?;
+            #[cfg(test)]
+            inject_atomic_dir(AtomicDirFaultPoint::CommitEntry)?;
             let Some(original) = original else {
                 // No existing target: one no-replace rename suffices, so there is nothing to
                 // roll back and nothing for the caller to clean up.
                 #[cfg(test)]
                 inject_atomic_dir(AtomicDirFaultPoint::InstallRename)?;
-                rename_child(parent, &mut source, source_name, target_name, false)?;
+                rename_child(parent, &mut source._pin, source_name, target_name, false)?;
                 return Ok(None);
             };
             let backup_name: OsString =
@@ -3845,7 +3869,7 @@ mod win {
                 rollback_backup(parent, &mut target, &backup_name, target_name)?;
                 return Err(error);
             }
-            match rename_child(parent, &mut source, source_name, target_name, false) {
+            match rename_child(parent, &mut source._pin, source_name, target_name, false) {
                 Ok(()) => Ok(Some(backup_name)),
                 Err(install_error) => {
                     rollback_backup(parent, &mut target, &backup_name, target_name)?;
@@ -3888,11 +3912,13 @@ mod win {
     ) -> Result<(), Error> {
         install_dir_at_driver(
             &WindowsDirInstallAdapter,
-            parent,
-            source_name,
-            Some(expected_source),
-            target_name,
-            policy,
+            DirectoryInstall {
+                parent,
+                source_name,
+                expected_source: Some(expected_source),
+                target_name,
+                policy,
+            },
             &|| Ok(()),
             committed,
         )
@@ -5264,6 +5290,10 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicDirFaultPoint {
     InstallerEntry,
+    /// Final Windows source consumer after the shared stat. Remove with this boundary's tests
+    /// if a stronger native publication primitive replaces the retained-entry contract.
+    #[cfg(windows)]
+    CommitEntry,
     SyncEntry,
     PreCommit,
     /// Unix: immediately before the single `EXCHANGE` (no backup is taken). Windows: after the
@@ -10303,6 +10333,202 @@ mod tests {
             assert_fixed_conflict(
                 result.expect_err("mismatched child identity must be refused"),
                 "directory is not a child of its opened parent",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_completed_source_substitution() {
+        use std::os::unix::fs::MetadataExt;
+
+        #[derive(Debug, Default)]
+        struct Observation {
+            swaps: usize,
+            substitute: Option<(u64, u64)>,
+            post_commit_parent_sync: bool,
+        }
+        struct Substitute {
+            source: PathBuf,
+            moved: PathBuf,
+            observation: Arc<Mutex<Observation>>,
+        }
+        impl AtomicDirInjector for Substitute {
+            fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+                if point == AtomicDirFaultPoint::InstallRename {
+                    std::fs::rename(&self.source, &self.moved)?;
+                    std::fs::create_dir(&self.source)?;
+                    std::fs::write(self.source.join("engine"), b"UNVERIFIED-SUBSTITUTE")?;
+                    let metadata = std::fs::metadata(&self.source)?;
+                    let mut observation = self.observation.lock().unwrap();
+                    observation.swaps += 1;
+                    observation.substitute = Some((metadata.dev(), metadata.ino()));
+                }
+                if point == AtomicDirFaultPoint::ParentSync {
+                    self.observation.lock().unwrap().post_commit_parent_sync = true;
+                }
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix(".source-probe-")
+            .tempdir_in(root.path())
+            .unwrap();
+        std::fs::write(temp.path().join("engine"), b"VERIFIED-ORIGINAL").unwrap();
+        let mut owner = OwnedStagingDir::adopt(&temp).unwrap();
+        let source = temp.keep();
+        let parent = owner.binding().0.try_clone().unwrap();
+        let accepted_identity = owner.binding().2;
+        let original_pin = owner.directory().unwrap().try_clone().unwrap();
+        let moved = root.path().join("moved-original");
+        let target = root.path().join("installed");
+        let observation = Arc::new(Mutex::new(Observation::default()));
+        let removals_before = OWNED_STAGING_DROP_REMOVALS.with(|count| count.get());
+        set_test_atomic_dir_injector(Some(Box::new(Substitute {
+            source: source.clone(),
+            moved: moved.clone(),
+            observation: observation.clone(),
+        })));
+        let result = install_staging_dir_at(
+            &mut owner,
+            &parent,
+            OsStr::new("installed"),
+            DirectoryInstallPolicy::Absent,
+        );
+        set_test_atomic_dir_injector(None);
+
+        // These fields belong to the real facade. It disarms only when its local committed
+        // flag is true, so the observed disarm proves that flag without a production hook.
+        let owner_armed = owner.armed;
+        let owner_child_present = owner.child.is_some();
+        let committed_from_facade_disarm = !owner_armed;
+        let parent_identity = opened_identity(&parent).unwrap();
+        let pin_identity = opened_identity(&original_pin).unwrap();
+        let mut pin_bytes = Vec::new();
+        open_regular_at(
+            &original_pin,
+            OsStr::new("engine"),
+            RegularFileAccess::ReadOnly,
+        )
+        .unwrap()
+        .read_to_end(&mut pin_bytes)
+        .unwrap();
+        let directory_identity = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .ok()
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+        };
+        let source_identity = directory_identity(&source);
+        let target_identity = directory_identity(&target);
+        let moved_identity = directory_identity(&moved);
+        let source_bytes = std::fs::read(source.join("engine")).ok();
+        let target_bytes = std::fs::read(target.join("engine")).ok();
+        let moved_bytes = std::fs::read(moved.join("engine")).ok();
+        drop(owner);
+        let removals_after = OWNED_STAGING_DROP_REMOVALS.with(|count| count.get());
+        let target_after_drop = directory_identity(&target);
+        let moved_after_drop = directory_identity(&moved);
+        let source_after_drop = directory_identity(&source);
+        let observed = observation.lock().unwrap();
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE source={source:?} target={target:?} moved={moved:?}");
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE result={result:?} parent={parent_identity:?} accepted={accepted_identity:?} pin={pin_identity:?} pin_bytes={pin_bytes:?}");
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE observation={observed:?} source={source_identity:?} target={target_identity:?} moved={moved_identity:?}");
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE source_bytes={source_bytes:?} target_bytes={target_bytes:?} moved_bytes={moved_bytes:?}");
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE committed_from_facade_disarm={committed_from_facade_disarm} owner_armed={owner_armed} owner_child_present={owner_child_present} drop_removal_delta={} after_drop_source={source_after_drop:?} after_drop_target={target_after_drop:?} after_drop_moved={moved_after_drop:?}", removals_after - removals_before);
+        let swaps = observed.swaps;
+        let substitute_identity = observed.substitute;
+        drop(observed);
+        let refused_without_trusted_publication = matches!(&result, Err(Error::Conflict(_)))
+            && target_identity == substitute_identity
+            && target_bytes.as_deref() == Some(b"UNVERIFIED-SUBSTITUTE".as_slice())
+            && moved_after_drop == Some(accepted_identity)
+            && moved_bytes.as_deref() == Some(b"VERIFIED-ORIGINAL".as_slice())
+            && source_after_drop.is_none()
+            && committed_from_facade_disarm
+            && removals_after == removals_before;
+        drop(original_pin);
+        drop(parent);
+        root.close().unwrap();
+        eprintln!("NATIVE_SOURCE_COMMIT_PROBE all native handles closed and disposable root removed before assertion");
+        assert_eq!(swaps, 1, "the probe must complete exactly one substitution");
+        assert!(
+            refused_without_trusted_publication,
+            "NATIVE_SOURCE_COMMIT_UNVERIFIED_PUBLICATION: accepted={accepted_identity:?} substitute={substitute_identity:?} installed={target_identity:?} result={result:?} committed={committed_from_facade_disarm}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_install_publication_confirmation_windows_renames_accepted_entry() {
+        struct Swap {
+            source: PathBuf,
+            moved: PathBuf,
+            refusal: Arc<Mutex<Option<i32>>>,
+        }
+        impl AtomicDirInjector for Swap {
+            fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+                if point == AtomicDirFaultPoint::CommitEntry {
+                    match std::fs::rename(&self.source, &self.moved) {
+                        Ok(()) => {
+                            std::fs::create_dir(&self.source)?;
+                            std::fs::write(self.source.join("foreign"), b"preserve substitute")?;
+                        }
+                        Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) => {
+                            *self.refusal.lock().unwrap() = error.raw_os_error();
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(root.path()).unwrap();
+        std::fs::write(temp.path().join("engine"), b"accepted original").unwrap();
+        let mut source = OwnedStagingDir::adopt(&temp).unwrap();
+        let source_path = temp.keep();
+        let parent = source.binding().0.try_clone().unwrap();
+        let expected = source.binding().2;
+        let moved = root.path().join("moved-original");
+        let refusal = Arc::new(Mutex::new(None));
+        set_test_atomic_dir_injector(Some(Box::new(Swap {
+            source: source_path.clone(),
+            moved: moved.clone(),
+            refusal: refusal.clone(),
+        })));
+        let result = install_staging_dir_at(
+            &mut source,
+            &parent,
+            OsStr::new("installed"),
+            DirectoryInstallPolicy::Absent,
+        );
+        set_test_atomic_dir_injector(None);
+        let disarmed = !source.armed;
+        drop(source);
+        let installed = entry_identity_at(&parent, OsStr::new("installed"), true);
+        let bytes = std::fs::read(root.path().join("installed/engine"));
+        let substitute = std::fs::read(source_path.join("foreign")).ok();
+        let original_moved = moved.exists();
+        let refusal = *refusal.lock().unwrap();
+        drop(parent);
+        root.close().unwrap();
+        assert!(result.is_ok(), "WINDOWS_ACCEPTED_SOURCE_ENTRY: {result:?}");
+        assert!(disarmed);
+        assert_eq!(installed.unwrap(), expected);
+        assert_eq!(bytes.unwrap(), b"accepted original");
+        assert!(
+            !original_moved,
+            "the exact accepted handle must reach the destination"
+        );
+        if refusal.is_some() {
+            assert!(matches!(refusal, Some(5 | 32)));
+            assert!(substitute.is_none());
+        } else {
+            assert_eq!(
+                substitute.as_deref(),
+                Some(b"preserve substitute".as_slice())
             );
         }
     }

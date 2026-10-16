@@ -62,11 +62,10 @@ async fn await_staging_deadline_with_admission<T>(
     admission: impl Future<Output = ()>,
 ) -> Result<T, Error> {
     tokio::pin!(producer);
+    // Own the pinned admission future so its publication sender can be explicitly released
+    // before awaiting a producer that may be blocked on that sender.
+    let mut admission = Box::pin(admission);
     let timed_out = {
-        // Drop the admission future, including any publication permit it owns, before
-        // awaiting an expired producer that may be blocked waiting for that permit.
-        let admission = admission;
-        tokio::pin!(admission);
         tokio::select! {
             biased;
             result = &mut producer => return result,
@@ -74,14 +73,14 @@ async fn await_staging_deadline_with_admission<T>(
             _ = tokio::time::sleep(deadline) => true,
         }
     };
-    if timed_out {
-        cancellation.cancel();
-        let _ = producer.await;
-        Err(Error::EngineTimeout(timeout_message.into()))
-    } else {
+    drop(admission);
+    if !timed_out {
         // No deadline competes with the admitted publication/durability tail.
-        producer.await
+        return producer.await;
     }
+    cancellation.cancel();
+    let _ = producer.await;
+    Err(Error::EngineTimeout(timeout_message.into()))
 }
 
 fn download_target_durability(
@@ -761,18 +760,7 @@ where
                     }
                     prepare_gz_cancellable(file, dest_parent, limits, cancellation)?
                 };
-                #[cfg(test)]
-                run_archive_pre_install_hook(dest_parent);
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancellation);
-                }
-                if crate::infra::path_authority::opened_file_identity(&pin)?
-                    != source.parent_identity()?
-                {
-                    return Err(Error::Conflict(
-                        "archive staging parent changed concurrently".into(),
-                    ));
-                }
+                validate_prepared_tree(&source, &pin, dest_parent, cancellation)?;
                 consume(source, &pin, cancellation)
             } else {
                 Err(archive_payload_required())
@@ -1440,14 +1428,15 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         }
         // A verified artefact has a stable directory name. Never replace an existing tree:
         // it may be registered already, and an engine may still be executing from it.
-        let existing_target = resolved
-            .target()
-            .ok_or_else(|| {
-                Error::InvalidInput("archive destination needs a target directory".into())
-            })?
-            .to_path_buf();
-        let exists = crate::infra::blocking::BLOCKING_GATEWAY
-            .spawn(move || crate::infra::fs::archive_destination_directory_exists(&existing_target))
+        let adoption_authority = state.pgn_path_authority.clone();
+        let adoption_destination = destination.clone();
+        let (exists, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(move || {
+                let exists = adoption_authority.with_mut(|authority| {
+                    authority.catalog_archive_destination_exists(&adoption_destination, &resolved)
+                })??;
+                Ok((exists, resolved))
+            })
             .await?;
         if exists {
             commit_gate.begin_commit()?;
@@ -1854,13 +1843,10 @@ fn archive_payload_required() -> Error {
     Error::InvalidInput("Download payload must be a zip, tar or tar.gz archive".into())
 }
 
-/// Checks cancellation after the test hook, then installs an adopted tree only under its original pin.
-#[cfg(test)]
-fn install_extracted_tree(
-    source: crate::infra::fs::OwnedStagingDir,
+fn validate_prepared_tree(
+    source: &crate::infra::fs::OwnedStagingDir,
     pin: &std::fs::File,
     _dest_parent: &Path,
-    dest_leaf: &OsStr,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
@@ -1873,6 +1859,19 @@ fn install_extracted_tree(
             "archive staging parent changed concurrently".into(),
         ));
     }
+    Ok(())
+}
+
+/// Installs an adopted tree only after the shared preparation checks.
+#[cfg(test)]
+fn install_extracted_tree(
+    source: crate::infra::fs::OwnedStagingDir,
+    pin: &std::fs::File,
+    _dest_parent: &Path,
+    dest_leaf: &OsStr,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    validate_prepared_tree(&source, pin, _dest_parent, cancellation)?;
     crate::infra::fs::install_owned_staging_dir(source, dest_leaf)
 }
 
@@ -2147,6 +2146,109 @@ fn file_exists_with_authority(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn catalog_install_publication_confirmation_deadline_drops_admission_before_join() {
+        let cancellation = CancellationToken::new();
+        let (permit_tx, permit_rx) = tokio::sync::oneshot::channel::<()>();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_worker = finished.clone();
+        let mut worker = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = permit_rx.blocking_recv();
+            finished_worker.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        started_rx.await.unwrap();
+        let producer = async { (&mut worker).await.unwrap() };
+        let admission = async move {
+            std::future::pending::<()>().await;
+            drop(permit_tx);
+        };
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(300),
+            await_staging_deadline_with_admission(
+                Duration::from_millis(5),
+                &cancellation,
+                "preparation expired",
+                producer,
+                admission,
+            ),
+        )
+        .await;
+        if outcome.is_err() {
+            // The bounded guard has dropped the helper and its sender. Reap the actual
+            // worker before propagating the deliberately reversed-source assertion.
+            worker.await.unwrap().unwrap();
+        }
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "physical producer must finish before assertion"
+        );
+        assert!(matches!(outcome, Ok(Err(Error::EngineTimeout(_)))),
+            "ADMISSION_DROP_BEFORE_JOIN: the helper must close the permit before awaiting its producer: {outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn catalog_install_publication_confirmation_admitted_tail_keeps_actual_result() {
+        for uncertain in [false, true] {
+            let cancellation = CancellationToken::new();
+            let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+            let (permit_tx, permit_rx) = tokio::sync::oneshot::channel::<()>();
+            let finished = Arc::new(AtomicBool::new(false));
+            let finished_worker = finished.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
+                let _ = prepared_tx.send(());
+                if permit_rx.blocking_recv().is_err() {
+                    return Err(Error::Cancellation);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+                finished_worker.store(true, Ordering::SeqCst);
+                if uncertain {
+                    Err(Error::CommittedDurabilityUncertain(
+                        crate::error::DurabilityStage::DirectoryInstall,
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
+            let producer = async { (&mut worker).await.unwrap() };
+            let admission = async move {
+                prepared_rx.await.unwrap();
+                let _ = permit_tx.send(());
+            };
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                await_staging_deadline_with_admission(
+                    Duration::from_millis(5),
+                    &cancellation,
+                    "preparation expired",
+                    producer,
+                    admission,
+                ),
+            )
+            .await;
+            if outcome.is_err() {
+                let _ = worker.await.unwrap();
+            }
+            assert!(
+                finished.load(Ordering::SeqCst),
+                "physical publication tail must finish before assertion"
+            );
+            let actual = if uncertain {
+                matches!(
+                    outcome,
+                    Ok(Err(Error::CommittedDurabilityUncertain(
+                        crate::error::DurabilityStage::DirectoryInstall
+                    )))
+                )
+            } else {
+                matches!(outcome, Ok(Ok(())))
+            };
+            assert!(actual, "ADMITTED_TAIL_ACTUAL_RESULT: preparation deadline must not replace publication outcome: {outcome:?}");
+        }
+    }
+
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
     use std::{
@@ -3209,16 +3311,25 @@ mod tests {
             "{helper}"
         );
         assert!(!helper.contains("adopt("), "{helper}");
-        let hook = helper
+        let validator = body_at_indent(source, "fn validate_prepared_tree(");
+        let hook = validator
             .find("run_archive_pre_install_hook(_dest_parent)")
             .unwrap();
-        let cancellation = helper.find("if cancellation.is_cancelled()").unwrap();
-        let identity = helper.find("opened_file_identity(pin)").unwrap();
+        let cancellation = validator.find("if cancellation.is_cancelled()").unwrap();
+        let identity = validator.find("opened_file_identity(pin)").unwrap();
+        let validation = helper
+            .find("validate_prepared_tree(&source, pin, _dest_parent, cancellation)?")
+            .expect("standalone install must use the shared prepared validator");
+        assert!(
+            production
+                .contains("validate_prepared_tree(&source, &pin, dest_parent, cancellation)?"),
+            "catalog preparation must use the shared prepared validator"
+        );
         let install = helper
             .find("install_owned_staging_dir(source, dest_leaf)")
             .unwrap();
         assert!(
-            hook < cancellation && cancellation < identity && identity < install,
+            hook < cancellation && cancellation < identity && validation < install,
             "{helper}"
         );
         assert!(
@@ -4505,6 +4616,124 @@ mod tests {
         assert_eq!(error.to_string(), archive_payload_required().to_string());
         assert!(!target.exists());
         assert_eq!(leaves(dir.path()), vec!["archive.gz"]);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn catalog_install_publication_confirmation_actual_core_rejects_retry_and_reopen() {
+        use crate::infra::fs::{
+            set_test_atomic_dir_injector, AtomicDirFaultPoint, AtomicDirInjector,
+        };
+        type Swap = Box<dyn FnOnce() -> std::io::Result<()>>;
+        struct FinalSwap(std::cell::RefCell<Option<Swap>>);
+        impl AtomicDirInjector for FinalSwap {
+            fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+                if point == AtomicDirFaultPoint::InstallRename {
+                    if let Some(swap) = self.0.borrow_mut().take() {
+                        return swap();
+                    }
+                }
+                Ok(())
+            }
+        }
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, root) = engine_destination(&dir);
+        let payload = zip_payload();
+        let integrity = unsigned_test_integrity(&payload);
+        let state = AppState {
+            http_transport: Arc::new(zip_response(payload)),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let target = engine_root.join("managed");
+        let moved = engine_root.join("moved-original");
+        let registry_path = dir.path().join("path-authority.json");
+        let pending_before_syscall = Arc::new(Mutex::new(None));
+        let snapshot = pending_before_syscall.clone();
+        let moved_at_hook = moved.clone();
+        let registry_at_hook = registry_path.clone();
+        set_core_after_pin_hook(
+            &target,
+            Some(Box::new(move |_| {
+                set_archive_pre_install_hook(Some(Box::new(move |parent| {
+                    let source = std::fs::read_dir(parent)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .find(|path| {
+                            path.is_dir()
+                                && path
+                                    .file_name()
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .starts_with(".zip")
+                        })
+                        .expect("actual prepared ZIP owner");
+                    set_test_atomic_dir_injector(Some(Box::new(FinalSwap(
+                        std::cell::RefCell::new(Some(Box::new(move || {
+                            *snapshot.lock().unwrap() = Some(std::fs::read(&registry_at_hook)?);
+                            std::fs::rename(&source, &moved_at_hook)?;
+                            std::fs::create_dir(&source)?;
+                            std::fs::write(source.join("engine.bin"), b"unverified substitute")?;
+                            Ok(())
+                        }))),
+                    ))));
+                })));
+            })),
+        );
+        for attempt in 0..3 {
+            let (job, lease) = test_download_lease(&state);
+            let result = download_engine_archive_core(
+                format!("confirmation-{attempt}"),
+                "https://example.com/engine.zip".into(),
+                destination.clone(),
+                "managed".into(),
+                job,
+                integrity.clone(),
+                app.handle().clone(),
+                state.clone(),
+                lease.token(),
+                lease.commit_gate(),
+                Box::new(accept_any_integrity),
+            )
+            .await;
+            assert!(matches!(result, Err(Error::Conflict(_))),
+                "PENDING_ADOPTION_FENCE: actual producer/retry/reopen must refuse the unverified tree at attempt {attempt}: {result:?}");
+            assert_eq!(
+                std::fs::read(target.join("engine.bin")).unwrap(),
+                b"unverified substitute"
+            );
+            assert_eq!(std::fs::read(moved.join("engine.bin")).unwrap(), b"engine");
+            assert!(
+                matches!(
+                    state
+                        .pgn_path_authority
+                        .with_mut(|authority| authority
+                            .register_installed_engine(&root, "managed/engine.bin"))
+                        .unwrap(),
+                    Err(Error::Conflict(_))
+                ),
+                "pending catalog tree must not mint a substitute executable handle for probing"
+            );
+            if attempt == 0 {
+                assert_eq!(std::fs::read(&registry_path).unwrap(),
+                    *pending_before_syscall.lock().unwrap().as_ref().expect("durable evidence before syscall"),
+                    "reopen must consume the exact pending evidence durable before native rejection");
+            }
+            if attempt == 1 {
+                let mut reopened = test_path_authority(&dir);
+                reopened
+                    .reconcile_startup_owners(crate::infra::path_authority::StartupPathOwners {
+                        retained_ids: vec![root.id.clone()],
+                        trusted_families: vec![
+                            crate::infra::path_authority::PathOwnerFamily::Engines,
+                        ],
+                    })
+                    .unwrap();
+                reopened.collect_catalog_installs().unwrap();
+                *state.pgn_path_authority.raw_for_test().lock().unwrap() = Some(reopened);
+            }
+        }
     }
 
     #[tokio::test]
