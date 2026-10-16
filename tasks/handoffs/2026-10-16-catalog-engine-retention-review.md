@@ -2379,6 +2379,386 @@ VERDICT: REVISE
 ### P4 durable-use implementation, integration repair and root proof
 
 
+### Cumulative diff review round 5
+
+
+### Focused cwd handoff judgment after round 5
+
+
+### Round 5 native repair implementation and proof
+
+
+Root independently passed 74 catalog, 284 authority, 214 filesystem with one existing ignore, 39 shutdown and 230 engine-process tests, formatting and diff checks. Canonical gate-r5-proof.fwuzY5 returned 0. The complete pre-review scheduler gate-r5-prereview.dcHQOK returned 0 including Windows GNU clippy. Root verified final source hashes against repair5-final-hashes.json and inspected the complete three-file repair diff. No source changed after those checks. CR9 and CR12–16 now await cumulative reviewer closure.
+
+The same sensitive writer implemented cwd1 and CR13–15. The original adopted phase listed process.rs as read-only. Cumulative review supplied new source evidence that its actual pathname launch consumer violated required O2, so this repair writes that directly connected consumer under d-20261016-12. This is required closure of the frozen lifetime contract, not added product scope. No new registry, actor lease, process-global cwd mutation or capability was introduced. CR16 pre-clippy hash qualification is corrected above. Reviewer closure remains pending.
+
+Root inspected all three source diffs and the full capture-to-spawn path. The source-only cwd mutant removes fchdir and fails at native data consumption, while the initial red-first test separately reproduces the original substituted-path data failure. Windows/macOS runtime remains pending, with actual cfg-gated production-launch tests now added. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### repair-r5.txt
+
+````text
+Implemented cwd1 in [mod.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/mod.rs), [process.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/engine/process.rs) and [catalog_install.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/catalog_install.rs). Changes remain unstaged. Foreign handoff work is preserved.
+
+The validated parent object now travels with `EngineExecutable` through `ChildOwnership` until confirmed reap. Unix uses child-only `fchdir`, without pathname cwd dependency or an extra inherited descriptor. Windows retains the no-delete parent alongside the sealed image. Canonical authorization remains intact.
+
+Admission names now describe units. Capacity and atomic-handoff fixture keys derive from authority-issued canonical bindings.
+
+All final commands returned **0**:
+
+| Check | Result |
+|---|---:|
+| Catalog | 74 passed |
+| Path authority | 284 passed |
+| Filesystem | 214 passed, 1 existing ignore |
+| Shutdown | 39 passed |
+| Engine process | 230 passed |
+| Formatting and diff checks | Passed |
+| Windows GNU compilation/clippy | Passed |
+
+The initial native witness reproduced replacement-data consumption. Three source-only reversals compiled and failed behaviorally, then passed after exact restoration with tests unchanged. These cover cwd launch binding and both admission protections. Actual children were reaped before failure propagation.
+
+[Complete capture/ownership/spawn trace, logs, patches, hashes and failure evidence](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/repair5-evidence.md).
+
+Runtime proof is Linux-only. Native Windows parent/ancestor replacement and macOS movement tests were added but remain pending hosted execution. No mechanism deviation or unresolved source-derived contract question was found.
+````
+
+#### repair5-evidence.md
+
+````text
+Round5 cohesive native repair evidence
+
+Implemented the approved cwd1 mechanism under d-20261016-12 and the frozen O1–O4 contract. Both supplied mechanism files and all eleven round5 lens reports were read. Only `src-tauri/src/infra/path_authority/mod.rs`, `src-tauri/src/infra/path_authority/catalog_install.rs` and `src-tauri/src/engine/process.rs` changed. `resolved.rs` was inspected and remained unchanged because its existing retained-parent accessor suffices. Main and all other production files were untouched. Root's dirty handoff was preserved. No skills, agents, messages, records, stage, commit, push or release operations were used. There is no mechanism deviation or unresolved contract question from local source inspection.
+
+Capture to ownership to spawn
+
+- The existing resolution boundary still records image and cwd node identities together in one durable candidate before handoff. Actual terminal descriptors determine resource scope. The shared node/recursive predicate, publication, originating-session lifetime and startup eligibility implementation are unchanged by this repair.
+- `mod.rs:6741` fallibly clones `resolved.parent()`. This is the same validated held directory object that supplied `resolved.parent_identity()` to durable evidence. It never reopens a pathname to establish cwd identity. Missing parent returns typed Conflict and clone failure returns I/O error before executable handoff.
+- `workspace_entry_path` canonical authorization still executes at `mod.rs:6752`. Its validated path supplies the Windows launch/cwd spelling. Canonical spelling and operation bounds are not bypassed.
+- `EngineExecutable` at `mod.rs:1886` now owns the retained cwd file alongside its existing image and resource ownership. Unix gets only its raw descriptor through a private native accessor. Windows additionally retains the canonical cwd path. There is no optional pathname fallback for an unavailable Unix cwd object.
+- Existing `ChildOwnership` at `process.rs:778` retains the complete EngineExecutable through confirmed physical reaping. Its existing success path releases the executable, cwd and resources together. Failed or canceled cleanup keeps that same owner. No new actor lease or registry was introduced.
+- Unix spawn at `process.rs:3775` uses `fchdir` on the retained descriptor in the fork-child pre_exec closure. There is no earlier Unix pathname current_dir dependency and no process-global cwd change or global lock. The closure uses async-signal-safe fchdir and the existing Linux fcntl operations.
+- Linux continues clearing CLOEXEC only for its existing image and resource descriptor list. The cwd descriptor remains CLOEXEC and is absent from that list. The existing descriptor regression now verifies both properties. Image execution through procfs and inherited directory resources retain their existing behavior.
+- macOS uses the same Unix descriptor cwd binding. Image launch-root materialization, sealed launch targets, resource pinning and materialized-file lifetime remain unchanged. The added macOS runtime test obtains a real authority-issued executable, materializes it through the production pinning path and probes normal, moved-and-missing and replaced cwd names through actual spawn_owned.
+- Windows keeps the already validated no-delete parent handle alongside its sealed no-delete image handle and canonical launch path. Path-based CreateProcess/current_dir remains Windows-only. The parent handle is retained through the same ChildOwnership lifetime. No check-then-spawn validation workaround was added.
+- The added Windows runtime test obtains the real executable through PathAuthority, attempts direct-parent and containing-directory renames while it is held, then exercises actual spawn_owned and relative native shell data reads. It includes an unchanged positive launch and verifies that confirmed reaping releases the handles so rename succeeds afterward. This directly tests the approved no-delete-parent premise. Local source did not disprove it, but Windows ancestor behavior remains a named runtime obligation until hosted execution.
+
+Fixtures and regressions
+
+The existing inherited-directory child harness now separates image preparation from native spawn. Its one UCI loop, Actor/Supervisor registration and physical reaping are reused. No second UCI or actor cleanup framework was added.
+
+`catalog_install_repair5_replacement_before_spawn_uses_original_cwd` first publishes an independent managed replacement tree, resolves an original image/cwd, moves the original directory aside and puts the managed tree at the old cwd name before starting the real app-owned Actor. No directory-resource lease is supplied. After spawn it restores the exact managed provenance locator and verifies unchanged root, immediate-parent, tree and full inventory identities. The child reads only original relative data. Trusted reopen and native reconciliation collect the independent replacement tree, while the original child still reads its own data.
+
+`catalog_install_repair5_moved_missing_cwd_before_spawn_uses_original_object` removes the original cwd pathname by rename before actual Actor spawn. Launch still succeeds through the held directory object and reads original relative data.
+
+Both Linux tests capture worker assertions and confirm Actor/Supervisor physical reaping before propagating failure. The native Windows/macOS probe helper likewise reaps through the existing ChildOwner before propagating data errors. Rename and pinning assertions before spawn cannot orphan a child.
+
+The existing Unix EngineExecutable test constructor now opens and retains a real cwd object. The entire process selector passed, including intentional spawn and post-spawn I/O failures, kill/reap retry and timeout coverage. The actual inherited-directory child regression is included in that selector. Removed-image cwd, historical resource, three-session, cleaning, alias and canonical spelling cases remain green in the catalog and path-authority selectors.
+
+CR13, CR14 and CR15
+
+- `registry_unique_id_count` is now `registry_admission_units` in every allowed caller and test. `RegistryAdmissionSnapshot.unique_ids` is now `admission_units`. The arithmetic, growth guard, error text and limits are unchanged. The genuinely deduplicating `unique_registry_id_count` helper retains its name and implementation. No other naming cleanup was performed.
+- The capacity fixture at `catalog_install.rs:2552` seeds paths from the canonical native root stored by authority issuance. It retains one validated bounded setup candidate, real binding identities, persisted reopen verification, exact 4,096 admission units, production ResourceLimit refusal and usable existing-binding contents. It does not emulate Windows strings or lower a limit.
+- The atomic image/cwd handoff test at `catalog_install.rs:2195` derives image and parent keys and identities from the validated registered StoredEntry. Native identity checks, one atomic write, zero-install evidence, write/sync refusal and same-binding retry assertions remain intact. Raw Windows tempdir spelling is no longer used as the expected map key.
+
+Red-first and final source-only proof
+
+`repair5-red-first.log` compiled before the production correction and returned status 101 with one behavioral failure. The pinned original image read `managed network` from the substituted cwd instead of `original cwd data`. The log confirms physical child reaping before propagation of the captured assertion. `repair5-tests-only.diff`, source snapshots and `repair5-tests-only-hashes.json` preserve that state.
+
+Final reversals use Git-derived source-only patches with tests byte-identical. Each patch was reverse-checked and reverse-applied, then forward-checked and applied without offsets. Actual mutant hashes, test-suffix hashes and exact restored manifests were verified across mod, catalog, process, unchanged resolved and unchanged main. `repair5-proof-audit.json` records the audit. `repair5-proof-commands.log` records exact commands.
+
+| Case | Removed behavior | Compiled behavioral red | Exact restored green |
+| --- | --- | --- | --- |
+| cwd | Only Unix launch fchdir binding | Status 101, native child reads empty relative data rather than original data | Status 0, 1 passed |
+| cr9-guard | Renamed aggregate admission growth guard | Status 101, real new binding admitted at 4,098 | Status 0, 1 passed |
+| cr9-baseline | Passing the pre-mutation admission baseline | Status 101, same real overflow with shared guard enabled | Status 0, 1 passed |
+
+Removing fchdir leaves launch without an object cwd binding and therefore uses the parent process cwd. That final source-only mutant fails at the intended native data assertion. The separate initial red-first run demonstrates the original pathname-replacement failure specifically. Neither witness is a compile or fixture failure. Both confirm child reaping before test failure propagation.
+
+Artifacts follow `repair5-CASE-source-fix.patch`, `repair5-CASE-red.log`, `repair5-CASE-green.log`, matching `.exit` files, `-reversed-hashes.json` and `-restored-hashes.json`. `repair5-reversal-plan.json` identifies selectors, paths and mutant/test hashes. All restored manifests equal `repair5-hashes-before-reversals.json`, which equals `repair5-final-hashes.json`.
+
+Initial green runs are retained in `repair5-first-green.log` and `repair5-native-first-*.log`. No runtime fixture failure or compile failure was discarded. One generated apply_patch attempt for the mechanical rename was rejected before that rename applied because it used numeric unified hunk headers. It was corrected to apply_patch's expected context format. This preparation error was not regression evidence.
+
+The older phase4/context1 evidence describes those earlier snapshots. Its hashes are not represented as matching this repair's new executable fields, canonical fixture keys, aggregate names or tests. New final hashes are contained only in the repair5 manifests. All earlier evidence was preserved. CR16 records qualification remains root-owned and was not edited here.
+
+Final verification
+
+All test commands below use `cargo test --manifest-path src-tauri/Cargo.toml --locked SELECTOR -- --nocapture`. Exact commands, actual statuses and log names are in `repair5-verification-statuses.json`. Every final command returned status 0.
+
+| Selector/check | Result | Complete log |
+| --- | --- | --- |
+| catalog_install | 74 passed | repair5-final-catalog_install.log |
+| infra::path_authority::tests | 284 passed | repair5-final-infra-path_authority-tests.log |
+| fs::tests | 214 passed, 1 existing ignore | repair5-final-fs-tests.log |
+| shutdown_ | 39 passed | repair5-final-shutdown_.log |
+| engine::process::tests | 230 passed | repair5-final-engine-process-tests.log |
+| cargo fmt --manifest-path src-tauri/Cargo.toml -- --check | Passed | repair5-final-fmt.log |
+| git diff --check | Passed | repair5-final-diff-check.log |
+| pnpm rust:windows:check | GNU compilation/clippy passed | repair5-windows-typecheck.log |
+
+The existing ignored filesystem test requires an isolated user and mount namespace. The process log explicitly includes passing inherited-directory and spawn-I/O-failure cleanup tests. The final capacity fixture created 2,046 real bindings and 4,096 admission units in one durable setup, taking about 460 ms under the final full catalog run. Both admission reversals remain meaningful after canonical seeding and the rename.
+
+`repair5-final-scoped.diff` contains only the three permitted changed sources. `repair5-final-git-status.txt` records those unstaged changes and root's preserved dirty handoff. No other source, manifest, generated, record or tooling changes were made.
+
+Platform limits and remaining root proof
+
+Real runtime proof here is Linux only. It uses actual app-owned Actors, pinned images, native cwd objects, complete managed inventories, authority reopen and trusted reconciliation. No crash, completed browser game or full-app verification is claimed.
+
+The Windows GNU wrapper compiled and linted all-target test code, including native Windows tests and the corrected canonical fixtures. It did not execute Windows tests. Actual parent/ancestor no-delete behavior, normal native Windows cwd launch and Windows fixture assertions remain pending hosted runtime. macOS native movement/materialization tests were added but not compiled or run locally. No macOS runtime success or substitute-cwd safety is claimed from Linux.
+
+Root still owns hosted Windows/macOS runtime, full pre-review, cumulative R6 closure, path-scoped commit and release. These are named platform proof limits, not an alternate mechanism or silent widening of ownership.
+````
+
+The changed consumer premise is actual pathname cwd selection after descriptor-derived identity capture. No source changes occurred between cumulative round5 and this focused first judgment. cwd1 was APPROVED with explicit Windows ancestor-sharing and macOS runtime limits. d-20261016-12 records the adopted mechanism. CR12 implementation and proof closure remain pending, not claimed by this private judgment. This does not create a fifth inherited plan round or reopen its fixed mandate. Root delegated the cohesive native repair to the same sensitive writer, including CR13–15. Root fixed CR16 by qualifying the pre-clippy hash snapshot while preserving all raw reports.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### mechanism-cwd-handoff.md
+
+````text
+# CR12 native cwd handoff correction
+
+Private implementation mechanism candidate cwd1 at committed snapshot a88febeb1028854420bbf974f8bbdb4f4056f6e6. Frozen O1–O4 and d-20261016-11 remain unchanged. This is a focused implementation check after cumulative round5, not a new inherited-plan round. No source changes since that review.
+
+Defect and evidence
+
+Correctness and engine-protocol independently identify one gap. mod.rs:7870 records resolved.parent_identity in durable node evidence. engine_executable:6743 then retains a pathname as working_directory, and process.rs:3766 calls current_dir on it during later spawn. A completed parent replacement after resolution can start the pinned Linux image in a different managed tree. Its identity is absent from the recorded image/cwd node set, so the tree can be eligible after interruption even while the child uses relative data. The ordinary-operation threat includes a single completed substitution, without continuous malicious mutation. Source-derived scenario, no runtime reproduction yet. Existing cwd regression starts before moving its directory, so it misses this handoff.
+
+Required shared contract
+
+The working directory used for launch must be the same validated directory object whose identity was durably recorded before handoff. It stays owned by the EngineExecutable through the existing child cleanup owner until confirmed reaping. A stale pathname must never substitute another cwd. Do not broaden cwd to recursive ambient ownership or reintroduce blanket stale-node retention. Keep canonical authorization, image/resource sealing, spawn admission, physical ownership, all failure cleanup and deadlines.
+
+Candidate
+
+Carry the already validated retained parent descriptor from ResolvedPath into EngineExecutable rather than dropping it. Reuse parent() and a fallible clone or a private transfer accessor, never reopen a pathname to establish identity. The same object supplied parent_identity at the durable use boundary.
+
+On Unix, set cwd by fchdir of this retained descriptor in the fork child immediately before exec, using the existing command pre_exec boundary. fchdir and the existing Linux fcntl loop are async-signal-safe. Do not change the parent's process cwd or use a global cwd lock. Unix spawn must not first depend on pathname current_dir, because a moved original directory should remain usable by descriptor. Linux continues inheriting only its existing image/resources descriptors, not a new ambient capability. macOS keeps existing managed image/file-resource materialization and uses the same Unix cwd object binding.
+
+On Windows, retain the validated parent handle that was opened by open_windows_nofollow without FILE_SHARE_DELETE, alongside the existing sealed executable handle and launch pathname. Keep it through CreateProcess and the same owner lifetime. The held no-delete parent prevents its completed replacement while path-based CreateProcess establishes cwd. Verify this against actual Windows runtime tests, including parent and containing-directory rename attempts. If the existing handle sharing cannot seal the pathname binding, the candidate needs a narrowly stronger existing native open boundary before acceptance, not a check-then-spawn pathname race or an invented runtime claim. Do not add a registry or process-global lock.
+
+Private field/accessor shape is executor-owned. Test fixtures must supply a real held cwd boundary without breaking deliberate spawn-failure cases. Existing canonical path authorization is still performed. Do not bypass workspace_entry_path or widen operation/capability scope.
+
+Proof obligations
+
+Add a real Linux child regression that resolves an executable and records its cwd, performs the reported completed replacement before spawn, then starts the actual app-owned Actor. Original cwd data is readable through relative access, replacement data is never consumed. Where useful restore exact managed-tree locator, root/parent/tree/inventory identities before trusted reopen to prove replacement tree remains collectible without affecting original child data. No separate directory-resource lease may mask cwd evidence. Source-only remove only the launch binding correction with all new tests unchanged, compiled behavioral red, exact restore green. Parent reaps the child before propagating every captured failure. Preserve existing removed-image cwd, historical recursive resource and three-session witnesses.
+
+Unix/macOS tests prove original object or explicit safe refusal after movement, never substitute a different cwd. Windows tests attempt parent and ancestor replacement while EngineExecutable is held, assert no successful substituted launch and retain a normal native cwd positive control. Hosted rust-windows-test and rust-macos-test provide actual runtime proof, local Windows GNU compilation alone is insufficient. No claim of runtime approval before those jobs.
+
+Also address independent round5 corrections in the same source package after mechanism approval: CR13 rename only the aggregate snapshot/counter to admission-unit names while keeping the genuinely unique_registry_id_count helper named correctly, preserve arithmetic/bounds. CR14 seed the capacity fixture using actual canonical authority-issued bindings, retain production overflow and usable reuse plus both guard reversals. CR15 derive expected image/cwd keys from validated registered binding rather than raw Windows temp spelling. Root handles CR16 records qualification.
+
+Reversal path
+
+If descriptor cwd is unavailable, return a typed pre-spawn error with cleanup, never silently fall back to a substituted pathname. If future evidence requires path-based semantics, it must include an equivalent object-binding proof and child lifetime preservation.
+````
+
+#### probe-cwd-handoff.txt
+
+````text
+No concrete plan defect found in cwd1.
+
+CR12 correction-check: the proposed mechanism addresses the producer/consumer mismatch. `ResolvedPath` retains the parent used for durable identity capture (`resolved.rs:149`, `mod.rs:7870`). Carrying that descriptor into `EngineExecutable` and using Unix `fchdir` binds launch to the recorded object. Existing `ChildOwnership` retains the executable until confirmed reaping (`process.rs:778–801`). CR12 implementation closure remains pending.
+
+Named platform limitation (confidence: 100): Windows resolution opens the executable’s parent without delete sharing (`resolved.rs:1035`, `mod.rs:3962`), but source inspection does not establish ancestor-replacement behavior. cwd1:19 and :27 correctly require native Windows rename/substitution tests and a positive launch control before runtime acceptance. macOS runtime behavior likewise remains unverified.
+
+The replacement-before-spawn regression and source-only reversal required by cwd1:25 would exercise the missed handoff. No files changed or tests run. Review used the code author’s model family in a separate session.
+
+VERDICT: APPROVED
+````
+
+REVIEWED_THROUGH a88febeb1028854420bbf974f8bbdb4f4056f6e6. All eleven required lenses completed through the selected executor. Six adopted witnesses, four new unique corrections and continued CR12. Rounds so far r1=6 r2=1 r3=3 r4=2 r5=6. The separate precommit integration check added CR11/CR12 without replacing inherited plan rounds. No Skip or Defer. Elapsed wall 334.565 seconds.
+
+CR10 and CR11 CLOSED with explicit reviewer evidence. CR9 remains open only for the Windows fixture correction. CR12 remains open for actual cwd launch binding, witnessed by correctness and engine-protocol as one cause, plus its Windows regression key. Adopt Fix for all six witnesses. CR13 describes admission-unit naming in the shared counter and snapshot. CR14 describes raw Windows keys in the capacity fixture. CR15 describes raw Windows keys in the image/cwd assertion. CR16 qualifies the stale hash-equality statement as the pre-clippy snapshot. Code-quality labels its naming witness blocker, root treats this as a naming correction while preserving raw severity. All other prior closures stand, subject to affected-mechanism review. Sixteen unique corrections total. The actual cwd uses pathname at spawn despite descriptor-derived evidence, so root pauses patches for a fresh focused mechanism judgment.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### Round 5 correctness
+
+````text
+CR9 CLOSED — Admission uses the pre-mutation baseline. The capacity regression checks refusal at 4,096 units and usable reuse of an existing binding (confidence: 98).
+
+CR10 CLOSED — Durable originating-session bindings survive reopen and attachment retirement. Publication preserves those sessions, and shutdown clears only its own evidence (confidence: 97).
+
+CR11 CLOSED — Startup eligibility reevaluates unresolved durable uses through the shared relation. The ancestor-substitution regression exercises this independently of publication markers (confidence: 97).
+
+CR12 NOT CLOSED — Recorded cwd identity can disagree with the directory actually handed to the child.
+
+[blocker] src-tauri/src/infra/path_authority/mod.rs:7870 — The new cwd context records the retained parent’s identity, but `EngineExecutable` retains only its pathname and launch later calls `.current_dir(working_directory)` (`engine/process.rs:3766`). On Linux, resolve `/R/X/engine`, rename directory X away, publish a new managed tree at `/R/X`, then resume launch. The held executable runs with the **new tree** as cwd, while durable evidence identifies the old directory and image. Neither identity belongs to the new inventory, so the new object-only predicate returns Disjoint (`catalog_install.rs:271`). After an interrupted session and trusted restart, collection can delete that unchanged tree while the surviving child uses its relative data. This requires one completed replacement before spawn, not continuous mutation. The captured context and actual launch must agree (confidence: 93).
+
+Limitations: the replacement-before-spawn case is source-derived, not reproduced. Windows/macOS runtime branches were not executed. No tests or writes ran. Review shares the code’s model family.
+
+VERDICT: REVISE
+````
+
+#### Round 5 root-cause
+
+````text
+CR9 CLOSED — `catalog_install.rs:537` captures admission before mutation and counts bindings plus session markers. Both guard and baseline reversals admit 4,098 units and fail behaviorally. Restored code refuses growth while existing-binding reuse succeeds.
+
+CR10 CLOSED — `mod.rs:8804` persists unresolved uses independently of install records and authority retirement. Publication preserves originating sessions, and shutdown clears only its own evidence atomically. The three-session real-child regression fails without serialization and passes after restoration.
+
+CR11 CLOSED — `catalog_install.rs:768` reevaluates durable uses during cleanup eligibility. The completed ancestor-substitution regression loses child-readable data when this lookup is removed and passes after restoration.
+
+CR12 CLOSED — `catalog_install.rs:242` distinguishes object-only uses from recursive resources. `mod.rs:7863` captures executable image and held-parent cwd identities together before handoff. Stale-node, cwd and terminal-directory reversals fail behaviorally and pass after restoration. Inventory validation still preserves added or modified content.
+
+No new root-cause defect or reintroduced prior fix found. The impacted alias, historical-binding, cleaning-refusal and canonical-spelling protections remain intact.
+
+Named limitation (confidence: 100): runtime evidence is Linux-only. Reopen models session boundaries without an actual crash. Hosted platform runtime and real-app verification remain pending. This read-only review examined saved proof without rerunning tests. Review and implementation share the Codex model family, and plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 tests
+
+````text
+CR9 CLOSED — `catalog_install.rs:2400` asserts production overflow refusal at 4096 and reads bytes through an existing binding. Removing either the growth guard or admission baseline produces behavioral failure at 4098.
+
+CR10 CLOSED — `catalog_install.rs:1731` crosses zero-install handoff, authority retirement, B’s successful shutdown and C’s trusted startup. Removing use serialization makes the real child’s data assertion fail.
+
+CR11 CLOSED — `catalog_install.rs:1827` isolates post-publication reachability while preserving deletion identities and inventory. Removing eligibility’s durable-use lookup makes the child read empty data.
+
+CR12 CLOSED — `catalog_install.rs:1924` asserts unrelated-tree reclamation despite stale file uses. Separate tests cover actual cwd retention, terminal-directory recursion, cleaning refusal and changed-inventory preservation. Saved source reversals fail the corresponding assertions.
+
+No new findings. Tests are reachable through `catalog_install` and the full backend gate.
+
+Limitations: reviewed source and saved logs without executing checks. Runtime witnesses are Linux-only, reopen models sessions without an actual crash, and completed-game, real-app and final release proof remain pending (confidence: 100). Review shares the implementation’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 error-handling
+
+````text
+CR9 CLOSED — `catalog_install.rs:2399` exercises actual capacity refusal with typed `ResourceLimit` and successful existing-binding reuse. Examined reversal logs show overflow at 4,098 when either admission protection is removed.
+
+CR10 CLOSED — `catalog_install.rs:537,593,731` atomically persists originating-session evidence, refuses failed or uncertain handoff, retries uncertainty and clears only the current session. Zero-install fault tests and the three-session child regression cover the missing boundary.
+
+CR11 CLOSED — `catalog_install.rs:768` reevaluates unresolved durable uses during eligibility. Inspection uncertainty conservatively retains trees. The examined reversal loses child-readable data after completed ancestor substitution.
+
+CR12 CLOSED — `catalog_install.rs:260` distinguishes object-only bindings from recursive resources. `mod.rs:7863` captures executable and held-parent cwd contexts in one durable candidate. Tests cover stale-node exclusion, cwd protection, atomic persistence refusal and independent inventory preservation.
+
+No new error-handling defects found. Cleanup failures retain retry state, log the install id and cause, and return an error from the helper. The startup caller intentionally preserves already successful owner reconciliation under d-20261016-04.
+
+Limitations: read-only source and supplied evidence review, with no tests executed here. Runtime evidence is Linux-only and models session transitions by reopening authority. Actual crashes, Windows/macOS runtime and full-app behavior remain unverified by this review (confidence: 100). Review and implementation share the Codex model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 minimalism
+
+````text
+CR9 CLOSED — The capacity test exercises production refusal at 4096 and usable existing-binding reuse. Setup uses one bounded candidate through existing commit machinery (`catalog_install.rs:2393`). Confidence: 98.
+
+CR10 CLOSED — Durable uses share the existing registry, admission, atomic commit and session-clear paths. The three-session regression crosses prepublication handoff and authority retirement (`catalog_install.rs:1750`). Confidence: 96.
+
+CR11 CLOSED — Startup eligibility consults durable uses through the same `reaches` relation used by publication and handoff (`catalog_install.rs:767`). No parallel collector mechanism was added. Confidence: 97.
+
+CR12 CLOSED — Object membership, recursive resource scope and executable cwd contexts feed that shared relation and one atomic handoff candidate (`catalog_install.rs:246`, `mod.rs:7863`). Confidence: 96.
+
+No retained bloat or duplication findings. The added `catalog_install.rs` owns a cohesive lifecycle domain. Inlining it would relocate the code without reducing required behavior. I found no substantial removable portion preserving O1–O4.
+
+Limitations: read-only source and supplied-evidence review, with no independent test execution or platform runtime verification. Closure statements are limited to this lens. Review used the code author’s model family, without family separation. Confidence: 100.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 code-quality
+
+````text
+CR9 CLOSED within this lens — shared admission and usable reuse are explicit in `catalog_install.rs:2400`.
+
+CR10 CLOSED within this lens — durable originating-session ownership and atomic clearing are documented and exercised at `catalog_install.rs:537`, `:731` and `:1731`.
+
+CR11 CLOSED within this lens — collection explicitly reevaluates durable uses, with the ancestor-substitution regression at `catalog_install.rs:1827`.
+
+CR12 CLOSED within this lens — object membership, recursive resources and separate image/cwd contexts are distinguishable in the producer and shared relation.
+
+[blocker] src-tauri/src/infra/path_authority/mod.rs:9275 — `registry_unique_id_count` now returns admission units rather than unique IDs. Two bindings from one originating session contribute four units because the session is counted separately for each binding. The `RegistryAdmissionSnapshot.unique_ids` field repeats this misleading description at the growth guard. Rename both to describe admission units, preserving the counting behavior. (confidence: 97)
+
+Limitation — read-only source review, no runtime verification performed. Author and reviewer share the Codex model family, so family separation is absent (confidence: 100).
+
+VERDICT: REVISE
+````
+
+#### Round 5 engine-protocol
+
+````text
+CR9 CLOSED — `catalog_install.rs:2400` exercises actual shared-capacity refusal through `engine_resource`, then successfully reads an existing durable binding at capacity. Admission uses the premutation baseline at `:546`.
+
+CR10 CLOSED — use evidence persists independently of installs, preserves originating sessions across reopen and authority retirement, and projects those sessions during publication. The three-session child regression at `catalog_install.rs:1731` crosses the required boundary. Shutdown clears only its own evidence after successful teardown.
+
+CR11 CLOSED — collection reevaluates unresolved durable bindings at `catalog_install.rs:768`. The completed-ancestor-substitution regression at `:1831` covers relationships formed after publication without changing the recorded tree or inventory.
+
+CR12 NOT CLOSED — object-only classification and recursive terminal-directory capture are repaired, but the recorded cwd identity need not identify the directory actually handed to the child.
+
+[blocker] src-tauri/src/infra/path_authority/mod.rs:7870 — cwd protection records the resolved parent descriptor’s identity, while `EngineExecutable` retains only its pathname and `engine/process.rs:3766` launches with `.current_dir(working_directory)`. Concrete Linux interleaving: publish an unowned managed tree T, resolve an independent engine in directory A, then move A aside and temporarily move T onto A’s pathname before spawn. The engine executes A’s pinned image but starts inside T. Restore both directories after spawn, then interrupt the application while that child survives. On restart, durable image/cwd evidence identifies A, so T is classified Disjoint and its unchanged inventory permits deletion while the child still uses T for relative data. The cwd regression starts the child before moving its directory and does not cover this handoff mismatch. This violates O2’s live-child protection despite durable evidence being written successfully (confidence: 94).
+
+Limitations: source review only, with no tests or processes run and no files changed. The interleaving above is source-derived, not reproduced. Windows/macOS runtime and completed GameManager/browser-game behavior remain unverified.
+
+VERDICT: REVISE
+````
+
+#### Round 5 ipc-contract
+
+````text
+CR6 remains CLOSED within this lens — cleaning refusal still requires confirmed membership in `catalog_install.rs:611`. Uncertain relationships retain protection without refusing unrelated engine resolution.
+
+No IPC-contract defects found. Rust command signatures, generated invoke keys and renderer callers agree. Progress remains registered, correlated and percentage-based, with listener cleanup. No new renderer parameters, events, commands or capability scopes were introduced.
+
+CR9–CR12 concern native admission and lifetime semantics. This lens found no contract regression from their corrections and does not independently certify their broader closure.
+
+Limitations: read-only source review, no tests or runtime verification performed. No files changed. Reviewer and code share the same model family in separate sessions.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 tauri-security
+
+````text
+CR9 CLOSED — `src-tauri/src/infra/path_authority/catalog_install.rs:545` captures admission before mutation. The capacity regression at `:2400` checks real overflow refusal and usable existing-binding reuse. Inspected reversal logs show admission at 4,098 when the baseline is removed, followed by restored green (confidence: 98).
+
+CR10 CLOSED — `src-tauri/src/infra/path_authority/mod.rs:8804` serializes unresolved bound uses independently of install records. Publication preserves originating sessions, and `catalog_install.rs:731` clears only the current session through the successful-shutdown boundary. The three-session reversal loses child-visible data, while restoration passes (confidence: 97).
+
+CR11 CLOSED — `src-tauri/src/infra/path_authority/catalog_install.rs:768` reevaluates durable uses during collection eligibility. The completed ancestor-substitution regression preserves exact cleanup identities and inventory, demonstrating why publication markers alone were insufficient. Inspected reversal and restoration logs confirm the correction (confidence: 97).
+
+CR12 CLOSED — `src-tauri/src/infra/path_authority/catalog_install.rs:257` preserves physical and inventory identity membership while excluding unrelated stale nodes. `mod.rs:7836` derives directory recursion from the terminal descriptor, and `:7863` records executable cwd separately in the same durable candidate. Inspected node and cwd reversals fail behaviorally and pass after restoration (confidence: 96).
+
+Impacted CR4/CR6–CR8 closures remain intact. Cleaning refusal requires confirmed membership, uncertainty retains protection, and deletion independently checks root, tree and complete inventory before descriptor-relative removal.
+
+No new defects found within this lens.
+
+Limitations: read-only source and supplied evidence review, with no tests rerun. Runtime evidence is Linux-only and models sessions through reopen, without an actual crash. Continuous hostile mutation between validation and unlink remains outside the frozen threat model. No refresh-token flow is introduced. Review used the code author’s model family in a separate session, with no family separation. No files changed.
+
+VERDICT: APPROVED
+````
+
+#### Round 5 platform-semantics
+
+````text
+CR9 NOT CLOSED — the capacity fixture uses raw path keys that differ from Windows resolution keys.
+
+CR10 CLOSED — durable bindings retain originating sessions across reload, publication and own-session clearing. The three-session child witness is Linux-only.
+
+CR11 CLOSED — startup eligibility reevaluates durable uses through the shared relation at `catalog_install.rs:768`. The substitution witness is Linux-only.
+
+CR12 NOT CLOSED — production captures image and cwd atomically, but its cross-platform regression has a Windows path-key mismatch.
+
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:2425 — On Windows, the capacity fixture seeds bindings using raw tempdir paths, while production resource resolution returns canonical, verbatim-prefixed paths. Because the key includes pathname and identity, reuse of `existing` creates another binding at capacity and returns `ResourceLimit`, making the unwrap at line 2450 fail. Seed the fixture from authority-issued canonical bindings. (confidence: 99)
+
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:2102 — On Windows, this lookup reconstructs image and cwd keys from the raw tempdir spelling. Registration canonicalizes their parent, and resolution persists that canonical spelling. Equal identities do not make these tuple keys equal, so the regression panics on a missing map entry. Derive expected keys from the validated registered binding. (confidence: 99)
+
+Limitations: no checks ran during this read-only review. Recorded final pre-review reports Windows GNU compilation/clippy passing, but that cannot detect these runtime failures. No non-Linux Unix source-probe result was supplied. Windows and macOS runtime proof remains pending in `rust-windows-test` and `rust-macos-test`, with `rust-platform` providing compile/lint evidence. Review used the code’s model family without family separation.
+
+VERDICT: REVISE
+````
+
+#### Round 5 records
+
+````text
+[should-fix] tasks/handoffs/2026-10-16-catalog-engine-retention-review.md:2415 — The statement that final source hashes match the worker restoration manifest is stale after the disclosed clippy cleanup. At a88febeb, catalog_install.rs hashes to `8cc5b680…4807ddb8`, while `phase4-context1-platform-final-hashes.json` records `ef7eca0e…f9e1f8d9`. Qualify this equality as applying to the pre-clippy root-proof snapshot. The retained test counts and seven reversal results check out (confidence: 99).
+
+VERDICT: REVISE
+````
+
+
 P4 final pre-review gate-p4-prereview.oIXa98 returned status 0, including Windows GNU compilation and clippy. The first attempt gate-p4-prereview.gxsSRd returned 101 for redundant_pattern_matching in one new legacy test. The same worker changed only that assertion to is_err, preserving production bytes and test semantics, then passed its targeted test, formatting and diff checks. The earlier source-only reversals used the unchanged equivalent assertion form. The final catalog test-suffix hash is cbd0a0b2c12135f6a48068a3fb16e70eb245f59aa1f3f94e77d43128c4748744, so the earlier whole-test suffix restoration manifest describes the pre-clippy snapshot rather than the committed test bytes. No gate failure is discarded.
 
 #### P4 exact clippy cleanup report
@@ -2412,7 +2792,7 @@ Final test-suffix SHA256:
 
 P4 addresses CR9 and CR10 from cumulative round 4, then CR11 and CR12 from the focused precommit integration check. The latter two are separate private implementation findings, not new rounds in the inherited frozen-plan history. d-20261016-10 and d-20261016-11 record the approved contracts. No Skip or Defer. Cumulative reviewer closure remains pending.
 
-Root inspected both allowed-source diffs and the execution trace. Native contexts enter one durable candidate, startup eligibility reads durable uses, and independent exact-locator inventory checks remain the deletion authority. Root independently passed 72 catalog, 284 authority, 214 filesystem with one existing ignore, 39 shutdown and one inherited-directory child test, plus formatting and global diff checks. Canonical gate-p4-proof.FrFDmF has completion status 0. The final allowed-source hashes match the worker restoration manifest.
+Root inspected both allowed-source diffs and the execution trace. Native contexts enter one durable candidate, startup eligibility reads durable uses, and independent exact-locator inventory checks remain the deletion authority. Root independently passed 72 catalog, 284 authority, 214 filesystem with one existing ignore, 39 shutdown and one inherited-directory child test, plus formatting and global diff checks. Canonical gate-p4-proof.FrFDmF has completion status 0. The allowed-source hashes at that pre-clippy root-proof snapshot match the worker restoration manifest. The equivalent assertion cleanup above changed the later test bytes, with its separate final test-suffix hash recorded explicitly.
 
 Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
 
