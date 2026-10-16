@@ -6924,133 +6924,8 @@ This is a diagnostic counterexample, not a fix-revert pair. No production repair
 
 #### registration-boundary-probe-test.patch
 
-```text
-diff --git a/src-tauri/src/infra/path_authority/catalog_install.rs b/src-tauri/src/infra/path_authority/catalog_install.rs
-index 5109fde6..08e8af02 100644
---- a/src-tauri/src/infra/path_authority/catalog_install.rs
-+++ b/src-tauri/src/infra/path_authority/catalog_install.rs
-@@ -1366,6 +1366,121 @@ mod tests {
-         assert_eq!(target_bytes.unwrap(), b"unconfirmed file");
-     }
- 
-+    #[cfg(unix)]
-+    #[test]
-+    fn catalog_install_r13_registration_boundary_pending_alias_probe() {
-+        use std::{cell::Cell, io::Read, rc::Rc};
-+
-+        struct HookCleanup;
-+        impl Drop for HookCleanup {
-+            fn drop(&mut self) {
-+                RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());
-+            }
-+        }
-+
-+        let mut control = Fixture::new();
-+        control.pending_install("managed");
-+        fs::rename(control.root.join("managed"), control.root.join("original")).unwrap();
-+        fs::write(control.root.join("managed"), b"unconfirmed file").unwrap();
-+        fs::hard_link(control.root.join("managed"), control.root.join("bad-alias")).unwrap();
-+        fs::write(control.root.join("independent"), b"good independent file").unwrap();
-+        let good_control = control
-+            .authority
-+            .register_installed_engine(&control.handle, "independent");
-+        let bad_control = control
-+            .authority
-+            .register_installed_engine(&control.handle, "bad-alias");
-+        let Fixture {
-+            temp, authority, ..
-+        } = control;
-+        let control_path = temp.path().to_path_buf();
-+        drop(authority);
-+        temp.close().unwrap();
-+
-+        let mut f = Fixture::new();
-+        f.pending_install("managed");
-+        fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
-+        fs::write(f.root.join("managed"), b"unconfirmed file").unwrap();
-+        let staged = f.root.join("staged-alias");
-+        let target = f.root.join("alias-engine");
-+        fs::hard_link(f.root.join("managed"), &staged).unwrap();
-+        fs::write(&target, b"good original file").unwrap();
-+        fs::hard_link(&target, f.root.join("good-original")).unwrap();
-+        let bad_identity = opened_file_identity(&fs::File::open(&staged).unwrap()).unwrap();
-+        let good_identity = opened_file_identity(&fs::File::open(&target).unwrap()).unwrap();
-+        let swaps = Rc::new(Cell::new(0));
-+        let hook_swaps = swaps.clone();
-+        let hook_cleanup = HookCleanup;
-+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
-+            assert!(slot
-+                .replace(Some(Box::new(move || {
-+                    fs::rename(staged, target).unwrap();
-+                    hook_swaps.set(hook_swaps.get() + 1);
-+                })))
-+                .is_none());
-+        });
-+        let result = f
-+            .authority
-+            .register_installed_engine(&f.handle, "alias-engine");
-+        drop(hook_cleanup);
-+        let registered_identity = result.as_ref().ok().map(|handle| {
-+            f.authority.persistent[&handle.path_ref().id]
-+                .stored
-+                .identity
-+                .clone()
-+        });
-+        let resolved_observation = result.as_ref().ok().map(|handle| {
-+            f.authority
-+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
-+                .map(|resolved| {
-+                    let file = resolved.file().unwrap();
-+                    let identity = opened_file_identity(file).unwrap();
-+                    let mut bytes = Vec::new();
-+                    (&mut &*file).read_to_end(&mut bytes).unwrap();
-+                    (identity, bytes)
-+                })
-+        });
-+        let records = serde_json::to_value(&f.authority.catalog_installs).unwrap();
-+        let durable_registry = fs::read_to_string(f.temp.path().join("registry.json")).unwrap();
-+        let pending = f.authority.catalog_installs.len() == 1
-+            && f.authority
-+                .catalog_installs
-+                .values()
-+                .all(|record| record.publication == Some(Publication::Pending));
-+        let original_engine = fs::read(f.root.join("original/engine")).unwrap();
-+        let original_network = fs::read(f.root.join("original/data/network")).unwrap();
-+        let good_bytes = fs::read(f.root.join("good-original")).unwrap();
-+        let managed_bytes = fs::read(f.root.join("managed")).unwrap();
-+        let alias_bytes = fs::read(f.root.join("alias-engine")).unwrap();
-+        let Fixture {
-+            temp, authority, ..
-+        } = f;
-+        let primary_path = temp.path().to_path_buf();
-+        drop(authority);
-+        temp.close().unwrap();
-+        let hook_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none());
-+        eprintln!(
-+            "REGISTRATION_BOUNDARY_NATIVE_OBSERVATION: controls good={good_control:?} bad={bad_control:?}, result={result:?}, swaps={}, good_identity={good_identity:?}, bad_identity={bad_identity:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}, pending={pending}, records={records}, original_engine={original_engine:?}, original_network={original_network:?}, good_bytes={good_bytes:?}, managed_bytes={managed_bytes:?}, alias_bytes={alias_bytes:?}, hook_empty={hook_empty}, control_removed={}, primary_removed={}, durable_registry={durable_registry}",
-+            swaps.get(),
-+            !control_path.exists(),
-+            !primary_path.exists(),
-+        );
-+        assert!(good_control.is_ok(), "independent control: {good_control:?}");
-+        assert!(matches!(bad_control, Err(Error::Conflict(_))), "bad alias control: {bad_control:?}");
-+        assert_eq!(swaps.get(), 1);
-+        assert!(hook_empty && !control_path.exists() && !primary_path.exists());
-+        assert!(pending);
-+        assert_eq!(original_engine, b"managed engine");
-+        assert_eq!(original_network, b"managed network");
-+        assert_eq!(good_bytes, b"good original file");
-+        assert_eq!(managed_bytes, b"unconfirmed file");
-+        assert_eq!(alias_bytes, b"unconfirmed file");
-+        assert!(
-+            matches!(result, Err(Error::Conflict(_))),
-+            "REGISTRATION_BOUNDARY_PENDING_ALIAS: automatic registration must refuse the pending native alias observed after its preguard, actual={result:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}"
-+        );
-+    }
-+
-     #[cfg(unix)]
-     #[test]
-     fn catalog_install_r12_unavailable_native_observation_is_not_absent() {
+```json
+{"artifact": "registration-boundary-probe-test.patch", "raw": "diff --git a/src-tauri/src/infra/path_authority/catalog_install.rs b/src-tauri/src/infra/path_authority/catalog_install.rs\nindex 5109fde6..08e8af02 100644\n--- a/src-tauri/src/infra/path_authority/catalog_install.rs\n+++ b/src-tauri/src/infra/path_authority/catalog_install.rs\n@@ -1366,6 +1366,121 @@ mod tests {\n         assert_eq!(target_bytes.unwrap(), b\"unconfirmed file\");\n     }\n \n+    #[cfg(unix)]\n+    #[test]\n+    fn catalog_install_r13_registration_boundary_pending_alias_probe() {\n+        use std::{cell::Cell, io::Read, rc::Rc};\n+\n+        struct HookCleanup;\n+        impl Drop for HookCleanup {\n+            fn drop(&mut self) {\n+                RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());\n+            }\n+        }\n+\n+        let mut control = Fixture::new();\n+        control.pending_install(\"managed\");\n+        fs::rename(control.root.join(\"managed\"), control.root.join(\"original\")).unwrap();\n+        fs::write(control.root.join(\"managed\"), b\"unconfirmed file\").unwrap();\n+        fs::hard_link(control.root.join(\"managed\"), control.root.join(\"bad-alias\")).unwrap();\n+        fs::write(control.root.join(\"independent\"), b\"good independent file\").unwrap();\n+        let good_control = control\n+            .authority\n+            .register_installed_engine(&control.handle, \"independent\");\n+        let bad_control = control\n+            .authority\n+            .register_installed_engine(&control.handle, \"bad-alias\");\n+        let Fixture {\n+            temp, authority, ..\n+        } = control;\n+        let control_path = temp.path().to_path_buf();\n+        drop(authority);\n+        temp.close().unwrap();\n+\n+        let mut f = Fixture::new();\n+        f.pending_install(\"managed\");\n+        fs::rename(f.root.join(\"managed\"), f.root.join(\"original\")).unwrap();\n+        fs::write(f.root.join(\"managed\"), b\"unconfirmed file\").unwrap();\n+        let staged = f.root.join(\"staged-alias\");\n+        let target = f.root.join(\"alias-engine\");\n+        fs::hard_link(f.root.join(\"managed\"), &staged).unwrap();\n+        fs::write(&target, b\"good original file\").unwrap();\n+        fs::hard_link(&target, f.root.join(\"good-original\")).unwrap();\n+        let bad_identity = opened_file_identity(&fs::File::open(&staged).unwrap()).unwrap();\n+        let good_identity = opened_file_identity(&fs::File::open(&target).unwrap()).unwrap();\n+        let swaps = Rc::new(Cell::new(0));\n+        let hook_swaps = swaps.clone();\n+        let hook_cleanup = HookCleanup;\n+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {\n+            assert!(slot\n+                .replace(Some(Box::new(move || {\n+                    fs::rename(staged, target).unwrap();\n+                    hook_swaps.set(hook_swaps.get() + 1);\n+                })))\n+                .is_none());\n+        });\n+        let result = f\n+            .authority\n+            .register_installed_engine(&f.handle, \"alias-engine\");\n+        drop(hook_cleanup);\n+        let registered_identity = result.as_ref().ok().map(|handle| {\n+            f.authority.persistent[&handle.path_ref().id]\n+                .stored\n+                .identity\n+                .clone()\n+        });\n+        let resolved_observation = result.as_ref().ok().map(|handle| {\n+            f.authority\n+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])\n+                .map(|resolved| {\n+                    let file = resolved.file().unwrap();\n+                    let identity = opened_file_identity(file).unwrap();\n+                    let mut bytes = Vec::new();\n+                    (&mut &*file).read_to_end(&mut bytes).unwrap();\n+                    (identity, bytes)\n+                })\n+        });\n+        let records = serde_json::to_value(&f.authority.catalog_installs).unwrap();\n+        let durable_registry = fs::read_to_string(f.temp.path().join(\"registry.json\")).unwrap();\n+        let pending = f.authority.catalog_installs.len() == 1\n+            && f.authority\n+                .catalog_installs\n+                .values()\n+                .all(|record| record.publication == Some(Publication::Pending));\n+        let original_engine = fs::read(f.root.join(\"original/engine\")).unwrap();\n+        let original_network = fs::read(f.root.join(\"original/data/network\")).unwrap();\n+        let good_bytes = fs::read(f.root.join(\"good-original\")).unwrap();\n+        let managed_bytes = fs::read(f.root.join(\"managed\")).unwrap();\n+        let alias_bytes = fs::read(f.root.join(\"alias-engine\")).unwrap();\n+        let Fixture {\n+            temp, authority, ..\n+        } = f;\n+        let primary_path = temp.path().to_path_buf();\n+        drop(authority);\n+        temp.close().unwrap();\n+        let hook_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none());\n+        eprintln!(\n+            \"REGISTRATION_BOUNDARY_NATIVE_OBSERVATION: controls good={good_control:?} bad={bad_control:?}, result={result:?}, swaps={}, good_identity={good_identity:?}, bad_identity={bad_identity:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}, pending={pending}, records={records}, original_engine={original_engine:?}, original_network={original_network:?}, good_bytes={good_bytes:?}, managed_bytes={managed_bytes:?}, alias_bytes={alias_bytes:?}, hook_empty={hook_empty}, control_removed={}, primary_removed={}, durable_registry={durable_registry}\",\n+            swaps.get(),\n+            !control_path.exists(),\n+            !primary_path.exists(),\n+        );\n+        assert!(good_control.is_ok(), \"independent control: {good_control:?}\");\n+        assert!(matches!(bad_control, Err(Error::Conflict(_))), \"bad alias control: {bad_control:?}\");\n+        assert_eq!(swaps.get(), 1);\n+        assert!(hook_empty && !control_path.exists() && !primary_path.exists());\n+        assert!(pending);\n+        assert_eq!(original_engine, b\"managed engine\");\n+        assert_eq!(original_network, b\"managed network\");\n+        assert_eq!(good_bytes, b\"good original file\");\n+        assert_eq!(managed_bytes, b\"unconfirmed file\");\n+        assert_eq!(alias_bytes, b\"unconfirmed file\");\n+        assert!(\n+            matches!(result, Err(Error::Conflict(_))),\n+            \"REGISTRATION_BOUNDARY_PENDING_ALIAS: automatic registration must refuse the pending native alias observed after its preguard, actual={result:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}\"\n+        );\n+    }\n+\n     #[cfg(unix)]\n     #[test]\n     fn catalog_install_r12_unavailable_native_observation_is_not_absent() {\n"}
 ```
 
 #### registration-boundary-probe-test-status.json
@@ -7165,17 +7040,8 @@ VERDICT: REVISE
 
 #### Recovery registration-r2.diff
 
-```text
---- /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r1.md
-+++ /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r2.md
-@@ -18,7 +18,7 @@
- 
- ## O2 — proof and release
- 
--Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
-+Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Additionally, with a real pending wrong-kind catalog record present, resolve an independent good executable and then replace its locator with a hard link to that unconfirmed target before the new confirmation step. Registration must persist the held good identity successfully and later use must refuse the replacement. This control must fail if the confirmation substitutes current pathname identity for the captured descriptor identity. Reuse the existing post-resolution hook at the handoff boundary rather than a generic race harness. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
- 
- ## Files and ownership
+```json
+{"artifact": "registration-r2.diff", "raw": "--- /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r1.md\n+++ /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r2.md\n@@ -18,7 +18,7 @@\n \n ## O2 \u2014 proof and release\n \n-Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22\u201327 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.\n+Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Additionally, with a real pending wrong-kind catalog record present, resolve an independent good executable and then replace its locator with a hard link to that unconfirmed target before the new confirmation step. Registration must persist the held good identity successfully and later use must refuse the replacement. This control must fail if the confirmation substitutes current pathname identity for the captured descriptor identity. Reuse the existing post-resolution hook at the handoff boundary rather than a generic race harness. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22\u201327 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.\n \n ## Files and ownership\n \n"}
 ```
 
 #### Recovery registration-mechanism-r2.md
