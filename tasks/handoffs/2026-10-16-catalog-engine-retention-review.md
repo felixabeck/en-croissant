@@ -2390,6 +2390,72 @@ VERDICT: REVISE
 
 ### Records-only closure round 7
 
+
+### Final records closure and gate attempt 1
+
+
+### GL1 independent proof before correction closure
+
+Root verified exactly two redundant borrow removals in the Linux-only tests::InheritedDirectoryChild::prepare_image helper. The production prefix remains byte-identical with SHA25659f406e302250bc2678c4a382ed9f7c21e87bb6f675aa9b3ebb5dbd677eb9b22. Root independently passed all-target Linux clippy with warnings denied, all74catalog tests, formatting and global diff checks. Canonical gate-final-lint-proof.MU80zJ completed0. New source matches final-lint-final-hashes.json exactly. This repairs a standard compiler lint observed at101 in the original gate, with no runtime behavior change or new test. Earlier native-app118checks describe unchanged production behavior, not the later test-source hash. Full final gates will rerun after committed closure.
+
+The worker's audit notes one indentation preparation slip corrected before checks and an overly strict whole-status assertion that noticed root's own handoff edit. Its scoped source audit passed and root records were preserved. Those are not behavioral failures or evidence of foreign source contamination. Plan authorship and arbitration shared one context. Detection ran on the same model family as code in separate Codex sessions, without family separation.
+
+#### GL1 worker report
+
+````text
+Changed only the two test borrows in [catalog_install.rs](/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/infra/path_authority/catalog_install.rs:1633), left unstaged:
+
+```diff
+-            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
++            fs::set_permissions(script, fs::Permissions::from_mode(0o700)).unwrap();
+-                .register_engine_file(&script, "Resource child")
++                .register_engine_file(script, "Resource child")
+```
+
+All requested checks exited **0**:
+
+- Clippy with warnings denied
+- Catalog tests: **74 passed**
+- Formatting check
+- Diff check
+
+[Commands and statuses](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/final-lint-commands.log), [clippy log](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/final-lint-clippy.log), [catalog log](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/final-lint-catalog.log).
+
+Byte comparison confirms exactly the requested changes and an unchanged production prefix. Full before/after SHA256 values are in the [hash manifest](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/final-lint-final-hashes.json). Runtime semantics are unchanged.
+
+An initial indentation slip was corrected before checks. The final audit also detected a foreign handoff file becoming dirty. It was untouched. Both observations are recorded in the [audit](/tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/final-lint-final-audit.json). No stage or commit.
+````
+
+R8 at8ccb04a4 was inconclusive because the caller prohibited all process execution while requiring shell file reads. The report established no factual defect and adopted count is0. It is preserved without pretending provider failure, quota failure, code revision or approval. Root corrected only assignment permissions and ran distinct same-revision R9 evidence closure using the original CR17 delta. R9 APPROVED, CR17CLOSED, zero new findings. No source changed. Counts remain17unique corrections and gapless diff_adopted_per_round r1=6 r2=1 r3=3 r4=2 r5=6 r6=0 r7=1 r8=0 r9=0. Original inherited plan counts remain r1=3 r2=0 r3=0 r4=0.
+
+The first full push gate ran on clean reviewed8ccb04a4 with all Rust/frontend/bindings flags. Guard0.2s, setup0, frontend build6.3s, bindings28.0s, contract92.8s, backend tests83.5s, backend coverage140.0s, frontend coverage60.4s, bundle0.4s and container e2e40.5s passed. Backend coverage ratchet and floors passed. Linux clippy failed101 at two redundant test-helper borrows, catalog_install.rs:1633 and1636. This is GL1, a gated lint repair, not a new adopted lens finding or a runtime mechanism change.
+
+Root gracefully cancelled only the owned scheduler117182 after other proof lanes passed, so the remaining frontend mutation workspace-storage package ended143 from SIGTERM. It is not a green mutation result or an independent mutation defect. Canonical gate-push-gate.F85q0n completion143 is retained, with scope agent-gate-117182-1792122994492799.scope verified inactive/dead before any edit. No gate child or tracked-file rewriter remained. The actual failure transcript is artifacts/gates/20261016T035634554Z-117182/rust-lint.log. An earlier poll used an incorrect nonexistent attempt path and provided no gate evidence, the actual F85q0n attempt was then polled canonically. No gate or receipt was invented from that monitoring error.
+
+Root delegated exactly the two test-only borrow removals to the same sensitive writer. Root still owns independent proof, pre-review, committed correction closure and a fresh complete final gate run. Native app proof from17d7574d remains evidence for unchanged production behavior, its118checks are not claimed as a build of later test-only bytes. Delivery remains pending at this repair checkpoint. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### lens-records-r8.txt
+
+````text
+CR17 NOT CLOSED — verification blocked. File access is available only through shell process execution, which this assignment prohibits. No file-reading resources are exposed.
+
+The corrected sentence, chronology, named contracts, saved R6/R7 reports and native-app log remain unverified. No factual defect established, and no files changed.
+
+VERDICT: REVISE
+````
+
+#### lens-records-r9.txt
+
+````text
+CR17 CLOSED — `tasks/handoffs/2026-10-16-catalog-engine-retention-review.md:2578` explicitly identifies app verification as pending at the historical R6 checkpoint and points to the completed later proof. The saved app log contains 118 successful checks and `all checks passed`. R6/R7 reports remain byte-preserved, and only the handoff changed since source snapshot `17d7574d`.
+
+No new factual defects found. Historical pending statements remain valid history. Final gates, hosted runtime, push and installation remain pending.
+
+Limitations: canonical gate completion was not independently verified. Historical coverage was selective. Review shares the author’s model family in a separate session. No files changed or checks rerun.
+
+VERDICT: APPROVED
+````
+
 REVIEWED_THROUGH e3e7825738a53b51bb14a45cdf083d686eba63b0. Adopted one Fix witness, CR17, confidence99: R6 source-review checkpoint prose retained present-tense app-pending wording after the successful app section was added. Root labels that sentence as historical and explicitly points to the completed later proof. No source, test, runtime outcome or quoted reviewer report changed. Seventeen unique corrections total, with CR17 records closure pending. No Skip or Defer. Inherited plan counts remain r1=3 r2=0 r3=0 r4=0. Diff witness counts now r1=6 r2=1 r3=3 r4=2 r5=6 r6=0 r7=1.
 
 Plan authorship and arbitration shared one context. Detection ran on the same model family as code in separate Codex sessions, without family separation.
