@@ -72,6 +72,7 @@
     "i18n:types": "i18next-cli types",
     "i18n:sync": "i18next-cli sync",
     "verify:app": "node scripts/verify-app.mjs",
+    "verify:catalog-engines": "node scripts/verify-catalog-engines.mjs",
     "test:e2e": "node scripts/run-e2e-native.mjs",
     "test:e2e:container": "node scripts/run-e2e-container.mjs",
     "test:e2e:update": "node scripts/run-e2e-container.mjs --update-snapshots",

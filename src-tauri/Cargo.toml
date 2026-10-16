@@ -94,6 +94,8 @@ default = ["custom-protocol"]
 # this feature is used for production builds where `devPath` points to the filesystem
 # DO NOT remove this
 custom-protocol = ["tauri/custom-protocol"]
+# Opt-in real signed catalog downloads and native UCI verification.
+catalog-network-tests = []
 
 [dev-dependencies]
 tauri = { version = "2.10.2", features = ["test"] }

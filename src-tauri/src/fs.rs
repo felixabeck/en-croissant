@@ -2403,9 +2403,25 @@ mod tests {
         PathBuf,
         crate::infra::path_authority::EngineRootHandle,
     ) {
+        let engine_root = engine_directory(dir);
+        engine_destination_with_authority(engine_root, test_path_authority(dir))
+    }
+
+    fn engine_directory(dir: &tempfile::TempDir) -> PathBuf {
         let engine_root = dir.path().join("engines");
         std::fs::create_dir(&engine_root).unwrap();
-        let mut authority = test_path_authority(dir);
+        engine_root
+    }
+
+    fn engine_destination_with_authority(
+        engine_root: PathBuf,
+        mut authority: crate::infra::path_authority::PathAuthority,
+    ) -> (
+        crate::infra::path_authority::PathAuthority,
+        crate::infra::path_authority::PathRef,
+        PathBuf,
+        crate::infra::path_authority::EngineRootHandle,
+    ) {
         let root = authority
             .get_or_create_engine_root(&engine_root, "Engines", None)
             .unwrap();
@@ -2440,6 +2456,301 @@ mod tests {
             )
             .unwrap();
         (ticket, lease)
+    }
+
+    #[cfg(feature = "catalog-network-tests")]
+    mod catalog_network {
+        use super::*;
+        use futures_util::FutureExt;
+        use serde::Deserialize;
+
+        #[derive(Clone, Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CatalogEntry {
+            name: String,
+            version: String,
+            os: String,
+            bmi2: bool,
+            download_link: String,
+            sha256: String,
+            signature: String,
+            path: String,
+        }
+
+        impl CatalogEntry {
+            fn label(&self, index: usize) -> String {
+                format!(
+                    "entry[{index}] {} {} os={} bmi2={} digest={} path={}",
+                    self.name, self.version, self.os, self.bmi2, self.sha256, self.path
+                )
+            }
+
+            fn same_executable(&self, other: &Self) -> bool {
+                self.download_link == other.download_link
+                    && self.sha256 == other.sha256
+                    && self.signature == other.signature
+                    && self.path == other.path
+            }
+        }
+
+        fn failure(stage: &str, error: impl std::fmt::Display) -> String {
+            // Native errors can contain untrusted engine or upstream text.
+            format!(
+                "{stage}: {}",
+                error.to_string().chars().take(2048).collect::<String>()
+            )
+        }
+
+        async fn verify_case(entry: &CatalogEntry) -> Result<(), String> {
+            // macOS /var is an alias. Authority roots and all descendants must use /private/var.
+            let temporary_root = std::env::temp_dir()
+                .canonicalize()
+                .map_err(|error| failure("scratch-root", error))?;
+            let scratch = tempfile::Builder::new()
+                .prefix("chessfable-catalog-")
+                .tempdir_in(temporary_root)
+                .map_err(|error| failure("scratch-create", error))?;
+            let state = AppState::default(); // Unbound credentials and production HTTP transport.
+            println!("SCRATCH {}", scratch.path().display());
+            let outcome = std::panic::AssertUnwindSafe(async {
+                let engine_root = engine_directory(&scratch);
+                let authority = crate::infra::path_authority::PathAuthority::open_for_engine_test(
+                    scratch.path(),
+                )
+                .map_err(|error| failure("authority", error.diagnostic()))?;
+                let (authority, destination, engine_root, root) =
+                    engine_destination_with_authority(engine_root, authority);
+                state
+                    .pgn_path_authority
+                    .install(authority)
+                    .map_err(|error| failure("authority", Error::from(error).diagnostic()))?;
+                let archive_name = entry.download_link.rsplit('/').next().unwrap_or_default();
+                if archive_name.is_empty() {
+                    return Err(failure("directory-contract", "missing archive filename"));
+                }
+                let directory = format!("{archive_name}-{}", entry.sha256.to_lowercase());
+                if engine_root
+                    .join(&directory)
+                    .try_exists()
+                    .map_err(|error| failure("fresh-destination", error))?
+                {
+                    return Err(failure("fresh-destination", "artifact already exists"));
+                }
+                let app = test_progress_app();
+                let (job, lease) = test_download_lease(&state);
+                let cancellation = lease.token();
+                let commit_gate = lease.commit_gate();
+                crate::infra::operations::run_native_operation(
+                    lease,
+                    "real catalog verification",
+                    download_engine_archive_core(
+                        job.clone(),
+                        entry.download_link.clone(),
+                        destination,
+                        directory.clone(),
+                        job,
+                        ArtifactIntegrity {
+                            sha256: entry.sha256.clone(),
+                            signature: entry.signature.clone(),
+                        },
+                        app.handle().clone(),
+                        state.clone(),
+                        cancellation,
+                        commit_gate,
+                        Box::new(|op, url, integrity| {
+                            validate_artifact_integrity(op, url, Some(integrity))
+                        }),
+                    ),
+                )
+                .await
+                .map_err(|error| failure("install", error.diagnostic()))?;
+                let authority = state.pgn_path_authority.clone();
+                let relative_path = format!("{directory}/{}", entry.path);
+                let handle = crate::infra::operations::run_accepted_blocking(
+                    &state.operations,
+                    "real catalog registration",
+                    move || {
+                        authority.with_mut(|authority| {
+                            authority.register_installed_engine(&root, &relative_path)
+                        })?
+                    },
+                )
+                .await
+                .map_err(|error| failure("registration", error.diagnostic()))?;
+                println!("REGISTERED handle={handle:?}");
+                let config = crate::chess::get_engine_config_core(handle, &state)
+                    .await
+                    .map_err(|error| failure("uci", error.diagnostic()))?;
+                if config.name.trim().is_empty() {
+                    return Err(failure("uci-identity", "empty engine name after uciok"));
+                }
+                println!(
+                    "UCI_OK name={:?} options={}",
+                    config.name.chars().take(256).collect::<String>(),
+                    config.options.len()
+                );
+                Ok(())
+            })
+            .catch_unwind()
+            .await;
+            let outcome = match outcome {
+                Ok(result) => result,
+                Err(payload) => Err(failure(
+                    "case-panic",
+                    payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap_or("non-text panic payload"),
+                )),
+            };
+
+            // Inspect physical reaping before any executable tree can be deleted, on every exit.
+            if let Err(error) = state.engine_supervisor.terminate_all().await {
+                let retained = scratch.keep();
+                println!("RETAINED {} reason=supervisor-cleanup", retained.display());
+                return Err(failure(
+                    "supervisor-cleanup",
+                    format!(
+                        "{} retained={} case={outcome:?}",
+                        error.diagnostic(),
+                        retained.display()
+                    ),
+                ));
+            }
+            let operations = state.operations.clone();
+            let drained = crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn(move || {
+                    operations.seal_and_request_cancellation()?;
+                    if !operations.wait_for_drain(Duration::ZERO)? {
+                        return Err(Error::Conflict(format!(
+                            "remaining operations: {:?}",
+                            operations.outstanding_labels()?
+                        )));
+                    }
+                    Ok(())
+                })
+                .await;
+            if let Err(error) = drained {
+                let retained = scratch.keep();
+                println!("RETAINED {} reason=operation-cleanup", retained.display());
+                return Err(failure(
+                    "operation-cleanup",
+                    format!(
+                        "{} retained={} case={outcome:?}",
+                        error.diagnostic(),
+                        retained.display()
+                    ),
+                ));
+            }
+            let authority = state.pgn_path_authority.clone();
+            let authority_cleanup = async {
+                let catalog_authority = authority.clone();
+                let initialized = crate::infra::blocking::BLOCKING_GATEWAY
+                    .spawn(move || {
+                        match catalog_authority
+                            .with_mut(|authority| authority.clear_catalog_session_use())
+                        {
+                            Ok(result) => result.map(|()| true),
+                            Err(
+                                crate::infra::path_authority::AuthorityUnavailable::Uninitialized,
+                            ) => Ok(false),
+                            Err(error) => Err(error.into()),
+                        }
+                    })
+                    .await?;
+                if initialized {
+                    crate::shutdown_engine_launch_root(authority).await?;
+                }
+                Ok::<(), Error>(())
+            }
+            .await;
+            if let Err(error) = authority_cleanup {
+                let retained = scratch.keep();
+                println!("RETAINED {} reason=authority-cleanup", retained.display());
+                return Err(failure(
+                    "authority-cleanup",
+                    format!(
+                        "{} retained={} case={outcome:?}",
+                        error.diagnostic(),
+                        retained.display()
+                    ),
+                ));
+            }
+            let scratch_path = scratch.path().to_path_buf();
+            scratch.close().map_err(|error| {
+                failure(
+                    "scratch-cleanup",
+                    format!("{error} path={} case={outcome:?}", scratch_path.display()),
+                )
+            })?;
+            println!("CLEANUP_OK supervisor=reaped operations=drained catalog-session=cleared launch-root=reclaimed scratch=removed");
+            outcome
+        }
+
+        #[tokio::test]
+        async fn real_signed_catalog_engines_install_register_and_configure() -> Result<(), String>
+        {
+            let document = include_str!("../../src/catalogs/engines.json");
+            let signature = include_str!("../../src/catalogs/engines.json.minisig");
+            verify_signed_bytes(document.into(), signature.into())
+                .await
+                .map_err(|error| failure("catalog-signature", error.diagnostic()))?;
+            let entries: Vec<CatalogEntry> =
+                serde_json::from_str(document).map_err(|error| failure("catalog-parse", error))?;
+            let os = std::env::consts::OS;
+            let arch = std::env::consts::ARCH;
+            if !matches!(
+                (os, arch),
+                ("linux" | "windows", "x86_64") | ("macos", "x86_64" | "aarch64")
+            ) {
+                return Err(failure(
+                    "native-platform",
+                    format!("unsupported native environment {os}/{arch}"),
+                ));
+            }
+            let selected: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.os == os)
+                .collect();
+            if selected.is_empty() {
+                return Err(failure(
+                    "native-selection",
+                    format!("zero catalog entries for {os}/{arch}"),
+                ));
+            }
+            println!("CATALOG native={os}/{arch} selected={}", selected.len());
+            let mut completed: Vec<(&CatalogEntry, Result<(), String>)> = Vec::new();
+            let mut failures = Vec::new();
+            for (index, entry) in selected {
+                let label = entry.label(index);
+                println!("VERIFY {label}");
+                let result = if let Some((_, result)) = completed
+                    .iter()
+                    .find(|(prior, _)| entry.same_executable(prior))
+                {
+                    println!("ALIAS {label} shares exact signed executable result");
+                    result.clone()
+                } else {
+                    let result = verify_case(entry).await;
+                    completed.push((entry, result.clone()));
+                    result
+                };
+                match result {
+                    Ok(()) => println!("PASS {label}"),
+                    Err(error) => {
+                        println!("FAIL {label}: {error}");
+                        failures.push(format!("{label}: {error}"));
+                    }
+                }
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures.join("\n"))
+            }
+        }
     }
 
     #[test]
