@@ -9935,12 +9935,14 @@ exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are 
 
 ### The signed download manifest verifies the raw URL while transport fetches the normalized one
 
-* **ID:** f-20260916-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260916-04 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** signature verification at `src-tauri/src/fs.rs:310`; transport parses and sends the normalized URL at `:399` and `:429`.
 * **Defect:** verification covers the raw URL string, but the request is issued against the normalized form. An input such as `https://host:443/path` is therefore signed as one URL and fetched as another, so the signed-payload contract's "exact URL" property does not hold.
 * **Why it matters:** the content digest still gates installation, so this is not a direct install bypass; what is lost is unambiguous signed provenance — the manifest no longer proves which URL was actually contacted. `docs/signed-download-manifests.md` states the exact-URL property.
 * **Related:** `f-20260914-10` (found while reviewing its plan; outside that finding's mandate).
 * **Found by:** `review-tauri-security` (confidence 94) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+* **Resolution (2026-10-16):** Commit 75004ef1 preserves the established raw URL plus lowercase digest signature payload and parsed transport. The signed-download documentation now accurately distinguishes authenticated raw locator text, normalized initial requests, individually validated redirects and authenticated final bytes. A disposable-key regression exercises actual signature verification and transport observations, rejects replacing the signed locator with its parsed spelling, and rejects a wrong downloaded digest before installation. Native Minisign fixture input changes each returned 1 with Signature verification failed, restored input returned 0. Exact Rust regression, catalog fixture tests, fmt, all-target clippy and pre-review passed. Canonicalization before signing and catalog re-signing were rejected under d-20260919-01, d-20260919-02 and d-20261016-27. This closes the inaccurate guarantee, not a claimed origin-policy bypass. No production signing or transport policy changed. Evidence: /tmp/chessfable-signed-locator-krkxod74/evidence.md.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"675e0c3400883029f13ff8859062fc0f407f0afae1088ca99e3df8567ec2459c","header_sha256":"5bc034a8a2205aa874291859e3f088cad5cbf2737ea25b8b78147293ab9ff617","header_status":"handled","input_sha256":"55a73d3a64326744e0eeb263cd8919759f36298f36084e4fd179116d085947c3","kind":"mutation-receipt","operation":"c40a5203a136d6770c27116cd37e802de03ded0c39a3115d50f8cfb4a3615aee","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-04"],"target":"f-20260916-04","v":1} -->
 
 ---
 
