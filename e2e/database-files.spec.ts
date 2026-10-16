@@ -706,16 +706,32 @@ test("database-files: concurrent conversions render their own live progress coun
     await page.getByRole("link", { name: "Library", exact: true }).click();
     await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
-    await secondRow.scrollIntoViewIfNeeded();
-    await expect(secondRow).toBeInViewport();
     const cancel = firstRow.getByRole("button", { name: "Cancel: first.pgn", exact: true });
-    await expect(cancel).toBeInViewport();
-    await page.mouse.move(400, 40);
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
-    await assertNoHorizontalOverflow();
-    await assertAccessible();
-    await capture("conversion-active");
-    await expect(page).toHaveScreenshot("conversion-active.png", { fullPage: true });
+    let previousRowTop: number | undefined;
+    for (const edge of ["end", "start"] as const) {
+        // Both prior alignments must converge on the same canonical capture position.
+        await secondRow.evaluate(
+            (node, block) => node.scrollIntoView({ block, behavior: "instant" }),
+            edge,
+        );
+        const rowTop = await secondRow.evaluate((node) => node.getBoundingClientRect().top);
+        if (previousRowTop !== undefined) expect(rowTop).not.toBe(previousRowTop);
+        previousRowTop = rowTop;
+        await secondRow.evaluate((node) =>
+            node.scrollIntoView({ block: "center", behavior: "instant" }),
+        );
+        await expect(secondRow).toBeInViewport();
+        await expect(cancel).toBeInViewport({ ratio: 1 });
+        await expect(
+            secondRow.getByRole("button", { name: "Cancel: second.pgn", exact: true }),
+        ).toBeInViewport({ ratio: 1 });
+        await page.mouse.move(400, 40);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await assertNoHorizontalOverflow();
+        await assertAccessible();
+        await capture("conversion-active");
+        await expect(page).toHaveScreenshot("conversion-active.png", { fullPage: true });
+    }
     await cancel.click();
     await expect(cancel).toBeDisabled();
     await expect(
