@@ -1630,10 +1630,10 @@ mod tests {
         fn prepare_image(f: &mut Fixture, script: &Path) -> (EngineExecutable, EngineHandle) {
             use std::os::unix::fs::PermissionsExt;
             fs::write(script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value\"; echo;; quit) exit 0;; esac; done\n").unwrap();
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(script, fs::Permissions::from_mode(0o700)).unwrap();
             let engine = f
                 .authority
-                .register_engine_file(&script, "Resource child")
+                .register_engine_file(script, "Resource child")
                 .unwrap();
             let executable = f
                 .authority
