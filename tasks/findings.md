@@ -16647,3 +16647,17 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Local release proof:** The actual delayed unchanged Board module reproduced 3857 differing pixels before correction. Retaining the assertions while reversing only Board render waits reproduced the unselected-state failure, and exact restoration passed all 37 assertions. The final complete Rust/frontend/bindings push gate passed all 12 lanes on the clean reviewed source, including 2448 native tests with two existing ignored cases, 4226 frontend tests, 138 browser cases and all three mutation packages at 100%. The release binary installed from that clean pushed SHA with reviewed provenance. No manual workflow dispatch, snapshot refresh for this CI race, coverage relaxation, release or deployment occurred.
 * **Record:** Complete raw review history, actual gate/CI results, source identity, screenshot scope and installer proof are committed in tasks/handoffs/2026-10-17-workspace-cleanup-review.md. The following records-only push publishes this now-known closure without changing source.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"f29f8d334806304ca691f0abdac8e3f958d5250fc4a4569f2cd3e9eb3f83f878","header_sha256":"8bf813645b10f455768eaa03feef8e68c3f9a3fbe0484cbc83241e3b7eb3625e","header_status":"handled","input_sha256":"9d98c00543a8803fd6b6184f3b0856155abbd5f8bb5904e05823b28ab7f25bba","kind":"mutation-receipt","operation":"d44dd9dfc3e0f90be2cf11e2354606dd90ce2ec2102846baa5921f0618a3c9cd","options":{"section":null},"request_id_sha256":null,"results":["f-20261017-03"],"target":"f-20261017-03","v":1} -->
+
+---
+
+## 2026-10-16 — filed through the inbox spool
+
+### ChessBase extended drawing colors suppress every arrow in a mixed PGN annotation
+* **ID:** f-20261016-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b
+* **Impact class:** behaviour
+* **Where:** src/utils/pgnComment.ts, src/utils/chess.ts, src/components/boards/continuationArrows.ts.
+* **Defect:** The chessops parser accepts only R/G/Y/B and rejects a complete cal/csl list when one entry uses O or C. Felix’s Weiß_Morra Gambit.pgn has eight arrows after 10.Ne4 including four O entries, yielding zero displayed arrows, while the two R entries after 11.Nxe5 render correctly. Six color codes survived export across the repertoire, including 458 O and 68 C markings.
+* **Open question:** How to preserve and display all six exported colors while retaining unfamiliar entries without suppressing supported neighbors?
+* **Authority:** Felix approved six-color support, per-entry parsing, original color-code preservation and real-repertoire round-trip verification, full auto executor Codex, in a separate worktree.
+* **Proof:** parseComment on the exact 10.Ne4 cal command yields zero shapes and leaves the command text, while the 11.Nxe5 command yields two shapes.
