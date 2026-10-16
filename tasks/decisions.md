@@ -8358,3 +8358,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, co-located source recheck for f-20261002-08. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2aed80768ff4ffc5e111855dafe487d5bb0daa8405d16a0aaec3da82cb6fa5ab","input_sha256":"2bb1b7698463298b60baa4b383e53cb8cf0ebd2648f0cdb2b4cc0f40643473cf","kind":"mutation-receipt","operation":"a97c32ceebfa4ad56f2685914dd15543392f0e2a50e948a3bb5f408a773839d8","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-28"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-29 — Retain failed catalog cleanup ownership through verifier process exit
+
+* **Question:** What owns the real-catalog verifier's native state after physical teardown or dependent cleanup cannot finish?
+* **Governs:** f-20261002-08
+* **Chosen:** The feature-only verifier intentionally retains its actual failed case AppState through process exit, together with the already retained scratch tree and a failing stage diagnostic. Use direct process-lifetime retention rather than a new registry. This is bounded by the finite selected distinct executable cases. Successful cases retain ordinary cleanup and removal.
+* **Rejected:** Keeping only a scratch path while dropping the last supervisor, which loses unresolved ChildOwner and executable leases. Hidden retries, which conceal the original failure. A production lifecycle redesign or new retained-owner registry solely for this isolated test.
+* **Reason:** Cumulative review C4 traced PendingActor termination completion leaving an unresolved child in the supervisor's pending map. Dropping the verifier's final AppState then discards that ownership without confirmed OS wait. Explicit retention preserves it and reports failure honestly until the test process exits. This does not claim an OS-unreapable child was successfully reaped. Reversal path: remove intentional retention if an existing guaranteed terminal owner can accept these leases and finish their cleanup without changing the failing result.
+* **Decided by:** Codex, full auto, cumulative review arbitration. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"fcca8a9cbb8c2b6c2cf00e969cc1da2eb75fc68ede44947a4f76c758238301e2","input_sha256":"f1cdec6b53576cabd9a866800a687156143a4d5bc6f5a6bd55d88022bca11477","kind":"mutation-receipt","operation":"c39992cd7a3ecc2b48960221fdfffb7f5849e64e4009db643e11976157bbb0cd","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-29"],"target":"decisions-ledger","v":1} -->
