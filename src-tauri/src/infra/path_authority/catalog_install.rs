@@ -2374,6 +2374,25 @@ mod tests {
         }
     }
 
+    fn r12_assert_pending_archive_refusal<T: std::fmt::Debug>(
+        result: Result<T, Error>,
+        alteration: &str,
+        name: &str,
+        cycle: usize,
+        operation: &str,
+    ) {
+        // Windows refuses a wrong-kind archive leaf in the resolver, before confirmation.
+        let refused = if cfg!(windows) && alteration == "file" {
+            matches!(&result, Err(Error::InvalidInput(message)) if message == "archive destination must be a directory")
+        } else {
+            matches!(&result, Err(Error::Conflict(_)))
+        };
+        assert!(
+            refused,
+            "pending {alteration} alias={name} cycle={cycle} {operation} refusal required: {result:?}"
+        );
+    }
+
     #[test]
     fn catalog_install_r12_native_alias_pending_mismatch_survives_startup() {
         for alteration in ["modified", "replacement", "file"] {
@@ -2395,7 +2414,7 @@ mod tests {
             };
             fs::write(f.root.join(contents), b"unconfirmed foreign contents").unwrap();
             fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
-            for _ in 0..2 {
+            for cycle in 0..2 {
                 f.reopen();
                 f.reconcile(vec![], true).unwrap();
                 assert_eq!(f.authority.catalog_installs.len(), 1);
@@ -2405,22 +2424,33 @@ mod tests {
                     .values()
                     .all(|record| record.publication == Some(Publication::Pending)));
                 for name in ["managed", "MANAGED"] {
-                    assert!(matches!(f.adopt(name), Err(Error::Conflict(_))));
+                    r12_assert_pending_archive_refusal(
+                        f.adopt(name),
+                        alteration,
+                        name,
+                        cycle,
+                        "adoption",
+                    );
                     let executable = if alteration == "file" {
                         name.to_string()
                     } else {
                         format!("{name}/engine")
                     };
-                    assert!(matches!(
-                        f.authority
-                            .register_installed_engine(&f.handle, &executable),
-                        Err(Error::Conflict(_))
-                    ));
+                    let registration = f
+                        .authority
+                        .register_installed_engine(&f.handle, &executable);
+                    assert!(
+                        matches!(&registration, Err(Error::Conflict(_))),
+                        "pending {alteration} alias={name} cycle={cycle} registration refusal required: {registration:?}"
+                    );
                     let mut stage = f.stage();
-                    assert!(matches!(
+                    r12_assert_pending_archive_refusal(
                         f.publish_stage(name, &mut stage),
-                        Err(Error::Conflict(_))
-                    ));
+                        alteration,
+                        name,
+                        cycle,
+                        "publication",
+                    );
                 }
                 assert_eq!(
                     fs::read(f.root.join(if alteration == "file" {
@@ -2507,12 +2537,6 @@ mod tests {
             };
             let cleanup = f.reconcile(vec![], true);
             drop(fault);
-            #[cfg(windows)]
-            assert!(
-                matches!(&cleanup, Err(Error::Io(cause)) if matches!(cause.raw_os_error(), Some(5 | 32)))
-                    || matches!(&cleanup, Err(Error::Conflict(message)) if message == "Windows sharing violation"),
-                "actual native delete-sharing refusal required: {cleanup:?}"
-            );
             assert!(cleanup.is_err());
             let record = f.authority.catalog_installs.values().next().unwrap();
             assert!(record.cleaning);
@@ -2528,6 +2552,16 @@ mod tests {
             assert!(
                 !remaining.is_empty() && remaining.len() < inventory.len(),
                 "native cleanup must actually remove a strict part of the original inventory"
+            );
+            #[cfg(windows)]
+            assert!(
+                matches!(&cleanup, Err(Error::PartialRemoval { removed_entries, cause })
+                    if *removed_entries > 0
+                        && *removed_entries == inventory.len() - remaining.len()
+                        && matches!(cause.as_ref(), Error::Conflict(message) if message == "Windows sharing violation")),
+                "actual native delete-sharing partial refusal must account for the removed inventory: {cleanup:?}, original={}, remaining={}",
+                inventory.len(),
+                remaining.len()
             );
             fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
             if modified {
