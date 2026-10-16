@@ -1425,6 +1425,22 @@ mod tests {
         }
     }
 
+    fn registration_directory_substitution(
+        alias: PathBuf,
+        independent_original: PathBuf,
+        managed: PathBuf,
+        swaps: std::rc::Rc<std::cell::RefCell<Vec<std::io::Result<()>>>>,
+    ) -> Box<dyn FnOnce()> {
+        Box::new(move || {
+            let first = fs::rename(&alias, independent_original);
+            let moved = first.is_ok();
+            swaps.borrow_mut().push(first);
+            if moved {
+                swaps.borrow_mut().push(fs::rename(managed, alias));
+            }
+        })
+    }
+
     fn pending_registration_evidence(
         records: &BTreeMap<String, CatalogInstall>,
         original: &CatalogInstall,
@@ -1597,21 +1613,15 @@ mod tests {
         let good_identity = identity(&alias.join("extra/added")).unwrap();
         let bad_identity = identity(&managed.join("extra/added")).unwrap();
         let swaps = Rc::new(RefCell::new(Vec::new()));
-        let hook_swaps = swaps.clone();
-        let hook_alias = alias.clone();
         let cleanup = RegistrationHookCleanup;
         INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
             assert!(slot
-                .replace(Some(Box::new(move || {
-                    let first = fs::rename(&hook_alias, independent_original);
-                    let moved = first.is_ok();
-                    hook_swaps.borrow_mut().push(first);
-                    if moved {
-                        hook_swaps
-                            .borrow_mut()
-                            .push(fs::rename(managed, hook_alias));
-                    }
-                })))
+                .replace(Some(registration_directory_substitution(
+                    alias.clone(),
+                    independent_original,
+                    managed,
+                    swaps.clone(),
+                )))
                 .is_none());
         });
         let result = f
@@ -1770,21 +1780,15 @@ mod tests {
         fs::create_dir_all(alias.join("extra")).unwrap();
         fs::write(alias.join("extra/added"), b"independent executable").unwrap();
         let swaps = Rc::new(RefCell::new(Vec::new()));
-        let hook_swaps = swaps.clone();
-        let hook_alias = alias.clone();
         let cleanup = RegistrationHookCleanup;
         RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
             assert!(slot
-                .replace(Some(Box::new(move || {
-                    let first = fs::rename(&hook_alias, independent_original);
-                    let moved = first.is_ok();
-                    hook_swaps.borrow_mut().push(first);
-                    if moved {
-                        hook_swaps
-                            .borrow_mut()
-                            .push(fs::rename(managed, hook_alias));
-                    }
-                })))
+                .replace(Some(registration_directory_substitution(
+                    alias.clone(),
+                    independent_original,
+                    managed,
+                    swaps.clone(),
+                )))
                 .is_none());
         });
         let result = f
@@ -1879,21 +1883,15 @@ mod tests {
         fs::write(alias.join("engine"), b"independent engine").unwrap();
         let managed_identity = identity(&managed.join("engine")).unwrap();
         let swaps = Rc::new(RefCell::new(Vec::new()));
-        let hook_swaps = swaps.clone();
-        let hook_alias = alias.clone();
         let cleanup = RegistrationHookCleanup;
         RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
             assert!(slot
-                .replace(Some(Box::new(move || {
-                    let first = fs::rename(&hook_alias, independent_original);
-                    let moved = first.is_ok();
-                    hook_swaps.borrow_mut().push(first);
-                    if moved {
-                        hook_swaps
-                            .borrow_mut()
-                            .push(fs::rename(managed, hook_alias));
-                    }
-                })))
+                .replace(Some(registration_directory_substitution(
+                    alias.clone(),
+                    independent_original,
+                    managed,
+                    swaps.clone(),
+                )))
                 .is_none());
         });
         let result = f

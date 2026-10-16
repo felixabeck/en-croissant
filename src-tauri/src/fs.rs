@@ -666,14 +666,16 @@ where
 {
     let target = path.to_path_buf();
     prepare_archive_download(
-        op,
-        url,
+        ArchiveDownloadRequest {
+            op,
+            url,
+            transport,
+            token,
+            total_size,
+            expected_sha256,
+        },
         path,
-        transport,
-        token,
-        total_size,
         cancellation,
-        expected_sha256,
         progress_updater,
         move |source, pin, cancellation| {
             let (parent, leaf) = archive_install_names(&target, &staging)?;
@@ -683,18 +685,21 @@ where
     .await
 }
 
+struct ArchiveDownloadRequest<'a> {
+    op: OpClass,
+    url: &'a str,
+    transport: &'a dyn crate::infra::net::DownloadTransport,
+    token: Option<&'a str>,
+    total_size: Option<u32>,
+    expected_sha256: Option<&'a str>,
+}
+
 /// Preparation and its consumer share one blocking worker. An owned tree never crosses an
 /// async return or cleanup boundary, including when the producer is cancelled or times out.
-#[allow(clippy::too_many_arguments)]
 async fn prepare_archive_download<F, C>(
-    op: OpClass,
-    url: &str,
+    request: ArchiveDownloadRequest<'_>,
     path: &Path,
-    transport: &dyn crate::infra::net::DownloadTransport,
-    token: Option<&str>,
-    total_size: Option<u32>,
     cancellation: CancellationToken,
-    expected_sha256: Option<&str>,
     progress_updater: F,
     consume: C,
 ) -> Result<(), Error>
@@ -708,6 +713,14 @@ where
         + Send
         + 'static,
 {
+    let ArchiveDownloadRequest {
+        op,
+        url,
+        transport,
+        token,
+        total_size,
+        expected_sha256,
+    } = request;
     let parsed_url = validate_download_request(op, url, token, &cancellation)?;
     let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp_file = tempfile::Builder::new()
@@ -1455,14 +1468,16 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
         let publication_authority = state.pgn_path_authority.clone();
         let producer = prepare_archive_download(
-            op,
-            &url,
+            ArchiveDownloadRequest {
+                op,
+                url: &url,
+                transport: state.http_transport.as_ref(),
+                token: None,
+                total_size: None,
+                expected_sha256: Some(&integrity.sha256),
+            },
             &archive_target,
-            state.http_transport.as_ref(),
-            None,
-            None,
             cancellation.clone(),
-            Some(&integrity.sha256),
             |progress| {
                 update_progress_with_state(
                     &state.progress_state,
