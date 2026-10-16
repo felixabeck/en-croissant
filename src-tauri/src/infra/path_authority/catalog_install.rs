@@ -118,13 +118,32 @@ fn target(record: &CatalogInstall) -> Result<PathBuf, Error> {
         .join(relative_path(&record.destination)?))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reachability {
+    /// Identity-confirmed descendant, recursive ancestor or exact pending reservation.
+    Member,
+    Disjoint,
+    Uncertain,
+}
+
+impl Reachability {
+    fn protects(self) -> bool {
+        self != Self::Disjoint
+    }
+}
+
 // Workspace ancestors do not own their children. Explicit directory resources do.
-fn reaches(tree: &Path, path: &Path, recursive: bool) -> bool {
-    path.starts_with(tree)
-        || (recursive && tree.starts_with(path))
-        // Filesystem aliases only add retention. These views never authorize cleanup or
-        // replace its exact locator, no-follow opens, identity checks or inventory.
-        || filesystem_reaches(tree, path, recursive).unwrap_or(true)
+fn reaches(record: &CatalogInstall, path: &Path, recursive: bool) -> Result<Reachability, Error> {
+    // Inspection failure requires conservative retention and durable use, but is never
+    // positive membership for cleaning refusal. None of these views authorize deletion.
+    Ok(filesystem_reaches(
+        &target(record)?,
+        &record.identity,
+        &record.root.identity,
+        path,
+        recursive,
+    )
+    .unwrap_or(Reachability::Uncertain))
 }
 
 struct ReachabilityBinding {
@@ -156,45 +175,89 @@ impl ReachabilityBinding {
         }
     }
 
-    fn contains(&self, other: &Self) -> Result<bool, Error> {
-        if self.existing {
-            let binding = identity(&self.path)?;
-            let start = if other.existing {
-                other.path.as_path()
-            } else {
-                other.path.parent().ok_or_else(invalid_record)?
-            };
-            // Compare actual objects, including the existing leaf. Canonical strings alone
-            // can still differ for case aliases, alternate names and hard-linked files.
-            for ancestor in start.ancestors() {
-                if identity(ancestor)? == binding {
-                    return Ok(true);
-                }
+    fn has_ancestor(&self, expected: &Identity) -> Result<bool, Error> {
+        let start = if self.existing {
+            self.path.as_path()
+        } else {
+            self.path.parent().ok_or_else(invalid_record)?
+        };
+        // Include the existing leaf. This also recognizes moved trees and aliases when
+        // their original provenance locator is unavailable or now names a substitute.
+        for ancestor in start.ancestors() {
+            if identity(ancestor)? == *expected {
+                return Ok(true);
             }
-            return Ok(false);
         }
-        if other.existing {
-            return Ok(false);
-        }
-        // Neither leaf exists. Equal parent bindings do not establish that different leaf
-        // spellings are disjoint on this filesystem, so retain rather than case-fold them.
-        Ok(identity(self.path.parent().ok_or_else(invalid_record)?)?
-            == identity(other.path.parent().ok_or_else(invalid_record)?)?)
+        Ok(false)
     }
 }
 
-fn filesystem_reaches(tree: &Path, path: &Path, recursive: bool) -> Result<bool, Error> {
-    let tree = ReachabilityBinding::resolve(tree)?;
+fn filesystem_reaches(
+    tree: &Path,
+    expected_tree: &Identity,
+    expected_root: &Identity,
+    path: &Path,
+    recursive: bool,
+) -> Result<Reachability, Error> {
     let path = ReachabilityBinding::resolve(path)?;
-    Ok(tree.contains(&path)? || (recursive && path.contains(&tree)?))
+    if path.has_ancestor(expected_tree)? {
+        return Ok(Reachability::Member);
+    }
+    let tree = ReachabilityBinding::resolve(tree)?;
+    if tree.existing {
+        if identity(&tree.path)? != *expected_tree {
+            // Identical spellings can name an independent replacement root or tree.
+            // A recursive resource could still contain the displaced original elsewhere.
+            return Ok(if recursive || !path.existing {
+                Reachability::Uncertain
+            } else {
+                Reachability::Disjoint
+            });
+        }
+        if recursive && path.existing && tree.has_ancestor(&identity(&path.path)?)? {
+            return Ok(Reachability::Member);
+        }
+        return Ok(if path.existing {
+            Reachability::Disjoint
+        } else {
+            Reachability::Uncertain
+        });
+    }
+    let parent = tree.path.parent().ok_or_else(invalid_record)?;
+    if identity(parent)? != *expected_root {
+        return Ok(if recursive || !path.existing {
+            Reachability::Uncertain
+        } else {
+            Reachability::Disjoint
+        });
+    }
+    if path.existing {
+        return Ok(if recursive && tree.has_ancestor(&identity(&path.path)?)? {
+            Reachability::Member
+        } else {
+            Reachability::Disjoint
+        });
+    }
+    if identity(path.path.parent().ok_or_else(invalid_record)?)? == *expected_root {
+        // An absent destination at its verified original root remains a pending reservation.
+        // Different missing leaf spellings are uncertain, never confirmed filesystem aliases.
+        return Ok(if tree.path.file_name() == path.path.file_name() {
+            Reachability::Member
+        } else {
+            Reachability::Uncertain
+        });
+    }
+    // A previously used resource can lose its final pathname before provenance is published.
+    // Its existing parent cannot establish where that resource's original binding went.
+    Ok(Reachability::Uncertain)
 }
 
-fn entry_reaches(record: &CatalogInstall, entry: &StoredEntry) -> Result<bool, Error> {
-    Ok(reaches(
-        &target(record)?,
+fn entry_reaches(record: &CatalogInstall, entry: &StoredEntry) -> Result<Reachability, Error> {
+    reaches(
+        record,
         &entry.path.to_path()?,
         entry.target_is_dir && entry.purpose == Some(EntryPurpose::EngineResource),
-    ))
+    )
 }
 
 fn inventory(directory: &fs::File, root_device: u64) -> Result<Vec<ManagedEntry>, Error> {
@@ -343,19 +406,17 @@ impl PathAuthority {
         recursive: bool,
         child_use: bool,
     ) -> Result<(), Error> {
-        let affected = self
-            .catalog_installs
-            .iter()
-            .filter_map(|(id, record)| match target(record) {
-                Ok(tree) if reaches(&tree, path, recursive) => Some(Ok(id.clone())),
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if affected.iter().any(|id| self.catalog_installs[id].cleaning) {
-            return Err(Error::Conflict(
-                "catalog install cleanup is in progress".into(),
-            ));
+        let mut affected = Vec::new();
+        for (id, record) in &self.catalog_installs {
+            let relation = reaches(record, path, recursive)?;
+            if record.cleaning && relation == Reachability::Member {
+                return Err(Error::Conflict(
+                    "catalog install cleanup is in progress".into(),
+                ));
+            }
+            if relation.protects() {
+                affected.push(id.clone());
+            }
         }
         if child_use && (recursive || !affected.is_empty()) && !self.catalog_uses.contains_key(path)
         {
@@ -439,12 +500,11 @@ impl PathAuthority {
             users: BTreeSet::new(),
         };
         // A recursive resource may have been handed to a child before provenance existed.
-        if self
-            .catalog_uses
-            .iter()
-            .any(|(used, recursive)| reaches(path, used, *recursive))
-        {
-            record.users.insert(self.catalog_session.clone());
+        for (used, recursive) in &self.catalog_uses {
+            if reaches(&record, used, *recursive)?.protects() {
+                record.users.insert(self.catalog_session.clone());
+                break;
+            }
         }
         let mut records = self.catalog_installs.clone();
         let mut replaced = Vec::new();
@@ -517,7 +577,7 @@ impl PathAuthority {
                 .values()
                 .chain(self.retired_attachments.values())
             {
-                live |= entry_reaches(&record, &entry.stored)?;
+                live |= entry_reaches(&record, &entry.stored)?.protects();
             }
             if live {
                 continue;
@@ -734,6 +794,300 @@ mod tests {
         }
     }
 
+    fn cr6_cleaning_fixture() -> Fixture {
+        let mut f = Fixture::new();
+        f.install("managed");
+        f.reopen();
+        #[cfg(unix)]
+        {
+            use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
+            let _guard = scoped_test_removal_injector(Arc::new(RemovalFault(
+                RemovalFaultPoint::BeforeTopOpen,
+            )));
+            assert!(f.reconcile(vec![], true).is_err());
+        }
+        #[cfg(windows)]
+        {
+            // Seed the same durable pre-removal retry state. Unix additionally proves the
+            // production removal failure above, while Windows exercises resolution below.
+            let mut records = f.authority.catalog_installs.clone();
+            records.values_mut().next().unwrap().cleaning = true;
+            f.authority.commit_catalog(records).unwrap();
+        }
+        f.reopen();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.cleaning && record.users.is_empty()));
+        f
+    }
+
+    fn cr6_independent_engine(f: &mut Fixture) -> EngineHandle {
+        let directory = f.temp.path().join("independent");
+        fs::create_dir(&directory).unwrap();
+        let executable = directory.join("engine");
+        fs::write(&executable, b"independent engine").unwrap();
+        f.authority
+            .register_engine_file(&executable, "Independent")
+            .unwrap()
+    }
+
+    #[test]
+    fn catalog_install_cr6_unavailable_cleaning_root_marks_unrelated_handoff_durably() {
+        let mut f = cr6_cleaning_fixture();
+        let engine = cr6_independent_engine(&mut f);
+        let original = f.authority.catalog_installs.clone();
+        let moved = f.temp.path().join("moved-root");
+        fs::rename(&f.root, &moved).unwrap();
+        let session = f.authority.catalog_session.clone();
+        drop(
+            f.authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap(),
+        );
+        let persisted = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+        for (id, record) in &original {
+            assert!(persisted.catalog_installs[id].users.contains(&session));
+            assert_eq!(persisted.catalog_installs[id].root, record.root);
+            assert!(persisted.catalog_installs[id].cleaning);
+            assert!(f.authority.catalog_protected.contains(id));
+        }
+        drop(persisted);
+        f.reopen();
+        f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        assert!(moved.join("managed/data/network").exists());
+    }
+
+    #[test]
+    fn catalog_install_cr6_uncertain_marker_failure_refuses_handoff() {
+        for uncertain in [false, true] {
+            let mut f = cr6_cleaning_fixture();
+            let engine = cr6_independent_engine(&mut f);
+            fs::rename(&f.root, f.temp.path().join("moved-root")).unwrap();
+            let fault: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(ParentSyncFault("uncertain catalog use"))
+            } else {
+                Arc::new(FileFault(AtomicFileFaultPoint::Write))
+            };
+            let _guard = install_test_atomic_file_injector(fault);
+            for _ in 0..2 {
+                let error = match f
+                    .authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                {
+                    Ok(_) => panic!("uncertain session use must be durable before handoff"),
+                    Err(error) => error,
+                };
+                assert!(
+                    matches!(error, Error::Io(_) | Error::CommittedDurabilityUncertain(_)),
+                    "{error:?}"
+                );
+            }
+            drop(_guard);
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            let session = f.authority.catalog_session.clone();
+            f.reopen();
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&session)));
+        }
+    }
+
+    #[test]
+    fn catalog_install_cr6_replacement_root_and_tree_allow_independent_engine() {
+        for replace_root in [false, true] {
+            let mut f = cr6_cleaning_fixture();
+            let original = f.authority.catalog_installs.clone();
+            let old_tree = f.root.join("managed");
+            let moved = f.temp.path().join("original-binding");
+            if replace_root {
+                fs::rename(&f.root, &moved).unwrap();
+                fs::create_dir(&f.root).unwrap();
+                let binding = identity(&f.root).unwrap();
+                f.handle = f
+                    .authority
+                    .get_or_create_engine_root(
+                        &f.root,
+                        "Replacement",
+                        Some(VerifiedIdentity::from_pair((binding.a, binding.b))),
+                    )
+                    .unwrap();
+                f.root = f.authority.engine_root_path(&f.handle).unwrap();
+            } else {
+                fs::rename(&old_tree, &moved).unwrap();
+            }
+            fs::create_dir(f.root.join("managed")).unwrap();
+            let executable = f.root.join("managed/engine");
+            fs::write(&executable, b"independent replacement").unwrap();
+            let engine = f
+                .authority
+                .register_engine_file(&executable, "Replacement")
+                .unwrap();
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            for (id, record) in &original {
+                assert_eq!(&f.authority.catalog_installs[id], record);
+            }
+            assert_eq!(fs::read(&executable).unwrap(), b"independent replacement");
+            assert!(moved
+                .join(if replace_root {
+                    "managed/data/network"
+                } else {
+                    "data/network"
+                })
+                .exists());
+        }
+    }
+
+    #[test]
+    fn catalog_install_cr6_moved_cleaning_descendants_are_refused() {
+        for move_root in [false, true] {
+            let mut f = Fixture::new();
+            f.install("managed");
+            let moved = f.temp.path().join("moved-binding");
+            if move_root {
+                fs::rename(&f.root, &moved).unwrap();
+            } else {
+                fs::rename(f.root.join("managed"), &moved).unwrap();
+            }
+            let tree = if move_root {
+                moved.join("managed")
+            } else {
+                moved.clone()
+            };
+            #[cfg(unix)]
+            let selected = {
+                let alias = f.temp.path().join("alias");
+                std::os::unix::fs::symlink(&tree, &alias).unwrap();
+                alias.join("engine")
+            };
+            #[cfg(windows)]
+            let selected = tree.join("engine");
+            let engine = f
+                .authority
+                .register_engine_file(&selected, "Moved")
+                .unwrap();
+            let resource = f.resource(&tree, true);
+            // Persist a retry state after acquiring handles at their moved filesystem binding.
+            let mut records = f.authority.catalog_installs.clone();
+            records.values_mut().next().unwrap().cleaning = true;
+            f.authority.commit_catalog(records).unwrap();
+            f.reopen();
+            assert!(
+                matches!(f.authority.engine_executable(&engine, PathOperation::EngineExecute), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+            );
+            assert!(
+                matches!(f.authority.engine_resource(&resource), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+            );
+            assert!(tree.join("data/network").exists());
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.is_empty()));
+        }
+    }
+
+    #[test]
+    fn catalog_install_cr6_missing_cleaning_reservation_refuses_reuse() {
+        let mut f = cr6_cleaning_fixture();
+        let moved = f.temp.path().join("moved-tree");
+        fs::rename(f.root.join("managed"), &moved).unwrap();
+        let stage = f.stage();
+        assert!(
+            matches!(f.publish_stage("managed", stage.path()), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+        );
+        assert!(!f.root.join("managed").exists());
+        assert!(stage.path().join("engine").exists());
+        assert!(moved.join("engine").exists());
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.cleaning));
+    }
+
+    #[test]
+    fn catalog_install_cr6_distinct_absent_leaf_is_not_cleaning_membership() {
+        let mut f = cr6_cleaning_fixture();
+        let moved = f.temp.path().join("moved-tree");
+        fs::rename(f.root.join("managed"), &moved).unwrap();
+        let original = f.authority.catalog_installs.clone();
+        let stage = f.stage();
+        f.publish_stage("other", stage.path()).unwrap();
+        assert_eq!(f.authority.catalog_installs.len(), 2);
+        for (id, record) in original {
+            assert_eq!(f.authority.catalog_installs[&id], record);
+            assert!(f.authority.catalog_protected.contains(&id));
+        }
+        assert!(!f.root.join("managed").exists());
+        assert!(f.root.join("other/data/network").exists());
+        assert!(moved.join("data/network").exists());
+    }
+
+    #[test]
+    fn catalog_install_cr6_retained_uncertainty_keeps_unavailable_provenance() {
+        let mut f = cr6_cleaning_fixture();
+        let engine = cr6_independent_engine(&mut f);
+        let original = f.authority.catalog_installs.clone();
+        fs::rename(&f.root, f.temp.path().join("moved-root")).unwrap();
+        f.reopen();
+        f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+        assert_eq!(f.authority.catalog_installs, original);
+    }
+
+    #[test]
+    fn catalog_install_cr6_unavailable_prepublication_resource_marks_new_tree() {
+        let mut f = Fixture::new();
+        let original_root = f.root.clone();
+        let resource = f.resource(&original_root, true);
+        drop(f.authority.engine_resource(&resource).unwrap());
+        let moved = f.temp.path().join("moved-root");
+        fs::rename(&f.root, &moved).unwrap();
+        let binding = identity(&moved).unwrap();
+        f.handle = f
+            .authority
+            .get_or_create_engine_root(
+                &moved,
+                "Moved root",
+                Some(VerifiedIdentity::from_pair((binding.a, binding.b))),
+            )
+            .unwrap();
+        f.root = f.authority.engine_root_path(&f.handle).unwrap();
+        f.authority.set_active_engine_root(&f.handle).unwrap();
+        assert!(f.authority.catalog_uses.contains_key(&original_root));
+        f.install("later");
+        let session = f.authority.catalog_session.clone();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&session)));
+        assert!(f.root.join("later/data/network").exists());
+    }
+
     #[test]
     fn catalog_install_upgrade_restart_reclaims_only_unowned_versions_and_releases_capacity() {
         let mut f = Fixture::new();
@@ -943,7 +1297,7 @@ mod tests {
             f.reopen();
             let record = f.authority.catalog_installs.values().next().unwrap();
             let entry = &f.authority.persistent[&retained.id].stored;
-            assert!(entry_reaches(record, entry).unwrap());
+            assert!(entry_reaches(record, entry).unwrap().protects());
             f.reconcile(vec![retained], true).unwrap();
             assert!(f.root.join("old/data/network").exists());
             assert_eq!(f.authority.catalog_installs.len(), 1);
@@ -1015,26 +1369,37 @@ mod tests {
         let lower = temp.path().join("engines");
         let upper = temp.path().join("Engines");
         fs::create_dir(&lower).unwrap();
+        let relation = |tree: &Path, path: &Path, recursive| {
+            let expected_tree = identity(tree).unwrap_or(Identity { a: 0, b: 0 });
+            let expected_root = identity(tree.parent().unwrap()).unwrap();
+            filesystem_reaches(tree, &expected_tree, &expected_root, path, recursive)
+                .unwrap_or(Reachability::Uncertain)
+        };
         if !upper.exists() {
             fs::create_dir(&upper).unwrap();
-            assert!(!reaches(&lower, &upper, true));
+            assert_eq!(relation(&lower, &upper, true), Reachability::Disjoint);
         }
         let unrelated = temp.path().join("unrelated");
         fs::create_dir(&unrelated).unwrap();
-        assert!(!reaches(&lower, &unrelated, true));
-        assert!(reaches(&lower.join("missing-install"), &lower, true));
-        assert!(!reaches(&lower.join("missing-install"), &unrelated, true));
-        assert!(reaches(
-            &lower,
-            &temp.path().join("unavailable/leaf"),
-            false
-        ));
+        assert_eq!(relation(&lower, &unrelated, true), Reachability::Disjoint);
+        assert_eq!(
+            relation(&lower.join("missing-install"), &lower, true),
+            Reachability::Member
+        );
+        assert_eq!(
+            relation(&lower.join("missing-install"), &unrelated, true),
+            Reachability::Disjoint
+        );
+        assert_eq!(
+            relation(&lower, &temp.path().join("unavailable/leaf"), false),
+            Reachability::Uncertain
+        );
         let file = lower.join("file");
         let alias = unrelated.join("file-alias");
         fs::write(&file, b"binding").unwrap();
         fs::hard_link(&file, &alias).unwrap();
         assert!(
-            reaches(&file, &alias, false),
+            relation(&file, &alias, false) == Reachability::Member,
             "existing leaf aliases use identity, not canonical strings"
         );
     }
