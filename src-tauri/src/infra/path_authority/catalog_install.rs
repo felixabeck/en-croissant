@@ -120,7 +120,73 @@ fn target(record: &CatalogInstall) -> Result<PathBuf, Error> {
 
 // Workspace ancestors do not own their children. Explicit directory resources do.
 fn reaches(tree: &Path, path: &Path, recursive: bool) -> bool {
-    path.starts_with(tree) || (recursive && tree.starts_with(path))
+    path.starts_with(tree)
+        || (recursive && tree.starts_with(path))
+        // Filesystem aliases only add retention. These views never authorize cleanup or
+        // replace its exact locator, no-follow opens, identity checks or inventory.
+        || filesystem_reaches(tree, path, recursive).unwrap_or(true)
+}
+
+struct ReachabilityBinding {
+    path: PathBuf,
+    existing: bool,
+}
+
+impl ReachabilityBinding {
+    fn resolve(path: &Path) -> Result<Self, Error> {
+        match fs::canonicalize(path) {
+            Ok(path) => Ok(Self {
+                path,
+                existing: true,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Only a missing final leaf has a useful partial binding. A dangling link,
+                // unavailable parent or other uncertainty must conservatively retain trees.
+                match fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err(Error::Conflict("uncertain catalog reachability".into())),
+                }
+                let parent = fs::canonicalize(path.parent().ok_or_else(invalid_record)?)?;
+                Ok(Self {
+                    path: parent.join(path.file_name().ok_or_else(invalid_record)?),
+                    existing: false,
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn contains(&self, other: &Self) -> Result<bool, Error> {
+        if self.existing {
+            let binding = identity(&self.path)?;
+            let start = if other.existing {
+                other.path.as_path()
+            } else {
+                other.path.parent().ok_or_else(invalid_record)?
+            };
+            // Compare actual objects, including the existing leaf. Canonical strings alone
+            // can still differ for case aliases, alternate names and hard-linked files.
+            for ancestor in start.ancestors() {
+                if identity(ancestor)? == binding {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        if other.existing {
+            return Ok(false);
+        }
+        // Neither leaf exists. Equal parent bindings do not establish that different leaf
+        // spellings are disjoint on this filesystem, so retain rather than case-fold them.
+        Ok(identity(self.path.parent().ok_or_else(invalid_record)?)?
+            == identity(other.path.parent().ok_or_else(invalid_record)?)?)
+    }
+}
+
+fn filesystem_reaches(tree: &Path, path: &Path, recursive: bool) -> Result<bool, Error> {
+    let tree = ReachabilityBinding::resolve(tree)?;
+    let path = ReachabilityBinding::resolve(path)?;
+    Ok(tree.contains(&path)? || (recursive && path.contains(&tree)?))
 }
 
 fn entry_reaches(record: &CatalogInstall, entry: &StoredEntry) -> Result<bool, Error> {
@@ -185,21 +251,23 @@ fn walk(
                 if opened_file_identity(&file)? != entry.identity {
                     return Err(Error::Conflict("catalog inventory entry changed".into()));
                 }
-                let mut hash = Sha256::new();
-                loop {
-                    let read = file.read(buffer)?;
-                    if read == 0 {
-                        break;
-                    }
-                    *bytes = bytes.saturating_add(read as u64);
-                    if *bytes > MAX_INVENTORY_BYTES {
-                        return Err(Error::ResourceLimit(
-                            "catalog inventory content limit reached".into(),
-                        ));
-                    }
-                    hash.update(&buffer[..read]);
-                }
-                Some(format!("{:x}", hash.finalize()))
+                let (_, digest) = sha256_read_core(
+                    &mut file,
+                    buffer,
+                    || Ok(()),
+                    |read| {
+                        *bytes = bytes.checked_add(read).ok_or_else(|| {
+                            Error::ResourceLimit("catalog inventory content limit reached".into())
+                        })?;
+                        if *bytes > MAX_INVENTORY_BYTES {
+                            return Err(Error::ResourceLimit(
+                                "catalog inventory content limit reached".into(),
+                            ));
+                        }
+                        Ok(())
+                    },
+                )?;
+                Some(digest)
             }
             DirectoryEntryKind::Other => {
                 return Err(Error::Conflict(
@@ -775,6 +843,317 @@ mod tests {
         f.reopen();
         f.reconcile(vec![], true).unwrap();
         assert!(!f.root.join("old").exists());
+    }
+
+    #[tokio::test]
+    async fn catalog_install_production_shutdown_durably_clears_only_after_success() {
+        for outcome in ["success", "failure", "timeout"] {
+            let mut f = Fixture::new();
+            f.install("old");
+            let engine = f.engine("old");
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            let session = f.authority.catalog_session.clone();
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&session)));
+            let authority = SharedPathAuthority::installed(f.authority);
+            let supervisor = crate::engine::EngineSupervisor::default();
+            let games = crate::game::GameManager::new();
+            let operations = crate::infra::operations::OperationRegistry::default();
+            let budget = if outcome == "timeout" {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(5)
+            };
+            let teardown = crate::shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                &operations,
+                async {
+                    match outcome {
+                        "failure" => Err("catalog teardown refused".into()),
+                        "timeout" => std::future::pending().await,
+                        _ => Ok(()),
+                    }
+                },
+                std::future::ready(Ok(())),
+                budget,
+            );
+            assert_eq!(
+                crate::shutdown_with_catalog_authority(teardown, authority.clone(), budget).await,
+                outcome == "success"
+            );
+            assert!(operations.prepare_download("after-shutdown").is_err());
+            drop(authority);
+            f.authority = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+            assert_eq!(
+                f.authority
+                    .catalog_installs
+                    .values()
+                    .any(|record| record.users.contains(&session)),
+                outcome != "success"
+            );
+            f.reconcile(vec![], true).unwrap();
+            assert_eq!(
+                f.root.join("old/data/network").exists(),
+                outcome != "success"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn alias_catalog_locator(f: &mut Fixture) {
+        let alias = f.temp.path().join("alias");
+        std::os::unix::fs::symlink(f.temp.path().parent().unwrap(), &alias).unwrap();
+        let root = alias
+            .join(f.temp.path().file_name().unwrap())
+            .join("engines");
+        let binding = identity(&f.root).unwrap();
+        assert_eq!(identity(&root).unwrap(), binding);
+        // This is only supplemental retention evidence. Cleanup retains its independent
+        // no-follow boundary and is never authorized through this alias.
+        let mut records = f.authority.catalog_installs.clone();
+        for record in records.values_mut() {
+            record.root.path = NativePath::from_path(&root);
+        }
+        f.authority.commit_catalog(records).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_filesystem_alias_retained_executable_and_recursive_ancestor() {
+        for recursive in [false, true] {
+            let mut f = Fixture::new();
+            f.install("old");
+            let retained = if recursive {
+                let root = f.root.clone();
+                f.resource(&root, true).path_ref().clone()
+            } else {
+                f.engine("old").path_ref().clone()
+            };
+            f.authority.clear_catalog_session_use().unwrap();
+            alias_catalog_locator(&mut f);
+            f.reopen();
+            let record = f.authority.catalog_installs.values().next().unwrap();
+            let entry = &f.authority.persistent[&retained.id].stored;
+            assert!(entry_reaches(record, entry).unwrap());
+            f.reconcile(vec![retained], true).unwrap();
+            assert!(f.root.join("old/data/network").exists());
+            assert_eq!(f.authority.catalog_installs.len(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_filesystem_alias_current_session_use_is_durable() {
+        let mut f = Fixture::new();
+        f.install("old");
+        let engine = f.engine("old");
+        f.authority.clear_catalog_session_use().unwrap();
+        alias_catalog_locator(&mut f);
+        f.reopen();
+        drop(
+            f.authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap(),
+        );
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+        f.reconcile(vec![], true).unwrap();
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("old/data/network").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_filesystem_alias_prepublication_ancestor_use_is_durable() {
+        let mut f = Fixture::new();
+        let root = f.root.clone();
+        let resource = f.resource(&root, true);
+        let lease = f.authority.engine_resource(&resource).unwrap();
+        let renamed = f.temp.path().join("renamed");
+        fs::rename(&root, &renamed).unwrap();
+        std::os::unix::fs::symlink(&renamed, &root).unwrap();
+        assert_eq!(
+            fs::canonicalize(&root).unwrap(),
+            fs::canonicalize(&renamed).unwrap()
+        );
+        // Model the root's new spelling while preserving the earlier successful resource use.
+        f.authority
+            .persistent
+            .get_mut(&f.handle.path_ref().id)
+            .unwrap()
+            .stored
+            .path = NativePath::from_path(&renamed);
+        f.root = renamed;
+        f.install("later");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("later/data/network").exists());
+        drop(lease);
+    }
+
+    #[test]
+    fn catalog_install_filesystem_bindings_keep_disjoint_paths_and_uncertainty_conservative() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("engines");
+        let upper = temp.path().join("Engines");
+        fs::create_dir(&lower).unwrap();
+        if !upper.exists() {
+            fs::create_dir(&upper).unwrap();
+            assert!(!reaches(&lower, &upper, true));
+        }
+        let unrelated = temp.path().join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        assert!(!reaches(&lower, &unrelated, true));
+        assert!(reaches(&lower.join("missing-install"), &lower, true));
+        assert!(!reaches(&lower.join("missing-install"), &unrelated, true));
+        assert!(reaches(
+            &lower,
+            &temp.path().join("unavailable/leaf"),
+            false
+        ));
+        let file = lower.join("file");
+        let alias = unrelated.join("file-alias");
+        fs::write(&file, b"binding").unwrap();
+        fs::hard_link(&file, &alias).unwrap();
+        assert!(
+            reaches(&file, &alias, false),
+            "existing leaf aliases use identity, not canonical strings"
+        );
+    }
+
+    #[test]
+    fn catalog_install_inventory_digest_enforces_cumulative_cap_and_checked_accounting() {
+        let f = Fixture::new();
+        let stage = f.stage();
+        let binding = identity(stage.path()).unwrap();
+        let directory = open_verified_directory(stage.path(), (binding.a, binding.b))
+            .unwrap()
+            .into_file();
+        for mut bytes in [MAX_INVENTORY_BYTES - 1, u64::MAX] {
+            let error = walk(
+                &directory,
+                Path::new(""),
+                binding.a,
+                &mut bytes,
+                &mut Vec::new(),
+                &mut vec![0; 64 * 1024],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::ResourceLimit(ref message) if message == "catalog inventory content limit reached"),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    fn rename_case_alias(f: &mut Fixture) -> bool {
+        let renamed = f.temp.path().join("Engines");
+        fs::rename(&f.root, &renamed).unwrap();
+        if !f.root.exists() {
+            eprintln!("case-sensitive fixture filesystem, case-alias runtime scenario skipped");
+            return false;
+        }
+        assert_eq!(identity(&f.root).unwrap(), identity(&renamed).unwrap());
+        f.root = renamed;
+        true
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_install_windows_case_rename_retained_executable_and_recursive_ancestor() {
+        for recursive in [false, true] {
+            let mut f = Fixture::new();
+            f.install("old");
+            let engine = f.engine("old");
+            f.authority.clear_catalog_session_use().unwrap();
+            if !rename_case_alias(&mut f) {
+                continue;
+            }
+            let retained = if recursive {
+                let root = f.root.clone();
+                f.resource(&root, true).path_ref().clone()
+            } else {
+                engine.path_ref().clone()
+            };
+            f.reopen();
+            f.reconcile(vec![retained], true).unwrap();
+            assert!(f.root.join("old/data/network").exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_install_windows_case_rename_current_session_use() {
+        let mut f = Fixture::new();
+        f.install("old");
+        let engine = f.engine("old");
+        f.authority.clear_catalog_session_use().unwrap();
+        if !rename_case_alias(&mut f) {
+            return;
+        }
+        f.reopen();
+        drop(
+            f.authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap(),
+        );
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("old/data/network").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_install_windows_case_rename_prepublication_ancestor_use() {
+        let mut f = Fixture::new();
+        let root = f.root.clone();
+        let resource = f.resource(&root, true);
+        let lease = f.authority.engine_resource(&resource).unwrap();
+        // Windows pins the selected directory against rename while the descriptor is held.
+        // Session reachability must outlive that descriptor for the rest of this process.
+        drop(lease);
+        if !rename_case_alias(&mut f) {
+            return;
+        }
+        f.authority
+            .persistent
+            .get_mut(&f.handle.path_ref().id)
+            .unwrap()
+            .stored
+            .path = NativePath::from_path(&f.root);
+        f.install("later");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("later/data/network").exists());
     }
 
     #[test]

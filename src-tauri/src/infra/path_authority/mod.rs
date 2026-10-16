@@ -3610,20 +3610,38 @@ fn sha256_reader_cancellable(
     reader: &mut impl Read,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(u64, String), Error> {
+    sha256_read_core(
+        reader,
+        &mut [0_u8; 64 * 1024],
+        || {
+            if cancellation.is_cancelled() {
+                Err(Error::Cancellation)
+            } else {
+                Ok(())
+            }
+        },
+        |_| Ok(()),
+    )
+}
+
+fn sha256_read_core(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    mut before_read: impl FnMut() -> Result<(), Error>,
+    mut account_read: impl FnMut(u64) -> Result<(), Error>,
+) -> Result<(u64, String), Error> {
     let mut hasher = Sha256::new();
     let mut size = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
     loop {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        let read = reader.read(&mut buffer)?;
+        before_read()?;
+        let read = reader.read(buffer)?;
         if read == 0 {
             break;
         }
         size = size.checked_add(read as u64).ok_or_else(|| {
             Error::ResourceLimit("artifact payload exceeds supported size".into())
         })?;
+        account_read(read as u64)?;
         hasher.update(&buffer[..read]);
     }
     Ok((size, format!("{:x}", hasher.finalize())))
@@ -3662,24 +3680,18 @@ fn sha256_open_file(
     file: &mut impl Read,
     #[cfg(test)] observer: Option<&Arc<dyn ActivationObserver + Send + Sync>>,
 ) -> Result<(u64, String), Error> {
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        #[cfg(test)]
-        if let Some(observer) = observer {
-            observer.observe(ActivationObserverStage::BeforeRead);
-        }
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        size = size.checked_add(read as u64).ok_or_else(|| {
-            Error::ResourceLimit("artifact payload exceeds supported size".into())
-        })?;
-        hasher.update(&buffer[..read]);
-    }
-    Ok((size, format!("{:x}", hasher.finalize())))
+    sha256_read_core(
+        file,
+        &mut [0_u8; 64 * 1024],
+        || {
+            #[cfg(test)]
+            if let Some(observer) = observer {
+                observer.observe(ActivationObserverStage::BeforeRead);
+            }
+            Ok(())
+        },
+        |_| Ok(()),
+    )
 }
 
 /// Change stamp paired with the opaque file identity. It is never a standalone authority check:
@@ -4350,6 +4362,8 @@ pub struct PathAuthority {
     catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
     catalog_session: String,
     catalog_protected: BTreeSet<String>,
+    /// Current-process session uses retained until exit, including resources used before
+    /// provenance publication. The boolean grants recursive reachability for directory uses.
     catalog_uses: BTreeMap<PathBuf, bool>,
     attachments_sealed: bool,
     registry_durability_pending: bool,

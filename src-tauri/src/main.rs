@@ -1931,6 +1931,34 @@ where
     }
 }
 
+/// Production shutdown boundary shared by RunEvent and durable catalog integration tests.
+async fn shutdown_with_catalog_authority<T>(
+    teardown: T,
+    authority: crate::infra::path_authority::SharedPathAuthority,
+    budget: Duration,
+) -> bool
+where
+    T: std::future::Future<Output = bool>,
+{
+    shutdown_with_catalog_clear(
+        teardown,
+        |cancellation| async move {
+            BLOCKING_GATEWAY
+                .spawn(move || {
+                    authority.with_mut_cancellable(&cancellation, |authority| {
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancellation);
+                        }
+                        authority.clear_catalog_session_use()
+                    })??
+                })
+                .await
+        },
+        budget,
+    )
+    .await
+}
+
 async fn shutdown_engine_launch_root(
     authority: crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<(), Error> {
@@ -2429,7 +2457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let app_handle = app_handle.clone();
                     async move {
                         let state = app_handle.state::<AppState>();
-                        shutdown_with_catalog_clear(
+                        shutdown_with_catalog_authority(
                             shutdown_backend_with_attachments(
                                 state.engine_supervisor.as_ref(),
                                 &state.game_manager,
@@ -2450,24 +2478,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 },
                                 SHUTDOWN_BUDGET,
                             ),
-                            |cancellation| {
-                                let authority = state.pgn_path_authority.clone();
-                                async move {
-                                    BLOCKING_GATEWAY
-                                        .spawn(move || {
-                                            authority.with_mut_cancellable(
-                                                &cancellation,
-                                                |authority| {
-                                                    if cancellation.is_cancelled() {
-                                                        return Err(Error::Cancellation);
-                                                    }
-                                                    authority.clear_catalog_session_use()
-                                                },
-                                            )??
-                                        })
-                                        .await
-                                }
-                            },
+                            state.pgn_path_authority.clone(),
                             SHUTDOWN_BUDGET,
                         )
                         .await;
@@ -5031,9 +5042,11 @@ mod blocking_offload_scans {
         );
 
         let hash_open = body_at_indent(path_authority, "fn sha256_open_file(");
+        assert!(hash_open.contains("sha256_read_core("));
+        let hash_core = body_at_indent(path_authority, "fn sha256_read_core(");
         assert!(
-            hash_open.contains(".read(") && hash_open.contains("hasher.finalize()"),
-            "sha256_open_file must hash the descriptor: {hash_open}"
+            hash_core.contains(".read(") && hash_core.contains("hasher.finalize()"),
+            "the shared hash core must hash the descriptor: {hash_core}"
         );
 
         let runtime_helper = body_at_indent(
