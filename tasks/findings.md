@@ -16358,3 +16358,19 @@ This closes the measured ownership defect and its completed local proof contract
 
 Closed with source1b2158ba and complete hosted confirmation on fd885f1891425d4103d5610b5c55d59a4dfb373d, Test run38734981517, Linux job116421889208 success. All six required jobs passed. Actual emitted SDK config uses dryRunTimeoutMinutes10 with all three mutation scores100, perTest/related and thresholds100 unchanged, individual and per-mutant settings5000/1.5 unchanged. Whole hosted baselines completed game291tests20s, workspace2166tests4m27s, tree2698tests4m58s. No claim this particular successful run exceeded the old cap. Published-base300s timeout remains the negative evidence. Complete constrained local proof and raw reviews are in tasks/handoffs/2026-10-15-ci-mutation-startup-repair.md. d-20261015-20 supersedes the initial agent-authored blanket timeout prohibition and discarded serial trial, no Felix requirement changed. Added failure cost is up to five minutes for a stalled complete initial suite, rollback git revert1b2158ba through normal gates. Plan authorship and arbitration shared one context, detection used the same model family as code.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"d5d7a8f5e1be2b85433c125ceded67ab271351b9349dfcc695e58a4dd64f5ea9","header_sha256":"a75877c4e5cf7d84964aeb4a1763c4f8f7f86e87fe7ddd09b30490443fd38f55","header_status":"handled","input_sha256":"d108e9758c43f2ab06166dfce4b5c1c2288f1867e24c29298b6ad3b7a2e5c5ef","kind":"mutation-receipt","operation":"066d10d1c07ce9cbe0ec249c45f032e0bc1628c405e4f857ae5c1db5b239743b","options":{"section":null},"request_id_sha256":null,"results":["f-20261015-08"],"target":"f-20261015-08","v":1} -->
+
+---
+
+## 2026-10-16 — filed through the inbox spool
+
+### Remote CI repair: Test
+* **ID:** f-20261016-01 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** a71ea5c2-b3b2-4ff8-8af7-bc4b9e5c38c9
+
+* **Impact class:** tooling
+* **Found by:** drain remote-CI check (Codex)
+* **Where:** workflow `Test`, jobs `rust-windows-test`.
+* **Defect:** failed jobs on `1a4305ed99259c861c266d85284aebbe048634c9`: `rust-windows-test`.
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/38851003688
+* **Proof:** `gh run view 38851003688 --log-failed`
+* **CI run:** 38851003688
