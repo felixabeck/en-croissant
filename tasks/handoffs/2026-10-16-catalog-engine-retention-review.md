@@ -1488,6 +1488,62 @@ Reviewed all seven production files and direct consumers. No files changed or te
 VERDICT: APPROVED
 ```
 
+### Complete retained-membership judgment before final registration repair
+
+The first recovery source remains uncommitted and unaccepted. Actual moved original-member registration reproduced on that candidate, intended red101 after native cleanup. Its inventory-only integration correction is a useful partial mechanism, but the fresh reviewer confirms that original inventory cannot represent ordinary added descendants in a moved pending tree. The final contract reuses the complete existing reaches relation with full resolved target and retained identity, preserving independent held files after locator replacement. This is mandatory original O1 work, with authority in the frozen user-addition/substitution model and d-20260906-08. No ownership, registry or public product contract changes. Decision d-20261016-20 supplements d19. Focused membership review has one completed round, zero adopted findings, explicit mechanism-level approval. Runtime and source closure remain pending at this checkpoint. Plan authorship and arbitration share a context. Detection uses the same model family as code in a fresh Codex session.
+
+#### Recovery registration-membership-mechanism-r1.md
+
+```text
+# Retained catalog membership at registration
+
+## MANDATE
+
+Complete the existing O1 registration confirmation contract of registration-mechanism-r2.md and WSC3. A pending, cleaning or preserved installation must not become usable through automatic registration after an ordinary completed filesystem substitution. A genuinely independent held file remains registerable despite later locator replacement, d-20260906-08. Original frozen threat model includes ordinary user additions/edits and filesystem substitution, excludes continuous malicious mutation. No new state, product scope or ownership authority.
+
+## Evidence and question
+
+The original605ad44c direct hard-link counterexample is preserved in the handoff. The first recovery candidate correctly fixes that file case, but the actual registration-leaf-integration-moved-prior.log proves it still registers an existing managed executable after its pending directory moves to a previously independent alias. The new in-progress candidate matches retained terminal identity to the original record inventory, extracted into contains_native_identity and reused by reaches. This closes the measured original-member move, source acceptance remains pending.
+
+Source question: user-added executables or added descendants of the same moved pending tree need not occur in its original managed inventory. Existing reaches first uses filesystem_reaches with the captured terminal binding to prove current physical ancestry, then falls back to known inventory identity. It excludes a later different pathname object when actual identity differs from the held binding. An inventory-only registration classifier does not inherit that complete membership contract. Is this a remaining mandatory O1 gap, and is reuse of the existing positive membership relation the simplest correct mechanism? Judge the actual source snapshot and dependent consumers, do not infer a new defect merely from this question.
+
+## O1 — one retained-object membership relation
+
+For registration, reuse the existing positive native membership relation for the exact resolved file context, in addition to existing top-level destination/native-alias scope. Supply the complete resolved target and its retained file identity so physical ancestry can only add refusal for that same object. Known original inventory identity still covers the original object after its pathname changes. Preserve exact authorized physical-root scoping, independent replacements/roots, pending confirmation persistence, cleaning/preserved refusal and existing no-follow boundaries. Reuse the actual shared relation, do not add another ancestor scanner or pathname classifier. Uncertainty is not invented positive membership, and no membership observation can mint ownership or deletion authority. Full record confirmation remains at its recorded exact root/destination through existing confirm_catalog_install.
+
+Confirmation must precede executable permission mutation and capability persistence. Keep existing early confirmation and durable conservative use, no child handoff until acceptance.
+
+## O2 — discriminating proof
+
+Retain the two existing direct-file opposite-order regressions and actual moved original-member test. Exercise an actual pending tree with an added executable/descendant, move it after preguard, and require refusal with pending evidence and bytes/permissions preserved. Require the opposite order, an independent held file whose locator later becomes a pending member, to remain registerable with its original identity. Source-only behavioral reversal of physical membership must fail the added-member case without changing tests, then exact restoration passes. Keep intended guard/binding/permission-ordering reversals with version qualifiers. Native Windows/macOS acceptance remains exact-pushed-SHA CI, no fake OS or native promise before observation.
+
+## Files and history
+
+Same owned files mod.rs and catalog_install.rs, resolved.rs only if exposing existing retained evidence is necessary. No new public interface, storage, workflow, framework or tool. Original plan metrics and R12 CR22–27 remain. Focused registration r1=1 r2=0, PR1 closed at plan level. This fresh judgment addresses a recurring retained-membership seam before another production correction. Previous exact snapshot is registration-mechanism-r2.md, and the new full-path positive-membership refinement is explicit here. Existing source worker may complete its prior inventory-based assignment while this read-only judgment runs, no concurrent writer is authorized.
+```
+
+#### Recovery lens-registration-membership-plan-r1.txt
+
+```text
+No plan defects found.
+
+The moved-tree pending-registration issue is CLOSED at mechanism level for `registration-membership-mechanism-r1.md:15` (confidence: 96). In the supplied snapshot, registration’s inventory-only check at `catalog_install.rs:704` misses added members. The shared `reaches` relation at `:278` already covers physical ancestry, while `filesystem_reaches` at `:374–382` prevents a replacement locator from establishing membership for a different held object. Reusing that relation addresses a mandatory gap within the frozen threat model.
+
+O2 requires discriminating production-path tests and a physical-membership reversal. Confirmation remains at the recorded destination, before permission mutation and capability persistence. No unaddressed consumer or scope expansion found.
+
+Limitation (confidence: 100): source and supplied-log review only. Added-member runtime proof, final source closure and native Windows/macOS acceptance remain pending. No files changed or tests executed. Review used the same model family in a fresh context.
+
+VERDICT: APPROVED
+```
+
+```json
+{"artifact": "registration-leaf-integration-moved-prior.log", "raw": "   Compiling chessfable v0.15.0 (/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.60s\n     Running unittests src/main.rs (src-tauri/target/debug/deps/chessfable-a8e841800ff27764)\n\nrunning 1 test\nREGISTRATION_MOVED_TREE_NATIVE: swaps=[Ok(()), Ok(())], result=Ok(EngineHandle { id: PathRef { id: \"2f9fd571-1954-4feb-a4fc-57ceb4fdf815\" }, kind: Engine }), expected=Identity { a: 64513, b: 91641763 }, native=Ok(Identity { a: 64513, b: 91641763 }), stored=Some(Identity { a: 64513, b: 91641763 }), pending=true/true, no_managed=false/false, engine=Ok([109, 97, 110, 97, 103, 101, 100, 32, 101, 110, 103, 105, 110, 101]), network=Ok([109, 97, 110, 97, 103, 101, 100, 32, 110, 101, 116, 119, 111, 114, 107]), independent=Ok([105, 110, 100, 101, 112, 101, 110, 100, 101, 110, 116, 32, 101, 110, 103, 105, 110, 101]), old_destination_absent=true, hooks_empty=true, removed=true\n\nthread 'infra::path_authority::catalog_install::tests::catalog_install_r13_registration_refuses_pending_moved_tree' (2782754) panicked at src/infra/path_authority/catalog_install.rs:1503:9:\nREGISTRATION_MOVED_TREE_PENDING_REFUSAL: refuse the captured member of the moved pending tree: Ok(EngineHandle { id: PathRef { id: \"2f9fd571-1954-4feb-a4fc-57ceb4fdf815\" }, kind: Engine }), stored=Some(Identity { a: 64513, b: 91641763 })\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest infra::path_authority::catalog_install::tests::catalog_install_r13_registration_refuses_pending_moved_tree ... FAILED\n\nfailures:\n\nfailures:\n    infra::path_authority::catalog_install::tests::catalog_install_r13_registration_refuses_pending_moved_tree\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2436 filtered out; finished in 0.10s\n\nerror: test failed, to rerun pass `--bin chessfable`\n"}
+```
+
+```json
+{"artifact": "registration-leaf-integration-moved-prior.status", "raw": "101\n"}
+```
+
 ### P4 integration review — CR11 and CR12
 
 P4 initially completed its assigned durable-state work in two source files with 65 catalog, 284 authority, 214 filesystem tests plus one existing ignore, 39 shutdown and one inherited-directory child test green. Formatting and diff checks passed. Source-only serialization reversal reproduced three-session child-data loss. Shared-admission and pre-mutation-baseline reversals each admitted a new binding at 4098 instead of refusing at 4096. Exact restoration and green reruns are indexed in phase4-implementation-evidence.md. These are leaf proofs pending the final root proof and pre-review. No P4 source commit was made because integration review found further in-mandate gaps.
