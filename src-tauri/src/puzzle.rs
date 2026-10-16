@@ -239,14 +239,15 @@ async fn cache_key(
     theme: Option<String>,
     cancellation: CancellationToken,
 ) -> Result<PuzzleCacheKey, Error> {
-    let (target, _) = puzzle_binding(&resolved)?;
-    let database_path = target.path().to_owned();
-    let database = BLOCKING_GATEWAY
+    let (database, database_path) = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            repository.identity_from_probe(&target, token, false)
+            let (target, _) = puzzle_binding(&resolved)?;
+            let database_path = target.path().to_owned();
+            let database = repository.identity_from_probe(&target, token, false)?;
+            Ok((database, database_path))
         })
         .await?;
     Ok(PuzzleCacheKey {
@@ -1846,6 +1847,162 @@ mod tests {
         assert_eq!(key.min_rating, 0);
         assert_eq!(key.max_rating, u16::MAX);
         assert!(key.theme.is_none());
+    }
+
+    #[test]
+    fn joiner_puzzle_retained_parent_mints_cache_and_loads_original_after_rename() {
+        for substitute in [false, true] {
+            let fixture = puzzle_deletion_fixture_at(Path::new("parent/puzzles.db3"));
+            let original_parent = fixture.path.parent().unwrap();
+            let moved = fixture._directory.path().join("moved-parent");
+            let renamed = std::fs::rename(original_parent, &moved);
+            #[cfg(windows)]
+            {
+                assert!(
+                    renamed.is_err(),
+                    "retained Windows handles must refuse parent replacement"
+                );
+            }
+            #[cfg(unix)]
+            {
+                renamed.unwrap();
+                if substitute {
+                    std::fs::create_dir(original_parent).unwrap();
+                    std::fs::write(&fixture.path, b"substitute is not a puzzle database").unwrap();
+                }
+            }
+            let (target, expected) = puzzle_binding(&fixture.resolved)
+                .expect("mint from the retained parent after rename");
+            assert_eq!(target.probe_current().unwrap().identity, expected);
+            let key = tauri::async_runtime::block_on(cache_key(
+                Arc::clone(&fixture.repository),
+                Arc::new(fixture.resolved),
+                0,
+                u16::MAX,
+                None,
+                CancellationToken::new(),
+            ))
+            .expect("cache key probes the original parent");
+            assert_eq!(key.database.object, expected, "substitution {substitute}");
+            let file = crate::infra::fs::open_regular_at(
+                target.parent(),
+                target.leaf(),
+                crate::infra::fs::RegularFileAccess::ReadOnly,
+            )
+            .unwrap();
+            let rows = load_puzzles(
+                &fixture.repository,
+                file,
+                expected,
+                0,
+                u16::MAX,
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].rating, 1200);
+            #[cfg(unix)]
+            if substitute {
+                assert_eq!(
+                    std::fs::read(&fixture.path).unwrap(),
+                    b"substitute is not a puzzle database"
+                );
+            } else {
+                assert!(!fixture.path.exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn joiner_puzzle_retained_parent_keeps_repository_deletion_exclusion() {
+        let fixture = puzzle_deletion_fixture_at(Path::new("parent/puzzles.db3"));
+        let (target, _) = puzzle_binding(&fixture.resolved).unwrap();
+        // Retain the sealed carrier while releasing the ordinary file lease before opening
+        // SQLite. Ordinary capability/SQLite exclusion is an independent existing contract.
+        drop(fixture.resolved);
+        let connection = fixture
+            .repository
+            .schema_specific_connection(&target)
+            .unwrap();
+        let moved = fixture._directory.path().join("moved-parent");
+        std::fs::rename(fixture.path.parent().unwrap(), &moved).unwrap();
+        assert_eq!(target.probe_current().unwrap().identity, target.identity());
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let _cancel_on_exit = cancellation.clone().drop_guard();
+            let worker = scope.spawn(|| {
+                fixture
+                    .repository
+                    .delete_exclusive_cancellable(&target, &cancellation, || {
+                        called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        crate::infra::fs::remove_entry_at(
+                            target.parent(),
+                            target.leaf(),
+                            target.identity(),
+                            false,
+                        )
+                    })
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !fixture.repository.deletion_is_waiting(&target).unwrap() {
+                assert!(
+                    !worker.is_finished(),
+                    "deletion must wait for the live repository lease"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "deletion must enter its existing lease wait"
+                );
+                std::thread::yield_now();
+            }
+            cancellation.cancel();
+            assert!(matches!(worker.join().unwrap(), Err(Error::Cancellation)));
+        });
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(moved.join("puzzles.db3").exists());
+        drop(connection);
+        fixture
+            .repository
+            .delete_exclusive(&target, || {
+                crate::infra::fs::remove_entry_at(
+                    target.parent(),
+                    target.leaf(),
+                    target.identity(),
+                    false,
+                )
+            })
+            .unwrap();
+        assert!(!moved.join("puzzles.db3").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn joiner_puzzle_retained_probe_refuses_changed_or_missing_leaf_after_rename() {
+        for replacement in ["missing", "file", "directory", "symlink"] {
+            let fixture = puzzle_deletion_fixture_at(Path::new("parent/puzzles.db3"));
+            let (target, _) = puzzle_binding(&fixture.resolved).unwrap();
+            let moved = fixture._directory.path().join("moved-parent");
+            std::fs::rename(fixture.path.parent().unwrap(), &moved).unwrap();
+            std::fs::rename(moved.join("puzzles.db3"), moved.join("original.db3")).unwrap();
+            match replacement {
+                "file" => std::fs::write(moved.join("puzzles.db3"), b"different object").unwrap(),
+                "directory" => std::fs::create_dir(moved.join("puzzles.db3")).unwrap(),
+                "symlink" => std::os::unix::fs::symlink(
+                    moved.join("original.db3"),
+                    moved.join("puzzles.db3"),
+                )
+                .unwrap(),
+                "missing" => {}
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(target.probe_current(), Err(Error::Conflict(_))),
+                "{replacement} must refuse the retained leaf"
+            );
+        }
     }
 
     #[test]

@@ -648,12 +648,14 @@ impl PathAuthority {
         &mut self,
         destination: &PathRef,
         resolved: &ResolvedPath,
-        staging: &Path,
+        staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
         self.protect_catalog_path(path, false, false, None)?;
         if crate::infra::fs::archive_destination_directory_exists(path)? {
-            return Ok(());
+            return Err(Error::Conflict(
+                "directory target was created concurrently".into(),
+            ));
         }
         let root = self
             .persistent
@@ -667,26 +669,23 @@ impl PathAuthority {
         {
             return Err(invalid_record());
         }
-        if staging.parent() != Some(root_path.as_path()) {
+        if staging.parent_identity()? != (root.identity.a, root.identity.b) {
             return Err(Error::InvalidInput(
                 "catalog staging must share the destination parent".into(),
             ));
         }
         let root_directory =
             open_verified_directory(&root_path, (root.identity.a, root.identity.b))?.into_file();
-        let identity = validate_target(staging, PathClass::PersistentCustomRoot)?;
-        let directory = open_removal_directory_at(
-            &root_directory,
-            staging.file_name().ok_or_else(invalid_record)?,
-            (identity.a, identity.b),
-        )?
-        .into_file();
+        let (source_parent, source_leaf, (a, b)) = staging.binding();
+        assert_entry_identity(source_parent, source_leaf, (a, b), true)?;
+        let identity = Identity { a, b };
+        let directory = staging.directory()?;
         let mut record = CatalogInstall {
             root,
             destination: NativePath::from_path(Path::new(
                 path.file_name().ok_or_else(invalid_record)?,
             )),
-            inventory: inventory(&directory, identity.a)?,
+            inventory: inventory(directory, identity.a)?,
             identity: identity.clone(),
             cleaning: false,
             preserved: false,
@@ -718,12 +717,7 @@ impl PathAuthority {
         records.insert(id.clone(), record);
         self.commit_catalog(records)?;
         self.catalog_protected.insert(id);
-        assert_entry_identity(
-            &root_directory,
-            staging.file_name().ok_or_else(invalid_record)?,
-            (identity.a, identity.b),
-            true,
-        )?;
+        assert_entry_identity(&root_directory, source_leaf, (identity.a, identity.b), true)?;
         resolved.atomic_install_download_dir(staging)
     }
 
@@ -879,6 +873,17 @@ mod tests {
         authority: PathAuthority,
     }
 
+    struct StageFixture {
+        path: PathBuf,
+        owner: crate::infra::fs::OwnedStagingDir,
+    }
+
+    impl StageFixture {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
     impl Fixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
@@ -904,27 +909,34 @@ mod tests {
                 PathAuthority::open(self.temp.path().join("registry.json"), vec![]).unwrap();
         }
 
-        fn stage(&self) -> tempfile::TempDir {
+        fn stage(&self) -> StageFixture {
             let stage = tempfile::tempdir_in(&self.root).unwrap();
             fs::write(stage.path().join("engine"), b"managed engine").unwrap();
             fs::create_dir(stage.path().join("data")).unwrap();
             fs::write(stage.path().join("data/network"), b"managed network").unwrap();
-            stage
+            let owner = crate::infra::fs::OwnedStagingDir::adopt(&stage).unwrap();
+            StageFixture {
+                path: stage.keep(),
+                owner,
+            }
         }
 
-        fn publish_stage(&mut self, name: &str, stage: &Path) -> Result<(), Error> {
+        fn publish_stage(&mut self, name: &str, stage: &mut StageFixture) -> Result<(), Error> {
             let resolved = self.authority.resolve(
                 self.handle.path_ref(),
                 PathOperation::DownloadArchive,
                 &[OsString::from(name)],
             )?;
-            self.authority
-                .publish_catalog_install(self.handle.path_ref(), &resolved, stage)
+            self.authority.publish_catalog_install(
+                self.handle.path_ref(),
+                &resolved,
+                &mut stage.owner,
+            )
         }
 
         fn install(&mut self, name: &str) {
-            let stage = self.stage();
-            self.publish_stage(name, stage.path()).unwrap();
+            let mut stage = self.stage();
+            self.publish_stage(name, &mut stage).unwrap();
         }
 
         fn engine(&mut self, name: &str) -> EngineHandle {
@@ -1017,6 +1029,208 @@ mod tests {
     impl Drop for DirFaultReset {
         fn drop(&mut self) {
             set_test_atomic_dir_injector(None);
+        }
+    }
+
+    type InstallEntryCallback = Box<dyn FnOnce() -> std::io::Result<()>>;
+    struct InstallEntryAction(std::cell::RefCell<Option<InstallEntryCallback>>);
+    impl AtomicDirInjector for InstallEntryAction {
+        fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+            if point == AtomicDirFaultPoint::InstallerEntry {
+                if let Some(action) = self.0.borrow_mut().take() {
+                    return action();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    type RegistryCommitCallback = Box<dyn FnOnce() + Send>;
+    struct RegistryCommitAction(std::sync::Mutex<Option<RegistryCommitCallback>>);
+    impl AtomicWriterInjector for RegistryCommitAction {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::ParentSync {
+                if let Some(action) = self.0.lock().unwrap().take() {
+                    action();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn catalog_install_joiner_post_inventory_parent_substitution_keeps_owned_cleanup() {
+        for fail in [false, true] {
+            let mut f = Fixture::new();
+            let mut stage = f.stage();
+            let stage_leaf = stage.path().file_name().unwrap().to_os_string();
+            let moved = f.temp.path().join("moved-root");
+            let root = f.root.clone();
+            let moved_at_hook = moved.clone();
+            let renamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let renamed_at_hook = renamed.clone();
+            let _reset = DirFaultReset;
+            set_test_atomic_dir_injector(Some(Box::new(InstallEntryAction(
+                std::cell::RefCell::new(Some(Box::new(move || {
+                    match fs::rename(&root, &moved_at_hook) {
+                        Ok(()) => {
+                            renamed_at_hook.store(true, Ordering::SeqCst);
+                            fs::create_dir(&root).unwrap();
+                            fs::create_dir(root.join(&stage_leaf)).unwrap();
+                            fs::write(
+                                root.join(&stage_leaf).join("foreign"),
+                                b"preserve substitute",
+                            )
+                            .unwrap();
+                        }
+                        Err(error) => {
+                            #[cfg(unix)]
+                            panic!("Unix parent rename must succeed: {error}");
+                            #[cfg(windows)]
+                            {
+                                assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                                assert!(!moved_at_hook.exists());
+                                assert_eq!(
+                                    fs::read(root.join(&stage_leaf).join("engine")).unwrap(),
+                                    b"managed engine"
+                                );
+                                assert_eq!(
+                                    fs::read(root.join(&stage_leaf).join("data/network")).unwrap(),
+                                    b"managed network"
+                                );
+                            }
+                        }
+                    }
+                    if fail {
+                        Err(std::io::Error::other("post-inventory refusal"))
+                    } else {
+                        Ok(())
+                    }
+                }))),
+            ))));
+            let result = f.publish_stage("installed", &mut stage);
+            assert_eq!(result.is_err(), fail);
+            let stage_path = stage.path().to_path_buf();
+            drop(stage);
+            #[cfg(unix)]
+            assert!(renamed.load(Ordering::SeqCst));
+            let installed_root = if renamed.load(Ordering::SeqCst) {
+                assert_eq!(
+                    fs::read(stage_path.join("foreign")).unwrap(),
+                    b"preserve substitute"
+                );
+                assert!(!moved.join(stage_path.file_name().unwrap()).exists());
+                &moved
+            } else {
+                assert!(!moved.exists());
+                assert!(!stage_path.exists());
+                &f.root
+            };
+            assert_eq!(installed_root.join("installed").exists(), !fail);
+            if !fail {
+                assert_eq!(
+                    fs::read(installed_root.join("installed/engine")).unwrap(),
+                    b"managed engine"
+                );
+                assert_eq!(
+                    fs::read(installed_root.join("installed/data/network")).unwrap(),
+                    b"managed network"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_joiner_destination_appearing_after_inventory_is_preserved() {
+        let mut f = Fixture::new();
+        let mut stage = f.stage();
+        let target = f.root.join("installed");
+        let target_at_commit = target.clone();
+        let guard = install_test_atomic_file_injector(Arc::new(RegistryCommitAction(
+            std::sync::Mutex::new(Some(Box::new(move || {
+                fs::create_dir(&target_at_commit).unwrap();
+                fs::write(target_at_commit.join("foreign"), b"user tree").unwrap();
+            }))),
+        )));
+        let result = f.publish_stage("installed", &mut stage);
+        drop(guard);
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "an appearing destination must be refused"
+        );
+        drop(stage);
+        assert_eq!(fs::read(target.join("foreign")).unwrap(), b"user tree");
+        assert!(!target.join("engine").exists());
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert_eq!(fs::read(target.join("foreign")).unwrap(), b"user tree");
+    }
+
+    #[test]
+    fn catalog_install_joiner_post_inventory_source_replacement_is_refused() {
+        let mut f = Fixture::new();
+        let mut stage = f.stage();
+        let source = stage.path().to_path_buf();
+        let moved = f.root.join("moved-source");
+        let source_at_hook = source.clone();
+        let moved_at_hook = moved.clone();
+        let renamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let renamed_at_hook = renamed.clone();
+        let _reset = DirFaultReset;
+        set_test_atomic_dir_injector(Some(Box::new(InstallEntryAction(std::cell::RefCell::new(
+            Some(Box::new(move || {
+                match fs::rename(&source_at_hook, &moved_at_hook) {
+                    Ok(()) => {
+                        renamed_at_hook.store(true, Ordering::SeqCst);
+                        fs::create_dir(&source_at_hook).unwrap();
+                        fs::write(source_at_hook.join("foreign"), b"foreign source").unwrap();
+                    }
+                    Err(error) => {
+                        #[cfg(unix)]
+                        panic!("Unix source rename must succeed: {error}");
+                        #[cfg(windows)]
+                        {
+                            assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                            assert!(!moved_at_hook.exists());
+                            assert_eq!(
+                                fs::read(source_at_hook.join("engine")).unwrap(),
+                                b"managed engine"
+                            );
+                            assert_eq!(
+                                fs::read(source_at_hook.join("data/network")).unwrap(),
+                                b"managed network"
+                            );
+                        }
+                    }
+                }
+                Ok(())
+            })),
+        )))));
+        let result = f.publish_stage("installed", &mut stage);
+        drop(stage);
+        #[cfg(unix)]
+        assert!(renamed.load(Ordering::SeqCst));
+        if renamed.load(Ordering::SeqCst) {
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            assert!(!f.root.join("installed").exists());
+            assert_eq!(fs::read(source.join("foreign")).unwrap(), b"foreign source");
+            assert_eq!(fs::read(moved.join("engine")).unwrap(), b"managed engine");
+            assert_eq!(
+                fs::read(moved.join("data/network")).unwrap(),
+                b"managed network"
+            );
+        } else {
+            assert!(result.is_ok());
+            assert!(!source.exists());
+            assert!(!moved.exists());
+            assert_eq!(
+                fs::read(f.root.join("installed/engine")).unwrap(),
+                b"managed engine"
+            );
+            assert_eq!(
+                fs::read(f.root.join("installed/data/network")).unwrap(),
+                b"managed network"
+            );
         }
     }
 
@@ -1243,9 +1457,9 @@ mod tests {
         let mut f = cr6_cleaning_fixture();
         let moved = f.temp.path().join("moved-tree");
         fs::rename(f.root.join("managed"), &moved).unwrap();
-        let stage = f.stage();
+        let mut stage = f.stage();
         assert!(
-            matches!(f.publish_stage("managed", stage.path()), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+            matches!(f.publish_stage("managed", &mut stage), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
         );
         assert!(!f.root.join("managed").exists());
         assert!(stage.path().join("engine").exists());
@@ -1263,8 +1477,8 @@ mod tests {
         let moved = f.temp.path().join("moved-tree");
         fs::rename(f.root.join("managed"), &moved).unwrap();
         let original = f.authority.catalog_installs.clone();
-        let stage = f.stage();
-        f.publish_stage("other", stage.path()).unwrap();
+        let mut stage = f.stage();
+        f.publish_stage("other", &mut stage).unwrap();
         assert_eq!(f.authority.catalog_installs.len(), 2);
         for (id, record) in original {
             assert_eq!(f.authority.catalog_installs[&id], record);
@@ -1488,10 +1702,10 @@ mod tests {
     #[test]
     fn catalog_install_phase3_file_resource_used_before_publication_gets_marker() {
         let mut f = Fixture::new();
-        let stage = f.stage();
+        let mut stage = f.stage();
         let resource = f.resource(&stage.path().join("engine"), false);
         drop(f.authority.engine_resource(&resource).unwrap());
-        f.publish_stage("later", stage.path()).unwrap();
+        f.publish_stage("later", &mut stage).unwrap();
         assert!(f
             .authority
             .catalog_installs
@@ -2116,7 +2330,7 @@ mod tests {
     #[tokio::test]
     async fn catalog_install_context1_removed_image_cwd_keeps_relative_data_without_resource() {
         let mut f = Fixture::new();
-        let stage = f.stage();
+        let mut stage = f.stage();
         let image = stage.path().join("engine");
         let child = InheritedDirectoryChild::spawn_image(&mut f, &image, None, ".".into()).await;
         let origin = f.authority.catalog_session.clone();
@@ -2127,7 +2341,7 @@ mod tests {
                 let image_identity = identity(&image).unwrap();
                 let cwd_identity = identity(stage.path()).unwrap();
                 fs::remove_file(&image).unwrap();
-                f.publish_stage("later", stage.path()).unwrap();
+                f.publish_stage("later", &mut stage).unwrap();
                 let record = f.authority.catalog_installs.values().next().unwrap();
                 assert_eq!(record.identity, cwd_identity);
                 assert!(record
@@ -2676,11 +2890,19 @@ mod tests {
         let mut f = Fixture::new();
         fs::create_dir(f.root.join("legacy")).unwrap();
         fs::write(f.root.join("legacy/keep"), b"user").unwrap();
-        f.install("legacy");
+        let mut stage = f.stage();
+        assert!(matches!(
+            f.publish_stage("legacy", &mut stage),
+            Err(Error::Conflict(_))
+        ));
         assert!(f.authority.catalog_installs.is_empty());
         f.install("managed");
         let original = f.authority.catalog_installs.clone();
-        f.install("managed");
+        let mut stage = f.stage();
+        assert!(matches!(
+            f.publish_stage("managed", &mut stage),
+            Err(Error::Conflict(_))
+        ));
         assert_eq!(f.authority.catalog_installs, original);
         f.reopen();
         f.reconcile(vec![], true).unwrap();
@@ -3138,9 +3360,9 @@ mod tests {
             AtomicFileFaultPoint::ParentSync,
         ] {
             let mut f = Fixture::new();
-            let stage = f.stage();
+            let mut stage = f.stage();
             let guard = install_test_atomic_file_injector(Arc::new(FileFault(point)));
-            assert!(f.publish_stage("managed", stage.path()).is_err());
+            assert!(f.publish_stage("managed", &mut stage).is_err());
             assert!(!f.root.join("managed").exists());
             drop(guard);
             f.reopen();
@@ -3160,10 +3382,10 @@ mod tests {
             AtomicDirFaultPoint::ParentSync,
         ] {
             let mut f = Fixture::new();
-            let stage = f.stage();
+            let mut stage = f.stage();
             let _reset = DirFaultReset;
             set_test_atomic_dir_injector(Some(Box::new(DirFault(point))));
-            assert!(f.publish_stage("managed", stage.path()).is_err());
+            assert!(f.publish_stage("managed", &mut stage).is_err());
             assert_eq!(
                 f.root.join("managed").exists(),
                 point == AtomicDirFaultPoint::ParentSync
@@ -3338,9 +3560,9 @@ mod tests {
             .values()
             .all(|record| record.cleaning));
         drop(guard);
-        let stage = f.stage();
+        let mut stage = f.stage();
         assert!(matches!(
-            f.publish_stage("managed", stage.path()),
+            f.publish_stage("managed", &mut stage),
             Err(Error::Conflict(_))
         ));
         assert!(f
@@ -3555,21 +3777,21 @@ mod tests {
             fs::read(f.root.join("managed/user-addition")).unwrap(),
             b"keep"
         );
-        let stage = f.stage();
+        let mut stage = f.stage();
         assert!(matches!(
-            f.publish_stage("managed", stage.path()),
+            f.publish_stage("managed", &mut stage),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
             f.authority
-                .publish_catalog_install(f.handle.path_ref(), &resolved, stage.path()),
+                .publish_catalog_install(f.handle.path_ref(), &resolved, &mut stage.owner),
             Err(Error::Conflict(_))
         ));
         f.reopen();
         f.reconcile(vec![], true).unwrap();
         assert!(f.root.join("managed/user-addition").exists());
         assert!(matches!(
-            f.publish_stage("managed", stage.path()),
+            f.publish_stage("managed", &mut stage),
             Err(Error::Conflict(_))
         ));
     }
@@ -3593,11 +3815,11 @@ mod tests {
     #[test]
     fn catalog_install_inventory_admission_refuses_excess_entries_before_publication() {
         let mut f = Fixture::new();
-        let stage = f.stage();
+        let mut stage = f.stage();
         for index in 0..MAX_INVENTORY_ENTRIES {
             fs::write(stage.path().join(format!("entry-{index}")), b"").unwrap();
         }
-        let error = f.publish_stage("too-large", stage.path()).unwrap_err();
+        let error = f.publish_stage("too-large", &mut stage).unwrap_err();
         assert!(
             matches!(error.unlabelled(), Error::ResourceLimit(_)),
             "{}",
@@ -3672,9 +3894,9 @@ mod tests {
             })
             .collect();
         f.authority.commit_catalog(records).unwrap();
-        let stage = f.stage();
+        let mut stage = f.stage();
         assert!(matches!(
-            f.publish_stage("overflow", stage.path()),
+            f.publish_stage("overflow", &mut stage),
             Err(Error::ResourceLimit(_))
         ));
         assert!(!f.root.join("overflow").exists());
@@ -3694,12 +3916,12 @@ mod tests {
     fn catalog_install_repeated_aborted_missing_target_publications_bound_protection() {
         let mut f = Fixture::new();
         for _ in 0..32 {
-            let stage = f.stage();
+            let mut stage = f.stage();
             let _reset = DirFaultReset;
             set_test_atomic_dir_injector(Some(Box::new(DirFault(
                 AtomicDirFaultPoint::InstallRename,
             ))));
-            assert!(f.publish_stage("aborted", stage.path()).is_err());
+            assert!(f.publish_stage("aborted", &mut stage).is_err());
             assert!(!f.root.join("aborted").exists());
             assert_eq!(f.authority.catalog_installs.len(), 1);
             assert_eq!(f.authority.catalog_protected.len(), 1);
@@ -3732,7 +3954,7 @@ mod tests {
         let threads = stages
             .into_iter()
             .zip(resolved)
-            .map(|(stage, resolved)| {
+            .map(|(mut stage, resolved)| {
                 let authority = authority.clone();
                 let destination = f.handle.path_ref().clone();
                 let barrier = barrier.clone();
@@ -3742,16 +3964,24 @@ mod tests {
                         &authority,
                         &destination,
                         &resolved,
-                        stage.path(),
+                        &mut stage.owner,
                     )
-                    .unwrap();
                 })
             })
             .collect::<Vec<_>>();
         barrier.wait();
-        for thread in threads {
-            thread.join().unwrap();
-        }
+        let results = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(Error::Conflict(_))))
+                .count(),
+            1
+        );
         authority
             .with_mut(|authority| {
                 assert_eq!(authority.catalog_installs.len(), 1);
@@ -3840,7 +4070,7 @@ mod tests {
         use crate::engine::{EngineActor, EngineDeadlines, EngineSupervisor, GoMode};
         use std::os::unix::fs::PermissionsExt;
         let mut f = Fixture::new();
-        let stage = f.stage();
+        let mut stage = f.stage();
         fs::write(stage.path().join("engine"),
             b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) if [ -f data/network ]; then echo readyok; else exit 3; fi;; go*) echo 'bestmove e2e4';; quit) exit 0;; esac; done\n").unwrap();
         fs::set_permissions(
@@ -3848,7 +4078,7 @@ mod tests {
             fs::Permissions::from_mode(0o700),
         )
         .unwrap();
-        f.publish_stage("old", stage.path()).unwrap();
+        f.publish_stage("old", &mut stage).unwrap();
         let old = f.engine("old");
         let executable = f
             .authority

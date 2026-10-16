@@ -986,6 +986,12 @@ pub(crate) struct DatabaseFileTarget {
     leaf: OsString,
     identity: (u64, u64),
     path: PathBuf,
+    validation: DatabaseTargetValidation,
+}
+
+enum DatabaseTargetValidation {
+    Pathname,
+    RetainedParent,
 }
 
 impl DatabaseFileTarget {
@@ -995,6 +1001,7 @@ impl DatabaseFileTarget {
             leaf,
             identity,
             path,
+            validation: DatabaseTargetValidation::Pathname,
         }
     }
 
@@ -1010,17 +1017,19 @@ impl DatabaseFileTarget {
         self.identity
     }
 
-    /// Returns the canonical pathname the identity was validated against. In-memory keys and
+    /// Returns the captured pathname for diagnostics and cache location. Ordinary producers
+    /// validate its canonical binding, while resolved puzzle carriers retain their parent. In-memory keys and
     /// logging consume this value; SQLite opens go through `db::bound_sqlite`, and create, unlink
     /// and mmap use the retained parent descriptor and leaf instead of reopening the pathname.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Probes the regular file authorized by this carrier after rechecking its retained parent
-    /// and inode. Unix must not open the leaf: closing any descriptor for an inode can release
-    /// this process's POSIX locks held by a pooled SQLite connection (`f-20260929-11`). The
-    /// pathname walk stays beside the carrier so repository callers cannot substitute a path.
+    /// Probes the regular file and its identity. Ordinary carriers revalidate the pathname and
+    /// parent binding, while puzzle carriers probe the retained parent and leaf after a rename.
+    /// Unix must not open the leaf: closing any descriptor for an inode can release this process's
+    /// POSIX locks held by a pooled SQLite connection (`f-20260929-11`). Validation stays beside
+    /// the carrier so repository callers cannot substitute a path.
     pub(crate) fn probe_current(&self) -> Result<RegularFileMetadata, Error> {
         const CONFLICT: &str = "database changed after capability resolution";
 
@@ -1038,19 +1047,26 @@ impl DatabaseFileTarget {
             }
         }
 
-        let (parent_now, leaf) = crate::infra::fs::open_verified_parent(
-            &self.path,
-            self.identity,
-            false,
-            ParentAccess::Readable,
-        )
-        .map_err(|error| map_probe_error(classify_probe_error_kind(&error), error))?;
-        if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
-            return Err(Error::Conflict(CONFLICT.into()));
-        }
-        let metadata = probe_regular_file_at(&parent_now, &leaf).map_err(|error| {
-            map_probe_error(classify_probe_error(&error, &parent_now, &leaf), error)
-        })?;
+        let pathname_parent;
+        let (parent, leaf) = match self.validation {
+            DatabaseTargetValidation::Pathname => {
+                let (parent_now, leaf) = crate::infra::fs::open_verified_parent(
+                    &self.path,
+                    self.identity,
+                    false,
+                    ParentAccess::Readable,
+                )
+                .map_err(|error| map_probe_error(classify_probe_error_kind(&error), error))?;
+                if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
+                    return Err(Error::Conflict(CONFLICT.into()));
+                }
+                pathname_parent = (parent_now, leaf);
+                (&pathname_parent.0, pathname_parent.1.as_os_str())
+            }
+            DatabaseTargetValidation::RetainedParent => (&self.parent, self.leaf.as_os_str()),
+        };
+        let metadata = probe_regular_file_at(parent, leaf)
+            .map_err(|error| map_probe_error(classify_probe_error(&error, parent, leaf), error))?;
         if metadata.identity != self.identity {
             return Err(Error::Conflict(CONFLICT.into()));
         }
@@ -1619,10 +1635,10 @@ impl EngineResourceHandle {
     }
 }
 
-/// Backend-only lease for a resource passed to an engine. Unix retains the
-/// opened descriptor for the complete process lifetime; Windows retains the
-/// opened no-delete handle alongside its path. In both cases, replacement
-/// cannot redirect an engine's lazy access after UCI configuration.
+/// Lease for an authority-bound resource passed to an engine. Unix retains the opened
+/// descriptor. Windows retains the no-delete leaf and complete absolute directory chain,
+/// then duplicates those seals into the exact child before protocol service begins.
+/// Backend leases remain held until confirmed reap, while child copies survive backend loss.
 #[derive(Debug)]
 pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
@@ -1637,6 +1653,8 @@ pub(crate) struct EngineResourceLease {
     /// Holds the no-delete handle until the lease is dropped.
     _file: OwnedFile,
     #[cfg(windows)]
+    _directories: Vec<fs::File>,
+    #[cfg(windows)]
     target: PathBuf,
 }
 
@@ -1650,6 +1668,16 @@ fn descriptor_path(file: &impl std::os::fd::AsFd) -> Result<PathBuf, Error> {
 }
 
 impl EngineResourceLease {
+    #[cfg(windows)]
+    pub(crate) fn windows_seal_handles(
+        &self,
+    ) -> impl Iterator<Item = std::os::windows::io::RawHandle> + '_ {
+        use std::os::windows::io::AsRawHandle;
+
+        std::iter::once(self._file.as_raw_handle())
+            .chain(self._directories.iter().map(AsRawHandle::as_raw_handle))
+    }
+
     #[cfg(unix)]
     fn from_file(
         file: OwnedFile,
@@ -4091,7 +4119,9 @@ pub(crate) fn allows_delete_sharing_for_operation(
     !is_final_leaf
         || !matches!(
             operation,
-            PathOperation::EngineExecute | PathOperation::EngineConfigure
+            PathOperation::EngineExecute
+                | PathOperation::EngineConfigure
+                | PathOperation::EngineResourceRead
         )
 }
 #[cfg(windows)]
@@ -6582,6 +6612,8 @@ impl PathAuthority {
         observe_engine_resolution("resource");
         let mut resolved =
             self.resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])?;
+        #[cfg(windows)]
+        let directories = resolved.windows_resource_directory_seals()?;
         match resource.kind {
             EngineResourceHandleKind::File => {
                 #[cfg(unix)]
@@ -6597,6 +6629,7 @@ impl PathAuthority {
                 #[cfg(windows)]
                 Ok(EngineResourceLease {
                     _file,
+                    _directories: directories,
                     target: resolved.take_target().ok_or_else(|| {
                         Error::Conflict("engine resource target is unavailable".into())
                     })?,
@@ -6617,6 +6650,7 @@ impl PathAuthority {
                     // arm above. The handle is retained for the lease lifetime; the path is
                     // only the UCI/CreateProcess string.
                     Ok(EngineResourceLease {
+                        _directories: directories,
                         _file: OwnedFile::directory(resolved.take_directory().ok_or_else(
                             || Error::InvalidInput("engine resource must be a directory".into()),
                         )?)?,
@@ -20997,6 +21031,22 @@ mod tests {
                 if message == "engine root changed; select it again"),
             "unexpected error: {error:?}"
         );
+    }
+
+    #[test]
+    fn windows_resource_leaf_sealing_uses_the_shared_operation_policy() {
+        assert!(
+            !allows_delete_sharing_for_operation(PathOperation::EngineResourceRead, true),
+            "an authorized engine resource leaf must deny delete sharing"
+        );
+        assert!(allows_delete_sharing_for_operation(
+            PathOperation::EngineResourceRead,
+            false
+        ));
+        assert!(allows_delete_sharing_for_operation(
+            PathOperation::OpeningBookRead,
+            true
+        ));
     }
 
     #[test]

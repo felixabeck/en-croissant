@@ -15,7 +15,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::canonical_binding;
 use super::{is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation};
 
 #[cfg(windows)]
@@ -71,6 +70,18 @@ fn windows_path_parts(path: &Path) -> Result<(PathBuf, Vec<OsString>), Error> {
 
 #[cfg(windows)]
 fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, Error> {
+    open_windows_path_chain(path, writable, true, true)?
+        .pop()
+        .ok_or_else(|| Error::Conflict("Windows directory binding is unavailable".into()))
+}
+
+#[cfg(windows)]
+fn open_windows_path_chain(
+    path: &Path,
+    writable: bool,
+    allow_delete_share: bool,
+    terminal_directory: bool,
+) -> Result<Vec<fs::File>, Error> {
     use std::ptr::null;
     use windows_sys::{
         Wdk::Storage::FileSystem::FILE_OPEN,
@@ -81,12 +92,25 @@ fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, 
     };
 
     let (base, names) = windows_path_parts(path)?;
-    let mut handle = super::open_windows_nofollow(&base, writable)?;
+    let handle = super::open_windows_nofollow(&base, writable)?;
+    let mut chain = vec![handle];
     let access = SYNCHRONIZE | GENERIC_READ | if writable { GENERIC_WRITE } else { 0 };
-    for name in names {
-        handle = super::open_windows_child(&handle, &name, FILE_OPEN, access, null(), true, true)?;
+    for (index, name) in names.iter().enumerate() {
+        let parent = chain
+            .last()
+            .ok_or_else(|| Error::Conflict("Windows parent binding is unavailable".into()))?;
+        let handle = super::open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            access,
+            null(),
+            index + 1 != names.len() || terminal_directory,
+            allow_delete_share,
+        )?;
+        chain.push(handle);
     }
-    Ok(handle)
+    Ok(chain)
 }
 
 /// Result of a successful resolution. It retains the exact opened file when
@@ -106,6 +130,44 @@ pub struct ResolvedPath {
 }
 
 impl ResolvedPath {
+    /// Seal the complete absolute resource pathname against ancestor replacement. A second
+    /// walk is evidence only when its terminal identity matches the already-authorized object.
+    #[cfg(windows)]
+    pub(super) fn windows_resource_directory_seals(&self) -> Result<Vec<fs::File>, Error> {
+        if self.operation != PathOperation::EngineResourceRead {
+            return Err(Error::InvalidInput(
+                "resolved capability is not an engine resource".into(),
+            ));
+        }
+        let target = self
+            .target()
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| {
+                Error::Conflict("absolute engine resource target is unavailable".into())
+            })?;
+        let (expected, directory) = if let Some(file) = self.file() {
+            (opened_file_identity(file)?, false)
+        } else {
+            let directory = self
+                .directory()
+                .ok_or_else(|| Error::Conflict("engine resource binding is unavailable".into()))?;
+            (opened_file_identity(directory)?, true)
+        };
+        let mut chain = open_windows_path_chain(target, false, false, directory)?;
+        let terminal = chain
+            .last()
+            .ok_or_else(|| Error::Conflict("engine resource binding is unavailable".into()))?;
+        if opened_file_identity(terminal)? != expected {
+            return Err(Error::Conflict(
+                "engine resource changed after authorization".into(),
+            ));
+        }
+        // The resolution already retains the same no-delete leaf. Keep every ancestor from
+        // the absolute root, without retaining a redundant second terminal handle.
+        chain.pop();
+        Ok(chain)
+    }
+
     pub(super) fn is_regular_file(&self) -> bool {
         #[cfg(unix)]
         if self.regular_file_identity.is_some() {
@@ -174,17 +236,25 @@ impl ResolvedPath {
     /// renderer cannot supply either native path.
     pub(crate) fn atomic_install_download_dir(
         &self,
-        temporary_directory: &Path,
+        staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
         if self.operation != PathOperation::DownloadArchive {
             return Err(Error::InvalidInput(
                 "resolved capability is not an archive destination".into(),
             ));
         }
-        let target = self.target.as_deref().ok_or_else(|| {
-            Error::InvalidInput("archive destination is a directory capability".into())
+        let parent = self.parent().ok_or_else(|| {
+            Error::InvalidInput("archive destination has no retained parent".into())
         })?;
-        crate::infra::fs::atomic_install_dir(temporary_directory, target)
+        let leaf = self.leaf().ok_or_else(|| {
+            Error::InvalidInput("archive destination has no retained leaf".into())
+        })?;
+        crate::infra::fs::install_staging_dir_at(
+            staging,
+            parent,
+            leaf,
+            crate::infra::fs::DirectoryInstallPolicy::Absent,
+        )
     }
 
     /// Transfers the already-opened, identity-checked regular file to a native
@@ -531,11 +601,13 @@ impl ResolvedPath {
             opened_file_identity(self.file.as_ref().ok_or_else(|| {
                 Error::InvalidInput("puzzle capability names a directory".into())
             })?)?;
-        let path = canonical_binding(
-            self.target()
-                .ok_or_else(|| Error::Conflict("puzzle database target is unavailable".into()))?,
-        )?;
-        Ok(DatabaseFileTarget::assemble(parent, leaf, identity, path))
+        let path = self
+            .target()
+            .ok_or_else(|| Error::Conflict("puzzle database target is unavailable".into()))?
+            .to_path_buf();
+        let mut target = DatabaseFileTarget::assemble(parent, leaf, identity, path);
+        target.validation = super::DatabaseTargetValidation::RetainedParent;
+        Ok(target)
     }
 
     /// Duplicate the already-authorized descriptor for SQLite. The caller owns
@@ -1219,6 +1291,58 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    #[test]
+    fn windows_resource_sealing_refuses_a_different_terminal_identity() {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathAuthority, PathClass};
+
+        for kind in [
+            EngineResourceHandleKind::File,
+            EngineResourceHandleKind::Directory,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let replacement = temp.path().join("replacement");
+            if kind == EngineResourceHandleKind::Directory {
+                fs::create_dir(&original).unwrap();
+                fs::create_dir(&replacement).unwrap();
+            } else {
+                fs::write(&original, b"original").unwrap();
+                fs::write(&replacement, b"replacement").unwrap();
+            }
+            let mut authority =
+                PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+            let grant = authority
+                .grant_dialog(
+                    &original,
+                    "resource",
+                    PathClass::SingleDialogGrant,
+                    PathOperation::EngineResourceRead,
+                    std::time::Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            let resource = authority
+                .promote_engine_resource(&grant, kind, "resource")
+                .unwrap();
+            let mut resolved = authority
+                .resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])
+                .unwrap();
+            let seals = resolved.windows_resource_directory_seals().unwrap();
+            assert!(
+                !seals.is_empty(),
+                "the absolute ancestor chain must remain held"
+            );
+            drop(seals);
+            // Redirect only the separate pass's locator. Its otherwise valid new object must
+            // never replace the identity captured by the original authority resolution.
+            resolved.target = Some(fs::canonicalize(&replacement).unwrap());
+            assert!(matches!(
+                resolved.windows_resource_directory_seals(),
+                Err(Error::Conflict(_))
+            ));
+        }
+    }
 
     #[test]
     fn mark_engine_executable_windows_is_a_checked_noop() {

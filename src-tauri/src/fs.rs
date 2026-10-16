@@ -1,5 +1,6 @@
+#[cfg(test)]
+use std::ffi::OsStr;
 use std::{
-    ffi::OsStr,
     future::Future,
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
@@ -43,15 +44,43 @@ async fn await_staging_deadline<T>(
     timeout_message: &'static str,
     producer: impl Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
+    await_staging_deadline_with_admission(
+        deadline,
+        cancellation,
+        timeout_message,
+        producer,
+        std::future::pending(),
+    )
+    .await
+}
+
+async fn await_staging_deadline_with_admission<T>(
+    deadline: Duration,
+    cancellation: &CancellationToken,
+    timeout_message: &'static str,
+    producer: impl Future<Output = Result<T, Error>>,
+    admission: impl Future<Output = ()>,
+) -> Result<T, Error> {
     tokio::pin!(producer);
-    tokio::select! {
-        biased;
-        result = &mut producer => result,
-        _ = tokio::time::sleep(deadline) => {
-            cancellation.cancel();
-            let _ = producer.await;
-            Err(Error::EngineTimeout(timeout_message.into()))
+    let timed_out = {
+        // Drop the admission future, including any publication permit it owns, before
+        // awaiting an expired producer that may be blocked waiting for that permit.
+        let admission = admission;
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            result = &mut producer => return result,
+            _ = &mut admission => false,
+            _ = tokio::time::sleep(deadline) => true,
         }
+    };
+    if timed_out {
+        cancellation.cancel();
+        let _ = producer.await;
+        Err(Error::EngineTimeout(timeout_message.into()))
+    } else {
+        // No deadline competes with the admitted publication/durability tail.
+        producer.await
     }
 }
 
@@ -391,6 +420,7 @@ where
 
 /// Splits the staging a zip or tar download installs under into the extractor's parent and
 /// leaf, refusing when `path` is not the directory that staging names.
+#[cfg(test)]
 fn archive_install_names<'a>(
     path: &Path,
     staging: &'a Option<PathBuf>,
@@ -619,6 +649,7 @@ fn accept_plain_download_payload(file: &mut std::fs::File) -> Result<(), Error> 
 /// Installs only zip, tar or tar-in-gzip into process-owned `staging`, which must match `path`.
 /// Its existing parent is pinned once for every archive install; missing parents are refused.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn download_file_core_control_with_integrity<F>(
     op: OpClass,
     url: &str,
@@ -633,6 +664,50 @@ async fn download_file_core_control_with_integrity<F>(
 ) -> Result<(), Error>
 where
     F: FnMut(f32) -> Result<(), Error>,
+{
+    let target = path.to_path_buf();
+    prepare_archive_download(
+        op,
+        url,
+        path,
+        transport,
+        token,
+        total_size,
+        cancellation,
+        expected_sha256,
+        progress_updater,
+        move |source, pin, cancellation| {
+            let (parent, leaf) = archive_install_names(&target, &staging)?;
+            install_extracted_tree(source, pin, parent, leaf, cancellation)
+        },
+    )
+    .await
+}
+
+/// Preparation and its consumer share one blocking worker. An owned tree never crosses an
+/// async return or cleanup boundary, including when the producer is cancelled or times out.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_archive_download<F, C>(
+    op: OpClass,
+    url: &str,
+    path: &Path,
+    transport: &dyn crate::infra::net::DownloadTransport,
+    token: Option<&str>,
+    total_size: Option<u32>,
+    cancellation: CancellationToken,
+    expected_sha256: Option<&str>,
+    progress_updater: F,
+    consume: C,
+) -> Result<(), Error>
+where
+    F: FnMut(f32) -> Result<(), Error>,
+    C: FnOnce(
+            crate::infra::fs::OwnedStagingDir,
+            &std::fs::File,
+            &CancellationToken,
+        ) -> Result<(), Error>
+        + Send
+        + 'static,
 {
     let parsed_url = validate_download_request(op, url, token, &cancellation)?;
     let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -675,49 +750,35 @@ where
                         "Archive payload is not allowed for this operation".into(),
                     ));
                 }
-                if is_zip || is_tar {
-                    let (dest_parent, dest_leaf) = archive_install_names(&path, &staging)?;
-                    if is_zip {
-                        extract_zip_cancellable(
-                            file,
-                            &pin,
-                            dest_parent,
-                            dest_leaf,
-                            limits,
-                            cancellation,
-                        )?;
-                    } else {
-                        extract_tar_cancellable(
-                            file,
-                            &pin,
-                            dest_parent,
-                            dest_leaf,
-                            limits,
-                            cancellation,
-                        )?;
-                    }
+                let dest_parent = path.parent().unwrap_or_else(|| Path::new("."));
+                let source = if is_zip {
+                    prepare_zip_cancellable(file, dest_parent, limits, cancellation)?
+                } else if is_tar {
+                    prepare_tar_cancellable(file, dest_parent, limits, cancellation)?
                 } else {
                     if !gzip_is_tar(&mut file)? {
                         return Err(archive_payload_required());
                     }
-                    let (dest_parent, dest_leaf) = archive_install_names(&path, &staging)?;
-                    extract_gz_cancellable(
-                        file,
-                        &pin,
-                        dest_parent,
-                        dest_leaf,
-                        limits,
-                        cancellation,
-                    )?;
+                    prepare_gz_cancellable(file, dest_parent, limits, cancellation)?
+                };
+                #[cfg(test)]
+                run_archive_pre_install_hook(dest_parent);
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
                 }
+                if crate::infra::path_authority::opened_file_identity(&pin)?
+                    != source.parent_identity()?
+                {
+                    return Err(Error::Conflict(
+                        "archive staging parent changed concurrently".into(),
+                    ));
+                }
+                consume(source, &pin, cancellation)
             } else {
-                return Err(archive_payload_required());
+                Err(archive_payload_required())
             }
-            Ok(())
         })
-        .await?;
-
-    Ok(())
+        .await
 }
 
 #[tauri::command]
@@ -1394,65 +1455,67 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
             report_download_success(&state, &app, &progress_lease, &job_id);
             return Ok(());
         }
-        let destination_parent = resolved
+        let archive_target = resolved
             .target()
-            .and_then(|target| target.parent())
             .ok_or_else(|| {
-                Error::InvalidInput("archive destination needs a parent directory".into())
+                Error::InvalidInput("archive destination needs a target directory".into())
             })?
             .to_path_buf();
-        // The staging tree is a sibling of the destination, created in the destination's
-        // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
-        // no cross-filesystem copy can quietly replace the atomic install.
-        let staging = private_tempdir_in(".archive", &destination_parent)?;
-        let extracted = staging.path().to_path_buf();
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
         let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-        let result = await_staging_deadline(
-            DOWNLOAD_DEADLINE,
-            &cancellation,
-            "engine archive download deadline exceeded",
-            download_file_core_control_with_integrity(
-                op,
-                &url,
-                &extracted,
-                Some(staging.path().to_path_buf()),
-                state.http_transport.as_ref(),
-                None,
-                None,
-                cancellation.clone(),
-                Some(&integrity.sha256),
-                |progress| {
-                    update_progress_with_state(
-                        &state.progress_state,
-                        &app,
-                        &progress_lease,
-                        progress,
-                        ProgressState::Running,
-                    )
-                },
-            ),
-        )
-        .await;
-        if let Err(error) = result {
-            report_download_error(&state, &app, &progress_lease, &job_id, &error);
-            return Err(error);
-        }
-        let commit_gate = commit_gate.clone();
+        let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+        let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
         let publication_authority = state.pgn_path_authority.clone();
-        let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-            .spawn(move || {
+        let producer = prepare_archive_download(
+            op,
+            &url,
+            &archive_target,
+            state.http_transport.as_ref(),
+            None,
+            None,
+            cancellation.clone(),
+            Some(&integrity.sha256),
+            |progress| {
+                update_progress_with_state(
+                    &state.progress_state,
+                    &app,
+                    &progress_lease,
+                    progress,
+                    ProgressState::Running,
+                )
+            },
+            move |mut staging, _pin, token| {
+                // The worker retains the owner while the async side ends its preparation
+                // deadline. A dropped/expired awaiter closes the permit and cleanup runs here.
+                if prepared_tx.send(()).is_err()
+                    || publish_rx.blocking_recv().is_err()
+                    || token.is_cancelled()
+                {
+                    return Err(Error::Cancellation);
+                }
                 commit_gate.begin_commit()?;
                 publish_engine_archive_tree(
                     &publication_authority,
                     &destination,
                     &resolved,
-                    staging.path(),
+                    &mut staging,
                 )
-            })
-            .await;
+            },
+        );
+        let admission = async move {
+            if prepared_rx.await.is_ok() {
+                let _ = publish_tx.send(());
+            } else {
+                drop(publish_tx);
+            }
+        };
+        let install_result = await_staging_deadline_with_admission(
+            DOWNLOAD_DEADLINE,
+            &cancellation,
+            "engine archive download deadline exceeded",
+            producer,
+            admission,
+        )
+        .await;
         if let Err(error) = install_result {
             report_download_error(&state, &app, &progress_lease, &job_id, &error);
             return Err(error);
@@ -1465,13 +1528,13 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
 }
 
 /// Publishes a fully extracted engine archive onto its authority-resolved destination. Split out
-/// from `download_engine_archive` so the staging-parent contract (`private_tempdir_in` in the
-/// destination's own parent) can be stated once and pinned without driving a download.
+/// from `download_engine_archive` so ownership can pass directly from preparation into inventory
+/// and the retained-parent commit. The caller keeps the owner on its blocking worker.
 pub(crate) fn publish_engine_archive_tree(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     destination: &crate::infra::path_authority::PathRef,
     resolved: &crate::infra::path_authority::ResolvedPath,
-    staging_dir: &Path,
+    staging_dir: &mut crate::infra::fs::OwnedStagingDir,
 ) -> Result<(), Error> {
     authority.with_mut(|authority| {
         authority.publish_catalog_install(destination, resolved, staging_dir)
@@ -1588,6 +1651,7 @@ fn map_zip_error(error: zip::result::ZipError, message: &str) -> Error {
     }
 }
 
+#[cfg(test)]
 fn extract_zip_cancellable(
     file: std::fs::File,
     pin: &std::fs::File,
@@ -1596,6 +1660,16 @@ fn extract_zip_cancellable(
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    let source = prepare_zip_cancellable(file, dest_parent, limits, cancellation)?;
+    install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
+}
+
+fn prepare_zip_cancellable(
+    file: std::fs::File,
+    dest_parent: &Path,
+    limits: ArchiveLimits,
+    cancellation: &CancellationToken,
+) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
     let temp_dir = private_tempdir_in(".zip", dest_parent)?;
     let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
@@ -1646,9 +1720,10 @@ fn extract_zip_cancellable(
         }
     }
 
-    install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)
+    Ok(staging)
 }
 
+#[cfg(test)]
 fn extract_tar_cancellable(
     file: std::fs::File,
     pin: &std::fs::File,
@@ -1657,6 +1732,16 @@ fn extract_tar_cancellable(
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    let source = prepare_tar_cancellable(file, dest_parent, limits, cancellation)?;
+    install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
+}
+
+fn prepare_tar_cancellable(
+    file: std::fs::File,
+    dest_parent: &Path,
+    limits: ArchiveLimits,
+    cancellation: &CancellationToken,
+) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
     let temp_dir = private_tempdir_in(".tar", dest_parent)?;
     let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
@@ -1711,7 +1796,7 @@ fn extract_tar_cancellable(
         }
     }
 
-    install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)
+    Ok(staging)
 }
 
 #[cfg(test)]
@@ -1770,6 +1855,7 @@ fn archive_payload_required() -> Error {
 }
 
 /// Checks cancellation after the test hook, then installs an adopted tree only under its original pin.
+#[cfg(test)]
 fn install_extracted_tree(
     source: crate::infra::fs::OwnedStagingDir,
     pin: &std::fs::File,
@@ -1845,14 +1931,25 @@ fn gzip_is_tar(file: &mut std::fs::File) -> Result<bool, Error> {
     Ok(is_ustar_header(&head))
 }
 
+#[cfg(test)]
 fn extract_gz_cancellable(
-    mut file: std::fs::File,
+    file: std::fs::File,
     pin: &std::fs::File,
     dest_parent: &Path,
     dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    let source = prepare_gz_cancellable(file, dest_parent, limits, cancellation)?;
+    install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
+}
+
+fn prepare_gz_cancellable(
+    mut file: std::fs::File,
+    dest_parent: &Path,
+    limits: ArchiveLimits,
+    cancellation: &CancellationToken,
+) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
     if !gzip_is_tar(&mut file)? {
         return Err(archive_payload_required());
     }
@@ -1883,7 +1980,7 @@ fn extract_gz_cancellable(
         other => other,
     })?;
     tar_file.seek(SeekFrom::Start(0))?;
-    extract_tar_cancellable(tar_file, pin, dest_parent, dest_leaf, limits, cancellation)
+    prepare_tar_cancellable(tar_file, dest_parent, limits, cancellation)
 }
 
 fn bounded_copy(
@@ -2378,14 +2475,17 @@ mod tests {
         let source = include_str!("fs.rs");
         let body = body_at_indent(source, "async fn download_engine_archive_core<");
         assert!(!body.contains("off_unix_refusal("), "{body}");
-        assert_eq!(body.matches("private_tempdir_in(").count(), 1, "{body}");
+        assert!(
+            !body.contains("private_tempdir_in("),
+            "catalog must keep the extractor owner without an outer pathname cleanup: {body}"
+        );
         assert!(
             !body.contains("private_tempdir()"),
             "production staging must be a sibling of the destination: {body}"
         );
         assert!(
-            body.contains("let destination_parent = resolved"),
-            "the staging parent must come from the resolved destination: {body}"
+            body.contains("let archive_target = resolved") && body.contains("prepare_archive_download("),
+            "shared preparation must derive its sibling parent from the resolved destination: {body}"
         );
         // The tree is only published after the cancellation check, so a cancelled job can never
         // leave a partially staged archive installed.
@@ -2426,9 +2526,11 @@ mod tests {
         let (authority, destination, engine_root, _) = engine_destination(&root);
         let state = AppState::default();
         state.pgn_path_authority.install(authority).unwrap();
-        let staging = engine_root.join("staging");
-        std::fs::create_dir(&staging).expect("staging");
-        std::fs::write(staging.join("engine"), b"staged").expect("staged file");
+        let staging = tempfile::tempdir_in(&engine_root).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        std::fs::write(staging.path().join("engine"), b"staged").expect("staged file");
+        let mut owner = crate::infra::fs::OwnedStagingDir::adopt(&staging).unwrap();
+        let _ = staging.keep();
         let (_, resolved) = resolve_engine_archive_destination(
             &state,
             &destination,
@@ -2436,11 +2538,16 @@ mod tests {
         )
         .unwrap();
 
-        publish_engine_archive_tree(&state.pgn_path_authority, &destination, &resolved, &staging)
-            .expect("publish");
+        publish_engine_archive_tree(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &mut owner,
+        )
+        .expect("publish");
 
         assert!(
-            !staging.exists(),
+            !staging_path.exists(),
             "the staging name is consumed by the install"
         );
         assert_eq!(
@@ -3028,6 +3135,8 @@ mod tests {
         for signature in [
             "fn extract_zip_cancellable(",
             "fn extract_tar_cancellable(",
+            "fn prepare_zip_cancellable(",
+            "fn prepare_tar_cancellable(",
             "fn install_extracted_tree(",
             "fn extract_zip(",
             "fn extract_tar(",
@@ -3038,9 +3147,10 @@ mod tests {
         for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
             let body = body_at_indent(source, signature);
             assert!(
-                body.contains(
-                    "install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)"
-                ),
+                body.contains("prepare_")
+                    && body.contains(
+                        "install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)"
+                    ),
                 "{body}"
             );
         }
@@ -3052,14 +3162,14 @@ mod tests {
             assert!(body.contains(&production), "{body}");
             assert!(body.contains("extract_archive_for_test("), "{body}");
         }
-        let zip = body_at_indent(source, "fn extract_zip_cancellable(");
+        let zip = body_at_indent(source, "fn prepare_zip_cancellable(");
         for message in ["Invalid zip archive", "Invalid zip entry"] {
             assert!(
                 zip.contains(&format!("map_zip_error(error, \"{message}\")")),
                 "{zip}"
             );
         }
-        for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
+        for signature in ["fn prepare_zip_cancellable(", "fn prepare_tar_cancellable("] {
             let body = body_at_indent(source, signature);
             let tempdir = body
                 .find("private_tempdir_in(")
@@ -4395,6 +4505,147 @@ mod tests {
         assert_eq!(error.to_string(), archive_payload_required().to_string());
         assert!(!target.exists());
         assert_eq!(leaves(dir.path()), vec!["archive.gz"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_install_joiner_actual_core_consumes_zip_tar_gzip_owners_and_failed_preparation(
+    ) {
+        for (payload, member, succeeds) in [
+            (zip_payload(), "engine.bin", true),
+            (raw_tar_payload(), "stockfish/engine", true),
+            (gzip_tar_payload(b"engine"), "stockfish/engine", true),
+            (b"PK\x03\x04invalid zip".to_vec(), "engine.bin", false),
+        ] {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let integrity = unsigned_test_integrity(&payload);
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload)),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            let (job, lease) = test_download_lease(&state);
+            let result = download_engine_archive_core(
+                "joiner-format".into(),
+                "https://example.com/engine.zip".into(),
+                destination,
+                "installed".into(),
+                job,
+                integrity,
+                app.handle().clone(),
+                state.clone(),
+                lease.token(),
+                lease.commit_gate(),
+                Box::new(accept_any_integrity),
+            )
+            .await;
+            assert_eq!(
+                result.is_ok(),
+                succeeds,
+                "actual archive preparation/publication: {result:?}"
+            );
+            if succeeds {
+                assert_eq!(
+                    std::fs::read(engine_root.join("installed").join(member)).unwrap(),
+                    b"engine"
+                );
+                assert_eq!(leaves(&engine_root), vec!["installed"]);
+            } else {
+                assert!(
+                    leaves(&engine_root).is_empty(),
+                    "failed producer must complete identity-bound cleanup"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_install_joiner_actual_core_deadline_and_cancel_await_owned_cleanup() {
+        for deadline in [false, true] {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let payload = zip_payload();
+            let integrity = unsigned_test_integrity(&payload);
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload)),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            let (job, lease) = test_download_lease(&state);
+            let cancellation = lease.token();
+            let worker_cancellation = cancellation.clone();
+            let commit_gate = lease.commit_gate();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let mut guard = ExtractionTestGuard {
+                release: Some(release_tx),
+            };
+            set_core_after_pin_hook(
+                &engine_root.join("installed"),
+                Some(Box::new(move |_| {
+                    set_archive_pre_install_hook(Some(Box::new(move |_| {
+                        let _ = entered_tx.send(());
+                        release_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .expect("preparation release");
+                    })));
+                })),
+            );
+            let task_state = state.clone();
+            let task = tokio::spawn(crate::infra::operations::run_native_operation(
+                lease,
+                "joiner owned preparation",
+                download_engine_archive_core(
+                    "joiner-held".into(),
+                    "https://example.com/engine.zip".into(),
+                    destination,
+                    "installed".into(),
+                    job,
+                    integrity,
+                    app.handle().clone(),
+                    task_state,
+                    worker_cancellation,
+                    commit_gate,
+                    Box::new(accept_any_integrity),
+                ),
+            ));
+            tokio::time::timeout(Duration::from_secs(5), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(leaves(&engine_root)
+                .iter()
+                .any(|leaf| leaf.starts_with(".zip")));
+            if deadline {
+                tokio::time::pause();
+                tokio::time::advance(DOWNLOAD_DEADLINE + Duration::from_secs(1)).await;
+                cancellation.cancelled().await;
+                tokio::time::resume();
+            } else {
+                cancellation.cancel();
+            }
+            assert!(!state.operations.wait_for_drain(Duration::ZERO).unwrap());
+            guard.release();
+            let result = tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                if deadline {
+                    matches!(result, Err(Error::EngineTimeout(_)))
+                } else {
+                    matches!(result, Err(Error::Cancellation))
+                },
+                "completed preparation outcome: {result:?}"
+            );
+            assert!(leaves(&engine_root).is_empty());
+            assert!(state
+                .operations
+                .wait_for_drain(Duration::from_secs(1))
+                .unwrap());
+        }
     }
 
     #[tokio::test]

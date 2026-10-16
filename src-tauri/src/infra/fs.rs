@@ -758,8 +758,10 @@ trait DirInstallAdapter {
     type Entry;
 
     /// Open the parent directory of `path` with the access the commit needs.
+    #[cfg(test)]
     fn open_parent(&self, path: &Path) -> Result<File, Error>;
     /// The `(volume, index)` / `(dev, ino)` identity of an open parent handle.
+    #[cfg(test)]
     fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error>;
     /// Observe one child leaf without following it. `None` means absent.
     fn target_stat(&self, dir: &File, name: &OsStr) -> Result<Option<Self::Entry>, Error>;
@@ -792,6 +794,7 @@ trait DirInstallAdapter {
 /// pre-commit revalidation, the platform commit, the durable parent syncs, and the old-tree
 /// cleanup. Windows has no directory `EXCHANGE`, so its adapter's commit takes a sibling backup
 /// and rolls it back if the install rename fails; that difference lives entirely in the adapter.
+#[cfg(test)]
 fn install_dir_driver<A: DirInstallAdapter>(
     adapter: &A,
     source: &Path,
@@ -824,9 +827,17 @@ fn install_dir_driver<A: DirInstallAdapter>(
         source_name,
         None,
         target_name,
+        DirectoryInstallPolicy::Replace,
         &revalidate_parent,
         &mut false,
     )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DirectoryInstallPolicy {
+    #[cfg(test)]
+    Replace,
+    Absent,
 }
 
 /// The held-parent body of [`install_dir_driver`]: both leaves are names under the one open
@@ -834,12 +845,14 @@ fn install_dir_driver<A: DirInstallAdapter>(
 /// captured earlier. `revalidate_parent` runs immediately before the commit revalidation.
 /// `committed` is set once the platform commit has returned `Ok`, so a caller can tell a
 /// pre-commit failure from `CommittedDurabilityUncertain`.
+#[allow(clippy::too_many_arguments)]
 fn install_dir_at_driver<A: DirInstallAdapter>(
     adapter: &A,
     parent: &File,
     source_name: &OsStr,
     expected_source: Option<(u64, u64)>,
     target_name: &OsStr,
+    policy: DirectoryInstallPolicy,
     revalidate_parent: &dyn Fn() -> Result<(), Error>,
     committed: &mut bool,
 ) -> Result<(), Error> {
@@ -859,6 +872,11 @@ fn install_dir_at_driver<A: DirInstallAdapter>(
     let source_dir = adapter.open_source_directory(parent, source_name)?;
     adapter.flush_tree(&source_dir)?;
     let original = match adapter.target_stat(parent, target_name)? {
+        Some(_) if matches!(policy, DirectoryInstallPolicy::Absent) => {
+            return Err(Error::Conflict(
+                "directory target was created concurrently".into(),
+            ));
+        }
         Some(entry) if adapter.is_directory(&entry) => Some(entry),
         Some(_) => {
             return Err(Error::InvalidInput(
@@ -899,7 +917,17 @@ fn install_dir_at_driver<A: DirInstallAdapter>(
             ))
         }
     }
-    let displaced = adapter.commit(parent, source_name, target_name, original.as_ref())?;
+    let displaced = adapter
+        .commit(parent, source_name, target_name, original.as_ref())
+        .map_err(|error| match error {
+            Error::Io(ref cause)
+                if matches!(policy, DirectoryInstallPolicy::Absent)
+                    && cause.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                Error::Conflict("directory target was created concurrently".into())
+            }
+            other => other,
+        })?;
     *committed = true;
     #[cfg(test)]
     if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
@@ -944,6 +972,7 @@ fn install_dir_at_driver<A: DirInstallAdapter>(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_leaf(path: &Path) -> Result<&OsStr, Error> {
     path.file_name()
         .filter(|name| !name.is_empty())
@@ -2172,10 +2201,12 @@ mod unix {
     impl DirInstallAdapter for UnixDirInstallAdapter {
         type Entry = fs::Stat;
 
+        #[cfg(test)]
         fn open_parent(&self, path: &Path) -> Result<File, Error> {
             open_parent(path)
         }
 
+        #[cfg(test)]
         fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error> {
             use std::os::unix::fs::MetadataExt;
             let metadata = dir.metadata().map_err(io)?;
@@ -2253,6 +2284,7 @@ mod unix {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
         install_dir_driver(&UnixDirInstallAdapter, source, target)
     }
@@ -2262,6 +2294,7 @@ mod unix {
         source_name: &OsStr,
         expected_source: (u64, u64),
         target_name: &OsStr,
+        policy: DirectoryInstallPolicy,
         committed: &mut bool,
     ) -> Result<(), Error> {
         install_dir_at_driver(
@@ -2270,6 +2303,7 @@ mod unix {
             source_name,
             Some(expected_source),
             target_name,
+            policy,
             &|| Ok(()),
             committed,
         )
@@ -3719,10 +3753,12 @@ mod win {
     impl DirInstallAdapter for WindowsDirInstallAdapter {
         type Entry = WindowsDirEntry;
 
+        #[cfg(test)]
         fn open_parent(&self, path: &Path) -> Result<File, Error> {
             open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
         }
 
+        #[cfg(test)]
         fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error> {
             opened_file_identity(dir)
         }
@@ -3837,6 +3873,7 @@ mod win {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
         install_dir_driver(&WindowsDirInstallAdapter, source, target)
     }
@@ -3846,6 +3883,7 @@ mod win {
         source_name: &OsStr,
         expected_source: (u64, u64),
         target_name: &OsStr,
+        policy: DirectoryInstallPolicy,
         committed: &mut bool,
     ) -> Result<(), Error> {
         install_dir_at_driver(
@@ -3854,6 +3892,7 @@ mod win {
             source_name,
             Some(expected_source),
             target_name,
+            policy,
             &|| Ok(()),
             committed,
         )
@@ -4333,14 +4372,7 @@ pub(crate) use unix::{
 pub(crate) use unix::{
     raw_libc_stat_identity, raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH,
 };
-// Not stale, and deliberately not a blanket allow: on Windows every *production* consumer of the
-// depth bound lives inside `mod win` itself, because `fs.rs`'s `MAX_ARCHIVE_PATH_COMPONENTS` is
-// still `#[cfg(unix)]` (archive extraction is not ported). The re-export keeps one crate-level
-// spelling of the bound on both targets, and the test build — where
-// `recursive_delete_refuses_more_than_the_maximum_depth` reads it — is left unsuppressed, so it
-// still goes red if that last consumer disappears.
 #[cfg(windows)]
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use win::MAX_REMOVE_TREE_DEPTH;
 
 pub fn atomic_replace_with_precommit<F, P>(
@@ -5231,6 +5263,7 @@ where
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicDirFaultPoint {
+    InstallerEntry,
     SyncEntry,
     PreCommit,
     /// Unix: immediately before the single `EXCHANGE` (no backup is taken). Windows: after the
@@ -5272,6 +5305,7 @@ fn inject_atomic_dir(point: AtomicDirFaultPoint) -> Result<(), Error> {
     })
 }
 
+#[cfg(test)]
 pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
@@ -5424,6 +5458,14 @@ impl OwnedStagingDir {
         opened_identity(&self.parent)
     }
 
+    pub(crate) fn binding(&self) -> (&File, &OsStr, (u64, u64)) {
+        (&self.parent, &self.leaf, self.identity)
+    }
+
+    pub(crate) fn directory(&self) -> Result<&File, Error> {
+        owned_staging_child(self)
+    }
+
     /// Creates-if-missing each component of `relative` below the held child, one
     /// [`ensure_directory_at`] per component. An empty `relative` is the staging root itself.
     pub(crate) fn ensure_relative_directory(&self, relative: &Path) -> Result<(), Error> {
@@ -5509,10 +5551,35 @@ impl Drop for OwnedStagingDir {
 /// an existing real directory to replace. Same-parent is structural, so there is no pathname
 /// reopen. Once the commit has returned, `source` no longer owns a leaf and its cleanup is
 /// disarmed, including when the result is `CommittedDurabilityUncertain`.
+#[cfg(test)]
 pub(crate) fn install_owned_staging_dir(
     mut source: OwnedStagingDir,
     dest_leaf: &OsStr,
 ) -> Result<(), Error> {
+    let parent = source.parent.try_clone()?;
+    install_staging_dir_at(
+        &mut source,
+        &parent,
+        dest_leaf,
+        DirectoryInstallPolicy::Replace,
+    )
+}
+
+/// Consumes the original staged binding only at the actual commit. Callers keep this owner on
+/// their blocking worker, including precommit failures and committed durability uncertainty.
+pub(crate) fn install_staging_dir_at(
+    source: &mut OwnedStagingDir,
+    destination_parent: &File,
+    dest_leaf: &OsStr,
+    policy: DirectoryInstallPolicy,
+) -> Result<(), Error> {
+    #[cfg(test)]
+    inject_atomic_dir(AtomicDirFaultPoint::InstallerEntry)?;
+    if source.parent_identity()? != opened_identity(destination_parent)? {
+        return Err(Error::InvalidInput(
+            "directory staging source must be in the target's real parent directory".into(),
+        ));
+    }
     single_leaf(dest_leaf)?;
     if dest_leaf == source.leaf {
         return Err(Error::InvalidInput(
@@ -5523,18 +5590,20 @@ pub(crate) fn install_owned_staging_dir(
     let mut committed = false;
     #[cfg(unix)]
     let result = unix::install_dir_at(
-        &source.parent,
+        destination_parent,
         &source.leaf,
         source.identity,
         dest_leaf,
+        policy,
         &mut committed,
     );
     #[cfg(windows)]
     let result = win::install_dir_at(
-        &source.parent,
+        destination_parent,
         &source.leaf,
         source.identity,
         dest_leaf,
+        policy,
         &mut committed,
     );
     if committed {
@@ -10239,6 +10308,40 @@ mod tests {
     }
 
     #[test]
+    fn joiner_absent_install_disarms_owned_cleanup_after_durability_uncertainty() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(root.path()).unwrap();
+        std::fs::write(temp.path().join("engine"), b"committed").unwrap();
+        let mut source = OwnedStagingDir::adopt(&temp).unwrap();
+        let _ = temp.keep();
+        let parent = source.binding().0.try_clone().unwrap();
+        let before = OWNED_STAGING_DROP_REMOVALS.with(|count| count.get());
+        set_test_atomic_dir_injector(Some(Box::new(DirFault {
+            point: AtomicDirFaultPoint::ParentSync,
+        })));
+        let result = install_staging_dir_at(
+            &mut source,
+            &parent,
+            OsStr::new("installed"),
+            DirectoryInstallPolicy::Absent,
+        );
+        set_test_atomic_dir_injector(None);
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        drop(source);
+        assert_eq!(
+            OWNED_STAGING_DROP_REMOVALS.with(|count| count.get()),
+            before
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("installed/engine")).unwrap(),
+            b"committed"
+        );
+    }
+
+    #[test]
     fn owned_staging_dir_source_scan_has_no_path_constructor() {
         let source = include_str!("fs.rs");
         let normalised = normalise(source, Literals::Blank);
@@ -10250,8 +10353,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             signatures.len(),
-            4,
-            "OwnedStagingDir has adopt, parent_identity and the two relative creates: {signatures:?}"
+            6,
+            "OwnedStagingDir has adopt, three binding accessors and the two relative creates: {signatures:?}"
         );
         // The relative creates take a `&Path` below the held child; they are not constructors.
         let relative = [

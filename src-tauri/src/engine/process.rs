@@ -52,6 +52,59 @@ use super::{
 #[cfg(target_os = "windows")]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+fn transfer_windows_resource_seals(
+    executable: &EngineExecutable,
+    child: &Child,
+) -> Result<(), Error> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::{
+        Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS},
+        System::Threading::GetCurrentProcess,
+    };
+
+    #[cfg(test)]
+    let failure = take_spawn_io_failure();
+    let target = child.raw_handle().ok_or(Error::EngineDisconnected)?;
+    for (index, source) in executable
+        .resource_leases()
+        .iter()
+        .flat_map(|resource| resource.windows_seal_handles())
+        .enumerate()
+    {
+        #[cfg(not(test))]
+        let _ = index;
+        #[cfg(test)]
+        if failure == Some(SpawnIoFailure::ResourceTransferAfter(index)) {
+            return Err(std::io::Error::other("injected resource seal transfer failure").into());
+        }
+        let mut remote = null_mut();
+        // Duplicate into this exact child with unchanged access and no inheritance. The
+        // returned number belongs to the child, so it must never be closed or owned locally.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source,
+                target,
+                &mut remote,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if duplicated == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        #[cfg(test)]
+        SPAWN_RESOURCE_TRANSFER_OBSERVED.with(|slot| {
+            if let Some((transferred, sent)) = slot.get() {
+                slot.set(Some((transferred + 1, sent)));
+            }
+        });
+    }
+    Ok(())
+}
+
 const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_RESOURCE_REDACTIONS: usize = 256;
@@ -3804,6 +3857,10 @@ impl EngineRuntime {
         let mut child = timeout(deadlines.spawn, async { command.spawn() })
             .await
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
+        // Capture failure without returning: every successfully spawned child must enter its
+        // cleanup owner before a partial transfer can refuse runtime/protocol construction.
+        #[cfg(windows)]
+        let resource_transfer = transfer_windows_resource_seals(&executable, &child);
         #[cfg(all(test, unix))]
         observe_spawned_child(&child, &command_target_for_observer);
         #[cfg(all(test, unix))]
@@ -3845,6 +3902,8 @@ impl EngineRuntime {
             }));
             state.executable = Some(executable);
         }
+        #[cfg(windows)]
+        resource_transfer?;
         if missing_stdin {
             return Err(Error::NoStdin);
         }
@@ -4096,6 +4155,12 @@ impl EngineRuntime {
         deadline: Instant,
         interrupt: Option<&CancellationToken>,
     ) -> Result<(), Error> {
+        #[cfg(all(test, windows))]
+        SPAWN_RESOURCE_TRANSFER_OBSERVED.with(|slot| {
+            if let Some((transferred, sent)) = slot.get() {
+                slot.set(Some((transferred, sent + 1)));
+            }
+        });
         validate_uci_text("UCI command", command)?;
         self.logs.push(EngineLog::Gui(
             self.resource_redactions.redact(format!("{command}\n")),
@@ -4963,17 +5028,27 @@ static ENGINE_LAUNCH_RESOLUTION_HOOKS: crate::infra::test_hooks::KeyedTestHooks<
 static ENGINE_LAUNCH_POST_PIN_HOOKS: crate::infra::test_hooks::KeyedTestHooks<EngineKey> =
     crate::infra::test_hooks::KeyedTestHooks::new();
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpawnIoFailure {
+    #[cfg(unix)]
     NoStdin,
+    #[cfg(unix)]
     NoStdout,
+    #[cfg(windows)]
+    ResourceTransferAfter(usize),
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 std::thread_local! {
     static SPAWN_IO_FAILURE: std::cell::RefCell<Option<SpawnIoFailure>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, windows))]
+std::thread_local! {
+    static SPAWN_RESOURCE_TRANSFER_OBSERVED: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(all(test, unix))]
@@ -4989,12 +5064,12 @@ static SPAWN_CHILD_OBSERVERS: std::sync::OnceLock<
     std::sync::Mutex<HashMap<std::path::PathBuf, SpawnChildObserver>>,
 > = std::sync::OnceLock::new();
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn set_spawn_io_failure(failure: Option<SpawnIoFailure>) {
     SPAWN_IO_FAILURE.with(|slot| *slot.borrow_mut() = failure);
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
     SPAWN_IO_FAILURE.with(|slot| slot.borrow_mut().take())
 }
@@ -6927,13 +7002,13 @@ mod tests {
     }
 
     #[cfg(any(windows, target_os = "macos"))]
-    async fn assert_native_cwd_probe(executable: EngineExecutable, command: &str) {
+    async fn spawn_native_probe(executable: EngineExecutable) -> (EngineRuntime, Arc<ChildOwner>) {
         let deadlines = EngineDeadlines {
             quit: Duration::from_millis(20),
             ..EngineDeadlines::default()
         };
         let cleanup = Arc::new(ChildOwner::default());
-        let mut runtime = match EngineRuntime::spawn_owned(
+        let runtime = match EngineRuntime::spawn_owned(
             executable,
             deadlines.clone(),
             cleanup.clone(),
@@ -6947,11 +7022,32 @@ mod tests {
                     .await;
                 assert!(
                     reaped.is_ok(),
-                    "failed native cwd launch must be reaped: {reaped:?}"
+                    "failed native launch must be reaped: {reaped:?}"
                 );
-                panic!("native cwd launch failed: {error:?}");
+                panic!("native launch failed: {error:?}");
             }
         };
+        (runtime, cleanup)
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    async fn reap_native_probe(runtime: &mut EngineRuntime, cleanup: &ChildOwner) {
+        let reaped = runtime.terminate().await;
+        let fallback = cleanup
+            .terminate(Duration::ZERO, runtime.deadlines.kill_reap, false)
+            .await;
+        assert!(reaped.is_ok(), "native probe must be reaped: {reaped:?}");
+        assert!(
+            fallback.is_ok(),
+            "native probe fallback must confirm reap: {fallback:?}"
+        );
+        assert!(!cleanup.unresolved());
+        eprintln!("native probe physically reaped before propagating outcome");
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    async fn assert_native_cwd_probe(executable: EngineExecutable, command: &str) {
+        let (mut runtime, cleanup) = spawn_native_probe(executable).await;
         let outcome = timeout(Duration::from_secs(5), async {
             runtime.send(command, None).await?;
             loop {
@@ -6966,20 +7062,200 @@ mod tests {
             }
         })
         .await;
-        let reaped = runtime.terminate().await;
-        let fallback = cleanup
-            .terminate(Duration::ZERO, deadlines.kill_reap, false)
+        reap_native_probe(&mut runtime, &cleanup).await;
+        assert_eq!(outcome.unwrap().unwrap(), "cwd-original");
+    }
+
+    #[cfg(windows)]
+    struct WindowsResourceProbe {
+        _temp: tempfile::TempDir,
+        executable: EngineExecutable,
+        resources: Vec<(String, std::path::PathBuf, &'static str)>,
+        rename_paths: Vec<std::path::PathBuf>,
+    }
+
+    #[cfg(windows)]
+    fn windows_resource_probe() -> WindowsResourceProbe {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("engine-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        let image = cwd.join("engine.exe");
+        std::fs::copy(std::env::var_os("COMSPEC").unwrap(), &image).unwrap();
+        let ancestor = temp.path().join("resource-ancestor");
+        let parent = ancestor.join("resource-parent");
+        let directory = parent.join("tables");
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = parent.join("book.bin");
+        std::fs::write(&file, b"resource-file-original\n").unwrap();
+        std::fs::write(directory.join("data"), b"resource-directory-original\n").unwrap();
+        let mut authority = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let engine = authority
+            .register_engine_file(&image, "Resource seal probe")
+            .unwrap();
+        let mut leases = Vec::new();
+        let mut resources = Vec::new();
+        for (path, kind, content) in [
+            (
+                &file,
+                EngineResourceHandleKind::File,
+                "resource-file-original",
+            ),
+            (
+                &directory,
+                EngineResourceHandleKind::Directory,
+                "resource-directory-original",
+            ),
+        ] {
+            let grant = authority
+                .grant_dialog(
+                    path,
+                    "resource",
+                    PathClass::SingleDialogGrant,
+                    PathOperation::EngineResourceRead,
+                    Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            let read_path = if kind == EngineResourceHandleKind::Directory {
+                path.join("data")
+            } else {
+                path.to_path_buf()
+            };
+            let handle = authority
+                .promote_engine_resource(&grant, kind, "resource")
+                .unwrap();
+            let lease = authority.engine_resource(&handle).unwrap();
+            let value = lease.uci_value().unwrap();
+            resources.push((value, read_path, content));
+            leases.push(Arc::new(lease));
+        }
+        let executable = authority
+            .engine_executable(&engine, PathOperation::EngineExecute)
+            .unwrap()
+            .with_resource_leases(leases);
+        WindowsResourceProbe {
+            _temp: temp,
+            executable,
+            resources,
+            rename_paths: vec![file, directory, parent, ancestor],
+        }
+    }
+
+    #[cfg(windows)]
+    fn assert_resource_renames_released(paths: &[std::path::PathBuf]) {
+        for path in paths {
+            let moved = path.with_extension("moved");
+            std::fs::rename(path, &moved)
+                .expect("physical reap must release child-only resource seals");
+            std::fs::rename(&moved, path).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_resource_child_seals_survive_all_backend_seal_loss_until_reap() {
+        let WindowsResourceProbe {
+            _temp,
+            executable,
+            resources,
+            rename_paths,
+        } = windows_resource_probe();
+        let (mut runtime, cleanup) = spawn_native_probe(executable).await;
+        let outcome = std::panic::AssertUnwindSafe(async {
+            // No EngineActor or local Arc retains resources here. This removes the sole
+            // backend executable/resource owner while leaving child control available.
+            let backend_seals = cleanup.state.lock().unwrap().executable.take().unwrap();
+            drop(backend_seals);
+            for path in &rename_paths {
+                let moved = path.with_extension("moved");
+                let error = std::fs::rename(path, &moved)
+                    .expect_err("child-only seals must refuse resource/parent/ancestor rename");
+                assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                assert!(!moved.exists());
+                for (_, read_path, content) in &resources {
+                    assert_eq!(std::fs::read_to_string(read_path).unwrap().trim(), *content);
+                }
+            }
+            for (value, _, content) in &resources {
+                let resource_path = if *content == "resource-directory-original" {
+                    format!("{value}\\data")
+                } else {
+                    value.clone()
+                };
+                timeout(Duration::from_secs(5), async {
+                    runtime
+                        .send(&format!("type \"{resource_path}\""), None)
+                        .await?;
+                    loop {
+                        let line = runtime
+                            .read_line()
+                            .await?
+                            .ok_or(Error::EngineDisconnected)?;
+                        if line.trim() == *content {
+                            return Ok::<_, Error>(());
+                        }
+                    }
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            }
+        })
+        .catch_unwind()
+        .await;
+        reap_native_probe(&mut runtime, &cleanup).await;
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+        assert_resource_renames_released(&rename_paths);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_resource_partial_transfer_failure_precedes_protocol_and_is_reaped() {
+        let WindowsResourceProbe {
+            _temp,
+            executable,
+            rename_paths,
+            ..
+        } = windows_resource_probe();
+        let cleanup = Arc::new(ChildOwner::default());
+        SPAWN_RESOURCE_TRANSFER_OBSERVED.with(|slot| slot.set(Some((0, 0))));
+        set_spawn_io_failure(Some(SpawnIoFailure::ResourceTransferAfter(1)));
+        let result =
+            EngineRuntime::spawn_owned(executable, EngineDeadlines::default(), cleanup.clone())
+                .await;
+        let owned = cleanup.unresolved();
+        let observed = SPAWN_RESOURCE_TRANSFER_OBSERVED.with(|slot| slot.take());
+        set_spawn_io_failure(None);
+        let error = match result {
+            Ok(mut runtime) => {
+                reap_native_probe(&mut runtime, &cleanup).await;
+                None
+            }
+            Err(error) => Some(error),
+        };
+        let reaped = cleanup
+            .terminate(Duration::ZERO, EngineDeadlines::default().kill_reap, false)
             .await;
         assert!(
             reaped.is_ok(),
-            "native cwd probe must be reaped: {reaped:?}"
+            "partial transfer child must be physically reaped: {reaped:?}"
+        );
+        assert!(!cleanup.unresolved());
+        eprintln!("partial transfer child physically reaped before propagating outcome");
+        assert!(owned, "transfer failure must retain actual child ownership");
+        assert_eq!(
+            observed,
+            Some((1, 0)),
+            "one actual transfer and no protocol/resource sends"
         );
         assert!(
-            fallback.is_ok(),
-            "native cwd probe fallback must confirm reap: {fallback:?}"
+            matches!(error, Some(Error::Io(error)) if error.to_string() == "injected resource seal transfer failure")
         );
-        eprintln!("native cwd probe physically reaped before propagating outcome");
-        assert_eq!(outcome.unwrap().unwrap(), "cwd-original");
+        assert_resource_renames_released(&rename_paths);
     }
 
     #[cfg(windows)]
