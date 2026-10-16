@@ -521,6 +521,7 @@ mod windows_tests {
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
             catalog_installs: BTreeMap::new(),
+            catalog_uses: Vec::new(),
         };
         fs::write(&registry, serde_json::to_vec(&registry_value).unwrap()).unwrap();
         let capture = crate::error::LogCaptureScope::start();
@@ -4176,6 +4177,8 @@ struct Registry {
     image_cleanup: Vec<StoredEntry>,
     #[serde(default)]
     catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
+    #[serde(default)]
+    catalog_uses: Vec<catalog_install::CatalogUse>,
 }
 /// Durable intent recorded before an atomic download replacement. It lets a restarted authority
 /// either activate the newly installed exact file or discard an intent whose replacement never
@@ -4362,10 +4365,10 @@ pub struct PathAuthority {
     catalog_installs: BTreeMap<String, catalog_install::CatalogInstall>,
     catalog_session: String,
     catalog_protected: BTreeSet<String>,
-    /// Current-process uses retained until exit, including bindings used before provenance.
-    /// Keys retain every distinct (pathname, terminal identity a, terminal identity b) binding
-    /// captured from successful resolution. The boolean includes recursive directory contents.
-    catalog_uses: BTreeMap<(PathBuf, u64, u64), bool>,
+    /// Durable unresolved child uses, independent of authority or install existence. Keys retain
+    /// each terminal binding. Each originating session owns its boolean, where true also reaches
+    /// recursive contents. Uses survive reopen until that session's proven shutdown clears them.
+    catalog_uses: catalog_install::CatalogUses,
     attachments_sealed: bool,
     registry_durability_pending: bool,
     active_image_issuances: Arc<ActiveImageIssuances>,
@@ -4983,6 +4986,7 @@ impl PathAuthority {
             provisional_attachments,
             image_cleanup,
             catalog_installs,
+            catalog_uses,
         ) = if registry_path.exists() {
             let file = fs::File::open(&registry_path)?;
             let bytes = read_registry_bytes(file)?;
@@ -4996,6 +5000,7 @@ impl PathAuthority {
             }
             let image_cleanup_records = registry.image_cleanup;
             catalog_install::validate_records(&registry.catalog_installs)?;
+            let catalog_uses = catalog_install::decode_uses(registry.catalog_uses)?;
             let provisional_attachments = registry.provisional_attachments.clone();
             let mut loaded = BTreeMap::new();
             for mut stored in registry.entries {
@@ -5091,6 +5096,7 @@ impl PathAuthority {
                 provisional_attachments,
                 image_cleanup,
                 registry.catalog_installs,
+                catalog_uses,
             )
         } else {
             (
@@ -5100,6 +5106,7 @@ impl PathAuthority {
                 None,
                 Vec::new(),
                 BTreeSet::new(),
+                BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
             )
@@ -5149,7 +5156,7 @@ impl PathAuthority {
             catalog_installs,
             catalog_session: Uuid::new_v4().to_string(),
             catalog_protected: BTreeSet::new(),
-            catalog_uses: BTreeMap::new(),
+            catalog_uses,
             attachments_sealed: false,
             registry_durability_pending: false,
             active_image_issuances: Arc::new(ActiveImageIssuances::new()),
@@ -7826,8 +7833,8 @@ impl PathAuthority {
         );
         if let Ok(resolved) = &resolved {
             if let Some(target) = resolved.target() {
-                let recursive = entry.stored.purpose == Some(EntryPurpose::EngineResource)
-                    && entry.stored.target_is_dir;
+                let recursive = operation == PathOperation::EngineResourceRead
+                    && resolved.directory().is_some();
                 let child_use = matches!(
                     operation,
                     PathOperation::EngineExecute
@@ -7853,7 +7860,20 @@ impl PathAuthority {
                     }
                 }
                 .map(|(a, b)| Identity { a, b });
-                self.protect_catalog_path(target, recursive, child_use, terminal.as_ref())?;
+                let mut contexts = vec![(target, recursive, terminal)];
+                if child_use
+                    && resolved.is_regular_file()
+                    && operation != PathOperation::EngineResourceRead
+                {
+                    // Native execution uses the image's parent as cwd. Capture that validated
+                    // held object separately as a node, without recursive ownership of siblings.
+                    let (a, b) = resolved.parent_identity()?;
+                    let cwd = target.parent().ok_or_else(|| {
+                        Error::Conflict("resolved executable has no working directory".into())
+                    })?;
+                    contexts.push((cwd, false, Some(Identity { a, b })));
+                }
+                self.protect_catalog_contexts(&contexts, child_use)?;
             }
         }
         if resolved.is_ok() && self.persistent.contains_key(&id.id) {
@@ -8781,6 +8801,7 @@ impl PathAuthority {
             provisional_attachments: provisional.clone(),
             image_cleanup: cleanup.values().cloned().collect(),
             catalog_installs: self.catalog_installs.clone(),
+            catalog_uses: catalog_install::encode_uses(&self.catalog_uses),
         })
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
         Ok(RegistryAdmissionSnapshot {
@@ -18281,6 +18302,7 @@ mod tests {
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
                 catalog_installs: BTreeMap::new(),
+                catalog_uses: Vec::new(),
             },
         );
         let capture = crate::error::LogCaptureScope::start();
@@ -18357,6 +18379,7 @@ mod tests {
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
                 catalog_installs: BTreeMap::new(),
+                catalog_uses: Vec::new(),
             },
         );
         let authority = PathAuthority::open(registry, vec![]).unwrap();
@@ -22126,6 +22149,7 @@ mod tests {
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
                 catalog_installs: BTreeMap::new(),
+                catalog_uses: Vec::new(),
             },
         );
     }
@@ -22790,6 +22814,7 @@ mod tests {
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
             catalog_installs: BTreeMap::new(),
+            catalog_uses: Vec::new(),
         })
         .unwrap();
         for entry in json["entries"].as_array_mut().unwrap() {
@@ -22854,6 +22879,7 @@ mod tests {
             provisional_attachments: BTreeSet::new(),
             image_cleanup: vec![],
             catalog_installs: BTreeMap::new(),
+            catalog_uses: Vec::new(),
         };
         fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
         let mut authority = PathAuthority::open(registry_path.clone(), vec![]).unwrap();
@@ -23320,6 +23346,7 @@ mod tests {
                 provisional_attachments: BTreeSet::new(),
                 image_cleanup: vec![],
                 catalog_installs: BTreeMap::new(),
+                catalog_uses: Vec::new(),
             })
             .unwrap(),
         )
@@ -24238,6 +24265,7 @@ mod tests {
             provisional_attachments: BTreeSet::from(["unknown".into()]),
             image_cleanup: vec![],
             catalog_installs: BTreeMap::new(),
+            catalog_uses: Vec::new(),
         })
         .unwrap();
         fs::write(&registry, serde_json::to_vec(&invalid_provisional).unwrap()).unwrap();

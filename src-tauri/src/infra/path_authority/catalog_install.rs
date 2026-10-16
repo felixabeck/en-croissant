@@ -7,6 +7,112 @@ use crate::infra::fs::{
 const MAX_INVENTORY_ENTRIES: usize = 16_384;
 const MAX_INVENTORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+pub(super) type CatalogUses = BTreeMap<(PathBuf, u64, u64), BTreeMap<String, bool>>;
+
+/// Durable evidence of child use, independent of archive ownership or resource authority.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct CatalogUse {
+    path: NativePath,
+    identity: Identity,
+    sessions: BTreeMap<String, bool>,
+}
+
+fn validate_use(
+    path: &Path,
+    a: u64,
+    b: u64,
+    sessions: &BTreeMap<String, bool>,
+) -> Result<(), Error> {
+    if !path.is_absolute()
+        || (a == 0 && b == 0)
+        || sessions.is_empty()
+        || sessions
+            .keys()
+            .any(|session| Uuid::parse_str(session).is_err())
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(Error::InvalidInput("invalid catalog use evidence".into()));
+    }
+    let components = path
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    validate_components(&components)
+}
+
+fn validate_uses(uses: &CatalogUses) -> Result<(), Error> {
+    let mut count = uses.len();
+    for ((path, a, b), sessions) in uses {
+        count = count
+            .checked_add(sessions.len())
+            .ok_or_else(invalid_record)?;
+        if count > MAX_AUTHORITY_IDS {
+            return Err(Error::ResourceLimit(
+                "catalog use evidence limit reached".into(),
+            ));
+        }
+        validate_use(path, *a, *b, sessions)?;
+    }
+    Ok(())
+}
+
+pub(super) fn encode_uses(uses: &CatalogUses) -> Vec<CatalogUse> {
+    uses.iter()
+        .map(|((path, a, b), sessions)| CatalogUse {
+            path: NativePath::from_path(path),
+            identity: Identity { a: *a, b: *b },
+            sessions: sessions.clone(),
+        })
+        .collect()
+}
+
+pub(super) fn decode_uses(records: Vec<CatalogUse>) -> Result<CatalogUses, Error> {
+    if records.len() > MAX_AUTHORITY_IDS
+        || records
+            .iter()
+            .try_fold(records.len(), |count, record| {
+                count.checked_add(record.sessions.len())
+            })
+            .is_none_or(|count| count > MAX_AUTHORITY_IDS)
+        || serde_json::to_vec(&records)
+            .map_err(|error| Error::InvalidInput(error.to_string()))?
+            .len()
+            > MAX_REGISTRY_BYTES
+    {
+        return Err(Error::ResourceLimit(
+            "catalog use evidence limit reached".into(),
+        ));
+    }
+    let mut uses = CatalogUses::new();
+    for record in records {
+        let path = record.path.to_path()?;
+        validate_use(
+            &path,
+            record.identity.a,
+            record.identity.b,
+            &record.sessions,
+        )?;
+        if uses
+            .insert(
+                (path, record.identity.a, record.identity.b),
+                record.sessions,
+            )
+            .is_some()
+        {
+            return Err(Error::InvalidInput("duplicate catalog use binding".into()));
+        }
+    }
+    Ok(uses)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CatalogInstall {
     root: StoredEntry,
@@ -141,7 +247,7 @@ fn reaches(
 ) -> Result<Reachability, Error> {
     // Inspection failure requires conservative retention and durable use, but is never
     // positive membership for cleaning refusal. None of these views authorize deletion.
-    Ok(filesystem_reaches(
+    let physical = filesystem_reaches(
         &target(record)?,
         &record.identity,
         &record.root.identity,
@@ -149,7 +255,28 @@ fn reaches(
         recursive,
         bound_identity,
     )
-    .unwrap_or(Reachability::Uncertain))
+    .unwrap_or(Reachability::Uncertain);
+    if physical == Reachability::Member {
+        return Ok(physical);
+    }
+    if let Some(binding) = bound_identity {
+        if *binding == record.identity
+            || record
+                .inventory
+                .iter()
+                .any(|entry| entry.identity == *binding)
+        {
+            return Ok(Reachability::Member);
+        }
+        if !recursive {
+            // A known node outside the complete managed identity set cannot own independent
+            // managed objects merely because its old locator disappeared. Physical membership
+            // above still covers added objects. Collection independently rejects any changed
+            // inventory before deletion, so this negative evidence grants no deletion authority.
+            return Ok(Reachability::Disjoint);
+        }
+    }
+    Ok(physical)
 }
 
 struct ReachabilityBinding {
@@ -394,6 +521,7 @@ impl PathAuthority {
     pub(super) fn catalog_admission_count(&self) -> usize {
         self.catalog_installs.len()
             + self.catalog_uses.len()
+            + self.catalog_uses.values().map(BTreeMap::len).sum::<usize>()
             + self
                 .catalog_installs
                 .values()
@@ -402,6 +530,17 @@ impl PathAuthority {
     }
 
     fn commit_catalog(&mut self, records: BTreeMap<String, CatalogInstall>) -> Result<(), Error> {
+        self.commit_catalog_state(records, self.catalog_uses.clone(), false)
+    }
+
+    /// One atomic lifecycle candidate owns both scope uses and their derived install markers.
+    fn commit_catalog_state(
+        &mut self,
+        records: BTreeMap<String, CatalogInstall>,
+        uses: CatalogUses,
+        clearing: bool,
+    ) -> Result<(), Error> {
+        // Capture admission before changing either state, including the first zero-install use.
         let baseline = self.registry_admission_snapshot(
             &self.persistent,
             &self.active_database_root,
@@ -413,7 +552,9 @@ impl PathAuthority {
             &self.image_cleanup,
         )?;
         validate_records(&records)?;
+        validate_uses(&uses)?;
         let previous = std::mem::replace(&mut self.catalog_installs, records);
+        let previous_uses = std::mem::replace(&mut self.catalog_uses, uses);
         let result = self.commit_candidate_with_pending_baseline(
             self.persistent.clone(),
             self.pending_artifacts.clone(),
@@ -422,12 +563,18 @@ impl PathAuthority {
         );
         match result {
             Ok(durability) => {
+                if clearing && !matches!(durability, CommitDurability::Durable) {
+                    // Unconfirmed clear is never positive in-memory evidence of child exit.
+                    self.catalog_installs = previous;
+                    self.catalog_uses = previous_uses;
+                }
                 self.catalog_protected
                     .retain(|id| self.catalog_installs.contains_key(id));
                 require_durable(durability)
             }
             Err(error) => {
                 self.catalog_installs = previous;
+                self.catalog_uses = previous_uses;
                 Err(error)
             }
         }
@@ -440,41 +587,41 @@ impl PathAuthority {
         child_use: bool,
         bound_identity: Option<&Identity>,
     ) -> Result<(), Error> {
-        let mut affected = Vec::new();
+        self.protect_catalog_contexts(&[(path, recursive, bound_identity.cloned())], child_use)
+    }
+
+    pub(super) fn protect_catalog_contexts(
+        &mut self,
+        contexts: &[(&Path, bool, Option<Identity>)],
+        child_use: bool,
+    ) -> Result<(), Error> {
+        let mut affected = BTreeSet::new();
         for (id, record) in &self.catalog_installs {
-            let relation = reaches(record, path, recursive, bound_identity)?;
-            if record.cleaning && relation == Reachability::Member {
-                return Err(Error::Conflict(
-                    "catalog install cleanup is in progress".into(),
-                ));
-            }
-            if relation.protects() {
-                affected.push(id.clone());
+            for (path, recursive, binding) in contexts {
+                let relation = reaches(record, path, *recursive, binding.as_ref())?;
+                if record.cleaning && relation == Reachability::Member {
+                    return Err(Error::Conflict(
+                        "catalog install cleanup is in progress".into(),
+                    ));
+                }
+                if relation.protects() {
+                    affected.insert(id.clone());
+                }
             }
         }
         if child_use {
-            let binding = bound_identity.ok_or_else(|| {
-                Error::Conflict("resolved child use has no terminal binding".into())
-            })?;
-            let key = (path.to_path_buf(), binding.a, binding.b);
-            if !self.catalog_uses.contains_key(&key) {
-                if self.registry_unique_id_count() >= MAX_AUTHORITY_IDS {
-                    return Err(Error::ResourceLimit(
-                        "catalog session use limit reached".into(),
-                    ));
-                }
-                self.catalog_uses.insert(key, recursive);
-            } else if recursive {
-                self.catalog_uses.insert(key, true);
+            let mut uses = self.catalog_uses.clone();
+            for (path, recursive, binding) in contexts {
+                let binding = binding.as_ref().ok_or_else(|| {
+                    Error::Conflict("resolved child use has no terminal binding".into())
+                })?;
+                let scope = uses
+                    .entry((path.to_path_buf(), binding.a, binding.b))
+                    .or_default()
+                    .entry(self.catalog_session.clone())
+                    .or_default();
+                *scope |= *recursive;
             }
-        }
-        if child_use
-            && affected.iter().any(|id| {
-                !self.catalog_installs[id]
-                    .users
-                    .contains(&self.catalog_session)
-            })
-        {
             let mut records = self.catalog_installs.clone();
             for id in &affected {
                 records
@@ -483,7 +630,12 @@ impl PathAuthority {
                     .users
                     .insert(self.catalog_session.clone());
             }
-            self.commit_catalog(records)?;
+            if uses != self.catalog_uses
+                || records != self.catalog_installs
+                || self.registry_durability_pending
+            {
+                self.commit_catalog_state(records, uses, false)?;
+            }
         } else if !affected.is_empty() && self.registry_durability_pending {
             self.retry_registry_durability()?;
         }
@@ -541,11 +693,12 @@ impl PathAuthority {
             users: BTreeSet::new(),
         };
         // A recursive resource may have been handed to a child before provenance existed.
-        for ((used, a, b), recursive) in &self.catalog_uses {
+        for ((used, a, b), sessions) in &self.catalog_uses {
             let binding = Identity { a: *a, b: *b };
-            if reaches(&record, used, *recursive, Some(&binding))?.protects() {
-                record.users.insert(self.catalog_session.clone());
-                break;
+            for (session, recursive) in sessions {
+                if reaches(&record, used, *recursive, Some(&binding))?.protects() {
+                    record.users.insert(session.clone());
+                }
             }
         }
         let mut records = self.catalog_installs.clone();
@@ -576,18 +729,16 @@ impl PathAuthority {
 
     /// The caller must first prove sealed admission, drained operations and successful reaping.
     pub(crate) fn clear_catalog_session_use(&mut self) -> Result<(), Error> {
-        let previous = self.catalog_installs.clone();
         let mut records = self.catalog_installs.clone();
         for record in records.values_mut() {
             record.users.remove(&self.catalog_session);
         }
-        let result = self.commit_catalog(records);
-        if result.is_err() {
-            // A failed or unconfirmed clear is never positive in-memory evidence of child exit.
-            // Preserve the markers for retry even when replacement crossed the rename boundary.
-            self.catalog_installs = previous;
+        let mut uses = self.catalog_uses.clone();
+        for sessions in uses.values_mut() {
+            sessions.remove(&self.catalog_session);
         }
-        result
+        uses.retain(|_, sessions| !sessions.is_empty());
+        self.commit_catalog_state(records, uses, true)
     }
 
     pub(crate) fn collect_catalog_installs(&mut self) -> Result<(), Error> {
@@ -614,6 +765,15 @@ impl PathAuthority {
                 continue;
             }
             let mut live = false;
+            'uses: for ((path, a, b), sessions) in &self.catalog_uses {
+                let binding = Identity { a: *a, b: *b };
+                for recursive in sessions.values() {
+                    if reaches(&record, path, *recursive, Some(&binding))?.protects() {
+                        live = true;
+                        break 'uses;
+                    }
+                }
+            }
             for entry in self
                 .persistent
                 .values()
@@ -808,6 +968,30 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    async fn finish_session(authority: PathAuthority) {
+        let authority = SharedPathAuthority::installed(authority);
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let games = crate::game::GameManager::new();
+        let operations = crate::infra::operations::OperationRegistry::default();
+        assert!(
+            crate::shutdown_with_catalog_authority(
+                crate::shutdown_backend_with_attachments(
+                    &supervisor,
+                    &games,
+                    None,
+                    &operations,
+                    std::future::ready(Ok(())),
+                    std::future::ready(Ok(())),
+                    Duration::from_secs(20),
+                ),
+                authority.clone(),
+                Duration::from_secs(20),
+            )
+            .await
+        );
+    }
+
     struct FileFault(AtomicFileFaultPoint);
     impl AtomicWriterInjector for FileFault {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
@@ -890,19 +1074,27 @@ mod tests {
         );
         let persisted = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
         for (id, record) in &original {
-            assert!(persisted.catalog_installs[id].users.contains(&session));
+            assert!(!persisted.catalog_installs[id].users.contains(&session));
             assert_eq!(persisted.catalog_installs[id].root, record.root);
             assert!(persisted.catalog_installs[id].cleaning);
-            assert!(f.authority.catalog_protected.contains(id));
+            assert!(!f.authority.catalog_protected.contains(id));
         }
+        assert_eq!(persisted.catalog_uses.len(), 2);
+        assert!(persisted
+            .catalog_uses
+            .values()
+            .all(|sessions| sessions.get(&session) == Some(&false)));
         drop(persisted);
         f.reopen();
-        f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+        assert!(matches!(
+            f.reconcile(vec![engine.path_ref().clone()], true),
+            Err(Error::Io(_))
+        ));
         assert!(f
             .authority
             .catalog_installs
             .values()
-            .all(|record| record.users.contains(&session)));
+            .all(|record| !record.users.contains(&session)));
         assert!(moved.join("managed/data/network").exists());
     }
 
@@ -941,9 +1133,10 @@ mod tests {
             f.reopen();
             assert!(f
                 .authority
-                .catalog_installs
+                .catalog_uses
                 .values()
-                .all(|record| record.users.contains(&session)));
+                .all(|sessions| sessions.get(&session) == Some(&false)));
+            assert_eq!(f.authority.catalog_uses.len(), 2);
         }
     }
 
@@ -1085,11 +1278,13 @@ mod tests {
     #[test]
     fn catalog_install_cr6_retained_uncertainty_keeps_unavailable_provenance() {
         let mut f = cr6_cleaning_fixture();
-        let engine = cr6_independent_engine(&mut f);
+        let _engine = cr6_independent_engine(&mut f);
+        let resource = f.resource(&f.temp.path().join("independent"), true);
         let original = f.authority.catalog_installs.clone();
         fs::rename(&f.root, f.temp.path().join("moved-root")).unwrap();
         f.reopen();
-        f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+        f.reconcile(vec![resource.path_ref().clone()], true)
+            .unwrap();
         assert_eq!(f.authority.catalog_installs, original);
     }
 
@@ -1226,7 +1421,7 @@ mod tests {
         let before = f.authority.registry_unique_id_count();
         let second_lease = f.authority.engine_resource(&second).unwrap();
         assert_eq!(f.authority.catalog_uses.len(), 2);
-        assert_eq!(f.authority.registry_unique_id_count(), before + 1);
+        assert_eq!(f.authority.registry_unique_id_count(), before + 2);
         drop(f.authority.engine_resource(&second).unwrap());
         assert_eq!(
             f.authority.catalog_uses.len(),
@@ -1379,66 +1574,142 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[derive(Clone)]
+    struct InheritedDirectoryChild {
+        actor: Arc<crate::engine::EngineActor>,
+        supervisor: Arc<crate::engine::EngineSupervisor>,
+        value: String,
+        resource: Option<EngineResourceHandle>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl InheritedDirectoryChild {
+        async fn spawn(f: &mut Fixture) -> Self {
+            let path = f.root.clone();
+            Self::spawn_resource(f, &path).await
+        }
+
+        async fn spawn_resource(f: &mut Fixture, path: &Path) -> Self {
+            let resource = f.resource(path, true);
+            let lease = Arc::new(f.authority.engine_resource(&resource).unwrap());
+            let value = lease.uci_value().unwrap();
+            let probe = f.temp.path().join("probe");
+            fs::create_dir(&probe).unwrap();
+            Self::spawn_image(
+                f,
+                &probe.join("resource-child"),
+                Some((resource, lease)),
+                value,
+            )
+            .await
+        }
+
+        async fn spawn_image(
+            f: &mut Fixture,
+            script: &Path,
+            resource: Option<(EngineResourceHandle, Arc<EngineResourceLease>)>,
+            value: String,
+        ) -> Self {
+            use crate::engine::{EngineActor, EngineDeadlines, EngineKey, EngineSupervisor};
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value\"; echo;; quit) exit 0;; esac; done\n").unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+            let engine = f
+                .authority
+                .register_engine_file(&script, "Resource child")
+                .unwrap();
+            let executable = f
+                .authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap()
+                .with_resource_leases(
+                    resource
+                        .as_ref()
+                        .map(|(_, lease)| lease.clone())
+                        .into_iter()
+                        .collect(),
+                );
+            let key = EngineKey::new("historical-resource".into(), "child".into()).unwrap();
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let actor = Arc::new(
+                EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+                    .await
+                    .unwrap(),
+            );
+            let registration = supervisor
+                .replace_handle(
+                    key,
+                    actor.clone(),
+                    "child".into(),
+                    engine.path_ref().clone(),
+                )
+                .await;
+            if let Err(error) = registration {
+                let cleanup = actor.terminate().await;
+                assert!(cleanup.is_ok(), "failed registration child must be reaped");
+                panic!("resource child registration failed: {error:?}");
+            }
+            InheritedDirectoryChild {
+                actor,
+                supervisor,
+                value,
+                resource: resource.map(|(handle, _)| handle),
+            }
+        }
+
+        async fn assert_network(&self) {
+            self.assert_contents("later/data/network").await;
+        }
+
+        async fn assert_contents(&self, relative: &str) {
+            let value = format!("{}/{relative}", self.value);
+            self.actor
+                .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), self.actor.next_configuration_line())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .as_deref(),
+                Some("managed network")
+            );
+        }
+
+        async fn reap(&self) {
+            let cleanup = self.supervisor.terminate_all().await;
+            let fallback = self.actor.terminate().await;
+            assert!(
+                cleanup.is_ok(),
+                "supervised child must be reaped: {cleanup:?}"
+            );
+            assert!(
+                fallback.is_ok(),
+                "actor reap must be confirmed: {fallback:?}"
+            );
+            eprintln!(
+                "historical-resource child reaping confirmed before propagating test outcome"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn catalog_install_phase3_inherited_resource_child_survives_publication_and_restart() {
-        use crate::engine::{EngineActor, EngineDeadlines, EngineKey, EngineSupervisor};
-        use std::os::unix::fs::PermissionsExt;
         let mut f = Fixture::new();
         let original = f.root.clone();
-        let resource = f.resource(&original, true);
-        let lease = Arc::new(f.authority.engine_resource(&resource).unwrap());
-        let value = lease.uci_value().unwrap();
-        let script = f.temp.path().join("resource-child");
-        fs::write(&script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value/later/data/network\"; echo;; quit) exit 0;; esac; done\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-        let engine = f
-            .authority
-            .register_engine_file(&script, "Resource child")
-            .unwrap();
-        let executable = f
-            .authority
-            .engine_executable(&engine, PathOperation::EngineExecute)
-            .unwrap()
-            .with_resource_leases(vec![lease]);
-        let key = EngineKey::new("historical-resource".into(), "child".into()).unwrap();
-        let supervisor = Arc::new(EngineSupervisor::default());
-        let actor = Arc::new(
-            EngineActor::spawn_initialized(executable, EngineDeadlines::default())
-                .await
-                .unwrap(),
-        );
-        // The parent always observes and reaps this actor before propagating a worker panic,
-        // including the intentional source-revert marker assertion failure.
+        let child = InheritedDirectoryChild::spawn(&mut f).await;
+        // Observe worker panics only after the parent has confirmed physical child reaping.
         let outcome = tokio::spawn({
-            let actor = actor.clone();
-            let supervisor = supervisor.clone();
+            let child = child.clone();
             async move {
-                supervisor
-                    .replace_handle(
-                        key,
-                        actor.clone(),
-                        "child".into(),
-                        engine.path_ref().clone(),
-                    )
-                    .await
-                    .unwrap();
                 let moved = f.temp.path().join("moved-root");
                 fs::rename(&original, &moved).unwrap();
                 fs::create_dir(&original).unwrap();
                 phase3_select_root(&mut f, &moved);
                 f.install("later");
-                actor
-                    .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    tokio::time::timeout(Duration::from_secs(2), actor.next_configuration_line())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .as_deref(),
-                    Some("managed network")
-                );
+                child.assert_network().await;
                 let session = f.authority.catalog_session.clone();
                 assert!(f
                     .authority
@@ -1447,33 +1718,741 @@ mod tests {
                     .all(|record| record.users.contains(&session)));
                 f.reopen();
                 f.reconcile(vec![], true).unwrap();
-                actor
-                    .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    tokio::time::timeout(Duration::from_secs(2), actor.next_configuration_line())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .as_deref(),
-                    Some("managed network")
-                );
+                child.assert_network().await;
             }
         })
         .await;
-        let cleanup = supervisor.terminate_all().await;
-        let fallback = actor.terminate().await;
-        assert!(
-            cleanup.is_ok(),
-            "supervised child must be reaped: {cleanup:?}"
-        );
-        assert!(
-            fallback.is_ok(),
-            "actor reap must be confirmed: {fallback:?}"
-        );
-        eprintln!("historical-resource child reaping confirmed before propagating test outcome");
+        child.reap().await;
         outcome.unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_phase4_three_sessions_preserve_prepublication_child_use() {
+        let mut f = Fixture::new();
+        let child = InheritedDirectoryChild::spawn(&mut f).await;
+        let origin = f.authority.catalog_session.clone();
+        assert!(f.authority.catalog_installs.is_empty());
+        let outcome = tokio::spawn({
+            let child = child.clone();
+            async move {
+                f.reopen();
+                let publisher = f.authority.catalog_session.clone();
+                assert_ne!(origin, publisher);
+                f.authority
+                    .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                        retained_ids: Some(vec![]),
+                        abandoned_ids: vec![],
+                        startup: true,
+                    })
+                    .unwrap();
+                assert!(!f
+                    .authority
+                    .persistent
+                    .contains_key(&child.resource.as_ref().unwrap().path_ref().id));
+                assert!(f
+                    .authority
+                    .retired_attachments
+                    .contains_key(&child.resource.as_ref().unwrap().path_ref().id));
+                let image: serde_json::Value =
+                    serde_json::from_slice(&fs::read(f.temp.path().join("registry.json")).unwrap())
+                        .unwrap();
+                assert!(!image["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(
+                        |entry| entry["id"]["id"] == child.resource.as_ref().unwrap().path_ref().id
+                    ));
+                f.install("later");
+                child.assert_network().await;
+                finish_session(f.authority).await;
+                f.authority =
+                    PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+                assert_ne!(f.authority.catalog_session, publisher);
+                assert!(!f
+                    .authority
+                    .persistent
+                    .contains_key(&child.resource.as_ref().unwrap().path_ref().id));
+                f.reconcile(vec![], true).unwrap();
+                child.assert_network().await;
+                assert_eq!(f.authority.catalog_installs.len(), 1);
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|record| record.users.contains(&origin)
+                        && !record.users.contains(&publisher)));
+            }
+        })
+        .await;
+        child.reap().await;
+        outcome.unwrap();
+    }
+
+    #[test]
+    fn catalog_install_phase4_zero_install_handoff_requires_durability_and_retry() {
+        for uncertain in [false, true] {
+            let mut f = Fixture::new();
+            let root = f.root.clone();
+            let resource = f.resource(&root, true);
+            let fault: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(ParentSyncFault("zero-install use sync"))
+            } else {
+                Arc::new(FileFault(AtomicFileFaultPoint::Write))
+            };
+            let guard = install_test_atomic_file_injector(fault);
+            for _ in 0..2 {
+                assert!(matches!(
+                    f.authority.engine_resource(&resource),
+                    Err(Error::Io(_) | Error::CommittedDurabilityUncertain(_))
+                ));
+                assert!(f.authority.catalog_installs.is_empty());
+            }
+            drop(guard);
+            drop(f.authority.engine_resource(&resource).unwrap());
+            let origin = f.authority.catalog_session.clone();
+            f.reopen();
+            f.install("later");
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&origin)));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_context1_eligibility_rechecks_completed_ancestor_substitution() {
+        let mut f = Fixture::new();
+        let outer = f.temp.path().join("outer");
+        let container = outer.join("container");
+        let root = container.join("engines");
+        fs::create_dir_all(&root).unwrap();
+        phase3_select_root(&mut f, &root);
+        let leased = f.temp.path().join("leased");
+        fs::create_dir(&leased).unwrap();
+        let child = InheritedDirectoryChild::spawn_resource(&mut f, &leased).await;
+        let origin = f.authority.catalog_session.clone();
+        let outcome = tokio::spawn({
+            let child = child.clone();
+            async move {
+                f.reopen();
+                f.authority
+                    .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                        retained_ids: Some(vec![]),
+                        abandoned_ids: vec![],
+                        startup: true,
+                    })
+                    .unwrap();
+                assert!(!f
+                    .authority
+                    .persistent
+                    .contains_key(&child.resource.as_ref().unwrap().path_ref().id));
+                f.install("later");
+                let record = f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .next()
+                    .unwrap()
+                    .clone();
+                assert!(
+                    !record.users.contains(&origin),
+                    "publication must be unrelated to A"
+                );
+                assert!(f
+                    .authority
+                    .catalog_uses
+                    .iter()
+                    .all(|((path, a, b), sessions)| {
+                        !sessions.contains_key(&origin)
+                            || reaches(
+                                &record,
+                                path,
+                                sessions[&origin],
+                                Some(&Identity { a: *a, b: *b }),
+                            )
+                            .unwrap()
+                                == Reachability::Disjoint
+                    }));
+                let root_identity = identity(&f.root).unwrap();
+                let parent_identity = identity(&container).unwrap();
+                let original_path = f.root.clone();
+                finish_session(f.authority).await;
+                let displaced = f.temp.path().join("displaced-outer");
+                fs::rename(&outer, &displaced).unwrap();
+                fs::rename(&leased, &outer).unwrap();
+                fs::rename(displaced.join("container"), &container).unwrap();
+                assert_eq!(f.root, original_path);
+                assert_eq!(identity(&f.root).unwrap(), root_identity);
+                assert_eq!(identity(&container).unwrap(), parent_identity);
+                assert_eq!(identity(&f.root.join("later")).unwrap(), record.identity);
+                let directory = open_verified_directory(
+                    &f.root.join("later"),
+                    (record.identity.a, record.identity.b),
+                )
+                .unwrap()
+                .into_file();
+                assert_eq!(
+                    inventory(&directory, record.identity.a).unwrap(),
+                    record.inventory
+                );
+                f.authority =
+                    PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|r| !r.users.contains(&origin)));
+                f.reconcile(vec![], true).unwrap();
+                child
+                    .assert_contents("container/engines/later/data/network")
+                    .await;
+                assert!(f.root.join("later/data/network").exists());
+                assert_eq!(f.authority.catalog_installs.len(), 1);
+            }
+        })
+        .await;
+        child.reap().await;
+        outcome.unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_context1_stale_file_nodes_do_not_own_unrelated_installs() {
+        for replacement in [false, true] {
+            let mut f = Fixture::new();
+            let path = f.temp.path().join("network.nnue");
+            fs::write(&path, b"original leased bytes").unwrap();
+            let resource = f.resource(&path, false);
+            let lease = f.authority.engine_resource(&resource).unwrap();
+            let origin = f.authority.catalog_session.clone();
+            f.reopen();
+            f.authority
+                .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                    retained_ids: Some(vec![]),
+                    abandoned_ids: vec![],
+                    startup: true,
+                })
+                .unwrap();
+            fs::remove_file(&path).unwrap();
+            if replacement {
+                fs::write(&path, b"independent replacement").unwrap();
+            }
+            f.install("later");
+            let projected = f
+                .authority
+                .catalog_installs
+                .values()
+                .any(|record| record.users.contains(&origin));
+            finish_session(f.authority).await;
+            f.authority = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+            f.reconcile(vec![], true).unwrap();
+            assert_eq!(
+                fs::read(PathBuf::from(lease.uci_value().unwrap())).unwrap(),
+                b"original leased bytes"
+            );
+            assert!(
+                !f.root.join("later").exists(),
+                "a stale file node retained an unrelated managed install"
+            );
+            assert!(
+                !projected,
+                "a stale file node cannot own unrelated managed objects"
+            );
+            assert!(f
+                .authority
+                .catalog_uses
+                .values()
+                .any(|sessions| sessions.contains_key(&origin)));
+            assert_eq!(
+                fs::read(PathBuf::from(lease.uci_value().unwrap())).unwrap(),
+                b"original leased bytes"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_context1_removed_image_cwd_keeps_relative_data_without_resource() {
+        let mut f = Fixture::new();
+        let stage = f.stage();
+        let image = stage.path().join("engine");
+        let child = InheritedDirectoryChild::spawn_image(&mut f, &image, None, ".".into()).await;
+        let origin = f.authority.catalog_session.clone();
+        let outcome = tokio::spawn({
+            let child = child.clone();
+            async move {
+                assert!(child.resource.is_none());
+                let image_identity = identity(&image).unwrap();
+                let cwd_identity = identity(stage.path()).unwrap();
+                fs::remove_file(&image).unwrap();
+                f.publish_stage("later", stage.path()).unwrap();
+                let record = f.authority.catalog_installs.values().next().unwrap();
+                assert_eq!(record.identity, cwd_identity);
+                assert!(record
+                    .inventory
+                    .iter()
+                    .all(|entry| entry.identity != image_identity));
+                f.reopen();
+                f.authority
+                    .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                        retained_ids: Some(vec![]),
+                        abandoned_ids: vec![],
+                        startup: true,
+                    })
+                    .unwrap();
+                f.reconcile(vec![], true).unwrap();
+                child.assert_contents("data/network").await;
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|record| record.users.contains(&origin)));
+                assert!(f
+                    .authority
+                    .catalog_uses
+                    .iter()
+                    .any(
+                        |((_, a, b), sessions)| (*a, *b) == (cwd_identity.a, cwd_identity.b)
+                            && sessions.get(&origin) == Some(&false)
+                    ));
+            }
+        })
+        .await;
+        child.reap().await;
+        outcome.unwrap();
+    }
+
+    #[test]
+    fn catalog_install_context1_added_file_membership_still_refuses_cleaning() {
+        let mut f = Fixture::new();
+        f.install("managed");
+        let added = f.root.join("managed/data/user-network");
+        fs::write(&added, b"user data").unwrap();
+        let resource = f.resource(&added, false);
+        let mut records = f.authority.catalog_installs.clone();
+        records.values_mut().next().unwrap().cleaning = true;
+        f.authority.commit_catalog(records).unwrap();
+        f.reopen();
+        assert!(
+            matches!(f.authority.engine_resource(&resource), Err(Error::Conflict(message)) if message == "catalog install cleanup is in progress")
+        );
+        assert_eq!(fs::read(&added).unwrap(), b"user data");
+    }
+
+    #[test]
+    fn catalog_install_context1_image_and_cwd_are_one_durable_handoff() {
+        struct CountWrites(std::sync::atomic::AtomicUsize);
+        impl AtomicWriterInjector for CountWrites {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Write {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+        for fault in [None, Some(false), Some(true)] {
+            let mut f = Fixture::new();
+            let engine = cr6_independent_engine(&mut f);
+            let origin = f.authority.catalog_session.clone();
+            let counter = Arc::new(CountWrites(std::sync::atomic::AtomicUsize::new(0)));
+            let injector: Arc<dyn AtomicWriterInjector + Send + Sync> = match fault {
+                None => counter.clone(),
+                Some(false) => Arc::new(FileFault(AtomicFileFaultPoint::Write)),
+                Some(true) => Arc::new(ParentSyncFault("multi-context use sync")),
+            };
+            let guard = install_test_atomic_file_injector(injector);
+            if fault.is_some() {
+                for _ in 0..2 {
+                    assert!(matches!(
+                        f.authority
+                            .engine_executable(&engine, PathOperation::EngineExecute),
+                        Err(Error::Io(_) | Error::CommittedDurabilityUncertain(_))
+                    ));
+                }
+            } else {
+                drop(
+                    f.authority
+                        .engine_executable(&engine, PathOperation::EngineExecute)
+                        .unwrap(),
+                );
+                assert_eq!(
+                    counter.0.load(Ordering::SeqCst),
+                    1,
+                    "all contexts must enter one atomic write"
+                );
+            }
+            drop(guard);
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            let disk: Registry =
+                serde_json::from_slice(&fs::read(f.temp.path().join("registry.json")).unwrap())
+                    .unwrap();
+            let uses = decode_uses(disk.catalog_uses).unwrap();
+            let cwd = f.temp.path().join("independent");
+            for path in [&cwd, &cwd.join("engine")] {
+                let binding = identity(path).unwrap();
+                assert_eq!(
+                    uses[&(path.clone(), binding.a, binding.b)].get(&origin),
+                    Some(&false)
+                );
+            }
+            assert_eq!(uses.len(), 2);
+            assert!(disk.catalog_installs.is_empty());
+        }
+    }
+
+    #[test]
+    fn catalog_install_context1_directory_read_uses_actual_terminal_scope() {
+        let mut f = Fixture::new();
+        fs::create_dir(f.root.join("selected")).unwrap();
+        let grant = f
+            .authority
+            .grant_dialog(
+                &f.root,
+                "Directory",
+                PathClass::BoundedDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                2,
+            )
+            .unwrap();
+        // A transient root has no EngineResource purpose. Its terminal directory still supplies
+        // explicit resource contents, while the unselected workspace siblings remain independent.
+        let resolved = f
+            .authority
+            .resolve(
+                &grant,
+                PathOperation::EngineResourceRead,
+                &[OsString::from("selected")],
+            )
+            .unwrap();
+        let binding = opened_file_identity(resolved.directory().unwrap()).unwrap();
+        let key = (f.root.join("selected"), binding.0, binding.1);
+        assert!(f.authority.catalog_uses[&key][&f.authority.catalog_session]);
+        f.install("sibling");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.is_empty()));
+        phase3_select_root(&mut f, &key.0);
+        f.install("nested");
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .filter(|record| target(record).unwrap() == f.root.join("nested"))
+            .all(|record| record.users.contains(&f.authority.catalog_session)));
+        assert_eq!(f.authority.catalog_installs.len(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_context1_node_exclusion_still_preserves_changed_inventory() {
+        let mut f = Fixture::new();
+        let path = f.temp.path().join("network.nnue");
+        fs::write(&path, b"original leased bytes").unwrap();
+        let resource = f.resource(&path, false);
+        let lease = f.authority.engine_resource(&resource).unwrap();
+        let binding = identity(&path).unwrap();
+        let origin = f.authority.catalog_session.clone();
+        f.reopen();
+        f.authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        f.install("later");
+        let record = f.authority.catalog_installs.values().next().unwrap();
+        assert!(!record.users.contains(&origin));
+        let added = f.root.join("later/data/user-network");
+        fs::hard_link(&path, &added).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            reaches(record, &path, false, Some(&binding)).unwrap(),
+            Reachability::Disjoint
+        );
+        finish_session(f.authority).await;
+        f.authority = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+        f.reconcile(vec![], true).unwrap();
+        // Negative node evidence cannot bypass the independent complete-inventory check.
+        assert!(f.authority.catalog_installs.is_empty());
+        assert_eq!(fs::read(&added).unwrap(), b"original leased bytes");
+        assert_eq!(
+            fs::read(f.root.join("later/data/network")).unwrap(),
+            b"managed network"
+        );
+        assert_eq!(
+            fs::read(PathBuf::from(lease.uci_value().unwrap())).unwrap(),
+            b"original leased bytes"
+        );
+    }
+
+    #[test]
+    fn catalog_install_phase4_recursive_broadening_is_durable_and_monotonic() {
+        for uncertain in [false, true] {
+            let mut f = Fixture::new();
+            let image = f.root.join("probe-image");
+            fs::write(&image, b"engine image").unwrap();
+            let engine = f.authority.register_engine_file(&image, "Image").unwrap();
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            let origin = f.authority.catalog_session.clone();
+            let binding = identity(&f.root).unwrap();
+            let key = (f.root.clone(), binding.a, binding.b);
+            assert!(!f.authority.catalog_uses[&key][&origin]);
+            let resource = f.resource(&f.root.clone(), true);
+            let fault: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(ParentSyncFault("recursive use sync"))
+            } else {
+                Arc::new(FileFault(AtomicFileFaultPoint::Write))
+            };
+            let guard = install_test_atomic_file_injector(fault);
+            for _ in 0..2 {
+                assert!(matches!(
+                    f.authority.engine_resource(&resource),
+                    Err(Error::Io(_) | Error::CommittedDurabilityUncertain(_))
+                ));
+            }
+            drop(guard);
+            drop(f.authority.engine_resource(&resource).unwrap());
+            let count = f.authority.registry_unique_id_count();
+            drop(
+                f.authority
+                    .engine_executable(&engine, PathOperation::EngineExecute)
+                    .unwrap(),
+            );
+            assert_eq!(f.authority.registry_unique_id_count(), count);
+            f.reopen();
+            assert_eq!(f.authority.catalog_uses.len(), 2);
+            assert!(f.authority.catalog_uses[&key][&origin]);
+            f.install("later");
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&origin)));
+        }
+    }
+
+    #[test]
+    fn catalog_install_phase4_clear_owns_only_its_session_and_rolls_back_both_states() {
+        for uncertain in [false, true] {
+            let mut f = Fixture::new();
+            let resource = f.resource(&f.root.clone(), true);
+            drop(f.authority.engine_resource(&resource).unwrap());
+            let origin = f.authority.catalog_session.clone();
+            f.reopen();
+            let publisher = f.authority.catalog_session.clone();
+            drop(f.authority.engine_resource(&resource).unwrap());
+            f.install("later");
+            let uses = f.authority.catalog_uses.clone();
+            let records = f.authority.catalog_installs.clone();
+            let fault: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(ParentSyncFault("session clear sync"))
+            } else {
+                Arc::new(FileFault(AtomicFileFaultPoint::Write))
+            };
+            let guard = install_test_atomic_file_injector(fault);
+            assert!(matches!(
+                f.authority.clear_catalog_session_use(),
+                Err(Error::Io(_) | Error::CommittedDurabilityUncertain(_))
+            ));
+            assert_eq!(f.authority.catalog_uses, uses);
+            assert_eq!(f.authority.catalog_installs, records);
+            let disk: Registry =
+                serde_json::from_slice(&fs::read(f.temp.path().join("registry.json")).unwrap())
+                    .unwrap();
+            let disk_uses = decode_uses(disk.catalog_uses).unwrap();
+            let sessions = disk_uses.values().next().unwrap();
+            assert!(sessions.contains_key(&origin));
+            assert_eq!(sessions.contains_key(&publisher), !uncertain);
+            assert!(disk
+                .catalog_installs
+                .values()
+                .all(|record| record.users.contains(&origin)
+                    && record.users.contains(&publisher) == !uncertain));
+            drop(guard);
+            f.authority.clear_catalog_session_use().unwrap();
+            f.reopen();
+            assert_eq!(
+                f.authority
+                    .catalog_uses
+                    .values()
+                    .next()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                vec![&origin]
+            );
+            // C has no authority to discharge A, even after owner pruning.
+            f.authority.clear_catalog_session_use().unwrap();
+            f.reconcile(vec![], true).unwrap();
+            f.reopen();
+            assert!(f.root.join("later/data/network").exists());
+            assert!(f.authority.catalog_uses.values().all(|sessions| sessions
+                .contains_key(&origin)
+                && !sessions.contains_key(&publisher)));
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.users == BTreeSet::from([origin.clone()])));
+        }
+    }
+
+    #[test]
+    fn catalog_install_phase4_legacy_absence_preserves_unknown_install_users_without_grant() {
+        let mut f = Fixture::new();
+        f.install("old");
+        let engine = f.engine("old");
+        drop(
+            f.authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap(),
+        );
+        let origin = f.authority.catalog_session.clone();
+        let registry_path = f.temp.path().join("registry.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        registry.as_object_mut().unwrap().remove("catalog_uses");
+        fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        f.reopen();
+        assert!(f.authority.catalog_uses.is_empty());
+        f.authority.clear_catalog_session_use().unwrap();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("old/data/network").exists());
+        assert!(f
+            .authority
+            .engine_executable(&engine, PathOperation::EngineExecute)
+            .is_err());
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.contains(&origin)));
+    }
+
+    #[test]
+    fn catalog_install_phase4_registry_rejects_malformed_and_oversized_use_evidence() {
+        let mut f = Fixture::new();
+        let resource = f.resource(&f.root.clone(), true);
+        drop(f.authority.engine_resource(&resource).unwrap());
+        let registry_path = f.temp.path().join("registry.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        let template = encode_uses(&f.authority.catalog_uses).pop().unwrap();
+        let mut cases = Vec::new();
+        let mut record = template.clone();
+        record.path = NativePath::from_path(Path::new("relative"));
+        cases.push(vec![record]);
+        let mut record = template.clone();
+        record.path = NativePath::from_path(&f.root.join("../elsewhere"));
+        cases.push(vec![record]);
+        let mut record = template.clone();
+        record.identity = Identity { a: 0, b: 0 };
+        cases.push(vec![record]);
+        let mut record = template.clone();
+        record.sessions = BTreeMap::from([("invalid-session".into(), true)]);
+        cases.push(vec![record]);
+        let mut record = template.clone();
+        record.sessions.clear();
+        cases.push(vec![record]);
+        let mut record = template.clone();
+        record.path = NativePath::Unix {
+            bytes: "invalid!".into(),
+        };
+        cases.push(vec![record]);
+        cases.push(vec![template.clone(), template.clone()]);
+        let mut record = template.clone();
+        record.sessions = (0..MAX_AUTHORITY_IDS)
+            .map(|_| (Uuid::new_v4().to_string(), true))
+            .collect();
+        cases.push(vec![record]);
+        cases.push(vec![template.clone(); MAX_AUTHORITY_IDS + 1]);
+        let mut record = template;
+        record.path = NativePath::from_path(&f.root.join("x".repeat(MAX_REGISTRY_BYTES)));
+        cases.push(vec![record]);
+        for records in cases {
+            let mut registry = original.clone();
+            registry["catalog_uses"] = serde_json::to_value(records).unwrap();
+            fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+            assert!(matches!(
+                PathAuthority::open(registry_path.clone(), vec![]),
+                Err(Error::InvalidInput(_) | Error::ResourceLimit(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn catalog_install_phase4_shared_capacity_refuses_new_binding_and_reuses_durable_use() {
+        let started = std::time::Instant::now();
+        let mut f = Fixture::new();
+        let resources = f.temp.path().join("resources");
+        fs::create_dir(&resources).unwrap();
+        let existing_path = resources.join("r0");
+        fs::create_dir(&existing_path).unwrap();
+        fs::write(existing_path.join("authorized"), b"durable contents").unwrap();
+        let overflow_path = resources.join("overflow");
+        fs::create_dir(&overflow_path).unwrap();
+        fs::write(overflow_path.join("authorized"), b"new contents").unwrap();
+        let _root = f.resource(&resources, true);
+        let existing = f.resource(&existing_path, true);
+        let overflow = f.resource(&overflow_path, true);
+        let mut uses = f.authority.catalog_uses.clone();
+        let available = MAX_AUTHORITY_IDS - f.authority.registry_unique_id_count();
+        assert_eq!(available % 2, 0);
+        for index in 0..available / 2 {
+            let name = format!("r{index}");
+            let path = resources.join(&name);
+            if index != 0 {
+                fs::create_dir(&path).unwrap();
+            }
+            let binding = identity(&path).unwrap();
+            uses.insert(
+                (path, binding.a, binding.b),
+                BTreeMap::from([(f.authority.catalog_session.clone(), true)]),
+            );
+        }
+        f.authority
+            .commit_catalog_state(f.authority.catalog_installs.clone(), uses, false)
+            .unwrap();
+        let inspected = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(inspected.catalog_uses, f.authority.catalog_uses);
+        assert_eq!(inspected.registry_unique_id_count(), MAX_AUTHORITY_IDS);
+        drop(inspected);
+        eprintln!(
+            "native capacity fixture: {} bindings, {} admission units, setup {:?}",
+            f.authority.catalog_uses.len(),
+            f.authority.registry_unique_id_count(),
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                f.authority.engine_resource(&overflow),
+                Err(Error::ResourceLimit(_))
+            ),
+            "new binding crossed shared admission at {}",
+            f.authority.registry_unique_id_count()
+        );
+        let lease = f.authority.engine_resource(&existing).unwrap();
+        assert_eq!(
+            fs::read(PathBuf::from(lease.uci_value().unwrap()).join("authorized")).unwrap(),
+            b"durable contents"
+        );
+        assert_eq!(f.authority.registry_unique_id_count(), MAX_AUTHORITY_IDS);
     }
 
     #[test]
