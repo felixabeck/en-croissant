@@ -1,11 +1,81 @@
 import {
     assertChooserInsideBoard,
     expect,
+    filesWorkspaceCommands,
+    filesWorkspaceFixture,
+    pgnFileCommands,
     playBoardMove,
     preserveStorageForReload,
+    selectFilesTreeRow,
     test,
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
+
+test("board-keyboard: PGN imports render six named arrow and square colors despite bad neighbors", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const drawings =
+        "[%cal Ra2a4,Gb2b4,Yc2c4,Bd2d4,Oe2e4,Cf2f4,Xg2g4,Ra9a2,broken] " +
+        "[%csl Ra5,Gb5,Yc5,Bd5,Oe5,Cf5,Qh8,Cz9]";
+    const pgn = `[Event "Six colors"]\n[Result "*"]\n\n{${drawings}} 1. e4 *`;
+    await mockScenario({
+        commands: filesWorkspaceCommands([[filesWorkspaceFixture.pgnFile]], {
+            ...pgnFileCommands,
+            read_games: {
+                result: [
+                    { pgn, stamp: "e".repeat(64), revision: "e2e-pgn-revision", present: true },
+                ],
+            },
+            read_game: {
+                result: { pgn, stamp: "e".repeat(64), revision: "e2e-pgn-revision", present: true },
+            },
+            // Mock only native lexing. The real parsePGN and Chessground render the imported data.
+            lex_pgn: {
+                result: [
+                    { type: "Header", value: { tag: "Event", value: "Six colors" } },
+                    { type: "Header", value: { tag: "Result", value: "*" } },
+                    { type: "Comment", value: drawings },
+                    { type: "San", value: "e4" },
+                    { type: "Outcome", value: "*" },
+                ],
+            },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: /choose collection/i }).click();
+    await selectFilesTreeRow(page, filesWorkspaceFixture.pgnFile.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByRole("button", { name: "Go to start", exact: true }).click();
+    const board = page.locator(".cg-wrap");
+    await expect(board).toBeVisible();
+    const svg = board.locator("svg.cg-shapes");
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(6);
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(6);
+    const colors = {
+        red: "#882020",
+        green: "#15781B",
+        yellow: "#e68f00",
+        blue: "#003088",
+        orange: "#ff6600",
+        cyan: "#00bcd4",
+    };
+    const strokes: string[] = [];
+    for (const [name, color] of Object.entries(colors)) {
+        const arrow = svg.locator(`g[cgHash*=',${name}'] line`);
+        const square = svg.locator(`g[cgHash*=',${name}'] circle`);
+        await expect(arrow).toHaveCount(1);
+        await expect(square).toHaveCount(1);
+        await expect(arrow).toHaveAttribute("stroke", color);
+        await expect(square).toHaveAttribute("stroke", color);
+        strokes.push((await arrow.getAttribute("stroke"))!);
+    }
+    expect(new Set(strokes).size).toBe(6);
+    await page.mouse.move(0, 0);
+    await capture("board-six-color-pgn-drawings");
+});
 
 test("board-keyboard: refuses an excess-material engine game with its localized position message", async ({
     page,

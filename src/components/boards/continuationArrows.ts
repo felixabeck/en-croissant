@@ -3,9 +3,11 @@ import { defaults } from "@lichess-org/chessground/state";
 import { makeSquare, type NormalMove } from "chessops";
 import type { VariationChoice } from "@/state/store/variationChooser";
 import type { TreeNode } from "@/utils/treeReducer";
+import { pgnDrawingBrushes } from "@/utils/drawings";
 
 export const continuationBrushes: DrawBrushes = {
     ...defaults().drawable.brushes,
+    ...pgnDrawingBrushes,
     variation: { key: "v", color: "#9b59b6", opacity: 0.8, lineWidth: 10 },
     continuationSelected: { key: "cs", color: "#9b59b6", opacity: 1, lineWidth: 11 },
     continuationOther: { key: "co", color: "#9b59b6", opacity: 0.25, lineWidth: 7.5 },

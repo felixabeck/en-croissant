@@ -1,8 +1,8 @@
-import { type CommentShape, type Evaluation, parseComment } from "chessops/pgn";
+import { type Evaluation, parseComment } from "chessops/pgn";
+import { extractPgnDrawings, PGN_COMMENT_COMMAND, type PgnDrawing } from "./drawings";
 
-/** The embedded commands the tree models itself; chessops parses exactly these into fields. */
-const MODELED_COMMANDS = new Set(["eval", "clk", "csl", "cal"]);
-const COMMAND = /\s?\[%([A-Za-z0-9_]+)(?:\s[^\]]*)?\]\s?/g;
+/** Drawings are extracted per entry before chessops parses the other modeled fields. */
+const MODELED_COMMANDS = new Set(["eval", "clk"]);
 /**
  * `++underline++` in comment Markdown: non-empty, on one line, without a nested `++`, and with
  * no whitespace just inside either delimiter, so chess prose such as `Qh7++ Kh8 Qg8++` stays
@@ -17,7 +17,7 @@ export type SplitComment = {
      *  comment it came from: the slices are concatenated with the whitespace they had. */
     commands: string;
     evaluation?: Evaluation;
-    shapes: CommentShape[];
+    shapes: PgnDrawing[];
     clock?: number;
 };
 
@@ -33,8 +33,9 @@ function isWellFormedModeled(command: string): boolean {
  * in source order, so the kept commands keep their order.
  */
 export function splitPgnComment(comment: string): SplitComment {
+    const drawings = extractPgnDrawings(comment);
     const commands: string[] = [];
-    const rest = comment.replace(COMMAND, (match, name: string) => {
+    const rest = drawings.text.replace(PGN_COMMENT_COMMAND, (match, name: string) => {
         if (MODELED_COMMANDS.has(name) && isWellFormedModeled(match.trim())) return match;
         commands.push(match);
         return " ";
@@ -44,7 +45,7 @@ export function splitPgnComment(comment: string): SplitComment {
         text: parsed.text,
         commands: commands.join("").trim(),
         evaluation: parsed.evaluation,
-        shapes: parsed.shapes,
+        shapes: drawings.shapes,
         clock: parsed.clock,
     };
 }

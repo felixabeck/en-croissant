@@ -1,6 +1,5 @@
 import { cancellationError, tauri } from "@/platform/tauri";
-import type { DrawShape } from "@lichess-org/chessground/draw";
-import { type Color, type Move, makeSquare, makeUci, type Role } from "chessops";
+import { type Color, type Move, makeUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns } from "chessops/pgn";
@@ -8,6 +7,7 @@ import { makeSan } from "chessops/san";
 import { type Outcome, type Score, type Token } from "@/bindings";
 import { isBasicAnnotation, isNagCode, nagGlyph, sortedNags } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
+import { makePgnDrawings, toDrawShape } from "./drawings";
 import { harmonicMean, isPrefix, mean } from "./misc";
 import { splitPgnComment } from "./pgnComment";
 import { formatScore, getAccuracy, getCPLoss, INITIAL_SCORE } from "./score";
@@ -103,23 +103,7 @@ export function getMoveText(
         }
 
         if (opt.extraMarkups && tree.shapes.length > 0) {
-            const squares = tree.shapes.filter((shape) => shape.dest === undefined);
-            const arrows = tree.shapes.filter((shape) => shape.dest !== undefined);
-
-            if (squares.length > 0) {
-                content += `[%csl ${squares
-                    .map((shape) => {
-                        return shape.brush![0].toUpperCase() + shape.orig;
-                    })
-                    .join(",")}]`;
-            }
-            if (arrows.length > 0) {
-                content += `[%cal ${arrows
-                    .map((shape) => {
-                        return shape.brush![0].toUpperCase() + shape.orig + shape.dest;
-                    })
-                    .join(",")}]`;
-            }
+            content += makePgnDrawings(tree.shapes);
         }
 
         // They were part of the comment text before the tree modeled them, so they travel with the
@@ -389,12 +373,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
             }
 
             if (comment.shapes.length > 0) {
-                const shapes: DrawShape[] = comment.shapes.map((shape) => ({
-                    orig: makeSquare(shape.from),
-                    dest: makeSquare(shape.to),
-                    brush: shape.color,
-                }));
-                node.shapes.push(...shapes);
+                node.shapes.push(...comment.shapes.map(toDrawShape));
             }
 
             if (comment.clock !== undefined) {

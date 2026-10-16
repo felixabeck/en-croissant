@@ -724,6 +724,90 @@ test("hydrates legacy child comments by separating unmodeled PGN commands", () =
     });
 });
 
+test.each(["legacy", "current"])(
+    "hydrates %s six-color drawings once and writes them back without touching current prose",
+    (format) => {
+        const tree = structuredClone(defaultTree());
+        const drawings = "[%cal Re2e4,Oe2e4,Oe2e4,Cg1f3,Xa1a2] [%csl Oa1,Cb2] [%opaque keep $&]";
+        const prose = format === "current" ? "Current prose [%csl Oa8]" : "Legacy prose";
+        tree.root.comment = format === "legacy" ? `${prose} ${drawings}` : prose;
+        if (format === "legacy") delete tree.root.commands;
+        else tree.root.commands = drawings;
+        tree.root.shapes = [
+            { orig: "e2", dest: "e4", brush: "red" },
+            { orig: "e2", dest: "e4", brush: "orange" },
+            // Both circle representations match the imported square, without losing its modifier.
+            { orig: "a1", brush: "orange", modifiers: { lineWidth: 5 } },
+        ];
+        tree.root.children = [
+            { ...tree.root, children: [], shapes: [], commands: "[%cal Cf2f4]", comment: "Child" },
+        ];
+        if (format === "legacy") storeLegacyTree("six-color-hydration", tree);
+        else persistTree("six-color-hydration", tree);
+        const expectedShapes = [
+            ...tree.root.shapes,
+            { orig: "e2", dest: "e4", brush: "orange" },
+            { orig: "g1", dest: "f3", brush: "cyan" },
+            { orig: "b2", dest: "b2", brush: "cyan" },
+        ];
+        for (let pass = 0; pass < 3; pass++) {
+            const read = new TabStorageRepository().read<StoredTreeForTest>("six-color-hydration")!;
+            expect(read.state.root).toMatchObject({
+                comment: prose,
+                shapes: expectedShapes,
+                children: [
+                    {
+                        comment: "Child",
+                        commands: "",
+                        shapes: [{ orig: "f2", dest: "f4", brush: "cyan" }],
+                    },
+                ],
+            });
+            expect(read.state.root.commands).toContain("[%cal Xa1a2]");
+            expect(read.state.root.commands).toContain("[%opaque keep $&]");
+            expect(read.state.root.commands).not.toContain("Oe2e4");
+            expect(migrateTreeForStorage(read.state)).toEqual(read.state);
+            expect(deserializeStorageValue(sessionStorage.getItem("six-color-hydration")!)).toEqual(
+                read,
+            );
+        }
+    },
+);
+
+test("drawing hydration refuses an empty-string shapes field and preserves corrupt storage bytes", () => {
+    const tree = treeWith((state) => {
+        state.root.commands = "[%cal Oe2e4]";
+        state.root.shapes = "" as never;
+    });
+    persistTree("invalid-hydrated-shapes", tree);
+    const raw = sessionStorage.getItem("invalid-hydrated-shapes");
+
+    expect.soft(canRehydrate(tree)).toBe(false);
+    expect.soft(storage.readTree("invalid-hydrated-shapes")).toEqual({
+        kind: "unreadable",
+        rawValue: raw,
+    });
+    expect(sessionStorage.getItem("invalid-hydrated-shapes")).toBe(raw);
+});
+
+test("drawing hydration preserves opaque bytes and validation and shape count bounds", () => {
+    const tree = structuredClone(defaultTree());
+    tree.root.commands = "  [%cal Xa1a2] [%eval 1.23] [%clk 0:05:00] [%other keep]  ";
+    expect(migrateTreeForStorage(tree)).toEqual(tree);
+    tree.root.commands = "[%cal Oe2e4]";
+    tree.root.shapes = [{ orig: "a1", brush: "green" }, null] as never;
+    expect(canRehydrate(tree)).toBe(false);
+    tree.root.shapes = Array.from({ length: 10_000 }, () => ({ orig: "a1", brush: "green" }));
+    expect(canRehydrate(tree)).toBe(false);
+    persistTree("too-many-hydrated-shapes", tree);
+    const raw = sessionStorage.getItem("too-many-hydrated-shapes");
+    expect(storage.readTree("too-many-hydrated-shapes")).toEqual({
+        kind: "unreadable",
+        rawValue: raw,
+    });
+    expect(sessionStorage.getItem("too-many-hydrated-shapes")).toBe(raw);
+});
+
 test("preserves nodes with a commands field while migrating legacy siblings", () => {
     const tree = structuredClone(defaultTree());
     tree.root.comment = "[%evp 0,34] root prose";

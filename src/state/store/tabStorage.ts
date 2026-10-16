@@ -3,6 +3,8 @@ import { ANNOTATION_INFO, MAX_NAG } from "@/utils/annotation";
 import { reportPersistError } from "@/state/persistError";
 import { puzzleSessionSchema } from "@/state/puzzleSession";
 import { splitPgnComment } from "@/utils/pgnComment";
+import { extractPgnDrawings, toDrawShape, type PgnDrawing } from "@/utils/drawings";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import { getResolvedPathLength, type TreeState } from "@/utils/treeReducer";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
@@ -228,8 +230,9 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
 /**
  * Migrates legacy node fields in one bounded walk. Before commands were split out of comments
  * (c449fbb2), trees carried `[%…]` commands inside `comment` and no `commands` field.
- * Split those once; a node that already has `commands` is left alone, so the migration is
- * idempotent. Depth is bounded like the schema's recursion.
+ * Split those once. Current prose stays untouched, while opaque drawing commands can acquire
+ * newly supported shapes. Consumed entries leave commands, making repeated reads idempotent.
+ * Depth is bounded like the schema's recursion.
  * Legacy glyph arrays become canonical NAG codes, preserving their order and multiplicity.
  * The empty glyph has lost its code already; invalid legacy glyphs remain unreadable.
  */
@@ -258,11 +261,41 @@ function migrateLegacyNode(
         !Object.prototype.hasOwnProperty.call(node, "commands") &&
         typeof node.comment === "string"
     ) {
-        const { text, commands } = splitPgnComment(node.comment);
+        const { text, commands, shapes } = splitPgnComment(node.comment);
         migrated.comment = text;
         if (commands.length > 0) migrated.commands = commands;
+        retainHydratedDrawings(migrated, shapes);
+    } else if (typeof node.commands === "string") {
+        const { text, shapes } = extractPgnDrawings(node.commands);
+        if (shapes.length > 0) {
+            migrated.commands = text.trim();
+            retainHydratedDrawings(migrated, shapes);
+        }
     }
     return migrated;
+}
+
+/** Consume existing matches as a multiset, preserving deliberate duplicates in either source. */
+function retainHydratedDrawings(node: Record<string, unknown>, drawings: PgnDrawing[]): void {
+    // Never repair an invalid shapes field. The storage schema must still refuse it.
+    if (!Array.isArray(node.shapes)) return;
+    const identity = (shape: DrawShape) =>
+        `${shape.orig}:${shape.dest ?? shape.orig}:${shape.brush}`;
+    const counts = new Map<string, number>();
+    for (const shape of node.shapes) {
+        if (!isRecord(shape)) continue;
+        const key = identity(shape as unknown as DrawShape);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const added: DrawShape[] = [];
+    for (const drawing of drawings) {
+        const shape = toDrawShape(drawing);
+        const key = identity(shape);
+        const remaining = counts.get(key) ?? 0;
+        if (remaining > 0) counts.set(key, remaining - 1);
+        else added.push(shape);
+    }
+    node.shapes = [...node.shapes, ...added];
 }
 
 /** Adds fields that were absent before TreeState persistence was versioned. */

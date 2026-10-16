@@ -671,6 +671,139 @@ function mockCommentLexer() {
     });
 }
 
+const SIX_COLOR_SHAPES = [
+    { orig: "a1", dest: "a3", brush: "green" },
+    { orig: "b1", dest: "b3", brush: "red" },
+    { orig: "c1", dest: "c3", brush: "yellow" },
+    { orig: "d1", dest: "d3", brush: "blue" },
+    { orig: "e1", dest: "e3", brush: "orange" },
+    { orig: "f1", dest: "f3", brush: "cyan" },
+] as const;
+
+test("drawing regression: six literal color identities survive arrow and square round trips", async () => {
+    mockCommentLexer();
+    const squares = SIX_COLOR_SHAPES.map((shape) => ({ ...shape, dest: shape.orig }));
+    const source =
+        "1. e4 {[%cal Ga1a3,Rb1b3,Yc1c3,Bd1d3,Oe1e3,Cf1f3]} " +
+        "{[%csl Ga1,Rb1,Yc1,Bd1,Oe1,Cf1]} e5 *";
+    let tree = await parsePGN(source);
+    const expected = [...SIX_COLOR_SHAPES, ...squares];
+    expect(tree.root.children[0].shapes).toEqual(expected);
+    for (let pass = 0; pass < 3; pass++) {
+        const written = getPGN(tree.root, { ...ALL_MARKUPS, headers: null });
+        // Independent of the production mapping and serializer: squares must be csl, length three.
+        expect(written).toContain("[%csl Ga1,Rb1,Yc1,Bd1,Oe1,Cf1]");
+        expect(written).toContain("[%cal Ga1a3,Rb1b3,Yc1c3,Bd1d3,Oe1e3,Cf1f3]");
+        expect(written).not.toContain("[%cal Ga1a1");
+        tree = await parsePGN(written);
+        expect(tree.root.children[0].shapes).toEqual([...squares, ...SIX_COLOR_SHAPES]);
+        expect(tree.root.children[0].commands).toBeUndefined();
+    }
+});
+
+test("drawing regression: mixed bad entries keep valid neighbors and residual bytes over repeated saves", async () => {
+    mockCommentLexer();
+    const residualArrows = "[%cal Xa1a2,Ra9a2,broken,$&,, Cb1b2]";
+    const residualSquares = "[%csl Qh8,Of9]";
+    let tree = await parsePGN(
+        "1. e4 {Plan [%cal Ga1a3,Xa1a2,Ra9a2,broken,$&,, Cb1b2,Oe1e3,Cf1f3] " +
+            "[%csl Qh8,Rb1,Of9,Cf1] [%timestamp 12] [%eval 0.34,61] [%clk 0:05:00]} *",
+    );
+    const expected = [
+        SIX_COLOR_SHAPES[0],
+        SIX_COLOR_SHAPES[4],
+        SIX_COLOR_SHAPES[5],
+        { orig: "b1", dest: "b1", brush: "red" },
+        { orig: "f1", dest: "f1", brush: "cyan" },
+    ];
+    expect(tree.root.children[0].shapes).toEqual(expected);
+    for (let pass = 0; pass < 3; pass++) {
+        const node = tree.root.children[0];
+        expect(node.comment).toBe("Plan");
+        expect(node.commands).toContain(residualArrows);
+        expect(node.commands).toContain(residualSquares);
+        expect(node.commands).toContain("[%timestamp 12]");
+        expect(node).toMatchObject({
+            clock: 300,
+            depth: 61,
+            score: { value: { type: "cp", value: 34 } },
+        });
+        const written = getPGN(tree.root, { ...ALL_MARKUPS, headers: null });
+        const next = await parsePGN(written);
+        expect(next.root.children[0].shapes).toHaveLength(5);
+        expect(next.root.children[0].commands).toBe(node.commands);
+        tree = next;
+    }
+    const noMarkups = getPGN(tree.root, { ...ALL_MARKUPS, headers: null, extraMarkups: false });
+    expect(noMarkups).toContain(residualArrows);
+    expect(noMarkups).toContain("Plan");
+    expect(noMarkups).not.toContain("Ga1a3");
+    const noComments = getPGN(tree.root, { ...ALL_MARKUPS, headers: null, comments: false });
+    expect(noComments).toContain("Ga1a3");
+    expect(noComments).not.toContain("Xa1a2");
+    expect(noComments).not.toContain("Plan");
+});
+
+test.each([
+    {
+        move: "10.Ne4",
+        command: "[%cal Bc5b4,Be4d6,Rc7b6,Rd1e2,Oe8g8,Oe4c5,Ob6c5,Ob2b3]",
+        expected: [
+            { orig: "c5", dest: "b4", brush: "blue" },
+            { orig: "e4", dest: "d6", brush: "blue" },
+            { orig: "c7", dest: "b6", brush: "red" },
+            { orig: "d1", dest: "e2", brush: "red" },
+            { orig: "e8", dest: "g8", brush: "orange" },
+            { orig: "e4", dest: "c5", brush: "orange" },
+            { orig: "b6", dest: "c5", brush: "orange" },
+            { orig: "b2", dest: "b3", brush: "orange" },
+        ],
+    },
+    {
+        move: "11.Nxe5",
+        command: "[%cal Rc7e5,Rd1g4]",
+        expected: [
+            { orig: "c7", dest: "e5", brush: "red" },
+            { orig: "d1", dest: "g4", brush: "red" },
+        ],
+    },
+])(
+    "drawing regression: exact Sibirisches System $move command keeps every arrow",
+    async ({ command, expected }) => {
+        mockCommentLexer();
+        // Commands reproduced from the read-only repertoire, independent of move legality.
+        const tree = await parsePGN(`1. e4 {${command}} *`);
+        expect(tree.root.children[0].shapes).toEqual(expected);
+        const written = getPGN(tree.root, { ...ALL_MARKUPS, headers: null });
+        expect(written).toContain(command);
+        expect((await parsePGN(written)).root.children[0].shapes).toEqual(expected);
+    },
+);
+
+test("drawing regression: repeated entries retain multiplicity and destination-absent circles use csl", async () => {
+    mockCommentLexer();
+    const tree = await parsePGN("1. e4 {[%cal Oe2e4,Oe2e4]} {[%csl Cf3,Cf3]} *");
+    tree.root.children[0].shapes.push({ orig: "h8", brush: "blue" });
+    const written = getPGN(tree.root, { ...ALL_MARKUPS, headers: null });
+    expect(written).toContain("[%csl Cf3,Cf3,Bh8]");
+    expect(written).toContain("[%cal Oe2e4,Oe2e4]");
+    expect((await parsePGN(written)).root.children[0].shapes).toEqual([
+        { orig: "f3", dest: "f3", brush: "cyan" },
+        { orig: "f3", dest: "f3", brush: "cyan" },
+        { orig: "h8", dest: "h8", brush: "blue" },
+        { orig: "e2", dest: "e4", brush: "orange" },
+        { orig: "e2", dest: "e4", brush: "orange" },
+    ]);
+});
+
+test("drawing regression: imported four-color square markings save as three-character csl entries", async () => {
+    mockCommentLexer();
+    const tree = await parsePGN("1. e4 {[%csl Ga1,Rb2,Yc3,Bd4]} *");
+    const written = getPGN(tree.root, { ...ALL_MARKUPS, headers: null });
+    expect(written).toContain("[%csl Ga1,Rb2,Yc3,Bd4]");
+    expect(written).not.toContain("[%cal");
+});
+
 test.each([
     { command: "[%clk 0:05:00]", annotation: { clock: 300 } },
     {

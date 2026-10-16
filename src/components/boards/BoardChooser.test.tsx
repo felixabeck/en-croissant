@@ -28,6 +28,9 @@ import { fixtureNode } from "@/tests/treeFixtures";
 import { defaultTree, type TreeState } from "@/utils/treeReducer";
 import Board from "@/components/boards/Board";
 import { childMoveArrow, continuationBrushes } from "@/components/boards/continuationArrows";
+import { defaults } from "@lichess-org/chessground/state";
+import { splitPgnComment } from "@/utils/pgnComment";
+import { toDrawShape } from "@/utils/drawings";
 
 const engine = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/state/atoms", async (importOriginal) => {
@@ -238,4 +241,36 @@ test("puzzle board uses the same frame, card and brushes", () => {
 
 test("a child without a move has no arrow", () => {
   expect(childMoveArrow(defaultTree().root, "variation")).toBeNull();
+});
+
+test("imported six-color arrows and squares reach the board with distinct brushes and legacy appearances", () => {
+  const parsed = splitPgnComment(
+    "[%cal Ra1a3,Gb1b3,Yc1c3,Bd1d3,Oe1e3,Cf1f3,Xg1g3] [%csl Ra4,Gb4,Yc4,Bd4,Oe4,Cf4]",
+  );
+  const initial = defaultTree();
+  initial.root.shapes = parsed.shapes.map(toDrawShape);
+  render(initial);
+  expect(boardConfig.drawable!.autoShapes).toEqual(initial.root.shapes);
+  expect(initial.root.shapes.map((shape) => shape.brush)).toEqual([
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "orange",
+    "cyan",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "orange",
+    "cyan",
+  ]);
+  const brushes = boardConfig.drawable!.brushes!;
+  expect(
+    new Set(["red", "green", "yellow", "blue", "orange", "cyan"].map((name) => brushes[name].color))
+      .size,
+  ).toBe(6);
+  for (const [name, brush] of Object.entries(defaults().drawable.brushes)) {
+    expect(brushes[name]).toEqual(brush);
+  }
 });
