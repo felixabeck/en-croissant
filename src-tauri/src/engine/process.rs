@@ -777,7 +777,7 @@ struct ChildOwner {
 #[derive(Default)]
 struct ChildOwnership {
     control: Option<Box<dyn ChildControl>>,
-    // Keep the validated executable and resource descriptors until confirmed
+    // Keep the validated executable, cwd and resource descriptors until confirmed
     // reaping. Linux executes the sealed target through `/proc/self/fd/N`.
     executable: Option<EngineExecutable>,
     slot: Option<OwnedSemaphorePermit>,
@@ -3760,10 +3760,10 @@ impl EngineRuntime {
         let command_target = executable.command_target();
         #[cfg(all(test, unix))]
         let command_target_for_observer = command_target.to_path_buf();
-        let working_directory = executable.working_directory().to_path_buf();
         let mut command = Command::new(command_target);
+        #[cfg(windows)]
+        command.current_dir(executable.working_directory_path());
         command
-            .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3772,14 +3772,20 @@ impl EngineRuntime {
             // where nothing is dropped at all — that is what the bounded
             // shutdown in `main` is for.
             .kill_on_drop(true);
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
+            let cwd_fd = executable.working_directory_fd();
+            #[cfg(target_os = "linux")]
             let inherited_fds = executable.inherited_fds();
-            // Tokio closes inherited descriptors by default. Clear CLOEXEC only
-            // in the fork child immediately before exec; no process-global FD
-            // flag is changed and concurrent spawns cannot observe a leak.
+            // Use only async-signal-safe operations in the fork child. The validated cwd
+            // stays close-on-exec. Linux exposes only the existing image/resource descriptors,
+            // without changing process-global cwd or descriptor flags in the parent.
             unsafe {
                 command.pre_exec(move || {
+                    if libc::fchdir(cwd_fd) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    #[cfg(target_os = "linux")]
                     for fd in &inherited_fds {
                         let flags = libc::fcntl(*fd, libc::F_GETFD);
                         if flags < 0
@@ -6918,6 +6924,143 @@ mod tests {
             Some("directory-authorized".into())
         );
         actor.terminate().await.unwrap();
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    async fn assert_native_cwd_probe(executable: EngineExecutable, command: &str) {
+        let deadlines = EngineDeadlines {
+            quit: Duration::from_millis(20),
+            ..EngineDeadlines::default()
+        };
+        let cleanup = Arc::new(ChildOwner::default());
+        let mut runtime = match EngineRuntime::spawn_owned(
+            executable,
+            deadlines.clone(),
+            cleanup.clone(),
+        )
+        .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let reaped = cleanup
+                    .terminate(Duration::ZERO, deadlines.kill_reap, false)
+                    .await;
+                assert!(
+                    reaped.is_ok(),
+                    "failed native cwd launch must be reaped: {reaped:?}"
+                );
+                panic!("native cwd launch failed: {error:?}");
+            }
+        };
+        let outcome = timeout(Duration::from_secs(5), async {
+            runtime.send(command, None).await?;
+            loop {
+                let line = runtime
+                    .read_line()
+                    .await?
+                    .ok_or(Error::EngineDisconnected)?;
+                let line = line.trim();
+                if line == "cwd-original" || line == "cwd-replacement" {
+                    return Ok::<_, Error>(line.to_owned());
+                }
+            }
+        })
+        .await;
+        let reaped = runtime.terminate().await;
+        let fallback = cleanup
+            .terminate(Duration::ZERO, deadlines.kill_reap, false)
+            .await;
+        assert!(
+            reaped.is_ok(),
+            "native cwd probe must be reaped: {reaped:?}"
+        );
+        assert!(
+            fallback.is_ok(),
+            "native cwd probe fallback must confirm reap: {fallback:?}"
+        );
+        eprintln!("native cwd probe physically reaped before propagating outcome");
+        assert_eq!(outcome.unwrap().unwrap(), "cwd-original");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_native_cwd_launch_seals_parent_and_ancestor_replacement() {
+        for attempt in ["normal", "parent", "ancestor"] {
+            let temp = tempfile::tempdir().unwrap();
+            let outer = temp.path().join("outer");
+            let parent = outer.join("cwd");
+            std::fs::create_dir_all(&parent).unwrap();
+            std::fs::write(parent.join("cwd-data"), b"cwd-original\n").unwrap();
+            let image = parent.join("engine.exe");
+            let command_processor = std::env::var_os("COMSPEC")
+                .expect("Windows must provide its native command processor");
+            std::fs::copy(command_processor, &image).unwrap();
+            let mut authority =
+                PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+            let engine = authority
+                .register_engine_file(&image, "Native cwd probe")
+                .unwrap();
+            let executable = authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap();
+            let source = if attempt == "ancestor" {
+                &outer
+            } else {
+                &parent
+            };
+            let moved = temp.path().join("moved");
+            if attempt != "normal" {
+                let result = std::fs::rename(source, &moved);
+                assert!(
+                    result.is_err(),
+                    "held native cwd must seal {attempt} replacement: {result:?}"
+                );
+                assert!(!moved.exists());
+                assert_eq!(
+                    std::fs::read(parent.join("cwd-data")).unwrap(),
+                    b"cwd-original\n"
+                );
+            }
+            // Exercise the actual CreateProcess boundary after the attempted substitution.
+            assert_native_cwd_probe(executable, "type cwd-data").await;
+            std::fs::rename(source, &moved)
+                .expect("confirmed reaping must release the no-delete cwd and image handles");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn apple_native_cwd_launch_uses_original_object_after_movement() {
+        for replacement in [None, Some(false), Some(true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("cwd");
+            std::fs::create_dir(&parent).unwrap();
+            std::fs::write(parent.join("cwd-data"), b"cwd-original\n").unwrap();
+            let image = parent.join("engine");
+            std::fs::copy("/bin/sh", &image).unwrap();
+            let mut authority =
+                PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+            let engine = authority
+                .register_engine_file(&image, "Native cwd probe")
+                .unwrap();
+            let mut executable = authority
+                .engine_executable(&engine, PathOperation::EngineExecute)
+                .unwrap();
+            let root =
+                crate::infra::path_authority::EngineLaunchRoot::for_test(temp.path()).unwrap();
+            executable.set_test_launch_root(root.clone());
+            let key = EngineKey::new("cwd-probe".into(), "engine".into()).unwrap();
+            pin_engine_launch(&mut executable, &key, "engine", &|| false).unwrap();
+            if let Some(replace) = replacement {
+                std::fs::rename(&parent, temp.path().join("moved-cwd")).unwrap();
+                if replace {
+                    std::fs::create_dir(&parent).unwrap();
+                    std::fs::write(parent.join("cwd-data"), b"cwd-replacement\n").unwrap();
+                }
+            }
+            assert_native_cwd_probe(executable, "/bin/cat cwd-data").await;
+            assert_eq!(root.reclaim().removed, 1);
+        }
     }
 
     type RecordedWrites = Arc<Mutex<Vec<String>>>;

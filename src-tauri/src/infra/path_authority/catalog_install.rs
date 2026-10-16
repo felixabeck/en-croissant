@@ -1418,10 +1418,10 @@ mod tests {
             EngineResourceHandleKind::Directory,
             "Second binding".into(),
         );
-        let before = f.authority.registry_unique_id_count();
+        let before = f.authority.registry_admission_units();
         let second_lease = f.authority.engine_resource(&second).unwrap();
         assert_eq!(f.authority.catalog_uses.len(), 2);
-        assert_eq!(f.authority.registry_unique_id_count(), before + 2);
+        assert_eq!(f.authority.registry_admission_units(), before + 2);
         drop(f.authority.engine_resource(&second).unwrap());
         assert_eq!(
             f.authority.catalog_uses.len(),
@@ -1610,7 +1610,24 @@ mod tests {
             resource: Option<(EngineResourceHandle, Arc<EngineResourceLease>)>,
             value: String,
         ) -> Self {
-            use crate::engine::{EngineActor, EngineDeadlines, EngineKey, EngineSupervisor};
+            let (executable, engine) = Self::prepare_image(f, script);
+            let executable = executable.with_resource_leases(
+                resource
+                    .as_ref()
+                    .map(|(_, lease)| lease.clone())
+                    .into_iter()
+                    .collect(),
+            );
+            Self::spawn_prepared(
+                executable,
+                engine,
+                resource.map(|(handle, _)| handle),
+                value,
+            )
+            .await
+        }
+
+        fn prepare_image(f: &mut Fixture, script: &Path) -> (EngineExecutable, EngineHandle) {
             use std::os::unix::fs::PermissionsExt;
             fs::write(script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value\"; echo;; quit) exit 0;; esac; done\n").unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1621,14 +1638,17 @@ mod tests {
             let executable = f
                 .authority
                 .engine_executable(&engine, PathOperation::EngineExecute)
-                .unwrap()
-                .with_resource_leases(
-                    resource
-                        .as_ref()
-                        .map(|(_, lease)| lease.clone())
-                        .into_iter()
-                        .collect(),
-                );
+                .unwrap();
+            (executable, engine)
+        }
+
+        async fn spawn_prepared(
+            executable: EngineExecutable,
+            engine: EngineHandle,
+            resource: Option<EngineResourceHandle>,
+            value: String,
+        ) -> Self {
+            use crate::engine::{EngineActor, EngineDeadlines, EngineKey, EngineSupervisor};
             let key = EngineKey::new("historical-resource".into(), "child".into()).unwrap();
             let supervisor = Arc::new(EngineSupervisor::default());
             let actor = Arc::new(
@@ -1653,7 +1673,7 @@ mod tests {
                 actor,
                 supervisor,
                 value,
-                resource: resource.map(|(handle, _)| handle),
+                resource,
             }
         }
 
@@ -1662,6 +1682,11 @@ mod tests {
         }
 
         async fn assert_contents(&self, relative: &str) {
+            self.assert_contents_equal(relative, "managed network")
+                .await;
+        }
+
+        async fn assert_contents_equal(&self, relative: &str, expected: &str) {
             let value = format!("{}/{relative}", self.value);
             self.actor
                 .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
@@ -1673,7 +1698,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .as_deref(),
-                Some("managed network")
+                Some(expected)
             );
         }
 
@@ -1783,6 +1808,117 @@ mod tests {
                     .values()
                     .all(|record| record.users.contains(&origin)
                         && !record.users.contains(&publisher)));
+            }
+        })
+        .await;
+        child.reap().await;
+        outcome.unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_repair5_replacement_before_spawn_uses_original_cwd() {
+        let mut f = Fixture::new();
+        f.install("replacement");
+        let record = f
+            .authority
+            .catalog_installs
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let root_identity = identity(&f.root).unwrap();
+        let root_parent_identity = identity(f.root.parent().unwrap()).unwrap();
+        let original = f.temp.path().join("original-cwd");
+        fs::create_dir_all(original.join("data")).unwrap();
+        fs::write(original.join("data/network"), b"original cwd data").unwrap();
+        let (executable, engine) =
+            InheritedDirectoryChild::prepare_image(&mut f, &original.join("engine"));
+        let original_binding = identity(&original).unwrap();
+        assert!(f
+            .authority
+            .catalog_uses
+            .iter()
+            .any(
+                |((_, a, b), sessions)| (*a, *b) == (original_binding.a, original_binding.b)
+                    && sessions.get(&f.authority.catalog_session) == Some(&false)
+            ));
+        let moved = f.temp.path().join("moved-original");
+        let replacement = f.root.join("replacement");
+        fs::rename(&original, &moved).unwrap();
+        fs::rename(&replacement, &original).unwrap();
+        let child =
+            InheritedDirectoryChild::spawn_prepared(executable, engine, None, ".".into()).await;
+        let outcome = tokio::spawn({
+            let child = child.clone();
+            async move {
+                assert!(child.resource.is_none());
+                fs::rename(&original, &replacement).unwrap();
+                fs::rename(&moved, &original).unwrap();
+                assert_eq!(identity(&f.root).unwrap(), root_identity);
+                assert_eq!(
+                    identity(f.root.parent().unwrap()).unwrap(),
+                    root_parent_identity
+                );
+                assert_eq!(identity(&replacement).unwrap(), record.identity);
+                let directory =
+                    open_verified_directory(&replacement, (record.identity.a, record.identity.b))
+                        .unwrap()
+                        .into_file();
+                assert_eq!(
+                    inventory(&directory, record.identity.a).unwrap(),
+                    record.inventory
+                );
+                child
+                    .assert_contents_equal("data/network", "original cwd data")
+                    .await;
+                f.reopen();
+                f.authority
+                    .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                        retained_ids: Some(vec![]),
+                        abandoned_ids: vec![],
+                        startup: true,
+                    })
+                    .unwrap();
+                f.reconcile(vec![], true).unwrap();
+                assert!(
+                    !replacement.exists(),
+                    "independent unchanged replacement must remain collectible"
+                );
+                child
+                    .assert_contents_equal("data/network", "original cwd data")
+                    .await;
+                assert_eq!(
+                    fs::read(original.join("data/network")).unwrap(),
+                    b"original cwd data"
+                );
+            }
+        })
+        .await;
+        child.reap().await;
+        outcome.unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn catalog_install_repair5_moved_missing_cwd_before_spawn_uses_original_object() {
+        let mut f = Fixture::new();
+        let original = f.temp.path().join("original-cwd");
+        fs::create_dir_all(original.join("data")).unwrap();
+        fs::write(original.join("data/network"), b"original cwd data").unwrap();
+        let (executable, engine) =
+            InheritedDirectoryChild::prepare_image(&mut f, &original.join("engine"));
+        let moved = f.temp.path().join("moved-original");
+        fs::rename(&original, &moved).unwrap();
+        assert!(!original.exists());
+        let child =
+            InheritedDirectoryChild::spawn_prepared(executable, engine, None, ".".into()).await;
+        let outcome = tokio::spawn({
+            let child = child.clone();
+            async move {
+                child
+                    .assert_contents_equal("data/network", "original cwd data")
+                    .await
             }
         })
         .await;
@@ -2057,6 +2193,11 @@ mod tests {
         for fault in [None, Some(false), Some(true)] {
             let mut f = Fixture::new();
             let engine = cr6_independent_engine(&mut f);
+            let registered = &f.authority.persistent[&engine.path_ref().id].stored;
+            let image = registered.path.to_path().unwrap();
+            let image_binding = registered.identity.clone();
+            let cwd = image.parent().unwrap().to_path_buf();
+            let cwd_binding = registered.parent_identity.clone().unwrap();
             let origin = f.authority.catalog_session.clone();
             let counter = Arc::new(CountWrites(std::sync::atomic::AtomicUsize::new(0)));
             let injector: Arc<dyn AtomicWriterInjector + Send + Sync> = match fault {
@@ -2095,9 +2236,8 @@ mod tests {
                 serde_json::from_slice(&fs::read(f.temp.path().join("registry.json")).unwrap())
                     .unwrap();
             let uses = decode_uses(disk.catalog_uses).unwrap();
-            let cwd = f.temp.path().join("independent");
-            for path in [&cwd, &cwd.join("engine")] {
-                let binding = identity(path).unwrap();
+            for (path, binding) in [(&cwd, &cwd_binding), (&image, &image_binding)] {
+                assert_eq!(identity(path).unwrap(), *binding);
                 assert_eq!(
                     uses[&(path.clone(), binding.a, binding.b)].get(&origin),
                     Some(&false)
@@ -2228,13 +2368,13 @@ mod tests {
             }
             drop(guard);
             drop(f.authority.engine_resource(&resource).unwrap());
-            let count = f.authority.registry_unique_id_count();
+            let count = f.authority.registry_admission_units();
             drop(
                 f.authority
                     .engine_executable(&engine, PathOperation::EngineExecute)
                     .unwrap(),
             );
-            assert_eq!(f.authority.registry_unique_id_count(), count);
+            assert_eq!(f.authority.registry_admission_units(), count);
             f.reopen();
             assert_eq!(f.authority.catalog_uses.len(), 2);
             assert!(f.authority.catalog_uses[&key][&origin]);
@@ -2409,14 +2549,19 @@ mod tests {
         fs::create_dir(&overflow_path).unwrap();
         fs::write(overflow_path.join("authorized"), b"new contents").unwrap();
         let _root = f.resource(&resources, true);
+        let canonical_resources = f.authority.persistent[&_root.path_ref().id]
+            .stored
+            .path
+            .to_path()
+            .unwrap();
         let existing = f.resource(&existing_path, true);
         let overflow = f.resource(&overflow_path, true);
         let mut uses = f.authority.catalog_uses.clone();
-        let available = MAX_AUTHORITY_IDS - f.authority.registry_unique_id_count();
+        let available = MAX_AUTHORITY_IDS - f.authority.registry_admission_units();
         assert_eq!(available % 2, 0);
         for index in 0..available / 2 {
             let name = format!("r{index}");
-            let path = resources.join(&name);
+            let path = canonical_resources.join(&name);
             if index != 0 {
                 fs::create_dir(&path).unwrap();
             }
@@ -2431,12 +2576,12 @@ mod tests {
             .unwrap();
         let inspected = PathAuthority::open(f.temp.path().join("registry.json"), vec![]).unwrap();
         assert_eq!(inspected.catalog_uses, f.authority.catalog_uses);
-        assert_eq!(inspected.registry_unique_id_count(), MAX_AUTHORITY_IDS);
+        assert_eq!(inspected.registry_admission_units(), MAX_AUTHORITY_IDS);
         drop(inspected);
         eprintln!(
             "native capacity fixture: {} bindings, {} admission units, setup {:?}",
             f.authority.catalog_uses.len(),
-            f.authority.registry_unique_id_count(),
+            f.authority.registry_admission_units(),
             started.elapsed()
         );
         assert!(
@@ -2445,14 +2590,14 @@ mod tests {
                 Err(Error::ResourceLimit(_))
             ),
             "new binding crossed shared admission at {}",
-            f.authority.registry_unique_id_count()
+            f.authority.registry_admission_units()
         );
         let lease = f.authority.engine_resource(&existing).unwrap();
         assert_eq!(
             fs::read(PathBuf::from(lease.uci_value().unwrap()).join("authorized")).unwrap(),
             b"durable contents"
         );
-        assert_eq!(f.authority.registry_unique_id_count(), MAX_AUTHORITY_IDS);
+        assert_eq!(f.authority.registry_admission_units(), MAX_AUTHORITY_IDS);
     }
 
     #[test]
@@ -3514,7 +3659,7 @@ mod tests {
             assert!(!f.root.join("aborted").exists());
             assert_eq!(f.authority.catalog_installs.len(), 1);
             assert_eq!(f.authority.catalog_protected.len(), 1);
-            assert_eq!(f.authority.registry_unique_id_count(), 2);
+            assert_eq!(f.authority.registry_admission_units(), 2);
         }
         f.reopen();
         f.reconcile(vec![], true).unwrap();

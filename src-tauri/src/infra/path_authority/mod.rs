@@ -1686,7 +1686,8 @@ impl EngineExecutable {
             descriptor_path(&file).unwrap_or_else(|_| working_directory.join("engine"));
         Self {
             file: file.into(),
-            working_directory,
+            _working_directory: fs::File::open(&working_directory)
+                .expect("test executable must retain a real cwd directory"),
             resource_leases: resource_leases.into_iter().map(Arc::new).collect(),
             #[cfg(target_os = "macos")]
             command_path,
@@ -1879,12 +1880,15 @@ impl OpeningBookHandle {
 }
 
 /// Backend-only sealed executable object. Unix retains the revalidated opened
-/// descriptor; Windows retains its revalidated no-delete handle and launch
-/// path. Callers cannot obtain a filesystem path from a renderer capability.
+/// descriptor. Every platform retains the validated cwd directory object through child reaping.
+/// Windows also retains the image's no-delete handle and launch path. Callers cannot obtain a
+/// filesystem path from a renderer capability.
 pub(crate) struct EngineExecutable {
     #[cfg(unix)]
     file: OwnedFile,
-    working_directory: PathBuf,
+    _working_directory: fs::File,
+    #[cfg(windows)]
+    working_directory_path: PathBuf,
     resource_leases: Vec<Arc<EngineResourceLease>>,
     #[cfg(target_os = "macos")]
     command_path: PathBuf,
@@ -1917,8 +1921,14 @@ impl EngineExecutable {
     pub(crate) fn command_target(&self) -> &Path {
         &self.command_path
     }
-    pub(crate) fn working_directory(&self) -> &Path {
-        &self.working_directory
+    #[cfg(windows)]
+    pub(crate) fn working_directory_path(&self) -> &Path {
+        &self.working_directory_path
+    }
+    #[cfg(unix)]
+    pub(crate) fn working_directory_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self._working_directory.as_raw_fd()
     }
     /// Descriptors the child must be able to reach after `exec`: every resource
     /// lease, plus the sealed engine image itself.
@@ -4337,7 +4347,7 @@ impl Drop for ActiveImageIssuanceLease {
 struct RegistryAdmissionSnapshot {
     bytes: usize,
     serialized: Vec<u8>,
-    unique_ids: usize,
+    admission_units: usize,
     pending_count: usize,
 }
 
@@ -6728,6 +6738,10 @@ impl PathAuthority {
             return Err(Error::InvalidInput("invalid engine operation".into()));
         }
         let mut resolved = self.resolve(engine.path_ref(), operation, &[])?;
+        let working_directory = resolved
+            .parent()
+            .ok_or_else(|| Error::Conflict("engine has no validated working directory".into()))?
+            .try_clone()?;
         #[cfg(unix)]
         let file = resolved
             .take_file()
@@ -6740,7 +6754,7 @@ impl PathAuthority {
             &FileWorkspaceHandle::new(engine.path_ref().clone()),
             operation,
         )?;
-        let working_directory = verified_path
+        let _working_directory_path = verified_path
             .parent()
             .ok_or_else(|| Error::InvalidInput("engine executable has no parent directory".into()))?
             .to_path_buf();
@@ -6749,7 +6763,9 @@ impl PathAuthority {
         Ok(EngineExecutable {
             #[cfg(unix)]
             file,
-            working_directory,
+            _working_directory: working_directory,
+            #[cfg(windows)]
+            working_directory_path: _working_directory_path,
             resource_leases: Vec::new(),
             #[cfg(target_os = "macos")]
             command_path,
@@ -7469,7 +7485,7 @@ impl PathAuthority {
     }
 
     fn authority_id_input_limit(&self) -> usize {
-        self.registry_unique_id_count()
+        self.registry_admission_units()
             .max(MAX_AUTHORITY_REQUEST_IDS)
     }
 
@@ -8807,7 +8823,7 @@ impl PathAuthority {
         Ok(RegistryAdmissionSnapshot {
             bytes: bytes.len(),
             serialized: bytes,
-            unique_ids: self.catalog_admission_count()
+            admission_units: self.catalog_admission_count()
                 + unique_registry_id_count(
                     entries.keys().map(String::as_str).collect(),
                     retired.keys().map(String::as_str).collect(),
@@ -9004,7 +9020,9 @@ impl PathAuthority {
         candidate: &RegistryAdmissionSnapshot,
         current: &RegistryAdmissionSnapshot,
     ) -> Result<(), Error> {
-        if candidate.unique_ids > MAX_AUTHORITY_IDS && candidate.unique_ids > current.unique_ids {
+        if candidate.admission_units > MAX_AUTHORITY_IDS
+            && candidate.admission_units > current.admission_units
+        {
             return Err(Error::ResourceLimit(
                 "path registry identifier limit reached".into(),
             ));
@@ -9271,7 +9289,7 @@ fn unique_registry_id_count(
 }
 
 impl PathAuthority {
-    fn registry_unique_id_count(&self) -> usize {
+    fn registry_admission_units(&self) -> usize {
         self.catalog_admission_count()
             + unique_registry_id_count(
                 self.persistent.keys().map(String::as_str).collect(),
@@ -15044,6 +15062,10 @@ mod tests {
         // No resource options configured: the image alone must still be inherited,
         // otherwise the interpreter cannot reopen a script engine.
         assert_eq!(executable.inherited_fds(), vec![image_fd]);
+        let cwd_fd = executable.working_directory_fd();
+        assert!(!executable.inherited_fds().contains(&cwd_fd));
+        let flags = unsafe { libc::fcntl(cwd_fd, libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
 
         let leases = vec![
             EngineResourceLease::test_file(fs::File::open(&first).unwrap()),
