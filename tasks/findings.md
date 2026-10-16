@@ -16479,3 +16479,19 @@ The duplicate remote-CI repair is complete. Original run38851003688 nested-direc
 
 This supersedes all earlier implementation/review/native-pending status for this finding. Record-only release, installation, exit row, owner cleanup and the requested new drain are subsequent task steps, not predicted here. The older118-check app proof retains ba5f/b4f3 producer/source98648d33, no new app execution is claimed. Plan authorship/arbitration shared one root context, detection used the same OpenAI family in fresh Codex sessions.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"e3137751129d09d521b424edc66a71478e7f93e98d69731dc7896b1e40df63ba","header_sha256":"f029b56c3dc55cfeee2803cfcf1693c9b2b7d14f79d9bb0309c5eee967eadce5","header_status":"handled","input_sha256":"cdc57683bc386e213a6704c1b7077ae72f60632fe246e5e7e8467ab8ab323f0c","kind":"mutation-receipt","operation":"275f18b5952e2965d9c5fbd9de290ece1eef3b3d6f3f7e95edf936fb00d638f2","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-01"],"target":"f-20261016-01","v":1} -->
+
+---
+
+## 2026-10-17 — filed through the inbox spool
+
+### Conversion progress screenshot retains two valid inner scroll positions
+
+* **ID:** f-20261017-01 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 88484749-4b68-46f2-8d33-153c8a0da9a3 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-88484749-4b68-46f2-8d33-153c8a0da9a3-1.jsonl
+* **Impact class:** tooling
+* **Where:** e2e/database-files.spec.ts:709-718, concurrent conversion journey and conversion-active.png.
+* **Defect:** The journey uses conditional scrollIntoViewIfNeeded before its pixel assertion. Both conversion rows can already be visible at different inner-scroll positions after client navigation, so visibility and text assertions pass while the full-page screenshot retains different offsets. Hosted Test run 38972100180, Linux job 117212677478 at source 0d138e64, failed conversion-active.png with 19,033 differing pixels. Expected, actual and diff images show the same content translated vertically by about 46 pixels inside the Library viewport. Local exact pnpm test:e2e:container passed all 132 cases on the unchanged source, confirming this is not a consistently different intended screen.
+* **Impact:** This stable alternate capture position blocks the master CI gate and release of the verified catalog work. Snapshot refreshing would preserve whichever incidental position won rather than establish one required view.
+* **Related:** f-20260914-06 owns an older scrollbar-fade screenshot failure, governed by d-20261004-10. This observed difference is a scroll offset rather than a fading thumb, so no shared Root is asserted. f-20261001-19 introduced the active and pending cancellation captures. Preserve their behavior and pixel proof.
+* **Fix direction:** Establish one unconditional instant centered row position in the existing journey, exercise it from two deliberately distinct prior offsets, preserve existing snapshots if that center matches, and prove the original conditional behavior fails with those inputs. Mandatory review lens: review-tests. No product scrolling change, fixed sleeps, weaker pixel tolerance or snapshot deletion.
+* **Found by:** Hosted source Test failure and root comparison of its expected, actual and diff artifacts, 2026-10-17. Artifacts and logs are under /tmp/build-cad8d11a/hosted-browser and source-linux-test.log.
