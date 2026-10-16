@@ -2382,6 +2382,419 @@ VERDICT: REVISE
 ### Cumulative diff review round 5
 
 
+### Cumulative diff review round 6 closure
+
+
+### Real application verification before final gates
+
+Source snapshot 17d7574d, with only this run's handoff records dirty. pnpm build passed, native optimized compilation 49.71 seconds. pnpm verify:app --screenshot /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png passed all 118 reported ok checks. Canonical gate-native-app.LEx6ZW completion status 0. Root independently polled it and inspected the final reloaded-workspace screenshot. The screenshot shows the actual WebKitGTK home surface with both seeded workspace tabs and readable cards. Earlier NAG capture used the same output path and was overwritten, so root claims inspection only of the final reload capture. No committed screenshot baseline changed.
+
+The real Rust/IPC product run verifies startup authority reconciliation, user-file preservation, orphan cleanup, progress leases, practice migration and counts, CSP/path refusal, sound server, attachment retirement, reservation cancellation, file opening/NAG save and metadata interactions, instance exclusion, document reload, real close and bounded shutdown cleanup. It confirms the application pid and recorded WebKit service pids are absent after close, destruction cancels the retained reservation, and retired-image cleanup runs. Native UCI live-child proof is supplied separately by the catalog/process tests. The driver does not register an engine through a native picker or prove a completed GameManager game. Native GTK menus, file pickers and decoration behavior are outside WebDriver coverage, with no changed GTK behavior requiring a manual check.
+
+Existing verifier failure-matrix limits, explicitly ARGUED NOT STAGED in docs/context/RULE-HISTORY.md:1343 onward, remain disclosed. These cover bridge presence, titlebar controls, process-before-close, migration capability retention, untouched legacy key, final inventory/migrated counts and legacy capability after key removal. A green run is not independent staged-failure proof of those assertions. The retained source-derived matrix covers the other assertions, including the separately staged engine-save publication assertions in the current verifier header. No verifier or test framework was added or modified in this run.
+
+This successful app proof supersedes prior real-app-pending statements for this snapshot. Final gates, hosted Windows/macOS/runtime and platform compile/lint, push and installer remain pending. Source reviewer closure is R6 all eleven APPROVED with zero new findings. Plan authorship and arbitration shared one context. Detection ran on the same model family as code in separate Codex sessions, without family separation.
+
+#### Complete real-app execution output
+
+````text
+> node scripts/verify-app.mjs --screenshot /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png
+
+  .. opening seed WebDriver session
+  .. seed app and WebKit processes are gone; reusing WebDriver after session quit
+  .. conversion disposable inputs: /tmp/chessfable-verify-x0BbB9/path-owner-fixture/files-workspace/verify-conversion-cancellation.pgn, /tmp/chessfable-verify-x0BbB9/path-owner-fixture/files-workspace/verify-conversion-seed.pgn
+  .. game-opening disposable PGN input: /tmp/chessfable-verify-x0BbB9/path-owner-fixture/files-workspace/verify-game-opening.pgn
+  .. opening assertion WebDriver session with the preserved profile
+  ok  production startup reclaims unowned authority and preserves native-owned authority
+  ok  startup authority reconciliation deletes no user files
+  ok  trusted production startup preserves owned images and cleans only the orphan
+  ok  the real Tauri IPC bridge is present (not a test mock)
+  ok  the real renderer exposes the ChessFable document title
+  ok  progress native event listener registers
+  ok  progress start lease has exact canonical string generation
+  ..  progress start wire: {"id":"verify-progress:72f0d7c3-48ea-4023-ac3b-3f176a65702a","generation":"1"}
+  ok  progress running event has exact canonical string generation
+  ok  progress state-update string lease reaches native with exact identity
+  ok  progress snapshot has exact canonical string generation
+  ok  progress terminal state update accepts the string lease
+  ok  progress terminal event has exact canonical string generation
+  ok  progress malformed lease rejects without changing the snapshot
+  ok  progress invalid clear rejects as a native IPC operation
+  ok  progress clear return has exact canonical string generation
+  ok  progress cleared event has exact canonical string generation
+  ok  progress clear removes the native snapshot
+  ok  progress native event listener is released
+  ok  the native practice read returns all 12,000 seeded positions
+  ok  native practice review paging returns every seeded entry and reaches the oldest review
+  ok  the legacy practice deck is migrated into the native store through real IPC
+  ok  migration retains the legacy deck capability in path-authority.json
+  ok  migration leaves the legacy practice localStorage key untouched
+  ok  fifty renderer ratings land in the native practice review store
+  ok  renderer ratings do not alter the large deck's 12,000 native positions
+  ok  the 50 new native reviews record the panel's Good rating
+  ok  renderer ratings create no new legacy key and do not grow the existing key
+  ok  list_practice_decks retains the legacy capability after its browser key is removed and fresh startup reconciliation
+  ok  the stale-file scenario rewrites the PGN in place
+  ok  the open file-backed tab reloads or withholds the changed PGN
+  ok  the file freshness transition includes a measured native read_game call
+  ok  the freshness transition applies within 1000 ms of the measured read
+  info  open file freshness: 2257.8 ms after rewrite (limit 2000 ms + read_game 9.0 ms + apply 438.0 ms; verified)
+  ok  the open file-backed tab refreshes within one poll interval plus measured read and apply
+  ok  the real sync path stores 500 further repertoire positions
+  ok  final restart preserves exact native position and review counts for both decks
+  ok  final practice inventory contains no additional native deck
+  ok  final migrated-deck counts still equal the legacy value's counts
+  ok  real IPC preserves the persisted offline download destination
+  ok  real IPC rejects a fresh download destination id
+  ok  real IPC rejects a database-root id
+  ok  the retained engine LocalImage rendered on the Engines page
+  ok  the retained engine LocalImage uses an image/png data URL
+  ok  the retained engine LocalImage data URL decodes in WebKitGTK
+  ok  EP1-card successful Name edit publishes the saved engine card
+  ok  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+  ok  EP2-storage refused Name edit retains the decoded saved engine name
+  ok  the production CSP rejects a detached blob image URL with an img-src violation
+  ok  the renderer cannot resolve a base directory (core:path grants are gone)
+  ok  the renderer reaches a live loopback sound-server port
+  ok  the loopback sound server serves the bundled standard move sound
+  ok  real attachment IPC prepares the exact next durable owner set
+  ok  real attachment IPC retires the selected managed image
+  ok  retirement preserves image bytes for the live session and records cleanup intent
+  ok  the custom title bar rendered its window controls
+  ok  the native backend mints an opaque read reservation
+  ok  the native backend acknowledges reservation cancellation
+  ok  a cancelled reservation cannot be claimed by a later native read
+  ok  the seeded workspace file row renders on the Files page
+  ok  a real double-click on the unselected Files row navigates to /
+  ok  a real double-click on the unselected Files row shows its game
+  ok  GO1 game-opening fixtures contain two distinct native database and PGN games
+  ok  DS1 native database storage_size is the exact decimal string of its file length
+  ok  LU1 Library has one sidebar destination and one tree containing both native source kinds
+  ok  LU2 Library selection switches from file preview to database Explore and actions
+  .. game-opening source screenshot: /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png.database-card.png
+  ok  GO2 the database card has a visible sibling Open database control before selection
+  ok  GO3 the labelled database control opens its handle route and synchronizes the database
+  ok  DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON
+  ok  GO4 database single-click selects a preview without admitting a tab
+  .. game-opening source screenshot: /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png.database-game.png
+  ok  GO5 the labelled database game button opens the selected content and origin
+  ok  GO6 a fixed-coordinate double-click opens an initially unselected database game
+  ok  GO7 row-focused Enter opens the requested database game content and origin
+  .. game-opening source screenshot: /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png.file-game.png
+  ok  GO8 the Files preview has a visible enabled Open game control
+  .. GO9 native geometry: {"originalRect":{"x":0,"y":0,"width":800,"height":647},"resizedRect":{"x":0,"y":0,"width":1300,"height":850}}
+  .. GO9 restored native geometry: {"x":0,"y":0,"width":800,"height":647}
+  ok  GO9 PGN single-click selects without opening and keeps row coordinates stationary
+  ok  GO10 the labelled Files game button opens the selected fresh game and explicit index
+  ok  GO11 a fixed-coordinate double-click opens an initially unselected non-first PGN game
+  ok  GO12 row-focused Enter opens the requested PGN game content and explicit index
+  ok  GO13 an empty PGN exposes no working Open game action
+  .. game-opening source screenshot: /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png.info-panel-discard.png
+  .. GO14 owner 63abadfe-036e-41ae-8387-e7445cd87bc8, admitted IDs ["17ffaf95-55c5-4b01-bde0-5d33b5c7430c","c68b3c70-ff93-47a4-9397-606924903346","e0132f7a-dd19-44f0-9492-42ec4e8557bc","4ef01d8b-198c-4114-b0fe-62be8ddec2f9","098e5096-0899-43a7-b748-452eb0fd1d8d","a921793f-5f24-4f05-a121-dc6c78787ab0","63abadfe-036e-41ae-8387-e7445cd87bc8"], Event verify:opening-1 -> verify:GO14-unsaved-owner-discard -> verify:opening-0, dirty false -> true -> false, file gameNumber 1 -> 0, confirmation gone
+  ok  GO14 confirmed discard replaces the owning current game without admitting a tab
+  ok  CC0 conversion fixture seeds exactly one native game
+  ok  CC1 prepared conversion cancellation returns typed Cancellation before claim
+  ok  CC2 native progress triggers running and same-target queued ticket cancellation
+  ok  CC3 cancelled native imports preserve existing content and DataRevision
+  ok  CC4 a fresh conversion ticket retries successfully after cancellation
+  ok  CC5 settled native conversion tickets are retired
+  ok  the $8 board hint is rendered with a glyph path
+  ok  the $8 board hint SVG title is □
+  ok  the $8 board hint has a visible box and positive opacity through its board ancestors
+  ..  NAG game at 1.e4 screenshot written to /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png
+  ok  the unknown $220 renders no board annotation hint
+  ok  SAVE_FILE writes Nc3?! to the seeded NAG file
+  ok  the saved NAG game preserves $8
+  ok  the saved NAG game preserves $11
+  ok  the saved NAG game preserves d4! $2
+  ok  the saved NAG game preserves $220
+  ok  the Files metadata edit submits without a dialog error
+  ok  the Repertoire filter lists the metadata-edited workspace file
+  ok  the metadata-edited workspace sidecar records repertoire on disk
+  ok  the Files metadata edit preserves the PGN filename
+  ok  a second process on the same app-data directory is refused before initialization
+  ok  the refused launch leaves authority and credential registry bytes unchanged
+  ok  the primary still answers WebDriver after the refused launch
+  ok  a second process sharing only the configuration directory is refused
+  ok  a process on a different app-data directory initializes while the primary runs
+  ok  a real document reload cancels the previous document's retained reservation
+  ok  a real document reload preserves both exact seeded workspace tab identities
+  ok  a real document reload selects the second seeded workspace tab
+  ..  Reloaded workspace screenshot written to /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png
+  ok  a native read reservation is retained until titlebar close
+  ok  the application process is running before the close
+  ok  application pid 81822 and recorded WebKit service pids [81873, 81906] do not exist after the close
+  ok  the real destroyed-window event cancels the exact retained main-webview reservation
+  ok  the shutdown sequence started
+  ok  the shutdown cleanup ran to completion inside its budget
+  ok  the sound server shutdown was signalled
+  ok  titlebar shutdown removes retired image bytes and intent while retaining the owner
+
+shutdown log:
+  [2026-10-16][03:41:08][chessfable::sound::server][INFO] Sound server prepared on port 45719
+  [2026-10-16][03:43:47][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-16][03:43:47][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-16][03:43:47][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-16][03:43:47][chessfable::sound::server][INFO] Sound server prepared on port 43159
+  [2026-10-16][03:43:48][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-16][03:43:48][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-16][03:43:48][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-16][03:43:48][chessfable::sound::server][INFO] Sound server prepared on port 37905
+  [2026-10-16][03:43:56][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-16][03:43:56][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-16][03:43:56][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-16][03:43:57][chessfable::sound::server][INFO] Sound server prepared on port 44075
+  [2026-10-16][03:45:22][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-16][03:45:22][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-16][03:45:22][chessfable][INFO] Shutdown cleanup finished
+  ok  default-root-unusable: the Databases alert offers a visible folder chooser
+  ok  selected-root-missing: the Databases alert offers a visible folder chooser without recreating db
+
+all checks passed
+````
+
+REVIEWED_THROUGH 17d7574d044560378c15e0bd2ede190494819eb5. All eleven required lenses APPROVED, zero new findings and zero adopted witnesses. Elapsed wall 233.664 seconds. CR9 and CR12–16 CLOSED with explicit reviewer evidence. CR10/CR11 and all earlier affected closures remain intact. All sixteen unique corrections are Fix and now source-closed. No Skip or Defer. Complete cumulative witness counts r1=6 r2=1 r3=3 r4=2 r5=6 r6=0. The separate precommit integration check added CR11/CR12 and does not replace inherited plan lineage r1=3 r2=0 r3=0 r4=0.
+
+This closure supersedes earlier implementation/review-pending statements for the same correction IDs. Runtime Windows/macOS, real-app verification, final gates and delivery remain pending obligations of this run. Records reviewer explicitly limits exhaustive coverage of the complete historical corpus and could not access root gate completions. Root has independently polled their canonical status0 records and supplied the exact paths above. No runtime platform success is inferred from reviewer approval.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
+
+#### Round 6 correctness
+
+````text
+CR9 CLOSED — Admission still uses the pre-mutation baseline. Canonical fixture keys preserve refusal at 4096 units and usable existing-binding reuse. Both saved reversals fail at 4098.
+
+CR12 CLOSED for source correctness and supplied Linux evidence — Durable cwd identity and actual launch now use the same retained parent object. Child-side `fchdir` survives pathname movement or replacement. `ChildOwnership` retains the descriptor until confirmed reaping. The original replacement witness fails before repair and passes afterward.
+
+CR13 CLOSED — Aggregate names now describe admission units. Counting arithmetic and bounds are unchanged.
+
+CR14 CLOSED — Capacity fixture paths derive from the authority-issued canonical root.
+
+CR15 CLOSED — Image/cwd assertion keys and identities derive from the registered `StoredEntry`.
+
+CR16 CLOSED as a review-input correction — Hash equality is explicitly limited to the pre-clippy snapshot. No code behavior changes.
+
+CR10 and CR11 remain CLOSED — Originating-session uses remain durable, and startup eligibility still reevaluates them. CR1–CR8 show no correctness regression in the affected dependencies.
+
+No new correctness defects found.
+
+Named limitation (confidence: 100): Windows ancestor sealing and macOS native launch remain unverified at runtime. Added tests and compilation do not establish runtime success. This review performed no writes or tests and shares the code author’s model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 root-cause
+
+````text
+CR9 CLOSED — Admission preserves the premutation baseline. Inspected source-only reversals admit 4,098 units and fail, while restored code refuses overflow and permits existing-binding reuse.
+
+CR10 CLOSED — Durable originating-session evidence remains independent of install records and authority retirement. This repair preserves serialization and session-specific clearing.
+
+CR11 CLOSED — Startup eligibility still reevaluates unresolved uses through the shared reachability relation.
+
+CR12 CLOSED — `mod.rs:6741` retains the same parent object recorded as cwd evidence. `process.rs:3785` applies child-side `fchdir`, and existing child ownership retains the descriptor through confirmed reaping. Inspected Linux logs reproduce replacement-data consumption before repair, then pass afterward. Removing only `fchdir` produces a behavioral failure.
+
+CR13 CLOSED — Aggregate names now describe admission units. Counting, limits and the genuinely unique-ID helper remain unchanged.
+
+CR14 CLOSED — Capacity fixture keys derive from the authority-issued canonical root. Production refusal and usable reuse assertions remain intact.
+
+CR15 CLOSED — Atomic image/cwd assertions derive keys and identities from the validated registered entry, preserving persistence-failure and retry coverage.
+
+CR16 CLOSED — Earlier hash equality is explicitly limited to the pre-clippy proof snapshot. Later evidence identifies its own snapshot.
+
+No new root-cause defect or reintroduced prior fix found.
+
+Named limitation (confidence: 100): Windows/macOS native runtime evidence remains pending, including Windows ancestor-replacement sealing. Linux reopen tests model session transitions without an actual crash. This review inspected source, history and saved evidence without executing tests or changing files. Reviewer and author share the Codex model family.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 tests
+
+````text
+CR9 CLOSED — Production overflow refusal and usable existing-binding reuse are asserted. Both source reversals fail at 4,098 admission units.
+
+CR10 CLOSED — The three-session child test detects lost prepublication durability through failed child-data reads.
+
+CR11 CLOSED — The ancestor-substitution test detects removal of eligibility’s durable-use lookup through failed child-data reads.
+
+CR12 CLOSED — Replacement-before-spawn now asserts original cwd bytes before and after unrelated-tree collection. Recorded original-code and source-only reversals fail that assertion.
+
+CR13 CLOSED within this lens — Naming changes preserve accounting and its behavioral capacity anchor.
+
+CR14 CLOSED — Capacity setup derives canonical paths from native authority issuance.
+
+CR15 CLOSED — Durable image/cwd assertions derive exact keys and identities from registered bindings, retaining fault and retry checks.
+
+CR16 CLOSED within this lens — Earlier hash equality is explicitly limited to the pre-clippy snapshot.
+
+No new findings. Tests are reachable through targeted selectors and full backend gates.
+
+Named limitation (confidence: 100): Windows/macOS runtime tests are configured but remain unexecuted in supplied evidence. Linux reopen tests do not prove actual crash, completed-game or whole-app behavior. This review ran no checks and shares the implementation’s model family.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 error-handling
+
+````text
+CR9 CLOSED — `catalog_install.rs:545` preserves the admission baseline. Capacity refusal returns typed `ResourceLimit`, while existing-binding reuse succeeds. Examined both compiled reversal failures and restored green logs.
+
+CR10 CLOSED — durable originating-session evidence survives authority retirement. Failed or uncertain persistence refuses handoff, and successful shutdown clears only its own evidence.
+
+CR11 CLOSED — startup eligibility reevaluates durable uses. Inspection uncertainty preserves retention without granting deletion authority.
+
+CR12 CLOSED within this lens — `mod.rs:6741` fallibly retains the validated parent object. `process.rs:3787` propagates `fchdir` failure through the existing typed error and cleanup chain. Child ownership retains cwd through confirmed reaping. Examined replacement regression and reversal evidence.
+
+CR13 CLOSED — admission-unit names now match their accounting. Error variants, arithmetic and bounds remain unchanged.
+
+CR14 CLOSED at source level — capacity fixture keys derive from the authority-issued canonical root. Windows runtime remains pending.
+
+CR15 CLOSED at source level — image/cwd assertions derive keys and identities from registered bindings. Atomic-write, failure-refusal and retry assertions remain.
+
+CR16 CLOSED — the hash-equality statement explicitly identifies the pre-clippy snapshot and separately discloses later test bytes.
+
+No new error-handling defects found at confidence ≥80. Cleanup failures retain retry state, log the install id and cause, and return an error. Startup deliberately handles that maintenance failure after successful owner reconciliation.
+
+Named limitations (confidence: 100): read-only source and saved-evidence review, with no tests rerun. Windows/macOS runtime, actual crashes and full-app behavior remain unverified. Review and implementation share the Codex model family. Plan authorship and arbitration shared one context. No files changed.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 minimalism
+
+````text
+CR9/CR14 CLOSED within this lens — capacity setup uses the authority-issued canonical root and existing commit machinery, preserving overflow refusal and usable reuse.
+
+CR12 CLOSED within this lens — the validated cwd descriptor travels through existing `EngineExecutable` and `ChildOwnership`. Unix launch uses child-side `fchdir`. Test helpers reuse the existing child harness.
+
+CR13 CLOSED — admission-unit names replace misleading unique-ID names without changing arithmetic or adding machinery.
+
+CR15 CLOSED — image/cwd expectations derive from registered bindings while preserving the atomic handoff test.
+
+CR16 CLOSED — the historical hash claim explicitly identifies its pre-clippy snapshot.
+
+CR10/CR11 dependency checks remain closed — publication, handoff and startup eligibility share the same retention relation and registry.
+
+No retained bloat or duplication findings. The added `catalog_install.rs` owns one cohesive lifecycle domain. Inlining it would relocate required code without reducing behavior. No substantial deletion preserves O1–O4.
+
+Limitations (confidence: 100): read-only source and supplied-evidence review. Windows/macOS runtime remains unverified. Author and reviewer share the Codex model family, without family separation. No files changed or tests run.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 code-quality
+
+````text
+CR13 CLOSED — `registry_admission_units` and `RegistryAdmissionSnapshot.admission_units` accurately describe the aggregate accounting. The distinct-ID helper retains its correct name.
+
+CR9/CR14 CLOSED within this lens — capacity setup explicitly derives canonical paths from authority-issued storage and uses the renamed aggregate counter.
+
+CR12 CLOSED within this lens — retained cwd ownership, Unix descriptor-based launch and Windows pathname access are clearly distinguished.
+
+CR15 CLOSED within this lens — expected image/cwd keys and identities come directly from the registered entry.
+
+CR16 CLOSED for wording — the hash-equality sentence explicitly identifies the pre-clippy snapshot.
+
+CR3 remains CLOSED — the recursive boolean and originating-session lifetime are documented. CR10/CR11 dependency checks reveal no readability regression.
+
+No new readability or local-consistency findings.
+
+Limitation (confidence: 100): read-only source review, no checks executed. Windows/macOS runtime behavior remains unverified here. Reviewer and author share the Codex model family.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 engine-protocol
+
+````text
+CR6–CR8 remain CLOSED — cleaning refusal requires confirmed membership, historical terminal identities survive pathname reuse, and recursive-ancestor refusal remains covered.
+
+CR9 CLOSED — `catalog_install.rs:2540` exercises production refusal at 4,096 units and usable existing-binding reuse. Inspected guard and baseline reversal logs fail at 4,098, followed by restored green.
+
+CR10 remains CLOSED — durable uses preserve originating sessions independently of install records and authority retirement. Successful shutdown clears only its own evidence.
+
+CR11 remains CLOSED — startup eligibility reevaluates unresolved durable bindings through the shared relation at `catalog_install.rs:768`.
+
+CR12 CLOSED — `mod.rs:6741` retains the validated parent descriptor, `process.rs:3786` establishes Unix cwd through `fchdir`, and `ChildOwnership` retains it until confirmed reaping. The inspected red-first witness reads replacement-tree data. Restored code reads original data while allowing the independent tree’s collection.
+
+CR13–CR16 CLOSED within the examined correction scope — admission naming matches accounting, fixtures derive canonical keys from issued bindings, atomic image/cwd assertions use registered identities, and the historical hash claim explicitly names its pre-clippy snapshot.
+
+No additional confirmed engine-supervision, UCI state-machine or asynchronous-result-routing defects found.
+
+Limitations: read-only source and saved-evidence review. No checks or processes run, no files changed. Windows/macOS runtime, actual crash, completed GameManager/browser game and whole-app verification remain unverified. Review and implementation share the Codex model family without family separation.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 ipc-contract
+
+````text
+CR6 remains CLOSED within this lens — `catalog_install.rs:605` refuses access during cleanup only for confirmed membership. Uncertain relationships retain protection without refusing unrelated engines.
+
+No IPC-contract defects found. Affected Rust signatures, generated invoke keys and renderer callers agree. Progress remains Specta-registered, correlated and percentage-based, with listener cleanup. No new commands, events, renderer parameters, binding edits or capability scopes appear.
+
+CR9–CR16 have no prior IPC witness requiring closure. Their broader native correctness and proof obligations remain with the assigned lenses.
+
+Limitations: read-only source review. No files changed, tests run or platform runtime behavior verified. Reviewer and code share the same model family in separate sessions.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 tauri-security
+
+````text
+CR9 CLOSED — `catalog_install.rs:544` captures admission before mutation. Canonical capacity fixtures preserve refusal at 4,096 and usable existing-binding reuse. Both inspected reversals admit 4,098 and fail.
+
+CR10 CLOSED — `mod.rs:8819` persists originating-session use independently of install records. Publication preserves those sessions, and successful shutdown clears only its own evidence.
+
+CR11 CLOSED — `catalog_install.rs:778` reevaluates unresolved durable uses before collection. Root, tree and inventory deletion checks remain independent.
+
+CR12 CLOSED — `mod.rs:6741` retains the validated parent descriptor through `EngineExecutable` and child reaping. `engine/process.rs:3785` establishes Unix cwd with `fchdir`. The inspected red-first witness reads replacement data before correction, while restored code reads original data and permits independent-tree collection.
+
+Prior CR4/CR6–CR8 security closures remain intact. CR13–CR16 were inspected as dependencies. The naming, canonical fixture and historical-evidence corrections introduce no security regression.
+
+No new in-scope defects found.
+
+Limitations: read-only source and supplied-proof review, without executing checks or changing files. Runtime evidence is Linux-only. Windows ancestor protection and macOS launch behavior await native execution. No actual crash or whole-app verification is established. No refresh-token flow is introduced. Reviewer and code author share the Codex model family, without family separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 platform-semantics
+
+````text
+CR9/CR14 CLOSED — `catalog_install.rs:2553` seeds capacity from the authority-issued canonical root. Production overflow refusal and usable existing-binding reuse remain covered.
+
+CR12 CLOSED at source-review level — `mod.rs:6741` retains the validated parent object through child ownership. `process.rs:3786` uses child-side `fchdir` on Unix. Windows retains its no-delete parent handle. Native platform tests cover normal launch and directory substitution.
+
+CR13 CLOSED — aggregate admission names changed without changing accounting or limits.
+
+CR15 CLOSED — `catalog_install.rs:2196` derives expected image/cwd keys and identities from the registered entry.
+
+CR16 CLOSED — the handoff qualifies hash equality as the pre-clippy snapshot and separately identifies later test bytes.
+
+CR10/CR11 remain CLOSED — durable originating-session evidence and startup eligibility lookup remain intact. Prior platform closures remain intact. No new platform defects established.
+
+Limitations: read-only review, no files changed or checks run. Supplied `pnpm rust:windows:check` evidence passes GNU compilation/clippy only. No non-Linux Unix source-probe result was supplied. Windows/macOS runtime proof remains pending in `rust-windows-test` and `rust-macos-test`, including Windows ancestor-rename behavior. `rust-platform` supplies compile/lint evidence. Reviewer and code share the same model family.
+
+VERDICT: APPROVED
+````
+
+#### Round 6 records
+
+````text
+No findings in the correction and inspected history. CR16 is CLOSED against both exact snapshots. Current hashes and saved test logs agree, and prior quoted reports remain byte-preserved.
+
+Limitations: the complete 4.54 MB record corpus was not exhaustively reviewed. Named root gate completion records were unavailable. Windows/macOS runtime, real-app verification, full gates and delivery remain pending. Review used the code author’s model family in a separate session.
+
+VERDICT: APPROVED
+````
+
+
 ### Focused cwd handoff judgment after round 5
 
 
