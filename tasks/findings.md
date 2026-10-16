@@ -13222,7 +13222,7 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). `in
 
 ### Engine archive staging reopens the destination parent by pathname
 
-* **ID:** f-20261001-15 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261001-15 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:1319-1329` (`download_engine_archive_core`: `destination_parent = resolved.target().parent().to_path_buf()`, then `private_tempdir_in(".archive", &destination_parent)`).
 * **Defect:** the staging directory is created under a pathname derived from the resolved destination rather than through the verified directory descriptor. If the engine root is renamed and its path replaced by a symlink between resolution and `private_tempdir_in`, download and extraction write staging data under the symlink target; the later atomic install refuses publication, but only after those out-of-authority writes happened.
 * **Why it matters:** every other path-authority write door binds to a verified inode; this one is a pathname re-open in the same class the path-authority work closed elsewhere. Reaching it needs a local actor racing the rename, so it is outside accidental-input threat models.
@@ -13232,6 +13232,11 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). `in
 
 * **Reopened (records lens, 2026-10-13):** the 2026-10-13 rule-4d rejection and its correction above are void. This is product security hardening in a shipped desktop app, not agent machinery: the precondition is write access to a containing directory, which a shared-directory writer has, and `validate_target` checks type and identity without ownership. Rule 4d's own-box clause covers agent, hook, gate and drain machinery only. The finding stays open as it was before the triage.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4c2175d5168731852eecb3f9b7ae392674c79c2bc8bdae9035ba41f55e8a9144","input_sha256":"b2709c0e5979b7be13f55b09f5bc22158cf7c455b7ec6d5ae50ec378a8e49dc4","kind":"mutation-receipt","operation":"2b35f5ee3596c7237f1a35a7d47c5dda99d60a2975ea529b31a913ad33a61679","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-15"],"target":"f-20261001-15","v":1} -->
+
+* **Entry revalidation, lens → build:** The old outer .archive call is removed, but the replacement still creates .download in prepare_archive_download by pathname before open_parent_no_follow, and ZIP/TAR preparation creates sibling temporary directories by pathname before adopting their owner. Later identity-checked publication cannot prevent those earlier writes. Confirmed through fs.rs prepare_archive_download, prepare_zip_cancellable and prepare_tar_cancellable, with source evidence in /tmp/build-cad8d11a/probe-1-r1.txt.
+* **Open question:** How should initial payload and extracted-tree temporary creation bind to the existing authorized parent identity on Linux, macOS and Windows while preserving sibling staging, retained cleanup ownership and the previous staging decisions?
+* **Independent design obligation:** d-20260918-11, d-20260919-03, d-20261005-05 and d-20261016-15 constrain the replacement. The anchor's frozen threat model covers accidental catalog errors and does not authorize this production staging redesign. Defer this existing finding to its own build under the separate open-design-question exception. No staging production change or claim of closure is made by the catalog verifier run.
+<!-- ledger-meta {"command":"set-header","effect_lines":3,"effect_sha256":"dd379bd053e53e1968d1ca108e3ca2482a595dda8719886cc7ac0df6608dfcbe","header_sha256":"e4bf5818c0fa7c07dc10069bfb8bd7f45272121d7cc503cc2d49ad228469e54e","header_status":"open","input_sha256":"97b679ec8206a7de091fb77283d7882425a2adda44dc2d5dbccc409b4f89c6ec","kind":"mutation-receipt","operation":"560122666dccc285e83c75d691b5ddacdfce97985b77df6b09f6b3a15b363060","options":{"headers":{"Entry":"build"},"section":null},"request_id_sha256":null,"results":["f-20261001-15"],"target":"f-20261001-15","v":1} -->
 
 ---
 
