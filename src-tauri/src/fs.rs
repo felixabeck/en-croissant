@@ -1430,15 +1430,15 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         // it may be registered already, and an engine may still be executing from it.
         let adoption_authority = state.pgn_path_authority.clone();
         let adoption_destination = destination.clone();
-        let (exists, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
+        let (adopted, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
             .spawn(move || {
-                let exists = adoption_authority.with_mut(|authority| {
-                    authority.catalog_archive_destination_exists(&adoption_destination, &resolved)
+                let adopted = adoption_authority.with_mut(|authority| {
+                    authority.confirm_catalog_archive_adoption(&adoption_destination, &resolved)
                 })??;
-                Ok((exists, resolved))
+                Ok((adopted, resolved))
             })
             .await?;
-        if exists {
+        if adopted {
             commit_gate.begin_commit()?;
             let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
             report_download_success(&state, &app, &progress_lease, &job_id);

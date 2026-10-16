@@ -372,19 +372,6 @@ pub(crate) enum ParentAccess {
     Writable,
 }
 
-/// Checks whether an archive destination can be adopted without following its leaf link.
-#[cfg(test)]
-pub(crate) fn archive_destination_directory_exists(path: &Path) -> Result<bool, Error> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
-        Ok(_) => Err(Error::Conflict(
-            "archive destination is not a directory".into(),
-        )),
-        Err(error) if crate::error::is_missing_entry_io(&error) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
 pub(crate) fn read_bounded_bytes<R: Read>(
     reader: &mut R,
     declared: u64,
@@ -855,8 +842,8 @@ struct DirectoryInstall<'a> {
 /// The held-parent body of [`install_dir_driver`]: both leaves are names under the one open
 /// `parent`, so same-parent is structural. `expected_source` pins the staged leaf to an identity
 /// captured earlier. `revalidate_parent` runs immediately before the commit revalidation.
-/// `committed` is set once the platform commit has returned `Ok`, so a caller can tell a
-/// pre-commit failure from `CommittedDurabilityUncertain`.
+/// `committed` records actual physical mutation independently of trusted acceptance. It can
+/// remain true for a hard postcommit `Conflict`, and drives disarming of source-owner cleanup.
 fn install_dir_at_driver<A: DirInstallAdapter>(
     adapter: &A,
     install: DirectoryInstall<'_>,
@@ -5787,30 +5774,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_destination_directory_exists_without_following_links() {
-        let root = tempfile::tempdir().expect("root");
-        let directory = root.path().join("directory");
-        let regular = root.path().join("regular");
-        let link = root.path().join("link");
-        assert!(!archive_destination_directory_exists(&directory).expect("missing directory"));
-        std::fs::create_dir(&directory).expect("directory");
-        assert!(archive_destination_directory_exists(&directory).expect("existing directory"));
-        std::fs::write(&regular, b"regular").expect("regular file");
-        assert!(matches!(
-            archive_destination_directory_exists(&regular),
-            Err(Error::Conflict(message)) if message == "archive destination is not a directory"
-        ));
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&directory, &link).expect("directory symlink");
-        #[cfg(windows)]
-        windows_test_junction(&link, &directory);
-        assert!(matches!(
-            archive_destination_directory_exists(&link),
-            Err(Error::Conflict(message)) if message == "archive destination is not a directory"
-        ));
-    }
-
-    #[test]
     fn write_if_changed_leaves_identical_bytes_untouched() {
         let directory = tempfile::tempdir().expect("binding directory");
         let path = directory.path().join("generated.ts");
@@ -10338,8 +10301,17 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn catalog_install_publication_confirmation_completed_source_substitution() {
+    struct SourceSubstitution {
+        result: Result<(), Error>,
+        swaps: usize,
+        parent_sync: bool,
+        backup_cleanup: bool,
+        displaced_preserved: bool,
+        preserved: bool,
+    }
+
+    #[cfg(unix)]
+    fn observe_source_substitution(replace: bool, fail_parent_sync: bool) -> SourceSubstitution {
         use std::os::unix::fs::MetadataExt;
 
         #[derive(Debug, Default)]
@@ -10347,11 +10319,13 @@ mod tests {
             swaps: usize,
             substitute: Option<(u64, u64)>,
             post_commit_parent_sync: bool,
+            backup_cleanup: bool,
         }
         struct Substitute {
             source: PathBuf,
             moved: PathBuf,
             observation: Arc<Mutex<Observation>>,
+            fail_parent_sync: bool,
         }
         impl AtomicDirInjector for Substitute {
             fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
@@ -10366,6 +10340,14 @@ mod tests {
                 }
                 if point == AtomicDirFaultPoint::ParentSync {
                     self.observation.lock().unwrap().post_commit_parent_sync = true;
+                    if self.fail_parent_sync {
+                        return Err(std::io::Error::other(
+                            "parent sync must not precede confirmation",
+                        ));
+                    }
+                }
+                if point == AtomicDirFaultPoint::BackupCleanup {
+                    self.observation.lock().unwrap().backup_cleanup = true;
                 }
                 Ok(())
             }
@@ -10384,18 +10366,30 @@ mod tests {
         let original_pin = owner.directory().unwrap().try_clone().unwrap();
         let moved = root.path().join("moved-original");
         let target = root.path().join("installed");
+        if replace {
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(target.join("engine"), b"DISPLACED-ORIGINAL").unwrap();
+        }
+        let displaced_identity = std::fs::metadata(&target)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()));
         let observation = Arc::new(Mutex::new(Observation::default()));
         let removals_before = OWNED_STAGING_DROP_REMOVALS.with(|count| count.get());
         set_test_atomic_dir_injector(Some(Box::new(Substitute {
             source: source.clone(),
             moved: moved.clone(),
             observation: observation.clone(),
+            fail_parent_sync,
         })));
         let result = install_staging_dir_at(
             &mut owner,
             &parent,
             OsStr::new("installed"),
-            DirectoryInstallPolicy::Absent,
+            if replace {
+                DirectoryInstallPolicy::Replace
+            } else {
+                DirectoryInstallPolicy::Absent
+            },
         );
         set_test_atomic_dir_injector(None);
 
@@ -10439,24 +10433,75 @@ mod tests {
         eprintln!("NATIVE_SOURCE_COMMIT_PROBE committed_from_facade_disarm={committed_from_facade_disarm} owner_armed={owner_armed} owner_child_present={owner_child_present} drop_removal_delta={} after_drop_source={source_after_drop:?} after_drop_target={target_after_drop:?} after_drop_moved={moved_after_drop:?}", removals_after - removals_before);
         let swaps = observed.swaps;
         let substitute_identity = observed.substitute;
+        let parent_sync = observed.post_commit_parent_sync;
+        let backup_cleanup = observed.backup_cleanup;
         drop(observed);
+        let displaced_preserved = source_after_drop == displaced_identity
+            && source_bytes.as_deref() == Some(b"DISPLACED-ORIGINAL".as_slice());
         let refused_without_trusted_publication = matches!(&result, Err(Error::Conflict(_)))
             && target_identity == substitute_identity
             && target_bytes.as_deref() == Some(b"UNVERIFIED-SUBSTITUTE".as_slice())
             && moved_after_drop == Some(accepted_identity)
             && moved_bytes.as_deref() == Some(b"VERIFIED-ORIGINAL".as_slice())
-            && source_after_drop.is_none()
+            && if replace {
+                displaced_preserved
+            } else {
+                source_after_drop.is_none()
+            }
             && committed_from_facade_disarm
             && removals_after == removals_before;
         drop(original_pin);
         drop(parent);
         root.close().unwrap();
         eprintln!("NATIVE_SOURCE_COMMIT_PROBE all native handles closed and disposable root removed before assertion");
-        assert_eq!(swaps, 1, "the probe must complete exactly one substitution");
-        assert!(
-            refused_without_trusted_publication,
-            "NATIVE_SOURCE_COMMIT_UNVERIFIED_PUBLICATION: accepted={accepted_identity:?} substitute={substitute_identity:?} installed={target_identity:?} result={result:?} committed={committed_from_facade_disarm}"
+        SourceSubstitution {
+            result,
+            swaps,
+            parent_sync,
+            backup_cleanup,
+            displaced_preserved,
+            preserved: refused_without_trusted_publication,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_publication_confirmation_completed_source_substitution() {
+        let observed = observe_source_substitution(false, false);
+        assert!(!observed.parent_sync,
+            "SOURCE_MISMATCH_BEFORE_PARENT_SYNC: native mismatch must be refused before parent sync: {:?}", observed.result);
+        assert_eq!(
+            observed.swaps, 1,
+            "the probe must complete exactly one substitution"
         );
+        assert!(
+            observed.preserved,
+            "NATIVE_SOURCE_COMMIT_UNVERIFIED_PUBLICATION: {:?}",
+            observed.result
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_r12_source_mismatch_precedes_sync_failure() {
+        let observed = observe_source_substitution(false, true);
+        assert!(matches!(observed.result, Err(Error::Conflict(_))),
+            "SOURCE_MISMATCH_SYNC_FAILURE_IS_HARD: native mismatch must precede applied sync uncertainty: {:?}", observed.result);
+        assert!(!observed.parent_sync);
+        assert!(!observed.backup_cleanup);
+        assert_eq!(observed.swaps, 1);
+        assert!(observed.preserved);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_r12_source_mismatch_preserves_displaced_tree() {
+        let observed = observe_source_substitution(true, false);
+        assert!(observed.displaced_preserved && !observed.backup_cleanup,
+            "SOURCE_MISMATCH_PRESERVES_DISPLACED: displaced tree must survive unconfirmed publication: {:?}", observed.result);
+        assert!(!observed.parent_sync);
+        assert_eq!(observed.swaps, 1);
+        assert!(observed.preserved);
     }
 
     #[cfg(windows)]

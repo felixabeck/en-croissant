@@ -151,6 +151,20 @@ fn invalid_record() -> Error {
     Error::InvalidInput("invalid catalog install provenance".into())
 }
 
+/// Only native absence below this exact held root can retire provenance or allow publication.
+fn catalog_directory_identity(
+    parent: &fs::File,
+    leaf: &OsStr,
+) -> Result<Option<(u64, u64)>, Error> {
+    match crate::infra::fs::entry_identity_at(parent, leaf, true) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(Error::Conflict(
+            "catalog destination could not be confirmed".into(),
+        )),
+    }
+}
+
 fn relative_path(path: &NativePath) -> Result<PathBuf, Error> {
     let path = path.to_path()?;
     if path.as_os_str().is_empty()
@@ -579,24 +593,16 @@ impl PathAuthority {
                 &opened_root
             };
             let leaf = relative_path(&record.destination)?;
-            let entries = read_directory_entries_at(
-                root,
-                &CancellationToken::new(),
-                Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
-                &mut |name| name == leaf.as_os_str(),
-            )?;
-            let Some(entry) = entries.first() else {
+            let Some(identity) = catalog_directory_identity(root, leaf.as_os_str())? else {
                 return Ok(false);
             };
-            if entry.identity != (record.identity.a, record.identity.b)
-                || entry.kind != DirectoryEntryKind::Directory
-            {
+            if identity != (record.identity.a, record.identity.b) {
                 return Err(Error::Conflict(
                     "catalog publication could not be confirmed".into(),
                 ));
             }
             let directory =
-                open_removal_directory_at(root, leaf.as_os_str(), entry.identity)?.into_file();
+                open_removal_directory_at(root, leaf.as_os_str(), identity)?.into_file();
             let observed = inventory(&directory, record.root.identity.a)?;
             if observed.len() != record.inventory.len()
                 || !observed
@@ -607,7 +613,7 @@ impl PathAuthority {
                     "catalog publication could not be confirmed".into(),
                 ));
             }
-            assert_entry_identity(root, leaf.as_os_str(), entry.identity, true)?;
+            assert_entry_identity(root, leaf.as_os_str(), identity, true)?;
             // Recovery may observe a rename whose producer never reached its parent sync.
             // Only after exact proof may this failure be described as applied uncertainty.
             root.sync_all().map_err(|error| {
@@ -660,7 +666,14 @@ impl PathAuthority {
             return Err(Error::Conflict("catalog publication root changed".into()));
         }
         let leaf = path.file_name().ok_or_else(invalid_record)?;
-        let current = crate::infra::fs::entry_identity_at(directory, leaf, true).ok();
+        // Native file identity adds refusal scope for an alias of a pending wrong-kind target.
+        // Publication and deletion still require the independent directory proof.
+        let binding = |name: &OsStr| {
+            crate::infra::fs::entry_identity_at(directory, name, true)
+                .or_else(|_| crate::infra::fs::entry_identity_at(directory, name, false))
+                .ok()
+        };
+        let current = binding(leaf);
         let mut ids = Vec::new();
         for (id, record) in &self.catalog_installs {
             if record.root.identity != root.identity {
@@ -671,8 +684,7 @@ impl PathAuthority {
             // define scope. Existing filesystem aliases add scope without global case folding.
             let same_leaf = recorded_leaf.as_os_str() == leaf
                 || current.is_some_and(|identity| {
-                    crate::infra::fs::entry_identity_at(directory, recorded_leaf.as_os_str(), true)
-                        .is_ok_and(|recorded| recorded == identity)
+                    binding(recorded_leaf.as_os_str()).is_some_and(|recorded| recorded == identity)
                 });
             if same_leaf {
                 ids.push(id.clone());
@@ -685,7 +697,9 @@ impl PathAuthority {
         Ok(confirmed)
     }
 
-    pub(crate) fn catalog_archive_destination_exists(
+    /// Confirms adoption without acquiring ownership of legacy trees. Pending provenance may
+    /// require full inventory validation, parent sync and durable publication confirmation.
+    pub(crate) fn confirm_catalog_archive_adoption(
         &mut self,
         destination: &PathRef,
         resolved: &ResolvedPath,
@@ -698,15 +712,9 @@ impl PathAuthority {
             open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
                 .into_file();
         let leaf = path.file_name().ok_or_else(invalid_record)?;
-        let entries = read_directory_entries_at(
-            &directory,
-            &CancellationToken::new(),
-            Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
-            &mut |name| name == leaf,
-        )?;
-        match entries.first() {
+        match catalog_directory_identity(&directory, leaf)? {
             None => Ok(false),
-            Some(entry) if entry.kind == DirectoryEntryKind::Directory && confirmed => Ok(true),
+            Some(_) if confirmed => Ok(true),
             _ => Err(Error::Conflict(
                 "archive destination is not a directory".into(),
             )),
@@ -872,23 +880,13 @@ impl PathAuthority {
         staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
-        if self.catalog_archive_destination_exists(destination, resolved)? {
+        if self.confirm_catalog_archive_adoption(destination, resolved)? {
             return Err(Error::Conflict(
                 "directory target was created concurrently".into(),
             ));
         }
-        let root = self
-            .persistent
-            .get(&destination.id)
-            .ok_or_else(invalid_record)?
-            .stored
-            .clone();
+        let root = self.catalog_destination_root(destination, path)?;
         let root_path = root.path.to_path()?;
-        if path.parent() != Some(root_path.as_path())
-            || root.purpose != Some(EntryPurpose::EngineRoot)
-        {
-            return Err(invalid_record());
-        }
         if staging.parent_identity()? != (root.identity.a, root.identity.b) {
             return Err(Error::InvalidInput(
                 "catalog staging must share the destination parent".into(),
@@ -1041,25 +1039,16 @@ impl PathAuthority {
         )?
         .into_file();
         let leaf = relative_path(&record.destination)?;
-        let entries = read_directory_entries_at(
-            &root,
-            &CancellationToken::new(),
-            Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
-            &mut |name| name == leaf.as_os_str(),
-        )?;
-        let Some(entry) = entries.first() else {
+        let Some(identity) = catalog_directory_identity(&root, leaf.as_os_str())? else {
             return self.forget_catalog_install(id);
         };
-        if entry.identity != (record.identity.a, record.identity.b)
-            || entry.kind != DirectoryEntryKind::Directory
-        {
+        if identity != (record.identity.a, record.identity.b) {
             return self.forget_catalog_install(id);
         }
         if record.preserved {
             return Ok(());
         }
-        let directory =
-            open_removal_directory_at(&root, leaf.as_os_str(), entry.identity)?.into_file();
+        let directory = open_removal_directory_at(&root, leaf.as_os_str(), identity)?.into_file();
         let observed = match inventory(&directory, record.root.identity.a) {
             Ok(entries) => entries,
             Err(Error::Conflict(_)) => return self.preserve_changed_catalog_install(id, record),
@@ -1079,7 +1068,7 @@ impl PathAuthority {
             self.commit_catalog(records)?;
         }
         // Keep the complete original inventory through partial removal and uncertain parent sync.
-        remove_entry_at(&root, leaf.as_os_str(), entry.identity, true)?;
+        remove_entry_at(&root, leaf.as_os_str(), identity, true)?;
         self.forget_catalog_install(id)
     }
 
@@ -1197,7 +1186,7 @@ mod tests {
                 &[OsString::from(name)],
             )?;
             self.authority
-                .catalog_archive_destination_exists(self.handle.path_ref(), &resolved)
+                .confirm_catalog_archive_adoption(self.handle.path_ref(), &resolved)
         }
 
         fn engine(&mut self, name: &str) -> EngineHandle {
@@ -1272,6 +1261,488 @@ mod tests {
                 Err(std::io::Error::other("catalog registry fault"))
             } else {
                 Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_r12_native_adoption_categories() {
+        let mut f = Fixture::new();
+        assert!(!f.adopt("missing").unwrap());
+        fs::create_dir(f.root.join("directory")).unwrap();
+        fs::write(f.root.join("directory/foreign"), b"legacy contents").unwrap();
+        assert!(f.adopt("directory").unwrap());
+        // Resolve before interference so these cases reach the real adoption/publication
+        // consumer rather than the resolver's independent link refusal.
+        let regular = f
+            .authority
+            .resolve(
+                f.handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &[OsString::from("regular")],
+            )
+            .unwrap();
+        let link = f
+            .authority
+            .resolve(
+                f.handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &[OsString::from("link")],
+            )
+            .unwrap();
+        fs::write(f.root.join("regular"), b"regular file").unwrap();
+        assert!(matches!(
+            f.authority
+                .confirm_catalog_archive_adoption(f.handle.path_ref(), &regular),
+            Err(Error::Conflict(_))
+        ));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(f.root.join("directory"), f.root.join("link")).unwrap();
+        #[cfg(windows)]
+        crate::infra::fs::windows_test_junction(&f.root.join("link"), &f.root.join("directory"));
+        assert!(matches!(
+            f.authority
+                .confirm_catalog_archive_adoption(f.handle.path_ref(), &link),
+            Err(Error::Conflict(_))
+        ));
+        for resolved in [&regular, &link] {
+            let mut stage = f.stage();
+            assert!(matches!(
+                f.authority.publish_catalog_install(
+                    f.handle.path_ref(),
+                    resolved,
+                    &mut stage.owner
+                ),
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(
+            fs::read(f.root.join("directory/foreign")).unwrap(),
+            b"legacy contents"
+        );
+        assert!(
+            f.authority.catalog_installs.is_empty(),
+            "legacy adoption must not mint provenance"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_r12_pending_file_alias_refuses_registration() {
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
+        fs::write(f.root.join("managed"), b"unconfirmed file").unwrap();
+        fs::hard_link(f.root.join("managed"), f.root.join("alias-engine")).unwrap();
+        fs::write(f.root.join("independent-engine"), b"independent file").unwrap();
+        let alias = f
+            .authority
+            .register_installed_engine(&f.handle, "alias-engine");
+        let independent = f
+            .authority
+            .register_installed_engine(&f.handle, "independent-engine");
+        let original = fs::read(f.root.join("original/engine"));
+        let alias_bytes = fs::read(f.root.join("alias-engine"));
+        let target_bytes = fs::read(f.root.join("managed"));
+        let pending = f.authority.catalog_installs.len() == 1
+            && f.authority
+                .catalog_installs
+                .values()
+                .all(|record| record.publication == Some(Publication::Pending));
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        temp.close().unwrap();
+        assert!(matches!(alias, Err(Error::Conflict(_))),
+            "PENDING_NATIVE_FILE_ALIAS_MUST_REFUSE: a native alias of the known pending wrong-kind target must not mint a handle: {alias:?}");
+        assert!(
+            independent.is_ok(),
+            "unrelated native file registration must remain available: {independent:?}"
+        );
+        assert!(pending);
+        assert_eq!(original.unwrap(), b"managed engine");
+        assert_eq!(alias_bytes.unwrap(), b"unconfirmed file");
+        assert_eq!(target_bytes.unwrap(), b"unconfirmed file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_install_r12_unavailable_native_observation_is_not_absent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let resolved = f
+            .authority
+            .resolve(
+                f.handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &[OsString::from("managed")],
+            )
+            .unwrap();
+        let held_root = open_verified_directory(
+            &f.root,
+            (
+                f.authority
+                    .catalog_installs
+                    .values()
+                    .next()
+                    .unwrap()
+                    .root
+                    .identity
+                    .a,
+                f.authority
+                    .catalog_installs
+                    .values()
+                    .next()
+                    .unwrap()
+                    .root
+                    .identity
+                    .b,
+            ),
+        )
+        .unwrap()
+        .into_file();
+        let mut stage = f.stage();
+        let permissions = fs::metadata(&f.root).unwrap().permissions();
+        fs::set_permissions(&f.root, fs::Permissions::from_mode(0o400)).unwrap();
+        let native = crate::infra::fs::entry_identity_at(&held_root, OsStr::new("managed"), true);
+        let adoption = f
+            .authority
+            .confirm_catalog_archive_adoption(f.handle.path_ref(), &resolved);
+        let publication =
+            f.authority
+                .publish_catalog_install(f.handle.path_ref(), &resolved, &mut stage.owner);
+        let (id, record) = f
+            .authority
+            .catalog_installs
+            .iter()
+            .next()
+            .map(|(id, record)| (id.clone(), record.clone()))
+            .unwrap();
+        let collection = f.authority.collect_catalog_install(&id, &record);
+        fs::set_permissions(&f.root, permissions).unwrap();
+        drop(held_root);
+        drop(stage);
+        f.reopen();
+        let record_retained = f.authority.catalog_installs.len() == 1;
+        let bytes = fs::read(f.root.join("managed/engine"));
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        temp.close().unwrap();
+        assert!(
+            matches!(native, Err(Error::Io(ref cause)) if cause.kind() == std::io::ErrorKind::PermissionDenied),
+            "real native permission refusal must be exercised: {native:?}"
+        );
+        assert!(matches!(adoption, Err(Error::Conflict(_))),
+            "NATIVE_ABSENCE_REQUIRES_NOT_FOUND: unavailable native observation cannot mean absent: {adoption:?}");
+        assert!(
+            matches!(publication, Err(Error::Conflict(_))),
+            "{publication:?}"
+        );
+        assert!(
+            collection.is_ok(),
+            "unavailable pending evidence must be retained: {collection:?}"
+        );
+        assert!(record_retained);
+        assert_eq!(bytes.unwrap(), b"managed engine");
+    }
+
+    #[test]
+    fn catalog_install_r12_wrong_kind_retains_pending_and_confirmed_evidence() {
+        for pending in [false, true] {
+            for link in [false, true] {
+                let mut f = Fixture::new();
+                let resolved = f
+                    .authority
+                    .resolve(
+                        f.handle.path_ref(),
+                        PathOperation::DownloadArchive,
+                        &[OsString::from("managed")],
+                    )
+                    .unwrap();
+                if pending {
+                    f.pending_install("managed");
+                } else {
+                    f.install("managed");
+                }
+                fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
+                if link {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(f.root.join("original"), f.root.join("managed"))
+                        .unwrap();
+                    #[cfg(windows)]
+                    crate::infra::fs::windows_test_junction(
+                        &f.root.join("managed"),
+                        &f.root.join("original"),
+                    );
+                } else {
+                    fs::write(f.root.join("managed"), b"foreign file").unwrap();
+                }
+                f.reopen();
+                let result = f.reconcile(vec![], true);
+                assert!(
+                    result.is_ok() || matches!(result, Err(Error::Conflict(_))),
+                    "{result:?}"
+                );
+                assert_eq!(f.authority.catalog_installs.len(), 1);
+                assert!(matches!(
+                    f.authority
+                        .confirm_catalog_archive_adoption(f.handle.path_ref(), &resolved),
+                    Err(Error::Conflict(_))
+                ));
+                assert_eq!(
+                    fs::read(f.root.join("original/engine")).unwrap(),
+                    b"managed engine"
+                );
+            }
+        }
+    }
+
+    fn r12_native_case_alias_applicable(f: &Fixture) -> bool {
+        use std::io::Write;
+        let lower = f.root.join(".r12-case-probe");
+        let upper = f.root.join(".R12-CASE-PROBE");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("witness"), b"independent native alias witness").unwrap();
+        let applicable = fs::read(upper.join("witness")).ok().as_deref()
+            == Some(b"independent native alias witness".as_slice());
+        fs::remove_dir_all(lower).unwrap();
+        writeln!(
+            std::io::stderr().lock(),
+            "R12_NATIVE_CASE_ALIAS applicable={applicable} root={:?}",
+            f.root
+        )
+        .unwrap();
+        applicable
+    }
+
+    #[test]
+    fn catalog_install_r12_native_alias_adoption_and_pending_confirmation() {
+        for state in ["legacy", "confirmed", "pending"] {
+            let mut f = Fixture::new();
+            if !r12_native_case_alias_applicable(&f) {
+                return;
+            }
+            match state {
+                "legacy" => {
+                    fs::create_dir(f.root.join("managed")).unwrap();
+                    fs::write(f.root.join("managed/engine"), b"managed engine").unwrap();
+                }
+                "confirmed" => f.install("managed"),
+                _ => f.pending_install("managed"),
+            }
+            let record_count = f.authority.catalog_installs.len();
+            fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
+            f.reopen();
+            assert!(
+                f.adopt("managed").unwrap(),
+                "native {state} alias must adopt"
+            );
+            assert!(f.adopt("MANAGED").unwrap());
+            assert_eq!(f.authority.catalog_installs.len(), record_count);
+            assert!(f
+                .authority
+                .catalog_installs
+                .values()
+                .all(|record| record.publication == Some(Publication::Confirmed)));
+            f.reopen();
+            let engine = f.engine("managed");
+            f.reconcile(vec![engine.path_ref().clone()], true).unwrap();
+            assert_eq!(
+                fs::read(f.root.join("MANAGED/engine")).unwrap(),
+                b"managed engine"
+            );
+            assert_eq!(f.authority.catalog_installs.len(), record_count);
+        }
+    }
+
+    #[test]
+    fn catalog_install_r12_native_alias_pending_mismatch_survives_startup() {
+        for alteration in ["modified", "replacement", "file"] {
+            let mut f = Fixture::new();
+            if !r12_native_case_alias_applicable(&f) {
+                return;
+            }
+            f.pending_install("managed");
+            if alteration != "modified" {
+                fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
+                if alteration != "file" {
+                    fs::create_dir(f.root.join("managed")).unwrap();
+                }
+            }
+            let contents = if alteration == "file" {
+                "managed"
+            } else {
+                "managed/engine"
+            };
+            fs::write(f.root.join(contents), b"unconfirmed foreign contents").unwrap();
+            fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
+            for _ in 0..2 {
+                f.reopen();
+                f.reconcile(vec![], true).unwrap();
+                assert_eq!(f.authority.catalog_installs.len(), 1);
+                assert!(f
+                    .authority
+                    .catalog_installs
+                    .values()
+                    .all(|record| record.publication == Some(Publication::Pending)));
+                for name in ["managed", "MANAGED"] {
+                    assert!(matches!(f.adopt(name), Err(Error::Conflict(_))));
+                    let executable = if alteration == "file" {
+                        name.to_string()
+                    } else {
+                        format!("{name}/engine")
+                    };
+                    assert!(matches!(
+                        f.authority
+                            .register_installed_engine(&f.handle, &executable),
+                        Err(Error::Conflict(_))
+                    ));
+                    let mut stage = f.stage();
+                    assert!(matches!(
+                        f.publish_stage(name, &mut stage),
+                        Err(Error::Conflict(_))
+                    ));
+                }
+                assert_eq!(
+                    fs::read(f.root.join(if alteration == "file" {
+                        "MANAGED"
+                    } else {
+                        "MANAGED/engine"
+                    }))
+                    .unwrap(),
+                    b"unconfirmed foreign contents"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_r12_native_alias_confirmed_cleanup_completes() {
+        let mut f = Fixture::new();
+        if !r12_native_case_alias_applicable(&f) {
+            return;
+        }
+        f.install("managed");
+        fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
+        f.reopen();
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.authority.catalog_installs.is_empty());
+        assert!(!f.root.join("MANAGED").exists());
+    }
+
+    #[test]
+    fn catalog_install_r12_native_alias_partial_cleanup_and_preserved_refusal() {
+        #[cfg(unix)]
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
+        for modified in [false, true] {
+            let mut f = Fixture::new();
+            if !r12_native_case_alias_applicable(&f) {
+                return;
+            }
+            f.install("managed");
+            let inventory = f
+                .authority
+                .catalog_installs
+                .values()
+                .next()
+                .unwrap()
+                .inventory
+                .clone();
+            f.reopen();
+            #[cfg(unix)]
+            let fault = scoped_test_removal_injector(Arc::new(RemovalFault(
+                RemovalFaultPoint::AfterEntryRemoved,
+            )));
+            #[cfg(windows)]
+            let fault = {
+                use std::os::windows::fs::OpenOptionsExt;
+                use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+                let record = f.authority.catalog_installs.values().next().unwrap();
+                let directory = open_verified_directory(
+                    &f.root.join("managed"),
+                    (record.identity.a, record.identity.b),
+                )
+                .unwrap()
+                .into_file();
+                let entries = read_directory_entries_at(
+                    &directory,
+                    &CancellationToken::new(),
+                    None,
+                    &mut |_| true,
+                )
+                .unwrap();
+                // Block deletion in the last native top-level entry, allowing an earlier
+                // entry to be physically removed before the real sharing refusal.
+                let last = entries.last().unwrap();
+                let blocked = if last.kind == DirectoryEntryKind::Directory {
+                    f.root.join("managed").join(&last.name).join("network")
+                } else {
+                    f.root.join("managed").join(&last.name)
+                };
+                fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                    .open(blocked)
+                    .unwrap()
+            };
+            let cleanup = f.reconcile(vec![], true);
+            drop(fault);
+            #[cfg(windows)]
+            assert!(
+                matches!(&cleanup, Err(Error::Io(cause)) if matches!(cause.raw_os_error(), Some(5 | 32)))
+                    || matches!(&cleanup, Err(Error::Conflict(message)) if message == "Windows sharing violation"),
+                "actual native delete-sharing refusal required: {cleanup:?}"
+            );
+            assert!(cleanup.is_err());
+            let record = f.authority.catalog_installs.values().next().unwrap();
+            assert!(record.cleaning);
+            assert_eq!(record.inventory, inventory);
+            let directory = open_verified_directory(
+                &f.root.join("managed"),
+                (record.identity.a, record.identity.b),
+            )
+            .unwrap()
+            .into_file();
+            let remaining = super::inventory(&directory, record.root.identity.a).unwrap();
+            drop(directory);
+            assert!(
+                !remaining.is_empty() && remaining.len() < inventory.len(),
+                "native cleanup must actually remove a strict part of the original inventory"
+            );
+            fs::rename(f.root.join("managed"), f.root.join("MANAGED")).unwrap();
+            if modified {
+                fs::write(f.root.join("MANAGED/user"), b"preserved user addition").unwrap();
+            }
+            f.reopen();
+            assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
+            f.reconcile(vec![], true).unwrap();
+            if modified {
+                for _ in 0..2 {
+                    f.reopen();
+                    f.reconcile(vec![], true).unwrap();
+                    let record = f.authority.catalog_installs.values().next().unwrap();
+                    assert!(record.cleaning && record.preserved);
+                    assert_eq!(record.inventory, inventory);
+                    assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
+                    assert!(matches!(
+                        f.authority
+                            .register_installed_engine(&f.handle, "managed/user"),
+                        Err(Error::Conflict(_))
+                    ));
+                    assert_eq!(
+                        fs::read(f.root.join("MANAGED/user")).unwrap(),
+                        b"preserved user addition"
+                    );
+                }
+            } else {
+                assert!(f.authority.catalog_installs.is_empty());
+                assert!(!f.root.join("MANAGED").exists());
             }
         }
     }
