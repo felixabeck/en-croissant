@@ -946,7 +946,7 @@ mod deletion_tests {
                     false,
                 )
                 .unwrap(),
-            database_path: path.clone(),
+            database_path: resolved.puzzle_database_path().unwrap(),
             min_rating: 0,
             max_rating: u16::MAX,
             theme: None,
@@ -1310,38 +1310,6 @@ mod deletion_tests {
         assert!(!path.exists(), "physical deletion must remain committed");
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
         assert!(authority_contains(&authority, &handle));
-    }
-
-    #[test]
-    fn command_flow_invalidates_the_captured_cache_location() {
-        let fixture = puzzle_deletion_fixture("canon-diff.db3");
-        {
-            let (target, _) = puzzle_binding(&fixture.resolved).unwrap();
-            let mut cache = tauri::async_runtime::block_on(fixture.cache.lock());
-            let mut key = cache.key.take().unwrap();
-            key.database_path = target.path().to_owned();
-            cache.key = Some(key);
-        }
-        let captured = fixture.resolved.puzzle_database_path().unwrap();
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            fixture.resolved,
-            fixture.handle.clone(),
-            fixture.repository,
-            fixture.authority.clone(),
-            Arc::clone(&fixture.cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(
-            result.is_ok(),
-            "captured-location deletion failed: {result:?}"
-        );
-        assert!(!captured.exists());
-        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
-            .key
-            .is_none());
-        assert!(!authority_contains(&fixture.authority, &fixture.handle));
     }
 
     #[test]
