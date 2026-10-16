@@ -8336,3 +8336,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, adopted reviewed plan 2026-10-16-real-catalog-engines, rounds 1–3. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7fe79d17d9e686ee9785e364ef1e181d5682eb57b3685cb893a7a098414eb99f","input_sha256":"fb768b42ae5b623c11b132d9e6dd8dd9c690c4e8fae116fba3862d506eb88445","kind":"mutation-receipt","operation":"1946507e36f17d23c697a33e6146adf555c22f554b95b39e1b9e923586476e8d","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-27 — Signed locator text and parsed transport representation
+
+* **Question:** Does the signed download URL contract require a new canonicalization rule, or accurate documentation and a regression for the existing signed-locator chain?
+* **Governs:** f-20260916-04, f-20260920-09
+* **Chosen:** Preserve the exact raw URL plus lowercase digest as the signed payload and document that the initial request uses the standard parser's representation, followed by individually validated redirects. Add fixture-key proof of the raw payload, normalized request and digest refusal before installation.
+* **Rejected:** Signing a normalized replacement, which changes the existing payload contract. Requesting unparsed URL bytes, which the HTTP transport does not expose. Rejecting semantically equivalent signed locators without an evidenced content or origin boundary failure.
+* **Reason:** Both findings describe the same discrepancy between the existing byte-for-byte request claim and actual parser behavior. Source fs.rs validates the signed locator before parsing and hashes received bytes before publication, while d-20260919-01 and d-20260919-02 preserve that payload. No unsigned installation or origin change was evidenced. This corrects the developer contract without changing product transport, signatures or catalogs. Reversal path: an evidenced origin or content ambiguity would require a stricter input contract and matching producer/consumer proof.
+* **Decided by:** Codex, full auto, co-located source recheck for f-20261002-08. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"3e758cdf9e1097f5a66a13d9b02c5f3f2c132874d444f8de0ad82f95c373ed38","input_sha256":"a0543eab8209d80e88277d5e0d824ad232c851bb190f651c2f17b8b547576446","kind":"mutation-receipt","operation":"dbfc926dfc51978557f4f48ef66bc977cd3d5e71d3ce12803cce951d7ee91508","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-27"],"target":"decisions-ledger","v":1} -->
