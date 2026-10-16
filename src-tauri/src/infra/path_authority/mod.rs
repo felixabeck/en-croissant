@@ -6858,14 +6858,14 @@ impl PathAuthority {
             return Err(Error::InvalidInput("engine path is required".into()));
         }
         validate_components(&components)?;
-        self.confirm_catalog_engine_registration(root, &components)?;
+        let (catalog_root, catalog_path, root_directory) =
+            self.prepare_catalog_engine_registration(root, &components)?;
         let resolved = self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
         if resolved.file().is_none() {
             return Err(Error::InvalidInput(
                 "installed engine must be a regular file".into(),
             ));
         }
-        resolved.mark_engine_executable()?;
         let identity = resolved.identity()?;
         let parent_identity = VerifiedIdentity::from_pair(resolved.parent_identity()?);
         let path = resolved
@@ -6878,6 +6878,13 @@ impl PathAuthority {
                 hook();
             }
         });
+        self.confirm_catalog_engine_registration(
+            &catalog_root,
+            &catalog_path,
+            &root_directory,
+            Some((&path, identity)),
+        )?;
+        resolved.mark_engine_executable()?;
         let display_name = components
             .last()
             .ok_or_else(|| Error::InvalidInput("engine path is required".into()))?

@@ -652,6 +652,7 @@ impl PathAuthority {
         root: &StoredEntry,
         path: &Path,
         retained_root: Option<&fs::File>,
+        retained_file: Option<(&Path, VerifiedIdentity)>,
     ) -> Result<bool, Error> {
         let opened_root;
         let directory = if let Some(directory) = retained_root {
@@ -673,7 +674,12 @@ impl PathAuthority {
                 .or_else(|_| crate::infra::fs::entry_identity_at(directory, name, false))
                 .ok()
         };
-        let current = binding(leaf);
+        // Registration adopts the retained file, even when its locator has been replaced.
+        // Other consumers still classify the current native destination. Neither observation
+        // grants ownership, and an unrelated replacement cannot broaden a held file's scope.
+        let current = retained_file
+            .map(|(_, identity)| identity.pair())
+            .or_else(|| binding(leaf));
         let mut ids = Vec::new();
         for (id, record) in &self.catalog_installs {
             if record.root.identity != root.identity {
@@ -686,7 +692,16 @@ impl PathAuthority {
                 || current.is_some_and(|identity| {
                     binding(recorded_leaf.as_os_str()).is_some_and(|recorded| recorded == identity)
                 });
-            if same_leaf {
+            // Full retained context covers added descendants of a moved tree too. Only the
+            // shared relation's positive membership adds refusal, never uncertain ancestry
+            // or a different object later occupying the captured file's locator.
+            let retained_member = if let Some((target, identity)) = retained_file {
+                let (a, b) = identity.pair();
+                reaches(record, target, false, Some(&Identity { a, b }))? == Reachability::Member
+            } else {
+                false
+            };
+            if same_leaf || retained_member {
                 ids.push(id.clone());
             }
         }
@@ -707,7 +722,7 @@ impl PathAuthority {
         let path = resolved.target().ok_or_else(invalid_record)?;
         let root = self.catalog_destination_root(destination, path)?;
         self.protect_catalog_path(path, false, false, None)?;
-        let confirmed = self.confirm_catalog_destination(&root, path, None)?;
+        let confirmed = self.confirm_catalog_destination(&root, path, None, None)?;
         let directory =
             open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
                 .into_file();
@@ -721,11 +736,13 @@ impl PathAuthority {
         }
     }
 
-    pub(super) fn confirm_catalog_engine_registration(
+    /// Retain the root during the existing precheck, without consuming the terminal resolver's
+    /// one-shot boundary. The post-resolution handoff must use this same native directory.
+    pub(super) fn prepare_catalog_engine_registration(
         &mut self,
         root: &EngineRootHandle,
         components: &[OsString],
-    ) -> Result<(), Error> {
+    ) -> Result<(StoredEntry, PathBuf, fs::File), Error> {
         let stored = self
             .persistent
             .get(&root.id.id)
@@ -737,8 +754,29 @@ impl PathAuthority {
             .to_path()?
             .join(components.first().ok_or_else(invalid_record)?);
         let stored = self.catalog_destination_root(root.path_ref(), &path)?;
-        self.protect_catalog_path(&path, false, false, None)?;
-        if self.confirm_catalog_destination(&stored, &path, None)? {
+        let directory = open_verified_directory(
+            &stored.path.to_path()?,
+            (stored.identity.a, stored.identity.b),
+        )?
+        .into_file();
+        self.confirm_catalog_engine_registration(&stored, &path, &directory, None)?;
+        Ok((stored, path, directory))
+    }
+
+    pub(super) fn confirm_catalog_engine_registration(
+        &mut self,
+        root: &StoredEntry,
+        path: &Path,
+        retained_root: &fs::File,
+        retained_file: Option<(&Path, VerifiedIdentity)>,
+    ) -> Result<(), Error> {
+        if let Some((target, identity)) = retained_file {
+            let (a, b) = identity.pair();
+            self.protect_catalog_path(target, false, false, Some(&Identity { a, b }))?;
+        } else {
+            self.protect_catalog_path(path, false, false, None)?;
+        }
+        if self.confirm_catalog_destination(root, path, Some(retained_root), retained_file)? {
             Ok(())
         } else {
             Err(Error::Conflict(
@@ -941,7 +979,7 @@ impl PathAuthority {
         assert_entry_identity(&root_directory, source_leaf, (identity.a, identity.b), true)?;
         resolved.atomic_install_download_dir(staging)?;
         self.confirm_catalog_install(&id, Some(&root_directory))?;
-        if !self.confirm_catalog_destination(&root, path, Some(&root_directory))? {
+        if !self.confirm_catalog_destination(&root, path, Some(&root_directory), None)? {
             return Err(Error::Conflict(
                 "catalog publication could not be confirmed".into(),
             ));
@@ -1179,6 +1217,18 @@ mod tests {
             ));
         }
 
+        fn pending_wrong_kind(&mut self) -> CatalogInstall {
+            self.pending_install("managed");
+            fs::rename(self.root.join("managed"), self.root.join("original")).unwrap();
+            fs::write(self.root.join("managed"), b"unconfirmed file").unwrap();
+            self.authority
+                .catalog_installs
+                .values()
+                .next()
+                .unwrap()
+                .clone()
+        }
+
         fn adopt(&mut self, name: &str) -> Result<bool, Error> {
             let resolved = self.authority.resolve(
                 self.handle.path_ref(),
@@ -1364,6 +1414,772 @@ mod tests {
         assert_eq!(original.unwrap(), b"managed engine");
         assert_eq!(alias_bytes.unwrap(), b"unconfirmed file");
         assert_eq!(target_bytes.unwrap(), b"unconfirmed file");
+    }
+
+    struct RegistrationHookCleanup;
+
+    impl Drop for RegistrationHookCleanup {
+        fn drop(&mut self) {
+            RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());
+            INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    fn pending_registration_evidence(
+        records: &BTreeMap<String, CatalogInstall>,
+        original: &CatalogInstall,
+    ) -> bool {
+        records.len() == 1
+            && records.values().all(|record| {
+                record.publication == Some(Publication::Pending)
+                    && !record.cleaning
+                    && !record.preserved
+                    && record.root == original.root
+                    && record.destination == original.destination
+                    && record.identity == original.identity
+                    && record.inventory == original.inventory
+                    && record.users.is_superset(&original.users)
+            })
+    }
+
+    #[test]
+    fn catalog_install_r15_registration_keeps_held_root_without_records() {
+        registration_keeps_held_root(false);
+    }
+
+    #[test]
+    fn catalog_install_r15_registration_keeps_held_root_with_pending_record() {
+        registration_keeps_held_root(true);
+    }
+
+    fn registration_keeps_held_root(with_pending: bool) {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        let original_record = with_pending.then(|| f.pending_wrong_kind());
+        fs::write(f.root.join("independent"), b"independent held engine").unwrap();
+        let expected_file = identity(&f.root.join("independent")).unwrap();
+        let expected_parent = identity(&f.root).unwrap();
+        let moved_root = f.temp.path().join("moved-root");
+        let hook_root = f.root.clone();
+        let hook_moved = moved_root.clone();
+        let swaps = Rc::new(RefCell::new(Vec::new()));
+        let hook_swaps = swaps.clone();
+        let cleanup = RegistrationHookCleanup;
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    hook_swaps
+                        .borrow_mut()
+                        .push(fs::rename(hook_root, hook_moved));
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "independent");
+        drop(cleanup);
+        let moved = swaps.borrow().first().is_some_and(Result::is_ok);
+        let actual_root = if moved { &moved_root } else { &f.root };
+        let bytes = fs::read(actual_root.join("independent")).unwrap();
+        let original_bytes = original_record.as_ref().map(|_| {
+            (
+                fs::read(actual_root.join("original/engine")).unwrap(),
+                fs::read(actual_root.join("original/data/network")).unwrap(),
+                fs::read(actual_root.join("managed")).unwrap(),
+            )
+        });
+        let stored = result
+            .as_ref()
+            .ok()
+            .and_then(|handle| f.authority.persistent.get(&handle.path_ref().id))
+            .map(|entry| {
+                (
+                    entry.stored.identity.clone(),
+                    entry.stored.parent_identity.clone(),
+                )
+            });
+        let later_use = result.as_ref().ok().map(|handle| {
+            f.authority
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let evidence = original_record.as_ref().map_or_else(
+            || f.authority.catalog_installs.is_empty(),
+            |record| pending_registration_evidence(&f.authority.catalog_installs, record),
+        );
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let mut reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_stored = result
+            .as_ref()
+            .ok()
+            .and_then(|handle| reopened.persistent.get(&handle.path_ref().id))
+            .map(|entry| {
+                (
+                    entry.stored.identity.clone(),
+                    entry.stored.parent_identity.clone(),
+                )
+            });
+        let durable_use = result.as_ref().ok().map(|handle| {
+            reopened
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let durable_evidence = original_record.as_ref().map_or_else(
+            || reopened.catalog_installs.is_empty(),
+            |record| pending_registration_evidence(&reopened.catalog_installs, record),
+        );
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none())
+            && RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_HELD_ROOT_NATIVE: pending={with_pending}, swaps={:?}, result={result:?}, expected={expected_file:?}/{expected_parent:?}, stored={stored:?}/{durable_stored:?}, use={later_use:?}/{durable_use:?}, evidence={evidence}/{durable_evidence}, hooks_empty={hooks_empty}, removed={}", swaps.borrow(), !temp_path.exists());
+        assert!(hooks_empty && !temp_path.exists());
+        assert_eq!(swaps.borrow().len(), 1);
+        assert!(evidence && durable_evidence);
+        assert_eq!(bytes, b"independent held engine");
+        if let Some((engine, network, pending)) = original_bytes {
+            assert_eq!(engine, b"managed engine");
+            assert_eq!(network, b"managed network");
+            assert_eq!(pending, b"unconfirmed file");
+        }
+        if !moved {
+            let code = swaps.borrow()[0].as_ref().unwrap_err().raw_os_error();
+            assert!(
+                cfg!(windows) && matches!(code, Some(5 | 32)),
+                "actual native root-rename refusal: {:?}",
+                swaps.borrow()
+            );
+        }
+        assert!(result.is_ok(), "REGISTRATION_HELD_ROOT_SUCCESS: retain independent file/parent authorization after root rename, pending={with_pending}, actual={result:?}");
+        let expected = Some((expected_file, Some(expected_parent)));
+        assert_eq!(stored, expected);
+        assert_eq!(durable_stored, expected);
+        if moved {
+            assert!(
+                matches!(later_use, Some(Err(_))),
+                "unavailable locator use: {later_use:?}"
+            );
+            assert!(
+                matches!(durable_use, Some(Err(_))),
+                "unavailable locator reload: {durable_use:?}"
+            );
+        } else {
+            assert!(matches!(later_use, Some(Ok(()))));
+            assert!(matches!(durable_use, Some(Ok(()))));
+        }
+    }
+
+    #[test]
+    fn catalog_install_r14_registration_keeps_independent_held_file_after_tree_swap() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let original_record = f
+            .authority
+            .catalog_installs
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let managed = f.root.join("managed");
+        let alias = f.root.join("alias-dir");
+        let independent_original = f.root.join("independent-original");
+        fs::create_dir(managed.join("extra")).unwrap();
+        fs::write(managed.join("extra/added"), b"pending user executable").unwrap();
+        fs::create_dir_all(alias.join("extra")).unwrap();
+        fs::write(alias.join("extra/added"), b"independent good executable").unwrap();
+        let good_identity = identity(&alias.join("extra/added")).unwrap();
+        let bad_identity = identity(&managed.join("extra/added")).unwrap();
+        let swaps = Rc::new(RefCell::new(Vec::new()));
+        let hook_swaps = swaps.clone();
+        let hook_alias = alias.clone();
+        let cleanup = RegistrationHookCleanup;
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    let first = fs::rename(&hook_alias, independent_original);
+                    let moved = first.is_ok();
+                    hook_swaps.borrow_mut().push(first);
+                    if moved {
+                        hook_swaps
+                            .borrow_mut()
+                            .push(fs::rename(managed, hook_alias));
+                    }
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "alias-dir/extra/added");
+        drop(cleanup);
+        let first_moved = swaps.borrow().first().is_some_and(Result::is_ok);
+        let completed = swaps.borrow().len() == 2 && swaps.borrow().iter().all(Result::is_ok);
+        let good_path = if first_moved {
+            f.root.join("independent-original")
+        } else {
+            alias.clone()
+        };
+        let pending_path = if completed {
+            alias.clone()
+        } else {
+            f.root.join("managed")
+        };
+        let stored_identity = result.as_ref().ok().map(|handle| {
+            f.authority.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let later_use = result.as_ref().ok().map(|handle| {
+            f.authority
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let pending =
+            pending_registration_evidence(&f.authority.catalog_installs, &original_record);
+        let no_bad_capability = f
+            .authority
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        let good_bytes = fs::read(good_path.join("extra/added")).unwrap();
+        let pending_bytes = fs::read(pending_path.join("extra/added")).unwrap();
+        let original_engine = fs::read(pending_path.join("engine")).unwrap();
+        let original_network = fs::read(pending_path.join("data/network")).unwrap();
+        let locator_bytes = fs::read(alias.join("extra/added"));
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let mut reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_identity = result.as_ref().ok().map(|handle| {
+            reopened.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let durable_use = result.as_ref().ok().map(|handle| {
+            reopened
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let durable_pending =
+            pending_registration_evidence(&reopened.catalog_installs, &original_record);
+        let durable_no_bad = reopened
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none())
+            && INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_TREE_BOUND_CONTROL: swaps={:?}, completed={completed}, result={result:?}, held={good_identity:?}, stored={stored_identity:?}/{durable_identity:?}, use={later_use:?}/{durable_use:?}, pending={pending}/{durable_pending}, no_bad={no_bad_capability}/{durable_no_bad}, hooks_empty={hooks_empty}, removed={}", swaps.borrow(), !temp_path.exists());
+        assert!(hooks_empty && !temp_path.exists());
+        assert!(pending && durable_pending && no_bad_capability && durable_no_bad);
+        assert_eq!(good_bytes, b"independent good executable");
+        assert_eq!(pending_bytes, b"pending user executable");
+        assert_eq!(original_engine, b"managed engine");
+        assert_eq!(original_network, b"managed network");
+        assert!(result.is_ok(), "REGISTRATION_TREE_HELD_INDEPENDENT_SUCCESS: register the original independent held file after a tree replaces its locator: {result:?}");
+        assert_eq!(stored_identity, Some(good_identity.clone()));
+        assert_eq!(durable_identity, Some(good_identity));
+        if completed {
+            assert_eq!(swaps.borrow().len(), 2);
+            assert_eq!(locator_bytes.unwrap(), b"pending user executable");
+            assert!(
+                matches!(later_use, Some(Err(Error::Conflict(_)))),
+                "changed locator use: {later_use:?}"
+            );
+            assert!(
+                matches!(durable_use, Some(Err(Error::Conflict(_)))),
+                "changed locator reload use: {durable_use:?}"
+            );
+        } else {
+            assert!(
+                cfg!(windows) && swaps.borrow().iter().any(Result::is_err),
+                "native tree swaps must complete on this platform: {:?}",
+                swaps.borrow()
+            );
+            for swap in swaps
+                .borrow()
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+            {
+                assert!(
+                    matches!(swap.raw_os_error(), Some(5 | 32)),
+                    "actual native refusal: {swap}"
+                );
+            }
+            if first_moved {
+                assert!(matches!(later_use, Some(Err(_))));
+                assert!(matches!(durable_use, Some(Err(_))));
+                assert!(locator_bytes.is_err());
+            } else {
+                assert_eq!(swaps.borrow().len(), 1);
+                assert_eq!(locator_bytes.unwrap(), b"independent good executable");
+                assert!(matches!(later_use, Some(Ok(()))));
+                assert!(matches!(durable_use, Some(Ok(()))));
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_install_r14_registration_refuses_added_member_of_moved_pending_tree() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let original_record = f
+            .authority
+            .catalog_installs
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let managed = f.root.join("managed");
+        let alias = f.root.join("alias-dir");
+        let independent_original = f.root.join("independent-original");
+        fs::create_dir(managed.join("extra")).unwrap();
+        fs::write(managed.join("extra/added"), b"user added executable").unwrap();
+        #[cfg(unix)]
+        let permissions_before = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                managed.join("extra/added"),
+                fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            fs::metadata(managed.join("extra/added"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        let added_identity = identity(&managed.join("extra/added")).unwrap();
+        let absent_from_inventory = original_record
+            .inventory
+            .iter()
+            .all(|entry| entry.identity != added_identity);
+        fs::create_dir_all(alias.join("extra")).unwrap();
+        fs::write(alias.join("extra/added"), b"independent executable").unwrap();
+        let swaps = Rc::new(RefCell::new(Vec::new()));
+        let hook_swaps = swaps.clone();
+        let hook_alias = alias.clone();
+        let cleanup = RegistrationHookCleanup;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    let first = fs::rename(&hook_alias, independent_original);
+                    let moved = first.is_ok();
+                    hook_swaps.borrow_mut().push(first);
+                    if moved {
+                        hook_swaps
+                            .borrow_mut()
+                            .push(fs::rename(managed, hook_alias));
+                    }
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "alias-dir/extra/added");
+        drop(cleanup);
+        let stored_identity = result.as_ref().ok().map(|handle| {
+            f.authority.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let native_identity = identity(&alias.join("extra/added"));
+        let no_added_capability = f
+            .authority
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != added_identity);
+        let pending =
+            pending_registration_evidence(&f.authority.catalog_installs, &original_record);
+        let original_engine = fs::read(alias.join("engine"));
+        let original_network = fs::read(alias.join("data/network"));
+        let added_bytes = fs::read(alias.join("extra/added"));
+        let independent_bytes = fs::read(f.root.join("independent-original/extra/added"));
+        #[cfg(unix)]
+        let permissions_after = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::metadata(alias.join("extra/added"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_pending =
+            pending_registration_evidence(&reopened.catalog_installs, &original_record);
+        let durable_no_added = reopened
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != added_identity);
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none())
+            && INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_ADDED_MEMBER_NATIVE: swaps={:?}, result={result:?}, expected={added_identity:?}, native={native_identity:?}, stored={stored_identity:?}, inventory_absent={absent_from_inventory}, pending={pending}/{durable_pending}, no_added={no_added_capability}/{durable_no_added}, hooks_empty={hooks_empty}, removed={}", swaps.borrow(), !temp_path.exists());
+        #[cfg(unix)]
+        eprintln!("REGISTRATION_ADDED_MEMBER_PERMISSIONS: before={permissions_before:o}, after={permissions_after:o}");
+        assert!(hooks_empty && !temp_path.exists());
+        assert_eq!(swaps.borrow().len(), 2);
+        assert!(
+            swaps.borrow().iter().all(Result::is_ok),
+            "native moves: {:?}",
+            swaps.borrow()
+        );
+        assert!(absent_from_inventory && pending && durable_pending);
+        assert_eq!(native_identity.unwrap(), added_identity);
+        assert_eq!(original_engine.unwrap(), b"managed engine");
+        assert_eq!(original_network.unwrap(), b"managed network");
+        assert_eq!(added_bytes.unwrap(), b"user added executable");
+        assert_eq!(independent_bytes.unwrap(), b"independent executable");
+        assert!(matches!(result, Err(Error::Conflict(_))), "REGISTRATION_ADDED_MEMBER_PENDING_REFUSAL: refuse the captured added descendant of the moved pending tree: {result:?}, stored={stored_identity:?}");
+        assert!(no_added_capability && durable_no_added);
+        #[cfg(unix)]
+        assert_eq!(
+            permissions_before, permissions_after,
+            "added member permissions must be preserved"
+        );
+    }
+
+    #[test]
+    fn catalog_install_r13_registration_refuses_pending_moved_tree() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        f.pending_install("managed");
+        let original_record = f
+            .authority
+            .catalog_installs
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let managed = f.root.join("managed");
+        let alias = f.root.join("alias-dir");
+        let independent_original = f.root.join("independent-original");
+        fs::create_dir(&alias).unwrap();
+        fs::write(alias.join("engine"), b"independent engine").unwrap();
+        let managed_identity = identity(&managed.join("engine")).unwrap();
+        let swaps = Rc::new(RefCell::new(Vec::new()));
+        let hook_swaps = swaps.clone();
+        let hook_alias = alias.clone();
+        let cleanup = RegistrationHookCleanup;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    let first = fs::rename(&hook_alias, independent_original);
+                    let moved = first.is_ok();
+                    hook_swaps.borrow_mut().push(first);
+                    if moved {
+                        hook_swaps
+                            .borrow_mut()
+                            .push(fs::rename(managed, hook_alias));
+                    }
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "alias-dir/engine");
+        drop(cleanup);
+        let stored_identity = result.as_ref().ok().map(|handle| {
+            f.authority.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let native_identity = identity(&alias.join("engine"));
+        let no_managed_capability = f
+            .authority
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != managed_identity);
+        let pending =
+            pending_registration_evidence(&f.authority.catalog_installs, &original_record);
+        let engine_bytes = fs::read(alias.join("engine"));
+        let network_bytes = fs::read(alias.join("data/network"));
+        let independent_bytes = fs::read(f.root.join("independent-original/engine"));
+        let old_destination_absent = !f.root.join("managed").exists();
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_pending =
+            pending_registration_evidence(&reopened.catalog_installs, &original_record);
+        let durable_no_managed = reopened
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != managed_identity);
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none())
+            && INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_MOVED_TREE_NATIVE: swaps={:?}, result={result:?}, expected={managed_identity:?}, native={native_identity:?}, stored={stored_identity:?}, pending={pending}/{durable_pending}, no_managed={no_managed_capability}/{durable_no_managed}, engine={engine_bytes:?}, network={network_bytes:?}, independent={independent_bytes:?}, old_destination_absent={old_destination_absent}, hooks_empty={hooks_empty}, removed={}", swaps.borrow(), !temp_path.exists());
+        assert!(hooks_empty && !temp_path.exists());
+        assert_eq!(swaps.borrow().len(), 2);
+        assert!(
+            swaps.borrow().iter().all(Result::is_ok),
+            "native directory substitutions: {:?}",
+            swaps.borrow()
+        );
+        assert!(pending && durable_pending);
+        assert!(old_destination_absent);
+        assert_eq!(native_identity.unwrap(), managed_identity);
+        assert_eq!(engine_bytes.unwrap(), b"managed engine");
+        assert_eq!(network_bytes.unwrap(), b"managed network");
+        assert_eq!(independent_bytes.unwrap(), b"independent engine");
+        assert!(matches!(result, Err(Error::Conflict(_))), "REGISTRATION_MOVED_TREE_PENDING_REFUSAL: refuse the captured member of the moved pending tree: {result:?}, stored={stored_identity:?}");
+        assert!(no_managed_capability && durable_no_managed);
+    }
+
+    #[test]
+    fn catalog_install_r13_registration_boundary_refuses_pending_alias() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        let original_record = f.pending_wrong_kind();
+        #[cfg(unix)]
+        let permissions_before = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(f.root.join("managed"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::metadata(f.root.join("managed"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        fs::hard_link(f.root.join("managed"), f.root.join("direct-bad")).unwrap();
+        fs::write(f.root.join("independent"), b"independent file").unwrap();
+        let independent = f
+            .authority
+            .register_installed_engine(&f.handle, "independent");
+        let direct_bad = f
+            .authority
+            .register_installed_engine(&f.handle, "direct-bad");
+        let staged = f.root.join("staged-alias");
+        let locator = f.root.join("alias-engine");
+        fs::hard_link(f.root.join("managed"), &staged).unwrap();
+        fs::write(&locator, b"good original file").unwrap();
+        fs::hard_link(&locator, f.root.join("good-original")).unwrap();
+        let bad_identity = identity(&staged).unwrap();
+        let swap = Rc::new(RefCell::new(Vec::new()));
+        let hook_swap = swap.clone();
+        let cleanup = RegistrationHookCleanup;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    hook_swap.borrow_mut().push(fs::rename(staged, locator));
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "alias-engine");
+        drop(cleanup);
+        let no_bad_capability = f
+            .authority
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        let pending =
+            pending_registration_evidence(&f.authority.catalog_installs, &original_record);
+        let original_engine = fs::read(f.root.join("original/engine")).unwrap();
+        let original_network = fs::read(f.root.join("original/data/network")).unwrap();
+        let good_bytes = fs::read(f.root.join("good-original")).unwrap();
+        let managed_bytes = fs::read(f.root.join("managed")).unwrap();
+        let alias_bytes = fs::read(f.root.join("alias-engine")).unwrap();
+        #[cfg(unix)]
+        let permissions_after = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::metadata(f.root.join("managed"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_no_bad = reopened
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        let durable_pending =
+            pending_registration_evidence(&reopened.catalog_installs, &original_record);
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none())
+            && INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_BOUNDARY_NATIVE: swap={:?}, result={result:?}, independent={independent:?}, direct_bad={direct_bad:?}, no_bad={no_bad_capability}/{durable_no_bad}, pending={pending}/{durable_pending}, hooks_empty={hooks_empty}, removed={}", swap.borrow(), !temp_path.exists());
+        assert!(hooks_empty && !temp_path.exists());
+        assert!(independent.is_ok(), "independent control: {independent:?}");
+        assert!(
+            matches!(direct_bad, Err(Error::Conflict(_))),
+            "direct bad alias: {direct_bad:?}"
+        );
+        assert_eq!(swap.borrow().len(), 1);
+        assert!(
+            swap.borrow()[0].is_ok(),
+            "native pre-resolution replacement: {:?}",
+            swap.borrow()
+        );
+        assert!(pending && durable_pending);
+        assert_eq!(original_engine, b"managed engine");
+        assert_eq!(original_network, b"managed network");
+        assert_eq!(good_bytes, b"good original file");
+        assert_eq!(managed_bytes, b"unconfirmed file");
+        assert_eq!(alias_bytes, b"unconfirmed file");
+        assert!(matches!(result, Err(Error::Conflict(_))),
+            "REGISTRATION_BOUNDARY_PENDING_ALIAS: refuse the pending alias captured after the precheck: {result:?}");
+        assert!(
+            no_bad_capability && durable_no_bad,
+            "no bad capability may be persisted"
+        );
+        #[cfg(unix)]
+        {
+            eprintln!("REGISTRATION_PENDING_ALIAS_PERMISSIONS: before={permissions_before:o}, after={permissions_after:o}");
+            assert_eq!(
+                permissions_before, permissions_after,
+                "REGISTRATION_PENDING_ALIAS_PERMISSIONS: refusal must precede executable marking"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_install_r13_registration_keeps_independent_bound_file_with_pending_record() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut f = Fixture::new();
+        let original_record = f.pending_wrong_kind();
+        let staged = f.root.join("staged-alias");
+        let locator = f.root.join("independent");
+        fs::hard_link(f.root.join("managed"), &staged).unwrap();
+        fs::write(&locator, b"good original file").unwrap();
+        fs::hard_link(&locator, f.root.join("good-original")).unwrap();
+        let good_identity = identity(&locator).unwrap();
+        let bad_identity = identity(&staged).unwrap();
+        let swap = Rc::new(RefCell::new(Vec::new()));
+        let hook_swap = swap.clone();
+        let cleanup = RegistrationHookCleanup;
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    hook_swap.borrow_mut().push(fs::rename(staged, locator));
+                })))
+                .is_none());
+        });
+        let result = f
+            .authority
+            .register_installed_engine(&f.handle, "independent");
+        drop(cleanup);
+        let stored_identity = result.as_ref().ok().map(|handle| {
+            f.authority.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let later_use = result.as_ref().ok().map(|handle| {
+            f.authority
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let no_bad_capability = f
+            .authority
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        let pending =
+            pending_registration_evidence(&f.authority.catalog_installs, &original_record);
+        let original_engine = fs::read(f.root.join("original/engine")).unwrap();
+        let original_network = fs::read(f.root.join("original/data/network")).unwrap();
+        let good_bytes = fs::read(f.root.join("good-original")).unwrap();
+        let managed_bytes = fs::read(f.root.join("managed")).unwrap();
+        let locator_bytes = fs::read(f.root.join("independent")).unwrap();
+        let Fixture {
+            temp, authority, ..
+        } = f;
+        drop(authority);
+        let mut reopened = PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
+        let durable_identity = result.as_ref().ok().map(|handle| {
+            reopened.persistent[&handle.path_ref().id]
+                .stored
+                .identity
+                .clone()
+        });
+        let durable_use = result.as_ref().ok().map(|handle| {
+            reopened
+                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+                .map(|_| ())
+        });
+        let durable_no_bad = reopened
+            .persistent
+            .values()
+            .all(|entry| entry.stored.identity != bad_identity);
+        let durable_pending =
+            pending_registration_evidence(&reopened.catalog_installs, &original_record);
+        drop(reopened);
+        let temp_path = temp.path().to_path_buf();
+        temp.close().unwrap();
+        let hooks_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none())
+            && INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| slot.borrow().is_none());
+        eprintln!("REGISTRATION_PR1_NATIVE: swap={:?}, result={result:?}, held={good_identity:?}, stored={stored_identity:?}/{durable_identity:?}, later_use={later_use:?}/{durable_use:?}, no_bad={no_bad_capability}/{durable_no_bad}, pending={pending}/{durable_pending}, hooks_empty={hooks_empty}, removed={}", swap.borrow(), !temp_path.exists());
+        assert!(hooks_empty && !temp_path.exists());
+        assert_eq!(swap.borrow().len(), 1);
+        assert!(pending && durable_pending);
+        assert_eq!(original_engine, b"managed engine");
+        assert_eq!(original_network, b"managed network");
+        assert_eq!(good_bytes, b"good original file");
+        assert_eq!(managed_bytes, b"unconfirmed file");
+        assert!(result.is_ok(), "REGISTRATION_PR1_HELD_INDEPENDENT_SUCCESS: persist the held independent file despite the pending replacement: {result:?}");
+        assert_eq!(stored_identity, Some(good_identity.clone()));
+        assert_eq!(durable_identity, Some(good_identity));
+        assert!(no_bad_capability && durable_no_bad);
+        if swap.borrow()[0].is_ok() {
+            assert_eq!(locator_bytes, b"unconfirmed file");
+            assert!(
+                matches!(later_use, Some(Err(Error::Conflict(_)))),
+                "replacement use: {later_use:?}"
+            );
+            assert!(
+                matches!(durable_use, Some(Err(Error::Conflict(_)))),
+                "reloaded replacement use: {durable_use:?}"
+            );
+        } else {
+            // Windows' retained no-delete file can reject replacement. Record that actual
+            // native refusal, rather than claiming that the opposite-order swap succeeded.
+            let code = swap.borrow()[0].as_ref().unwrap_err().raw_os_error();
+            assert!(
+                cfg!(windows) && matches!(code, Some(5 | 32)),
+                "native replacement failure: {:?}",
+                swap.borrow()
+            );
+            assert_eq!(locator_bytes, b"good original file");
+            assert!(matches!(later_use, Some(Ok(()))));
+            assert!(matches!(durable_use, Some(Ok(()))));
+        }
     }
 
     #[cfg(unix)]
