@@ -6895,3 +6895,327 @@ The following raw artifact strings preserve exact evidence and version qualifier
 ```json
 {"artifact": "r12-publication-win1-windows-clippy.log", "sha256": "a71a41d845c535aabbc7ffa53811fdebf256f5eee7990d48b96049f65bc8763d", "raw": "\n> chessfable@0.15.0 rust:windows:check /home/felixb/Projekte/chessfable.worktrees/drain\n> node scripts/rust-windows-check.mjs\n\nWindows GNU C compiler: /home/felixb/.local/opt/mingw/usr/bin/x86_64-w64-mingw32-gcc\n    Checking chessfable v0.15.0 (/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.92s\n"}
 ```
+
+## Interactive recovery of the interrupted cluster, 2026-10-16
+
+Felix authorized finishing the current cluster after the drain exhausted retries on repeated provider cybersecurity-risk errors. The recovered worktree is drain/drain-20261013 at95a1c43e, upstream origin/master1a4305ed. Both worktrees were clean. Recovery uses the existing build and push workflows, with bounded Codex workers and fresh read-only review. Original plan, phase and review numbering remain historical and cumulative. Plan authorship and arbitration share one root context. Detection uses the same model family as the code in separate Codex sessions. The missing temporary breadcrumb is not recorded as the termination cause.
+
+The shutdown ledger batch was made durable by95a1c43e. Its Windows CI report is now f-20261016-01, duplicating the native failures already owned by this correction. This is not evidence that the CI failure has been repaired. Exact-pushed-SHA native acceptance remains required.
+
+### Preserved diagnostic before the registration repair
+
+The following raw artifacts establish a counterexample on source605ad44c, not a repaired-source red/green pair.
+
+#### registration-boundary-probe-final-report.txt
+
+```text
+The Linux native diagnostic reproduced the registration boundary counterexample. The actual register_installed_engine call returned Ok(EngineHandle) after exactly one completed std::fs::rename replaced alias-engine with the hard link of the pending wrong-kind managed target.
+
+The separate control fixture registered an independent file successfully and refused an already-present bad alias with Conflict("catalog publication could not be confirmed"). In the primary fixture, the original good file had identity (64513, 92041226). The replacement, persisted engine entry and subsequently resolved native descriptor all had identity (64513, 92041221). The descriptor read "unconfirmed file". The durable registry log includes that engineExecutable entry while its one original catalog record remains publication=pending, cleaning=false, preserved=false, users=[]. Original engine/network bytes remained "managed engine" and "managed network". The preserved good hard link read "good original file". Both managed and alias-engine read "unconfirmed file".
+
+Source ordering observed before the probe: register_installed_engine validates components and calls confirm_catalog_engine_registration before resolve. That confirmation checks the current first-component destination and matching native catalog aliases. resolve validates the root, invokes the existing RESOLVE_PRE_ROOT_OPEN_HOOK, then resolve_unix observes and opens the terminal leaf and checks its descriptor identity. resolve then calls protect_catalog_contexts with the captured terminal identity and cwd node. That lifecycle protects evidence and refuses known cleaning membership, but does not perform pending publication confirmation for the new native terminal alias. register_engine_file_from_resolved then routes the captured identity through get_or_create_persistent_file_from_identity, prepare_persistent_file and publish_prepared_entry without another pending publication confirmation. The native production path log, rather than this trace alone, establishes the measured result.
+
+The exact targeted cargo command is preserved in registration-boundary-probe-test-status.json. It compiled successfully and executed one test, then exited 101 at REGISTRATION_BOUNDARY_PENDING_ALIAS. Result: 0 passed, 1 failed, 2434 filtered out. All earlier control, substitution-count, cleanup, pending-evidence and byte assertions passed before this final intended assertion. The hook had been removed, all temporary descriptors/authorities had been dropped, and both TempDirs had been explicitly closed before the assertion propagated. The log records hook_empty=true, control_removed=true and primary_removed=true. No child or engine probe was spawned.
+
+The only source addition was the disposable cfg(unix) test, retained in registration-boundary-probe-test.patch. The reverse patch was derived from Git. The first apply_patch restoration attempt rejected the numbered Git hunk heading without changing source. Both that rejected patch and its failure explanation remain preserved. Converting only the heading to apply_patch syntax allowed exact test deletion. Baseline, restored and report-time source hashes match for catalog_install.rs, path_authority/mod.rs, infra/fs.rs and fs.rs. Tracked and untracked Git status are empty. Previously completed post-restoration cargo fmt --check and git diff --check both exited 0. No test or gate was rerun during report finalization.
+
+This is a diagnostic counterexample, not a fix-revert pair. No production repair or permanent regression was implemented. It demonstrates one completed Linux native hard-link replacement at the existing hook, without continuous mutation, child execution or any Windows/macOS runtime claim. The supervisor terminal reason is preserved as "leaf killed on the resume path", distinct from the completed native test result and restoration. Root owns subsequent mechanism judgment and records.
+```
+
+#### registration-boundary-probe-test.patch
+
+```text
+diff --git a/src-tauri/src/infra/path_authority/catalog_install.rs b/src-tauri/src/infra/path_authority/catalog_install.rs
+index 5109fde6..08e8af02 100644
+--- a/src-tauri/src/infra/path_authority/catalog_install.rs
++++ b/src-tauri/src/infra/path_authority/catalog_install.rs
+@@ -1366,6 +1366,121 @@ mod tests {
+         assert_eq!(target_bytes.unwrap(), b"unconfirmed file");
+     }
+ 
++    #[cfg(unix)]
++    #[test]
++    fn catalog_install_r13_registration_boundary_pending_alias_probe() {
++        use std::{cell::Cell, io::Read, rc::Rc};
++
++        struct HookCleanup;
++        impl Drop for HookCleanup {
++            fn drop(&mut self) {
++                RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());
++            }
++        }
++
++        let mut control = Fixture::new();
++        control.pending_install("managed");
++        fs::rename(control.root.join("managed"), control.root.join("original")).unwrap();
++        fs::write(control.root.join("managed"), b"unconfirmed file").unwrap();
++        fs::hard_link(control.root.join("managed"), control.root.join("bad-alias")).unwrap();
++        fs::write(control.root.join("independent"), b"good independent file").unwrap();
++        let good_control = control
++            .authority
++            .register_installed_engine(&control.handle, "independent");
++        let bad_control = control
++            .authority
++            .register_installed_engine(&control.handle, "bad-alias");
++        let Fixture {
++            temp, authority, ..
++        } = control;
++        let control_path = temp.path().to_path_buf();
++        drop(authority);
++        temp.close().unwrap();
++
++        let mut f = Fixture::new();
++        f.pending_install("managed");
++        fs::rename(f.root.join("managed"), f.root.join("original")).unwrap();
++        fs::write(f.root.join("managed"), b"unconfirmed file").unwrap();
++        let staged = f.root.join("staged-alias");
++        let target = f.root.join("alias-engine");
++        fs::hard_link(f.root.join("managed"), &staged).unwrap();
++        fs::write(&target, b"good original file").unwrap();
++        fs::hard_link(&target, f.root.join("good-original")).unwrap();
++        let bad_identity = opened_file_identity(&fs::File::open(&staged).unwrap()).unwrap();
++        let good_identity = opened_file_identity(&fs::File::open(&target).unwrap()).unwrap();
++        let swaps = Rc::new(Cell::new(0));
++        let hook_swaps = swaps.clone();
++        let hook_cleanup = HookCleanup;
++        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
++            assert!(slot
++                .replace(Some(Box::new(move || {
++                    fs::rename(staged, target).unwrap();
++                    hook_swaps.set(hook_swaps.get() + 1);
++                })))
++                .is_none());
++        });
++        let result = f
++            .authority
++            .register_installed_engine(&f.handle, "alias-engine");
++        drop(hook_cleanup);
++        let registered_identity = result.as_ref().ok().map(|handle| {
++            f.authority.persistent[&handle.path_ref().id]
++                .stored
++                .identity
++                .clone()
++        });
++        let resolved_observation = result.as_ref().ok().map(|handle| {
++            f.authority
++                .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
++                .map(|resolved| {
++                    let file = resolved.file().unwrap();
++                    let identity = opened_file_identity(file).unwrap();
++                    let mut bytes = Vec::new();
++                    (&mut &*file).read_to_end(&mut bytes).unwrap();
++                    (identity, bytes)
++                })
++        });
++        let records = serde_json::to_value(&f.authority.catalog_installs).unwrap();
++        let durable_registry = fs::read_to_string(f.temp.path().join("registry.json")).unwrap();
++        let pending = f.authority.catalog_installs.len() == 1
++            && f.authority
++                .catalog_installs
++                .values()
++                .all(|record| record.publication == Some(Publication::Pending));
++        let original_engine = fs::read(f.root.join("original/engine")).unwrap();
++        let original_network = fs::read(f.root.join("original/data/network")).unwrap();
++        let good_bytes = fs::read(f.root.join("good-original")).unwrap();
++        let managed_bytes = fs::read(f.root.join("managed")).unwrap();
++        let alias_bytes = fs::read(f.root.join("alias-engine")).unwrap();
++        let Fixture {
++            temp, authority, ..
++        } = f;
++        let primary_path = temp.path().to_path_buf();
++        drop(authority);
++        temp.close().unwrap();
++        let hook_empty = RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow().is_none());
++        eprintln!(
++            "REGISTRATION_BOUNDARY_NATIVE_OBSERVATION: controls good={good_control:?} bad={bad_control:?}, result={result:?}, swaps={}, good_identity={good_identity:?}, bad_identity={bad_identity:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}, pending={pending}, records={records}, original_engine={original_engine:?}, original_network={original_network:?}, good_bytes={good_bytes:?}, managed_bytes={managed_bytes:?}, alias_bytes={alias_bytes:?}, hook_empty={hook_empty}, control_removed={}, primary_removed={}, durable_registry={durable_registry}",
++            swaps.get(),
++            !control_path.exists(),
++            !primary_path.exists(),
++        );
++        assert!(good_control.is_ok(), "independent control: {good_control:?}");
++        assert!(matches!(bad_control, Err(Error::Conflict(_))), "bad alias control: {bad_control:?}");
++        assert_eq!(swaps.get(), 1);
++        assert!(hook_empty && !control_path.exists() && !primary_path.exists());
++        assert!(pending);
++        assert_eq!(original_engine, b"managed engine");
++        assert_eq!(original_network, b"managed network");
++        assert_eq!(good_bytes, b"good original file");
++        assert_eq!(managed_bytes, b"unconfirmed file");
++        assert_eq!(alias_bytes, b"unconfirmed file");
++        assert!(
++            matches!(result, Err(Error::Conflict(_))),
++            "REGISTRATION_BOUNDARY_PENDING_ALIAS: automatic registration must refuse the pending native alias observed after its preguard, actual={result:?}, registered_identity={registered_identity:?}, resolved={resolved_observation:?}"
++        );
++    }
++
+     #[cfg(unix)]
+     #[test]
+     fn catalog_install_r12_unavailable_native_observation_is_not_absent() {
+```
+
+#### registration-boundary-probe-test-status.json
+
+```text
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--locked",
+    "catalog_install_r13_registration_boundary_pending_alias_probe",
+    "--",
+    "--nocapture"
+  ],
+  "exit": 101,
+  "seconds": 29.96694372800266,
+  "test_patch_sha256": "9d0fc9dd6fa1674d1bf0dce22098941c0b434aef0e2f7abbf9dce70dc4fea5f2"
+}
+```
+
+#### registration-boundary-probe-final-audit.json
+
+```text
+{
+  "current_head": "ed5c10a77efc8f6a0fee066b1b1da4a820b86543",
+  "baseline_restored_and_current_hashes_equal": true,
+  "current_hashes": {
+    "src-tauri/src/infra/path_authority/catalog_install.rs": "cce0e1b05483bef3b4d7aa0cfe6fe5d685a84a8cbe46a966fb315d3daa8f45a3",
+    "src-tauri/src/infra/path_authority/mod.rs": "3ec9d59a239b1b09633a60cead38dd3e59ebfa47b541945fec60d8601a5f4a42",
+    "src-tauri/src/infra/fs.rs": "2e2142c649972c50cd0fb34d77c073ece6bfba734e3e29b0f319e037b630018e",
+    "src-tauri/src/fs.rs": "33b0d6ae57a2b80130e78e6d1dd363c8aa6b39398023e36da83667afe7ce4e8f"
+  },
+  "tracked_and_untracked_status_empty": true,
+  "test_exit": 101,
+  "test_result": "0 passed, 1 failed, 2434 filtered out",
+  "native_replacement_count": 1,
+  "independent_control": "Ok(EngineHandle)",
+  "pending_alias_control": "Err(Conflict(\"catalog publication could not be confirmed\"))",
+  "primary_result": "Ok(EngineHandle), persisted identity (64513, 92041221)",
+  "good_original_identity": [
+    64513,
+    92041226
+  ],
+  "bad_resolved_registered_identity": [
+    64513,
+    92041221
+  ],
+  "resolved_bytes": "unconfirmed file",
+  "pending_record_retained": true,
+  "cleanup_recorded_before_final_assertion": {
+    "hook_empty": true,
+    "control_removed": true,
+    "primary_removed": true
+  },
+  "restoration_checks_previously_executed": {
+    "fmt": 0,
+    "diff": 0
+  },
+  "new_tests_or_gates_run_during_report_finalization": false,
+  "classification": "Diagnostic counterexample only, no production fix or fix-revert pair",
+  "platform": "Linux native hard-link and rename only, no Windows/macOS runtime claim",
+  "supervisor_terminal_reason": "leaf killed on the resume path",
+  "initial_restore_rejection": "Numbered Git hunk header was rejected by apply_patch. No source changed in that attempt. Original rejected artifact retained."
+}
+```
+
+### Focused registration mechanism judgment
+
+Independent focused review r1 adopted one issue, PR1. Fix: O2 requires the opposite-order pending-record control to distinguish retained descriptor evidence from a repeated pathname check. Authority is the existing WSC3 refusal contract plus d-20260906-08, no expanded mandate. Review r2 explicitly closes PR1 at plan level. No source closure or native acceptance is claimed by this judgment. Decision d-20261016-19 supplements d17/d18. Source is delegated at sensitive rung gpt-6.1-sol/high, with non-overlapping root record ownership. Focused adoptions r1=1 r2=0 remain separate from original plan and code-round metrics. Durations were not separately recorded.
+
+#### Recovery registration-mechanism-r1.md
+
+```text
+# Registration confirmation at the resolved binding
+
+## MANDATE
+
+Finish the adopted f-20261002-04 catalog lifecycle cluster and its approved WSC3 publication-confirmation correction. Pending, cleaning and preserved installations must not be automatically registered as usable catalog engines. Preserve descriptor-bound registration, legacy independent engines, conservative deletion and bounded durable use. The original mandate and threat model remain tasks/plans/2026-10-16-catalog-engine-retention.md and tasks/plans/2026-10-16-catalog-publication-confirmation.md. This adds no UI, authority or adversary model.
+
+## Evidence and recurrence
+
+Committed source605ad44c validates the catalog destination before resolve in register_installed_engine. The existing RESOLVE_PRE_ROOT_OPEN_HOOK then permits one completed replacement with a hard link to the pending wrong-kind managed target. Actual registration succeeds and the carrier reads unconfirmed bytes. The disposable test failed101 at REGISTRATION_BOUNDARY_PENDING_ALIAS after physical cleanup and was removed byte-exactly. Full diagnostic /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/registration-boundary-probe-final-report.txt, test-only patch/log/audit in the same directory. No Windows runtime proof. This reopens the WSC3 registration refusal mechanism after R12, so fresh-context judgment precedes source correction.
+
+## O1 — bind refusal to the object that registration actually adopts
+
+Keep the existing early catalog confirmation, which refuses known bad targets before resolve can record use. At the registration handoff, also apply the same native catalog confirmation logic to the retained terminal file identity and authorized root. The decision must cover the descriptor being registered, including a native alias of a pending wrong-kind target introduced after the early check. Do not substitute a reopened pathname identity for the resolved descriptor. Native identities add refusal scope only, never ownership or deletion authority. Existing confirmed/legacy installations and independent files remain registerable.
+
+Reuse confirm_catalog_destination and its native alias-scope matching instead of a second classifier. Supply the resolved terminal identity as evidence for alias membership when confirming registration after resolution. Scope remains the exact root and top-level destination, with current recorded native target identity queried under the authorized root. Preserve same-leaf refusal, all pending confirmation persistence rules, cleaning/preserved refusal and native NotFound-only absence. The helper's other consumers retain existing semantics. No new registry field, framework or public command.
+
+The existing d-20260906-08 behavior remains: when an independent valid executable is replaced after resolution, registration persists the original held file identity and later use refuses the replacement. Do not turn this fix into pathname reacquisition or blanket refusal of unrelated files. Preserve current child-use markers and conservative retained use on refusal.
+
+## O2 — proof and release
+
+Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
+
+## Files and ownership
+
+One sensitive write leaf owns src-tauri/src/infra/path_authority/mod.rs and catalog_install.rs, with resolved.rs only if source inspection proves necessary to expose existing retained evidence. Root owns records, integration, proofs, commits and release. No changes to renderer, IPC signatures, workflows, capabilities or shared tooling.
+```
+
+#### Recovery lens-registration-plan-r1.txt
+
+```text
+[blocker] registration-mechanism-r1.md:21 — O2 does not distinguish descriptor-bound confirmation from simply repeating the pathname guard after resolution. The latter would pass the promoted counterexample and existing swap regression, yet violate O1’s independent-file guarantee at line 17. `catalog_install.rs:676–687` classifies aliases using the current pathname identity. The existing swap test at `src-tauri/src/infra/path_authority/mod.rs:13529–13555` creates no pending catalog record, so it cannot detect this false refusal. Require a behavioral control that resolves an independent good executable, then replaces its locator with a hard link to the pending wrong-kind target before confirmation. Registration must persist the held good identity successfully, while later use refuses the replacement. The registration-boundary counterexample remains open at proof level. (confidence: 95)
+
+Limitation: source and supplied diagnostic review only. No tests executed or files changed. Native Windows/macOS behavior remains unverified. Review used the same model family in a separate session.
+
+VERDICT: REVISE
+```
+
+#### Recovery registration-r2.diff
+
+```text
+--- /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r1.md
++++ /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/registration-mechanism-r2.md
+@@ -18,7 +18,7 @@
+ 
+ ## O2 — proof and release
+ 
+-Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
++Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Additionally, with a real pending wrong-kind catalog record present, resolve an independent good executable and then replace its locator with a hard link to that unconfirmed target before the new confirmation step. Registration must persist the held good identity successfully and later use must refuse the replacement. This control must fail if the confirmation substitutes current pathname identity for the captured descriptor identity. Reuse the existing post-resolution hook at the handoff boundary rather than a generic race harness. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
+ 
+ ## Files and ownership
+```
+
+#### Recovery registration-mechanism-r2.md
+
+```text
+# Registration confirmation at the resolved binding
+
+## MANDATE
+
+Finish the adopted f-20261002-04 catalog lifecycle cluster and its approved WSC3 publication-confirmation correction. Pending, cleaning and preserved installations must not be automatically registered as usable catalog engines. Preserve descriptor-bound registration, legacy independent engines, conservative deletion and bounded durable use. The original mandate and threat model remain tasks/plans/2026-10-16-catalog-engine-retention.md and tasks/plans/2026-10-16-catalog-publication-confirmation.md. This adds no UI, authority or adversary model.
+
+## Evidence and recurrence
+
+Committed source605ad44c validates the catalog destination before resolve in register_installed_engine. The existing RESOLVE_PRE_ROOT_OPEN_HOOK then permits one completed replacement with a hard link to the pending wrong-kind managed target. Actual registration succeeds and the carrier reads unconfirmed bytes. The disposable test failed101 at REGISTRATION_BOUNDARY_PENDING_ALIAS after physical cleanup and was removed byte-exactly. Full diagnostic /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/registration-boundary-probe-final-report.txt, test-only patch/log/audit in the same directory. No Windows runtime proof. This reopens the WSC3 registration refusal mechanism after R12, so fresh-context judgment precedes source correction.
+
+## O1 — bind refusal to the object that registration actually adopts
+
+Keep the existing early catalog confirmation, which refuses known bad targets before resolve can record use. At the registration handoff, also apply the same native catalog confirmation logic to the retained terminal file identity and authorized root. The decision must cover the descriptor being registered, including a native alias of a pending wrong-kind target introduced after the early check. Do not substitute a reopened pathname identity for the resolved descriptor. Native identities add refusal scope only, never ownership or deletion authority. Existing confirmed/legacy installations and independent files remain registerable.
+
+Reuse confirm_catalog_destination and its native alias-scope matching instead of a second classifier. Supply the resolved terminal identity as evidence for alias membership when confirming registration after resolution. Scope remains the exact root and top-level destination, with current recorded native target identity queried under the authorized root. Preserve same-leaf refusal, all pending confirmation persistence rules, cleaning/preserved refusal and native NotFound-only absence. The helper's other consumers retain existing semantics. No new registry field, framework or public command.
+
+The existing d-20260906-08 behavior remains: when an independent valid executable is replaced after resolution, registration persists the original held file identity and later use refuses the replacement. Do not turn this fix into pathname reacquisition or blanket refusal of unrelated files. Preserve current child-use markers and conservative retained use on refusal.
+
+## O2 — proof and release
+
+Promote the existing disposable counterexample into a deterministic regression on the actual production registration path, with independent-file success and already-bad-alias refusal controls, registry/provenance and bytes checked, physical cleanup before final assertions. Keep the existing post-resolution identity-swap regression green. Additionally, with a real pending wrong-kind catalog record present, resolve an independent good executable and then replace its locator with a hard link to that unconfirmed target before the new confirmation step. Registration must persist the held good identity successfully and later use must refuse the replacement. This control must fail if the confirmation substitutes current pathname identity for the captured descriptor identity. Reuse the existing post-resolution hook at the handoff boundary rather than a generic race harness. Add supported-platform coverage where the actual native handle semantics permit the replacement, explicitly report platforms on which the replacement is refused by the OS. No fake OS or fabricated production outcome. New tests must fail on the original production guard, compile and run, then pass on exact restoration with unchanged tests. Run affected authority/catalog suites, formatting, Linux and Windows GNU clippy, contract/pre-review checks. Cumulative R13 review closes CR22–27 and this recurrence, current-source app verification and full mapped final gates follow. Windows/macOS runtime acceptance remains exact-pushed-SHA required CI.
+
+## Files and ownership
+
+One sensitive write leaf owns src-tauri/src/infra/path_authority/mod.rs and catalog_install.rs, with resolved.rs only if source inspection proves necessary to expose existing retained evidence. Root owns records, integration, proofs, commits and release. No changes to renderer, IPC signatures, workflows, capabilities or shared tooling.
+```
+
+#### Recovery lens-registration-plan-r2.txt
+
+```text
+PR1 CLOSED — at plan level. `registration-mechanism-r2.md:21` now requires the pending-record control, successful persistence of the held good identity, subsequent replacement refusal, and failure when confirmation substitutes pathname identity. The existing handoff hook at `src-tauri/src/infra/path_authority/mod.rs:6876` supports this distinction from the pathname classifier at `src-tauri/src/infra/path_authority/catalog_install.rs:676` (confidence: 97).
+
+No newly introduced dependent defects or other blockers found. The shared helper’s adoption and publication consumers remain explicitly covered by O1’s preservation requirement.
+
+Limitation (confidence: 100): source and supplied diagnostic review only. No tests executed or files changed. Windows/macOS runtime behavior remains unverified. Review used the same model family in a separate session, with plan authorship and arbitration sharing the root context.
+
+VERDICT: APPROVED
+```
