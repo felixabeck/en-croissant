@@ -2387,6 +2387,23 @@ VERDICT: REVISE
 
 ### Real application verification before final gates
 
+
+### Records-only closure round 7
+
+REVIEWED_THROUGH e3e7825738a53b51bb14a45cdf083d686eba63b0. Adopted one Fix witness, CR17, confidence99: R6 source-review checkpoint prose retained present-tense app-pending wording after the successful app section was added. Root labels that sentence as historical and explicitly points to the completed later proof. No source, test, runtime outcome or quoted reviewer report changed. Seventeen unique corrections total, with CR17 records closure pending. No Skip or Defer. Inherited plan counts remain r1=3 r2=0 r3=0 r4=0. Diff witness counts now r1=6 r2=1 r3=3 r4=2 r5=6 r6=0 r7=1.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code in separate Codex sessions, without family separation.
+
+#### Round 7 records
+
+````text
+[should-fix] tasks/handoffs/2026-10-16-catalog-engine-retention-review.md:2561 — Lists real-app verification as still pending, contradicting lines 2390–2396 and the saved app log’s 118 successful checks. Remove that pending obligation or explicitly label this sentence as historical R6 status. Preserve quoted reviewer reports unchanged. (confidence: 99)
+
+Limitations: Canonical gate completion was not independently verified here. Historical evidence was inspected selectively. No files changed or checks rerun. Review shares the author’s model family in a separate session.
+
+VERDICT: REVISE
+````
+
 Source snapshot 17d7574d, with only this run's handoff records dirty. pnpm build passed, native optimized compilation 49.71 seconds. pnpm verify:app --screenshot /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/native-app.png passed all 118 reported ok checks. Canonical gate-native-app.LEx6ZW completion status 0. Root independently polled it and inspected the final reloaded-workspace screenshot. The screenshot shows the actual WebKitGTK home surface with both seeded workspace tabs and readable cards. Earlier NAG capture used the same output path and was overwritten, so root claims inspection only of the final reload capture. No committed screenshot baseline changed.
 
 The real Rust/IPC product run verifies startup authority reconciliation, user-file preservation, orphan cleanup, progress leases, practice migration and counts, CSP/path refusal, sound server, attachment retirement, reservation cancellation, file opening/NAG save and metadata interactions, instance exclusion, document reload, real close and bounded shutdown cleanup. It confirms the application pid and recorded WebKit service pids are absent after close, destruction cancels the retained reservation, and retired-image cleanup runs. Native UCI live-child proof is supplied separately by the catalog/process tests. The driver does not register an engine through a native picker or prove a completed GameManager game. Native GTK menus, file pickers and decoration behavior are outside WebDriver coverage, with no changed GTK behavior requiring a manual check.
@@ -2558,7 +2575,7 @@ all checks passed
 
 REVIEWED_THROUGH 17d7574d044560378c15e0bd2ede190494819eb5. All eleven required lenses APPROVED, zero new findings and zero adopted witnesses. Elapsed wall 233.664 seconds. CR9 and CR12–16 CLOSED with explicit reviewer evidence. CR10/CR11 and all earlier affected closures remain intact. All sixteen unique corrections are Fix and now source-closed. No Skip or Defer. Complete cumulative witness counts r1=6 r2=1 r3=3 r4=2 r5=6 r6=0. The separate precommit integration check added CR11/CR12 and does not replace inherited plan lineage r1=3 r2=0 r3=0 r4=0.
 
-This closure supersedes earlier implementation/review-pending statements for the same correction IDs. Runtime Windows/macOS, real-app verification, final gates and delivery remain pending obligations of this run. Records reviewer explicitly limits exhaustive coverage of the complete historical corpus and could not access root gate completions. Root has independently polled their canonical status0 records and supplied the exact paths above. No runtime platform success is inferred from reviewer approval.
+This closure supersedes earlier implementation/review-pending statements for the same correction IDs. At R6's source-review checkpoint, Windows/macOS runtime, real-app verification, final gates and delivery were pending. The later real-application verification section above records the completed app proof. Windows/macOS runtime, final gates and delivery remain pending at this pre-gate records checkpoint. Records reviewer explicitly limits exhaustive coverage of the complete historical corpus and could not access root gate completions. Root has independently polled their canonical status0 records and supplied the exact paths above. No runtime platform success is inferred from reviewer approval.
 
 Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions, without family separation.
 
