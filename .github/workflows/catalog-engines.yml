@@ -1,0 +1,130 @@
+name: Catalog engines
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 4 * * 0"
+  push:
+    paths:
+      - "src/catalogs/**"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "src-tauri/tauri*.json"
+      - "src-tauri/capabilities/**"
+      - "src-tauri/keys/release.minisign.pub"
+      - "src-tauri/src/fs.rs"
+      - "src-tauri/src/infra/**"
+      - "src-tauri/src/engine/**"
+      - "src-tauri/src/chess.rs"
+      - "src-tauri/src/main.rs"
+      - "src-tauri/src/error.rs"
+      - "src-tauri/src/progress.rs"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/setup-rust.sh"
+      - "scripts/verify-catalog-engines.mjs"
+      - "scripts/child-supervisor.mjs"
+      - "scripts/gate-logs.mjs"
+      - ".github/workflows/catalog-engines.yml"
+  pull_request:
+    paths:
+      - "src/catalogs/**"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "src-tauri/tauri*.json"
+      - "src-tauri/capabilities/**"
+      - "src-tauri/keys/release.minisign.pub"
+      - "src-tauri/src/fs.rs"
+      - "src-tauri/src/infra/**"
+      - "src-tauri/src/engine/**"
+      - "src-tauri/src/chess.rs"
+      - "src-tauri/src/main.rs"
+      - "src-tauri/src/error.rs"
+      - "src-tauri/src/progress.rs"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/setup-rust.sh"
+      - "scripts/verify-catalog-engines.mjs"
+      - "scripts/child-supervisor.mjs"
+      - "scripts/gate-logs.mjs"
+      - ".github/workflows/catalog-engines.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Catalog engines (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Sync node version and setup cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install app dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Use a canonical macOS temporary directory
+        if: runner.os == 'macOS'
+        run: |
+          canonical_temp="$(cd "$RUNNER_TEMP" && pwd -P)"
+          echo "TMPDIR=$canonical_temp" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        run: bash scripts/setup-rust.sh
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build frontend
+        run: pnpm build-vite
+
+      # The phase-1 launcher limits each of its two Cargo commands to 1 MiB of output.
+      # See docs/catalog-engine-verification.md for native prerequisites and failure semantics.
+      - name: Verify real signed catalog engines
+        run: |
+          set -o pipefail
+          pnpm verify:catalog-engines 2>&1 | tee "$RUNNER_TEMP/catalog-engines.log"
+
+      - name: Upload catalog verification output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-engines-${{ matrix.os }}
+          path: ${{ runner.temp }}/catalog-engines.log
+          retention-days: 7
+          if-no-files-found: warn
