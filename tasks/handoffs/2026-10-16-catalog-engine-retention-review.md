@@ -8929,3 +8929,178 @@ Plan authorship and arbitration shared one context. Detection used the same Open
   "raw": "set -euo pipefail\ncd /home/felixb/Projekte/chessfable.worktrees/drain\ncargo test --manifest-path src-tauri/Cargo.toml --locked fs::tests -- --nocapture\ncargo test --manifest-path src-tauri/Cargo.toml --locked catalog_install_r1 -- --nocapture\ngit diff --check\npnpm checks:pre-review\n"
 }
 ```
+
+## Cumulative recovery closure R14
+
+REVIEWED_THROUGH=ba5f064b6827198017ac60e3cc3ee59f35105583. All seven canonical read-only reports completed and root read each. Six source lenses reviewed c8d0e78e..ba5f064b with full1a4305ed published context, the separate records lens checked known records and evidence qualifiers. CR28 and CR29 are CLOSED by originating witnesses and dependent correctness/tests/root-cause/platform reviewers. No new retained finding, no Skip/Defer. All source review obligations CR1–29 and separateGL1 are closed, native runtime remains pending. Native GNU checks are compilation only.
+
+Code adoptions retain complete lineage r1=6 r2=1 r3=3 r4=2 r5=6 r6=0 r7=1 r8=0 r9=0 r10=0 r11=4 r12=7 r13=2 r14=0. Twenty-nine uniqueCR plus GL1. Original/J/WSC/focused mechanism metrics remain separate. The old five registration reversals keep their8e38aad3 source/test qualifier, current refactor equivalence and real17test results preserve their assertions without inventing new fault executions. Git fetch confirmed origin/master1a4305ed and rebase reported the branch up to date, no SHA/source change or review carry was needed.
+
+Wall timing below includes reviewer waiting, active time and non-overlapping waits remain unknown. No exit ledger row yet. Root plan authorship and arbitration shared a context. Detection used the same OpenAI family in fresh Codex sessions. Current app, final gates, native CI and installation are separate pending acceptance at this review snapshot.
+
+### R14 artifact review-r14-elapsed.json
+
+```json
+{
+  "artifact": "review-r14-elapsed.json",
+  "sha256": "fc8a248f5255efca94e2acfaa4fe5160c49dda6173e5f3ada20ffb4f014f6e9c",
+  "raw": "{\n  \"head\": \"ba5f064b6827198017ac60e3cc3ee59f35105583\",\n  \"wall_seconds_through_arbitration\": 190.22155073400063,\n  \"adopted_witnesses\": 0,\n  \"unique_new_findings\": 0,\n  \"closed\": [\n    \"CR28\",\n    \"CR29\"\n  ],\n  \"native_acceptance\": \"pending\",\n  \"verdict\": \"APPROVED\"\n}\n"
+}
+```
+
+### R14 artifact lens-correctness-r14.txt
+
+```json
+{
+  "artifact": "lens-correctness-r14.txt",
+  "sha256": "18f9d1b1b1c0bfb570ad7519d8187fdbc4655d0d6189e11a982311f8fd4e2a1a",
+  "raw": "No correctness defects found in the closure diff.\n\nCR28 correctness dependencies CLOSED — the shared helper preserves rename order, result capture and first-rename failure behavior. All three callers retain their hooks, cleanup and assertions.\n\nCR29 correctness dependencies CLOSED — both consumers supply unchanged request values. Destructuring precedes the unchanged preparation body, preserving validation order and same-worker tree consumption.\n\nLimitation: native Windows/macOS behavior was not executed in this read-only review. Source-equivalence confidence: 98/100. Historical reversal evidence retains its original revision qualifiers.\n\nReview used the same model family as the author, without family separation. No files changed.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-root-cause-r14.txt
+
+```json
+{
+  "artifact": "lens-root-cause-r14.txt",
+  "sha256": "88295d1fcae6011b9163802d39b945b57099cbc16e5494b59a8dfd5b71d7e9f1",
+  "raw": "CR28 CLOSED — `catalog_install.rs:1428` shares the exact two-step substitution and result capture. First-rename failure behavior, hook timing, assertions and cleanup remain intact. Current Linux evidence shows completed substitutions and expected registration outcomes. (confidence: 98)\n\nCR29 CLOSED — `fs.rs:686` groups the same request values for both consumers and removes the suppression. Validation order, integrity checks, same-worker tree ownership and cancellation/deadline cleanup remain unchanged. (confidence: 98)\n\nNo symptom patch or reintroduced prior defect found. The refactors preserve the mechanisms exercised by the historical registration reversals without relabeling those reversals as current-source proof.\n\nLimitation — native Windows/macOS runtime acceptance remains pending. GNU checking and Linux execution do not establish it. (confidence: 100)\n\nReview ran in a fresh Codex context within the same OpenAI model family. No files changed or tests executed by this reviewer.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-tests-r14.txt
+
+```json
+{
+  "artifact": "lens-tests-r14.txt",
+  "sha256": "b25933f2d21164a60fd3f6b85216e10732fb5177c67bb9a8ef2c347675fe0b0d",
+  "raw": "CR28 CLOSED — shared substitution preserves the native mutations and explicit refusal, held-identity, reload, permission and cleanup assertions. Removing physical-membership refusal still fails the added-member `Conflict` assertion (confidence: 99).\n\nCR29 CLOSED — both callers preserve their inputs. Existing tests exercise actual preparation and publication, asserting installed bytes, checksum refusal, cancellation/deadline outcomes and completed cleanup (confidence: 98).\n\nNo new verification gap found. Tests are reachable through backend and native CI selectors. Historical reversals retain their original version qualifiers. Windows/macOS native acceptance remains pending, so this approves the refactor’s coverage preservation only.\n\nReview used the same model family as the author. No tests or gates were run.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-minimalism-r14.txt
+
+```json
+{
+  "artifact": "lens-minimalism-r14.txt",
+  "sha256": "d4f4d7f77a8790021a2cecccb69441b43e39df8a23dc7de47e0a6f4585ecf4f8",
+  "raw": "CR28 CLOSED — `catalog_install.rs:1428` centralizes the exact two-rename mutation and result capture for all three callers. First-rename failure behavior, hook selection, assertions and cleanup remain unchanged (confidence: 99).\n\nThe private `ArchiveDownloadRequest` at `fs.rs:688` serves both existing consumers without adding configuration or another execution layer. No new bloat or duplication defects found.\n\nLimitations: read-only source review, no tests rerun. Native Windows/macOS acceptance remains pending. Author and reviewer share the OpenAI model family.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-code-quality-r14.txt
+
+```json
+{
+  "artifact": "lens-code-quality-r14.txt",
+  "sha256": "cb05764c879ca0553beb40e88116df36e6d5501f3ddb086a8130f2be11337cc0",
+  "raw": "CR28 CLOSED — `catalog_install.rs:1428` shares the two-step substitution and result capture. All three callers retain explicit hook selection and scenario assertions (confidence: 98).\n\nCR29 CLOSED — `fs.rs:688` groups coherent download inputs in `ArchiveDownloadRequest`. Both consumers use it, and the unsupported suppression is removed (confidence: 99).\n\nNo retained readability or local-consistency findings in the closure diff.\n\nLimitation: untouched test tails were not exhaustively reread, so this is closure-diff approval, not whole-file approval (confidence: 100). Review used the same model family as the author.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-platform-semantics-r14.txt
+
+```json
+{
+  "artifact": "lens-platform-semantics-r14.txt",
+  "sha256": "f19cdb02d16018762168767a9593a72c82c7e2d4469b994818ed72f5b6834502",
+  "raw": "CR28 CLOSED within platform scope — `catalog_install.rs:1428` preserves the exact rename sequence, first-failure short circuit and result capture. All three callers retain their hooks, native refusal assertions, identity/permission checks and cleanup.\n\nCR29 CLOSED within platform scope — `fs.rs:688` groups unchanged request values. Both consumers preserve preparation, validation, cancellation and same-worker ownership behavior.\n\nNo new platform-semantics defects found.\n\nSaved `pnpm rust:windows:check` passed compilation/lint only. No current non-Linux Unix source-probe result was established. Exact-SHA native acceptance remains pending in `rust-windows-test` and `rust-macos-test`. The `rust-platform` matrix supplies compilation/lint evidence.\n\nHistorical registration reversals remain qualified to their earlier source. The refactor preserves their assertions without establishing new-source reversal execution.\n\nRead-only review of both changed files and connected consumers. No files changed or checks executed. Reviewer and author share the OpenAI model family.\n\nVERDICT: APPROVED"
+}
+```
+
+### R14 artifact lens-records-r14.txt
+
+```json
+{
+  "artifact": "lens-records-r14.txt",
+  "sha256": "dff7a65a1710ad98f99ac87d6c316b43d744ead8fea3ac34d4214a2b386d51c6",
+  "raw": "No findings. R13 arbitration, repair claims, source hashes and test counts match the inspected history and supplied artifacts. Raw history and prior-snapshot qualifiers remain intact.\n\nLimitations: no live CI queries or native Windows/macOS verification. Review used the same OpenAI family in a fresh context. No files changed or gates run.\n\nVERDICT: APPROVED"
+}
+```
+
+## Current-source real application verification before final gates
+
+Observed completion `0 native-app ba5f064b6827198017ac60e3cc3ee59f35105583`. `pnpm build` compiled the reviewed release source, followed by `pnpm verify:app --screenshot /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png` through the real off-screen Tauri/WebKitGTK application and backend. All checks passed. The run exercised real startup reconciliation, typed IPC, progress, native practice reads and reviews, migrations and renderer writes, file freshness, offline handles, engine-card save/refusal, sound, attachments, Files and game opening, Library selection, conversion cancellation/retry, workspace reload, single-instance refusal and titlebar shutdown. The recorded application and WebKit service PIDs were absent after close, shutdown completed within its budget, and the exact retained reservation was cancelled.
+
+Root read the full app results and inspected all five PNG captures listed below. The final image shows the restored workspace. Database captures contain the expected storage-quota refusal notifications from the deliberate EP2 scenario, and the discard capture observes its dialog transition. These images are current native-app evidence, not newly accepted layout changes or replaced pixel snapshots. No renderer/UI files changed in this corrective published range. No new native GTK picker/menu/chrome or live-engine registration coverage is claimed. Existing harness assertions retain their historical staging limits, this run does not claim all assertions were newly fault-staged. Native Windows/macOS acceptance remains required CI, not established here.
+
+The launch tree and HEAD stayed clean/unchanged throughout verification. Review R14 already closed every source Fix. Known R14 and app records now precede final gates. This is not final-gate, push, install or finding-closure success. Original shutdown inbox claim and spool are absent, with its CI finding durably committed since95a1c43e. Root plan authorship and arbitration shared a context, detection used the same OpenAI family in fresh Codex sessions. The app verification itself ran in-process under the Codex/Codex verify-ui route.
+
+Release binary SHA256 at this snapshot: c6f512894ef45973461dad1abbf5ab474cc50d4901d31e21a4c606f216e236fc.
+
+Screenshot artifact manifest, root inspected each image:
+
+```json
+[
+  {
+    "path": "/tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png",
+    "sha256": "62277b9d634156e82f4479b4f05e149487d6a8ed30dffa49c96738c8b54bdbb0"
+  },
+  {
+    "path": "/tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.database-card.png",
+    "sha256": "8d1bf49dd228fbbf9753b951656d0ed12acdac0e8cb60efd74f6d52f6c97fd22"
+  },
+  {
+    "path": "/tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.database-game.png",
+    "sha256": "33db02ae240403fa09f105a41f36126c7e8072a642f7bc1feff5c5dce690fed2"
+  },
+  {
+    "path": "/tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.file-game.png",
+    "sha256": "6599f56dfd64e4610968357450d00663986eac8c60c96947923510d4c4a8af3d"
+  },
+  {
+    "path": "/tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.info-panel-discard.png",
+    "sha256": "2aeb90ef239217ba3330e3b422b0d1e27ba39dc22abb0e0bc80e2656845d1350"
+  }
+]
+```
+
+### App verification artifact completion.record
+
+```json
+{
+  "artifact": "gate-native-app.iCfxz0/completion.record",
+  "sha256": "a51f7c2370283a96858870d060598e9da862ce591df1ee564600e5dbf84202f0",
+  "raw": "0 native-app ba5f064b6827198017ac60e3cc3ee59f35105583\n"
+}
+```
+
+### App verification artifact head
+
+```json
+{
+  "artifact": "gate-native-app.iCfxz0/head",
+  "sha256": "220debb0fb09c229dfafcd36deca847732cecc0b146fa509d6c799ca0e22e2ad",
+  "raw": "ba5f064b6827198017ac60e3cc3ee59f35105583\n"
+}
+```
+
+### App verification artifact tree-status
+
+```json
+{
+  "artifact": "gate-native-app.iCfxz0/tree-status",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "raw": ""
+}
+```
+
+### App verification artifact log
+
+```json
+{
+  "artifact": "gate-native-app.iCfxz0/log",
+  "sha256": "c290ef933e9d5cf23ffd2930b0f3c79ac2400b5ad3533742dfe4c0ce6df79ce3",
+  "raw": "Waiting for heavy-gate lock slot 1 held by: repo=chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b pid=1783582 start=2026-10-16T15:52:14+02:00 slot=1\nWaiting for heavy-gate lock slot 2 held by: repo=watchdog-code-f-20261013-04-20261016-151053-4bb3ec6d pid=1798685 start=2026-10-16T15:54:12+02:00 slot=2\n\n> chessfable@0.15.0 build /home/felixb/Projekte/chessfable.worktrees/drain\n> tauri build --no-bundle\n\n        Info Looking up installed tauri packages to check mismatched versions...\n     Running beforeBuildCommand `pnpm build-vite`\n\n> chessfable@0.15.0 build-vite /home/felixb/Projekte/chessfable.worktrees/drain\n> tsgo --noEmit && vite build\n\nvite v8.0.0 building client environment for production...\n\u001b[2K\rtransforming...✓ 8754 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/index.html                                 0.69 kB │ gzip:   0.30 kB\ndist/.vite/manifest.json                       18.13 kB │ gzip:   2.44 kB\ndist/assets/PersonalCard-DC1oMMoh.css           0.07 kB │ gzip:   0.08 kB\ndist/assets/FileInput-CMqMgxH4.css              0.25 kB │ gzip:   0.18 kB\ndist/assets/accounts-BiiVJIUH.css               0.32 kB │ gzip:   0.16 kB\ndist/assets/_databaseId-BKRmGVsN.css            0.82 kB │ gzip:   0.25 kB\ndist/assets/GameSelector-D3PX6CcP.css           1.19 kB │ gzip:   0.39 kB\ndist/assets/GenericCard-BPhEspwy.css            1.35 kB │ gzip:   0.45 kB\ndist/assets/settings-K9ozHxLL.css               1.97 kB │ gzip:   0.61 kB\ndist/assets/engines-DStUpGqo.css                2.04 kB │ gzip:   0.57 kB\ndist/assets/PlayerSearchInput-BSbtPwEB.css      2.14 kB │ gzip:   0.86 kB\ndist/assets/databaseLoadFailure-B5N2evTE.css    4.92 kB │ gzip:   1.09 kB\ndist/assets/index-BCB1_CsW.css                  6.57 kB │ gzip:   1.43 kB\ndist/assets/react-mosaic-CEM_HzXJ.css          14.85 kB │ gzip:   2.23 kB\ndist/assets/index-BTxMd1cA.css                365.48 kB │ gzip:  42.71 kB\ndist/assets/IconCheck-Do2y2jFp.js               0.13 kB │ gzip:   0.14 kB\ndist/assets/IconSearch-C4JBTsLf.js              0.20 kB │ gzip:   0.17 kB\ndist/assets/IconFolder-Bu9LqkoM.js              0.20 kB │ gzip:   0.17 kB\ndist/assets/useNativePicker-BRuw4T9P.js         0.26 kB │ gzip:   0.21 kB\ndist/assets/IconEdit-BtNRW227.js                0.31 kB │ gzip:   0.22 kB\ndist/assets/IconCloud-Dxv4ZG7Y.js               0.37 kB │ gzip:   0.28 kB\ndist/assets/IconTrophy-BsfK3YlU.js              0.38 kB │ gzip:   0.21 kB\ndist/assets/IconCopy-DeSTLuUc.js                0.39 kB │ gzip:   0.24 kB\ndist/assets/ThemeIcon-C0eC0upA.js               0.92 kB │ gzip:   0.52 kB\ndist/assets/GenericCard-DMc4XoE5.js             2.87 kB │ gzip:   1.45 kB\ndist/assets/api-CwPdGgDd.js                     3.22 kB │ gzip:   1.49 kB\ndist/assets/Textarea-BXNO4S-F.js                3.89 kB │ gzip:   1.78 kB\ndist/assets/IconFlag-Dj_gLDos.js                4.55 kB │ gzip:   1.81 kB\ndist/assets/GameSelector-BcMBIzLy.js            5.17 kB │ gzip:   2.56 kB\ndist/assets/SegmentedControl-D3e_jKXO.js        6.08 kB │ gzip:   2.53 kB\ndist/assets/LinesSlider-BPRv9WJE.js             6.30 kB │ gzip:   2.98 kB\ndist/assets/immutable-pFveYmic.js               7.38 kB │ gzip:   2.81 kB\ndist/assets/get-step-mark-value-Bp8WAtBX.js     7.58 kB │ gzip:   3.05 kB\ndist/assets/databaseLoadFailure-BAxt_9JT.js     8.35 kB │ gzip:   4.07 kB\ndist/assets/IconX-CC9d6-47.js                   8.80 kB │ gzip:   3.43 kB\ndist/assets/esm-DKLDWDFO.js                    17.75 kB │ gzip:   6.13 kB\ndist/assets/FileInput-De1vaiyE.js              21.34 kB │ gzip:   7.82 kB\ndist/assets/NumberInput-Byc1E5kW.js            21.41 kB │ gzip:   8.32 kB\ndist/assets/accounts.lazy-4JQEOTNq.js          27.60 kB │ gzip:  10.51 kB\ndist/assets/Piece-FPQj_fUP.js                  28.91 kB │ gzip:  10.14 kB\ndist/assets/engines.lazy-CkVgJleC.js           33.72 kB │ gzip:  12.24 kB\ndist/assets/files-Dq5U77u8.js                  34.31 kB │ gzip:  13.20 kB\ndist/assets/_databaseId.lazy-BOWU3myQ.js       40.14 kB │ gzip:  14.41 kB\ndist/assets/clsx-CkRZ1UbI.js                   43.62 kB │ gzip:  13.83 kB\ndist/assets/countries-CJn4zzn_.js              45.61 kB │ gzip:  11.38 kB\ndist/assets/library.lazy-YswLWsqb.js           47.40 kB │ gzip:  17.10 kB\ndist/assets/zh-CN-DjTTmKPM.js                  48.07 kB │ gzip:  15.29 kB\ndist/assets/zh-TW-DxUTLhKO.js                  48.14 kB │ gzip:  15.72 kB\ndist/assets/PersonalCard-Df68skAD.js           49.14 kB │ gzip:  17.00 kB\ndist/assets/en-GB-BFgjELX0.js                  49.59 kB │ gzip:  13.72 kB\ndist/assets/en-US-Dnngpiwk.js                  49.64 kB │ gzip:  13.75 kB\ndist/assets/nb-NO-C9ymBHBs.js                  51.14 kB │ gzip:  14.90 kB\ndist/assets/tr-TR-DVcQ3VEN.js                  52.62 kB │ gzip:  15.21 kB\ndist/assets/de-DE-h8eI7AfQ.js                  54.49 kB │ gzip:  15.45 kB\ndist/assets/pl-PL-D6FxwuOr.js                  54.90 kB │ gzip:  16.19 kB\ndist/assets/it-IT-DOSOQEr_.js                  55.27 kB │ gzip:  15.34 kB\ndist/assets/es-ES-Dg86GIe2.js                  55.57 kB │ gzip:  15.46 kB\ndist/assets/pt-PT-BsSJ5LEU.js                  55.75 kB │ gzip:  15.38 kB\ndist/assets/ko-KR-YEV53wG9.js                  55.84 kB │ gzip:  15.81 kB\ndist/assets/settings.lazy-6JQH1xLo.js          55.85 kB │ gzip:  19.27 kB\ndist/assets/fr-FR-BaMRA5IB.js                  58.08 kB │ gzip:  16.04 kB\ndist/assets/uk-UA-DFWX-2hL.js                  72.32 kB │ gzip:  17.96 kB\ndist/assets/ru-RU-5UdjMn1B.js                  73.08 kB │ gzip:  18.09 kB\ndist/assets/be-BY-8sym9kqX.js                  73.14 kB │ gzip:  18.10 kB\ndist/assets/PlayerSearchInput-C0Locowz.js     118.48 kB │ gzip:  41.37 kB\ndist/assets/react-mosaic-Cx4CIcge.js          209.35 kB │ gzip:  61.62 kB\ndist/assets/AreaChart-CLf4XOAD.js             349.60 kB │ gzip: 106.48 kB\ndist/assets/index-CmfAQ4wN.js                 593.70 kB │ gzip: 193.29 kB\ndist/assets/index.lazy-DHqIDTFs.js            616.89 kB │ gzip: 208.45 kB\ndist/assets/esm-Cna0DqA8.js                   788.48 kB │ gzip: 232.55 kB\ndist/assets/sound-Ds1q9bar.js                 880.25 kB │ gzip: 269.25 kB\n\n\u001b[33m[PLUGIN_TIMINGS] Warning:\u001b[0m Your build spent significant time in plugins. Here is a breakdown:\n  - @rolldown/plugin-babel (58%)\n  - vite:css (33%)\n  - vite:asset (7%)\nSee https://rolldown.rs/options/checks#plugintimings for more details.\n\n✓ built in 6.57s\n   Compiling chessfable v0.15.0 (/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri)\n    Finished `release` profile [optimized] target(s) in 1m 01s\n       Built application at: /home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/target/release/chessfable\n\n> chessfable@0.15.0 verify:app /home/felixb/Projekte/chessfable.worktrees/drain\n> node scripts/verify-app.mjs --screenshot /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png\n\n  .. opening seed WebDriver session\n  .. seed app and WebKit processes are gone; reusing WebDriver after session quit\n  .. conversion disposable inputs: /tmp/chessfable-verify-fCHSaa/path-owner-fixture/files-workspace/verify-conversion-cancellation.pgn, /tmp/chessfable-verify-fCHSaa/path-owner-fixture/files-workspace/verify-conversion-seed.pgn\n  .. game-opening disposable PGN input: /tmp/chessfable-verify-fCHSaa/path-owner-fixture/files-workspace/verify-game-opening.pgn\n  .. opening assertion WebDriver session with the preserved profile\n  ok  production startup reclaims unowned authority and preserves native-owned authority\n  ok  startup authority reconciliation deletes no user files\n  ok  trusted production startup preserves owned images and cleans only the orphan\n  ok  the real Tauri IPC bridge is present (not a test mock)\n  ok  the real renderer exposes the ChessFable document title\n  ok  progress native event listener registers\n  ok  progress start lease has exact canonical string generation\n  ..  progress start wire: {\"id\":\"verify-progress:e25d907a-92e2-4c02-872a-d9c833878603\",\"generation\":\"1\"}\n  ok  progress running event has exact canonical string generation\n  ok  progress state-update string lease reaches native with exact identity\n  ok  progress snapshot has exact canonical string generation\n  ok  progress terminal state update accepts the string lease\n  ok  progress terminal event has exact canonical string generation\n  ok  progress malformed lease rejects without changing the snapshot\n  ok  progress invalid clear rejects as a native IPC operation\n  ok  progress clear return has exact canonical string generation\n  ok  progress cleared event has exact canonical string generation\n  ok  progress clear removes the native snapshot\n  ok  progress native event listener is released\n  ok  the native practice read returns all 12,000 seeded positions\n  ok  native practice review paging returns every seeded entry and reaches the oldest review\n  ok  the legacy practice deck is migrated into the native store through real IPC\n  ok  migration retains the legacy deck capability in path-authority.json\n  ok  migration leaves the legacy practice localStorage key untouched\n  ok  fifty renderer ratings land in the native practice review store\n  ok  renderer ratings do not alter the large deck's 12,000 native positions\n  ok  the 50 new native reviews record the panel's Good rating\n  ok  renderer ratings create no new legacy key and do not grow the existing key\n  ok  list_practice_decks retains the legacy capability after its browser key is removed and fresh startup reconciliation\n  ok  the stale-file scenario rewrites the PGN in place\n  ok  the open file-backed tab reloads or withholds the changed PGN\n  ok  the file freshness transition includes a measured native read_game call\n  ok  the freshness transition applies within 1000 ms of the measured read\n  info  open file freshness: 2393.7 ms after rewrite (limit 2000 ms + read_game 12.0 ms + apply 580.0 ms; verified)\n  ok  the open file-backed tab refreshes within one poll interval plus measured read and apply\n  ok  the real sync path stores 500 further repertoire positions\n  ok  final restart preserves exact native position and review counts for both decks\n  ok  final practice inventory contains no additional native deck\n  ok  final migrated-deck counts still equal the legacy value's counts\n  ok  real IPC preserves the persisted offline download destination\n  ok  real IPC rejects a fresh download destination id\n  ok  real IPC rejects a database-root id\n  ok  the retained engine LocalImage rendered on the Engines page\n  ok  the retained engine LocalImage uses an image/png data URL\n  ok  the retained engine LocalImage data URL decodes in WebKitGTK\n  ok  EP1-card successful Name edit publishes the saved engine card\n  ok  EP1-storage successful Name edit persists the decoded engine name\n  ok  EP2-error refused engines storage write reports the save error\n  ok  EP2-card refused Name edit retains the saved engine card\n  ok  EP2-input refused Name draft settles to the saved name\n  ok  EP2-storage refused Name edit retains the decoded saved engine name\n  ok  the production CSP rejects a detached blob image URL with an img-src violation\n  ok  the renderer cannot resolve a base directory (core:path grants are gone)\n  ok  the renderer reaches a live loopback sound-server port\n  ok  the loopback sound server serves the bundled standard move sound\n  ok  real attachment IPC prepares the exact next durable owner set\n  ok  real attachment IPC retires the selected managed image\n  ok  retirement preserves image bytes for the live session and records cleanup intent\n  ok  the custom title bar rendered its window controls\n  ok  the native backend mints an opaque read reservation\n  ok  the native backend acknowledges reservation cancellation\n  ok  a cancelled reservation cannot be claimed by a later native read\n  ok  the seeded workspace file row renders on the Files page\n  ok  a real double-click on the unselected Files row navigates to /\n  ok  a real double-click on the unselected Files row shows its game\n  ok  GO1 game-opening fixtures contain two distinct native database and PGN games\n  ok  DS1 native database storage_size is the exact decimal string of its file length\n  ok  LU1 Library has one sidebar destination and one tree containing both native source kinds\n  ok  LU2 Library selection switches from file preview to database Explore and actions\n  .. game-opening source screenshot: /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.database-card.png\n  ok  GO2 the database card has a visible sibling Open database control before selection\n  ok  GO3 the labelled database control opens its handle route and synchronizes the database\n  ok  DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON\n  ok  GO4 database single-click selects a preview without admitting a tab\n  .. game-opening source screenshot: /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.database-game.png\n  ok  GO5 the labelled database game button opens the selected content and origin\n  ok  GO6 a fixed-coordinate double-click opens an initially unselected database game\n  ok  GO7 row-focused Enter opens the requested database game content and origin\n  .. game-opening source screenshot: /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.file-game.png\n  ok  GO8 the Files preview has a visible enabled Open game control\n  .. GO9 native geometry: {\"originalRect\":{\"x\":0,\"y\":0,\"width\":800,\"height\":647},\"resizedRect\":{\"x\":0,\"y\":0,\"width\":1300,\"height\":850}}\n  .. GO9 restored native geometry: {\"x\":0,\"y\":0,\"width\":800,\"height\":647}\n  ok  GO9 PGN single-click selects without opening and keeps row coordinates stationary\n  ok  GO10 the labelled Files game button opens the selected fresh game and explicit index\n  ok  GO11 a fixed-coordinate double-click opens an initially unselected non-first PGN game\n  ok  GO12 row-focused Enter opens the requested PGN game content and explicit index\n  ok  GO13 an empty PGN exposes no working Open game action\n  .. game-opening source screenshot: /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png.info-panel-discard.png\n  .. GO14 owner 4e304a3c-356a-4145-abfc-3f8a97340bf5, admitted IDs [\"87b9218e-c2a0-4c83-88e7-38eaa00af822\",\"7a4092b2-f105-4e12-b5b0-006f94220f7b\",\"d5f69fc7-415c-4c97-aef8-e3c5229e0888\",\"d93b1489-1cd9-40b7-bb63-7dc1496e3e57\",\"df2551d3-eed5-41c7-bb28-a1abc539db6e\",\"7f2aaf8e-5da5-416f-a7d7-cd914d85ecfb\",\"4e304a3c-356a-4145-abfc-3f8a97340bf5\"], Event verify:opening-1 -> verify:GO14-unsaved-owner-discard -> verify:opening-0, dirty false -> true -> false, file gameNumber 1 -> 0, confirmation gone\n  ok  GO14 confirmed discard replaces the owning current game without admitting a tab\n  ok  CC0 conversion fixture seeds exactly one native game\n  ok  CC1 prepared conversion cancellation returns typed Cancellation before claim\n  ok  CC2 native progress triggers running and same-target queued ticket cancellation\n  ok  CC3 cancelled native imports preserve existing content and DataRevision\n  ok  CC4 a fresh conversion ticket retries successfully after cancellation\n  ok  CC5 settled native conversion tickets are retired\n  ok  the $8 board hint is rendered with a glyph path\n  ok  the $8 board hint SVG title is □\n  ok  the $8 board hint has a visible box and positive opacity through its board ancestors\n  ..  NAG game at 1.e4 screenshot written to /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png\n  ok  the unknown $220 renders no board annotation hint\n  ok  SAVE_FILE writes Nc3?! to the seeded NAG file\n  ok  the saved NAG game preserves $8\n  ok  the saved NAG game preserves $11\n  ok  the saved NAG game preserves d4! $2\n  ok  the saved NAG game preserves $220\n  ok  the Files metadata edit submits without a dialog error\n  ok  the Repertoire filter lists the metadata-edited workspace file\n  ok  the metadata-edited workspace sidecar records repertoire on disk\n  ok  the Files metadata edit preserves the PGN filename\n  ok  a second process on the same app-data directory is refused before initialization\n  ok  the refused launch leaves authority and credential registry bytes unchanged\n  ok  the primary still answers WebDriver after the refused launch\n  ok  a second process sharing only the configuration directory is refused\n  ok  a process on a different app-data directory initializes while the primary runs\n  ok  a real document reload cancels the previous document's retained reservation\n  ok  a real document reload preserves both exact seeded workspace tab identities\n  ok  a real document reload selects the second seeded workspace tab\n  ..  Reloaded workspace screenshot written to /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.png\n  ok  a native read reservation is retained until titlebar close\n  ok  the application process is running before the close\n  ok  application pid 1954063 and recorded WebKit service pids [1954146, 1954242] do not exist after the close\n  ok  the real destroyed-window event cancels the exact retained main-webview reservation\n  ok  the shutdown sequence started\n  ok  the shutdown cleanup ran to completion inside its budget\n  ok  the sound server shutdown was signalled\n  ok  titlebar shutdown removes retired image bytes and intent while retaining the owner\n\nshutdown log:\n  [2026-10-16][14:03:14][chessfable::sound::server][INFO] Sound server prepared on port 34455\n  [2026-10-16][14:06:40][chessfable][INFO] Shutdown requested: terminating engines and live games\n  [2026-10-16][14:06:40][chessfable][INFO] Sound server shutdown signalled\n  [2026-10-16][14:06:40][chessfable][INFO] Shutdown cleanup finished\n  [2026-10-16][14:06:41][chessfable::sound::server][INFO] Sound server prepared on port 44825\n  [2026-10-16][14:06:42][chessfable][INFO] Shutdown requested: terminating engines and live games\n  [2026-10-16][14:06:42][chessfable][INFO] Sound server shutdown signalled\n  [2026-10-16][14:06:42][chessfable][INFO] Shutdown cleanup finished\n  [2026-10-16][14:06:42][chessfable::sound::server][INFO] Sound server prepared on port 35403\n  [2026-10-16][14:06:52][chessfable][INFO] Shutdown requested: terminating engines and live games\n  [2026-10-16][14:06:52][chessfable][INFO] Sound server shutdown signalled\n  [2026-10-16][14:06:52][chessfable][INFO] Shutdown cleanup finished\n  [2026-10-16][14:06:52][chessfable::sound::server][INFO] Sound server prepared on port 37627\n  [2026-10-16][14:08:21][chessfable][INFO] Shutdown requested: terminating engines and live games\n  [2026-10-16][14:08:21][chessfable][INFO] Sound server shutdown signalled\n  [2026-10-16][14:08:21][chessfable][INFO] Shutdown cleanup finished\n  ok  default-root-unusable: the Databases alert offers a visible folder chooser\n  ok  selected-root-missing: the Databases alert offers a visible folder chooser without recreating db\n\nall checks passed\n"
+}
+```
+
+### App verification artifact gate.sh
+
+```json
+{
+  "artifact": "gate-native-app.iCfxz0/gate.sh",
+  "sha256": "56657aa57c2d23100ec758ee07e3cd2a4f686533b657751da179c273c7855e06",
+  "raw": "set -euo pipefail\nexec agent-gate bash /tmp/build-cluster-recovery-f-20261002-04-20261016-133112-f0e4481a/native-app.sh\n"
+}
+```
