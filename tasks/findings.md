@@ -16661,6 +16661,8 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Open question:** How to preserve and display all six exported colors while retaining unfamiliar entries without suppressing supported neighbors?
 * **Authority:** Felix approved six-color support, per-entry parsing, original color-code preservation and real-repertoire round-trip verification, full auto executor Codex, in a separate worktree.
 * **Proof:** parseComment on the exact 10.Ne4 cal command yields zero shapes and leaves the command text, while the 11.Nxe5 command yields two shapes.
+* **Found by:** Felix reported missing arrows in his screenshots. Codex confirmed the parser cause by source tracing and the exact mixed-color command reproduction.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1320b4c8d78b93d97b7abfce8fb5e709353fe785967c992532b7c23f29d789fd","input_sha256":"3f81ea8017a4406e4758645fa5101db2cda0ddbfae44e57159997cff4437fe86","kind":"mutation-receipt","operation":"e66320de68f5b9d73c2020ff6e581888dfc6531e1d3ff266b130cda7e99c5706","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-02"],"target":"f-20261016-02","v":1} -->
 
 ---
 
