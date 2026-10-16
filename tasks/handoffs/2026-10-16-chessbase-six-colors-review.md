@@ -254,7 +254,7 @@ A first closure prompt preparation failed before any leaf launched because of a 
 
 Browser proof: pnpm test:e2e:container --project=board-keyboard passed 6/6 at cb078a6c. The new test uses the real comment parser and Chessground after a mocked native PGN read, asserting six SVG arrows, six SVG circles and literal expected stroke colors, with malformed neighbors preserved rather than shown. Root inspected board-six-color-pgn-drawings.png, all six color identities and both marking kinds are visible within the board. Screenshot copied to the run directory as verified-six-color-board.png. Existing committed screenshots did not move. The wrapper cleaned its preview server and container, port 4173 was free afterward. No native GTK surface changed and no native dialog check is required.
 
-Current status: implementation, review, remediation and scoped browser proof complete. Final clean-tree frontend gates and upstream CI/push/install remain. The source code is still f93aab8d, with endpoint test correction cb078a6c. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+At the handoff to final gates, implementation, review, remediation and scoped browser proof were complete. Final clean-tree frontend gates and upstream CI/push/install remained. The source code at that handoff was f93aab8d, with endpoint test correction cb078a6c. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 
 ## Raw cumulative review round 2 reports
 
