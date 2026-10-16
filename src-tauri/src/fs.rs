@@ -2694,25 +2694,11 @@ mod tests {
                 if initialized {
                     crate::shutdown_engine_launch_root(authority).await?;
                 }
-                let session = if initialized {
-                    "cleared"
-                } else {
-                    "skipped-uninitialized"
-                };
-                let launch_root = if cfg!(target_os = "macos") {
-                    if initialized {
-                        "reclaimed"
-                    } else {
-                        "skipped-uninitialized"
-                    }
-                } else {
-                    "not-applicable"
-                };
-                Ok::<_, Error>((session, launch_root))
+                Ok::<_, Error>(initialized)
             }
             .await;
-            let (session, launch_root) = match authority_cleanup {
-                Ok(status) => status,
+            let initialized = match authority_cleanup {
+                Ok(initialized) => initialized,
                 Err(error) => {
                     return Err(retain_failed_cleanup(
                         state,
@@ -2730,8 +2716,42 @@ mod tests {
                     format!("{error} path={} case={outcome:?}", scratch_path.display()),
                 )
             })?;
-            println!("CLEANUP_OK supervisor=reaped operations=drained catalog-session={session} launch-root={launch_root} scratch=removed");
+            println!("{}", cleanup_summary(initialized));
             outcome
+        }
+
+        fn cleanup_summary(initialized: bool) -> String {
+            let session = if initialized {
+                "cleared"
+            } else {
+                "skipped-uninitialized"
+            };
+            let launch_root = if cfg!(target_os = "macos") {
+                if initialized {
+                    "reclaimed"
+                } else {
+                    "skipped-uninitialized"
+                }
+            } else {
+                "not-applicable"
+            };
+            format!("CLEANUP_OK supervisor=reaped operations=drained catalog-session={session} launch-root={launch_root} scratch=removed")
+        }
+
+        #[test]
+        fn cleanup_summary_reports_authority_and_native_platform_status() {
+            #[cfg(target_os = "macos")]
+            let expected = [
+                "CLEANUP_OK supervisor=reaped operations=drained catalog-session=cleared launch-root=reclaimed scratch=removed",
+                "CLEANUP_OK supervisor=reaped operations=drained catalog-session=skipped-uninitialized launch-root=skipped-uninitialized scratch=removed",
+            ];
+            #[cfg(not(target_os = "macos"))]
+            let expected = [
+                "CLEANUP_OK supervisor=reaped operations=drained catalog-session=cleared launch-root=not-applicable scratch=removed",
+                "CLEANUP_OK supervisor=reaped operations=drained catalog-session=skipped-uninitialized launch-root=not-applicable scratch=removed",
+            ];
+            assert_eq!(cleanup_summary(true), expected[0]);
+            assert_eq!(cleanup_summary(false), expected[1]);
         }
 
         #[tokio::test]

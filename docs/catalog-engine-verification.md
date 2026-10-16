@@ -8,14 +8,19 @@ Use the existing Rust setup and per-checkout Cargo target/cache configuration.
 No application window, user profile, signing secret or release permission is needed.
 
 The command enables the non-default empty Cargo feature `catalog-network-tests`,
-discovers exactly this runnable test, and executes it with output visible:
+selects the feature module with the single `fs::tests::catalog_network::` filter,
+discovers exactly these three runnable tests, and executes them with output visible:
 
 ```text
+fs::tests::catalog_network::cleanup_failure_retains_case_owners_until_process_exit
+fs::tests::catalog_network::cleanup_summary_reports_authority_and_native_platform_status
 fs::tests::catalog_network::real_signed_catalog_engines_install_register_and_configure
 ```
 
-Discovery must find exactly that test. Execution must report one passed test and zero
-failed or ignored tests. Cargo failures, signals, missing discovery, missing success
+Exactly one test performs real network installation and UCI. The other two regress
+cleanup ownership and the actual cleanup-summary formatter. Discovery must find exactly
+the three explicit names above. Execution must report all three discovered tests passed
+and zero failed or ignored tests. Cargo failures, signals, missing discovery, missing success
 summary and excessive output make the command fail. The launcher returns 1 on failure
 and conventional signal status on interruption. Each Cargo child's observed status is
 printed as `CATALOG_STATUS`. Both captured and emitted output are limited to 1 MiB per
@@ -27,7 +32,7 @@ All network-only code lives inline inside `fs::tests` behind the feature. Defaul
 builds, discovery and backend coverage do not compile it. Never enable this feature
 in ordinary coverage or add it to default features. Existing fixture tests continue
 to cover offline integrity, archive and authority refusals. Removal path: delete the
-feature, inline test, package command, launcher, workflow and this document together
+feature, inline module, package command, launcher, workflow and this document together
 when another existing runtime check proves the same production chain.
 
 The test verifies the exact bundled catalog bytes and detached signature with the
@@ -89,11 +94,23 @@ passes the owned state through the same failure helper used by all three cleanup
 Weak supervisor handles observe continued ownership after the helper returns. It also
 checks retained scratch, failure context and normal owner drop after successful teardown.
 The three stage labels exercise the shared helper, not real operation-drain or authority
-failures. The actor fixture has no native child or executable. This proves helper ownership,
+failures. It intentionally retains a fixed three childless fixture states until process
+exit, separately from the at-most-one retained real `AppState` per selected distinct
+executable. The successful control state is dropped. The actor fixture has no native
+child, executable or native child lease. This proves helper ownership,
 not an OS-unreapable native process or native lease retention under a staged wait failure.
 The repair adds no verifier failure exit. Existing `supervisor-cleanup`,
 `operation-cleanup` and `authority-cleanup` refusals remain argued at the native end-to-end
 boundary in the historical matrix below. Its staged evidence remains unchanged.
+
+The feature-only `cleanup_summary_reports_authority_and_native_platform_status`
+regression asserts two complete visible lines from the same `cleanup_summary` function
+used by `verify_case` output. Initialized authority reports a cleared catalog session,
+uninitialized authority reports a skipped session. Both Linux and Windows report
+`launch-root=not-applicable` in either case. Native macOS expects `reclaimed` only for
+initialized authority and `skipped-uninitialized` otherwise. The regression uses exact
+platform-specific expected strings without a second status computation. These assertions
+verify output formatting after cleanup succeeds, not staged native cleanup failures.
 
 The native download, archive size, UCI and physical
 reaping bounds stay in force. Independent cases run sequentially and errors are
@@ -227,8 +244,10 @@ supervisor reaping, drained operations, cleared catalog session use and removed 
 The command's enabled discovery and execution Cargo children each exited 0.
 Windows/macOS runtime results belong to Phase 2 and remain unproven here.
 
-The source-derived exits below enumerate every explicit failure site in the new
-native verifier and launcher. Production errors flow through the corresponding
+The historical source-derived exits below enumerate the failure sites in the native
+verifier and the original single-test launcher at that checkpoint. The two selector
+assertions changed in the closure repair documented below, so their old wording and
+one-test counts are historical only. Production errors flow through the corresponding
 stage rather than being converted to skipped success. `FAIL` rows aggregate into
 the Rust test's nonzero result, normally Cargo status 101 and launcher status 1.
 No row is staged until both its distinguishing message and observed status are recorded.
@@ -331,3 +350,76 @@ The helper regression does not stage a native OS wait failure, operation-drain f
 or authority-cleanup failure. Native macOS reclaim, Windows behavior and the new
 uninitialized-authority status text were not exercised by this repair checkpoint.
 No pre-review or receipt-backed gate was run by this repair worker.
+
+## Automated closure repair checkpoint
+
+The subsequent C2/C4 closure repair on 2026-10-16 changes only the feature-only
+`catalog_network` module, the existing public launcher and this document. Named text
+limits and actual failed-case `AppState` retention are unchanged. All other `fs.rs`
+bytes and `error.rs` match Git HEAD. Plan authorship and arbitration shared one context.
+Detection ran on the same model family as the code. Evidence is under
+`/tmp/catalog-closure-r3.9F5bZl`. Earlier counts, including historical three-native-case
+and one-test results, remain historical and do not describe the new selector.
+
+| Proof | Observed result | Evidence under the closure directory |
+| --- | --- | --- |
+| Exact status regression | Cargo 0, 1 passed, 0 failed, 0 ignored, 2,447 filtered out on Linux | `gate-catalog-r3-focused.Ok19pS/log` |
+| Exact ownership regression | Cargo 0, 1 passed, 0 failed, 0 ignored, 2,447 filtered out | Same focused log |
+| Status-only reversal | Cargo 101, 0 passed, 1 failed, 0 ignored. Exact line comparison rejected unconditional `catalog-session=cleared launch-root=reclaimed` against Linux `catalog-session=cleared launch-root=not-applicable` | `status-only.patch`, `reversal-red.log`, `reversal-red.status` |
+| Exact restoration | Patch applied without offsets, complete file matched saved fixed bytes. Cargo 0, 1 passed, 0 failed, 0 ignored | `reverse-apply.log`, `restore-apply.log`, `restoration-green.log`, `gate-catalog-r3-reversal.Kycu8m/log` |
+
+The reversal derives the old unconditional visible line from
+`git show 6f924f3e^:src-tauri/src/fs.rs`. Git's `diff --no-index` produces the exact
+patch between that historical behavior inside the current helper and the fixed source.
+Reverse application changes only the helper's status behavior and unused argument
+spelling. The new test, real output call, ownership helper and every other source byte
+remain present. Forward application restores the complete saved file byte-for-byte.
+The restored SHA-256 is
+`536e674138ba9ea4d6b16af8825f0b30725f9ed896aca3dd6adcfb6b518dac6a`.
+Both canonical focused and reversal controller records are 0. The expected failing
+Cargo status remains 101 inside the successful reversal controller.
+
+Launcher staging uses only the invocation-local native Cargo runner configuration.
+An inline Python runner executes the real compiled test binary with additional libtest
+arguments. It neither substitutes Cargo nor fabricates test output. The unchanged
+launcher still supplies its single module filter. `--skip` can remove a real test,
+and an additional filter can include an existing neighboring test. Execution-only
+arguments leave discovery untouched. Removing the invocation override restores the
+canonical command, including a fresh real network installation and UCI run. No tracked
+runner, new installation route, verifier logic edit or assertion fixture mutation is
+introduced. Runner inputs, full output and same-run public statuses are retained as
+`<stage>-runner-input.txt`, `<stage>.log` and `<stage>.status`.
+
+| Changed assertion / real input stage | Distinguishing observed output | Same-run status and restoration |
+| --- | --- | --- |
+| Exact discovery, omit ownership with `--skip` | `CATALOG_FAIL discovery: expected exactly these 3 runnable tests:` with `found 2:` and the actual remaining names | `discovery-two`: Cargo discovery 0, public command 1, execution did not start. Removing override restored public 0, discovery/execution 0, 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+| Excess discovery, add the existing `fs::tests::from_operations_derives_exclusive_download_classes` filter | Same exact discovery refusal prefix with `found 4:` and the actual extra name | `discovery-excess`: Cargo discovery 0, public command 1, execution did not start. Restored public 0, discovery/execution 0, 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+| Same count with a wrong identity, skip network and add that neighboring test | Same exact discovery refusal prefix with `found 3:` and `fs::tests::from_operations_derives_exclusive_download_classes: test` replacing the network identity | `discovery-wrong-name`: Cargo discovery 0, public command 1, execution did not start. Restored public 0, discovery/execution 0, 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+| All discovered tests passed, skip network only during execution | `test result: ok. 2 passed; 0 failed; 0 ignored;` then `CATALOG_FAIL execution: expected all 3 discovered tests passed with zero failed or ignored tests` | `execution-two`: discovery/execution Cargo 0, public command 1. Restored public 0 with 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+| Nonzero expected summary, skip entire module only during execution | `test result: ok. 0 passed; 0 failed; 0 ignored;` then the same exact execution refusal | `execution-zero`: discovery/execution Cargo 0, public command 1. Restored public 0 with 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+| Missing execution summary, pass `--list` only during execution | Actual three-name listing without a `test result:` line, then the same exact execution refusal | `execution-list`: discovery/execution Cargo 0, public command 1. Restored public 0 with 3 passed, 0 failed, 0 ignored, 4 Linux entries and 3 native installs/UCI |
+
+The missing-discovery and three execution stages have canonical controller status 0
+in `gate-catalog-r3-staging.sE1Pq1/completion.record`. Excess and wrong-identity
+discovery stages have controller status 0 in
+`gate-catalog-r3-identity.sQvnC0/completion.record`. Successful restorations list all
+three exact intended names and report `3 passed`, `0 failed`, `0 ignored`,
+`0 measured` and `2445 filtered out`. Each real Linux case emits
+`CLEANUP_OK supervisor=reaped operations=drained catalog-session=cleared launch-root=not-applicable scratch=removed`.
+
+The zero-ignored and zero-measured summary predicates and discovery's benchmark-kind
+rejection remain argued for nonzero counts or an actual benchmark identity.
+This feature module has no ignored tests or benchmarks, so manufacturing
+those counts requires changing test declarations or substituting output. Nonzero
+failed counts already make real Cargo fail before summary validation, as in the
+historical native refusals. This repair adds no native failure exit. The inherited
+native failure gaps and unchanged launcher spawn, signal, nonzero status, output-cap,
+interruption and signal-forwarding rows remain staged or argued as explicitly recorded
+in the historical matrix. None is reclassified as staged by the new selector proof.
+Linux formatter tests do not prove native Windows or macOS cleanup execution.
+
+Documentation is frozen before the final detached public command, feature all-target
+Clippy, format check and `pnpm checks:pre-review`. Their canonical completion record
+and full output under this closure directory carry the results reported with the change.
+No pass is inferred from a missing or pending record, and no document is edited during
+receipt gates.

@@ -8,8 +8,12 @@ import {
 } from "./child-supervisor.mjs";
 import { LOG_TAIL_BYTES } from "./gate-logs.mjs";
 
-const TEST =
-  "fs::tests::catalog_network::real_signed_catalog_engines_install_register_and_configure";
+const MODULE = "fs::tests::catalog_network::";
+const TESTS = [
+  "fs::tests::catalog_network::cleanup_failure_retains_case_owners_until_process_exit",
+  "fs::tests::catalog_network::cleanup_summary_reports_authority_and_native_platform_status",
+  "fs::tests::catalog_network::real_signed_catalog_engines_install_register_and_configure",
+];
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cargo = [
   "test",
@@ -20,9 +24,8 @@ const cargo = [
   "chessfable",
   "--features",
   "catalog-network-tests",
-  TEST,
+  MODULE,
   "--",
-  "--exact",
 ];
 // Bound both captured and emitted command output. Continue draining on overflow so native
 // ownership can finish, then fail. CI's finite job timeout is the external last resort.
@@ -59,17 +62,26 @@ async function run(args, stage) {
 try {
   const listing = await run([...cargo, "--list", "--format", "terse"], "discovery");
   const tests = listing.split(/\r?\n/u).filter((line) => /: (test|benchmark)$/u.test(line));
-  if (tests.length !== 1 || tests[0] !== `${TEST}: test`) {
-    throw new Error(`discovery: expected exactly one runnable test ${TEST}, found ${tests.length}`);
+  tests.sort();
+  if (
+    tests.length !== TESTS.length ||
+    TESTS.some((test, index) => tests[index] !== `${test}: test`)
+  ) {
+    throw new Error(
+      `discovery: expected exactly these ${TESTS.length} runnable tests: ${TESTS.join(", ")}, found ${tests.length}: ${tests.join(", ")}`,
+    );
   }
   if (forwarding.requestedReason !== undefined) throw new Error("discovery: interrupted");
   const output = await run([...cargo, "--nocapture", "--test-threads=1"], "execution");
   if (
-    !/^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out;/mu.test(
-      output,
-    )
+    !new RegExp(
+      `^test result: ok\\. ${tests.length} passed; 0 failed; 0 ignored; 0 measured; \\d+ filtered out;`,
+      "mu",
+    ).test(output)
   ) {
-    throw new Error("execution: expected exactly one passed test with zero ignored tests");
+    throw new Error(
+      `execution: expected all ${tests.length} discovered tests passed with zero failed or ignored tests`,
+    );
   }
 } catch (error) {
   console.error(`CATALOG_FAIL ${error.message}`);
