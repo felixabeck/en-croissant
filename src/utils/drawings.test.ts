@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { extractPgnDrawings, makePgnDrawings } from "./drawings";
+import { extractPgnDrawings, makePgnDrawings, toDrawShape } from "./drawings";
 
 test.each([
     "[%cal]",
@@ -22,13 +22,13 @@ test("empty residual entries retain their commas through repeated extraction", (
 
 test("legacy permissive command lengths retain shapes and normalize square endpoints", () => {
     const parsed = extractPgnDrawings("[%cal Oe4] [%csl Cf2f4] [%cal Ge2e2]");
+    const shapes = parsed.shapes.map(toDrawShape);
     expect(parsed.shapes).toHaveLength(3);
     expect(parsed.shapes.map((shape) => shape.color)).toEqual(["orange", "cyan", "green"]);
-    expect(
-        makePgnDrawings([
-            { orig: "e4", dest: "e4", brush: "orange" },
-            { orig: "f2", dest: "f4", brush: "cyan" },
-            { orig: "e2", brush: "green" },
-        ]),
-    ).toBe("[%csl Oe4,Ge2][%cal Cf2f4]");
+    expect(shapes).toEqual([
+        { orig: "e4", dest: "e4", brush: "orange" },
+        { orig: "f2", dest: "f4", brush: "cyan" },
+        { orig: "e2", dest: "e2", brush: "green" },
+    ]);
+    expect(makePgnDrawings(shapes)).toBe("[%csl Oe4,Ge2][%cal Cf2f4]");
 });

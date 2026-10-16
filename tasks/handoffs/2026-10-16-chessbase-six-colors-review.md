@@ -127,7 +127,7 @@ Root independently ran the five-file focused suite, 259 tests passed. Type check
 
 Root independently retained the new parser tests, stashed exactly the five production fix paths with Git, ran the drawing regressions against pre-fix source, restored by stash object and verified all five production hashes. Pre-fix exit 1 with five assertion failures and the two-red-arrow control passing. Restored exit 0 with all six selected regressions passing. This is measured behavior, not only the leaf report.
 
-The first root pre-review built and passed format/lint, frontend coverage mapping and bundle checks. Mutation failed with exit 1, score 99.84, 1231 killed, three timed out and two survived. Both surviving mutations replace the current commands branch guard shapes.length > 0 at tabStorage.ts:270 with true or >= 0. The uncovered difference is trimming leading/trailing opaque command bytes when no supported shape is consumed. A scoped test repair is underway, with the guard preserved and each actual mutation staged temporarily to prove the new assertion.
+The first root pre-review built and passed format/lint, frontend coverage mapping and bundle checks. Mutation failed with exit 1, score 99.84, 1231 killed, three timed out and two survived. Both surviving mutations replace the current commands branch guard shapes.length > 0 at tabStorage.ts:270 with true or >= 0. The uncovered difference is trimming leading/trailing opaque command bytes when no supported shape is consumed. At that checkpoint a scoped test repair was underway, with the guard preserved and each actual mutation staged temporarily to prove the new assertion. D1 completion is recorded below.
 
 At the first gate checkpoint, cumulative code review, browser execution and final gates had not run. The earlier leaf queued pre-review was interrupted while waiting for occupied gate slots, exit 143, and is explicitly not a pass.
 
@@ -143,4 +143,105 @@ Read-only corpus inventory: 11,531 cal/csl entries across the repertoire PGNs, a
 
 The third root pre-review waited for shared heavy-gate capacity, then passed with canonical completion record 0 pre-review-r3 a570e94959eb2f559433cacf06325fe15ac209af in /tmp/build-chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b/gate-pre-review-r3.PGPmW9. Build, format/lint, coverage mapping and bundle passed. Workspace-storage mutation passed 100%, 1,233 killed, zero timeouts or survivors. Tree/path passed 100% with seven timeouts and no survivors. No numeric baseline or floor changed.
 
-Source was committed as aac25666 before cumulative review. Current checkpoint: cumulative code review and browser verification are next. The actual reviewed SHA will be recorded after fetching/rebasing and the review round.
+Source was committed as aac25666 before cumulative review, then rebased without content changes to f93aab8d. The first full reviewed HEAD is 954167dd56f759568cf5ba52e62e8a88dcd38860. At the first review checkpoint all eight code lenses approved, with test correction T1 adopted. Records requested corrections R1/R2. Those repairs are implemented and await closure review. Browser execution remains pending until that closure.
+
+## Cumulative review round 1 arbitration
+
+Reviewed range 1a4305ed99259c861c266d85284aebbe048634c9..954167dd56f759568cf5ba52e62e8a88dcd38860, code excluding records, plus a separate records lens. All nine fresh Codex sessions completed. Eight code verdicts APPROVED, records REVISE.
+
+T1, review-tests, should-fix, confidence 99: drawings.test.ts's permissive-length case verifies colors/count but serializes manually constructed shapes, so wrong parsed endpoints could pass. Fix, assert exact parsed endpoints and serialize the parsed-derived shapes. Mechanical Codex repair gpt-6-luna/max completed. A staged wrong csl endpoint failed the exact-shape assertion, expected f4 but received f2, exit 1. Restored source hash 8c0b5d8670d6be9e43666135731a9ffede38ae2926fd0fdf8d7c72b24ff30d78. Leaf and root passed all 85 parser/drawing tests, type checking and formatting passed, with no persistent production change.
+
+R1, records, should-fix, confidence 99: both finding entries omitted Found by, and the preview finding omitted Defect and Proof. Fix, findings.py annotate adds those fields, with the preview proof explicitly a source trace and proposed browser regression, not an executed test claim.
+
+R2, records, should-fix, confidence 92: the old D1-underway sentence contradicted its later completed status. Fix, explicitly label that earlier checkpoint as historical.
+
+Diff adoptions r1=3, three unique issues. No implementation defect was reported. f-20261016-03 remains the separately recorded preview presentation work, not an implemented change here. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+Post-repair pre-review passed at canonical record 0 pre-review-r4 d5182c5b07e05a0a5bb7c53fcfa8dd14f08117cb. Both selected mutation packages passed 100%. The next review is a closure over the committed repair delta from 954167dd, with the complete published range as context.
+
+## Raw cumulative review round 1 reports
+
+### Diff round 1: correctness
+
+No correctness defects found in the changed parser, exporter, hydration or board palette contracts.
+
+Limitation: static review only. Browser rendering remains unverified in this pass (confidence: 90).
+
+VERDICT: APPROVED
+
+### Diff round 1: root-cause
+
+No findings. Per-entry extraction removes whole-list rejection, shared color mapping preserves six-color identity, and export recognizes both square representations. Hydration retains newly parsed drawings without duplication or weakening unreadable-data safeguards.
+
+Supplied red/green logs show five failures before the fix and all six regressions passing afterward. Touched-line history revealed no reintroduced prior fix.
+
+Named limitation: browser rendering remains unverified because execution is pending (confidence: 100).
+
+Review used the same model family as the code, without family separation. No files changed.
+
+VERDICT: APPROVED
+
+### Diff round 1: tests
+
+[should-fix] src/utils/drawings.test.ts:24 — The permissive-length test asserts parsed counts and colors, then serializes manually constructed shapes. Changing `%csl Cf2f4` to incorrectly produce a square would still pass. Assert parsed endpoints and serialize those parsed shapes. (confidence: 99)
+
+Central regression anchors would fail on revert and are reachable through configured gates. Browser execution remains pending, so rendered behavior is not yet observed.
+
+Review used the same model family as the author, without family separation.
+
+VERDICT: APPROVED
+
+### Diff round 1: minimalism
+
+No bloat or duplication defects found.
+
+- `src/utils/drawings.ts` centralizes semantics used by import, export, rendering and hydration. Removing it would duplicate that logic.
+- `src/utils/drawings.test.ts` adds focused residual-preservation and compatibility cases. Merging it elsewhere would save only file overhead.
+
+Read-only review completed. No gates or browser tests ran. Detection used the same model family as the code author.
+
+VERDICT: APPROVED
+
+### Diff round 1: code-quality
+
+No readability or local-consistency defects found above 80 confidence.
+
+Read-only review. No files changed or gates run. Detection used the same model family as the code. Plan authorship and arbitration shared root context.
+
+VERDICT: APPROVED
+
+### Diff round 1: error-handling
+
+No error-handling findings. Unsupported entries remain preserved, while invalid hydrated trees retain their raw bytes and surface through the recovery gate.
+
+Limitation: source review only. Tests and pending browser verification were not executed.
+
+Review used the same model family as the code, without family separation. Plan authorship and arbitration shared root context.
+
+VERDICT: APPROVED
+
+### Diff round 1: chess-semantics
+
+No chess-domain invariant violations found in the reviewed parsing, drawing metadata, hydration or enclosing tree flows. No files changed or gates run. Browser execution remains pending.
+
+Review used the same model family as the implementation, without family separation.
+
+VERDICT: APPROVED
+
+### Diff round 1: persisted-state
+
+No in-scope defects found. Traced seed/update writers, compressed readers, legacy/current hydration, tab key scope, close cleanup and unload flushing. No files changed or gates run.
+
+Review used the same model family as the code, without family separation.
+
+VERDICT: APPROVED
+
+### Diff round 1: records
+
+[should-fix] tasks/findings.md:16312 — Both new findings omit the ledger contract’s required `Found by` field. The entry at line 16326 also omits required `Defect` and `Proof` fields. See findings-ledger-contract.md:488. (confidence: 99)
+
+[should-fix] tasks/handoffs/2026-10-16-chessbase-six-colors-review.md:130 — “A scoped test repair is underway” remains standing after line 134 records D1 completed and line 144 records successful pre-review. Mark that sentence explicitly as historical so the repair status is consistent. (confidence: 92)
+
+Limitation: Original repertoire provenance and detailed color counts were not independently verifiable from available files. External historical observations rely on caller-supplied evidence. Review used the same model family as the author.
+
+VERDICT: REVISE
