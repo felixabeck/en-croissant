@@ -1455,3 +1455,137 @@ Root reran eight canonical-spelling tests, all 284 path-authority tests, filesys
 Review covers the complete unpublished merge-base range, including all decisions, finding closures and this inherited planning history. Review uses separate selected-executor Codex sessions on the same model family as the code. Plan authorship and arbitration shared one context, and the current root owns integration arbitration. No family separation is claimed.
 
 An unmeasured platform question is supplied for examination: catalog reachability currently uses lexical Path::starts_with, while Windows directory acquisition verifies identity without checking canonical spelling. Check ordinary case-only root/tree renames on case-insensitive filesystems and any effect on retained-resource or session-use protection. No Windows/macOS runtime witness or defect verdict is claimed for that question at this point.
+
+### Cumulative diff review round 1
+
+REVIEWED_THROUGH=9b8691f220bcda7fadfd371698435a64672d56bc. All eleven selected-executor read-only lenses completed. Measured elapsed through arbitration: 609.525 seconds. Six adopted witnesses identify five unique corrections. diff_adopted_per_round: r1=6. No Skip or Defer disposition. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code, in separate Codex sessions.
+
+- CR1 Fix, tests: connect the real production shutdown clear to durable marker removal and next-start collection. Generic callback tests do not prove that hook.
+- CR2 Fix, minimalism: route all three SHA256 read loops through one bounded digest core.
+- CR3 Fix, code-quality: document the recursive flag and process lifetime of catalog_uses.
+- CR4 Fix, tauri-security and platform-semantics duplicate witnesses: supplement lexical ownership reachability with filesystem bindings before collection. The reported Windows case-only rename is source-derived. No Windows runtime witness is claimed. The same protection relation must govern retained owners, session use and prepublication recursive resources. Cleanup identity, no-follow and inventory authority remain unchanged.
+- CR5 Fix, records: preserve historical d-20260918-02 prose while recording d-20261016-07, which retains its failure handling and follows d-20260918-18 for strict canonical spelling. The earlier combined decision now points to that clarification.
+
+The root assigned CR1–CR4 to one sensitive write leaf because they share the native lifecycle module. Root handled CR5 only through the locked decisions writer. Closure review and complete release remain pending.
+
+Raw lens reports follow unchanged.
+
+Repair evidence for CR1–CR4 is committed as 1824eb56. The selected sensitive write leaf changed only catalog_install.rs, mod.rs and main.rs. The root inspected the complete diff and independently passed 42 catalog tests, 284 authority tests, 214 filesystem tests with one existing isolated-mount test ignored, and 39 shutdown tests. The sha256 selector matched zero tests, so hashing evidence is the actual staged_hash_core_cancels_between_real_read_chunks and activation tests within the authority suite. Shared hashing preserves the inventory byte cap and checked overflow accounting. Formatting and diff checks passed. Full checks:pre-review passed including Windows GNU compilation/clippy.
+
+Source-only Git-derived reversals retained the new tests and compiled, then failed at the production durable marker assertion and all three Linux alias relation/use assertions. Exact restored source hashes matched, and the complete proof set passed after restoration. Initial fixture-attempt logs are retained but are not counted as regression proof. Windows case-only rename tests use actual filesystem behavior and remain pending hosted execution. Linux alias fixtures supply conservative retention evidence only, never cleanup authority. The bounded production shutdown wrapper owns the real clear callback and is shared by RunEvent and the durable integration test.
+
+Complete repair logs, patches and hash manifests are indexed by /tmp/build-de5be974-c551-48bb-b87c-30caf1642a05/review-fix1-evidence.md. Independent root completion records are gate-review-fix1-proof.VrnPOD and gate-review-fix1-prereview.FKYWJU under this drain's gate directory. CR5 is recorded in e3b7d443 and 99581fe3. All five corrections await reviewer closure, with no unresolved implementation deviation reported. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+#### Round 1 correctness
+
+```text
+No concrete correctness defects established.
+
+Limitation (confidence: 75/100): case-only root renames remain unresolved. Catalog reachability compares lexical paths, while Windows opens accept case aliases. The source trace does not settle whether collection could miss retained ownership after rebinding. No Windows/macOS runtime witness was available.
+
+Reviewed all seven production files and direct consumers. No files changed or tests run. Review used the code author’s model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 root-cause
+
+```text
+No root-cause or prior-fix regression findings. Durable prepublication provenance preserves cleanup ownership after handle pruning. Shared acquisition checks close the identity-only binding gaps while preserving earlier canonical-spelling fixes. Supplied red/green evidence supports both mechanisms.
+
+Limitation: case-only rename reachability remains unverified on Windows/macOS. No runtime witness establishes a defect (confidence: 100).
+
+Review and code authorship share the Codex model family. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 tests
+
+```text
+[should-fix] src-tauri/src/main.rs:3311 — The successful-shutdown test substitutes a callback returning `Ok(())`, while reclamation tests call `clear_catalog_session_use` directly. Removing the production clear callback at line 2464 would leave these tests green and retain used installations indefinitely after clean exits. No assertion connects production shutdown to durable marker removal and next-startup reclamation. (confidence: 98)
+
+VERDICT: APPROVED
+```
+
+#### Round 1 error-handling
+
+```text
+No error-handling defects found at confidence ≥80.
+
+Limitation: source review only. Windows/macOS runtime failure behavior remains unverified (confidence: 100).
+
+Reviewer and code authors share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 minimalism
+
+```text
+[should-fix] src-tauri/src/infra/path_authority/catalog_install.rs:188 — Catalog publication and cleanup add another streaming SHA-256 loop alongside `sha256_reader_cancellable` and `sha256_open_file` in `mod.rs:3609` and `:3661`. Extract one digest-reading core and route all three through it, preserving inventory byte limits, cancellation and test observers at their callers. The smallest sufficient new module keeps the lifecycle logic but replaces this 15-line hashing implementation with that shared call (confidence: 85).
+
+VERDICT: REVISE
+```
+
+#### Round 1 code-quality
+
+```text
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:4353 — `catalog_uses: BTreeMap<PathBuf, bool>` leaves the boolean’s meaning undocumented. For an ancestor resource used before publication, it means recursive reachability, requiring readers to trace insertion, publication and `reaches` to understand retention. Document the value as `recursive` and the map’s session lifetime (confidence: 92).
+
+Reviewer and code author share the Codex model family.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 engine-protocol
+
+```text
+No confirmed defects within this lens. Source review covered catalog protection before engine handoff, shutdown clearing, shared launch paths and asynchronous result guards.
+
+Read-only review only. Windows/macOS path-alias behavior remains unverified. No files changed.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 ipc-contract
+
+```text
+No IPC contract defects found. Traced affected commands, renderer ownership payloads, progress events, listener cleanup and shutdown handling. No new commands, events, binding edits or capability changes.
+
+Read-only review. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+#### Round 1 tauri-security
+
+```text
+[blocker] src-tauri/src/infra/path_authority/catalog_install.rs:123 — Case-sensitive lexical reachability can authorize deletion of a retained installation on Windows. After a clean shutdown, rename the engine workspace from `Engines` to `engines`, then restart with its engine still saved. Startup rebinding canonicalizes the executable’s parent to the new spelling (`mod.rs:5250`), while catalog provenance retains the old root spelling. `starts_with` misses that retained executable, so collection proceeds. Cleanup still opens the original root identity through Windows case-insensitive lookup (`mod.rs:3886`), validates the unchanged inventory and recursively deletes the retained installation. Ownership matching must account for the filesystem binding before authorizing deletion. (confidence: 92)
+
+Limitation: this is source-backed, without a Windows runtime witness. No tests or files were changed. Credential/session storage is unchanged, and no refresh-token flow is introduced.
+
+VERDICT: REVISE
+```
+
+#### Round 1 platform-semantics
+
+```text
+[blocker] src-tauri/src/infra/path_authority/catalog_install.rs:123 — On Windows, a case-only workspace rename can cause deletion of a retained resource tree. Install under `C:\engines\old`, rename the workspace to `C:\Engines`, save that directory as an explicit recursive engine resource, then restart retaining the resource. Acquisition preserves the selected leaf spelling (`mod.rs:2092`), so lexical `starts_with` misses its relationship to the recorded tree. Cleanup nevertheless opens the old spelling through Windows’ case-insensitive lookup, verifies the unchanged identity (`infra/fs.rs:3390`), and deletes the tree. The same comparison also misses session-use protection. Reachability needs binding-aware alias handling and a Windows regression. This is source-derived, without a Windows runtime witness. (confidence: 94)
+
+Proof limits: supplied evidence reports Windows GNU compilation/clippy passing through pre-review. I ran no checks. No non-Linux Unix source-probe result was found for this diff. Windows and macOS runtime proof remains pending in `rust-windows-test` and `rust-macos-test`. `rust-platform` supplies compilation/lint evidence only.
+
+No files changed. Review and implementation use the same model family.
+
+VERDICT: REVISE
+```
+
+#### Round 1 records
+
+```text
+[should-fix] tasks/decisions.md:3344 — d-20260918-02 requires an app-owned-subtree canonical-spelling exemption and remains unsuperseded at line 3347. d-20260918-18 explicitly removes that exemption at lines 3503–3504, matching the current rebinding implementation. Record the supersession while preserving historical prose so later sessions do not treat both policies as binding. This contradiction predates the reviewed range. (confidence: 99)
+
+Unverifiable: recorded test counts, gate outcomes, timings and fix-revert results without their original execution logs. No writes, tests or live queries performed.
+
+VERDICT: REVISE
+```
