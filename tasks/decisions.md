@@ -8347,3 +8347,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, co-located source recheck for f-20261002-08. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"3e758cdf9e1097f5a66a13d9b02c5f3f2c132874d444f8de0ad82f95c373ed38","input_sha256":"a0543eab8209d80e88277d5e0d824ad232c851bb190f651c2f17b8b547576446","kind":"mutation-receipt","operation":"dbfc926dfc51978557f4f48ef66bc977cd3d5e71d3ce12803cce951d7ee91508","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-27"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-28 — Resolve staged PGN destination before reserving its artifact
+
+* **Question:** How does the staged PGN installer prevent an early resolution refusal from leaking a persisted pending reservation?
+* **Governs:** f-20260919-11
+* **Chosen:** Resolve the authorized destination before reserving the artifact, following download_to_destination_inner's existing ordering. Keep installation-error cleanup and post-publication activation quarantine unchanged. Reuse the existing resolution pre-root-open test hook through a narrow test-only accessor to force the actual refusal without a timing race. Remove that accessor with its last cross-module consumer when another existing fixture covers the same boundary.
+* **Rejected:** Reserving first and adding a second owning cleanup guard, which creates a second reservation lifecycle instead of removing the unnecessary exposure. Abandoning a published intent on activation failure, which contradicts d-20260908-12.
+* **Reason:** install_staged_pgn_artifact currently returns through an independent fallible resolution after reservation persistence. Moving that read before reservation prevents this prepublication leak while retaining descriptor staging under d-20261005-01. Reversal path: any future reservation-first contract must own every prepublication exit and preserve published quarantine, proven by failure injection and registry reopen.
+* **Decided by:** Codex, full auto, co-located source recheck for f-20261002-08. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2aed80768ff4ffc5e111855dafe487d5bb0daa8405d16a0aaec3da82cb6fa5ab","input_sha256":"2bb1b7698463298b60baa4b383e53cb8cf0ebd2648f0cdb2b4cc0f40643473cf","kind":"mutation-receipt","operation":"a97c32ceebfa4ad56f2685914dd15543392f0e2a50e948a3bb5f408a773839d8","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-28"],"target":"decisions-ledger","v":1} -->
