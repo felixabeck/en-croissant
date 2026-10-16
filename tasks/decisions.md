@@ -8325,3 +8325,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, adopted reviewed plan 2026-10-16-real-catalog-engines, rounds 1–3. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"96793d7e4b0f0ca019aa3e7d14161a3abd6ea1897e3737670aa04e82ff70367b","input_sha256":"75499822f9bfc2d4a1da5bba9772023ac56598ede4f3ec593fcde3c662eb8149","kind":"mutation-receipt","operation":"540cd3e341a23b1d35ac92ad76a49385cd30311343d66451d3d6c363b5b90439","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-25"],"target":"decisions-ledger","v":1} -->
+
+### d-20261016-26 — Native catalog verification coverage unit
+
+* **Question:** Which catalog engine variants must the network verifier execute?
+* **Governs:** f-20261002-08
+* **Chosen:** Every native-OS catalog entry, sharing execution only for identical URL, digest, signature and nested executable path, and reporting every alias.
+* **Rejected:** Only the first Stockfish entry or only the host bmi2 selection, which leaves distinct nested executable paths untested. Missing native dependencies cannot become skipped success.
+* **Reason:** Catalog paths and archive layouts are the finding's defect surface. Each distinct executable needs a production UCI handshake. Existing executable-registration and publication contracts remain governed by d-20260920-06 and d-20261005-05. Reversal requires evidence of a different supported-platform catalog contract.
+* **Decided by:** Codex, full auto, adopted reviewed plan 2026-10-16-real-catalog-engines, rounds 1–3. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7fe79d17d9e686ee9785e364ef1e181d5682eb57b3685cb893a7a098414eb99f","input_sha256":"fb768b42ae5b623c11b132d9e6dd8dd9c690c4e8fae116fba3862d506eb88445","kind":"mutation-receipt","operation":"1946507e36f17d23c697a33e6146adf555c22f554b95b39e1b9e923586476e8d","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-26"],"target":"decisions-ledger","v":1} -->
