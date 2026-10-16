@@ -2464,6 +2464,9 @@ mod tests {
         use futures_util::FutureExt;
         use serde::Deserialize;
 
+        const FAILURE_CHARACTER_LIMIT: usize = 2048;
+        const UCI_IDENTITY_CHARACTER_LIMIT: usize = 256;
+
         #[derive(Clone, Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct CatalogEntry {
@@ -2497,7 +2500,38 @@ mod tests {
             // Native errors can contain untrusted engine or upstream text.
             format!(
                 "{stage}: {}",
-                error.to_string().chars().take(2048).collect::<String>()
+                error
+                    .to_string()
+                    .chars()
+                    .take(FAILURE_CHARACTER_LIMIT)
+                    .collect::<String>()
+            )
+        }
+
+        fn retain_failed_cleanup(
+            state: AppState,
+            scratch: tempfile::TempDir,
+            stage: &str,
+            error: Error,
+            outcome: &Result<(), String>,
+        ) -> String {
+            let retained = scratch.keep();
+            // A completed failed termination attempt leaves ChildOwner and executable leases
+            // in the supervisor. Keep their actual owner, plus operation and authority owners,
+            // until process exit. At most one state is retained per selected unique executable.
+            // Remove this retention if an existing guaranteed terminal owner replaces it.
+            std::mem::forget(state);
+            println!(
+                "RETAINED {} reason={stage} owners=process-lifetime",
+                retained.display()
+            );
+            failure(
+                stage,
+                format!(
+                    "{} retained={} owners=process-lifetime case={outcome:?}",
+                    error.diagnostic(),
+                    retained.display()
+                ),
             )
         }
 
@@ -2586,7 +2620,11 @@ mod tests {
                 }
                 println!(
                     "UCI_OK name={:?} options={}",
-                    config.name.chars().take(256).collect::<String>(),
+                    config
+                        .name
+                        .chars()
+                        .take(UCI_IDENTITY_CHARACTER_LIMIT)
+                        .collect::<String>(),
                     config.options.len()
                 );
                 Ok(())
@@ -2607,15 +2645,12 @@ mod tests {
 
             // Inspect physical reaping before any executable tree can be deleted, on every exit.
             if let Err(error) = state.engine_supervisor.terminate_all().await {
-                let retained = scratch.keep();
-                println!("RETAINED {} reason=supervisor-cleanup", retained.display());
-                return Err(failure(
+                return Err(retain_failed_cleanup(
+                    state,
+                    scratch,
                     "supervisor-cleanup",
-                    format!(
-                        "{} retained={} case={outcome:?}",
-                        error.diagnostic(),
-                        retained.display()
-                    ),
+                    error,
+                    &outcome,
                 ));
             }
             let operations = state.operations.clone();
@@ -2632,15 +2667,12 @@ mod tests {
                 })
                 .await;
             if let Err(error) = drained {
-                let retained = scratch.keep();
-                println!("RETAINED {} reason=operation-cleanup", retained.display());
-                return Err(failure(
+                return Err(retain_failed_cleanup(
+                    state,
+                    scratch,
                     "operation-cleanup",
-                    format!(
-                        "{} retained={} case={outcome:?}",
-                        error.diagnostic(),
-                        retained.display()
-                    ),
+                    error,
+                    &outcome,
                 ));
             }
             let authority = state.pgn_path_authority.clone();
@@ -2662,21 +2694,35 @@ mod tests {
                 if initialized {
                     crate::shutdown_engine_launch_root(authority).await?;
                 }
-                Ok::<(), Error>(())
+                let session = if initialized {
+                    "cleared"
+                } else {
+                    "skipped-uninitialized"
+                };
+                let launch_root = if cfg!(target_os = "macos") {
+                    if initialized {
+                        "reclaimed"
+                    } else {
+                        "skipped-uninitialized"
+                    }
+                } else {
+                    "not-applicable"
+                };
+                Ok::<_, Error>((session, launch_root))
             }
             .await;
-            if let Err(error) = authority_cleanup {
-                let retained = scratch.keep();
-                println!("RETAINED {} reason=authority-cleanup", retained.display());
-                return Err(failure(
-                    "authority-cleanup",
-                    format!(
-                        "{} retained={} case={outcome:?}",
-                        error.diagnostic(),
-                        retained.display()
-                    ),
-                ));
-            }
+            let (session, launch_root) = match authority_cleanup {
+                Ok(status) => status,
+                Err(error) => {
+                    return Err(retain_failed_cleanup(
+                        state,
+                        scratch,
+                        "authority-cleanup",
+                        error,
+                        &outcome,
+                    ));
+                }
+            };
             let scratch_path = scratch.path().to_path_buf();
             scratch.close().map_err(|error| {
                 failure(
@@ -2684,8 +2730,61 @@ mod tests {
                     format!("{error} path={} case={outcome:?}", scratch_path.display()),
                 )
             })?;
-            println!("CLEANUP_OK supervisor=reaped operations=drained catalog-session=cleared launch-root=reclaimed scratch=removed");
+            println!("CLEANUP_OK supervisor=reaped operations=drained catalog-session={session} launch-root={launch_root} scratch=removed");
             outcome
+        }
+
+        #[tokio::test]
+        async fn cleanup_failure_retains_case_owners_until_process_exit() {
+            use crate::engine::{EngineActor, EngineKey};
+
+            for stage in [
+                "supervisor-cleanup",
+                "operation-cleanup",
+                "authority-cleanup",
+            ] {
+                let state = AppState::default();
+                let supervisor = Arc::downgrade(&state.engine_supervisor);
+                let scratch = tempfile::tempdir().unwrap();
+                let path = scratch.path().to_path_buf();
+                let key = EngineKey::new("catalog-retention".into(), stage.into()).unwrap();
+                state
+                    .engine_supervisor
+                    .replace_handle(
+                        key,
+                        EngineActor::failing_terminate_test_actor("catalog cleanup regression"),
+                        stage.into(),
+                        crate::infra::path_authority::PathRef {
+                            id: "catalog-retention".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let error = state.engine_supervisor.terminate_all().await.unwrap_err();
+                let outcome = Err("original case failure".into());
+                let diagnostic = retain_failed_cleanup(state, scratch, stage, error, &outcome);
+                assert!(
+                    supervisor.upgrade().is_some(),
+                    "CASE_OWNER_DROPPED stage={stage}"
+                );
+                assert!(path.is_dir(), "scratch must survive failed cleanup");
+                assert!(diagnostic.starts_with(&format!("{stage}:")));
+                assert!(diagnostic.contains(&format!("retained={}", path.display())));
+                assert!(diagnostic.contains("owners=process-lifetime"));
+                assert!(diagnostic.contains("original case failure"));
+                // This fixture owns no native child or executable. Remove only its empty tree.
+                std::fs::remove_dir(path).unwrap();
+            }
+
+            let state = AppState::default();
+            let supervisor = Arc::downgrade(&state.engine_supervisor);
+            let scratch = tempfile::tempdir().unwrap();
+            let path = scratch.path().to_path_buf();
+            state.engine_supervisor.terminate_all().await.unwrap();
+            scratch.close().unwrap();
+            drop(state);
+            assert!(supervisor.upgrade().is_none());
+            assert!(!path.exists());
         }
 
         #[tokio::test]

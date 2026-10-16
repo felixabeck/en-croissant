@@ -57,13 +57,45 @@ Each native download runs through `run_native_operation`, which observes complet
 and releases its lease before delivering the result. Case errors and caught panics
 still await and inspect `EngineSupervisor::terminate_all`. Only after successful
 physical teardown does the test seal and inspect operation drain, clear originating-session
-catalog use through the blocking gateway, reclaim the initialized authority's launch
-root through `crate::shutdown_engine_launch_root`, and remove the scratch root. Setup
-failure with an uninitialized authority keeps its existing cleanup route and skips
-launch-root reclaim. Reclaim errors retain the scratch tree and primary case outcome
-under the existing `authority-cleanup` label. Supervisor, operation or authority cleanup
-failure fails the check and reports `RETAINED <path> reason=<stage>` instead of removing a tree
-whose ownership is unresolved. The native download, archive size, UCI and physical
+catalog use through the blocking gateway, await `crate::shutdown_engine_launch_root`
+for an initialized authority, and remove the scratch root. `CLEANUP_OK` reports
+`catalog-session=cleared` only after session clearing, or
+`catalog-session=skipped-uninitialized` after setup failed before authority installation.
+It reports `launch-root=reclaimed` only after successful macOS reclaim,
+`launch-root=skipped-uninitialized` for uninitialized macOS authority, and
+`launch-root=not-applicable` on Linux and Windows, where the shutdown facade is a noop.
+These statuses describe cleanup, independently of the primary case outcome.
+
+Supervisor, operation or authority cleanup failure fails the check and reports
+`RETAINED <path> reason=<stage> owners=process-lifetime`, preserving the scratch path,
+native cleanup error and primary case outcome. The shared feature-only failure helper
+intentionally retains the actual owned `AppState` using `std::mem::forget`, under
+decision `d-20261016-29`. Keeping only
+the scratch directory would drop the final supervisor and its pending `ChildOwner`,
+executable leases and original child handle after a failed termination attempt finishes.
+The same helper preserves operation-registry and authority owners if their cleanup
+cannot safely finish. Retention lasts until the test process exits, with at most one
+retained state per finite selected unique executable in that invocation. Retained scratch
+directories remain on disk for diagnosis. Successful cleanup drops owners normally and
+removes scratch. No production lifecycle changes, new registry, retry or timeout wrapper
+are introduced. There is no hidden successful retry or conversion of failure to green.
+Reversal path: remove this retention when an existing guaranteed terminal owner can
+replace it while preserving child handles and executable/resource leases until confirmed
+OS wait, plus operation and authority ownership through their terminal cleanup.
+
+The feature-only `cleanup_failure_retains_case_owners_until_process_exit` regression
+uses the existing failing actor fixture and real supervisor termination failure, then
+passes the owned state through the same failure helper used by all three cleanup branches.
+Weak supervisor handles observe continued ownership after the helper returns. It also
+checks retained scratch, failure context and normal owner drop after successful teardown.
+The three stage labels exercise the shared helper, not real operation-drain or authority
+failures. The actor fixture has no native child or executable. This proves helper ownership,
+not an OS-unreapable native process or native lease retention under a staged wait failure.
+The repair adds no verifier failure exit. Existing `supervisor-cleanup`,
+`operation-cleanup` and `authority-cleanup` refusals remain argued at the native end-to-end
+boundary in the historical matrix below. Its staged evidence remains unchanged.
+
+The native download, archive size, UCI and physical
 reaping bounds stay in force. Independent cases run sequentially and errors are
 aggregated, including failed aliases. CPU instruction and native library failures
 remain failed native cases. Windows LC0's CUDA prerequisites must be tested as
@@ -264,3 +296,38 @@ stage does not cover authority opening or macOS reclaim, and the measured Cargo 
 does not cover launcher interruption or forwarding failure. No all-assertions-staged
 claim is made. Historical checkpoint statuses remain unchanged by later root proof.
 No browser proof is required because Phase 1 changes no visible UI or IPC contract.
+
+## Cleanup ownership repair checkpoint
+
+The C1/C2/C4 repair on 2026-10-16 changed only the feature-gated `catalog_network`
+module and this document. Other `fs.rs` code remained byte-identical to Git HEAD.
+Plan authorship and arbitration shared one context. Detection ran on the same model
+family as the code. Evidence is under `/tmp/catalog-cleanup-repair.9JKgG8`.
+This checkpoint preserves the earlier attempts and argued native failure gaps above.
+
+The focused regression command was:
+
+```text
+cargo test --manifest-path src-tauri/Cargo.toml --locked --bin chessfable --features catalog-network-tests fs::tests::catalog_network::cleanup_failure_retains_case_owners_until_process_exit -- --exact --nocapture --test-threads=1
+```
+
+| Proof | Actual result | Output under the repair evidence directory |
+| --- | --- | --- |
+| First attempt | Format check 0, focused compilation 101 with E0603 for private engine modules. No test executed. Work stopped for root inspection | `gate-catalog-cleanup-initial.36JWYo/log` |
+| Resumed focused regression after using public re-exports | Format check 0, regression 0 with exactly 1 passed, 0 failed and 0 ignored | `gate-catalog-cleanup-resumed-focused.VWj6OI/log` |
+| Git-derived fix-only retention reversal | Reverse apply 0 without offsets. Only `std::mem::forget(state)` removed, test and all other edits retained byte-identically. Executed regression 101 with `CASE_OWNER_DROPPED stage=supervisor-cleanup`, 0 passed and 1 failed | `reversal-origin.diff`, `retention-only.patch`, `reverse-apply.log`, `reversal-red.log`, `reversal-red.status` |
+| Exact restoration | Forward apply 0 without offsets, full `fs.rs` bytes matched `fixed-fs.rs`. Regression 0 with exactly 1 passed, 0 failed and 0 ignored. Reversal/restoration controller 0 | `restore-apply.log`, `restoration-green.log`, `gate-catalog-cleanup-reversal.5cf5jO/log` |
+| `pnpm verify:catalog-engines` | 0 on Linux x86_64. Exact discovery 0, execution 0 with 1 passed and 0 ignored, all 4 selected entries through 3 distinct native executions, 21.63 seconds. All three reported cleared sessions, `launch-root=not-applicable` and removed scratch | `gate-catalog-cleanup-native-network.P9Y1Sc/log` |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features catalog-network-tests --locked -- -D warnings` | 0 | `gate-catalog-cleanup-feature-clippy.eEIgqg/log` |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | 0 after Clippy | `gate-catalog-cleanup-feature-clippy.eEIgqg/log` |
+
+Each detached attempt has its canonical `completion.record` beside its log. The
+initial record remains 101. The resumed focused, reversal/restoration, network and
+Clippy/format records are 0. The reversal's expected failing Cargo execution remains
+101 inside its successful proof controller, rather than being reported as a green test.
+The restored `fs.rs` SHA-256 is
+`45aa899b57613229581b637a274315ed11c60add2c3fa1b1c12aa74dda5256cf`.
+The helper regression does not stage a native OS wait failure, operation-drain failure
+or authority-cleanup failure. Native macOS reclaim, Windows behavior and the new
+uninitialized-authority status text were not exercised by this repair checkpoint.
+No pre-review or receipt-backed gate was run by this repair worker.
