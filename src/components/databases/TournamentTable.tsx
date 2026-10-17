@@ -11,6 +11,7 @@ import { type Event, type TournamentSort } from "@/bindings";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
+import { getAdjacentRecordId } from "./pageSelection";
 import classes from "./styles.module.css";
 import TournamentCard from "./TournamentCard";
 
@@ -34,21 +35,15 @@ function TournamentTable() {
   const tournament = tournaments.find((t) => t.id === selected);
 
   useHotkeys("ArrowUp", () => {
-    if (selected != null) {
-      const prevIndex = tournaments.findIndex((p) => p.id === selected) - 1;
-      if (prevIndex > -1) {
-        setSelected(tournaments[prevIndex].id);
-      }
+    const id = getAdjacentRecordId(tournaments, selected, -1);
+    if (id != null) {
+      setSelected(id);
     }
   });
   useHotkeys("ArrowDown", () => {
-    const curIndex = tournaments.findIndex((p) => p.id === selected);
-    if (curIndex > -1) {
-      const nextIndex = curIndex + 1;
-
-      if (nextIndex < (count ?? 0)) {
-        setSelected(tournaments[nextIndex].id);
-      }
+    const id = getAdjacentRecordId(tournaments, selected, 1);
+    if (id != null) {
+      setSelected(id);
     }
   });
 

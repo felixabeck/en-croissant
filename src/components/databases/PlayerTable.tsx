@@ -12,6 +12,7 @@ import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { query_players } from "@/utils/db";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
+import { getAdjacentRecordId } from "./pageSelection";
 import PlayerCard from "./PlayerCard";
 import classes from "./styles.module.css";
 
@@ -38,21 +39,15 @@ function PlayerTable() {
   const [open, setOpen] = useState(false);
 
   useHotkeys("ArrowUp", () => {
-    if (selectedPlayer != null) {
-      const prevIndex = players.findIndex((p) => p.id === selectedPlayer) - 1;
-      if (prevIndex > -1) {
-        setSelectedPlayer(players[prevIndex].id);
-      }
+    const id = getAdjacentRecordId(players, selectedPlayer, -1);
+    if (id != null) {
+      setSelectedPlayer(id);
     }
   });
   useHotkeys("ArrowDown", () => {
-    const curIndex = players.findIndex((p) => p.id === selectedPlayer);
-    if (curIndex > -1) {
-      const nextIndex = curIndex + 1;
-
-      if (nextIndex < (count ?? 0)) {
-        setSelectedPlayer(players[nextIndex].id);
-      }
+    const id = getAdjacentRecordId(players, selectedPlayer, 1);
+    if (id != null) {
+      setSelectedPlayer(id);
     }
   });
 
