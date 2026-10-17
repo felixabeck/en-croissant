@@ -3,6 +3,7 @@ import type {
     ErrorCategory,
     ErrorPayload,
     ErrorPayloadTag,
+    RemoteHttpRejection,
     RootFailure,
 } from "@/bindings";
 import { error as logError, warn as logWarn } from "./native";
@@ -23,6 +24,7 @@ export type AppError = {
     backendCategory?: ErrorCategory;
     rootFailure?: RootFailure;
     engineFailure?: EngineTerminalSnapshot;
+    remoteHttpRejection?: RemoteHttpRejection;
 };
 
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
@@ -222,10 +224,23 @@ function classify(source: string): AppErrorCategory {
 
 export function normalizeError(error: unknown): AppError {
     if (isErrorPayload(error)) {
+        const rejection = error.remoteHttpRejection;
         return {
             category: BACKEND_CATEGORY[error.category],
             backendCategory: error.category,
             message: redact(error.message),
+            ...(typeof rejection === "object" &&
+            rejection !== null &&
+            typeof rejection.status === "number" &&
+            Number.isFinite(rejection.status) &&
+            typeof rejection.authorizationSent === "boolean"
+                ? {
+                      remoteHttpRejection: {
+                          status: rejection.status,
+                          authorizationSent: rejection.authorizationSent,
+                      },
+                  }
+                : {}),
             ...(error.rootFailure == null ? {} : { rootFailure: error.rootFailure }),
             ...(error.engineFailure == null
                 ? {}

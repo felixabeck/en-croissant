@@ -19,6 +19,124 @@ import {
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
 const germanListingCopy = germanCatalogue.translation;
 
+for (const scenario of [
+    {
+        locale: "de-DE",
+        status: 401,
+        authorizationSent: true,
+        service: "lichess",
+        key: "Common.RemoteRequest.AuthorizationRejected",
+    },
+    {
+        locale: "de-DE",
+        status: 429,
+        authorizationSent: false,
+        service: "chesscom",
+        key: "Common.RemoteRequest.RateLimited",
+    },
+    {
+        locale: "en-US",
+        status: 500,
+        authorizationSent: false,
+        service: "chesscom",
+        key: "Common.RemoteRequest.ServerFailed",
+    },
+] as const) {
+    test(`remote HTTP download: ${scenario.locale} status ${scenario.status}`, async ({
+        page,
+        mockScenario,
+        assertNoHorizontalOverflow,
+    }) => {
+        const { locale, status, authorizationSent, service, key } = scenario;
+        const copy =
+            locale === "de-DE" ? germanCatalogue.translation : englishCatalogue.translation;
+        if (locale === "de-DE") await page.setViewportSize({ width: 320, height: 900 });
+        await page.addInitScript(
+            ({ locale, service }) => {
+                localStorage.setItem("i18nextLng", locale);
+                localStorage.setItem("font-size", locale === "de-DE" ? "200" : "100");
+                localStorage.setItem(
+                    "sessions",
+                    JSON.stringify([
+                        {
+                            player: "download-player",
+                            updatedAt: Date.UTC(2026, 9, 4),
+                            ...(service === "lichess"
+                                ? {
+                                      lichess: {
+                                          username: "download-player",
+                                          handle: "download-account",
+                                          account: {
+                                              id: "download-player",
+                                              username: "download-player",
+                                              perfs: {},
+                                          },
+                                      },
+                                  }
+                                : {
+                                      chessCom: {
+                                          username: "download-player",
+                                          stats: {
+                                              chess_rapid: {
+                                                  last: { rating: 1500, date: 1791072000, rd: 50 },
+                                                  record: { win: 1, loss: 0, draw: 0 },
+                                              },
+                                          },
+                                      },
+                                  }),
+                        },
+                    ]),
+                );
+            },
+            { locale, service },
+        );
+        const command =
+            service === "lichess" ? "download_lichess_games" : "download_chess_com_games";
+        const error: ErrorPayload = {
+            tag: "backend-error",
+            category: status === 401 ? "authentication" : "network",
+            message: `Remote HTTP request rejected: status ${status}`,
+            remoteHttpRejection: { status, authorizationSent },
+        };
+        await mockScenario({
+            commands: {
+                list_lichess_accounts: {
+                    result:
+                        service === "lichess"
+                            ? [{ handle: "download-account", username: "download-player" }]
+                            : [],
+                },
+                issue_download_destination: { result: { id: "download-destination" } },
+                prepare_download: { result: "download-ticket" },
+                [command]: { delay: 120, error },
+            },
+        });
+        await page.goto("/accounts");
+        const download = page.getByRole("button", {
+            name: copy["Home.Accounts.DownloadGames"],
+            exact: true,
+        });
+        await expect(download).toBeEnabled();
+        await download.click();
+        await page.mouse.move(0, 0);
+        const notification = page.locator(".mantine-Notification-root");
+        await expect(notification).toHaveCount(1);
+        await expect(notification).toContainText(copy[key]);
+        const guidance = notification.locator(".mantine-Notification-description");
+        await expect(guidance).toHaveText(copy[key]);
+        await expect(notification).toHaveCSS("opacity", "1");
+        await expect(download).toBeEnabled();
+        const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+        expect(invocations.filter(({ command: invoked }) => invoked === command)).toHaveLength(1);
+        expect(invocations.filter(({ command }) => command === "convert_pgn")).toEqual([]);
+        await assertNoHorizontalOverflow();
+        await assertNothingClipped(notification, { mode: "reachable" });
+        await expect(guidance).toBeInViewport({ ratio: 1 });
+        await expect(notification).toBeInViewport({ ratio: 1 });
+        await expect(notification).toHaveScreenshot(`remote-http-${locale}-${status}.png`);
+    });
+}
+
 for (const locale of ["en-US", "de-DE"] as const) {
     for (const relistFails of [false, true]) {
         test(`workspace cleanup: ${locale}, relist fails=${relistFails}, 320px and 200%`, async ({

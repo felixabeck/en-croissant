@@ -221,6 +221,71 @@ function accountDatabases(type: "chesscom" | "lichess" = "chesscom"): ManagedDat
 }
 
 const DOWNLOAD_DESTINATION_KEY = "download-destination-capability";
+
+test.each([
+  {
+    type: "lichess",
+    status: 401,
+    authorizationSent: true,
+    key: "Common.RemoteRequest.AuthorizationRejected",
+  },
+  { type: "chesscom", status: 404, authorizationSent: false, key: "Common.RemoteRequest.NotFound" },
+  {
+    type: "lichess",
+    status: 429,
+    authorizationSent: true,
+    key: "Common.RemoteRequest.RateLimited",
+  },
+  {
+    type: "chesscom",
+    status: 429,
+    authorizationSent: false,
+    key: "Common.RemoteRequest.RateLimited",
+  },
+] as const)(
+  "a rejected $type download ($status) releases pending state and preserves its destination",
+  async ({ type, status, authorizationSent, key }) => {
+    const destination = { id: "kept" };
+    localStorage.setItem(DOWNLOAD_DESTINATION_KEY, JSON.stringify(destination));
+    mocks.downloadDestinationIsKnown.mockResolvedValue(true);
+    const download = type === "lichess" ? mocks.downloadLichess : mocks.downloadChessCom;
+    let rejectDownload!: (error: unknown) => void;
+    download.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectDownload = reject;
+      }),
+    );
+    await renderCard({ type, accountHandle: "account" });
+
+    await act(async () => downloadButton().click());
+    expect(downloadButton().disabled).toBe(true);
+    expect(downloadButton().getAttribute("data-pending")).toBe("true");
+    await act(async () =>
+      rejectDownload({
+        tag: "backend-error",
+        category: status === 401 ? "authentication" : "network",
+        message: `Remote HTTP request rejected: status ${status}`,
+        remoteHttpRejection: { status, authorizationSent },
+      }),
+    );
+
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        color: "red",
+        title: "Common.Error",
+        message: english.translation[key],
+      }),
+    );
+    expect(downloadButton().disabled).toBe(false);
+    expect(downloadButton().getAttribute("data-pending")).toBeNull();
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(mocks.issueDownloadDestination).not.toHaveBeenCalled();
+    expect(localStorage.getItem(DOWNLOAD_DESTINATION_KEY)).toBe(JSON.stringify(destination));
+  },
+);
+
 const CATEGORY_CASES = {
   cancelled: { message: "cancelled download failed" },
   network: { message: "network download failed" },

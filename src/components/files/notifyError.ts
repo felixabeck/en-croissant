@@ -3,6 +3,7 @@ import i18n from "@/i18n";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { rootFailureMessage, type RootFailureDomain } from "./listingFailure";
 import { workspaceErrorMessage } from "./workspaceError";
+import { remoteHttpGuidance } from "./remoteHttpGuidance";
 
 export function notifyUnlessCancelled(
     title: string,
@@ -13,10 +14,42 @@ export function notifyUnlessCancelled(
     if (visible) {
         const fallback =
             (domain ? rootFailureMessage(domain, visible) : undefined) ?? visible.message;
+        let message = domain === "files" ? workspaceErrorMessage(visible, fallback) : fallback;
+        const remoteRejection =
+            visible.rootFailure == null && visible.backendCategory !== "operation-and-cleanup"
+                ? visible.remoteHttpRejection
+                : undefined;
+        if (remoteRejection) {
+            message = remoteHttpGuidance(remoteRejection);
+        }
         notifications.show({
             color: "red",
             title,
-            message: domain === "files" ? workspaceErrorMessage(visible, fallback) : fallback,
+            message,
+            ...(remoteRejection
+                ? {
+                      // The default 200px cap clips guidance at the supported 200% font scale.
+                      style: {
+                          maxHeight: "calc(100dvh - 2 * var(--mantine-spacing-md))",
+                          alignItems: "flex-start",
+                          overflowY: "auto",
+                      } as const,
+                      styles: {
+                          body: { minWidth: 0, overflow: "visible" },
+                          title: {
+                              overflowWrap: "anywhere",
+                              overflow: "visible",
+                              paddingInlineEnd: "2.5rem",
+                          },
+                          description: { overflowWrap: "anywhere", overflow: "visible" },
+                          closeButton: {
+                              position: "absolute",
+                              top: "var(--mantine-spacing-xs)",
+                              insetInlineEnd: "var(--mantine-spacing-xs)",
+                          },
+                      } as const,
+                  }
+                : {}),
         });
     }
 }

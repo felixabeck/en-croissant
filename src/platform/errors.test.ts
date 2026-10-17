@@ -55,6 +55,53 @@ describe("warnSafely", () => {
 });
 
 describe("normalizeError", () => {
+    test("carries only the typed remote rejection detail through command normalization", () => {
+        const payload = {
+            tag: "backend-error",
+            category: "authentication",
+            message: "Remote HTTP request rejected: status 401",
+            remoteHttpRejection: { status: 401, authorizationSent: true, extra: "ignored" },
+        };
+        const normalized = normalizeError(payload);
+        expect(normalized).toEqual({
+            category: "permission",
+            backendCategory: "authentication",
+            message: payload.message,
+            remoteHttpRejection: { status: 401, authorizationSent: true },
+        });
+        expect(normalizeError(normalized)).toBe(normalized);
+        const wrapped = new TauriCommandError(payload);
+        expect(wrapped.details).toEqual(normalized);
+        expect(normalizeError(wrapped)).toBe(wrapped.details);
+    });
+
+    test.each([
+        undefined,
+        null,
+        "401",
+        401,
+        {},
+        { status: "401", authorizationSent: true },
+        { status: NaN, authorizationSent: true },
+        { status: Infinity, authorizationSent: true },
+        { status: -Infinity, authorizationSent: false },
+        { status: 401 },
+        { status: 401, authorizationSent: "true" },
+    ])("omits absent or malformed remote rejection detail %j", (remoteHttpRejection) => {
+        expect(
+            normalizeError({
+                tag: "backend-error",
+                category: "network",
+                message: "Remote HTTP request rejected: status 401",
+                remoteHttpRejection,
+            }),
+        ).toEqual({
+            category: "network",
+            backendCategory: "network",
+            message: "Remote HTTP request rejected: status 401",
+        });
+    });
+
     test.each([
         ["engine-retired", "validation"],
         ["cancellation", "cancelled"],
