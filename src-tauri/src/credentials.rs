@@ -345,7 +345,13 @@ impl CredentialManager {
         if !handle.valid() {
             return Ok(None);
         }
-        let _registry = credential_lock(&self.registry)?;
+        let registry = credential_lock(&self.registry)?;
+        if !matches!(
+            registry.accounts.get(&handle.0),
+            Some(AccountRecord::Active(_))
+        ) {
+            return Ok(None);
+        }
         self.store.get(&handle.key())
     }
 
@@ -1190,6 +1196,31 @@ mod tests {
             .initialize(&AppDataDir::for_test(temp.path()))
             .unwrap();
         assert_eq!(after_restart.list().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_delete_tombstone_refuses_token_while_secret_remains() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let manager = Arc::new(CredentialManager::new(store.clone()));
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
+        let account = manager
+            .store_lichess_token("a".into(), "secret".into())
+            .unwrap()
+            .account;
+        let handle = account.handle;
+
+        assert!(manager.remove(&handle).is_err());
+        assert!(manager.list().unwrap().is_empty());
+        assert_eq!(store.get(&handle.key()).unwrap().as_deref(), Some("secret"));
+        assert!(matches!(
+            manager.registry.lock().unwrap().accounts.get(&handle.0),
+            Some(AccountRecord::PendingDelete(_))
+        ));
+        assert!(matches!(manager.token(&handle), Ok(None)));
+        assert!(matches!(manager.token_async(handle).await, Ok(None)));
     }
 
     #[test]
