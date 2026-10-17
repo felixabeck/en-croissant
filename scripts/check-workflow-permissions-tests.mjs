@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
   checkWorkflowPermissions,
   checkWorkflowText,
   workflowPaths,
 } from "./check-workflow-permissions.mjs";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const checkerPath = fileURLToPath(new URL("./check-workflow-permissions.mjs", import.meta.url));
 const CHECKOUT_SHA = "11d5960a326750d5838078e36cf38b85af677262";
@@ -43,7 +45,7 @@ function release(action = `actions/checkout@${CHECKOUT_SHA}`) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "workflow-permissions-"));
+  const root = await temporaryRoot("workflow-permissions-");
   const directory = join(root, ".github", "workflows");
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "test.yml"), workflow());

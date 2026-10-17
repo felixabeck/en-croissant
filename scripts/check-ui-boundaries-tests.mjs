@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test, { after } from "node:test";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const checker = join(process.cwd(), "scripts", "check-ui-boundaries.mjs");
 
 async function runChecker(listedPath, prepare) {
-  const root = await mkdtemp(join(tmpdir(), "ui-boundaries-"));
+  const root = await temporaryRoot("ui-boundaries-");
   const bin = join(root, "bin");
   await mkdir(join(root, "src"), { recursive: true });
   await mkdir(bin);

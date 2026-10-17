@@ -4,10 +4,13 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 import { workflowSteps } from "./check-gate-routing.mjs";
 import { checkToolVersionParity, discoverToolVersions } from "./check-tool-version-parity.mjs";
 import { gitInit } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const checkerPath = fileURLToPath(new URL("./check-tool-version-parity.mjs", import.meta.url));
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -30,7 +33,7 @@ async function put(root, path, contents) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "tool-version-parity-"));
+  const root = await temporaryRoot("tool-version-parity-");
   gitInit(root);
   const nightly = "nightly-" + "2025-06-01";
   await put(root, "scripts/rust-coverage.mjs", `const toolchain = "${nightly}";\n`);

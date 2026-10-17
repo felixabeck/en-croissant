@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 import { checkSkillBridges } from "./check-skill-bridges.mjs";
 import { gitInit } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const checkerPath = fileURLToPath(new URL("./check-skill-bridges.mjs", import.meta.url));
 
@@ -30,7 +32,7 @@ function bridge(name) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "skill-bridges-"));
+  const root = await temporaryRoot("skill-bridges-");
   gitInit(root);
   for (const name of ["push", "verify-ui"]) {
     await write(root, skillPath(".claude", name), canonical(name));

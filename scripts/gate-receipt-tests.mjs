@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, writeSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Writable } from "node:stream";
 import { once } from "node:events";
@@ -17,6 +16,9 @@ import {
   readLogTail,
   transcriptFileName,
 } from "./gate-logs.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 // The push-gate scheduler exports its own run directory to this lane; fixtures must not inherit it.
 delete process.env[GATE_LOG_DIRECTORY_ENV];
@@ -38,7 +40,7 @@ function runGit(root, ...argumentsList) {
 }
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), "gate-receipt-test-"));
+  const directory = await temporaryRoot("gate-receipt-test-");
   const root = join(directory, "repo");
   await mkdir(root);
   runGit(root, "init", "--quiet");
@@ -159,7 +161,7 @@ test("frontend-build records a real node and pnpm fingerprint", async () => {
 });
 
 test("a repo git cannot observe refuses the receipt as unobservable, not as a tree change", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gate-receipt-nongit-"));
+  const root = await temporaryRoot("gate-receipt-nongit-");
   const messages = [];
   assert.equal(
     await executeAction({

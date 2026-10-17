@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isEntrypoint } from "./entrypoint.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const helperPath = resolve(dirname(fileURLToPath(import.meta.url)), "entrypoint.mjs");
 
@@ -30,7 +32,7 @@ test("isEntrypoint refuses another module and a missing argv[1]", () => {
 });
 
 test("a real Node process on a path with a space runs its guarded main", async () => {
-  const root = await mkdtemp(join(tmpdir(), "entrypoint probe-"));
+  const root = await temporaryRoot("entrypoint probe-");
   const script = join(root, "gate.mjs");
   await writeFile(
     script,

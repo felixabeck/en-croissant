@@ -16,7 +16,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
   assertAreaFloors,
   assertBaseline,
@@ -48,6 +48,9 @@ import { filesBelow } from "./files-below.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 import { maskRustSource, maskRustSourceWithSpans } from "./rust-source-mask.mjs";
 import { classifyRustTestOnlySources, scanRustTestOnly } from "./rust-test-only.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const config = {
   version: 1,
@@ -65,7 +68,7 @@ const lcov = `TN:\nSF:src/utils/example.ts\nFN:1,example\nFNDA:1,example\nDA:1,1
 const duplicateFunctionLcov = `TN:\nSF:src/utils/example.ts\nFN:1,handler\nFN:10,handler\nFNDA:1,handler\nFNDA:0,handler\nDA:1,1\nDA:10,0\nend_of_record\n`;
 
 async function fixture({ source = "export const example = 1;\n", files = {} } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "coverage-report-"));
+  const root = await temporaryRoot("coverage-report-");
   const fixtureFiles = { "src/utils/example.ts": source, ...files };
   for (const [path, contents] of Object.entries(fixtureFiles)) {
     const filePath = join(root, path);
@@ -708,7 +711,7 @@ test("Rust exclusion failures are staged through the CLI with path, line, and ex
     });
   }
 
-  await t.test("unreadable included Rust file", async () => {
+  await t.test("unreadable included Rust file", async (t) => {
     const { root } = await fixture({
       files: {
         "src-tauri/src/lib.rs": "pub fn production() {}\n",
@@ -718,6 +721,7 @@ test("Rust exclusion failures are staged through the CLI with path, line, and ex
     await chmod(root, 0o755);
     await chmod(join(root, "src-tauri"), 0o755);
     await chmod(join(root, "src-tauri/src"), 0o755);
+    t.after(() => chmod(join(root, "src-tauri/src/unreadable.rs"), 0o600));
     await chmod(join(root, "src-tauri/src/unreadable.rs"), 0);
     const result = await runCoverageCli(root, {
       config: rustConfig(),

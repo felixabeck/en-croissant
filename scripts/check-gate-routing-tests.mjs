@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   checkGateRouting,
@@ -11,6 +10,9 @@ import {
   workflowSteps,
 } from "./check-gate-routing.mjs";
 import { gitInit } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
@@ -23,7 +25,7 @@ async function write(root, relativePath, contents) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "gate-routing-"));
+  const root = await temporaryRoot("gate-routing-");
   gitInit(root);
   await write(
     root,

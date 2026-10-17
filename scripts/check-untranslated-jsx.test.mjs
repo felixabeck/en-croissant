@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test, vi } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(afterAll);
 
 const parserSeam = vi.hoisted(() => ({ parseTsSource: null }));
 
@@ -32,8 +34,8 @@ function assertCli(result, status, stderr) {
   expect(result.stderr).toBe(stderr);
 }
 
-function workspace() {
-  const root = mkdtempSync(join(tmpdir(), "untranslated-jsx-"));
+async function workspace() {
+  const root = await temporaryRoot("untranslated-jsx-");
   mkdirSync(join(root, "src", "components"), { recursive: true });
   writeFileSync(join(root, "src", "components", "Tracked.tsx"), "<Text>Tracked copy</Text>;\n");
   writeFileSync(join(root, "src", "components", "Tracked.test.tsx"), "<Text>Test copy</Text>;\n");
@@ -45,7 +47,7 @@ function workspace() {
 
 describe("untranslated UI literal gate", () => {
   test("uses the extracted parser result", async () => {
-    const root = workspace();
+    const root = await workspace();
     parserSeam.parseTsSource = () => ({ type: "JSXText", value: "Parser sentinel" });
     try {
       expect(await checkUntranslatedJsx(root)).toEqual([
@@ -119,7 +121,7 @@ describe("untranslated UI literal gate", () => {
 
 describe("untranslated UI literal file discovery", () => {
   test("scans tracked, untracked and symlinked components and skips test files", async () => {
-    const root = workspace();
+    const root = await workspace();
     writeFileSync(join(root, "Linked.tsx"), "<Text>Linked copy</Text>;\n");
     symlinkSync(join(root, "Linked.tsx"), join(root, "src", "components", "Linked.tsx"));
 
@@ -134,13 +136,13 @@ describe("untranslated UI literal file discovery", () => {
     ]);
   });
 
-  test("the CLI reports violations as exit 1 and an enumeration failure as exit 2", () => {
-    const clean = workspace();
+  test("the CLI reports violations as exit 1 and an enumeration failure as exit 2", async () => {
+    const clean = await workspace();
     writeFileSync(join(clean, "src", "components", "Tracked.tsx"), '<Text>{t("a")}</Text>;\n');
     const green = spawnSync(process.execPath, [checkerPath], { cwd: clean, encoding: "utf8" });
     assertCli(green, 0, "");
 
-    const root = workspace();
+    const root = await workspace();
     writeFileSync(join(root, "src", "components", "Loud.tsx"), "<Text>Loud copy</Text>;\n");
     const red = spawnSync(process.execPath, [checkerPath], { cwd: root, encoding: "utf8" });
     assertCli(
@@ -149,7 +151,7 @@ describe("untranslated UI literal file discovery", () => {
       'Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.\nsrc/components/Loud.tsx: "Loud copy"\nsrc/components/Tracked.tsx: "Tracked copy"\n',
     );
 
-    const outside = mkdtempSync(join(tmpdir(), "untranslated-jsx-nogit-"));
+    const outside = await temporaryRoot("untranslated-jsx-nogit-");
     mkdirSync(join(outside, "src"), { recursive: true });
     const broken = spawnSync(process.execPath, [checkerPath], { cwd: outside, encoding: "utf8" });
     assertCli(

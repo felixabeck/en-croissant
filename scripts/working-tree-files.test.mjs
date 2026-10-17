@@ -1,17 +1,19 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
+
+const temporaryRoot = testTempRoots(afterAll);
 
 /**
  * The walker is the single enumeration primitive every gate checker now shares,
  * so its two queries are proven here once rather than re-derived in each
  * checker's suite (`f-20260901-16`).
  */
-function workspace() {
-  const root = mkdtempSync(join(tmpdir(), "working-tree-files-"));
+async function workspace() {
+  const root = await temporaryRoot("working-tree-files-");
   mkdirSync(join(root, "src", "nested"), { recursive: true });
   writeFileSync(join(root, "src", "tracked.ts"), "export const tracked = 1;\n");
   writeFileSync(join(root, "src", "nested", "untracked.ts"), "export const untracked = 2;\n");
@@ -24,15 +26,16 @@ function workspace() {
 }
 
 describe("working-tree file enumeration", () => {
-  test("reports tracked and untracked files, and ignores what git ignores", () => {
-    expect(listWorkingTreeFiles({ workspaceRoot: workspace(), pathspec: "src" })).toEqual([
+  test("reports tracked and untracked files, and ignores what git ignores", async () => {
+    const root = await workspace();
+    expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).toEqual([
       "src/nested/untracked.ts",
       "src/tracked.ts",
     ]);
   });
 
-  test("includes git-ignored entries only when explicitly requested", () => {
-    const root = workspace();
+  test("includes git-ignored entries only when explicitly requested", async () => {
+    const root = await workspace();
     expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).not.toContain(
       "src/ignored.ts",
     );
@@ -59,8 +62,8 @@ describe("working-tree file enumeration", () => {
     ]);
   });
 
-  test("reports a tracked file whose only sibling is ignored", () => {
-    const root = workspace();
+  test("reports a tracked file whose only sibling is ignored", async () => {
+    const root = await workspace();
     // Deleting the untracked file leaves the tracked query as the sole source,
     // so an enumeration that dropped it would report an empty tree here.
     writeFileSync(join(root, ".gitignore"), "src/ignored.ts\nsrc/nested/\n");
@@ -69,22 +72,21 @@ describe("working-tree file enumeration", () => {
     ]);
   });
 
-  test("reports a symlink, which a readdir walk skips as not a file", () => {
-    const root = workspace();
+  test("reports a symlink, which a readdir walk skips as not a file", async () => {
+    const root = await workspace();
     symlinkSync(join(root, "outside.ts"), join(root, "src", "linked.ts"));
     expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).toContain(
       "src/linked.ts",
     );
   });
 
-  test("confines the result to the pathspec", () => {
-    expect(listWorkingTreeFiles({ workspaceRoot: workspace(), pathspec: "." })).toContain(
-      "outside.ts",
-    );
+  test("confines the result to the pathspec", async () => {
+    const root = await workspace();
+    expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "." })).toContain("outside.ts");
   });
 
-  test("fails loudly outside a git repository rather than reporting an empty tree", () => {
-    const root = mkdtempSync(join(tmpdir(), "working-tree-files-nogit-"));
+  test("fails loudly outside a git repository rather than reporting an empty tree", async () => {
+    const root = await temporaryRoot("working-tree-files-nogit-");
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "src", "loose.ts"), "export const loose = 5;\n");
     expect(() => listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).toThrow(
@@ -92,10 +94,11 @@ describe("working-tree file enumeration", () => {
     );
   });
 
-  test("names the failing query when git reports an error", () => {
+  test("names the failing query when git reports an error", async () => {
+    const root = await workspace();
     expect(() =>
       listWorkingTreeFiles({
-        workspaceRoot: workspace(),
+        workspaceRoot: root,
         pathspec: "src",
         runGit: () => ({ status: 128, stderr: "fatal: bad pathspec" }),
       }),

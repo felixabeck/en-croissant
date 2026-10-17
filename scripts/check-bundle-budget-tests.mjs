@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { gzipSync } from "node:zlib";
 import { assertBundleBudget, buildBundleReport } from "./check-bundle-budget.mjs";
+import { testTempRoots } from "./test-temp-root.mjs";
+
+const temporaryRoot = testTempRoots(after);
 
 const manifest = {
   "index.html": {
@@ -35,7 +37,7 @@ const payloads = {
 };
 
 async function fixture() {
-  const outputDirectory = await mkdtemp(join(tmpdir(), "bundle-budget-"));
+  const outputDirectory = await temporaryRoot("bundle-budget-");
   await mkdir(join(outputDirectory, "assets"));
   await Promise.all(
     Object.entries(payloads).map(([file, contents]) =>
