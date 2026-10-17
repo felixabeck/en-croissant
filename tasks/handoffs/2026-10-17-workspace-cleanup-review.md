@@ -2504,3 +2504,27 @@ Plan authorship and arbitration shared one context. Detection and code used the 
 model family in separate selected-executor sessions. No source, test, asset, dependency,
 workflow or policy changed after the verified source push. The next record closure is not
 an early promise of CI success, it records the actual successful hosted result above.
+
+## Hosted-closure records review, round7
+
+The records-only reviewer verified the new source gate, CI and installer facts, but found
+one additional records issue at two older Related references. Both still labelled the now
+handled f-20261003-09 open. Root adopted R7-REC1 as Fix and used the validated findings writer
+to append explicit status corrections to f-20261005-04 and f-20261006-07. Both broader findings
+remain open. Historical text is preserved. Closure review of this correction follows.
+Round7 adds one adoption, giving diff_adopted_per_round r1=8 r2=5 r3=2 r4=1 r5=0 r6=0 r7=1.
+There are now13 unique adopted diff issues, including this records correction. The12 prior
+issues remain closed. Source, tests and proof bytes are unchanged.
+
+Raw round7 report:
+
+```text
+[should-fix] tasks/findings.md:14190 — Related still labels f-20261003-09 “open”, as does line 14445. Its header is now handled, with closure committed at 8b9a1620. Append status corrections while preserving historical text. (confidence: 100)
+
+Verified R6 transcription, adoption counts, ledger counts and retained source gate/CI/install results. Root screenshot inspection remains independently unverifiable. No writes, gates or live queries performed.
+
+VERDICT: REVISE
+```
+
+Plan authorship and arbitration shared one context. Detection and code used the same OpenAI
+model family. This records repair introduces no source phase or new product defect.
