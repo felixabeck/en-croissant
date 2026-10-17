@@ -16025,13 +16025,15 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### `pnpm i18n:extract` deletes the live `Window.Restore` key, because TopBar picks it through a ternary inside one `t()` call
 
-* **ID:** f-20261012-01 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261012-01 · **Status:** rejected · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 789f2f5a-cecf-48c9-be14-da27602ae6e9
 * **Where:** `src/components/TopBar.tsx:288` (`t(isMaximized ? "Window.Restore" : "Window.Maximize")`), `i18next.config.ts:33` (`removeUnusedKeys: true`), every `src/translation/*.json`.
 * **Defect:** `i18next-cli extract` recognises only one branch of the ternary as a key. Running `pnpm i18n:extract` (the documented route after adding keys, `docs/localization.md`) removed `"Window.Restore"` from all 16 catalogues in the f-20261001-07 build run on 2026-10-12, while `TopBar.tsx` still renders it as the Restore label of the maximised window. The run restored the key by hand; the next `i18n:extract` by any session deletes it again, and the window-control tooltip then shows the raw key.
 * **Fix shape:** select between two literal calls (`isMaximized ? t("Window.Restore") : t("Window.Maximize")`) so the extractor sees both keys, then prove that `pnpm i18n:extract` on a clean tree leaves every catalogue byte-identical. Grep for other `t(<cond> ? "…" : "…")` sites and fix them the same way.
 * **Proof:** `pnpm i18n:extract` followed by `git diff --exit-code -- src/translation`; `pnpm i18n:check`.
 * **Found by:** Claude Code (Opus 5.5), drain build run for f-20261001-07, reviewing the phase-2 leaf's catalogue diff.
+* **Why rejected:** not a defect (2026-10-17, Grok Bot side lane, Codex leaf measurement). On a clean tree at 244cfec5, `pnpm i18n:extract` and `pnpm exec i18next-cli extract --ci` change no catalogue (`git diff --exit-code -- src/translation` exit 0), and `"Window.Restore"` stays in all 16 catalogues. The locked i18next-cli is 1.42.12 now and was 1.42.12 in the lockfile in force on 2026-10-12 (`aee810b7`); it collects both literal branches of `t(cond ? "A" : "B")`. Neither `src/components/TopBar.tsx:288` nor the `Window.Restore` catalogue entries have changed since 2026-08-13, so the 2026-10-12 deletion did not come from this extractor reading this source. A recurrence is already caught: the contract gate's `lint:ci` runs `i18next-cli extract --ci`, which fails on any catalogue drift. No code change; rewriting the ten two-literal ternaries was measured and declined as churn.
+<!-- ledger-meta {"command":"set-header","effect_lines":1,"effect_sha256":"df6123d38d687d7d33d5cfc2a6ac92645c3900b028387487878e40fe683bfbe6","header_sha256":"51450a9fc5795533bc7ab234db81bc0ceaa63bf126c2481fcdf9a437d29b94aa","header_status":"rejected","input_sha256":"d4b820cf5907f49988cc82294046d75b8f154e28ea4340b8ca7f497f86bd2ab0","kind":"mutation-receipt","operation":"d6539d8cb5f152468fa425208b386bd5454f75f2a0f9221accc55f4006620a4a","options":{"headers":{"Status":"rejected"},"section":null},"request_id_sha256":null,"results":["f-20261012-01"],"target":"f-20261012-01","v":1} -->
 
 ### The chessfable script test suites leave thousands of mkdtemp directories in /tmp per day
 
