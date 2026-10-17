@@ -356,13 +356,39 @@ test("the catalog card becomes installed only after its successful save receipt"
 });
 
 test.each(["registerInstalledEngine", "getEngineConfig"] as const)(
-  "%s failure after download shows an error and adds nothing through the real installer",
+  "%s failure after download stays idle after rejected clear and remount through the real button and installer",
   async (step) => {
     const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
+    mocks.realProgressButton = true;
     mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
-    mocks[step].mockRejectedValue(new Error(`${step} failed`));
+    const id = defaultEngineProgressId(mocks.defaultEngines[0].downloadLink);
+    const succeeded = {
+      id,
+      generation: 7n,
+      progress: 100,
+      finished: true,
+      state: "succeeded" as const,
+    };
+    mocks.downloadEngineArchive.mockImplementation(async () => {
+      mocks.getProgress.mockResolvedValue(succeeded);
+      mocks.progressListener!({ payload: { ...succeeded, cleared: false } });
+    });
+    mocks.clearProgress.mockRejectedValue(new Error("clear failed"));
+    let failSetup!: (error: Error) => void;
+    mocks[step].mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failSetup = reject;
+        }),
+    );
     await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
     await act(async () => mocks.progressButtonProps!.onClick());
+    expect(host.querySelector("[data-progress]")?.textContent).toBe("100");
+    const finalizing = [...host.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Common.Extracting"),
+    );
+    expect(finalizing?.disabled).toBe(true);
+    await act(async () => failSetup(new Error(`${step} failed`)));
     expect(mocks.downloadEngineArchive).toHaveBeenCalledOnce();
     expect(mocks.registerInstalledEngine).toHaveBeenCalledOnce();
     expect(mocks.getEngineConfig).toHaveBeenCalledTimes(step === "getEngineConfig" ? 1 : 0);
@@ -375,6 +401,21 @@ test.each(["registerInstalledEngine", "getEngineConfig"] as const)(
     );
     expect(mocks.progressButtonProps?.initInstalled).toBe(false);
     expect(mocks.progressButtonProps?.inProgress).toBe(false);
+    expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith(id);
+    expect(host.querySelector("[data-progress]")).toBeNull();
+    expect(
+      [...host.querySelectorAll("button")].find((button) => button.textContent === "Common.Install")
+        ?.disabled,
+    ).toBe(false);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+    expect(mocks.getProgress).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("[data-progress]")).toBeNull();
+    expect(
+      [...host.querySelectorAll("button")].find((button) => button.textContent === "Common.Install")
+        ?.disabled,
+    ).toBe(false);
   },
 );
 

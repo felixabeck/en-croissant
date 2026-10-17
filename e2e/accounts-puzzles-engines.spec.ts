@@ -607,7 +607,11 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
     });
 });
 
-test("accounts-puzzles-engines: add engine download catalog", async ({ page, mockScenario }) => {
+test("accounts-puzzles-engines: add engine download catalog", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
     await page.addInitScript(() => {
         localStorage.setItem("font-size", "100");
     });
@@ -630,6 +634,122 @@ test("accounts-puzzles-engines: add engine download catalog", async ({ page, moc
         dialog.getByRole("button", { name: "Install", exact: true }).first(),
     ).toBeVisible();
     await expect(dialog).toHaveScreenshot("engine-add-catalog.png");
+
+    const transferCommands = {
+        is_bmi2_compatible: { result: false },
+        verify_signed_bytes: { result: null },
+        get_progress: { result: null },
+        prepare_download: { result: "engine-download-ticket" },
+        release_download: { result: null },
+        get_engine_workspace: { result: { id: { id: "engine-root" }, kind: "engineRoot" } },
+        engine_archive_destination: { result: { id: "engine-destination" } },
+        download_engine_archive: { result: null },
+        register_installed_engine: {
+            result: { id: { id: "engine-binary" }, kind: "engine" },
+        },
+        get_engine_config: {
+            delay: 5000,
+            error: {
+                tag: "backend-error",
+                category: "io",
+                message: "Engine configuration failed after transfer",
+            },
+        },
+        clear_progress: {
+            error: {
+                tag: "backend-error",
+                category: "io",
+                message: "Progress clear refused",
+            },
+        },
+    } satisfies NonNullable<MockScenario["commands"]>;
+    await page.evaluate(
+        (commands) => window.__E2E_TAURI__.configure({ commands }),
+        transferCommands,
+    );
+    await dialog.getByRole("button", { name: "Install", exact: true }).first().click();
+    await expect
+        .poll(() =>
+            page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .some(({ command }) => command === "get_engine_config"),
+            ),
+        )
+        .toBe(true);
+    const progressId = await page.evaluate((commands) => {
+        const call = window.__E2E_TAURI__
+            .invocations()
+            .find(({ command }) => command === "download_engine_archive")!;
+        const { id } = call.args as { id: string };
+        const succeeded = {
+            id,
+            generation: "7",
+            progress: 100,
+            finished: true,
+            state: "succeeded",
+        };
+        window.__E2E_TAURI__.configure({
+            commands: { ...commands, get_progress: { result: succeeded } },
+        });
+        window.__E2E_TAURI__.emit("progress-event", { ...succeeded, cleared: false });
+        return id;
+    }, transferCommands);
+    const finalizing = dialog.getByRole("button", { name: /Extracting/ });
+    await expect(finalizing).toBeDisabled();
+    await expect(finalizing.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+    await capture("engine-add-active-finalization");
+    await expect(
+        page.getByText("Engine configuration failed after transfer", { exact: true }),
+    ).toBeVisible();
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    window.__E2E_TAURI__
+                        .invocations()
+                        .filter(({ command }) => command === "clear_progress").length,
+            ),
+        )
+        .toBe(1);
+    const install = dialog.getByRole("button", { name: "Install", exact: true }).first();
+    await expect(install).toBeEnabled();
+    await expect(install.getByRole("progressbar")).toHaveCount(0);
+    await expect(dialog.getByRole("progressbar")).toHaveCount(0);
+    await capture("engine-add-failed-cleanup-idle");
+    const readsBeforeReopen = await page.evaluate(
+        (id) =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(
+                    (call) =>
+                        call.command === "get_progress" && (call.args as { id: string }).id === id,
+                ).length,
+        progressId,
+    );
+    await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    await page.getByRole("button", { name: "Add New", exact: true }).click();
+    await expect
+        .poll(() =>
+            page.evaluate(
+                (id) =>
+                    window.__E2E_TAURI__
+                        .invocations()
+                        .filter(
+                            (call) =>
+                                call.command === "get_progress" &&
+                                (call.args as { id: string }).id === id,
+                        ).length,
+                progressId,
+            ),
+        )
+        .toBeGreaterThan(readsBeforeReopen);
+    await expect(dialog).toHaveCSS("opacity", "1");
+    await expect(install).toBeEnabled();
+    await expect(install.getByRole("progressbar")).toHaveCount(0);
+    await expect(dialog.getByRole("progressbar")).toHaveCount(0);
+    await capture("engine-add-reopened-idle");
 });
 
 test("accounts-puzzles-engines: local engine validation is visible before any native issuance", async ({

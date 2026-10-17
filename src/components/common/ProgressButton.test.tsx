@@ -544,26 +544,80 @@ test.each([
   expect(host.querySelector("[data-testid='progress']") !== null).toBe(hasBar);
 });
 
-test("a succeeded item still shows progress when success does not complete the action", async () => {
-  progress.progress = 50;
-  progress.finished = true;
-  progress.isActive = false;
-  progress.item = { ...progress.item, progress: 50, finished: true, state: "succeeded" };
-
-  await act(async () => {
+test("retained wire success shows finalization only while owned, including after rejected clear and remount", async () => {
+  nativeProgress.enabled = true;
+  nativeProgress.getProgress.mockResolvedValue({
+    status: "ok",
+    data: {
+      id: "job",
+      generation: "9007199254740993",
+      progress: 100,
+      finished: true,
+      state: "succeeded",
+    },
+  });
+  nativeProgress.clearProgress.mockRejectedValue({
+    tag: "backend-error",
+    category: "conflict",
+    message: "clear refused",
+  });
+  const render = (inProgress: boolean) =>
     root.render(
       <ProgressButton
         id="job"
         initInstalled={false}
         completeOnProgressSuccess={false}
         onClick={() => undefined}
-        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
-        inProgress={false}
+        labels={{
+          completed: "Done",
+          action: "Run",
+          inProgress: "Running",
+          finalizing: "Finalizing",
+        }}
+        inProgress={inProgress}
         setInProgress={() => undefined}
       />,
     );
-  });
 
-  expect(host.querySelector("[data-testid='progress']")).not.toBeNull();
-  expect(host.querySelector("button")?.textContent).toContain("Run");
+  await act(async () => render(true));
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("100");
+  expect(host.querySelector("button")?.textContent).toContain("Finalizing");
+  expect(host.querySelector("button")?.disabled).toBe(true);
+  await expect(tauri.clearProgress("job")).rejects.toThrow("clear refused");
+  expect(nativeProgress.clearProgress).toHaveBeenCalledExactlyOnceWith("job");
+  await act(async () => render(false));
+  expect(host.querySelector("[data-testid='progress']")).toBeNull();
+  expect(host.querySelector("button")?.textContent).toBe("Run");
+  expect(host.querySelector("button")?.disabled).toBe(false);
+
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await act(async () => render(false));
+  expect(nativeProgress.getProgress).toHaveBeenCalledTimes(2);
+  expect(host.querySelector("[data-testid='progress']")).toBeNull();
+  expect(host.querySelector("button")?.textContent).toBe("Run");
+  expect(host.querySelector("button")?.disabled).toBe(false);
+  await reportProgress(9007199254740994n, 45);
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("45");
+  expect(host.querySelector("button")?.disabled).toBe(true);
+});
+
+test("ownerless wire Running remains visible and cancellable after remount and rejected cancel", async () => {
+  nativeProgress.getProgress.mockResolvedValue({
+    status: "ok",
+    data: { id: "job", generation: "7", progress: 45, finished: false, state: "running" },
+  });
+  const onCancel = vi.fn().mockRejectedValue(new Error("cancel refused"));
+  await renderNativeProgress(onCancel);
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await renderNativeProgress(onCancel);
+  expect(nativeProgress.getProgress).toHaveBeenCalledTimes(2);
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("45");
+  expect(host.querySelector("button")?.disabled).toBe(true);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  expect(onCancel).toHaveBeenCalledOnce();
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("45");
+  expect(host.querySelector("[data-testid='cancel']")).not.toBeNull();
+  expect(nativeProgress.clearProgress).not.toHaveBeenCalled();
 });

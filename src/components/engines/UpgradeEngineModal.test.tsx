@@ -13,24 +13,31 @@ import {
 } from "@/utils/engines";
 import type { EngineConfig } from "@/bindings";
 import UpgradeEngineModal from "./UpgradeEngineModal";
+import {
+  resetProgressButtonTestHarness,
+  reportRunningProgress,
+} from "@/tests/progressButtonTestHarness";
 
-const mocks = vi.hoisted(() => ({
-  download: vi.fn(),
-  register: vi.fn(),
-  config: vi.fn(),
-  retire: vi.fn(),
-  reconcile: vi.fn(),
-  cancel: vi.fn(),
-  cancelDownloadForProgress: vi.fn(),
-  clear: vi.fn(),
-  report: vi.fn(),
-  notify: vi.fn(),
-  notificationShow: vi.fn(),
-  getEngineWorkspace: vi.fn(),
-  close: undefined as (() => void) | undefined,
-  catalogError: undefined as unknown,
-  progress: new Map<string, number>(),
-}));
+const mocks = await vi.hoisted(async () => {
+  const { createProgressButtonTestHarness } = await import("@/tests/progressButtonTestHarness");
+  const harness = createProgressButtonTestHarness();
+  return Object.assign(harness, {
+    download: vi.fn(),
+    register: vi.fn(),
+    config: vi.fn(),
+    retire: vi.fn(),
+    reconcile: vi.fn(),
+    cancel: harness.cancelDownload,
+    clear: harness.clearProgress,
+    report: vi.fn(),
+    notify: vi.fn(),
+    notificationShow: vi.fn(),
+    getEngineWorkspace: vi.fn(),
+    close: undefined as (() => void) | undefined,
+    catalogError: undefined as unknown,
+    progress: new Map<string, number>(),
+  });
+});
 vi.mock("@/platform/tauri", async (original) => ({
   ...(await original<typeof import("@/platform/tauri")>()),
   withDownloadTicket: (run: (ticket: string) => Promise<unknown>) => run("ticket"),
@@ -45,7 +52,9 @@ vi.mock("@/platform/tauri", async (original) => ({
     cancelDownload: mocks.cancel,
     cancelDownloadForProgress: mocks.cancelDownloadForProgress,
     clearProgress: mocks.clear,
+    getProgress: mocks.getProgress,
   },
+  tauriSubscriptions: { progress: mocks.subscribeProgress },
 }));
 vi.mock("@/utils/engines", async (original) => ({
   ...(await original<typeof import("@/utils/engines")>()),
@@ -84,18 +93,24 @@ vi.mock("@/i18n", async (original) => ({
   },
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@/hooks/useProgress", () => ({
-  useProgress: (id: string) => ({
-    progress: mocks.progress.get(id) ?? 0,
-    finished: mocks.progress.get(id) === 100,
-    isActive: mocks.progress.has(id) && mocks.progress.get(id) !== 100,
-    item: mocks.progress.has(id)
-      ? { generation: 1n, state: mocks.progress.get(id) === 100 ? "succeeded" : "running" }
-      : null,
-    clear: () => mocks.clear(id),
-    fence: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/useProgress", async (original) => {
+  const actual = await original<typeof import("@/hooks/useProgress")>();
+  return {
+    useProgress: (id: string) =>
+      mocks.realProgressButton
+        ? actual.useProgress(id)
+        : {
+            progress: mocks.progress.get(id) ?? 0,
+            finished: mocks.progress.get(id) === 100,
+            isActive: mocks.progress.has(id) && mocks.progress.get(id) !== 100,
+            item: mocks.progress.has(id)
+              ? { generation: 1n, state: mocks.progress.get(id) === 100 ? "succeeded" : "running" }
+              : null,
+            clear: () => mocks.clear(id),
+            fence: vi.fn(),
+          },
+  };
+});
 vi.mock("../common/AppModal", () => ({
   default: ({ children, onClose }: { children: React.ReactNode; onClose: () => void }) => {
     mocks.close = onClose;
@@ -197,6 +212,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetEngineOwnerCoordinatorForTests();
   vi.clearAllMocks();
+  resetProgressButtonTestHarness(mocks);
   mocks.catalogError = undefined;
   mocks.getEngineWorkspace
     .mockReset()
@@ -576,5 +592,57 @@ test.each([false, true])(
     expect(host.querySelector("[data-progress]")).toBeNull();
     expect(host.textContent).not.toContain("Common.Downloading");
     expect(host.textContent).not.toContain("Common.Extracting");
+  },
+);
+
+test.each([false, true])(
+  "discarded transfer stays idle after rejected clear and remount when cancel request fails=%s",
+  async (fails) => {
+    mocks.realProgressButton = true;
+    const id = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
+    const succeeded = {
+      id,
+      generation: 7n,
+      progress: 100,
+      finished: true,
+      state: "succeeded" as const,
+    };
+    mocks.clear.mockRejectedValue(new Error("clear failed"));
+    let complete!: () => void;
+    mocks.download.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    if (fails) mocks.cancel.mockRejectedValueOnce(new Error("cancel IPC failed"));
+    else mocks.cancel.mockResolvedValueOnce(false);
+    await render();
+    await click("Common.Install");
+    await reportRunningProgress(mocks, id);
+    await click("Common.Cancel");
+    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("ticket");
+    expect(mocks.notify).toHaveBeenCalledTimes(fails ? 1 : 0);
+    expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
+    expect(host.querySelector("button")?.disabled).toBe(true);
+    await act(async () => {
+      mocks.getProgress.mockResolvedValue(succeeded);
+      mocks.progressListener!({ payload: { ...succeeded, cleared: false } });
+      complete();
+    });
+    expect(mocks.clear).toHaveBeenCalledExactlyOnceWith(id);
+    expect(store.get(enginesAtom)).toEqual([old]);
+    expect(mocks.retire).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+    expect(host.querySelector("[data-progress]")).toBeNull();
+    expect(host.querySelector("button")?.textContent).toBe("Common.Install");
+    expect(host.querySelector("button")?.disabled).toBe(false);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render();
+    expect(mocks.getProgress).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("[data-progress]")).toBeNull();
+    expect(host.querySelector("button")?.textContent).toBe("Common.Install");
+    expect(host.querySelector("button")?.disabled).toBe(false);
   },
 );

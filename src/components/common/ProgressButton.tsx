@@ -108,15 +108,18 @@ function ProgressButton({
         autoContrast
       >
         <span className={classes.label}>{label}</span>
-        {!completed && progress !== 0 && item?.state !== "cancelled" && (
-          <Progress
-            pos="absolute"
-            h="100%"
-            value={progress}
-            className={classes.progress}
-            radius="sm"
-          />
-        )}
+        {!completed &&
+          progress !== 0 &&
+          item?.state !== "cancelled" &&
+          (item?.state !== "succeeded" || showProgress) && (
+            <Progress
+              pos="absolute"
+              h="100%"
+              value={progress}
+              className={classes.progress}
+              radius="sm"
+            />
+          )}
       </Button>
       {showProgress && onCancel && (
         <IconAction
