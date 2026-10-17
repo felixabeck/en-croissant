@@ -8426,3 +8426,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Change failed-terminal presentation only through independently authorized failed-progress work with its own proof.
 * **Decided by:** Codex, autonomously under full auto in drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"dfd258e23a5c0c2b349fce2abf43e636644cb23c4cfbf2eceb19e10d5971e869","input_sha256":"b99d98a0880df55c0b72c1586267f1d1856f2271ed3c2ca1bd6477eef5465e48","kind":"mutation-receipt","operation":"8b6d07dee96bb5f7add109a4ec6cd9b42b90ca9972658ff36639a3bda354d241","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-05 — Workspace cleanup renderer contract, choice 1
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 1?
+* **Governs:** f-20261003-09
+* **Chosen:** Cleanup failure uses reconciliation-only then original rejection. Rejected treating it as applied-despite-error, since an incomplete leftover is not a successful create. d-20261006-05 keeps compensation and explicitly distinguishes ordinary rollback from committed uncertainty. Reverse only with a reviewed richer operation outcome and evidence that consumers can safely recover the object.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"9e506899c4d30b46224f4c7b66ff56184d600876835d82d6f4c8b3b683d1d195","input_sha256":"53cb46bd6488aa4ef36001d69a6d99367826c3d3377cde27361eeaff912e2cfe","kind":"mutation-receipt","operation":"af49ebad8aaddf947ef085d28d2076c5cfe2d74a0e8f3e47a4b63681c18775cb","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-05"],"target":"decisions-ledger","v":1} -->
