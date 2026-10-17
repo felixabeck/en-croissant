@@ -8526,3 +8526,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The installed Jotai producer commits its atom before throwing a subscriber error. The source trace shows appendStoreGame can therefore admit the origin and then escape before stamp installation, while saveToFile discards that failure as superseded. The root measured this ordering against the installed library and the repair must add real workspace-subscriber regressions. Reversal path: replace only the append/tab-update acknowledgement integration with an equivalent exact-successor, original-failure and dirty-edit contract proven through those regressions.
 * **Decided by:** Codex, full auto, cumulative review arbitration. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4599046aac0d846c9844a0950ae54eee1835087797a71262af997227ea68b097","input_sha256":"af2a06bd658ebc71c0c6af765f8bddf0dadc85a1c74297ebd3eaf8b812274021","kind":"mutation-receipt","operation":"db180b5b6187236e73c2c80f1ebe6e32712fa729540b5a158c0c61b9d1d16f4f","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-15 — Where does engine archive preparation obtain its scratch authority?
+
+* **Question:** Must archive payload scratch live beside the destination, and where does extracted staging obtain creation authority?
+* **Governs:** f-20261001-15
+* **Chosen:** Anonymous tempfile descriptors for network payload and decompressed tar scratch, following d-20261005-01. A closed archive-only creation door on the retained resolution calls one parent-relative OwnedStagingDir constructor. Preserve sibling directory staging and exact ownership through publication and cleanup.
+* **Rejected:** Named payload ownership, destination-parent pathname temporaries, reopening a path then comparing after creation, a general raw-parent accessor, checker exemptions and registry grants for staging.
+* **Reason:** Neither scratch file is renamed into place. Anonymous descriptors remove the pathname race and named cleanup. The resolution already retains the authorized parent, and the observed failure includes writes before publication. This refines d-20260918-11, d-20260919-03, d-20261005-05 and d-20261016-15 with pre-publication write evidence while retaining their same-parent publication and exact ownership contracts. The existing non-O_TMPFILE fallback unlink limitation remains. Reversal path: equivalent parent-bound creation and exact-owner runtime proof are required before changing this facade, and a future same-volume payload publication requirement needs a reviewed descriptor-relative named owner.
+* **Decided by:** Codex, autonomously under full auto, adopted plan 2026-10-17-f-20261001-15-archive-staging. **Superseded-by:** -
+
+### d-20261017-16 — How is the archive staging implementation partitioned?
+
+* **Question:** How many implementation phases should the authority-bound archive staging change use?
+* **Governs:** f-20261001-15
+* **Chosen:** One cohesive phase spanning filesystem ownership, the resolved-authority door, preparation consumers and native regression tests, delegated to one sensitive Codex write leaf.
+* **Rejected:** An independently committed constructor without a production consumer and overlapping fs.rs implementation workers.
+* **Reason:** The complete security boundary and native regression can land green together. Root owns integration, review, gates and release. Reversal path: split only when an independent file set and standalone verified contract emerge.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"c9d134eb297726362e92439362c24722bce93366e3020d034152d3ad82fdb08b","input_sha256":"2e99f3f9c3e94ad8cf54c0fc0e58c657381f69ba4bf1c63433d809da98b2afc4","kind":"mutation-receipt","operation":"d6a4f5a486f5e8df9e08d0c9116a89515c195771b3fce57658743b1d04e72675","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-15","d-20261017-16"],"target":"decisions-ledger","v":1} -->
