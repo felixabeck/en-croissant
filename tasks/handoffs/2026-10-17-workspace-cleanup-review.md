@@ -2337,3 +2337,96 @@ Limitation: static source review only, no tests run or files changed. Detection 
 
 VERDICT: REVISE
 ```
+
+
+## Diff closure round5 at dc3d4b58
+
+All eight required read-only reports completed. Tests and records explicitly CLOSED R1-T1
+from inspected retained images, exact initial-capture hashes and the36-case green container
+confirmation. The other code lenses correctly report NOT APPLICABLE to the PNG-only delta.
+All earlier source/test/records closures remain intact. No new issue was found, so
+round5 diff adoptions are0. Diff adoption history is r1=8 r2=5 r3=2 r4=1 r5=0.
+These are lens findings adopted per round, including repeated T1 and the duplicate R2-C2
+witness. There were12 distinct diff issues, all Fix and now closed. The rejected root A1
+counterexample is not a diff-lens adoption or a production defect.
+
+The three implemented findings are closed through the ledger writer after their complete
+history and local proofs were committed: f-20261003-09 at8b9a1620, f-20261007-03 at0bc68509,
+f-20261011-08 atdc3d4b58. The CI finding f-20261017-03 remains OPEN until its explicit hosted
+proof. It is not deferred, this run owns that release obligation and its source repair.
+Skipped f-20261013-01 remains open at inline tier because its fix does not overlap the actual
+primary cleanup fix source. Related broader f-20261004-09, f-20261005-04 and f-20261006-07
+remain unchanged at build tier. The separate carried catalog-label clipping finding
+f-20261017-02 remains open at build tier, only its missing normative Proof was repaired.
+
+REVIEWED_THROUGH is dc3d4b585662aba4838f88f6bca86c526aa027fb. This closing transcript and
+current state will receive the final records-only check before full gates. No new source,
+test, baseline, dependency, coverage floor or budget change is authorized by that check.
+Plan authorship and arbitration shared one context. Detection used the same OpenAI family
+as the code. All raw round5 reports follow unchanged.
+
+### Raw correctness closure report, round5
+
+```text
+NOT APPLICABLE: The supplied delta adds only two PNG baselines. It changes no executable logic or caller/callee contracts. R1-T1 asset-proof closure is outside this correctness lens.
+VERDICT: APPROVED
+```
+
+### Raw root-cause closure report, round5
+
+```text
+NOT APPLICABLE: The reviewed code delta adds only two PNG baselines. It changes no failure-producing mechanism and cannot reintroduce a source defect. R1-T1 asset and browser-proof closure falls outside this lens.
+
+VERDICT: APPROVED
+```
+
+### Raw error-handling closure report, round5
+
+```text
+NOT APPLICABLE: The delta adds only two PNG baselines. It changes no error handling, failure surfacing, or retries. R1-T1 closure is outside this lens.
+VERDICT: APPROVED
+```
+
+### Raw minimalism closure report, round5
+
+```text
+NOT APPLICABLE: The delta contains only two planned PNG baselines for distinct locales. No abstractions, configurability, pass-through layers, or duplicated implementation occur. R1-T1 closure is outside this lens.
+VERDICT: APPROVED
+```
+
+### Raw code-quality closure report, round5
+
+```text
+NOT APPLICABLE: The scoped delta contains only two PNG baselines. Code readability and local-consistency defects cannot occur in this delta. R1-T1 closure is outside this lens and was not assessed.
+VERDICT: APPROVED
+```
+
+### Raw tests closure report, round5
+
+```text
+R1-T1 CLOSED — Both retained PNGs match the initial browser captures byte-for-byte. Inspected English and German images show readable cleanup text and reachable confirmation controls. The assertions at `e2e/async-errors.spec.ts:109` consume these exact baselines. Removing them reproduces the recorded missing-snapshot failures. Canonical confirmation passed all 36 cases.
+
+No new verification gaps found in this delta. Final push gates remain pending. Review used the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+```
+
+### Raw persisted-state closure report, round5
+
+```text
+NOT APPLICABLE: The code delta adds only two PNG baselines. It changes no persistence encoding, storage keys, atom families, hydration or tab lifecycle. R1-T1 closure belongs to visual verification and was not assessed by this lens.
+
+VERDICT: APPROVED
+```
+
+### Raw records closure report, round5
+
+```text
+R1-T1 CLOSED — Both retained baselines match initial actuals byte-for-byte. Inspected locale/relist captures are readable. Canonical confirmation passed all 36 cases.
+
+No new records findings. Raw reports and withdrawal history are preserved. Local closure claims match retained source and proof.
+
+Hosted CI remains unverifiable without live queries. Final push gates remain pending. Read-only review, no gates rerun. Detection shares the implementation’s OpenAI family.
+
+VERDICT: APPROVED
+```
