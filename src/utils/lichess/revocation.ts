@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { LichessRevocationOutcome } from "@/bindings/generated";
+import type { LichessRevocationOutcome } from "@/bindings";
 import enUS from "@/translation/en-US.json";
 
 export type RevocationReason =
