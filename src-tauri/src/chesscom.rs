@@ -17,8 +17,20 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use specta::Type;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 use std::{io::Write, time::Duration};
 use tokio_util::sync::CancellationToken;
+
+#[cfg(test)]
+static STAGED_PGN_CAPTURE: Mutex<Option<Arc<Mutex<Vec<u8>>>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn capture_staged_pgn_bytes(bytes: &[u8]) {
+    if let Some(capture) = STAGED_PGN_CAPTURE.lock().unwrap().as_ref() {
+        capture.lock().unwrap().extend_from_slice(bytes);
+    }
+}
 
 const API_ORIGIN: &str = "https://api.chess.com";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -371,7 +383,11 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
                         ));
                     }
                     staged.write_all(pgn.as_bytes())?;
+                    #[cfg(test)]
+                    capture_staged_pgn_bytes(pgn.as_bytes());
                     staged.write_all(b"\n")?;
+                    #[cfg(test)]
+                    capture_staged_pgn_bytes(b"\n");
                 }
                 update_progress_with_state(
                     &state.progress_state,
@@ -918,6 +934,14 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_after_final_archive_fetch_stops_before_staging() {
+        struct ResetStagedPgnCapture;
+
+        impl Drop for ResetStagedPgnCapture {
+            fn drop(&mut self) {
+                *STAGED_PGN_CAPTURE.lock().unwrap() = None;
+            }
+        }
+
         struct CancelOnDropArchiveStream {
             body: Option<Bytes>,
             state: AppState,
@@ -977,7 +1001,7 @@ mod tests {
         let (_dir, state, destination, root, app) = export_fixture(transport.clone());
         std::fs::write(root.join("cancel.pgn"), b"previous").unwrap();
         let job_id = state.operations.prepare_download("test").unwrap();
-        let body = br#"{"games":[{"pgn":"1. e4 e5"},{"pgn":"1. d4 d5"}]}"#;
+        let body = br#"{"games":[{"pgn":"1. e4 e5 {CANCEL-STAGING-MARKER-f20260920-02}"},{"pgn":"1. d4 d5 {CANCEL-STAGING-MARKER-f20260920-02}"}]}"#;
         *transport.archive.lock().unwrap() = Some(DownloadResponse {
             status: 200,
             headers: HeaderMap::new(),
@@ -988,6 +1012,13 @@ mod tests {
                 job_id: job_id.clone(),
             }),
         });
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut slot = STAGED_PGN_CAPTURE.lock().unwrap();
+            assert!(slot.is_none(), "staged PGN capture is already installed");
+            *slot = Some(captured.clone());
+        }
+        let _reset_capture = ResetStagedPgnCapture;
         let task = tokio::spawn(run_owned_export(
             destination,
             "cancel.pgn".into(),
@@ -1001,6 +1032,12 @@ mod tests {
         wait_for_progress(&state, &job_id, ProgressState::Cancelled).await;
         assert_eq!(std::fs::read(root.join("cancel.pgn")).unwrap(), b"previous");
         wait_for_operation_drain(&state).await;
+        let marker = b"CANCEL-STAGING-MARKER-f20260920-02";
+        assert!(!captured
+            .lock()
+            .unwrap()
+            .windows(marker.len())
+            .any(|bytes| bytes == marker));
     }
 
     #[tokio::test]
