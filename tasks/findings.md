@@ -11075,12 +11075,15 @@ This supersedes all earlier implementation/review/native-pending status for this
 
 ### A cancelled Chess.com download keeps parsing and staging the archive it already fetched
 
-* **ID:** f-20260920-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260920-02 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/chesscom.rs` — the parse-and-stage loop after the final archive fetch (~:348), between the last cancellation-aware fetch and the install-time check.
 * **Defect:** once the last month's archive has been fetched, cancellation is not observed again while the games are parsed and written into the staged PGN. A user who cancels at that moment keeps the CPU and disk work running to the end of the archive; only publication is prevented. Found while `f-20260906-07` made Cancel reach the download at all — the transfer now stops, this tail does not.
 * **Why it matters:** "Cancel stops the work" is only true up to the last fetch; a large account export keeps writing for the rest of its staging pass.
 * **Fix shape:** check the cancellation token between games (or per chunk) in that loop and return `Error::Cancellation`, matching the fetch loop above it; assert it with the existing blocking-transport test shape by cancelling after the final fetch.
 * **Found by:** review-correctness (Codex) over the `f-20260906-07` cumulative diff, 2026-09-20; outside that mandate (the mandate's three cards are the database, puzzle and engine flows), filed by Claude Code.
+
+Handled. The Chess.com per-game loop returns Error::Cancellation before writing the next staged game. Commit b9070b8b. The regression cancellation_after_final_archive_fetch_stops_before_staging now captures staged bytes under cfg(test) and asserts that CANCEL-STAGING-MARKER-f20260920-02 is absent. Commit d8f0a8b2. A zero-offset revert of only the per-game check went red at that assertion (exit 101) and the restore was green. The installer still cancels later. No production hook exists outside cfg(test). Review history: tasks/handoffs/2026-10-17-f-20261004-01-review.md.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ce407c77b44c9e2ee224a95dad3ec709f9a7f9e820d8699526145c879d144623","header_sha256":"c2819c20dadb337e4f9b0718c355a85ea25fa856bbb3b854bb4bf5c7181669fe","header_status":"handled","input_sha256":"fa17cec2b2254ac4663ca89aa1bbdd6dc72b834bd286bf20f435cfd66e16dd21","kind":"mutation-receipt","operation":"42c154c473fd7ee106c2d05ae7e0fd07a4c88e8ee08c91f168fa346bdf28e9e6","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-02"],"target":"f-20260920-02","v":1} -->
 
 ### The `largestLazy` bundle budget has no headroom left: the board route sits 33 gzip bytes over the cap
 
