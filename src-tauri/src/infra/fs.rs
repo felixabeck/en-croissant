@@ -5446,20 +5446,16 @@ impl OwnedStagingDir {
                     .map_err(|error| io(error.into()));
             #[cfg(windows)]
             let created = win::create_directory_child(&parent, &leaf);
-            let created = match created {
-                Ok(created) => created,
+            let child = match created {
+                #[cfg(unix)]
+                Ok(()) => open_directory_at(&parent, &leaf, true)?,
+                #[cfg(windows)]
+                Ok(child) => child,
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     continue
                 }
                 Err(error) => return Err(error),
             };
-            #[cfg(unix)]
-            let child = {
-                let () = created;
-                open_directory_at(&parent, &leaf, true)?
-            };
-            #[cfg(windows)]
-            let child = created;
             let identity = opened_identity(&child)?;
             let staging = Self {
                 parent,

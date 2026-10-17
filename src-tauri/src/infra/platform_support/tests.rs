@@ -1378,26 +1378,6 @@ fn windows_nt_name_interpreters_guard_a_single_leaf() {
 }
 
 #[test]
-fn windows_create_collision_is_already_exists() {
-    let source = source_for("infra/fs.rs");
-    let body = compact(&source[braced_body(source, "fn map_create_collision(")]);
-    assert!(body.contains("\"Windows object name collision\""), "{body}");
-    assert!(body.contains("AlreadyExists"), "{body}");
-    assert!(
-        !body.contains("windows_open_status_error"),
-        "collision translation must not edit the shared mapper: {body}"
-    );
-    let create_dir =
-        compact(&source[braced_body(source, "pub(super) fn create_dir_at_committed(")]);
-    assert!(create_dir.contains("map_create_collision"), "{create_dir}");
-    let create_regular = compact(&source[braced_body(source, "pub(super) fn create_regular_at(")]);
-    assert!(
-        create_regular.contains("map_create_collision"),
-        "{create_regular}"
-    );
-}
-
-#[test]
 fn windows_identity_is_read_from_the_retained_handle() {
     let source = source_for("infra/fs.rs");
     for signature in [

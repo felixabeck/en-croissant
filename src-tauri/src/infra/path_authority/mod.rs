@@ -21969,7 +21969,11 @@ mod tests {
 
         let unix_resolver = body_at_indent(resolved, "fn resolve_unix(");
         let windows_resolver = body_at_indent(resolved, "fn resolve_windows(");
-        let constructor_count = resolved
+        let test_module =
+            crate::infra::blocking::source_scan::braced_body(resolved, "#[cfg(test)]\nmod tests {");
+        let production_resolved =
+            [&resolved[..test_module.start], &resolved[test_module.end..]].concat();
+        let constructor_count = production_resolved
             .lines()
             .filter(|line| {
                 line.contains("ResolvedPath {")
