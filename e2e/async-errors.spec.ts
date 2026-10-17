@@ -119,6 +119,8 @@ for (const scenario of [
         await expect(download).toBeEnabled();
         await download.click();
         await page.mouse.move(0, 0);
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
         const notification = page.locator(".mantine-Notification-root");
         await expect(notification).toHaveCount(1);
         await expect(notification).toContainText(copy[key]);
