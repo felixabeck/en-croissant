@@ -82,6 +82,12 @@ export function useFileWorkspace(
       (await tauri.listFileWorkspace(workspace!, { signal })).map(workspaceEntryToEntry),
     ),
   );
+  const refreshWorkspace = (cleanupFailure?: unknown) => {
+    if (!workspace || !workspaceKey) return;
+    return cleanupFailure
+      ? reconcileWorkspaceListing(workspace, listingCache)
+      : listingCache.mutate(workspaceKey);
+  };
   const failure = listingFailure(error);
   const loadFailureMessage =
     rootFailureMessage("files", error, t) ??
@@ -134,20 +140,14 @@ export function useFileWorkspace(
   async function moveEntry(entry: Entry, destination: Entry["handle"]) {
     if (moveInFlight.current) return;
     if (!workspace) return;
-    const submittingWorkspace = workspace;
-    const submittingKey = workspaceListingKey(submittingWorkspace);
-    const submittingCache = listingCache;
     moveInFlight.current = true;
     setMoving(true);
     setActionError("");
     setSelectedEntry(entry);
     try {
       await runAppliedMutationWithRefresh(
-        () => tauri.moveWorkspaceEntry(submittingWorkspace, entry.handle, destination),
-        (cleanupFailure) =>
-          cleanupFailure
-            ? reconcileWorkspaceListing(submittingWorkspace, submittingCache)
-            : submittingCache.mutate(submittingKey),
+        () => tauri.moveWorkspaceEntry(workspace, entry.handle, destination),
+        refreshWorkspace,
       );
       setMoveTarget(null);
     } catch (cause) {
@@ -160,9 +160,6 @@ export function useFileWorkspace(
   async function submitAction() {
     const nameUnchanged = selected?.type === "file" && name === selected.name;
     if (!workspace || !parent) return;
-    const submittingWorkspace = workspace;
-    const submittingKey = workspaceListingKey(submittingWorkspace);
-    const submittingCache = listingCache;
     const editing = action === fileAction.edit || action === fileAction.rename;
     if (
       !name.trim() &&
@@ -187,36 +184,30 @@ export function useFileWorkspace(
       return;
     }
     try {
-      await runAppliedMutationWithRefresh(
-        async () => {
-          if (action === fileAction.file)
-            await tauri.createWorkspaceFile(
-              workspace,
-              parent,
-              name,
-              { type: "game", tags: [] },
-              {
-                kind: "text",
-                pgn: "*",
-              },
-            );
-          if (action === fileAction.folder)
-            await tauri.createWorkspaceDirectory(workspace, parent, name);
-          if (editing && selected?.type === "file") {
-            const metadata = {
-              type: chosenType,
-              tags: selected.metadata.tags,
-            };
-            if (nameUnchanged)
-              await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
-            else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
-          }
-        },
-        (cleanupFailure) =>
-          cleanupFailure
-            ? reconcileWorkspaceListing(submittingWorkspace, submittingCache)
-            : submittingCache.mutate(submittingKey),
-      );
+      await runAppliedMutationWithRefresh(async () => {
+        if (action === fileAction.file)
+          await tauri.createWorkspaceFile(
+            workspace,
+            parent,
+            name,
+            { type: "game", tags: [] },
+            {
+              kind: "text",
+              pgn: "*",
+            },
+          );
+        if (action === fileAction.folder)
+          await tauri.createWorkspaceDirectory(workspace, parent, name);
+        if (editing && selected?.type === "file") {
+          const metadata = {
+            type: chosenType,
+            tags: selected.metadata.tags,
+          };
+          if (nameUnchanged)
+            await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
+          else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
+        }
+      }, refreshWorkspace);
       setAction(null);
       setName("");
     } catch (cause) {

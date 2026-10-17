@@ -267,11 +267,13 @@ import type { Entry } from "./file";
 import { Input, Select } from "@mantine/core";
 import { SWRConfig, unstable_serialize, useSWRConfig } from "swr";
 import { workspaceListingKey, type WorkspaceListingCache } from "./workspaceListing";
+let controller!: ReturnType<typeof useFileWorkspace>;
 function FilesPage() {
   const [selected, setSelected] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
   const source = useFileWorkspace(selected, setSelected);
+  controller = source;
   return (
     <>
       {source.chooser}
@@ -405,6 +407,53 @@ test.each(["file", "folder", "rename", "metadata", "move"] as const)(
     expect(
       (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
     ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Keep this name");
+  },
+);
+
+test.each([false, true])(
+  "move cleanup awaits delayed real SWR listing and blocks duplicate admission, relist failure=%s",
+  async (fails) => {
+    const listing = deferred<unknown[]>();
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce([nativeFile, nativeDestination])
+      .mockReturnValueOnce(listing.promise);
+    mocks.moveWorkspaceEntry.mockRejectedValueOnce(
+      commandError("operation-and-cleanup", "private diagnostic"),
+    );
+    await realWorkspace();
+    let settled = false;
+    let moving!: Promise<void>;
+    let duplicate: Promise<void> | undefined;
+    await act(async () => {
+      moving = controller.listProps.onMove(entry as Entry, destination as Entry).then(() => {
+        settled = true;
+      });
+    });
+    try {
+      expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        duplicate = controller.listProps.onMove(entry as Entry, destination as Entry);
+      });
+      expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+      expect(container.textContent).not.toContain(cleanupCopy);
+    } finally {
+      await act(async () => {
+        if (fails) listing.reject(new Error("relist unavailable"));
+        else listing.resolve([nativeFile, nativeDestination, nativeLeftover]);
+        await moving;
+        await duplicate;
+      });
+    }
+    expect(settled).toBe(true);
+    expect(container.textContent).toContain(cleanupCopy);
+    expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce();
+    expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe(
+      fails ? undefined : [entry.name, destination.name, nativeLeftover.name].join(","),
+    );
+    expect(container.textContent).not.toContain("relist unavailable");
   },
 );
 

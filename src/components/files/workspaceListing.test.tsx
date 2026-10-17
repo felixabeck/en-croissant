@@ -8,6 +8,8 @@ import { TauriCommandError } from "@/platform/tauri";
 import { workspaceEntryToEntry } from "./file";
 import { workspaceListingKey, type WorkspaceListingCache } from "./workspaceListing";
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 const native = vi.hoisted(() => ({ createWorkspaceFile: vi.fn(), listFileWorkspace: vi.fn() }));
 vi.mock("@/platform/tauri", async (original) => ({
   ...(await original<typeof import("@/platform/tauri")>()),
@@ -29,6 +31,15 @@ let host: HTMLDivElement;
 let root: Root;
 let context!: WorkspaceListingCache;
 let result: Awaited<ReturnType<typeof createFile>> | undefined;
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 function Reader({ visible }: { visible: boolean }) {
   context = useSWRConfig();
   const owner = useNativeRequestOwner(visible ? key : null);
@@ -69,17 +80,16 @@ afterEach(async () => {
 });
 
 test.each([false, true])(
-  "createFile keeps typed cleanup error with real SWR, relist failure=%s",
+  "createFile awaits delayed real SWR listing before returning typed cleanup error, relist failure=%s",
   async (fails) => {
     const cause = new TauriCommandError({
       tag: "backend-error",
       category: "operation-and-cleanup",
       message: "private diagnostic",
     });
+    const listing = deferred<(typeof leftover)[]>();
     native.createWorkspaceFile.mockRejectedValueOnce(cause);
-    native.listFileWorkspace.mockResolvedValueOnce([]);
-    if (fails) native.listFileWorkspace.mockRejectedValueOnce(new Error("relist failed"));
-    else native.listFileWorkspace.mockResolvedValueOnce([leftover]);
+    native.listFileWorkspace.mockResolvedValueOnce([]).mockReturnValueOnce(listing.promise);
     const cache = new Map();
     await act(async () =>
       root.render(
@@ -91,6 +101,16 @@ test.each([false, true])(
       ),
     );
     await act(async () => host.querySelector("button")!.click());
+    try {
+      expect(native.listFileWorkspace).toHaveBeenCalledTimes(2);
+      expect(result).toBeUndefined();
+      expect(native.createWorkspaceFile).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => {
+        if (fails) listing.reject(new Error("relist failed"));
+        else listing.resolve([leftover]);
+      });
+    }
     expect(result?.isErr).toBe(true);
     if (!result?.isErr) throw new Error("Expected cleanup to remain an error Result");
     expect(result.error).toBe(cause);

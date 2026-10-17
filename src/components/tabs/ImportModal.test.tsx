@@ -440,7 +440,7 @@ test.each(["saved file", "pasted PGN"])(
       category: "operation-and-cleanup",
       message: "private diagnostic",
     });
-    const held = deferred<never>();
+    const held = deferred<void>();
     const create = vi.spyOn(tauri, "createWorkspaceFile").mockImplementationOnce(async () => {
       await held.promise;
       throw cause;
@@ -473,7 +473,7 @@ test.each(["saved file", "pasted PGN"])(
     expect(create).toHaveBeenCalledOnce();
     await act(async () => root.unmount());
     rootMounted = false;
-    await act(async () => held.resolve(undefined as never));
+    await act(async () => held.resolve());
     expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
       "Common.Error",
       cause,

@@ -17,8 +17,9 @@ export async function reconcileWorkspaceListing(
     const key = workspaceListingKey(workspace);
     await supersedeNativeRequest(cache, key);
     const active = hasNativeRequestSubscribers(cache, key);
-    // Public revalidation clears SWR's deduplication slot as well as fencing old deliveries.
-    // Active readers run their native fetcher once. Inactive keys remain empty for next mount.
-    await mutate(key, undefined, { revalidate: true });
+    // Invalidate first, then await no-data revalidation to settle the actual native fetch.
+    // This also clears completed SWR fetches. Inactive keys stay empty for next mount.
+    await mutate(key, undefined, { revalidate: false });
+    await mutate(key);
     if (!active) await tauri.listFileWorkspace(workspace);
 }
