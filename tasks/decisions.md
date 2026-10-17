@@ -8616,3 +8616,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal:** Move the one mapper to a future shared notification owner and update its callers.
 * **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, adopting the reviewed plan for f-20261004-01 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":29,"effect_sha256":"32a61d89f74c664db43cf61bcde4d9f37bb487691b4615362b0d5f50ae8c9614","input_sha256":"4a1c4b65cb166635cc5ebedfe01636fbfb8d9bd6d0d4736fa5aabc2e0f4a16f0","kind":"mutation-receipt","operation":"9322cfe3583f5352efc9aabc8e0da16e6ca6c8417cd6d12c9b5ec2940cef4346","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-21","d-20261017-22","d-20261017-23"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-24 — How does a remote HTTP guidance toast stay readable at 200% text?
+
+* **Question:** How does a remote HTTP guidance toast stay readable when the window is 320px wide and the text scale is 200%?
+* **Governs:** f-20261004-01
+* **Chosen:** Only toasts that carry remote HTTP guidance raise the notification max height to the viewport minus spacing, wrap the title and description, and place the close control in the title corner.
+* **Rejected:** Accepting the default 200px Mantine cap, which clipped the German 401 and 429 guidance to 256 by 200. Leaving the close control in the flex row, which split ordinary German words. Applying the taller layout to every error toast.
+* **Reason:** Measured in the async-errors container at 320 by 900 and font-size 200. The default notification max height is 200px with overflow hidden. The guidance itself is the product fix, so only that toast changes. After the change the German 401 snapshot is 256 by 532 and the German 429 snapshot is 256 by 329, with the full sentences visible and the close control in the corner.
+* **Reversal:** Remove the remote-rejection style override in notifyError.ts and re-record the three remote-http snapshots.
+* **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, during implementation of f-20261004-01 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e0cfc2a6378eb459bd993f1e9795a3a786f0b548bcc68ef063edbe4565d1033a","input_sha256":"d80885c69ef843475a3c32a7939356f6827779d726f8ce3866a61efcf9d87e27","kind":"mutation-receipt","operation":"336bdfd7dc184edfb96fb388a87e914fdeeed7a991f51aff44c6b2933d263323","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-24"],"target":"decisions-ledger","v":1} -->
