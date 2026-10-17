@@ -2484,13 +2484,28 @@ mod drain_gate_tests {
     fn wait_drained_blocks_until_the_held_ticket_is_dropped() {
         let gate = Arc::new(DrainGate::default());
         let ticket = gate.enter().expect("open gate issues a ticket");
+        let dropped_at = std::sync::OnceLock::new();
         gate.close();
         std::thread::scope(|scope| {
-            let started = spawn_after_release_delay(scope, move || drop(ticket));
+            let release_record = &dropped_at;
+            let started = spawn_after_release_delay(scope, move || {
+                release_record
+                    .set(Instant::now())
+                    .expect("ticket release is recorded once");
+                drop(ticket);
+            });
 
-            assert!(gate
-                .wait_drained(Duration::from_secs(10), None, "t")
-                .is_ok());
+            let result = gate.wait_drained(Duration::from_secs(10), None, "t");
+            let returned_at = Instant::now();
+            assert_eq!(gate.snapshot().outstanding, 0);
+            assert!(result.is_ok());
+            let dropped_at = dropped_at
+                .get()
+                .expect("ticket release must be recorded before drain returns");
+            assert!(
+                returned_at >= *dropped_at,
+                "drain wait returned before ticket release was recorded"
+            );
             assert!(started.elapsed() >= RELEASE_DELAY);
         });
         assert_eq!(gate.snapshot().outstanding, 0);
