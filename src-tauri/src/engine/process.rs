@@ -1668,13 +1668,48 @@ impl Default for EngineSupervisor {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AdmissionCancellation {
+    Cancelled,
+    EngineRetired,
+}
+
+impl AdmissionCancellation {
+    fn error(self) -> Error {
+        match self {
+            Self::Cancelled => Error::Cancellation,
+            Self::EngineRetired => Error::EngineRetired,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct EngineAdmission {
     generation: u64,
     engine_id: String,
     executable: PathRef,
     cancelled: Arc<AtomicBool>,
+    cancellation_reason: Arc<OnceLock<AdmissionCancellation>>,
     prepared: bool,
+}
+
+impl EngineAdmission {
+    fn cancel(&self, reason: AdmissionCancellation) {
+        // Publish the immutable reason before the cancellation flag. Late lease holders retain
+        // this exact admission's reason even after its registry entry has been removed.
+        self.cancellation_reason.get_or_init(|| reason);
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    fn cancel_error(&self) -> Option<Error> {
+        self.cancelled.load(Ordering::SeqCst).then(|| {
+            self.cancellation_reason
+                .get()
+                .copied()
+                .unwrap_or(AdmissionCancellation::Cancelled)
+                .error()
+        })
+    }
 }
 
 pub(crate) struct AdmissionLease {
@@ -1691,12 +1726,14 @@ impl AdmissionLease {
     }
 
     fn cancel_error(&self) -> Option<Error> {
-        (self.admission.cancelled.load(Ordering::SeqCst)
-            || self
-                .operation_cancellation
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled))
-        .then_some(Error::Cancellation)
+        if self
+            .operation_cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Some(Error::Cancellation);
+        }
+        self.admission.cancel_error()
     }
 
     fn disarm(&mut self) {
@@ -1720,26 +1757,20 @@ impl Drop for AdmissionLease {
         if self.disarmed {
             return;
         }
-        cancel_admission_exact(
-            &self.admissions,
-            &self.key,
-            self.admission.generation,
-            &self.admission.cancelled,
-        );
+        cancel_admission_exact(&self.admissions, &self.key, &self.admission);
     }
 }
 
 fn cancel_admission_exact(
     admissions: &DashMap<EngineKey, EngineAdmission>,
     key: &EngineKey,
-    generation: u64,
-    cancelled: &AtomicBool,
+    admission: &EngineAdmission,
 ) -> bool {
     // Flag the captured lease even if a newer admission has already replaced
     // its map entry. A late holder must still observe cancellation of its Arc.
-    cancelled.store(true, Ordering::SeqCst);
+    admission.cancel(AdmissionCancellation::Cancelled);
     admissions
-        .remove_if(key, |_, admission| admission.generation == generation)
+        .remove_if(key, |_, current| current.generation == admission.generation)
         .is_some()
 }
 
@@ -1763,7 +1794,7 @@ impl EngineSupervisor {
             return Err(Error::Conflict("application is shutting down".into()));
         }
         if self.is_retired(engine_id) {
-            return Err(Error::Conflict("engine id is retired".into()));
+            return Err(Error::EngineRetired);
         }
         if self.is_retired_executable(executable) {
             return Err(Error::Conflict("engine executable is retired".into()));
@@ -1775,15 +1806,14 @@ impl EngineSupervisor {
     }
 
     fn cancel_admission(&self, key: &EngineKey, admission: &EngineAdmission) -> bool {
-        cancel_admission_exact(
-            &self.admissions,
-            key,
-            admission.generation,
-            &admission.cancelled,
-        )
+        cancel_admission_exact(&self.admissions, key, admission)
     }
 
-    fn cancel_admissions_matching(&self, predicate: impl Fn(&EngineKey, &EngineAdmission) -> bool) {
+    fn cancel_admissions_matching(
+        &self,
+        reason: AdmissionCancellation,
+        predicate: impl Fn(&EngineKey, &EngineAdmission) -> bool,
+    ) {
         let targets: Vec<_> = self
             .admissions
             .iter()
@@ -1791,6 +1821,7 @@ impl EngineSupervisor {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
         for (key, admission) in targets {
+            admission.cancel(reason);
             self.cancel_admission(&key, &admission);
         }
     }
@@ -1810,6 +1841,7 @@ impl EngineSupervisor {
             engine_id,
             executable,
             cancelled: Arc::new(AtomicBool::new(false)),
+            cancellation_reason: Arc::default(),
             prepared,
         };
         let lease = AdmissionLease {
@@ -1845,7 +1877,7 @@ impl EngineSupervisor {
                 .admissions
                 .insert(lease.key.clone(), lease.admission.clone())
             {
-                previous.cancelled.store(true, Ordering::SeqCst);
+                previous.cancel(AdmissionCancellation::Cancelled);
             }
         }
         let _registration = self.registration.lock().await;
@@ -1925,8 +1957,8 @@ impl EngineSupervisor {
                     "engine search reservation is invalid or expired".into(),
                 ));
             }
-            if admission.cancelled.load(Ordering::SeqCst) {
-                return Err(Error::Cancellation);
+            if let Some(error) = admission.cancel_error() {
+                return Err(error);
             }
             if admission.engine_id != engine_id
                 || admission.executable != executable
@@ -2541,7 +2573,7 @@ impl EngineSupervisor {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(mut admission) = self.admissions.get_mut(key) {
-                admission.cancelled.store(true, Ordering::SeqCst);
+                admission.cancel(AdmissionCancellation::Cancelled);
                 admission.prepared = false;
             }
             let published = self
@@ -2744,7 +2776,7 @@ impl EngineSupervisor {
             .admission_coordination
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.cancel_admissions_matching(|key, _| key.tab == tab);
+        self.cancel_admissions_matching(AdmissionCancellation::Cancelled, |key, _| key.tab == tab);
         drop(_coordination);
         drop(registration);
         self.drain_matching(|key, _, _| key.tab == tab).await
@@ -2753,8 +2785,10 @@ impl EngineSupervisor {
     pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
         validate_uci_text("engine", &engine_id)?;
         self.with_retired(|retired| retired.insert(engine_id.clone()));
-        self.retire_matching(|key, owner, _| key.engine == engine_id || owner == engine_id)
-            .await
+        self.retire_matching(AdmissionCancellation::EngineRetired, |key, owner, _| {
+            key.engine == engine_id || owner == engine_id
+        })
+        .await
     }
 
     pub async fn retire_engine_binary(
@@ -2771,7 +2805,7 @@ impl EngineSupervisor {
             binaries.remove(&(engine_id.clone(), current));
             binaries.insert((engine_id.clone(), retired.clone()));
         });
-        self.retire_matching(|key, owner, path| {
+        self.retire_matching(AdmissionCancellation::Cancelled, |key, owner, path| {
             !is_game_engine_key(key)
                 && owner == engine_id
                 && path == &retired
@@ -2790,13 +2824,16 @@ impl EngineSupervisor {
                 retired.insert(executable);
             }
         });
-        self.retire_matching(|_, _, executable| executable_set.contains(executable))
-            .await
+        self.retire_matching(AdmissionCancellation::Cancelled, |_, _, executable| {
+            executable_set.contains(executable)
+        })
+        .await
     }
 
     /// All tombstone operations cross the same admission/publication barrier before draining.
     async fn retire_matching(
         &self,
+        reason: AdmissionCancellation,
         matches: impl Fn(&EngineKey, &str, &PathRef) -> bool,
     ) -> Result<(), Error> {
         let registration = self.registration.lock().await;
@@ -2805,7 +2842,7 @@ impl EngineSupervisor {
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.cancel_admissions_matching(|key, admission| {
+            self.cancel_admissions_matching(reason, |key, admission| {
                 matches(key, &admission.engine_id, &admission.executable)
             });
         }
@@ -2822,7 +2859,7 @@ impl EngineSupervisor {
             .admission_coordination
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.cancel_admissions_matching(|_, _| true);
+        self.cancel_admissions_matching(AdmissionCancellation::Cancelled, |_, _| true);
         for entry in self.actors.iter() {
             entry.mark_cancelled();
         }
@@ -3600,7 +3637,15 @@ pub(crate) async fn resolve_launch(
             }))
         })
         .await?;
-    let result = result.map_err(|failure| failure.into_error(&error_key, &error_engine_id))?;
+    let result = result.map_err(|failure| {
+        let error = failure.into_error(&error_key, &error_engine_id);
+        // Only a bare cancellation can take the admission's semantic reason. A launch
+        // materialization or cleanup failure must keep its own truthful category.
+        match error {
+            Error::Cancellation => admission.cancel_error().unwrap_or(error),
+            error => error,
+        }
+    })?;
     for (reclaim_key, reclaim_id, error) in result.reclaim_failures {
         error!(
             "engine launch leaf reclaim failed for key={} engine_id={} category={}",
@@ -9351,7 +9396,12 @@ mod tests {
         let rejected = pending_test_wait(publisher_a).await.unwrap();
         match operation {
             ScopedPendingDrain::Tab => assert!(matches!(rejected, Err(Error::Cancellation))),
-            ScopedPendingDrain::Retirement(_) => assert!(rejected.is_err()),
+            ScopedPendingDrain::Retirement(PendingRetirement::Engine) => {
+                assert!(matches!(rejected, Err(Error::EngineRetired)))
+            }
+            ScopedPendingDrain::Retirement(_) => {
+                assert!(matches!(rejected, Err(Error::Cancellation)))
+            }
         }
         pending_test_wait(publisher_b).await.unwrap().unwrap();
         assert!(supervisor.get_exact(&a).is_none());
@@ -10339,7 +10389,7 @@ mod tests {
             .await
         {
             Err(Error::OperationAndCleanup { primary, cleanup }) => {
-                assert_eq!(primary, "Cancellation");
+                assert_eq!(primary, Error::EngineRetired.to_string());
                 assert!(cleanup.contains(CAUSE));
             }
             other => panic!(
@@ -12506,6 +12556,7 @@ mod tests {
             engine_id: "engine".into(),
             executable: path_ref("old"),
             cancelled: old_cancelled.clone(),
+            cancellation_reason: Arc::default(),
             prepared: false,
         };
         let lease = AdmissionLease {
@@ -12522,6 +12573,7 @@ mod tests {
                 engine_id: "engine".into(),
                 executable: path_ref("new"),
                 cancelled: Arc::new(AtomicBool::new(false)),
+                cancellation_reason: Arc::default(),
                 prepared: false,
             },
         );
@@ -13417,6 +13469,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn application_id_retirement_refuses_game_admission_with_typed_reason() {
+        let supervisor = EngineSupervisor::default();
+        supervisor
+            .retire_engine("retired-game".into())
+            .await
+            .unwrap();
+        let key = EngineKey::game("retired-game", 1, "white", "retired-game").unwrap();
+        assert!(matches!(
+            supervisor
+                .admit_for_launch(key, "retired-game".into(), path_ref("image"))
+                .await,
+            Err(Error::EngineRetired)
+        ));
+        assert!(supervisor.admissions.is_empty());
+        assert_eq!(supervisor.spawn_attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn application_id_retirement_reaches_in_flight_game_launch_resolution() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::game("retiring-game", 1, "white", "retiring-game").unwrap();
+        let executable = path_ref("image");
+        let admission = supervisor
+            .admit_for_launch(key, "retiring-game".into(), executable.clone())
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine("retiring-game".into())
+            .await
+            .unwrap();
+        // The worker's early cancellation path precedes authority resolution, just as it can
+        // when retirement wins while a start is queued at the blocking gateway.
+        let result = resolve_launch(
+            crate::infra::path_authority::SharedPathAuthority::uninitialized(),
+            EngineHandle {
+                id: executable,
+                kind: crate::infra::path_authority::EngineHandleKind::Engine,
+            },
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::EngineRetired)));
+        assert!(supervisor.admissions.is_empty());
+        assert_eq!(supervisor.spawn_attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn application_id_retirement_rejection_keeps_actor_cleanup_failure() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::game("retiring-cleanup", 1, "white", "owner").unwrap();
+        let admission = supervisor
+            .admit_for_launch(key.clone(), "owner".into(), path_ref("image"))
+            .await
+            .unwrap();
+        let generation = admission.generation();
+        supervisor.retire_engine("owner".into()).await.unwrap();
+        let actor = Arc::new(EngineActor::new(
+            Box::new(TerminateErrorIo),
+            EngineDeadlines::default(),
+        ));
+        assert!(actor.cleanup.is_none());
+        let result = initialize_admitted_actor(
+            supervisor.clone(),
+            key.clone(),
+            actor,
+            admission,
+            |_| async { Ok(()) },
+        )
+        .await;
+        match result {
+            Err(error @ Error::OperationAndCleanup { .. }) => {
+                assert_eq!(
+                    error.category(),
+                    crate::error::ErrorCategory::OperationAndCleanup
+                );
+                assert!(error.diagnostic().contains("Engine id is retired"));
+                assert!(error.diagnostic().contains("fake terminate failed"));
+            }
+            _ => panic!("expected retirement with cleanup failure"),
+        }
+        assert!(supervisor.get_exact(&key).is_none());
+        // This mock reports a termination diagnostic but owns no unresolved OS child.
+        assert!(!supervisor.pending_actors.contains_key(&generation));
+        assert!(supervisor.admissions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ordinary_admission_cancellations_keep_their_identity() {
+        for cause in [
+            "tab",
+            "operation",
+            "shutdown",
+            "user",
+            "executable",
+            "binary",
+        ] {
+            let supervisor = EngineSupervisor::default();
+            let key = EngineKey::new(format!("cancel-{cause}"), "owner".into()).unwrap();
+            let executable = path_ref("image");
+            let cancellation = CancellationToken::new();
+            let admission = supervisor
+                .admit_for_operation(
+                    key.clone(),
+                    "owner".into(),
+                    executable.clone(),
+                    cancellation.clone(),
+                )
+                .await
+                .unwrap();
+            match cause {
+                "tab" => supervisor.terminate_tab(&key.tab).await.unwrap(),
+                "operation" => cancellation.cancel(),
+                "shutdown" => supervisor.terminate_all().await.unwrap(),
+                "user" => supervisor.kill_engine(&key).await.unwrap(),
+                "executable" => supervisor
+                    .retire_executables(vec![executable.clone()])
+                    .await
+                    .unwrap(),
+                "binary" => supervisor
+                    .retire_engine_binary("owner".into(), executable.clone(), path_ref("new"))
+                    .await
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(admission.cancel_error(), Some(Error::Cancellation)),
+                "{cause}"
+            );
+            if matches!(cause, "shutdown" | "executable" | "binary") {
+                assert!(
+                    matches!(
+                        supervisor
+                            .admit_for_launch(key, "owner".into(), executable)
+                            .await,
+                        Err(Error::Conflict(_))
+                    ),
+                    "{cause}"
+                );
+            }
+            if matches!(cause, "user" | "operation") {
+                supervisor.retire_engine("owner".into()).await.unwrap();
+                assert!(matches!(
+                    admission.cancel_error(),
+                    Some(Error::Cancellation)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn retired_engine_id_refuses_static_and_registration_blocked_replacements() {
         let supervisor = Arc::new(EngineSupervisor::default());
         supervisor.retire_engine("retired".into()).await.unwrap();
@@ -13424,7 +13628,7 @@ mod tests {
         let ((actor, _), terminated) = actor_with(&[], false, None);
         assert!(matches!(
             supervisor.replace(key.clone(), actor).await,
-            Err(Error::Conflict(message)) if message == "engine id is retired"
+            Err(Error::EngineRetired)
         ));
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
         assert!(supervisor.get_exact(&key).is_none());
@@ -13438,7 +13642,7 @@ mod tests {
             EngineActor::new(Box::new(TerminateErrorIo), EngineDeadlines::default());
         match supervisor.replace(cleanup_key, cleanup_actor).await {
             Err(Error::OperationAndCleanup { primary, cleanup }) => {
-                assert_eq!(primary, "Conflict: engine id is retired");
+                assert_eq!(primary, "Engine id is retired");
                 assert!(cleanup.contains("fake terminate failed"));
             }
             other => panic!(
@@ -13470,7 +13674,7 @@ mod tests {
         retirement.await.unwrap().unwrap();
         assert!(matches!(
             replacement.await.unwrap(),
-            Err(Error::Conflict(_))
+            Err(Error::EngineRetired)
         ));
         assert_eq!(racing_terminated.load(AtomicOrdering::SeqCst), 1);
         assert!(supervisor.get_exact(&race_key).is_none());

@@ -55,6 +55,7 @@ const BACKEND_CATEGORY: Record<ErrorCategory, AppErrorCategory> = {
     "operation-and-cleanup": "unexpected",
     "engine-timeout": "unexpected",
     "engine-position-rejected": "validation",
+    "engine-retired": "validation",
     "engine-failure": "unexpected",
     permission: "permission",
     "puzzle-themes-unavailable": "not-found",

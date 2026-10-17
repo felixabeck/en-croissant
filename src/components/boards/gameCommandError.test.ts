@@ -24,6 +24,52 @@ beforeEach(() => {
     mocks.logError.mockReset().mockResolvedValue(undefined);
 });
 
+test.each(["start", "move", "takeback", "abort", "resign"] as const)(
+    "typed application-id retirement uses missing-engine validation only for start, during %s",
+    (operation) => {
+        const result = createGameCommandError(
+            operation,
+            new TauriCommandError({
+                tag: "backend-error",
+                category: "engine-retired",
+                message: "arbitrary native wording /private/engine.bin",
+            }),
+        );
+        expect(result).toEqual(
+            operation === "start"
+                ? {
+                      kind: "validation",
+                      code: "missing-local-engine",
+                      diagnostic: "arbitrary native wording [path]",
+                  }
+                : {
+                      kind: "operation",
+                      operation,
+                      diagnostic: "arbitrary native wording [path]",
+                  },
+        );
+    },
+);
+
+test.each(["cancellation", "conflict", "operation-and-cleanup", "engine-failure"] as const)(
+    "start preserves %s failures even when their diagnostic mentions retirement",
+    (category) => {
+        const result = createGameCommandError(
+            "start",
+            new TauriCommandError({
+                tag: "backend-error",
+                category,
+                message: "Engine id is retired",
+            }),
+        );
+        expect(result).toEqual({
+            kind: "operation",
+            operation: "start",
+            diagnostic: "Engine id is retired",
+        });
+    },
+);
+
 test("typed engine-position refusal uses its own localized game-start message", async () => {
     const result = createGameCommandError(
         "start",

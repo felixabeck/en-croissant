@@ -55,6 +55,28 @@ describe("warnSafely", () => {
 });
 
 describe("normalizeError", () => {
+    test.each([
+        ["engine-retired", "validation"],
+        ["cancellation", "cancelled"],
+        ["conflict", "validation"],
+        ["operation-and-cleanup", "unexpected"],
+    ] as const)(
+        "classifies %s by category and retains its native identity",
+        (backendCategory, category) => {
+            const normalized = normalizeError({
+                tag: "backend-error",
+                category: backendCategory,
+                message: "Engine id is retired",
+            });
+            expect(normalized).toEqual({
+                category,
+                backendCategory,
+                message: "Engine id is retired",
+            });
+            expect(normalizeError(new TauriCommandError(normalized))).toEqual(normalized);
+        },
+    );
+
     test("preserves the typed terminal snapshot and re-redacts retained engine text", () => {
         const error = {
             tag: "engine-failure",

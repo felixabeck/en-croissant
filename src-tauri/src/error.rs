@@ -81,6 +81,7 @@ pub enum ErrorCategory {
     OperationAndCleanup,
     EngineTimeout,
     EnginePositionRejected,
+    EngineRetired,
     EngineFailure,
     Permission,
     PuzzleThemesUnavailable,
@@ -108,6 +109,7 @@ impl std::fmt::Display for ErrorCategory {
             Self::OperationAndCleanup => "operation and cleanup failure",
             Self::EngineTimeout => "engine timeout",
             Self::EnginePositionRejected => "engine position rejected",
+            Self::EngineRetired => "engine retired",
             Self::EngineFailure => "engine failure",
             Self::Permission => "permission denied",
             Self::PuzzleThemesUnavailable => "puzzle themes unavailable",
@@ -259,6 +261,9 @@ pub enum Error {
 
     #[error("Position cannot be played against an engine")]
     EnginePositionRejected(#[source] Box<Error>),
+
+    #[error("Engine id is retired")]
+    EngineRetired,
 
     #[error("Analysis cancelled")]
     AnalysisCancelled,
@@ -509,6 +514,7 @@ impl Error {
             Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
             Self::EngineTimeout(_) => ErrorCategory::EngineTimeout,
             Self::EnginePositionRejected(_) => ErrorCategory::EnginePositionRejected,
+            Self::EngineRetired => ErrorCategory::EngineRetired,
             Self::EngineFailure {
                 cleanup: Some(_), ..
             } => ErrorCategory::OperationAndCleanup,
@@ -1703,6 +1709,26 @@ mod tests {
             serde_json::to_string(&Error::EngineTimeout("waiting for readyok".into())).unwrap();
         let payload = parsed_payload(&serialized);
         assert_eq!(payload["category"], "engine-timeout");
+    }
+
+    #[test]
+    fn engine_retirement_serializes_distinctly_and_keeps_cleanup_failures() {
+        let retired = parsed_payload(&serde_json::to_string(&Error::EngineRetired).unwrap());
+        assert_eq!(retired["tag"], "backend-error");
+        assert_eq!(retired["category"], "engine-retired");
+        assert_eq!(retired["message"], "Engine id is retired");
+        for error in [Error::Cancellation, Error::AnalysisCancelled] {
+            let payload = parsed_payload(&serde_json::to_string(&error).unwrap());
+            assert_eq!(payload["category"], "cancellation");
+        }
+        let combined = Error::with_cleanup(
+            Error::EngineRetired,
+            Err(std::io::Error::other("retirement cleanup failed").into()),
+        );
+        let payload = parsed_payload(&serde_json::to_string(&combined).unwrap());
+        assert_eq!(payload["category"], "operation-and-cleanup");
+        assert!(combined.diagnostic().contains("Engine id is retired"));
+        assert!(combined.diagnostic().contains("retirement cleanup failed"));
     }
 
     #[test]

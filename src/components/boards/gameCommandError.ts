@@ -36,15 +36,17 @@ export type GameCommandError =
 /**
  * Retains only the semantic identity needed by the UI while preserving a redacted diagnostic
  * for native logging. Unknown and backend failures use the operation fallback, except that
- * engine-position-rejected during start is a validation error.
+ * engine-position-rejected and engine-retired during start are validation errors.
  */
 export function createGameCommandError(operation: GameCommand, cause: unknown): GameCommandError {
     const diagnostic = safeFailureContext(cause).message;
-    if (
-        operation === "start" &&
-        normalizeError(cause).backendCategory === "engine-position-rejected"
-    ) {
-        return { kind: "validation", code: "engine-position-rejected", diagnostic };
+    if (operation === "start") {
+        switch (normalizeError(cause).backendCategory) {
+            case "engine-position-rejected":
+                return { kind: "validation", code: "engine-position-rejected", diagnostic };
+            case "engine-retired":
+                return { kind: "validation", code: "missing-local-engine", diagnostic };
+        }
     }
     if (cause instanceof MissingLocalEngineError) {
         return { kind: "validation", code: cause.code, diagnostic };

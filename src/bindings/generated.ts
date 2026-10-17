@@ -1284,7 +1284,7 @@ export type EngineTerminalEntry = { type: "infoString"; value: string } | { type
  * An absent reason asks the renderer to localize the failure kind/status.
  */
 export type EngineTerminalSnapshot = { kind: EngineFailureKind; exitStatus: EngineExitStatus | null; reason: string | null; entries: EngineTerminalEntry[] }
-export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "engine-failure" | "permission" | "puzzle-themes-unavailable"
+export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "engine-retired" | "engine-failure" | "permission" | "puzzle-themes-unavailable"
 export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string; rootFailure?: RootFailure | null; engineFailure?: EngineTerminalSnapshot | null }
 export type ErrorPayloadTag = "backend-error" | "engine-failure"
 export type Event = { id: number; name: string | null }
