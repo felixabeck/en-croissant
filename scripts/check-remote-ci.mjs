@@ -26,10 +26,19 @@ function displayCommand(command, args) {
 
 function runChecked(runner, command, args, cwd) {
   const label = displayCommand(command, args);
+  const env = { ...process.env };
+  if (command === "gh") {
+    // gh honours CLICOLOR_FORCE even with NO_COLOR set. Keep JSON output uncoloured.
+    delete env.CLICOLOR_FORCE;
+    delete env.FORCE_COLOR;
+    delete env.GH_FORCE_TTY;
+    env.NO_COLOR = "1";
+  }
   let result;
   try {
     result = runner(command, args, {
       cwd,
+      env,
       encoding: "utf8",
       timeout: COMMAND_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER_BYTES,

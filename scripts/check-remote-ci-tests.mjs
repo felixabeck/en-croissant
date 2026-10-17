@@ -237,6 +237,57 @@ test("filters the gh query to the upstream branch and Test workflow", () => {
   assert.deepEqual(listCall.args, listRunsArgs("release/ci-remote"));
 });
 
+test("disables colour forcing for every gh call while preserving the parent environment", () => {
+  const originalEnvironment = process.env;
+  const parentEnvironment = {
+    ...originalEnvironment,
+    CLICOLOR_FORCE: "1",
+    FORCE_COLOR: "1",
+    GH_FORCE_TTY: "120",
+    NO_COLOR: "",
+    GH_TOKEN: "regression-test-token",
+  };
+  const { runner, calls } = cannedRunner({
+    runs: [run(112, recent), run(111, older)],
+    jobsByRun: { 112: [job("test")], 111: [job("test")] },
+  });
+
+  try {
+    process.env = parentEnvironment;
+    assert.equal(checkRemoteCi({ runner }).exitCode, 0);
+    const ghCalls = calls.filter(({ command }) => command === "gh");
+    assert.deepEqual(
+      ghCalls.map(({ args }) => args.slice(0, 3)),
+      [
+        ["run", "list", "--workflow"],
+        ["run", "view", "112"],
+        ["run", "view", "111"],
+      ],
+    );
+    for (const { options } of ghCalls) {
+      assert.ok(options.env, "gh must receive an explicit environment");
+      assert.ok(options.env !== parentEnvironment, "gh must receive its own environment");
+      for (const name of ["CLICOLOR_FORCE", "FORCE_COLOR", "GH_FORCE_TTY"]) {
+        assert.equal(Object.hasOwn(options.env, name), false, `${name} must be absent`);
+      }
+      assert.equal(options.env.NO_COLOR, "1");
+      for (const [name, value] of Object.entries(parentEnvironment)) {
+        if (["CLICOLOR_FORCE", "FORCE_COLOR", "GH_FORCE_TTY", "NO_COLOR"].includes(name)) {
+          continue;
+        }
+        // Compare without including inherited credentials in assertion diagnostics.
+        assert.ok(options.env[name] === value, `${name} must be preserved`);
+      }
+    }
+    assert.equal(parentEnvironment.CLICOLOR_FORCE, "1");
+    assert.equal(parentEnvironment.FORCE_COLOR, "1");
+    assert.equal(parentEnvironment.GH_FORCE_TTY, "120");
+    assert.equal(parentEnvironment.NO_COLOR, "");
+  } finally {
+    process.env = originalEnvironment;
+  }
+});
+
 test("refuses with the gh failure cause", () => {
   const { runner } = cannedRunner({
     runs: [],
