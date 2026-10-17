@@ -8413,8 +8413,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** gating every terminal fill on activity in this plan.
 * **Reason:** the pinned defect concerns retained success, and failed progress has an explicit existing expectation plus an unassigned co-located finding.
 * **Reversal path:** an independently authorized failed-terminal finding may change that policy with its own evidence. This planner does not adopt or close a joiner.
-* **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b08b80f66ffb1e7282996538ff70461efff0f18ab5717407a56ab6ff875ebf83","input_sha256":"0d7cf547dd3c3c04047c167ec30ffc777949780c2b8400cf1d607d637ee4e5d7","kind":"mutation-receipt","operation":"6c67b76d776a37096f7f728ada0879318ea1e1086fc3a64b18ea2917fd8f0b67","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-03"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** d-20261017-04
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"41b184862824f6424f8237e58f62679395ee34afdfa5d34ea7ee3091afc6d5f1","input_sha256":"0d7cf547dd3c3c04047c167ec30ffc777949780c2b8400cf1d607d637ee4e5d7","kind":"mutation-receipt","operation":"6c67b76d776a37096f7f728ada0879318ea1e1086fc3a64b18ea2917fd8f0b67","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-03"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261017-04 — Why preserve failed-terminal presentation in the stale-success fix?
 
