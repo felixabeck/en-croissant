@@ -40,6 +40,7 @@ import { MantineProvider } from "@mantine/core";
 import BoardAnalysis from "./BoardAnalysis";
 import { normalizeError, type AppError } from "@/platform/errors";
 import FileFreshnessGate from "@/components/tabs/FileFreshnessGate";
+import i18n, { initializeI18n } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
   notifyUnlessCancelled: vi.fn(),
@@ -47,6 +48,7 @@ const mocks = vi.hoisted(() => ({
   countPgnGames: vi.fn(),
   parsePGN: vi.fn(),
   issuePgnWorkspace: vi.fn(),
+  issuePgnExportDestination: vi.fn(),
   readGame: vi.fn(),
   showNotification: vi.fn(),
   translate: (key: string) => key,
@@ -54,7 +56,8 @@ const mocks = vi.hoisted(() => ({
   realTabs: false,
 }));
 
-vi.mock("react-i18next", () => ({
+vi.mock("react-i18next", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-i18next")>()),
   useTranslation: () => ({ t: mocks.translate }),
 }));
 
@@ -126,6 +129,7 @@ vi.mock("@/platform/tauri", async () => {
       countPgnGames: mocks.countPgnGames,
       writeGame: mocks.writeGame,
       issuePgnWorkspace: mocks.issuePgnWorkspace,
+      issuePgnExportDestination: mocks.issuePgnExportDestination,
       readGame: mocks.readGame,
     },
   };
@@ -954,36 +958,53 @@ describe("BoardAnalysis add game durability", () => {
     });
   });
 
-  test("a toolbar Save As whose read-back fails on a tab without a file says the game may be written", async () => {
+  test("a fresh toolbar save with uncertain readback preserves dirty edits and durably refuses another append", async () => {
+    await initializeI18n();
     const destination = { id: { id: "picked-token" }, kind: "fileWorkspace" } as const;
-    mocks.issuePgnWorkspace.mockResolvedValueOnce({
+    mocks.issuePgnExportDestination.mockResolvedValueOnce({
       handle: destination,
       displayName: "picked.pgn",
     });
-    mocks.readGame.mockResolvedValueOnce({
-      pgn: "",
-      stamp: "c".repeat(64),
-      revision: "r0",
-      present: false,
-    });
+    mocks.countPgnGames.mockResolvedValueOnce(4);
     mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
     await act(async () => {
       jotaiStore.set(tabsAtom, [{ ...tab, gameOrigin: { kind: "none" } }], tabId);
+      treeStore.getState().setSourceStamp(null);
+      treeStore.getState().setComment("Fresh unsaved toolbar comment");
     });
+    const pgn = serializeStoreTree(treeStore);
     await act(async () => {
       latestSaveHotkey()();
       await vi.waitFor(() => expect(mocks.showNotification).toHaveBeenCalled());
     });
 
-    expect(mocks.writeGame).toHaveBeenCalledWith(destination, 0, expect.any(String), {
-      kind: "game",
-      stamp: "c".repeat(64),
+    expect(mocks.issuePgnExportDestination).toHaveBeenCalledOnce();
+    expect(mocks.issuePgnWorkspace).not.toHaveBeenCalled();
+    expect(mocks.countPgnGames).toHaveBeenCalledWith(destination);
+    expect(mocks.readGame).not.toHaveBeenCalled();
+    expect(mocks.writeGame).toHaveBeenCalledWith(destination, 4, pgn, {
+      kind: "append",
     });
     expectNotification({
       category: "applied-despite-error",
-      message: "Tab.SaveMayHaveBeenWritten",
+      message: i18n.t("FileFreshness.AppendMayHaveBeenAdded"),
     });
     expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual({ kind: "none" });
+    expect(treeStore.getState()).toMatchObject({
+      dirty: true,
+      sourceStamp: null,
+      appendAttempted: true,
+    });
+    expect(serializeStoreTree(treeStore)).toBe(pgn);
+    expect(tabStorage.flush()).toEqual([]);
+    expect(new TabStorageRepository().read(getTabTreeKey(tab))?.state).toMatchObject({
+      dirty: true,
+      appendAttempted: true,
+    });
+    await act(async () => latestSaveHotkey()());
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+    expect(mocks.issuePgnExportDestination).toHaveBeenCalledOnce();
+    expect(serializeStoreTree(treeStore)).toBe(pgn);
   });
 
   const awayTab: Tab = {

@@ -9,7 +9,84 @@ import {
     gameOpeningCommands,
     gameOpeningFixture,
     dragMosaicDivider,
+    activeWorkspaceTab,
+    playBoardMove,
 } from "./fixtures";
+
+for (const count of [0, 3]) {
+    test(`workspace-tabs: fresh first save appends at destination count ${count}`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        const handle = { id: { id: "first-save-destination" }, kind: "fileWorkspace" } as const;
+        const revision = "first-save-revision";
+        await mockScenario({
+            commands: {
+                issue_pgn_export_destination: {
+                    result: { handle, displayName: "First save.pgn", availability: "available" },
+                },
+                count_pgn_games: { result: count },
+                write_game: { result: { stamp: "a".repeat(64), revision } },
+                file_revision: { result: revision },
+            },
+        });
+        await page.goto("/");
+        await page.getByRole("button", { name: /^open$/i }).click();
+        const before = (await activeWorkspaceTab(page))!;
+        expect(before.gameOrigin).toEqual({ kind: "none" });
+        const board = page.getByRole("grid", {
+            name: "Chessboard, White orientation",
+            exact: true,
+        });
+        await expect(board).toBeVisible();
+        await playBoardMove(page, page.locator("cg-board").first(), "e2", "e4");
+        await playBoardMove(page, page.locator("cg-board").first(), "e7", "e5");
+        await page.getByRole("tab", { name: "Annotate", exact: true }).click();
+        const comment = "First saved analysis comment";
+        await page.locator('[contenteditable="true"]').fill(comment);
+        await page.getByRole("button", { name: /^save pgn/i }).click();
+        await expect(page.locator("[data-file-freshness]")).toHaveAttribute(
+            "data-file-freshness",
+            /^verified:/,
+        );
+        const after = (await activeWorkspaceTab(page))!;
+        expect(after.value).toBe(before.value);
+        expect(after.treeKey).toBe(before.treeKey);
+        expect(after.gameOrigin).toMatchObject({
+            kind: "file",
+            gameNumber: count,
+            file: { handle, numGames: count + 1, name: "First save" },
+        });
+        const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+        expect(
+            calls.filter(({ command }) => command === "issue_pgn_export_destination"),
+        ).toHaveLength(1);
+        expect(calls.filter(({ command }) => command === "issue_pgn_workspace")).toHaveLength(0);
+        expect(calls.filter(({ command }) => command === "count_pgn_games")).toMatchObject([
+            { command: "count_pgn_games", args: { file: handle } },
+        ]);
+        const writes = calls.filter(({ command }) => command === "write_game");
+        expect(writes).toHaveLength(1);
+        expect(writes[0].args).toMatchObject({
+            file: handle,
+            n: count,
+            expected: { kind: "append" },
+            pgn: expect.stringContaining("1. e4 e5"),
+        });
+        expect(writes[0].args).toMatchObject({ pgn: expect.stringContaining(comment) });
+        expect(calls.filter(({ command }) => command === "read_game")).toHaveLength(0);
+        await expect(board).toBeVisible();
+        await expect(
+            page.getByRole("gridcell", { name: "e4, White Pawn", exact: true }),
+        ).toHaveCount(1);
+        await expect(
+            page.getByRole("gridcell", { name: "e5, Black Pawn", exact: true }),
+        ).toHaveCount(1);
+        await expect(page.locator('[contenteditable="true"]')).toHaveText(comment);
+        await capture(`workspace-tabs-first-save-${count}`);
+    });
+}
 
 test("workspace-tabs: analysis row and nested column drags resize panes and restore committed percentages", async ({
     page,

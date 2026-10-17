@@ -5,8 +5,8 @@ import { useTranslation } from "react-i18next";
 import { activeTabAtom, currentTabAtom, tabsAtom, updateTabById } from "@/state/atoms";
 import { normalizeError } from "@/platform/errors";
 import type { TreeStore } from "@/state/store/tree";
-import { saveToFile, type Tab, type UpdateTab } from "@/utils/tabs";
-import { saveFileConflictVersion, useFileFreshness } from "@/state/fileFreshness";
+import { sameTabOwner, saveToFile, type Tab, type UpdateTab } from "@/utils/tabs";
+import { getFileFreshness, saveFileConflictVersion, useFileFreshness } from "@/state/fileFreshness";
 import { TreeStateContext } from "../common/TreeStateContext";
 import AppModal from "../common/AppModal";
 
@@ -73,14 +73,25 @@ function ConfirmChangesModal({
     if (freshness.state === "unavailable") {
       try {
         const saved = await saveFileConflictVersion(targetTab.value);
-        if (saved) {
+        const current = jotaiStore
+          .get(tabsAtom)
+          .find((candidate) => candidate.value === targetTab.value);
+        const currentOwner = sameTabOwner(current, targetTab);
+        const dirty = targetStore.getState().dirty;
+        if (saved && currentOwner && !dirty) {
           if (pendingClose !== undefined) onSaved?.();
           else {
             closeTab?.();
             toggle?.();
           }
         } else {
-          setSaveMessage(t("FileFreshness.SaveAsNewGameFailed"));
+          setSaveMessage(
+            t(
+              currentOwner && dirty && getFileFreshness(targetTab.value).state === "verified"
+                ? "Tab.SaveSuperseded"
+                : "FileFreshness.SaveAsNewGameFailed",
+            ),
+          );
         }
       } catch (error) {
         setSaveMessage(normalizeError(error).message);

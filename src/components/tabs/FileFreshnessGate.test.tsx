@@ -155,7 +155,7 @@ async function setup({
   dirty = false,
   appendAttempted = false,
   freshness = "unverified",
-  persisted = false,
+  persisted = true,
   readError,
   readResult,
   tab = fileTab,
@@ -517,6 +517,44 @@ test("append resolution flushes uncertainty first and moves the tab only after a
   });
   expect(getFileFreshness(tabId).state).toBe("verified");
   expect(getFileFreshness(tabId).verifiedRevision).toBe("appended-revision");
+});
+
+test("recovery adoption preserves edits made during append and clears the admitted marker", async () => {
+  const { pending, completion } = await startPendingAppend(true);
+  await act(async () => treeStore.getState().setComment("Later recovery edit"));
+  await act(async () => pending.resolve({ stamp: changedStamp, revision: "recovery-append" }));
+  expect(await completion).toEqual({ result: false });
+  expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toMatchObject({ kind: "file", gameNumber: 7 });
+  expect(treeStore.getState()).toMatchObject({
+    dirty: true,
+    sourceStamp: changedStamp,
+    appendAttempted: false,
+    root: { comment: "Later recovery edit" },
+  });
+});
+
+test("refused recovery origin admission keeps append uncertainty durable and refuses retry", async () => {
+  const { pending, completion } = await startPendingAppend(true);
+  const original = Storage.prototype.setItem;
+  const refuse = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(function (this: Storage, key, value) {
+      if (key === WORKSPACE_STORAGE_KEY) throw new DOMException("quota", "QuotaExceededError");
+      original.call(this, key, value);
+    });
+  await act(async () => pending.resolve({ stamp: changedStamp, revision: "refused-admission" }));
+  expect(await completion).toEqual({ result: false });
+  refuse.mockRestore();
+  expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toEqual(fileTab.gameOrigin);
+  expect(treeStore.getState()).toMatchObject({ dirty: true, appendAttempted: true });
+  expect(host.textContent).toContain("FileFreshness.AppendMayHaveBeenAdded");
+  expect(await saveFileConflictVersion(tabId)).toBe(false);
+  expect(tabStorage.flush()).toEqual([]);
+  expect(new TabStorageRepository().read(tabId)?.state).toMatchObject({
+    dirty: true,
+    appendAttempted: true,
+  });
+  expect(mocks.writeGame).toHaveBeenCalledOnce();
 });
 
 test("a failed storage flush aborts append, clears its marker, and reports persistence failure", async () => {

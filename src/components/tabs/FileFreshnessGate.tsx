@@ -6,15 +6,14 @@ import { normalizeError } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import type { TreeStore } from "@/state/store/tree";
-import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
-import { loadFileGame, pickPgnFile, readFileGame, writeFileGame } from "@/utils/files";
+import { loadFileGame, pickPgnFile, readFileGame } from "@/utils/files";
 import {
   AddGameContext,
   appendBlankGame,
+  appendStoreGame,
   getAddGameLease,
   subscribeAddGame,
-  getTabTreeKey,
   isFileBackedTab,
   matchesFileGameTab,
   serializeStoreTree,
@@ -288,52 +287,24 @@ function FileBackedGate({
           const selected = await pickPgnFile();
           if (!selected || !actionIsCurrent(signal)) return false;
 
-          store.getState().setAppendAttempted(true);
-          const failedTabs = tabStorage.flush();
-          if (failedTabs.includes(getTabTreeKey(tab))) {
-            store.getState().setAppendAttempted(false);
-            tabStorage.flush({ notify: true });
-            setPanelError(t("FileFreshness.CouldNotPrepareAppend"));
-            if (throwOnFailure) {
-              throw {
-                category: "unexpected",
-                message: t("FileFreshness.CouldNotPrepareAppend"),
-              };
-            }
-            return false;
-          }
-
-          const pgn = serializeStoreTree(store);
-          const written = await writeFileGame(selected.handle, selected.numGames, pgn, {
-            kind: "append",
+          const result = await appendStoreGame({
+            tab,
+            store,
+            selected,
+            pgn: serializeStoreTree(store),
+            isCurrent: () => actionIsCurrent(signal),
+            updateTab,
+            getTab,
+            prepareMessage: t("FileFreshness.CouldNotPrepareAppend"),
           });
-          if (!actionIsCurrent(signal)) return false;
-          if (written.stamp === null || written.revision === null) {
+          if (result === "uncertain") {
             setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
-            return false;
           }
-          const originSaved = updateTab(tabId, (previous) => ({
-            ...previous,
-            gameOrigin: {
-              kind: "file",
-              gameNumber: selected.numGames,
-              file: {
-                ...selected,
-                numGames: selected.numGames + 1,
-                metadata: { tags: [], type: "game" },
-              },
-            },
-          }));
-          if (!originSaved) return false;
-          store.getState().save(written.stamp);
-          setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
-          return true;
+          return result === "saved" && !store.getState().dirty;
         } catch (error) {
           if (!actionIsCurrent(signal)) return false;
           const normalized = normalizeError(error);
           if (normalized.backendCategory === "stale-game") {
-            store.getState().setAppendAttempted(false);
-            tabStorage.flush();
             setPanelError(t("FileFreshness.AppendChanged"));
           } else {
             if (isUnavailableFileError(normalized)) {
@@ -346,7 +317,7 @@ function FileBackedGate({
         }
       });
     },
-    [appendAttempted, runAction, actionIsCurrent, store, tabId, tab, t, updateTab],
+    [appendAttempted, runAction, actionIsCurrent, store, tabId, tab, t, updateTab, getTab],
   );
 
   useEffect(

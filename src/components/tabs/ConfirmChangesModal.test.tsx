@@ -1,7 +1,7 @@
 import { act } from "react";
 import { useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Provider, createStore } from "jotai";
+import { Provider, createStore, useAtomValue } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
@@ -138,15 +138,26 @@ test("a successful background save forwards the receipt to the captured pending 
   expect(onSaved).toHaveBeenCalledOnce();
 });
 
-test("a failed background Save-As keeps the captured pending close open", async () => {
-  mocks.readFileGame.mockRejectedValueOnce(new Error("destination unavailable"));
+test("a failed fresh background append keeps its captured pending close open", async () => {
+  treeStore.getState().setComment("Captured background edits");
+  const currentTree = createTreeStore(currentTab.value);
+  currentTree.getState().setComment("Active tab edits");
+  const currentState = currentTree.getState();
+  let rejectAppend!: (error: Error) => void;
+  mocks.writeGame.mockReturnValueOnce(
+    new Promise((_resolve, reject) => {
+      rejectAppend = reject;
+    }),
+  );
   const onSaved = vi.fn();
-  const updateTab = (tabId: string, update: React.SetStateAction<Tab>) =>
+  const onCancel = vi.fn();
+  const updateTab = vi.fn((tabId: string, update: React.SetStateAction<Tab>) =>
     jotaiStore.set(tabsAtom, (tabs) =>
       tabs.map((tab) =>
         tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
       ),
-    );
+    ),
+  );
   await act(async () =>
     root.render(
       <Provider store={jotaiStore}>
@@ -154,7 +165,7 @@ test("a failed background Save-As keeps the captured pending close open", async 
           pendingClose={{ tabId: backgroundTab.value, store: treeStore }}
           tab={backgroundTab}
           updateTab={updateTab}
-          onCancel={vi.fn()}
+          onCancel={onCancel}
           onDiscard={vi.fn()}
           onSaved={onSaved}
         />
@@ -163,12 +174,31 @@ test("a failed background Save-As keeps the captured pending close open", async 
   );
 
   await saveAndClose();
+  expect(mocks.pickPgnFile).toHaveBeenCalledExactlyOnceWith("export");
+  expect(mocks.readFileGame).not.toHaveBeenCalled();
+  expect(mocks.writeGame).toHaveBeenCalledExactlyOnceWith(
+    { id: { id: "saved" }, kind: "fileWorkspace" },
+    1,
+    expect.stringContaining("Captured background edits"),
+    { kind: "append" },
+  );
+  expect(jotaiStore.get(currentTabAtom)).toEqual(currentTab);
+  expect(currentTree.getState()).toBe(currentState);
+  await act(async () => rejectAppend(new Error("destination unavailable")));
 
   expect(
     jotaiStore.get(tabsAtom).find((tab) => tab.value === backgroundTab.value)?.gameOrigin,
   ).toEqual({ kind: "none" });
-  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(treeStore.getState()).toMatchObject({
+    dirty: true,
+    appendAttempted: true,
+    root: { comment: "Captured background edits" },
+  });
+  expect(currentTree.getState()).toBe(currentState);
+  expect(updateTab).not.toHaveBeenCalled();
   expect(onSaved).not.toHaveBeenCalled();
+  expect(onCancel).not.toHaveBeenCalled();
+  expect(jotaiStore.get(currentTabAtom)).toEqual(currentTab);
   expect(host.querySelector('[role="dialog"]')?.textContent).toContain("destination unavailable");
 });
 
@@ -216,6 +246,114 @@ function fileBackedTab(value: string): Tab {
     },
   };
 }
+
+async function startUnavailableRecoveryClose() {
+  const sourceTab = fileBackedTab(backgroundTab.value);
+  jotaiStore.set(tabsAtom, [currentTab, sourceTab], currentTab.value);
+  treeStore.getState().setState({ ...defaultTree(), dirty: true, sourceStamp: "a".repeat(64) });
+  treeStore.getState().setComment("Captured recovery edits");
+  setFileFreshness(sourceTab.value, "unavailable");
+  let resolveAppend!: (written: { stamp: string; revision: string }) => void;
+  mocks.writeGame.mockReturnValueOnce(
+    new Promise((resolve) => {
+      resolveAppend = resolve;
+    }),
+  );
+  const onSaved = vi.fn();
+  const onCancel = vi.fn();
+  const closeTab = vi.fn();
+  function RecoveryCloseHarness() {
+    const tabs = useAtomValue(tabsAtom);
+    const liveTab = tabs.find((tab) => tab.value === sourceTab.value)!;
+    const [pending, setPending] = useState(true);
+    return (
+      <TreeStateContext.Provider value={treeStore}>
+        <FileFreshnessGate tab={liveTab} closeTab={closeTab}>
+          <div>board</div>
+        </FileFreshnessGate>
+        <ConfirmChangesModal
+          pendingClose={pending ? { tabId: sourceTab.value, store: treeStore } : null}
+          tab={liveTab}
+          onCancel={onCancel}
+          onDiscard={vi.fn()}
+          onSaved={() => {
+            onSaved();
+            setPending(false);
+          }}
+          closeTab={closeTab}
+        />
+      </TreeStateContext.Provider>
+    );
+  }
+  await act(async () =>
+    root.render(
+      <Provider store={jotaiStore}>
+        <RecoveryCloseHarness />
+      </Provider>,
+    ),
+  );
+  await saveAndClose();
+  await vi.waitFor(() => expect(mocks.writeGame).toHaveBeenCalledOnce());
+  expect(mocks.writeGame).toHaveBeenCalledWith(
+    { id: { id: "saved" }, kind: "fileWorkspace" },
+    1,
+    expect.stringContaining("Captured recovery edits"),
+    { kind: "append" },
+  );
+  return { resolveAppend, onSaved, onCancel, closeTab, sourceTab };
+}
+
+test("unavailable recovery keeps a pending close open for later edits, then CAS saves them before closing", async () => {
+  const { resolveAppend, onSaved, onCancel, closeTab, sourceTab } =
+    await startUnavailableRecoveryClose();
+  await act(async () => treeStore.getState().setComment("Later recovery edit"));
+  await act(async () => resolveAppend({ stamp: "b".repeat(64), revision: "recovery-append" }));
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(onCancel).not.toHaveBeenCalled();
+  expect(closeTab).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain("Tab.SaveSuperseded");
+  expect(treeStore.getState()).toMatchObject({
+    dirty: true,
+    appendAttempted: false,
+    sourceStamp: "b".repeat(64),
+    root: { comment: "Later recovery edit" },
+  });
+  expect(
+    jotaiStore.get(tabsAtom).find((tab) => tab.value === sourceTab.value)?.gameOrigin,
+  ).toMatchObject({
+    kind: "file",
+    gameNumber: 1,
+    file: { numGames: 2, handle: { id: { id: "saved" } } },
+  });
+  expect(jotaiStore.get(currentTabAtom)).toEqual(currentTab);
+  mocks.writeGame.mockResolvedValueOnce({ stamp: "c".repeat(64), revision: "latest-edits" });
+  await saveAndClose();
+  expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+  expect(mocks.writeGame).toHaveBeenLastCalledWith(
+    { id: { id: "saved" }, kind: "fileWorkspace" },
+    1,
+    expect.stringContaining("Later recovery edit"),
+    { kind: "game", stamp: "b".repeat(64) },
+  );
+  expect(mocks.pickPgnFile).toHaveBeenCalledOnce();
+  expect(onSaved).toHaveBeenCalledOnce();
+  expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "c".repeat(64) });
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+});
+
+test("unavailable recovery closes normally when the appended snapshot contains all current edits", async () => {
+  const { resolveAppend, onSaved, onCancel } = await startUnavailableRecoveryClose();
+  await act(async () => resolveAppend({ stamp: "b".repeat(64), revision: "clean-recovery" }));
+  expect(onSaved).toHaveBeenCalledOnce();
+  expect(onCancel).not.toHaveBeenCalled();
+  expect(treeStore.getState()).toMatchObject({
+    dirty: false,
+    appendAttempted: false,
+    sourceStamp: "b".repeat(64),
+  });
+  expect(mocks.writeGame).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+});
 
 test("close-tab conflict closes the dialog, keeps the tab, and activates it", async () => {
   const sourceTab = fileBackedTab(backgroundTab.value);

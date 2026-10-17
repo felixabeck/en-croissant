@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { normalizeError, type AppError } from "@/platform/errors";
+import i18n from "i18next";
 import { useSetAtom, useStore, type getDefaultStore } from "jotai";
 import type { StoreApi } from "zustand";
 import { createContext, startTransition, useCallback } from "react";
@@ -622,6 +623,83 @@ function failed(error: unknown): Extract<SaveResult, { status: "failed" }> {
     return { status: "failed", error: normalizeError(error) };
 }
 
+/** The durable marker is also the synchronous admission guard for concurrent submissions.
+ * Keep it until an observed append has an admitted origin, or a known stale refusal proves
+ * nothing was written. A cold store must refuse the same uncertain append too. */
+export async function appendStoreGame({
+    tab,
+    store,
+    selected,
+    pgn,
+    isCurrent,
+    updateTab,
+    getTab,
+    prepareMessage,
+}: {
+    tab: Tab;
+    store: StoreApi<TreeStoreState>;
+    selected: FileMetadata;
+    pgn: string;
+    isCurrent: () => boolean;
+    updateTab: UpdateTab;
+    getTab: (tabId: string) => Tab | undefined;
+    prepareMessage: string;
+}): Promise<"saved" | "edited" | "superseded" | "uncertain" | "refused"> {
+    if (!isCurrent()) return "superseded";
+    if (store.getState().appendAttempted) return "uncertain";
+    store.getState().setAppendAttempted(true);
+    const treeKey = getTabTreeKey(tab);
+    const failedTabs = tabStorage.flush();
+    if (
+        failedTabs.includes(treeKey) ||
+        !tabStorage.read<TreeState>(treeKey)?.state.appendAttempted
+    ) {
+        store.getState().setAppendAttempted(false);
+        tabStorage.flush({ notify: true });
+        throw { category: "unexpected", message: prepareMessage };
+    }
+    let written;
+    try {
+        written = await writeFileGame(selected.handle, selected.numGames, pgn, { kind: "append" });
+    } catch (error) {
+        if (!isCurrent()) return "superseded";
+        if (normalizeError(error).backendCategory === "stale-game") {
+            store.getState().setAppendAttempted(false);
+            tabStorage.flush();
+        }
+        throw error;
+    }
+    if (!isCurrent()) return "superseded";
+    if (written.stamp === null || written.revision === null) return "uncertain";
+    const successorOrigin: GameOrigin = {
+        kind: "file",
+        gameNumber: selected.numGames,
+        file: { ...selected, numGames: selected.numGames + 1 },
+    };
+    const admitted = updateTab(tab.value, (previous) => ({
+        ...previous,
+        gameOrigin: successorOrigin,
+    }));
+    if (!admitted) return "refused";
+    // Admission can synchronously notify a subscriber that installs a foreign owner.
+    // The original-origin guard no longer matches a legitimate successful adoption.
+    const ownsSuccessor = () => {
+        const current = getTab(tab.value);
+        return sameTabOwner(current, tab) && sameOrigin(current.gameOrigin, successorOrigin);
+    };
+    if (!ownsSuccessor()) return "superseded";
+    const unchanged = serializeStoreTree(store) === pgn;
+    if (unchanged) store.getState().save(written.stamp);
+    else {
+        store.getState().setSourceStamp(written.stamp);
+        if (!ownsSuccessor()) return "superseded";
+        store.getState().setAppendAttempted(false);
+    }
+    if (!ownsSuccessor()) return "superseded";
+    setFileFreshness(tab.value, "verified", { verifiedRevision: written.revision });
+    return unchanged ? "saved" : "edited";
+}
+
 export async function saveToFile({
     tab,
     updateTab,
@@ -652,6 +730,38 @@ export async function saveToFile({
         const isTempFile = currentOrigin?.kind === "temp_file";
         const sourceStamp = store.getState().sourceStamp;
         const pgn = serializeStoreTree(store);
+        if (currentOrigin.kind === "none") {
+            const uncertain = () =>
+                failed({
+                    category: "applied-despite-error",
+                    message: i18n.t("FileFreshness.AppendMayHaveBeenAdded"),
+                });
+            if (store.getState().appendAttempted) return uncertain();
+            const selected = await pickPgnFile("export");
+            if (!owns()) return "superseded";
+            if (!selected) return "cancelled";
+            try {
+                const result = await appendStoreGame({
+                    tab,
+                    store,
+                    selected,
+                    pgn,
+                    isCurrent: owns,
+                    updateTab,
+                    getTab,
+                    prepareMessage: i18n.t("FileFreshness.CouldNotPrepareAppend"),
+                });
+                if (result === "uncertain" || result === "refused") return uncertain();
+                return result === "edited" ? "superseded" : result;
+            } catch (error) {
+                if (!owns()) return "superseded";
+                const failure = failed(error);
+                if (store.getState().appendAttempted) {
+                    failure.error.message = `${i18n.t("FileFreshness.AppendMayHaveBeenAdded")} ${failure.error.message}`;
+                }
+                return failure;
+            }
+        }
         const gameNumber = fileOrigin?.gameNumber ?? 0;
         const write = (file: FileMetadata, stamp: string) =>
             writeFileGame(file.handle, gameNumber, pgn, { kind: "game", stamp });

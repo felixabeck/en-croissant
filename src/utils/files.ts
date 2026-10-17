@@ -35,10 +35,15 @@ export function usePlatform() {
     return { os: r.data, ...r };
 }
 
-export async function pickPgnFile(): Promise<FileMetadata | null> {
+export async function pickPgnFile(
+    destination: "existing" | "export" = "existing",
+): Promise<FileMetadata | null> {
     let descriptor;
     try {
-        descriptor = await tauri.issuePgnWorkspace();
+        descriptor =
+            destination === "export"
+                ? await tauri.issuePgnExportDestination()
+                : await tauri.issuePgnWorkspace();
     } catch (error) {
         if (errorUnlessCancelled(error) === null) return null;
         throw error;

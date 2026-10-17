@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
     createTab: vi.fn(),
     listFileWorkspace: vi.fn(),
     issuePgnWorkspace: vi.fn(),
+    issuePgnExportDestination: vi.fn(),
     countPgnGames: vi.fn(),
     readGame: vi.fn(),
     writeGame: vi.fn(),
@@ -272,6 +273,41 @@ describe("createFile content", () => {
 
 describe("pickPgnFile", () => {
     const handle = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;
+
+    test.each([0, 4])("uses the native save destination and counts %i games", async (count) => {
+        mocks.issuePgnExportDestination.mockResolvedValueOnce({ handle, displayName: "new.PGN" });
+        mocks.countPgnGames.mockResolvedValueOnce(count);
+        await expect(pickPgnFile("export")).resolves.toMatchObject({
+            type: "file",
+            handle,
+            name: "new",
+            numGames: count,
+            metadata: { type: "game", tags: [] },
+        });
+        expect(mocks.issuePgnExportDestination).toHaveBeenCalledOnce();
+        expect(mocks.issuePgnWorkspace).not.toHaveBeenCalled();
+        expect(mocks.countPgnGames).toHaveBeenCalledWith(handle);
+    });
+
+    test("handles save picker cancellation", async () => {
+        mocks.issuePgnExportDestination.mockRejectedValueOnce(new Error("Cancellation"));
+        await expect(pickPgnFile("export")).resolves.toBeNull();
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    });
+
+    test("propagates a save picker permission failure", async () => {
+        const error = new Error("permission denied");
+        mocks.issuePgnExportDestination.mockRejectedValueOnce(error);
+        await expect(pickPgnFile("export")).rejects.toBe(error);
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    });
+
+    test("propagates a destination count failure", async () => {
+        mocks.issuePgnExportDestination.mockResolvedValueOnce({ handle, displayName: "new.pgn" });
+        const error = new Error("count failed");
+        mocks.countPgnGames.mockRejectedValueOnce(error);
+        await expect(pickPgnFile("export")).rejects.toBe(error);
+    });
 
     test("returns null on Cancellation without counting games", async () => {
         mocks.issuePgnWorkspace.mockRejectedValueOnce(new Error("Cancellation"));
