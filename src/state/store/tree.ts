@@ -531,13 +531,15 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
                 produce((state) => {
                     if (state.position.length === 0) return;
 
-                    const parent = getNodeAtPath(state.root, state.position.slice(0, -1));
-                    const branchIndex = state.position[state.position.length - 1];
+                    let parent = getNodeAtPath(state.root, state.position.slice(0, -1));
+                    let branchIndex = state.position[state.position.length - 1];
                     const node = parent.children[branchIndex];
 
                     // Makes the navigation more fluid and compatible with next/previous branching
                     if (node.children.length >= 2 && parent.children.length <= 1) {
                         state.position.push(0);
+                        parent = getNodeAtPath(state.root, state.position.slice(0, -1));
+                        branchIndex = state.position[state.position.length - 1];
                     }
 
                     state.position = [
@@ -551,13 +553,15 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
                 produce((state) => {
                     if (state.position.length === 0) return;
 
-                    const parent = getNodeAtPath(state.root, state.position.slice(0, -1));
-                    const branchIndex = state.position[state.position.length - 1];
+                    let parent = getNodeAtPath(state.root, state.position.slice(0, -1));
+                    let branchIndex = state.position[state.position.length - 1];
                     const node = parent.children[branchIndex];
 
                     // Makes the navigation more fluid and compatible with next/previous branching
                     if (node.children.length >= 2 && parent.children.length <= 1) {
                         state.position.push(0);
+                        parent = getNodeAtPath(state.root, state.position.slice(0, -1));
+                        branchIndex = state.position[state.position.length - 1];
                     }
 
                     state.position = [

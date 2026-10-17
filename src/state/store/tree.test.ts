@@ -295,6 +295,61 @@ function mainlinePrependStore() {
     return createTreeStore(undefined, tree);
 }
 
+test.each(["nextBranch", "previousBranch"] as const)(
+    "%s cycles to c5 after descending from e4 into its fork",
+    (action) => {
+        const tree = defaultTree();
+        const e4 = addMove(tree.root, "e2e4");
+        addMove(e4, "e7e5");
+        const c5 = addMove(e4, "c7c5");
+        tree.position = [0];
+        const store = createTreeStore(undefined, tree);
+
+        store.getState()[action]();
+
+        expect(store.getState().position).toEqual([0, 1]);
+        expect(store.getState().currentNode()).toBe(c5);
+    },
+);
+
+test.each(["nextBranch", "previousBranch"] as const)(
+    "%s cycles from e4 to d4 at the parent fork",
+    (action) => {
+        const tree = defaultTree();
+        const e4 = addMove(tree.root, "e2e4");
+        const d4 = addMove(tree.root, "d2d4");
+        addMove(e4, "e7e5");
+        tree.position = [0];
+        const store = createTreeStore(undefined, tree);
+
+        store.getState()[action]();
+
+        expect(store.getState().position).toEqual([1]);
+        expect(store.getState().currentNode()).toBe(d4);
+    },
+);
+
+test.each([
+    { action: "nextBranch", indices: [1, 2, 0] },
+    { action: "previousBranch", indices: [2, 1, 0] },
+] as const)("$action wraps around three siblings at the parent fork", ({ action, indices }) => {
+    const tree = defaultTree();
+    const e4 = addMove(tree.root, "e2e4");
+    addMove(tree.root, "d2d4");
+    addMove(tree.root, "c2c4");
+    addMove(e4, "e7e5");
+    addMove(e4, "c7c5");
+    tree.position = [0];
+    const store = createTreeStore(undefined, tree);
+
+    for (const index of indices) {
+        store.getState()[action]();
+
+        expect(store.getState().position).toEqual([index]);
+        expect(store.getState().currentNode()).toBe(tree.root.children[index]);
+    }
+});
+
 test("goToAnnotation leaves the cursor unchanged when the annotation is only on a variation", () => {
     const tree = defaultTree();
     const variation = fixtureNode("variation");
