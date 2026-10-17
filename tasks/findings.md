@@ -14447,6 +14447,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Open question:** should the Files create, rename, move and metadata dialogs show a non-blocking "saved, but the disk did not confirm it" notice after the relist (one shared message for the `durability` category, `d-20260901-34`), and does that notice belong in `runAppliedMutationWithRefresh` itself, so every caller gets it, or in each dialog? Coordinate with `f-20261005-04` (category-specific copy for the same dialogs) and `f-20261003-09` (operation-and-cleanup relist).
 * **Related:** `f-20261005-04` (open, Root `-`), `f-20261003-09` (open, Root `-`), `d-20260830-05`, `d-20260831-01`, `d-20260906-03`.
 * **Found by:** Codex `review-error-handling` lens, round 1 of the `f-20260919-07` PLAN-ONLY review, drain session cd187b0b-1781-4d36-b3c9-966e59eab603, 2026-10-06; confirmed by reading `src/platform/errors.ts:284-300` and `src/components/files/FilesPage.test.tsx:480`.
+* **Related status correction (2026-10-17):** The older Related line above describes the filing-time state. f-20261003-09 is now handled, closed at 8b9a1620 after cleanup reconciliation proof and independent review. This supersedes its earlier open label. This finding itself remains open under its independent broader Files dialog behavior.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f6f6f51e07af72fcd5edf7b1dc011d731c12216d9d3a49b519603bbd1bc62214","input_sha256":"8a8bdd7c8e19eeaa256d7933f515c5f12f25d9b96d08922ef4e2e9294c7dd79b","kind":"mutation-receipt","operation":"39711cdb84ac26128f8631fc20c2ec2d607208d301b337aefc2612cd5c5d64ca","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-07"],"target":"f-20261006-07","v":1} -->
 
 ---
 
