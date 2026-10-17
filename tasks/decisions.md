@@ -8393,3 +8393,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full auto, hosted red-gate repair. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"9121373c20ec930df342f9c15ee251c3d578e19021126f4e45b9ca4996c3f4f2","input_sha256":"b8d6d26d2080e0e2682cead139da486e9afdf17bfa738a9e5696965f3f7dba1c","kind":"mutation-receipt","operation":"626bdf3879dab083f4a2f8fe46856deb103cf1dbb170b04ee35c3b975cd02352","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-02 — Which layer owns removing the stale succeeded visual after cleanup fails?
+
+* **Governs:** f-20261002-07
+* **Question:** Which layer owns removing the stale succeeded visual after cleanup fails?
+* **Chosen:** the shared renderer presentation boundary derives visibility from existing action activity.
+* **Rejected:** backend outcome rewriting, retrying clear before releasing the job, and a remount-persistent fence map.
+* **Reason:** native success correctly describes transfer/publication, existing caller activity already describes remaining renderer work, and the mismatch is the fill ignoring that evidence. Bounded retries still can fail and a fence map adds state and could hide live work.
+* **Reversal path:** replace the button visibility rule only with an equally correct design proven through the same rejected-clear/remount, finalization and ownerless-Running regressions. The adopter records this decision before implementation.
+* **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"37aba2755e14abeb254db5b0dc6e23dbbe94179f17d0bfca40fbdf5b902b61ff","input_sha256":"44bb78279e598eb884e2297d46e98b992df71b0a63cca351d1908577f105b32a","kind":"mutation-receipt","operation":"cf3bd12ded641c99c7a479f66870139097cec145967a0c4e3f7134fd88ea73a7","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-02"],"target":"decisions-ledger","v":1} -->
