@@ -250,8 +250,9 @@ describe("Lichess account removal", () => {
         message: "Home.Accounts.RevocationPending Lichess.Revocation.Unconfirmed",
         color: "orange",
       });
-      if (outcome !== null)
-        expect(mocks.notificationsShow.mock.calls[0][0].message).not.toContain(outcome);
+      expect(mocks.notificationsShow.mock.calls[0][0].message).not.toContain(
+        "unexpected_revocation_outcome",
+      );
     },
   );
 
