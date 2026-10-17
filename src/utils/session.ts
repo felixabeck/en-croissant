@@ -2,6 +2,11 @@ import { tauri } from "@/platform/tauri";
 import { z } from "zod";
 import type { ChessComStats } from "@/utils/chess.com/api";
 import { getLichessAccount, type LichessAccount } from "@/utils/lichess/api";
+import {
+    revocationReason,
+    sanitizeRevocationReasons,
+    type RevocationReason,
+} from "@/utils/lichess/revocation";
 
 export type LichessSession = {
     /** Opaque native credential identifier. It is never a bearer token. */
@@ -62,14 +67,20 @@ const SESSION_STORAGE_KEY = "sessions";
 export class SessionSanitizationError extends Error {
     /** Whether this launch read any legacy Lichess bearer token; contains no account identity. */
     readonly legacySignInFound: boolean;
-    /** Whether every token read was revoked, vacuously true when none was found. */
+    /** Whether every token read is confirmed unusable, vacuously true for an empty batch. */
     readonly allRevoked: boolean;
+    readonly unresolvedReasons: RevocationReason[];
 
-    constructor(legacySignInFound = false, allRevoked = true) {
+    constructor(
+        legacySignInFound = false,
+        allRevoked = true,
+        unresolvedReasons: readonly unknown[] = allRevoked ? [] : ["unconfirmed"],
+    ) {
         super("account storage could not be sanitized");
         this.name = "SessionSanitizationError";
         this.legacySignInFound = legacySignInFound;
         this.allRevoked = allRevoked;
+        this.unresolvedReasons = sanitizeRevocationReasons(unresolvedReasons);
     }
 }
 
@@ -174,14 +185,17 @@ export async function initializePersistedSessions(): Promise<void> {
         const revocations = await Promise.all(
             legacyTokens.map(async (token) => {
                 try {
-                    await tauri.revokeLegacyLichessToken(token);
-                    return true;
+                    return revocationReason(await tauri.revokeLegacyLichessToken(token));
                 } catch {
-                    return false;
+                    return revocationReason(undefined);
                 }
             }),
         );
-        throw new SessionSanitizationError(legacyTokens.length > 0, revocations.every(Boolean));
+        throw new SessionSanitizationError(
+            legacyTokens.length > 0,
+            revocations.every((reason) => reason === null),
+            revocations,
+        );
     }
     const migrated = await Promise.all(
         migrations.map(async ({ username, token }) => {

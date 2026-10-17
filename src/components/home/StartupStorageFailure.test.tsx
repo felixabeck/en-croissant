@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { appCssVariablesResolver, createAppTheme } from "@/styles/theme";
 import enUS from "@/translation/en-US.json";
+import type { RevocationReason } from "@/utils/lichess/revocation";
 import { StartupStorageFailure } from "./StartupStorageFailure";
 
 vi.mock("@/styles/theme", async (importOriginal) => {
@@ -46,13 +47,13 @@ const states = [
     legacySignInFound: true,
     allRevoked: true,
     explanation:
-      "A saved Lichess sign-in could not be removed from local storage, so ChessFable signed it out at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in and signing it out at Lichess.",
+      "A saved Lichess sign-in could not be removed from local storage. This sign-in no longer works at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in.",
   },
   {
     legacySignInFound: true,
     allRevoked: false,
     explanation:
-      "A saved Lichess sign-in could not be removed from local storage. Signing it out at Lichess also failed, for example because there is no connection. Try again to retry removing the saved sign-in and signing it out at Lichess.",
+      "A saved Lichess sign-in could not be removed from local storage. Revocation at Lichess is unconfirmed. Try again to retry removing the saved sign-in and revoking it at Lichess.",
   },
 ];
 
@@ -60,6 +61,14 @@ const catalogues = import.meta.glob<{ translation: Record<string, string> }>(
   "../../translation/*.json",
   { eager: true, import: "default" },
 );
+
+const reasons = ["unreachable", "rate_limited", "rejected", "unconfirmed"] as const;
+const reasonKeys = [
+  "Lichess.Revocation.Unreachable",
+  "Lichess.Revocation.RateLimited",
+  "Lichess.Revocation.Rejected",
+  "Lichess.Revocation.Unconfirmed",
+] as const;
 
 test.each(Object.entries(catalogues))(
   "uses the shipped %s catalogue with fallback disabled",
@@ -78,9 +87,16 @@ test.each(Object.entries(catalogues))(
       [states[2], "Startup.StorageFailure.NotRevoked"],
     ] as const) {
       if (!state) throw new Error("Missing test state");
-      await renderFailure(i18n, state.legacySignInFound, state.allRevoked);
+      await renderFailure(i18n, state.legacySignInFound, state.allRevoked, reasons);
       expect(catalogue.translation[key]).toBeTruthy();
       expect(host.querySelector("p")?.textContent).toBe(catalogue.translation[key]);
+      expect(Array.from(host.querySelectorAll("p"), (p) => p.textContent)).toEqual([
+        catalogue.translation[key],
+        ...(state.allRevoked
+          ? []
+          : reasonKeys.map((reasonKey) => catalogue.translation[reasonKey])),
+      ]);
+      for (const reasonKey of reasonKeys) expect(catalogue.translation[reasonKey]).toBeTruthy();
       expect(host.querySelector("h1")?.textContent).toBe(
         catalogue.translation["Startup.StorageFailure.Title"],
       );
@@ -91,11 +107,20 @@ test.each(Object.entries(catalogues))(
   },
 );
 
-async function renderFailure(i18n: I18n, legacySignInFound: boolean, allRevoked: boolean) {
+async function renderFailure(
+  i18n: I18n,
+  legacySignInFound: boolean,
+  allRevoked: boolean,
+  unresolvedReasons: readonly RevocationReason[] = [],
+) {
   await act(async () =>
     root.render(
       <I18nextProvider i18n={i18n}>
-        <StartupStorageFailure legacySignInFound={legacySignInFound} allRevoked={allRevoked} />
+        <StartupStorageFailure
+          legacySignInFound={legacySignInFound}
+          allRevoked={allRevoked}
+          unresolvedReasons={unresolvedReasons}
+        />
       </I18nextProvider>,
     ),
   );
@@ -162,3 +187,14 @@ test.each(states)(
     expect(host.querySelector("button")?.textContent).toBe("Try again");
   },
 );
+
+test("names every unresolved reason before i18n initializes and offers only reload", async () => {
+  await renderFailure(createInstance(), true, false, reasons);
+  expect(Array.from(host.querySelectorAll("p"), (p) => p.textContent)).toEqual([
+    enUS.translation["Startup.StorageFailure.NotRevoked"],
+    ...reasonKeys.map((key) => enUS.translation[key]),
+  ]);
+  expect(host.querySelectorAll("button")).toHaveLength(1);
+  expect(host.querySelector("button")?.textContent).toBe("Try again");
+  expect(host.textContent).not.toMatch(/private-token|private-player/);
+});

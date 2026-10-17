@@ -2,6 +2,7 @@ import { Button, Container, MantineProvider, Stack, Text, Title } from "@mantine
 import { useTranslation } from "react-i18next";
 import { appCssVariablesResolver, createAppTheme } from "@/styles/theme";
 import enUS from "@/translation/en-US.json";
+import { revocationReasonText, type RevocationReason } from "@/utils/lichess/revocation";
 
 // Match the preference defaults without hydrating feature state. App's root scaling is not mounted.
 const DEFAULT_PRIMARY_COLOR = "blue";
@@ -16,9 +17,11 @@ const theme = createAppTheme({
 export function StartupStorageFailure({
   legacySignInFound,
   allRevoked,
+  unresolvedReasons,
 }: {
   legacySignInFound: boolean;
   allRevoked: boolean;
+  unresolvedReasons: readonly RevocationReason[];
 }) {
   const { t } = useTranslation(undefined, { useSuspense: false });
   // Before i18n initializes, t() returns no value; keep the shipped fallback readable too.
@@ -44,6 +47,10 @@ export function StartupStorageFailure({
               enUS.translation["Startup.StorageFailure.Title"]}
           </Title>
           <Text>{explanation}</Text>
+          {!allRevoked &&
+            unresolvedReasons.map((reason) => (
+              <Text key={reason}>{revocationReasonText(reason, t)}</Text>
+            ))}
           <Button onClick={() => window.location.reload()}>
             {t("Startup.StorageFailure.TryAgain", {}) ||
               enUS.translation["Startup.StorageFailure.TryAgain"]}

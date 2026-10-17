@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   removeLichessAccount: vi.fn(),
   notificationsShow: vi.fn(),
   accountCard: vi.fn(),
+  translate: vi.fn((key: string, options?: { reason?: string }) =>
+    options?.reason ? `${key} ${options.reason}` : key,
+  ),
 }));
 
 vi.mock("@/platform/tauri", () => ({
@@ -17,7 +20,7 @@ vi.mock("@/platform/tauri", () => ({
 vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationsShow },
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: mocks.translate }) }));
 vi.mock("@/utils/chess.com/api", () => ({ getChessComAccount: vi.fn(), getStats: vi.fn() }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: vi.fn() }));
 vi.mock("../home/AccountCard", () => ({
@@ -203,6 +206,48 @@ describe("Player session grouping", () => {
 });
 
 describe("Lichess account removal", () => {
+  test.each([
+    ["unreachable", "Lichess.Revocation.Unreachable"],
+    ["rate_limited", "Lichess.Revocation.RateLimited"],
+    ["rejected", "Lichess.Revocation.Rejected"],
+  ])(
+    "completes local logout for %s and keeps both independent warnings",
+    async (outcome, reasonKey) => {
+      mocks.removeLichessAccount.mockResolvedValue({
+        state: "removed",
+        revocation_pending: true,
+        revocation_outcome: outcome,
+        durability_uncertain: true,
+      });
+      await renderCards();
+      await logout();
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+      expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+      expect(mocks.notificationsShow).toHaveBeenCalledTimes(2);
+      expect(mocks.notificationsShow.mock.calls.map(([warning]) => warning.message)).toEqual([
+        `Home.Accounts.RevocationPending ${reasonKey}`,
+        "Home.Accounts.RemoveDurabilityUncertain",
+      ]);
+      expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    },
+  );
+
+  test.each(["revoked", "already_invalid", null])(
+    "%s needs no pending warning",
+    async (outcome) => {
+      mocks.removeLichessAccount.mockResolvedValue({
+        state: "removed",
+        revocation_pending: false,
+        revocation_outcome: outcome,
+        durability_uncertain: false,
+      });
+      await renderCards();
+      await logout();
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+      expect(mocks.notificationsShow).not.toHaveBeenCalled();
+    },
+  );
+
   test("logs out after an uncertain committed removal and shows a warning", async () => {
     mocks.removeLichessAccount.mockResolvedValue({
       state: "removed",

@@ -39,6 +39,9 @@ const LISTENER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const JOB_TTL: Duration = Duration::from_secs(15 * 60);
 const LICHESS_ACCOUNT_URL: &str = "https://lichess.org/api/account";
 const LICHESS_TOKEN_URL: &str = "https://lichess.org/api/token";
+const LICHESS_TOKEN_TEST_URL: &str = "https://lichess.org/api/token/test";
+const REVOCATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_TOKEN_TEST_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_VERIFY_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
@@ -265,8 +268,25 @@ pub enum LichessAccountRemoval {
     NotFound,
     Removed {
         revocation_pending: bool,
+        revocation_outcome: Option<LichessRevocationOutcome>,
         durability_uncertain: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LichessRevocationOutcome {
+    Revoked,
+    AlreadyInvalid,
+    Unreachable,
+    RateLimited,
+    Rejected,
+}
+
+impl LichessRevocationOutcome {
+    fn is_pending(self) -> bool {
+        !matches!(self, Self::Revoked | Self::AlreadyInvalid)
+    }
 }
 
 pub struct ListenerHandle {
@@ -286,7 +306,7 @@ pub trait OAuthServices: Send + Sync + 'static {
 
     async fn verify_identity(&self, access_token: &str) -> Result<String, Error>;
 
-    async fn revoke_token(&self, access_token: &str) -> Result<(), Error>;
+    async fn revoke_token(&self, access_token: &str) -> LichessRevocationOutcome;
 
     fn start_listener_and_server(
         &self,
@@ -297,6 +317,7 @@ pub trait OAuthServices: Send + Sync + 'static {
 pub struct ProdOAuthServices {
     http_client: Arc<reqwest::Client>,
     token_url: String,
+    token_test_url: String,
 }
 
 impl ProdOAuthServices {
@@ -304,20 +325,104 @@ impl ProdOAuthServices {
         Self {
             http_client,
             token_url: LICHESS_TOKEN_URL.into(),
+            token_test_url: LICHESS_TOKEN_TEST_URL.into(),
         }
     }
 
     #[cfg(test)]
-    fn with_token_url(http_client: Arc<reqwest::Client>, token_url: String) -> Self {
+    fn with_token_urls(
+        http_client: Arc<reqwest::Client>,
+        token_url: String,
+        token_test_url: String,
+    ) -> Self {
         Self {
             http_client,
             token_url,
+            token_test_url,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn shares_http_client(&self, client: &Arc<reqwest::Client>) -> bool {
         Arc::ptr_eq(&self.http_client, client)
+    }
+
+    async fn revoke_token_before(
+        &self,
+        access_token: &str,
+        deadline: tokio::time::Instant,
+    ) -> LichessRevocationOutcome {
+        use LichessRevocationOutcome::*;
+        // One deadline owns both requests and all response reads. Dropping this future on
+        // expiry also drops the response stream, with no retained task or retry state.
+        tokio::time::timeout_at(deadline, async {
+            let response = match self
+                .http_client
+                .delete(&self.token_url)
+                .bearer_auth(access_token)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Unreachable,
+            };
+            match response.status() {
+                status if status.is_success() => return Revoked,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => return RateLimited,
+                reqwest::StatusCode::UNAUTHORIZED => {}
+                _ => return Rejected,
+            }
+            // DELETE bodies cannot establish invalidity, including "No such token".
+            drop(response);
+            let mut response = match self
+                .http_client
+                .post(&self.token_test_url)
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .body(access_token.to_owned())
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Unreachable,
+            };
+            match response.status() {
+                reqwest::StatusCode::OK => {}
+                reqwest::StatusCode::TOO_MANY_REQUESTS => return RateLimited,
+                _ => return Rejected,
+            }
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_TOKEN_TEST_RESPONSE_BYTES as u64)
+            {
+                return Rejected;
+            }
+            let mut body = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if chunk.len() > MAX_TOKEN_TEST_RESPONSE_BYTES - body.len() {
+                            return Rejected;
+                        }
+                        body.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => break,
+                    Err(_) => return Unreachable,
+                }
+            }
+            // The echoed token and body remain native, ephemeral, and never diagnostic data.
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(serde_json::Value::Object(values))
+                    if values
+                        .get(access_token)
+                        .is_some_and(serde_json::Value::is_null) =>
+                {
+                    AlreadyInvalid
+                }
+                _ => Rejected,
+            }
+        })
+        .await
+        .unwrap_or(Unreachable)
     }
 }
 
@@ -376,19 +481,12 @@ impl OAuthServices for ProdOAuthServices {
         Ok(account.username)
     }
 
-    async fn revoke_token(&self, access_token: &str) -> Result<(), Error> {
-        let response = self
-            .http_client
-            .delete(&self.token_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|_| Error::OAuthFailure(OAUTH_FAILURE.into()))?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(Error::OAuthFailure(OAUTH_FAILURE.into()))
-        }
+    async fn revoke_token(&self, access_token: &str) -> LichessRevocationOutcome {
+        self.revoke_token_before(
+            access_token,
+            tokio::time::Instant::now() + REVOCATION_TIMEOUT,
+        )
+        .await
     }
 
     fn start_listener_and_server(
@@ -566,11 +664,13 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
     };
     // Local removal is already committed. A provider outage, or an unconfirmed parent
     // fsync, is reported on the result without rolling local access back into existence.
+    let revocation_outcome = match removal.token {
+        Some(token) => Some(services.revoke_token(&token).await),
+        None => None,
+    };
     Ok(LichessAccountRemoval::Removed {
-        revocation_pending: match removal.token {
-            Some(token) => services.revoke_token(&token).await.is_err(),
-            None => false,
-        },
+        revocation_pending: revocation_outcome.is_some_and(LichessRevocationOutcome::is_pending),
+        revocation_outcome,
         durability_uncertain: removal.durability_uncertain,
     })
 }
@@ -582,7 +682,7 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
 pub async fn revoke_legacy_lichess_token(
     token: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), Error> {
+) -> Result<LichessRevocationOutcome, Error> {
     revoke_legacy_lichess_token_internal(
         token,
         &ProdOAuthServices::new(state.json_http_client.clone()),
@@ -593,11 +693,8 @@ pub async fn revoke_legacy_lichess_token(
 async fn revoke_legacy_lichess_token_internal<S: OAuthServices>(
     token: String,
     services: &S,
-) -> Result<(), Error> {
-    services
-        .revoke_token(&token)
-        .await
-        .map_err(|_| Error::OAuthFailure(OAUTH_FAILURE.into()))
+) -> Result<LichessRevocationOutcome, Error> {
+    Ok(services.revoke_token(&token).await)
 }
 
 /// One-way bridge for pre-credential-store renderer records. The caller must erase the supplied
@@ -942,7 +1039,7 @@ mod tests {
         exchange_pending: bool,
         verified_username: String,
         verify_error: Option<String>,
-        revoke_error: bool,
+        revoke_outcome: LichessRevocationOutcome,
         server_error: bool,
         listener_ignores_shutdown: bool,
         exchange_started: Arc<AtomicBool>,
@@ -961,7 +1058,7 @@ mod tests {
                 exchange_pending: false,
                 verified_username: "user".into(),
                 verify_error: None,
-                revoke_error: false,
+                revoke_outcome: LichessRevocationOutcome::Revoked,
                 server_error: false,
                 listener_ignores_shutdown: false,
                 exchange_started: Arc::new(AtomicBool::new(false)),
@@ -998,16 +1095,10 @@ mod tests {
             }
         }
 
-        async fn revoke_token(&self, access_token: &str) -> Result<(), Error> {
+        async fn revoke_token(&self, access_token: &str) -> LichessRevocationOutcome {
             self.revoke_calls.fetch_add(1, Ordering::Relaxed);
             self.revoked_tokens.lock().await.push(access_token.into());
-            if self.revoke_error {
-                Err(Error::OAuthFailure(format!(
-                    "mock revocation failed for {access_token}"
-                )))
-            } else {
-                Ok(())
-            }
+            self.revoke_outcome
         }
 
         fn start_listener_and_server(
@@ -1237,9 +1328,11 @@ mod tests {
     fn provider_endpoints_are_exactly_allowlisted() {
         let services = ProdOAuthServices::new(Arc::new(reqwest::Client::new()));
         assert_eq!(services.token_url, LICHESS_TOKEN_URL);
+        assert_eq!(services.token_test_url, LICHESS_TOKEN_TEST_URL);
         for (endpoint, path) in [
             (LICHESS_ACCOUNT_URL, "/api/account"),
             (LICHESS_TOKEN_URL, "/api/token"),
+            (LICHESS_TOKEN_TEST_URL, "/api/token/test"),
         ] {
             let parsed = reqwest::Url::parse(endpoint).unwrap();
             assert_eq!(parsed.scheme(), "https");
@@ -1252,81 +1345,237 @@ mod tests {
     #[tokio::test]
     async fn legacy_revocation_calls_services_once_with_the_supplied_token() {
         let services = MockServices::new();
-        revoke_legacy_lichess_token_internal("legacy-secret".into(), &services)
+        let outcome = revoke_legacy_lichess_token_internal("legacy-secret".into(), &services)
             .await
             .unwrap();
+        assert_eq!(outcome, LichessRevocationOutcome::Revoked);
         assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
         assert_eq!(*services.revoked_tokens.lock().await, vec!["legacy-secret"]);
     }
 
-    fn assert_token_free_oauth_failure(error: &Error, token: &str) {
-        assert!(matches!(error, Error::OAuthFailure(message) if message == OAUTH_FAILURE));
-        assert!(!error.to_string().contains(token));
-        assert!(!format!("{error:?}").contains(token));
+    fn assert_token_free_outcome(outcome: LichessRevocationOutcome, token: &str) {
+        assert!(!serde_json::to_string(&outcome).unwrap().contains(token));
+        assert!(!format!("{outcome:?}").contains(token));
     }
 
     #[tokio::test]
-    async fn legacy_revocation_redacts_service_errors() {
-        let mut services = MockServices::new();
-        services.revoke_error = true;
+    async fn legacy_revocation_preserves_every_safe_outcome_as_successful_data() {
+        use LichessRevocationOutcome::*;
         let token = "legacy-private-secret";
-        let error = revoke_legacy_lichess_token_internal(token.into(), &services)
-            .await
-            .unwrap_err();
-        assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(*services.revoked_tokens.lock().await, vec![token]);
-        assert_token_free_oauth_failure(&error, token);
+        for outcome in [Revoked, AlreadyInvalid, Unreachable, RateLimited, Rejected] {
+            let mut services = MockServices::new();
+            services.revoke_outcome = outcome;
+            let result = revoke_legacy_lichess_token_internal(token.into(), &services)
+                .await
+                .unwrap();
+            assert_eq!(result, outcome);
+            assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(*services.revoked_tokens.lock().await, vec![token]);
+            assert_token_free_outcome(result, token);
+        }
+    }
+
+    async fn read_revocation_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+            assert!(request.len() <= 8192);
+        }
+        let headers = String::from_utf8(request.clone()).unwrap();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        assert!(length <= 8192);
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        request.extend(body);
+        String::from_utf8(request).unwrap()
+    }
+
+    fn revocation_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    async fn loopback_revocation(
+        responses: Vec<String>,
+    ) -> (Vec<String>, LichessRevocationOutcome) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        // Only the loopback test bypasses public DNS policy. Production retains AppState's client.
+        let services = ProdOAuthServices::with_token_urls(
+            Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
+            format!("{origin}/api/token"),
+            format!("{origin}/api/token/test"),
+        );
+        let server = async {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                requests.push(read_revocation_request(&mut stream).await);
+                // A bounded reader may close before this over-cap test response finishes.
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+            requests
+        };
+        let (requests, outcome) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(server, services.revoke_token("loopback-private-secret"))
+        })
+        .await
+        .expect("revocation must reach and finish the loopback server");
+        // An unexpected extra token-test request cannot succeed after the server exits.
+        assert_token_free_outcome(outcome, "loopback-private-secret");
+        (requests, outcome)
     }
 
     #[tokio::test]
     async fn production_revocation_sends_delete_with_bearer_and_checks_status() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let token = "loopback-private-secret";
-        let client = Arc::new(reqwest::Client::builder().no_proxy().build().unwrap());
-        for status in ["200 OK", "204 No Content", "401 Unauthorized"] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!("http://{}/api/token", listener.local_addr().unwrap());
-            let services = ProdOAuthServices::with_token_url(client.clone(), url);
-            let server = async {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    request.push(stream.read_u8().await.unwrap());
-                    assert!(request.len() <= 8192, "request headers exceed test limit");
-                }
-                stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .unwrap();
-                String::from_utf8(request).unwrap()
-            };
-            // Joining under a deadline also fails if revocation becomes a no-op: no request
-            // would ever reach the listener. No server task is left behind on that failure.
-            let (request, result) = tokio::time::timeout(Duration::from_secs(2), async {
-                tokio::join!(server, services.revoke_token(token))
-            })
-            .await
-            .expect("revocation must reach and finish the loopback server");
-            let mut lines = request.lines();
-            assert_eq!(lines.next(), Some("DELETE /api/token HTTP/1.1"));
-            let authorization = lines.find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("authorization")
-                    .then(|| value.trim())
-            });
-            assert_eq!(authorization, Some(format!("Bearer {token}").as_str()));
-            if status.starts_with('2') {
-                result.unwrap();
-            } else {
-                assert_token_free_oauth_failure(&result.unwrap_err(), token);
-            }
+        use LichessRevocationOutcome::*;
+        for (status, expected) in [
+            ("200 OK", Revoked),
+            ("204 No Content", Revoked),
+            ("429 Too Many Requests", RateLimited),
+            ("403 Forbidden", Rejected),
+            ("500 Internal Server Error", Rejected),
+        ] {
+            let (requests, outcome) =
+                loopback_revocation(vec![revocation_response(status, "No such token")]).await;
+            assert_eq!(outcome, expected);
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("DELETE /api/token HTTP/1.1\r\n"));
+            assert!(requests[0].contains("authorization: Bearer loopback-private-secret\r\n"));
         }
+    }
+
+    #[tokio::test]
+    async fn production_revocation_only_confirms_the_exact_token_null_after_401() {
+        use LichessRevocationOutcome::*;
+        for (status, body, expected) in [
+            (
+                "200 OK",
+                r#"{"loopback-private-secret":null}"#,
+                AlreadyInvalid,
+            ),
+            (
+                "200 OK",
+                r#"{"loopback-private-secret":{"userId":"existing"}}"#,
+                Rejected,
+            ),
+            ("200 OK", r#"{"another-token":null}"#, Rejected),
+            ("200 OK", r#"{"loopback-private-secret":false}"#, Rejected),
+            ("200 OK", r#"{"loopback-private-secret":"null"}"#, Rejected),
+            ("200 OK", "null", Rejected),
+            ("200 OK", "malformed loopback-private-secret", Rejected),
+            (
+                "429 Too Many Requests",
+                "loopback-private-secret",
+                RateLimited,
+            ),
+            (
+                "401 Unauthorized",
+                r#"{"loopback-private-secret":null}"#,
+                Rejected,
+            ),
+            (
+                "201 Created",
+                r#"{"loopback-private-secret":null}"#,
+                Rejected,
+            ),
+        ] {
+            // Signature rejection of an existing token uses this same ambiguous DELETE body.
+            let (requests, outcome) = loopback_revocation(vec![
+                revocation_response("401 Unauthorized", "No such token"),
+                revocation_response(status, body),
+            ])
+            .await;
+            assert_eq!(outcome, expected);
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("POST /api/token/test HTTP/1.1\r\n"));
+            assert!(requests[1].contains("content-type: text/plain\r\n"));
+            assert!(!requests[1].contains("authorization:"));
+            assert_eq!(
+                requests[1].split_once("\r\n\r\n").unwrap().1,
+                "loopback-private-secret"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn production_revocation_bounds_streaming_confirmation_and_distinguishes_read_failure() {
+        use LichessRevocationOutcome::*;
+        let exact_cap = format!(
+            "{{\"loopback-private-secret\":null}}{}",
+            " ".repeat(MAX_TOKEN_TEST_RESPONSE_BYTES - 32)
+        );
+        assert_eq!(exact_cap.len(), MAX_TOKEN_TEST_RESPONSE_BYTES);
+        let oversize = format!("{exact_cap} ");
+        for (response, expected) in [
+            (String::new(), Unreachable),
+            (revocation_response("200 OK", &exact_cap), AlreadyInvalid),
+            (revocation_response("200 OK", &oversize), Rejected),
+            // No Content-Length: enforce the cap on chunks, not just response headers.
+            (format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{oversize}\r\n0\r\n\r\n", oversize.len()), Rejected),
+            (format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{oversize}"), Rejected),
+            // A declared length is not trusted as evidence that the complete JSON arrived.
+            ("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"loopback-private-secret\":null}".into(), Unreachable),
+        ] {
+            let (_, outcome) = loopback_revocation(vec![revocation_response("401 Unauthorized", ""), response]).await;
+            assert_eq!(outcome, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads() {
+        use tokio::io::AsyncWriteExt;
+        assert_eq!(REVOCATION_TIMEOUT, Duration::from_secs(30));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let services = ProdOAuthServices::with_token_urls(
+            Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
+            format!("{url}/api/token"),
+            format!("{url}/api/token/test"),
+        );
+        let server = async {
+            let (mut delete, _) = listener.accept().await.unwrap();
+            read_revocation_request(&mut delete).await;
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            delete
+                .write_all(revocation_response("401 Unauthorized", "").as_bytes())
+                .await
+                .unwrap();
+            let (mut confirmation, _) = listener.accept().await.unwrap();
+            read_revocation_request(&mut confirmation).await;
+            confirmation
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\n\r\n")
+                .await
+                .unwrap();
+            // A fresh second budget would accept this body. The shared budget expires first.
+            tokio::time::sleep(Duration::from_millis(90)).await;
+            let _ = confirmation
+                .write_all(b"{\"loopback-private-secret\":null}")
+                .await;
+        };
+        let (_, outcome) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                server,
+                services.revoke_token_before(
+                    "loopback-private-secret",
+                    tokio::time::Instant::now() + Duration::from_millis(120)
+                )
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome, LichessRevocationOutcome::Unreachable);
     }
 
     #[tokio::test]
@@ -1341,10 +1590,11 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        let services = ProdOAuthServices::with_token_url(client, url);
+        let services = ProdOAuthServices::with_token_urls(client, url.clone(), url);
         let token = "refused-connection-private-secret";
-        let error = services.revoke_token(token).await.unwrap_err();
-        assert_token_free_oauth_failure(&error, token);
+        let outcome = services.revoke_token(token).await;
+        assert_eq!(outcome, LichessRevocationOutcome::Unreachable);
+        assert_token_free_outcome(outcome, token);
     }
 
     #[tokio::test]
@@ -1487,10 +1737,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_removal_stays_true_when_provider_revocation_fails() {
+    async fn local_removal_stays_committed_for_every_provider_outcome() {
+        use LichessRevocationOutcome::*;
+        for outcome in [Revoked, AlreadyInvalid, Unreachable, RateLimited, Rejected] {
+            let temp = tempfile::tempdir().unwrap();
+            let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+                crate::credentials::MemoryCredentialStore::default(),
+            )));
+            credentials
+                .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                    temp.path(),
+                ))
+                .unwrap();
+            let account = credentials
+                .store_lichess_token("user".into(), "token".into())
+                .unwrap()
+                .account;
+            let mut services = MockServices::new();
+            services.revoke_outcome = outcome;
+            assert_eq!(
+                remove_lichess_account_internal(
+                    account.handle.clone(),
+                    credentials.clone(),
+                    &services
+                )
+                .await
+                .unwrap(),
+                LichessAccountRemoval::Removed {
+                    revocation_pending: !matches!(outcome, Revoked | AlreadyInvalid),
+                    revocation_outcome: Some(outcome),
+                    durability_uncertain: false,
+                }
+            );
+            assert!(credentials.list().unwrap().is_empty());
+            assert_eq!(credentials.token(&account.handle).unwrap(), None);
+            assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn uncertain_removal_and_revocation_pending_are_independent() {
+        use LichessRevocationOutcome::*;
+        for outcome in [Revoked, AlreadyInvalid, Unreachable, RateLimited, Rejected] {
+            let temp = tempfile::tempdir().unwrap();
+            let credentials = Arc::new(
+                crate::credentials::CredentialManager::with_uncertain_persistence(Arc::new(
+                    crate::credentials::MemoryCredentialStore::default(),
+                )),
+            );
+            credentials
+                .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                    temp.path(),
+                ))
+                .unwrap();
+            let account = credentials
+                .store_lichess_token("user".into(), "token".into())
+                .unwrap()
+                .account;
+            let mut services = MockServices::new();
+            services.revoke_outcome = outcome;
+
+            assert_eq!(
+                remove_lichess_account_internal(account.handle, credentials.clone(), &services)
+                    .await
+                    .unwrap(),
+                LichessAccountRemoval::Removed {
+                    revocation_pending: !matches!(outcome, Revoked | AlreadyInvalid),
+                    revocation_outcome: Some(outcome),
+                    durability_uncertain: true,
+                }
+            );
+            assert!(credentials.list().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn removal_without_a_local_token_does_not_claim_a_provider_attempt() {
+        struct MissingTokenStore;
+        impl crate::credentials::CredentialStore for MissingTokenStore {
+            fn set(&self, _: &str, _: &str) -> Result<(), Error> {
+                Ok(())
+            }
+            fn get(&self, _: &str) -> Result<Option<String>, Error> {
+                Ok(None)
+            }
+            fn delete(&self, _: &str) -> Result<(), Error> {
+                Ok(())
+            }
+        }
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
-            crate::credentials::MemoryCredentialStore::default(),
+            MissingTokenStore,
         )));
         credentials
             .initialize(&crate::infra::path_authority::AppDataDir::for_test(
@@ -1501,50 +1838,19 @@ mod tests {
             .store_lichess_token("user".into(), "token".into())
             .unwrap()
             .account;
-        let mut services = MockServices::new();
-        services.revoke_error = true;
+        let services = MockServices::new();
         assert_eq!(
             remove_lichess_account_internal(account.handle, credentials.clone(), &services)
                 .await
                 .unwrap(),
             LichessAccountRemoval::Removed {
-                revocation_pending: true,
+                revocation_pending: false,
+                revocation_outcome: None,
                 durability_uncertain: false,
             }
         );
         assert!(credentials.list().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn uncertain_removal_and_revocation_failure_report_both_flags() {
-        let temp = tempfile::tempdir().unwrap();
-        let credentials = Arc::new(
-            crate::credentials::CredentialManager::with_uncertain_persistence(Arc::new(
-                crate::credentials::MemoryCredentialStore::default(),
-            )),
-        );
-        credentials
-            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
-                temp.path(),
-            ))
-            .unwrap();
-        let account = credentials
-            .store_lichess_token("user".into(), "token".into())
-            .unwrap()
-            .account;
-        let mut services = MockServices::new();
-        services.revoke_error = true;
-
-        assert_eq!(
-            remove_lichess_account_internal(account.handle, credentials.clone(), &services)
-                .await
-                .unwrap(),
-            LichessAccountRemoval::Removed {
-                revocation_pending: true,
-                durability_uncertain: true,
-            }
-        );
-        assert!(credentials.list().unwrap().is_empty());
+        assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

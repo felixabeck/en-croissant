@@ -616,7 +616,7 @@ const tauriBootstrap = () => {
 
     const defaultCommands: Record<string, Response> = {
         close_splashscreen: { result: null },
-        revoke_legacy_lichess_token: { result: null },
+        revoke_legacy_lichess_token: { result: "revoked" },
         cancel_native_read: { result: null },
         reconcile_startup_path_owners: { result: null },
         reconcile_engine_attachments: { result: null },

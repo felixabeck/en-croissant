@@ -161,7 +161,14 @@ test.each([
       "sessions",
       JSON.stringify([{ lichess: { accessToken: token, username } }]),
     );
-    const error = new sessions.SessionSanitizationError(legacySignInFound, allRevoked);
+    const unresolvedReasons = allRevoked ? [] : ["unreachable", "rejected"];
+    const error = new sessions.SessionSanitizationError(legacySignInFound, allRevoked, [
+      ...unresolvedReasons,
+      token,
+      username,
+      ...unresolvedReasons,
+    ]);
+    error.unresolvedReasons.push(token as never);
     error.message = `${token} ${username}`;
     vi.mocked(sessions.initializePersistedSessions).mockRejectedValueOnce(error);
 
@@ -172,10 +179,10 @@ test.each([
     expect(render).toHaveBeenCalledTimes(1);
     expect(renderedChild().type).toBe(StartupStorageFailure);
     expect(renderedChild().type).not.toBe(App);
-    expect(renderedChild().props).toEqual({ legacySignInFound, allRevoked });
+    expect(renderedChild().props).toEqual({ legacySignInFound, allRevoked, unresolvedReasons });
     expect(closeSplashscreen).toHaveBeenCalledExactlyOnceWith();
     expect(logFailureSafely).toHaveBeenCalledTimes(1);
-    const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}`;
+    const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}, unresolvedReasons=${unresolvedReasons.join(",")}`;
     expect(logFailureSafely).toHaveBeenCalledWith(
       diagnostic,
       {
@@ -209,7 +216,11 @@ test("renders and reveals the terminal view even when i18n initialization reject
   expect(initializeI18n).toHaveBeenCalledTimes(1);
   expect(render).toHaveBeenCalledTimes(1);
   expect(renderedChild().type).toBe(StartupStorageFailure);
-  expect(renderedChild().props).toEqual({ legacySignInFound: true, allRevoked: false });
+  expect(renderedChild().props).toEqual({
+    legacySignInFound: true,
+    allRevoked: false,
+    unresolvedReasons: ["unconfirmed"],
+  });
   expect(closeSplashscreen).toHaveBeenCalledExactlyOnceWith();
   expect(logFailureSafely).toHaveBeenCalledTimes(1);
 });
@@ -235,7 +246,8 @@ test("logs a sanitized reveal failure and resolves startup", async () => {
     },
     "Startup window reveal failed",
   );
-  const diagnostic = "SessionSanitizationError: legacySignInFound=false, allRevoked=true";
+  const diagnostic =
+    "SessionSanitizationError: legacySignInFound=false, allRevoked=true, unresolvedReasons=";
   expect(logFailureSafely).toHaveBeenNthCalledWith(
     2,
     diagnostic,

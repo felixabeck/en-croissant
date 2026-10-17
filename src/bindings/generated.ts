@@ -857,7 +857,7 @@ async migrateLegacyLichessToken(username: string, token: string) : Promise<Resul
  * Handle-free revocation: writes no keyring, registry or file, is not platform-gated,
  * and never echoes the supplied token.
  */
-async revokeLegacyLichessToken(token: string) : Promise<Result<null, ErrorPayload>> {
+async revokeLegacyLichessToken(token: string) : Promise<Result<LichessRevocationOutcome, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("revoke_legacy_lichess_token", { token }) };
 } catch (e) {
@@ -1309,9 +1309,10 @@ export type GameStatus = "playing" | { finished: { result: GameResult } }
 export type GoMode = { t: "PlayersTime"; c: PlayersTime } | { t: "Depth"; c: number } | { t: "Time"; c: number } | { t: "Nodes"; c: number } | { t: "Infinite" }
 export type LichessAccountHandle = string
 export type LichessAccountMetadata = { handle: LichessAccountHandle; username: string }
-export type LichessAccountRemoval = { state: "not_found" } | { state: "removed"; revocation_pending: boolean; durability_uncertain: boolean }
+export type LichessAccountRemoval = { state: "not_found" } | { state: "removed"; revocation_pending: boolean; revocation_outcome: LichessRevocationOutcome | null; durability_uncertain: boolean }
 export type LichessAccountStoreResult = { account: LichessAccountMetadata; durability_uncertain: boolean }
 export type LichessExplorerEndpoint = "lichess" | "masters" | "player"
+export type LichessRevocationOutcome = "revoked" | "already_invalid" | "unreachable" | "rate_limited" | "rejected"
 export type MoveAnalysis = { best: BestMoves[]; novelty: boolean; is_sacrifice: boolean }
 export type NormalizedGame = { id: number; fen: string; event: string; event_id: number; site: string; site_id: number; date?: string | null; time?: string | null; round?: string | null; white: string; white_id: number; white_elo?: number | null; black: string; black_id: number; black_elo?: number | null; result: Outcome; time_control?: string | null; eco?: string | null; ply_count?: number | null; moves: string }
 export type OpeningBookConfig = { book: OpeningBookHandle; maxPly?: bigint }

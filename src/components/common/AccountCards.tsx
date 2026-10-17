@@ -10,6 +10,7 @@ import { getChessComAccount, getStats } from "@/utils/chess.com/api";
 import type { ManagedDatabaseInfo } from "@/utils/db";
 import { accountDatabaseFilename } from "../home/accountDatabase";
 import { getLichessAccount } from "@/utils/lichess/api";
+import { revocationReason, revocationReasonText } from "@/utils/lichess/revocation";
 import { type Session, sessionPlayerName } from "@/utils/session";
 import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
@@ -211,8 +212,23 @@ function LichessOrChessCom({
         updatedAt={session.updatedAt}
         total={totalGames}
         logout={async () => {
-          if (lichessSession.handle) {
-            const removal = await tauri.removeLichessAccount(lichessSession.handle);
+          const removal = lichessSession.handle
+            ? await tauri.removeLichessAccount(lichessSession.handle)
+            : null;
+          setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
+          if (removal) {
+            if (removal.state === "removed" && removal.revocation_pending) {
+              const reason = revocationReason(removal.revocation_outcome);
+              if (reason)
+                notifications.show({
+                  message: t("Home.Accounts.RevocationPending", {
+                    reason: revocationReasonText(reason, t),
+                    defaultValue:
+                      "Local logout completed. {{reason}} Revocation at Lichess is unconfirmed.",
+                  }),
+                  color: "orange",
+                });
+            }
             if (removal.state === "removed" && removal.durability_uncertain) {
               notifications.show({
                 message: t("Home.Accounts.RemoveDurabilityUncertain", {
@@ -223,7 +239,6 @@ function LichessOrChessCom({
               });
             }
           }
-          setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
         }}
         reload={async () => {
           const account = await getLichessAccount(

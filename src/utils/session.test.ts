@@ -27,7 +27,7 @@ beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
     mocks.listLichessAccounts.mockResolvedValue([]);
-    mocks.revokeLegacyLichessToken.mockReset().mockResolvedValue({ status: "ok", data: null });
+    mocks.revokeLegacyLichessToken.mockReset().mockResolvedValue({ status: "ok", data: "revoked" });
 });
 
 test("session player names prefer the alias, then Lichess, then Chess.com, then empty", () => {
@@ -102,10 +102,14 @@ describe("initializePersistedSessions", () => {
         expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
         await Promise.resolve();
         expect(settled).toBe(false);
-        finishRevocation({ status: "ok", data: null });
+        finishRevocation({ status: "ok", data: "already_invalid" });
         const error = await outcome;
         expect(error).toBeInstanceOf(SessionSanitizationError);
-        expect(error).toMatchObject({ legacySignInFound: true, allRevoked: true });
+        expect(error).toMatchObject({
+            legacySignInFound: true,
+            allRevoked: true,
+            unresolvedReasons: [],
+        });
         for (const sensitive of [...tokens, "private-player-0", "private-player-1"]) {
             expect(String(error)).not.toContain(sensitive);
             expect((error as SessionSanitizationError).stack).not.toContain(sensitive);
@@ -130,6 +134,7 @@ describe("initializePersistedSessions", () => {
             name: "SessionSanitizationError",
             legacySignInFound: true,
             allRevoked: false,
+            unresolvedReasons: ["unconfirmed"],
         });
         expect(mocks.revokeLegacyLichessToken.mock.calls).toEqual([
             ["failed-private-token"],
@@ -152,6 +157,39 @@ describe("initializePersistedSessions", () => {
             legacySignInFound: true,
             allRevoked: false,
         });
+    });
+
+    test("retains only distinct sanitized reasons across every provider outcome and IPC rejection", async () => {
+        const tokens = Array.from({ length: 8 }, (_, index) => `private-token-${index}`);
+        seedLegacySessions(tokens);
+        refuseSessionErasure();
+        const consoleError = vi.spyOn(console, "error");
+        const consoleWarn = vi.spyOn(console, "warn");
+        for (const outcome of [
+            "already_invalid",
+            "revoked",
+            "rejected",
+            "unreachable",
+            "rate_limited",
+            "rejected",
+            "unreachable",
+        ]) {
+            mocks.revokeLegacyLichessToken.mockResolvedValueOnce({ status: "ok", data: outcome });
+        }
+        mocks.revokeLegacyLichessToken.mockRejectedValueOnce(new Error(tokens[7]));
+        const error = await initializePersistedSessions().catch((cause: unknown) => cause);
+        expect(error).toMatchObject({
+            legacySignInFound: true,
+            allRevoked: false,
+            unresolvedReasons: ["unreachable", "rate_limited", "rejected", "unconfirmed"],
+        });
+        expect(mocks.revokeLegacyLichessToken.mock.calls).toEqual(tokens.map((token) => [token]));
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
+        expect(mocks.getLichessAccount).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+        expect(consoleWarn).not.toHaveBeenCalled();
+        expect(JSON.stringify(error)).not.toMatch(/private-token|private-player/);
     });
 
     test("reports nothing found and skips revocation when storage has no legacy token", async () => {

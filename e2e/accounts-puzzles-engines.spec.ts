@@ -394,23 +394,18 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
     });
 });
 
-test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
-    page,
-    mockScenario,
-    capture,
-}) => {
-    const token = "lip_e2e-legacy-token";
-    const storedSessions = JSON.stringify([
-        {
+async function seedUnerasableLegacySessions(page: Page, tokens: string[]) {
+    const storedSessions = JSON.stringify(
+        tokens.map((accessToken, index) => ({
             updatedAt: 1,
-            player: "legacy-player",
+            player: `legacy-player-${index}`,
             lichess: {
-                username: "legacy-player",
-                account: { id: "legacy-player", username: "legacy-player" },
-                accessToken: token,
+                username: `legacy-player-${index}`,
+                account: { id: `legacy-player-${index}`, username: `legacy-player-${index}` },
+                accessToken,
             },
-        },
-    ]);
+        })),
+    );
     await page.addInitScript((sessions) => {
         const originalSetItem = Storage.prototype.setItem;
         const originalRemoveItem = Storage.prototype.removeItem;
@@ -425,7 +420,19 @@ test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cann
             return originalRemoveItem.call(this, key);
         };
     }, storedSessions);
-    await mockScenario({ commands: {} });
+    return storedSessions;
+}
+
+test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const token = "lip_e2e-legacy-token";
+    const storedSessions = await seedUnerasableLegacySessions(page, [token]);
+    await mockScenario({
+        commands: { revoke_legacy_lichess_token: { result: "already_invalid" } },
+    });
     await page.goto("/");
 
     await expect(
@@ -433,7 +440,7 @@ test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cann
     ).toBeVisible();
     await expect(
         page.getByText(
-            "A saved Lichess sign-in could not be removed from local storage, so ChessFable signed it out at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in and signing it out at Lichess.",
+            "A saved Lichess sign-in could not be removed from local storage. This sign-in no longer works at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in.",
             { exact: true },
         ),
     ).toBeVisible();
@@ -455,6 +462,127 @@ test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cann
     await capture("startup-storage-failure-revoked");
     await expect(page).toHaveScreenshot("startup-storage-failure-revoked.png", { fullPage: true });
 });
+
+test("accounts-puzzles-engines: startup names every unconfirmed revocation reason", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const tokens = ["lip_e2e-offline", "lip_e2e-limited", "lip_e2e-rejected", "lip_e2e-ipc"];
+    const storedSessions = await seedUnerasableLegacySessions(page, tokens);
+    await mockScenario({
+        commands: {
+            revoke_legacy_lichess_token: {
+                outcomes: [
+                    { result: "unreachable" },
+                    { result: "rate_limited" },
+                    { result: "rejected" },
+                    { error: "lip_e2e-ipc" },
+                ],
+            },
+        },
+    });
+    await page.goto("/");
+    await expect(
+        page.getByRole("heading", { name: "ChessFable could not start", exact: true }),
+    ).toBeVisible();
+    for (const reason of [
+        "Lichess could not be reached.",
+        "Lichess is limiting requests.",
+        "Lichess rejected the request or returned an unexpected response.",
+        "The revocation result could not be confirmed.",
+    ]) {
+        await expect(page.getByText(reason, { exact: true })).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation")).toHaveCount(0);
+    for (const sensitive of [...tokens, "legacy-player"])
+        await expect(page.locator("body")).not.toContainText(sensitive);
+    expect(await page.evaluate(() => localStorage.getItem("sessions"))).toBe(storedSessions);
+    const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(invocations.filter(({ command }) => command === "revoke_legacy_lichess_token")).toEqual(
+        tokens.map((token) => ({ command: "revoke_legacy_lichess_token", args: { token } })),
+    );
+    expect(
+        invocations.filter(({ command }) =>
+            ["migrate_legacy_lichess_token", "list_lichess_accounts"].includes(command),
+        ),
+    ).toEqual([]);
+    await capture("startup-storage-failure-unconfirmed");
+    await expect(page).toHaveScreenshot("startup-storage-failure-unconfirmed.png", {
+        fullPage: true,
+    });
+});
+
+for (const [outcome, reason] of [
+    ["unreachable", "Lichess could not be reached."],
+    ["rate_limited", "Lichess is limiting requests."],
+    ["rejected", "Lichess rejected the request or returned an unexpected response."],
+] as const) {
+    test(`accounts-puzzles-engines: local logout warns about ${outcome}`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        await page.addInitScript(() =>
+            localStorage.setItem(
+                "sessions",
+                JSON.stringify([
+                    {
+                        updatedAt: 1,
+                        lichess: {
+                            username: "logout-player",
+                            handle: "logout-handle",
+                            account: { id: "logout-player", username: "logout-player" },
+                        },
+                    },
+                ]),
+            ),
+        );
+        await mockScenario({
+            commands: {
+                list_lichess_accounts: {
+                    result: [{ username: "logout-player", handle: "logout-handle" }],
+                },
+                remove_lichess_account: {
+                    result: {
+                        state: "removed",
+                        revocation_pending: true,
+                        revocation_outcome: outcome,
+                        durability_uncertain: true,
+                    },
+                },
+            },
+        });
+        await page.goto("/accounts");
+        await page
+            .locator(".mantine-Card-root")
+            .filter({ hasText: "logout-player" })
+            .getByRole("button", { name: "Remove account", exact: true })
+            .click();
+        await expect(
+            page.getByText(
+                `Local logout completed. ${reason} Revocation at Lichess is unconfirmed.`,
+                { exact: true },
+            ),
+        ).toBeVisible();
+        await expect(
+            page.getByText(
+                "The account was removed, but the save could not be fully confirmed. Do not retry.",
+                { exact: true },
+            ),
+        ).toBeVisible();
+        expect(
+            await page.evaluate(() => JSON.parse(localStorage.getItem("sessions") ?? "null")),
+        ).toEqual([]);
+        const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+        expect(invocations.filter(({ command }) => command === "remove_lichess_account")).toEqual([
+            { command: "remove_lichess_account", args: { handle: "logout-handle" } },
+        ]);
+        await capture(`account-logout-${outcome}`);
+        await expect(page).toHaveScreenshot(`account-logout-${outcome}.png`, { fullPage: true });
+    });
+}
 
 test("accounts-puzzles-engines: local settings and catalog upgrade modal", async ({
     page,

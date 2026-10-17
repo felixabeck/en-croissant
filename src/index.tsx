@@ -7,6 +7,7 @@ import { initializePersistedSessions, SessionSanitizationError } from "./utils/s
 import { setAutoFreeze } from "immer";
 import { I18nextProvider } from "react-i18next";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
+import { sanitizeRevocationReasons } from "./utils/lichess/revocation";
 import { logFailureSafely, safeFailureContext } from "./platform/errors";
 import { tauri } from "./platform/tauri";
 import { initializeWorkspace } from "./state/atoms";
@@ -65,9 +66,14 @@ export const applicationStartup = (async () => {
 
   if (sanitizationFailure) {
     const { legacySignInFound, allRevoked } = sanitizationFailure;
+    const unresolvedReasons = sanitizeRevocationReasons(sanitizationFailure.unresolvedReasons);
     root.render(
       <I18nextProvider i18n={i18n}>
-        <StartupStorageFailure legacySignInFound={legacySignInFound} allRevoked={allRevoked} />
+        <StartupStorageFailure
+          legacySignInFound={legacySignInFound}
+          allRevoked={allRevoked}
+          unresolvedReasons={unresolvedReasons}
+        />
       </I18nextProvider>,
     );
     try {
@@ -80,7 +86,7 @@ export const applicationStartup = (async () => {
       );
     }
     // Only the class and public summary may leave this credential-handling boundary.
-    const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}`;
+    const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}, unresolvedReasons=${unresolvedReasons.join(",")}`;
     await logStartupDiagnostic(
       "initializePersistedSessions",
       diagnostic,
