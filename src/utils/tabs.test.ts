@@ -737,11 +737,16 @@ function saveFixture({
                       },
         } as Tab,
     ];
-    const updateTab = (tabId: string, update: React.SetStateAction<Tab>) => {
+    const updateTab = (
+        tabId: string,
+        update: React.SetStateAction<Tab>,
+        onAdmitted?: (successor: Tab) => void,
+    ) => {
         const found = tabs.some((tab) => tab.value === tabId);
         tabs = tabs.map((tab) =>
             tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
         );
+        if (found) onAdmitted?.(tabs.find((tab) => tab.value === tabId)!);
         return found;
     };
     const getTab = (tabId: string) => tabs.find((tab) => tab.value === tabId);
@@ -915,8 +920,13 @@ async function appendWithJotaiSuccessor(
                         : isFileBackedTab(owner) && matchesFileGameTab(current, owner.gameOrigin))
                 );
             },
-            updateTab: (tabId, update) =>
-                updateTabById((tabs) => workspace.set(tabsAtom, tabs), tabId, update),
+            updateTab: (tabId, update, onAdmitted) =>
+                updateTabById(
+                    (tabs, active, saved) => workspace.set(tabsAtom, tabs, active, saved),
+                    tabId,
+                    update,
+                    onAdmitted,
+                ),
             prepareMessage: "Could not prepare append",
         });
         expect(admitted).toBe(true);
@@ -975,6 +985,171 @@ test.each(
         });
     },
 );
+
+function expectForeignFirstSave(
+    result: Awaited<ReturnType<typeof saveToFile>>,
+    store: ReturnType<typeof createTreeStore>,
+    replacement: ReturnType<typeof store.getState> | undefined,
+    id: string,
+) {
+    expect(result).toBe("superseded");
+    expect(store.getState()).toBe(replacement);
+    expect(getFileFreshness(id).state).toBe("conflict");
+}
+
+async function expectRefusedFirstSave(
+    result: Awaited<ReturnType<typeof saveToFile>>,
+    observed: boolean,
+    actions: ReturnType<typeof useTabActions>,
+    store: ReturnType<typeof createTreeStore>,
+    id: string,
+) {
+    expect(result).toMatchObject({ status: "failed" });
+    expect(observed).toBe(false);
+    expect(actions.getTab(id)?.gameOrigin).toEqual({ kind: "none" });
+    expect(store.getState().appendAttempted).toBe(true);
+    tabStorage.flush();
+    expect(new TabStorageRepository().read(id)?.state).toMatchObject({
+        appendAttempted: true,
+        dirty: true,
+    });
+    await expect(saveToFile({ tab: actions.getTab(id), store, ...actions })).resolves.toMatchObject(
+        { status: "failed" },
+    );
+    expect(mocks.writeGame).toHaveBeenCalledOnce();
+}
+
+test.each([
+    "snapshot",
+    "newer-edit",
+    "physical-replacement",
+    "origin-replacement",
+    "refusal",
+] as const)("first-save provider preserves admitted subscriber failure for %s", async (outcome) => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const id = crypto.randomUUID();
+    const workspace = createStore();
+    const tree = { ...defaultTree(), dirty: true };
+    tree.root.comment = "Captured first save";
+    tabStorage.seed(id, tree);
+    const store = createTreeStore(id);
+    const owner: Tab = {
+        value: id,
+        name: "Keep settings owner",
+        type: "analysis",
+        gameOrigin: { kind: "none" },
+    };
+    workspace.set(tabsAtom, [owner], id);
+    let actions!: ReturnType<typeof useTabActions>;
+    function Probe() {
+        actions = useTabActions();
+        return null;
+    }
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    let replacement: ReturnType<typeof store.getState> | undefined;
+    let unsubscribe = () => {};
+    const failure = new Error("First-save workspace subscriber failed");
+    try {
+        await act(async () =>
+            root.render(createElement(Provider, { store: workspace }, createElement(Probe))),
+        );
+        let observed = false;
+        unsubscribe = workspace.sub(tabsAtom, () => {
+            if (observed) return;
+            observed = true;
+            const admitted = actions.getTab(id)!;
+            expect(admitted.gameOrigin).toMatchObject({ kind: "file", gameNumber: 8 });
+            expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]).toEqual(admitted);
+            if (outcome === "physical-replacement" || outcome === "origin-replacement") {
+                workspace.set(tabsAtom, [
+                    {
+                        ...admitted,
+                        ...(outcome === "physical-replacement"
+                            ? { treeKey: crypto.randomUUID() }
+                            : { gameOrigin: { kind: "none" as const } }),
+                    },
+                ]);
+                store.getState().setComment("Foreign owner edit");
+                replacement = store.getState();
+                setFileFreshness(id, "conflict");
+            }
+            throw failure;
+        });
+        mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+        const pending = deferred<{ stamp: string; revision: string }>();
+        mocks.writeGame.mockReturnValueOnce(pending.promise);
+        const saving = saveToFile({ tab: owner, store, ...actions, isUserSave: true });
+        await vi.waitFor(() => expect(mocks.writeGame).toHaveBeenCalledOnce());
+        if (outcome === "newer-edit") store.getState().setComment("Newer first-save edit");
+        const original = Storage.prototype.setItem;
+        const refusal =
+            outcome === "refusal"
+                ? vi
+                      .spyOn(Storage.prototype, "setItem")
+                      .mockImplementation(function (this: Storage, key, value) {
+                          if (key === WORKSPACE_STORAGE_KEY)
+                              throw new DOMException("workspace refused", "QuotaExceededError");
+                          original.call(this, key, value);
+                      })
+                : undefined;
+        pending.resolve({ stamp: stampB, revision: "first-admitted" });
+        const result = await saving;
+        refusal?.mockRestore();
+        unsubscribe();
+        if (outcome === "physical-replacement" || outcome === "origin-replacement") {
+            expectForeignFirstSave(result, store, replacement, id);
+            return;
+        }
+        if (outcome === "refusal") {
+            await expectRefusedFirstSave(result, observed, actions, store, id);
+            return;
+        }
+        expect(result).toMatchObject({
+            status: "failed",
+            error: { message: expect.stringContaining(failure.message) },
+        });
+        expect(actions.getTab(id)).toMatchObject({
+            value: id,
+            name: owner.name,
+            gameOrigin: { kind: "file", gameNumber: 8 },
+        });
+        expect(store.getState()).toMatchObject({
+            sourceStamp: stampB,
+            appendAttempted: false,
+            dirty: outcome === "newer-edit",
+            root: {
+                comment: outcome === "newer-edit" ? "Newer first-save edit" : "Captured first save",
+            },
+        });
+        tabStorage.flush();
+        expect(new TabStorageRepository().read(id)?.state).toMatchObject({
+            sourceStamp: stampB,
+            appendAttempted: false,
+            dirty: outcome === "newer-edit",
+        });
+        expect(getFileFreshness(id)).toMatchObject({
+            state: "verified",
+            verifiedRevision: "first-admitted",
+        });
+        store.getState().setComment("Deliberate later Save");
+        mocks.writeGame.mockResolvedValueOnce({ stamp: stampC, revision: "later-cas" });
+        await expect(
+            saveToFile({ tab: actions.getTab(id), store, ...actions, isUserSave: true }),
+        ).resolves.toBe("saved");
+        expect(mocks.writeGame).toHaveBeenLastCalledWith(destinationHandle, 8, expect.any(String), {
+            kind: "game",
+            stamp: stampB,
+        });
+        expect(mocks.pickPgnFile).toHaveBeenCalledOnce();
+    } finally {
+        unsubscribe();
+        await act(async () => root.unmount());
+        closeTreeStore(id);
+        tabStorage.remove(id);
+        removeFileFreshness(id);
+    }
+});
 
 test("fresh picker cancellation leaves the board unchanged", async () => {
     const fixture = saveFixture({ kind: "none", stamp: null });

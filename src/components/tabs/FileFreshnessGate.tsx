@@ -283,6 +283,15 @@ function FileBackedGate({
     async (throwOnFailure = false): Promise<boolean> => {
       if (appendAttempted) return false;
       return runAction("append", async (signal) => {
+        let admittedOwner: Tab | undefined;
+        const ownsCompletion = () =>
+          admittedOwner
+            ? viewMountedRef.current &&
+              actionIdentityRef.current.store === store &&
+              sameTabOwner(getTab(tabId), admittedOwner) &&
+              isFileBackedTab(admittedOwner) &&
+              matchesFileGameTab(getTab(tabId), admittedOwner.gameOrigin)
+            : actionIsCurrent(signal);
         try {
           const selected = await pickPgnFile();
           if (!selected || !actionIsCurrent(signal)) return false;
@@ -296,13 +305,16 @@ function FileBackedGate({
             updateTab,
             getTab,
             prepareMessage: t("FileFreshness.CouldNotPrepareAppend"),
+            onAdmitted: (successor) => {
+              admittedOwner = successor;
+            },
           });
           if (result === "uncertain") {
             setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
           }
           return result === "saved" && !store.getState().dirty;
         } catch (error) {
-          if (!actionIsCurrent(signal)) return false;
+          if (!ownsCompletion()) return false;
           const normalized = normalizeError(error);
           if (normalized.backendCategory === "stale-game") {
             setPanelError(t("FileFreshness.AppendChanged"));

@@ -106,12 +106,17 @@ async function saveAndClose() {
 }
 
 test("a successful background save forwards the receipt to the captured pending tab", async () => {
-  const updateTab = vi.fn((tabId: string, update: React.SetStateAction<Tab>) =>
-    jotaiStore.set(tabsAtom, (tabs) =>
-      tabs.map((tab) =>
-        tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
+  const updateTab = vi.fn(
+    (tabId: string, update: React.SetStateAction<Tab>, onAdmitted?: (successor: Tab) => void) =>
+      jotaiStore.set(
+        tabsAtom,
+        (tabs) =>
+          tabs.map((tab) =>
+            tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
+          ),
+        undefined,
+        (saved) => onAdmitted?.(saved.tabs.find((tab) => tab.value === tabId)!),
       ),
-    ),
   );
   const onSaved = vi.fn();
   await act(async () =>
@@ -131,7 +136,11 @@ test("a successful background save forwards the receipt to the captured pending 
 
   await saveAndClose();
 
-  expect(updateTab).toHaveBeenCalledWith(backgroundTab.value, expect.any(Function));
+  expect(updateTab).toHaveBeenCalledWith(
+    backgroundTab.value,
+    expect.any(Function),
+    expect.any(Function),
+  );
   expect(
     jotaiStore.get(tabsAtom).find((tab) => tab.value === backgroundTab.value)?.gameOrigin.kind,
   ).toBe("file");
@@ -339,6 +348,48 @@ test("unavailable recovery keeps a pending close open for later edits, then CAS 
   expect(onSaved).toHaveBeenCalledOnce();
   expect(treeStore.getState()).toMatchObject({ dirty: false, sourceStamp: "c".repeat(64) });
   expect(host.querySelector('[role="dialog"]')).toBeNull();
+});
+
+test("unavailable recovery keeps close pending after an admitted subscriber failure and later CAS saves newer edits", async () => {
+  const { resolveAppend, onSaved, onCancel, closeTab, sourceTab } =
+    await startUnavailableRecoveryClose();
+  await act(async () => treeStore.getState().setComment("Later recovery observer edit"));
+  const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+    throw new Error("Recovery close workspace subscriber failed");
+  });
+  try {
+    await act(async () => resolveAppend({ stamp: "b".repeat(64), revision: "recovery-observer" }));
+    expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Recovery close workspace subscriber failed",
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(treeStore.getState()).toMatchObject({
+      dirty: true,
+      appendAttempted: false,
+      sourceStamp: "b".repeat(64),
+      root: { comment: "Later recovery observer edit" },
+    });
+    expect(
+      jotaiStore.get(tabsAtom).find((tab) => tab.value === sourceTab.value)?.gameOrigin,
+    ).toMatchObject({ kind: "file", gameNumber: 1 });
+  } finally {
+    unsubscribe();
+  }
+  mocks.writeGame.mockResolvedValueOnce({
+    stamp: "c".repeat(64),
+    revision: "later-observer-edits",
+  });
+  await saveAndClose();
+  expect(mocks.writeGame).toHaveBeenLastCalledWith(
+    { id: { id: "saved" }, kind: "fileWorkspace" },
+    1,
+    expect.stringContaining("Later recovery observer edit"),
+    { kind: "game", stamp: "b".repeat(64) },
+  );
+  expect(mocks.pickPgnFile).toHaveBeenCalledOnce();
+  expect(onSaved).toHaveBeenCalledOnce();
 });
 
 test("unavailable recovery closes normally when the appended snapshot contains all current edits", async () => {

@@ -4,7 +4,7 @@ import { Provider, createStore as createJotaiStore, useAtomValue } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FileMetadata } from "@/components/files/file";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { activeTabAtom, tabsAtom, updateTabById } from "@/state/atoms";
 import {
   closeTreeStore,
   createTreeStore,
@@ -556,6 +556,126 @@ test("refused recovery origin admission keeps append uncertainty durable and ref
   });
   expect(mocks.writeGame).toHaveBeenCalledOnce();
 });
+
+test.each([false, true])(
+  "recovery provider preserves admitted subscriber failure with newer edits %s",
+  async (newer) => {
+    const { pending, completion } = await startPendingAppend(true);
+    if (newer) await act(async () => treeStore.getState().setComment("Newer recovery edit"));
+    const failure = new Error("Recovery workspace subscriber failed");
+    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+      throw failure;
+    });
+    try {
+      await act(async () =>
+        pending.resolve({ stamp: changedStamp, revision: "subscriber-admitted" }),
+      );
+      expect(await completion).toMatchObject({
+        error: { message: expect.stringContaining(failure.message) },
+      });
+    } finally {
+      unsubscribe();
+    }
+    const admitted = jotaiStore.get(tabsAtom)[0]!;
+    expect(admitted).toMatchObject({
+      value: tabId,
+      gameOrigin: { kind: "file", gameNumber: 7, file: { numGames: 8 } },
+    });
+    expect(treeStore.getState()).toMatchObject({
+      dirty: newer,
+      sourceStamp: changedStamp,
+      appendAttempted: false,
+    });
+    expect(treeStore.getState().root.comment).toBe(newer ? "Newer recovery edit" : "");
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "subscriber-admitted",
+    });
+    tabStorage.flush();
+    expect(new TabStorageRepository().read(getTabTreeKey(admitted))?.state).toMatchObject({
+      dirty: newer,
+      sourceStamp: changedStamp,
+      appendAttempted: false,
+    });
+    await act(async () => treeStore.getState().setComment("Deliberate later recovery Save"));
+    mocks.writeGame.mockResolvedValueOnce({ stamp: emptyStamp, revision: "later-recovery-cas" });
+    await act(async () =>
+      expect(
+        saveToFile({
+          tab: admitted,
+          store: treeStore,
+          getTab: (id) => jotaiStore.get(tabsAtom).find((candidate) => candidate.value === id),
+          updateTab: (id, update, onAdmitted) =>
+            updateTabById(
+              (next, active, saved) => jotaiStore.set(tabsAtom, next, active, saved),
+              id,
+              update,
+              onAdmitted,
+            ),
+          isUserSave: true,
+        }),
+      ).resolves.toBe("saved"),
+    );
+    expect(mocks.writeGame).toHaveBeenLastCalledWith(file.handle, 7, expect.any(String), {
+      kind: "game",
+      stamp: changedStamp,
+    });
+    expect(mocks.pickPgnFile).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["physical", "origin"] as const)(
+  "recovery suppresses subscriber failure after reentrant foreign %s replacement",
+  async (kind) => {
+    const { pending, completion } = await startPendingAppend(true);
+    let replaced = false;
+    let replacement!: ReturnType<typeof treeStore.getState>;
+    let foreign!: Tab;
+    let treeKey: string | undefined;
+    const candidate = {
+      ...defaultTree(),
+      sourceStamp: emptyStamp,
+      dirty: true,
+      appendAttempted: true,
+    };
+    candidate.root.comment = "Reentrant recovery replacement";
+    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+      if (replaced) return;
+      replaced = true;
+      const admitted = jotaiStore.get(tabsAtom)[0]!;
+      foreign = {
+        ...admitted,
+        ...(kind === "physical"
+          ? { treeKey: crypto.randomUUID() }
+          : { gameOrigin: fileTab.gameOrigin }),
+      };
+      treeKey = getTabTreeKey(foreign);
+      tabStorage.seed(treeKey, candidate);
+      jotaiStore.set(tabsAtom, [foreign], undefined, () =>
+        retargetTreeStore(tabId, treeKey!, candidate),
+      );
+      replacement = treeStore.getState();
+      setFileFreshness(tabId, "conflict");
+      throw new Error("Foreign recovery subscriber failure");
+    });
+    try {
+      await act(async () =>
+        pending.resolve({ stamp: changedStamp, revision: "obsolete-admitted" }),
+      );
+      expect(await completion).toEqual({ result: false });
+      expect(replaced).toBe(true);
+      expect(jotaiStore.get(tabsAtom)[0]).toEqual(foreign);
+      expect(treeStore.getState()).toBe(replacement);
+      expect(getFileFreshness(tabId).state).toBe("conflict");
+      expect(host.textContent).not.toContain("Foreign recovery subscriber failure");
+      tabStorage.flush();
+      expect(new TabStorageRepository().read(treeKey!)?.state).toMatchObject(candidate);
+    } finally {
+      unsubscribe();
+      if (treeKey && treeKey !== tabId) tabStorage.remove(treeKey);
+    }
+  },
+);
 
 test("a failed storage flush aborts append, clears its marker, and reports persistence failure", async () => {
   mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));

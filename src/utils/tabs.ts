@@ -34,6 +34,7 @@ import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
 import { getFileFreshness, setFileFreshness } from "@/state/fileFreshness";
+import type { Workspace } from "@/state/workspace";
 export { getTabTreeKey, tabSchema, type GameOrigin, type Tab };
 
 export type FileBackedTab = Tab & {
@@ -66,9 +67,18 @@ export function isPersistentGameOrigin(tab?: Tab | null): boolean {
 
 export const genID = newWorkspaceId;
 
-export type SetTabs = (update: Tab[] | ((tabs: Tab[]) => Tab[]), activeTab?: string) => boolean;
+export type SetTabs = (
+    update: Tab[] | ((tabs: Tab[]) => Tab[]),
+    activeTab?: string,
+    onSaved?: (saved: Workspace) => void,
+) => boolean;
 export type SetCurrentTab = (update: React.SetStateAction<Tab>) => boolean;
-export type UpdateTab = (tabId: string, update: React.SetStateAction<Tab>) => boolean;
+/** Acknowledges the canonical persisted successor before workspace observers run. */
+export type UpdateTab = (
+    tabId: string,
+    update: React.SetStateAction<Tab>,
+    onAdmitted?: (successor: Tab) => void,
+) => boolean;
 
 /** Live access stays inside the caller's workspace provider, including durable refusal. */
 export function useTabActions() {
@@ -79,7 +89,8 @@ export function useTabActions() {
         [workspace],
     );
     const updateTab = useCallback(
-        (id: string, update: React.SetStateAction<Tab>) => updateTabById(setTabs, id, update),
+        (id: string, update: React.SetStateAction<Tab>, onAdmitted?: (successor: Tab) => void) =>
+            updateTabById(setTabs, id, update, onAdmitted),
         [setTabs],
     );
     return { workspace, getTab, updateTab };
@@ -635,6 +646,7 @@ export async function appendStoreGame({
     updateTab,
     getTab,
     prepareMessage,
+    onAdmitted,
 }: {
     tab: Tab;
     store: StoreApi<TreeStoreState>;
@@ -644,6 +656,7 @@ export async function appendStoreGame({
     updateTab: UpdateTab;
     getTab: (tabId: string) => Tab | undefined;
     prepareMessage: string;
+    onAdmitted?: (successor: Tab) => void;
 }): Promise<"saved" | "edited" | "superseded" | "uncertain" | "refused"> {
     if (!isCurrent()) return "superseded";
     if (store.getState().appendAttempted) return "uncertain";
@@ -671,32 +684,52 @@ export async function appendStoreGame({
     }
     if (!isCurrent()) return "superseded";
     if (written.stamp === null || written.revision === null) return "uncertain";
+    const { stamp, revision } = written;
     const successorOrigin: GameOrigin = {
         kind: "file",
         gameNumber: selected.numGames,
         file: { ...selected, numGames: selected.numGames + 1 },
     };
-    const admitted = updateTab(tab.value, (previous) => ({
-        ...previous,
-        gameOrigin: successorOrigin,
-    }));
-    if (!admitted) return "refused";
-    // Admission can synchronously notify a subscriber that installs a foreign owner.
-    // The original-origin guard no longer matches a legitimate successful adoption.
+    let successor: Tab | undefined;
     const ownsSuccessor = () => {
         const current = getTab(tab.value);
-        return sameTabOwner(current, tab) && sameOrigin(current.gameOrigin, successorOrigin);
+        return (
+            !!successor &&
+            sameTabOwner(current, successor) &&
+            sameOrigin(current.gameOrigin, successor.gameOrigin)
+        );
     };
-    if (!ownsSuccessor()) return "superseded";
-    const unchanged = serializeStoreTree(store) === pgn;
-    if (unchanged) store.getState().save(written.stamp);
-    else {
-        store.getState().setSourceStamp(written.stamp);
-        if (!ownsSuccessor()) return "superseded";
-        store.getState().setAppendAttempted(false);
+    let unchanged = false;
+    try {
+        const admitted = updateTab(
+            tab.value,
+            (previous) => ({
+                ...previous,
+                gameOrigin: successorOrigin,
+            }),
+            (saved) => {
+                // The canonical workspace acknowledges admission before observers can throw.
+                // Reconcile only that acknowledged owner, never an inferred current tab.
+                successor = saved;
+                onAdmitted?.(saved);
+                if (!ownsSuccessor()) return;
+                unchanged = serializeStoreTree(store) === pgn;
+                if (unchanged) store.getState().save(stamp);
+                else {
+                    store.getState().setSourceStamp(stamp);
+                    if (!ownsSuccessor()) return;
+                    store.getState().setAppendAttempted(false);
+                }
+                if (ownsSuccessor())
+                    setFileFreshness(tab.value, "verified", { verifiedRevision: revision });
+            },
+        );
+        if (!admitted) return "refused";
+    } catch (error) {
+        if (successor && !ownsSuccessor()) return "superseded";
+        throw error;
     }
     if (!ownsSuccessor()) return "superseded";
-    setFileFreshness(tab.value, "verified", { verifiedRevision: written.revision });
     return unchanged ? "saved" : "edited";
 }
 
@@ -716,9 +749,13 @@ export async function saveToFile({
     if (!tab) return failed(new Error("There is no active tab to save."));
     const tabId = tab.value;
     const currentOrigin = tab.gameOrigin;
+    let completionOwner = tab;
     const owns = () => {
         const current = getTab(tabId);
-        return sameTabOwner(current, tab) && sameOrigin(current.gameOrigin, currentOrigin);
+        return (
+            sameTabOwner(current, completionOwner) &&
+            sameOrigin(current.gameOrigin, completionOwner.gameOrigin)
+        );
     };
     let currentFileOperation = false;
     let writingCurrentOrigin = false;
@@ -750,6 +787,9 @@ export async function saveToFile({
                     updateTab,
                     getTab,
                     prepareMessage: i18n.t("FileFreshness.CouldNotPrepareAppend"),
+                    onAdmitted: (successor) => {
+                        completionOwner = successor;
+                    },
                 });
                 if (result === "uncertain" || result === "refused") return uncertain();
                 return result === "edited" ? "superseded" : result;

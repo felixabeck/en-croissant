@@ -101,7 +101,9 @@ function ConfirmChangesModal({
       return;
     }
     const result = await saveToFile({
-      updateTab: updateTab ?? ((tabId, update) => updateTabById(setTabs, tabId, update)),
+      updateTab:
+        updateTab ??
+        ((tabId, update, onAdmitted) => updateTabById(setTabs, tabId, update, onAdmitted)),
       getTab: (tabId) => jotaiStore.get(tabsAtom).find((candidate) => candidate.value === tabId),
       tab: targetTab,
       store: targetStore,

@@ -201,17 +201,30 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
 });
 
 export function updateTabById(
-    setTabs: (update: Tab[] | ((tabs: Tab[]) => Tab[])) => boolean,
+    setTabs: (
+        update: Tab[] | ((tabs: Tab[]) => Tab[]),
+        activeTab?: string,
+        onSaved?: (saved: Workspace) => void,
+    ) => boolean,
     tabId: string,
     update: SetStateAction<Tab>,
+    onAdmitted?: (successor: Tab) => void,
 ) {
     let found = false;
-    const committed = setTabs((tabs) =>
-        tabs.map((tab) => {
-            if (tab.value !== tabId) return tab;
-            found = true;
-            return typeof update === "function" ? update(tab) : update;
-        }),
+    const committed = setTabs(
+        (tabs) =>
+            tabs.map((tab) => {
+                if (tab.value !== tabId) return tab;
+                found = true;
+                return typeof update === "function" ? update(tab) : update;
+            }),
+        undefined,
+        onAdmitted
+            ? (saved) => {
+                  const successor = saved.tabs.find((tab) => tab.value === tabId);
+                  if (found && successor) onAdmitted(successor);
+              }
+            : undefined,
     );
     return committed && found;
 }
