@@ -15076,7 +15076,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### Tournament game pagination always slices 25 rows while its page-size selector changes the paginator
 
-* **ID:** f-20261010-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-03 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 08351eaf-aeac-45f2-aac0-9ca5f71e144a · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-1/run/attempt-08351eaf-aeac-45f2-aac0-9ca5f71e144a-1.jsonl
 * **Where:** `src/components/databases/TournamentCard.tsx` defines `pageSize` and passes it to `recordsPerPage`, but `paginatedGames` slices with `(page - 1) * 25` and a length of 25.
 * **Defect:** choosing 10 or 50 records per page changes the paginator while the rendered records still use 25-row chunks. For example, page two with size 10 starts at the 26th game instead of the 11th, and size 50 still renders only 25 games.
@@ -15084,6 +15084,10 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261001-09 changes shared pane geometry, not tournament result pagination. This pre-change data-pagination defect is a separate obligation from the layout mandate, not a reason to add paging changes to its plan. No matching ledger or pending-inbox entry was found.
 * **Proof required:** component regression tests with more than 50 distinguishable games, page sizes 10 and 50, a second page, and page-size changes asserting the actual displayed records and paginator state.
 * **Found by:** Codex orchestrator while tracing GridLayout's TournamentTable consumer, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+* **Handled:** commit "fix(databases): page tournament games by the selected page size" (Grok Bot side lane, Codex leaf). `src/components/databases/TournamentCard.tsx` now slices the sorted games by the selected `pageSize` instead of fixed 25-row chunks; changing the page size returns to page 1 (the database PlayerTable/TournamentTable keep the page across a size change through their query state; GamesTable has a fixed size of 20 and resets only when its games change), and the page is clamped to the last valid page (page 1 when empty) when the result count shrinks. Sorting is unchanged.
+* **Proof:** `src/components/databases/TournamentCard.test.tsx`, with 60 distinguishable games, asserts the rendered rows and paginator state: size 10 page 2 shows games 11-20; size 50 pages 1 and 2; a size change on a later page; sorting before slicing; the count shrinking to 40 and to 0. Before the fix 6 failed and 2 passed; after, 8 pass. Review r1: correctness, root-cause, tests, minimalism, code-quality APPROVED.
+* **Rejected:** keeping the current page across a size change (with a larger size it can point past the last page; returning to page 1 shows the first rows of the new size).
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"f63ca01c775f46f6c177fba1cd532d952a2780232871c26d371a0d34db2ac60e","header_sha256":"6b691a031cc61c2a4c5d19271ad48fb230122027c46711a026272da50accdf89","header_status":"handled","input_sha256":"24b393f58680e0bd3f511798a36543c8ad0fcd91448d55cfd512099995b53bcc","kind":"mutation-receipt","operation":"9e15a5b95f098e79288033466107af364477a912ce1f3dd3301f6264e897d280","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-03"],"target":"f-20261010-03","v":1} -->
 
 ### Player and tournament ArrowDown navigation indexes beyond the loaded page
 
