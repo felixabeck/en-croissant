@@ -664,7 +664,13 @@ async fn download_file_core_control_with_integrity<F>(
 where
     F: FnMut(f32) -> Result<(), Error>,
 {
+    validate_download_request(op, url, token, &cancellation)?;
     let target = path.to_path_buf();
+    let setup_path = target.clone();
+    let pin = crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || crate::infra::fs::open_parent_no_follow(&setup_path))
+        .await?;
+    let creation_parent = pin.try_clone()?;
     prepare_archive_download(
         ArchiveDownloadRequest {
             op,
@@ -675,11 +681,14 @@ where
             expected_sha256,
         },
         path,
+        move |prefix| crate::infra::fs::OwnedStagingDir::create_in(&creation_parent, prefix),
         cancellation,
         progress_updater,
-        move |source, pin, cancellation| {
+        move |source, _pin, cancellation| {
             let (parent, leaf) = archive_install_names(&target, &staging)?;
-            install_extracted_tree(source, pin, parent, leaf, cancellation)
+            let current = crate::infra::fs::open_parent_no_follow(&target)?;
+            validate_prepared_tree(&source, &current, parent, cancellation)?;
+            install_extracted_tree(source, &pin, parent, leaf, cancellation)
         },
     )
     .await
@@ -696,15 +705,17 @@ struct ArchiveDownloadRequest<'a> {
 
 /// Preparation and its consumer share one blocking worker. An owned tree never crosses an
 /// async return or cleanup boundary, including when the producer is cancelled or times out.
-async fn prepare_archive_download<F, C>(
+async fn prepare_archive_download<F, C, S>(
     request: ArchiveDownloadRequest<'_>,
     path: &Path,
+    create_staging: S,
     cancellation: CancellationToken,
     progress_updater: F,
     consume: C,
 ) -> Result<(), Error>
 where
     F: FnMut(f32) -> Result<(), Error>,
+    S: FnOnce(&str) -> Result<crate::infra::fs::OwnedStagingDir, Error> + Send + 'static,
     C: FnOnce(
             crate::infra::fs::OwnedStagingDir,
             &std::fs::File,
@@ -722,15 +733,26 @@ where
         expected_sha256,
     } = request;
     let parsed_url = validate_download_request(op, url, token, &cancellation)?;
-    let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temp_file = tempfile::Builder::new()
-        .prefix(".download")
-        .tempfile_in(target_dir)
-        .map_err(|e| Error::Io(Box::new(e)))?;
-    download_payload_network(
+    let limits = op.limits();
+    let path = path.to_path_buf();
+    #[cfg(test)]
+    let setup_path = path.clone();
+    let mut file = crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |_| {
+            #[cfg(test)]
+            run_archive_payload_hook(&setup_path);
+            #[cfg(test)]
+            run_archive_payload_create_fault(&setup_path)?;
+            let file = tempfile::tempfile()?;
+            #[cfg(test)]
+            run_archive_payload_created_hook(&setup_path, &file);
+            Ok(file)
+        })
+        .await?;
+    let result = download_payload_network(
         op,
         parsed_url,
-        temp_file.as_file_mut(),
+        &mut file,
         transport,
         token,
         total_size,
@@ -738,46 +760,55 @@ where
         expected_sha256,
         progress_updater,
     )
-    .await?;
-    let limits = op.limits();
-
-    let path = path.to_path_buf();
+    .await;
+    #[cfg(test)]
+    run_archive_payload_network_done_hook(&path);
+    // Accepted workflows own the file across the network await. Once it exists, admission
+    // must drain even after cancellation so every network result closes it on this worker.
     crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |cancellation| {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let mut file = temp_file.into_file();
-            let pin = crate::infra::fs::open_parent_no_follow(&path)?;
+        .spawn(move || {
             #[cfg(test)]
-            run_core_after_pin_hook(&path);
-            let kind = sniff_download_payload(&mut file)?;
-            let is_zip = kind == DownloadPayloadKind::Zip;
-            let is_tar = kind == DownloadPayloadKind::Tar;
-            let is_gz = kind == DownloadPayloadKind::Gzip;
-
-            if is_zip || is_tar || is_gz {
-                if op.payload_format() != PayloadFormat::Archive {
-                    return Err(Error::InvalidInput(
-                        "Archive payload is not allowed for this operation".into(),
-                    ));
+            let terminal_path = path.clone();
+            let outcome = (move || {
+                result?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
                 }
-                let dest_parent = path.parent().unwrap_or_else(|| Path::new("."));
-                let source = if is_zip {
-                    prepare_zip_cancellable(file, dest_parent, limits, cancellation)?
-                } else if is_tar {
-                    prepare_tar_cancellable(file, dest_parent, limits, cancellation)?
-                } else {
-                    if !gzip_is_tar(&mut file)? {
-                        return Err(archive_payload_required());
+                #[cfg(test)]
+                run_core_after_pin_hook(&path);
+                let kind = sniff_download_payload(&mut file)?;
+                let is_zip = kind == DownloadPayloadKind::Zip;
+                let is_tar = kind == DownloadPayloadKind::Tar;
+                let is_gz = kind == DownloadPayloadKind::Gzip;
+
+                if is_zip || is_tar || is_gz {
+                    if op.payload_format() != PayloadFormat::Archive {
+                        return Err(Error::InvalidInput(
+                            "Archive payload is not allowed for this operation".into(),
+                        ));
                     }
-                    prepare_gz_cancellable(file, dest_parent, limits, cancellation)?
-                };
-                validate_prepared_tree(&source, &pin, dest_parent, cancellation)?;
-                consume(source, &pin, cancellation)
-            } else {
-                Err(archive_payload_required())
-            }
+                    let dest_parent = path.parent().unwrap_or_else(|| Path::new("."));
+                    let staging = create_staging(if is_zip { ".zip" } else { ".tar" })?;
+                    let pin = staging.binding().0.try_clone()?;
+                    let source = if is_zip {
+                        prepare_zip_cancellable(file, staging, limits, &cancellation)?
+                    } else if is_tar {
+                        prepare_tar_cancellable(file, staging, limits, &cancellation)?
+                    } else {
+                        if !gzip_is_tar(&mut file)? {
+                            return Err(archive_payload_required());
+                        }
+                        prepare_gz_cancellable(file, dest_parent, staging, limits, &cancellation)?
+                    };
+                    validate_prepared_tree(&source, &pin, dest_parent, &cancellation)?;
+                    consume(source, &pin, &cancellation)
+                } else {
+                    Err(archive_payload_required())
+                }
+            })();
+            #[cfg(test)]
+            run_archive_payload_cleanup_hook(&terminal_path);
+            outcome
         })
         .await
 }
@@ -1463,6 +1494,8 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                 Error::InvalidInput("archive destination needs a target directory".into())
             })?
             .to_path_buf();
+        let resolved = std::sync::Arc::new(resolved);
+        let staging_authority = resolved.clone();
         let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
         let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
         let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
@@ -1477,6 +1510,7 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                 expected_sha256: Some(&integrity.sha256),
             },
             &archive_target,
+            move |_prefix| staging_authority.create_archive_staging(),
             cancellation.clone(),
             |progress| {
                 update_progress_with_state(
@@ -1586,6 +1620,7 @@ pub fn cancel_download_for_progress(
         .cancel_download_for_progress(&progress_id, window.label())
 }
 
+#[cfg(test)]
 fn private_tempdir_in(prefix: &str, parent: &Path) -> Result<tempfile::TempDir, Error> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
@@ -1656,6 +1691,25 @@ fn map_zip_error(error: zip::result::ZipError, message: &str) -> Error {
 }
 
 #[cfg(test)]
+fn create_test_archive_staging(
+    pin: &std::fs::File,
+    dest_parent: &Path,
+    prefix: &str,
+) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
+    // Standalone fixtures supply both a logical locator and a pin. Production's closed
+    // resolution door makes this relationship structural instead.
+    let logical_parent = crate::infra::fs::open_parent_no_follow(&dest_parent.join("installed"))?;
+    if crate::infra::path_authority::opened_file_identity(&logical_parent)?
+        != crate::infra::path_authority::opened_file_identity(pin)?
+    {
+        return Err(Error::Conflict(
+            "archive staging parent changed concurrently".into(),
+        ));
+    }
+    crate::infra::fs::OwnedStagingDir::create_in(pin, prefix)
+}
+
+#[cfg(test)]
 fn extract_zip_cancellable(
     file: std::fs::File,
     pin: &std::fs::File,
@@ -1664,21 +1718,17 @@ fn extract_zip_cancellable(
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let source = prepare_zip_cancellable(file, dest_parent, limits, cancellation)?;
+    let staging = create_test_archive_staging(pin, dest_parent, ".zip")?;
+    let source = prepare_zip_cancellable(file, staging, limits, cancellation)?;
     install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
 }
 
 fn prepare_zip_cancellable(
     file: std::fs::File,
-    dest_parent: &Path,
+    staging: crate::infra::fs::OwnedStagingDir,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
-    let temp_dir = private_tempdir_in(".zip", dest_parent)?;
-    let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
-    // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
-    let _ = temp_dir.keep();
-
     let mut archive =
         zip::ZipArchive::new(file).map_err(|error| map_zip_error(error, "Invalid zip archive"))?;
 
@@ -1736,21 +1786,17 @@ fn extract_tar_cancellable(
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let source = prepare_tar_cancellable(file, dest_parent, limits, cancellation)?;
+    let staging = create_test_archive_staging(pin, dest_parent, ".tar")?;
+    let source = prepare_tar_cancellable(file, staging, limits, cancellation)?;
     install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
 }
 
 fn prepare_tar_cancellable(
     file: std::fs::File,
-    dest_parent: &Path,
+    staging: crate::infra::fs::OwnedStagingDir,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
-    let temp_dir = private_tempdir_in(".tar", dest_parent)?;
-    let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
-    // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
-    let _ = temp_dir.keep();
-
     let mut archive = tar::Archive::new(file);
     let mut entry_count = 0;
     let mut total_expanded = 0u64;
@@ -1834,6 +1880,89 @@ type CoreAfterPinHook = Box<dyn FnOnce(&Path) + Send>;
 static CORE_AFTER_PIN_HOOKS: std::sync::Mutex<
     std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
 > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+static ARCHIVE_GZIP_SCRATCH_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+static ARCHIVE_PAYLOAD_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+type ArchivePayloadCreatedHook = Box<dyn FnOnce(&std::fs::File) + Send>;
+
+#[cfg(test)]
+static ARCHIVE_PAYLOAD_CREATED_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, ArchivePayloadCreatedHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+static ARCHIVE_PAYLOAD_CREATE_FAULTS: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Error>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+static ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+static ARCHIVE_PAYLOAD_CLEANUP_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+fn run_archive_payload_create_fault(target: &Path) -> Result<(), Error> {
+    match ARCHIVE_PAYLOAD_CREATE_FAULTS.lock().unwrap().remove(target) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+fn run_archive_payload_created_hook(target: &Path, file: &std::fs::File) {
+    let hook = ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().remove(target);
+    if let Some(hook) = hook {
+        hook(file);
+    }
+}
+
+#[cfg(test)]
+fn run_archive_payload_network_done_hook(target: &Path) {
+    let hook = ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS
+        .lock()
+        .unwrap()
+        .remove(target);
+    if let Some(hook) = hook {
+        hook(target);
+    }
+}
+
+#[cfg(test)]
+fn run_archive_payload_cleanup_hook(target: &Path) {
+    let hook = ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().remove(target);
+    if let Some(hook) = hook {
+        hook(target);
+    }
+}
+
+#[cfg(test)]
+fn run_archive_payload_hook(target: &Path) {
+    let hook = ARCHIVE_PAYLOAD_HOOKS.lock().unwrap().remove(target);
+    if let Some(hook) = hook {
+        hook(target);
+    }
+}
+
+#[cfg(test)]
+fn run_archive_gzip_scratch_hook(parent: &Path) {
+    let hook = ARCHIVE_GZIP_SCRATCH_HOOKS.lock().unwrap().remove(parent);
+    if let Some(hook) = hook {
+        hook(parent);
+    }
+}
 
 /// Keyed by the unique test target so a different blocking worker cannot consume the hook.
 #[cfg(test)]
@@ -1954,13 +2083,15 @@ fn extract_gz_cancellable(
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let source = prepare_gz_cancellable(file, dest_parent, limits, cancellation)?;
+    let staging = create_test_archive_staging(pin, dest_parent, ".tar")?;
+    let source = prepare_gz_cancellable(file, dest_parent, staging, limits, cancellation)?;
     install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)
 }
 
 fn prepare_gz_cancellable(
     mut file: std::fs::File,
     dest_parent: &Path,
+    staging: crate::infra::fs::OwnedStagingDir,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
@@ -1973,7 +2104,11 @@ fn prepare_gz_cancellable(
     let stream_limit = limits.expanded.min(ratio_limit);
     // Bound the entire decompressed stream (headers and padding included) before tar
     // publication. The tar extractor still enforces entry count and per-entry limits.
-    let mut tar_file = tempfile::tempfile_in(dest_parent)?;
+    #[cfg(test)]
+    run_archive_gzip_scratch_hook(dest_parent);
+    #[cfg(not(test))]
+    let _ = dest_parent;
+    let mut tar_file = tempfile::tempfile()?;
     let mut decoder = flate2::read::GzDecoder::new(file);
     let mut total = 0;
     bounded_copy(
@@ -1994,7 +2129,7 @@ fn prepare_gz_cancellable(
         other => other,
     })?;
     tar_file.seek(SeekFrom::Start(0))?;
-    prepare_tar_cancellable(tar_file, dest_parent, limits, cancellation)
+    prepare_tar_cancellable(tar_file, staging, limits, cancellation)
 }
 
 fn bounded_copy(
@@ -3672,122 +3807,6 @@ mod tests {
         assert!(!parent.path().join("payload").exists());
     }
 
-    #[test]
-    fn extract_zip_and_tar_source_scan_has_no_atomic_install_dir() {
-        let source = include_str!("fs.rs");
-        let production = &source[..source
-            .find("#[cfg(test)]\nmod tests {")
-            .expect("test module")];
-        assert!(!production.contains("atomic_install_dir"));
-        for signature in [
-            "fn extract_zip_cancellable(",
-            "fn extract_tar_cancellable(",
-            "fn prepare_zip_cancellable(",
-            "fn prepare_tar_cancellable(",
-            "fn install_extracted_tree(",
-            "fn extract_zip(",
-            "fn extract_tar(",
-        ] {
-            let body = body_at_indent(source, signature);
-            assert!(!body.contains("atomic_install_dir"), "{body}");
-        }
-        for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
-            let body = body_at_indent(source, signature);
-            assert!(
-                body.contains("prepare_")
-                    && body.contains(
-                        "install_extracted_tree(source, pin, dest_parent, dest_leaf, cancellation)"
-                    ),
-                "{body}"
-            );
-        }
-        for signature in ["fn extract_zip(", "fn extract_tar("] {
-            let body = body_at_indent(source, signature);
-            let production = signature
-                .trim_start_matches("fn ")
-                .replace('(', "_cancellable");
-            assert!(body.contains(&production), "{body}");
-            assert!(body.contains("extract_archive_for_test("), "{body}");
-        }
-        let zip = body_at_indent(source, "fn prepare_zip_cancellable(");
-        for message in ["Invalid zip archive", "Invalid zip entry"] {
-            assert!(
-                zip.contains(&format!("map_zip_error(error, \"{message}\")")),
-                "{zip}"
-            );
-        }
-        for signature in ["fn prepare_zip_cancellable(", "fn prepare_tar_cancellable("] {
-            let body = body_at_indent(source, signature);
-            let tempdir = body
-                .find("private_tempdir_in(")
-                .expect("private_tempdir_in");
-            let adopt = body
-                .find("OwnedStagingDir::adopt(&temp_dir)?;")
-                .expect("adopt after private_tempdir_in");
-            let keep = body
-                .find("\n    let _ = temp_dir.keep();\n")
-                .expect("discarded keep() statement");
-            let member_loop = body.find("\n    for ").expect("member loop");
-            assert!(
-                tempdir < adopt && adopt < keep && keep < member_loop,
-                "{body}"
-            );
-            assert_eq!(body.matches("= temp_dir.keep()").count(), 1, "{body}");
-            let inner = &body[tempdir..];
-            assert!(inner.contains("ensure_relative_directory("), "{body}");
-            assert!(inner.contains("create_relative_regular("), "{body}");
-            for banned in [
-                ".join(",
-                "File::create",
-                "std::fs::create_dir",
-                "create_private_dir_all",
-                "OpenOptions",
-                "private_output_file",
-            ] {
-                assert!(!inner.contains(banned), "{banned}: {body}");
-            }
-        }
-        assert!(!production.contains("private_output_file"));
-        let helper = body_at_indent(source, "fn install_extracted_tree(");
-        assert!(
-            source.contains(
-                "fn install_extracted_tree(\n    source: crate::infra::fs::OwnedStagingDir,\n    pin: &std::fs::File,\n    _dest_parent: &Path,\n    dest_leaf: &OsStr,\n    cancellation: &CancellationToken,"
-            ),
-            "{helper}"
-        );
-        assert!(!helper.contains("adopt("), "{helper}");
-        let validator = body_at_indent(source, "fn validate_prepared_tree(");
-        let hook = validator
-            .find("run_archive_pre_install_hook(_dest_parent)")
-            .unwrap();
-        let cancellation = validator.find("if cancellation.is_cancelled()").unwrap();
-        let identity = validator.find("opened_file_identity(pin)").unwrap();
-        let validation = helper
-            .find("validate_prepared_tree(&source, pin, _dest_parent, cancellation)?")
-            .expect("standalone install must use the shared prepared validator");
-        assert!(
-            production
-                .contains("validate_prepared_tree(&source, &pin, dest_parent, cancellation)?"),
-            "catalog preparation must use the shared prepared validator"
-        );
-        let install = helper
-            .find("install_owned_staging_dir(source, dest_leaf)")
-            .unwrap();
-        assert!(
-            hook < cancellation && cancellation < identity && validation < install,
-            "{helper}"
-        );
-        assert!(
-            helper.contains("install_owned_staging_dir(source, dest_leaf)"),
-            "{helper}"
-        );
-        assert_eq!(
-            helper.matches("open_parent_no_follow(").count(),
-            0,
-            "{helper}"
-        );
-    }
-
     use crate::infra::net::{DownloadResponse, DownloadTransport};
     use reqwest::header::{HeaderMap, HeaderValue};
 
@@ -5196,7 +5215,7 @@ mod tests {
                                     .file_name()
                                     .unwrap()
                                     .to_string_lossy()
-                                    .starts_with(".zip")
+                                    .starts_with(".archive")
                         })
                         .expect("actual prepared ZIP owner");
                     set_test_atomic_dir_injector(Some(Box::new(FinalSwap(
@@ -5266,8 +5285,690 @@ mod tests {
         }
     }
 
+    // These tests deliberately occupy every shared permit. Serialize their admission holds
+    // so separate test runtimes cannot each retain half the gateway while awaiting the rest.
+    static ARCHIVE_GATEWAY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct HeldArchiveTransport {
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+        release: Arc<tokio::sync::Semaphore>,
+        payload: Vec<u8>,
+        network_failure: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl DownloadTransport for HeldArchiveTransport {
+        async fn request(
+            &self,
+            _url: &str,
+            _headers: HeaderMap,
+        ) -> Result<DownloadResponse, Error> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            let payload = self.payload.clone();
+            let network_failure = self.network_failure;
+            Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(payload.len() as u64),
+                stream: Box::pin(futures_util::stream::once(async move {
+                    let _ = started.send(());
+                    release.acquire_owned().await.unwrap().forget();
+                    if network_failure {
+                        Err(Error::Io(Box::new(std::io::Error::from(
+                            std::io::ErrorKind::ConnectionReset,
+                        ))))
+                    } else {
+                        Ok(bytes::Bytes::from(payload))
+                    }
+                })),
+            })
+        }
+    }
+
+    struct ReleaseArchiveStreams(Arc<tokio::sync::Semaphore>);
+
+    impl Drop for ReleaseArchiveStreams {
+        fn drop(&mut self) {
+            self.0.add_permits(4);
+        }
+    }
+
+    fn spawn_accepted_archive(
+        state: AppState,
+        destination: crate::infra::path_authority::PathRef,
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        progress: &str,
+        name: &str,
+        integrity: ArtifactIntegrity,
+    ) -> (
+        tokio::task::JoinHandle<Result<(), Error>>,
+        CancellationToken,
+    ) {
+        let job = state.operations.prepare_download("test").unwrap();
+        let lease = state
+            .operations
+            .claim_download(
+                &job,
+                "test",
+                "archive staging test",
+                progress,
+                progress,
+                false,
+                MAX_ACTIVE_DOWNLOADS,
+            )
+            .unwrap();
+        let cancellation = lease.token();
+        let commit_gate = lease.commit_gate();
+        let workflow = download_engine_archive_core(
+            progress.into(),
+            "https://example.com/engine.zip".into(),
+            destination,
+            name.into(),
+            job,
+            integrity,
+            app,
+            state,
+            cancellation.clone(),
+            commit_gate,
+            Box::new(accept_any_integrity),
+        );
+        (
+            tokio::spawn(crate::infra::operations::run_native_operation(
+                lease,
+                "archive staging test",
+                workflow,
+            )),
+            cancellation,
+        )
+    }
+
     #[tokio::test]
-    async fn catalog_install_joiner_actual_core_consumes_zip_tar_gzip_owners_and_failed_preparation(
+    async fn archive_staging_authority_four_stalled_streams_leave_gateway_available() {
+        let _exclusive_gateway_test = ARCHIVE_GATEWAY_TEST_LOCK.lock().await;
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
+        let payload = zip_payload();
+        let integrity = unsigned_test_integrity(&payload);
+        let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let release_guard = ReleaseArchiveStreams(release.clone());
+        let state = AppState {
+            http_transport: Arc::new(HeldArchiveTransport {
+                started,
+                release: release.clone(),
+                payload,
+                network_failure: false,
+            }),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let mut commands = Vec::new();
+        for index in 0..4 {
+            let name = format!("engine-{index}");
+            commands.push(
+                spawn_accepted_archive(
+                    state.clone(),
+                    destination.clone(),
+                    app.handle().clone(),
+                    &name,
+                    &name,
+                    integrity.clone(),
+                )
+                .0,
+            );
+        }
+        for _ in 0..4 {
+            tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let probe_path = dir.path().join("unrelated-file");
+        std::fs::write(&probe_path, b"gateway probe").unwrap();
+        let probe = tokio::time::timeout(
+            Duration::from_millis(500),
+            crate::infra::blocking::BLOCKING_GATEWAY.spawn(move || Ok(std::fs::read(probe_path)?)),
+        )
+        .await;
+        // Release and drain even for the deliberately restored waiting-worker red proof.
+        drop(release_guard);
+        for command in commands {
+            tokio::time::timeout(Duration::from_secs(5), command)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        assert!(matches!(&probe, Ok(Ok(bytes)) if bytes == b"gateway probe"),
+            "ARCHIVE_STREAM_GATEWAY_AVAILABLE: unrelated filesystem work must finish before releasing four archive streams: {probe:?}");
+        assert!(state.operations.wait_for_drain(Duration::ZERO).unwrap());
+        for index in 0..4 {
+            let name = format!("engine-{index}");
+            assert_eq!(
+                std::fs::read(engine_root.join(&name).join("engine.bin")).unwrap(),
+                b"engine"
+            );
+            assert_eq!(
+                state.progress_state.get(&name).unwrap().unwrap().state,
+                ProgressState::Succeeded
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_command_awaiter_drop_keeps_success_and_failure_tails() {
+        for failure in ["none", "network", "publication"] {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let payload = zip_payload();
+            let integrity = unsigned_test_integrity(&payload);
+            let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let release_guard = ReleaseArchiveStreams(release.clone());
+            let state = AppState {
+                http_transport: Arc::new(HeldArchiveTransport {
+                    started,
+                    release,
+                    payload,
+                    network_failure: failure == "network",
+                }),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let cleanup_observed = cleaned.clone();
+            ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().insert(
+                engine_root.join("installed"),
+                Box::new(move |_| {
+                    cleanup_observed.store(true, Ordering::SeqCst);
+                }),
+            );
+            let app = test_progress_app();
+            let (command, _) = spawn_accepted_archive(
+                state.clone(),
+                destination,
+                app.handle().clone(),
+                "archive-caller-drop",
+                "installed",
+                integrity,
+            );
+            tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            command.abort();
+            assert!(command.await.unwrap_err().is_cancelled());
+            assert!(!state.operations.wait_for_drain(Duration::ZERO).unwrap());
+            if failure == "publication" {
+                state.pgn_path_authority.uninstall();
+            }
+            drop(release_guard);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !state.operations.wait_for_drain(Duration::ZERO).unwrap() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                cleaned.load(Ordering::SeqCst),
+                "accepted archive must complete terminal cleanup after caller drop"
+            );
+            let item = state
+                .progress_state
+                .get("archive-caller-drop")
+                .unwrap()
+                .unwrap();
+            assert!(item.finished);
+            if failure == "none" {
+                assert_eq!(item.state, ProgressState::Succeeded);
+                assert_eq!(
+                    std::fs::read(engine_root.join("installed/engine.bin")).unwrap(),
+                    b"engine"
+                );
+                assert_eq!(leaves(&engine_root), vec!["installed"]);
+            } else {
+                assert_eq!(item.state, ProgressState::Failed);
+                assert!(leaves(&engine_root).is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_payload_creation_failure_preserves_io_and_failed_progress() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
+        let payload = zip_payload();
+        let integrity = unsigned_test_integrity(&payload);
+        let transport = Arc::new(zip_response(payload));
+        let state = AppState {
+            http_transport: transport.clone(),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        ARCHIVE_PAYLOAD_CREATE_FAULTS.lock().unwrap().insert(
+            engine_root.join("installed"),
+            Error::Io(Box::new(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))),
+        );
+        let app = test_progress_app();
+        let (command, _) = spawn_accepted_archive(
+            state.clone(),
+            destination,
+            app.handle().clone(),
+            "archive-setup-failure",
+            "installed",
+            integrity,
+        );
+        let error = command.await.unwrap().unwrap_err();
+        assert!(matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied),
+            "ARCHIVE_SETUP_TYPED_IO: anonymous payload setup must preserve its typed failure: {error:?}");
+        assert!(transport.requests_seen.lock().unwrap().is_empty());
+        assert!(leaves(&engine_root).is_empty());
+        let item = state
+            .progress_state
+            .get("archive-setup-failure")
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert!(item.finished);
+        assert!(state.operations.wait_for_drain(Duration::ZERO).unwrap());
+    }
+
+    async fn assert_archive_terminal_cleanup_waits_for_admission(network_failure: bool) {
+        let _exclusive_gateway_test = ARCHIVE_GATEWAY_TEST_LOCK.lock().await;
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
+        let payload = zip_payload();
+        let integrity = unsigned_test_integrity(&payload);
+        let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let release_guard = ReleaseArchiveStreams(release.clone());
+        let state = AppState {
+            http_transport: Arc::new(HeldArchiveTransport {
+                started,
+                release,
+                payload,
+                network_failure,
+            }),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let target = engine_root.join("installed");
+        let runtime_thread = std::thread::current().id();
+        let created = Arc::new(AtomicBool::new(false));
+        let creation_observed = created.clone();
+        #[cfg(target_os = "linux")]
+        let descriptor = Arc::new(Mutex::new(None));
+        #[cfg(target_os = "linux")]
+        let created_descriptor = descriptor.clone();
+        ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().insert(
+            target.clone(),
+            Box::new(move |_file| {
+                assert_ne!(
+                    std::thread::current().id(),
+                    runtime_thread,
+                    "payload creation must leave the runtime worker"
+                );
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::fd::AsRawFd;
+                    *created_descriptor.lock().unwrap() = Some((
+                        _file.as_raw_fd(),
+                        crate::infra::path_authority::opened_file_identity(_file).unwrap(),
+                    ));
+                }
+                creation_observed.store(true, Ordering::SeqCst);
+            }),
+        );
+        let (network_done_tx, network_done_rx) = tokio::sync::oneshot::channel();
+        ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS.lock().unwrap().insert(
+            target.clone(),
+            Box::new(move |_| {
+                let _ = network_done_tx.send(());
+            }),
+        );
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let cleanup_observed = cleaned.clone();
+        let (cleanup_entered_tx, cleanup_entered_rx) = tokio::sync::oneshot::channel();
+        let (cleanup_release_tx, cleanup_release_rx) = std::sync::mpsc::channel();
+        let mut cleanup_guard = ExtractionTestGuard {
+            release: Some(cleanup_release_tx),
+        };
+        #[cfg(target_os = "linux")]
+        let cleanup_descriptor = descriptor.clone();
+        ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().insert(target, Box::new(move |_| {
+            assert_ne!(std::thread::current().id(), runtime_thread, "terminal payload cleanup must leave the runtime worker");
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let (fd, identity) = cleanup_descriptor.lock().unwrap().unwrap();
+                if let Ok(metadata) = std::fs::metadata(format!("/proc/self/fd/{fd}")) {
+                    assert_ne!((metadata.dev(), metadata.ino()), identity, "terminal worker must destroy the actual anonymous payload before reporting cleanup");
+                }
+            }
+            cleanup_observed.store(true, Ordering::SeqCst);
+            let _ = cleanup_entered_tx.send(());
+            cleanup_release_rx.recv_timeout(Duration::from_secs(5)).expect("terminal cleanup release");
+        }));
+        let app = test_progress_app();
+        let (mut command, cancellation) = spawn_accepted_archive(
+            state.clone(),
+            destination,
+            app.handle().clone(),
+            "archive-terminal",
+            "installed",
+            integrity,
+        );
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(created.load(Ordering::SeqCst));
+        // Occupy all shared permits only after setup and network entry. Each guard releases
+        // its worker on every test exit, including a failed assertion.
+        let mut holders = Vec::new();
+        let mut holder_guards = Vec::new();
+        for _ in 0..4 {
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            holder_guards.push(ExtractionTestGuard {
+                release: Some(release_tx),
+            });
+            holders.push(tokio::spawn(
+                crate::infra::blocking::BLOCKING_GATEWAY.spawn(move || {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                    Ok(())
+                }),
+            ));
+            tokio::time::timeout(Duration::from_secs(5), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        if !network_failure {
+            cancellation.cancel();
+        }
+        drop(release_guard);
+        tokio::time::timeout(Duration::from_secs(5), network_done_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        // A captured network failure must still win a later cancellation at admission.
+        cancellation.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut command)
+                .await
+                .is_err(),
+            "terminal admission must not skip payload cleanup after cancellation"
+        );
+        assert!(!cleaned.load(Ordering::SeqCst));
+        assert!(
+            !state.operations.wait_for_drain(Duration::ZERO).unwrap(),
+            "accepted lease must retain queued terminal cleanup"
+        );
+        assert_eq!(
+            state
+                .progress_state
+                .get("archive-terminal")
+                .unwrap()
+                .unwrap()
+                .state,
+            ProgressState::Running
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (fd, identity) = descriptor.lock().unwrap().unwrap();
+            let metadata = std::fs::metadata(format!("/proc/self/fd/{fd}")).unwrap();
+            assert_eq!(
+                (metadata.dev(), metadata.ino()),
+                identity,
+                "queued cleanup must retain its actual payload descriptor"
+            );
+        }
+        drop(holder_guards);
+        tokio::time::timeout(Duration::from_secs(5), cleanup_entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(cleaned.load(Ordering::SeqCst));
+        assert!(
+            !state.operations.wait_for_drain(Duration::ZERO).unwrap(),
+            "lease must await terminal worker exit"
+        );
+        assert!(
+            leaves(&engine_root).is_empty(),
+            "cancelled or failed payload must not reach extraction/publication"
+        );
+        cleanup_guard.release();
+        let error = tokio::time::timeout(Duration::from_secs(5), command)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        if network_failure {
+            assert!(
+                matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+                "terminal cleanup must preserve original network failure: {error:?}"
+            );
+        } else {
+            assert!(matches!(error, Error::Cancellation), "{error:?}");
+        }
+        let item = state
+            .progress_state
+            .get("archive-terminal")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            item.state,
+            if network_failure {
+                ProgressState::Failed
+            } else {
+                ProgressState::Cancelled
+            }
+        );
+        assert!(item.finished);
+        assert!(state.operations.wait_for_drain(Duration::ZERO).unwrap());
+        assert!(leaves(&engine_root).is_empty());
+        for holder in holders {
+            holder.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_cancelled_payload_waits_for_terminal_cleanup_and_lease() {
+        assert_archive_terminal_cleanup_waits_for_admission(false).await;
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_network_failure_uses_terminal_cleanup_before_lease_release()
+    {
+        assert_archive_terminal_cleanup_waits_for_admission(true).await;
+    }
+
+    /// Linux observes anonymous O_TMPFILE writes too, which a directory listing cannot see.
+    #[cfg(target_os = "linux")]
+    fn archive_write_watch(path: &Path) -> std::fs::File {
+        use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(
+            fd >= 0,
+            "inotify_init1: {}",
+            std::io::Error::last_os_error()
+        );
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let watch = unsafe {
+            libc::inotify_add_watch(
+                fd,
+                path.as_ptr(),
+                libc::IN_CREATE
+                    | libc::IN_MODIFY
+                    | libc::IN_CLOSE_WRITE
+                    | libc::IN_MOVED_TO
+                    | libc::IN_DELETE,
+            )
+        };
+        assert!(
+            watch >= 0,
+            "inotify_add_watch: {}",
+            std::io::Error::last_os_error()
+        );
+        file
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_no_archive_writes(mut watch: &std::fs::File) {
+        let mut events = [0u8; 8192];
+        match watch.read(&mut events) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            result => panic!("replacement root received temporary writes: {result:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn assert_archive_staging_authority_replaced_root(symlink: bool, during_gzip: bool) {
+        for (payload, member) in [
+            (zip_payload(), "engine.bin"),
+            (raw_tar_payload(), "stockfish/engine"),
+            (gzip_tar_payload(b"engine"), "stockfish/engine"),
+        ] {
+            if during_gzip && !payload.starts_with(&[0x1f, 0x8b]) {
+                continue;
+            }
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let moved = dir.path().join("authorized-moved");
+            let replacement = dir.path().join("replacement");
+            std::fs::create_dir(&replacement).unwrap();
+            std::fs::write(replacement.join("foreign"), b"keep").unwrap();
+            #[cfg(target_os = "linux")]
+            let watch = Arc::new(archive_write_watch(&replacement));
+            let swapped = Arc::new(AtomicBool::new(false));
+            let observed = Arc::new(AtomicBool::new(false));
+            let hook_root = engine_root.clone();
+            let hook_moved = moved.clone();
+            let hook_replacement = replacement.clone();
+            let hook_swapped = swapped.clone();
+            let hook_observed = observed.clone();
+            #[cfg(target_os = "linux")]
+            let hook_watch = watch.clone();
+            let hook: CoreAfterPinHook = Box::new(move |_| {
+                std::fs::rename(&hook_root, &hook_moved).unwrap();
+                if symlink {
+                    std::os::unix::fs::symlink(&hook_replacement, &hook_root).unwrap();
+                } else {
+                    std::fs::rename(&hook_replacement, &hook_root).unwrap();
+                }
+                hook_swapped.store(true, Ordering::SeqCst);
+                set_archive_pre_install_hook(Some(Box::new(move |_| {
+                    assert_eq!(
+                        leaves(&hook_root),
+                        vec!["foreign"],
+                        "replacement root must contain no temporary entry before publication"
+                    );
+                    #[cfg(target_os = "linux")]
+                    assert_no_archive_writes(&hook_watch);
+                    let staging = leaves(&hook_moved);
+                    assert_eq!(
+                        staging.len(),
+                        1,
+                        "only the retained authorized root receives staging"
+                    );
+                    assert!(staging[0].starts_with(".archive"));
+                    assert_eq!(
+                        std::fs::read(hook_moved.join(&staging[0]).join(member)).unwrap(),
+                        b"engine"
+                    );
+                    hook_observed.store(true, Ordering::SeqCst);
+                })));
+            });
+            if during_gzip {
+                ARCHIVE_GZIP_SCRATCH_HOOKS
+                    .lock()
+                    .unwrap()
+                    .insert(engine_root.clone(), hook);
+            } else {
+                ARCHIVE_PAYLOAD_HOOKS
+                    .lock()
+                    .unwrap()
+                    .insert(engine_root.join("installed"), hook);
+            }
+            let integrity = unsigned_test_integrity(&payload);
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload)),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            let (job, lease) = test_download_lease(&state);
+            let result = download_engine_archive_core(
+                "authority-parent-swap".into(),
+                "https://example.com/engine.archive".into(),
+                destination,
+                "installed".into(),
+                job,
+                integrity,
+                app.handle().clone(),
+                state,
+                lease.token(),
+                lease.commit_gate(),
+                Box::new(accept_any_integrity),
+            )
+            .await;
+            assert!(swapped.load(Ordering::SeqCst));
+            assert!(
+                observed.load(Ordering::SeqCst),
+                "preparation must reach the pre-publication boundary"
+            );
+            assert!(
+                matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
+                "replaced authority root must refuse publication: {result:?}"
+            );
+            assert_eq!(leaves(&engine_root), vec!["foreign"]);
+            assert_eq!(std::fs::read(engine_root.join("foreign")).unwrap(), b"keep");
+            assert!(
+                leaves(&moved).is_empty(),
+                "refused publication must clean the authorized staging entry"
+            );
+            #[cfg(target_os = "linux")]
+            assert_no_archive_writes(&watch);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_staging_authority_symlink_before_payload_has_zero_replacement_writes() {
+        assert_archive_staging_authority_replaced_root(true, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_staging_authority_different_directory_before_payload_has_zero_replacement_writes(
+    ) {
+        assert_archive_staging_authority_replaced_root(false, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_staging_authority_symlink_during_gzip_has_zero_replacement_writes() {
+        assert_archive_staging_authority_replaced_root(true, true).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_staging_authority_different_directory_during_gzip_has_zero_replacement_writes()
+    {
+        assert_archive_staging_authority_replaced_root(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_actual_core_consumes_zip_tar_gzip_owners_and_failed_preparation(
     ) {
         for (payload, member, succeeds) in [
             (zip_payload(), "engine.bin", true),
@@ -5320,7 +6021,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_install_joiner_actual_core_deadline_and_cancel_await_owned_cleanup() {
+    async fn archive_staging_authority_actual_core_preserves_substituted_leaf_before_inventory() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
+        let moved = engine_root.join("moved-owner");
+        let substituted = Arc::new(Mutex::new(None));
+        let hook_substituted = substituted.clone();
+        let hook_moved = moved.clone();
+        set_core_after_pin_hook(
+            &engine_root.join("installed"),
+            Some(Box::new(move |_| {
+                set_archive_pre_install_hook(Some(Box::new(move |parent| {
+                    let leaf = leaves(parent)
+                        .into_iter()
+                        .find(|leaf| leaf.starts_with(".archive"))
+                        .unwrap();
+                    let path = parent.join(leaf);
+                    std::fs::rename(&path, &hook_moved).unwrap();
+                    std::fs::create_dir(&path).unwrap();
+                    std::fs::write(path.join("foreign"), b"keep").unwrap();
+                    *hook_substituted.lock().unwrap() = Some(path);
+                })));
+            })),
+        );
+        let payload = zip_payload();
+        let integrity = unsigned_test_integrity(&payload);
+        let state = AppState {
+            http_transport: Arc::new(zip_response(payload)),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let (job, lease) = test_download_lease(&state);
+        let result = download_engine_archive_core(
+            "authority-leaf-swap".into(),
+            "https://example.com/engine.zip".into(),
+            destination,
+            "installed".into(),
+            job,
+            integrity,
+            app.handle().clone(),
+            state,
+            lease.token(),
+            lease.commit_gate(),
+            Box::new(accept_any_integrity),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "substituted staging must refuse inventory/publication: {result:?}"
+        );
+        let substituted = substituted.lock().unwrap().take().unwrap();
+        assert_eq!(std::fs::read(substituted.join("foreign")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(moved.join("engine.bin")).unwrap(), b"engine");
+        assert!(!engine_root.join("installed").exists());
+    }
+
+    #[tokio::test]
+    async fn archive_staging_authority_actual_core_deadline_and_cancel_await_owned_cleanup() {
         for deadline in [false, true] {
             let dir = tempdir().unwrap();
             let (authority, destination, engine_root, _) = engine_destination(&dir);
@@ -5376,7 +6134,7 @@ mod tests {
                 .unwrap();
             assert!(leaves(&engine_root)
                 .iter()
-                .any(|leaf| leaf.starts_with(".zip")));
+                .any(|leaf| leaf.starts_with(".archive")));
             if deadline {
                 tokio::time::pause();
                 tokio::time::advance(DOWNLOAD_DEADLINE + Duration::from_secs(1)).await;

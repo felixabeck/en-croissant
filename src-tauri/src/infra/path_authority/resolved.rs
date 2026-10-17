@@ -232,8 +232,22 @@ impl ResolvedPath {
         self.operation
     }
 
-    /// Installs a backend-created archive directory at the authority-resolved destination. The
-    /// renderer cannot supply either native path.
+    /// Creates a private archive sibling through this operation's retained parent.
+    pub(crate) fn create_archive_staging(
+        &self,
+    ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
+        if self.operation != PathOperation::DownloadArchive {
+            return Err(Error::InvalidInput(
+                "resolved capability is not an archive destination".into(),
+            ));
+        }
+        let parent = self.parent().ok_or_else(|| {
+            Error::InvalidInput("archive destination has no retained parent".into())
+        })?;
+        crate::infra::fs::OwnedStagingDir::create_in(parent, ".archive")
+    }
+
+    /// Publishes through the same retained parent that created the staging owner.
     pub(crate) fn atomic_install_download_dir(
         &self,
         staging: &mut crate::infra::fs::OwnedStagingDir,
@@ -1247,6 +1261,35 @@ mod tests {
         file.write_all(bytes).expect("write PGN");
         file.seek(std::io::SeekFrom::Start(0)).expect("rewind");
         file
+    }
+
+    #[test]
+    fn archive_staging_authority_requires_archive_operation_and_retained_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent =
+            crate::infra::fs::open_parent_no_follow(&dir.path().join("installed")).unwrap();
+        let mut resolved = ResolvedPath {
+            operation: PathOperation::ReadPgn,
+            file: None,
+            #[cfg(unix)]
+            regular_file_identity: None,
+            directory: None,
+            parent: Some(parent),
+            leaf: Some("installed".into()),
+            target: Some(dir.path().join("installed")),
+        };
+        assert!(matches!(
+            resolved.create_archive_staging(),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        resolved.operation = PathOperation::DownloadArchive;
+        resolved.parent = None;
+        assert!(matches!(
+            resolved.create_archive_staging(),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

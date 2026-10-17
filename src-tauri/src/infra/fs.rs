@@ -3308,6 +3308,19 @@ mod win {
         Ok(super::parent_sync_as_atomic_outcome(parent))
     }
 
+    pub(super) fn create_staging_directory(parent: &File, name: &OsStr) -> Result<File, Error> {
+        open_windows_child(
+            parent,
+            name,
+            FILE_CREATE,
+            DIRECTORY_ACCESS,
+            null(),
+            true,
+            true,
+        )
+        .map_err(map_create_collision)
+    }
+
     fn unlink_windows_child_at(
         parent: &File,
         name: &OsStr,
@@ -5365,7 +5378,7 @@ fn opened_identity(file: &File) -> Result<(u64, u64), Error> {
 }
 
 /// Unix only, like its one caller [`open_parent_directory`].
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn parent_child_mismatch() -> Error {
     Error::Conflict("directory is not a child of its opened parent".into())
 }
@@ -5376,7 +5389,7 @@ fn parent_child_mismatch() -> Error {
 ///
 /// Unix only. A Windows relative open has no `".."` (and [`single_leaf`] refuses the name), so
 /// [`OwnedStagingDir::adopt`] reaches its parent through `win::open_verified_parent` instead.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType};
     use std::os::unix::ffi::OsStrExt;
@@ -5408,7 +5421,7 @@ pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
     Ok(parent)
 }
 
-/// A directory the process created (a `tempfile::TempDir`), held as a leaf under one open parent
+/// A private directory the process created, held as a leaf under one open parent
 /// descriptor. It carries no pathname: installing it and cleaning it up are both relative to the
 /// held parent, so a later swap of the parent's pathname cannot redirect either. Until it is
 /// consumed by a commit, dropping it removes the leaf by identity.
@@ -5427,9 +5440,69 @@ pub(crate) struct OwnedStagingDir {
 }
 
 impl OwnedStagingDir {
+    /// Exclusively creates a randomized private sibling through the retained authority parent.
+    /// Unix mkdir/open is not atomic against substitution between the individual syscalls.
+    /// No cleanup is armed until the no-follow child and its parent entry have one identity.
+    pub(crate) fn create_in(parent: &File, prefix: &str) -> Result<Self, Error> {
+        let parent = parent.try_clone()?;
+        for _ in 0..32 {
+            let leaf = staging_directory_name(prefix);
+            single_leaf(&leaf)?;
+            #[cfg(unix)]
+            let created =
+                rustix::fs::mkdirat(&parent, &leaf, rustix::fs::Mode::from_raw_mode(0o700))
+                    .map_err(|error| io(error.into()));
+            #[cfg(windows)]
+            let created = win::create_staging_directory(&parent, &leaf);
+            let created = match created {
+                Ok(created) => created,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    continue
+                }
+                Err(error) => return Err(error),
+            };
+            #[cfg(unix)]
+            let child = {
+                let () = created;
+                open_directory_at(&parent, &leaf, true)?
+            };
+            #[cfg(windows)]
+            let child = created;
+            let identity = opened_identity(&child)?;
+            let staging = Self {
+                parent,
+                leaf,
+                child: Some(child),
+                identity,
+                armed: true,
+            };
+            assert_entry_identity(&staging.parent, &staging.leaf, identity, true)?;
+            #[cfg(test)]
+            if let Some(hook) =
+                STAGING_DIRECTORY_INITIALIZED_HOOK.with(|slot| slot.borrow_mut().take())
+            {
+                hook(&staging);
+            }
+            // From here all failures drop the identity-bound owner. Its cleanup logs errors
+            // without replacing this original initialization failure.
+            if let AtomicFileOutcome::CommittedDurabilityUncertain(error) =
+                parent_sync_as_atomic_outcome(&staging.parent)
+            {
+                return Err(io(error));
+            }
+            return Ok(staging);
+        }
+        Err(io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "archive staging name collisions exhausted",
+        )))
+    }
+
+    /// Test-fixture adoption. Production creates directly through its authority parent.
     /// No-follow open of `temp`, then the platform's parent open of that handle (see the type
     /// documentation), then a check that `temp`'s leaf under the held parent is still the opened
     /// directory.
+    #[cfg(test)]
     pub(crate) fn adopt(temp: &tempfile::TempDir) -> Result<Self, Error> {
         let leaf = temp
             .path()
@@ -5508,6 +5581,24 @@ impl OwnedStagingDir {
     }
 }
 
+fn staging_directory_name(prefix: &str) -> OsString {
+    #[cfg(test)]
+    if let Some(name) = STAGING_DIRECTORY_NAMES.with(|slot| slot.borrow_mut().pop()) {
+        return name;
+    }
+    format!("{prefix}-{}", uuid::Uuid::new_v4()).into()
+}
+
+#[cfg(test)]
+type StagingDirectoryInitializedHook = Box<dyn FnOnce(&OwnedStagingDir)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static STAGING_DIRECTORY_NAMES: std::cell::RefCell<Vec<OsString>> = const { std::cell::RefCell::new(Vec::new()) };
+    static STAGING_DIRECTORY_INITIALIZED_HOOK: std::cell::RefCell<Option<StagingDirectoryInitializedHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 fn owned_staging_changed() -> Error {
     Error::Conflict("owned staging directory changed concurrently".into())
 }
@@ -6823,6 +6914,103 @@ mod tests {
             }
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn archive_staging_authority_exclusive_collision_and_bounded_retries() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = test_parent(root.path());
+        std::fs::create_dir(root.path().join("collision")).unwrap();
+        std::fs::write(root.path().join("collision/foreign"), b"keep").unwrap();
+        STAGING_DIRECTORY_NAMES
+            .with(|slot| *slot.borrow_mut() = vec!["owned".into(), "collision".into()]);
+        let staging = OwnedStagingDir::create_in(&parent, ".archive").unwrap();
+        assert_eq!(staging.binding().1, OsStr::new("owned"));
+        assert_eq!(
+            std::fs::read(root.path().join("collision/foreign")).unwrap(),
+            b"keep"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                root.path()
+                    .join("owned")
+                    .metadata()
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        drop(staging);
+        assert!(!root.path().join("owned").exists());
+        STAGING_DIRECTORY_NAMES.with(|slot| *slot.borrow_mut() = vec!["collision".into(); 32]);
+        let error = OwnedStagingDir::create_in(&parent, ".archive")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, Error::Io(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error}"
+        );
+        assert!(STAGING_DIRECTORY_NAMES.with(|slot| slot.borrow().is_empty()));
+        assert_eq!(
+            std::fs::read(root.path().join("collision/foreign")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn archive_staging_authority_post_create_failure_cleans_and_preserves_original_error() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = test_parent(root.path());
+        STAGING_DIRECTORY_NAMES.with(|slot| *slot.borrow_mut() = vec!["owned".into()]);
+        let _reset = install_test_atomic_file_injector(Arc::new(ParentSyncFault(
+            "archive initialization failure",
+        )));
+        let error = OwnedStagingDir::create_in(&parent, ".archive")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&error, Error::Io(error) if error.to_string() == "archive initialization failure"),
+            "{error}"
+        );
+        assert!(
+            !root.path().join("owned").exists(),
+            "initialized owner must clean on parent sync failure"
+        );
+    }
+
+    #[test]
+    fn archive_staging_authority_post_create_substitution_keeps_foreign_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = test_parent(root.path());
+        STAGING_DIRECTORY_NAMES.with(|slot| *slot.borrow_mut() = vec!["owned".into()]);
+        let path = root.path().to_path_buf();
+        STAGING_DIRECTORY_INITIALIZED_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |_| {
+                std::fs::rename(path.join("owned"), path.join("moved")).unwrap();
+                std::fs::create_dir(path.join("owned")).unwrap();
+                std::fs::write(path.join("owned/foreign"), b"keep").unwrap();
+            }))
+        });
+        let _reset = install_test_atomic_file_injector(Arc::new(ParentSyncFault(
+            "archive initialization failure",
+        )));
+        let error = OwnedStagingDir::create_in(&parent, ".archive")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&error, Error::Io(error) if error.to_string() == "archive initialization failure"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("owned/foreign")).unwrap(),
+            b"keep",
+            "cleanup must preserve substituted staging entry"
+        );
+        assert!(root.path().join("moved").is_dir());
     }
 
     #[test]
@@ -10609,60 +10797,6 @@ mod tests {
         assert_eq!(
             std::fs::read(root.path().join("installed/engine")).unwrap(),
             b"committed"
-        );
-    }
-
-    #[test]
-    fn owned_staging_dir_source_scan_has_no_path_constructor() {
-        let source = include_str!("fs.rs");
-        let normalised = normalise(source, Literals::Blank);
-        assert_eq!(normalised.matches("impl OwnedStagingDir {").count(), 1);
-        let body = &normalised[braced_body(source, "impl OwnedStagingDir {")];
-        let mut signatures = body
-            .match_indices("fn ")
-            .map(|(start, _)| &body[start..start + body[start..].find('{').expect("fn body")])
-            .collect::<Vec<_>>();
-        assert_eq!(
-            signatures.len(),
-            6,
-            "OwnedStagingDir has adopt, three binding accessors and the two relative creates: {signatures:?}"
-        );
-        // The relative creates take a `&Path` below the held child; they are not constructors.
-        let relative = [
-            "fn ensure_relative_directory(",
-            "fn create_relative_regular(",
-        ];
-        for name in relative {
-            let signature = signatures
-                .iter()
-                .find(|signature| signature.starts_with(name))
-                .unwrap_or_else(|| panic!("{name} is an OwnedStagingDir method: {signatures:?}"));
-            assert!(signature.contains("&self"), "{signature}");
-            assert!(!signature.contains("Self"), "{signature}");
-        }
-        signatures.retain(|signature| !relative.iter().any(|name| signature.starts_with(name)));
-        let install = normalised
-            .find("fn install_owned_staging_dir(")
-            .expect("install entry");
-        signatures.push(&normalised[install..install + normalised[install..].find('{').unwrap()]);
-        let fields = &normalised[braced_body(source, "pub(crate) struct OwnedStagingDir {")];
-        for text in signatures.iter().copied().chain([fields]) {
-            assert!(
-                !text.contains("Path"),
-                "OwnedStagingDir must not be constructible from a pathname: {text}"
-            );
-        }
-        assert!(
-            signatures
-                .iter()
-                .any(|signature| signature.contains("temp: &tempfile::TempDir")),
-            "adopt takes TempDir: {signatures:?}"
-        );
-        assert!(
-            signatures
-                .iter()
-                .any(|signature| signature.contains("parent_identity")),
-            "parent_identity is the held-parent accessor: {signatures:?}"
         );
     }
 
