@@ -13862,7 +13862,7 @@ Handled. Chess.com fetch_bounded and download_payload_network return RemoteHttpR
 
 ### A Lichess account stuck in PendingDelete still yields its bearer token to new exports
 
-* **ID:** f-20261004-02 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261004-02 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 03d2028b-c7dc-4979-98e4-2fe92af0aef8
 * **Where:** `src-tauri/src/credentials.rs:342-348` (`CredentialManager::token`) reads the keyring for any valid handle without consulting the registry record's state; `credentials.rs:590-610` (account removal) first journals `AccountRecord::PendingDelete`, then deletes the keyring secret, and can fail between the two; `credentials.rs:335-338` hides `PendingDelete` accounts from the account list; `src-tauri/src/fs.rs:1208-1220` uses `token_async` for authenticated Lichess exports.
 * **Defect:** if the keyring delete fails after the tombstone was written, the account disappears from the native account list but a renderer still holding its handle can start a new authenticated export, and the native side hands the secret to it. A removal the user requested does not disable native use of the credential.
@@ -13870,6 +13870,9 @@ Handled. Chess.com fetch_bounded and download_payload_network return RemoteHttpR
 * **Related:** `f-20260912-01` (handled; `PendingDelete` tombstones for detached credential directories, `d-20260927-25`), `f-20260914-14` (the account-export plan whose round-1 `review-tauri-security` lens raised this; out of that finding's MANDATE).
 * **Fix shape:** `token` (and `token_async`) return `None`/a typed refusal unless the handle's registry record is `AccountRecord::Active`; a test drives a failed keyring delete and asserts that a later token read is refused while the tombstone stands.
 * **Found by:** `review-tauri-security` plan lens (Codex), 2026-10-04, `f-20260914-14` plan review round 1, confidence 96. Pre-existing at `9d6c4d99`; read and confirmed by the orchestrator at the cited lines.
+
+Handled. CredentialManager::token returns Ok(None) unless the registry record for that handle is AccountRecord::Active, so a PendingDelete tombstone no longer yields the leftover keyring secret. token_async still delegates to token. Commit f46ffa92. Test pending_delete_tombstone_refuses_token_while_secret_remains. A zero-offset revert of the Active check went red at credentials.rs:1216 (exit 101) and the restore was green. Mandatory review-tauri-security on the cumulative diff was APPROVED. Review history: tasks/handoffs/2026-10-17-f-20261004-01-review.md.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"12c3cd364e2e0a7fa9ede1ea1ce0597c0ca752bfeb23e34be62b3322ffb0fcf8","header_sha256":"fce8dfc374a23e364fb6af6ffa5872d726e5603984e4e4ec66c9706165799dfa","header_status":"handled","input_sha256":"3f5ce347a37a623fa1b51b5fb17e745ef58389cfc01a1d500f1fcf50621789b7","kind":"mutation-receipt","operation":"1d4526384576b7bc44daf85e8c1192fa3db98919fd71fe36480a3b26c28df63d","options":{"section":null},"request_id_sha256":null,"results":["f-20261004-02"],"target":"f-20261004-02","v":1} -->
 
 ### Startup keeps a Lichess session's handle after the native store confirms the account is gone, and logout then cannot clear it
 
