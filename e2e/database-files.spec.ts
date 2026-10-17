@@ -635,6 +635,12 @@ test("database-files: concurrent conversions render their own live progress coun
     assertAccessible,
     assertNoHorizontalOverflow,
 }) => {
+    // Deliver the real lazy Board module slowly so an immediate return can cancel navigation.
+    await page.route(/\/assets\/index\.lazy-[^/]+\.js$/, async (route) => {
+        const response = await route.fetch();
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.fulfill({ response });
+    });
     await mockScenario({
         commands: {
             ...databaseScenario.commands,
@@ -703,7 +709,12 @@ test("database-files: concurrent conversions render their own live progress coun
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
     // Client navigation preserves the fixture session and the app-owned conversion registry.
     await page.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("tab", { name: "New Tab", exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Library", exact: true }).click();
+    await expect(page).toHaveURL("/library");
+    await expect(page.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
+    await expect(page.getByText("Select a library item", { exact: true })).toBeVisible();
     await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/sCancel");
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/sCancel");
     const cancel = firstRow.getByRole("button", { name: "Cancel: first.pgn", exact: true });
