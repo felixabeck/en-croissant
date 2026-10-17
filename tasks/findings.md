@@ -15999,12 +15999,16 @@ Reopened (records lens on the setup-findings triage, 2026-10-13): rust-coverage 
 
 ### Next/previous branch cycles over the wrong sibling set after descending into a fork
 
-* **ID:** f-20261011-11 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261011-11 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tree.ts:~470-520` (`nextBranch` / `previousBranch`).
 * **Defect (reported by review-chess-semantics, confidence 99; the orchestrator read the code):** when the current node has ≥ 2 children and its parent has ≤ 1, both functions push `0` onto `state.position` ("makes the navigation more fluid") but then compute the new last index from the *old* `parent` and `branchIndex`, modulo the old parent's child count. Example: `1. e4 e5 (1... c5)`, cursor on `e4`, previous-branch: `[0]` becomes `[0,0]`, then the last index is set to `(0 ± 1) mod 1 = 0`, so the cursor lands on `e5` instead of cycling to `c5`.
 * **Why it matters:** branch-cycling hotkeys silently pick the mainline instead of the variation in the most common fork shape; `.claude/rules/chess-tree-semantics.md` (move paths after tree mutation) governs.
 * **Proof required:** tree-store tests for both directions on that example (red now) and on a fork at the parent level (unchanged).
 * **Found by:** Claude Code orchestrator, `$push` review of f-20261011-09, 2026-10-11 (pre-existing, outside that diff).
+* **Handled:** commit "fix(tree): cycle the fork after nextBranch and previousBranch descend" (Grok Bot side lane, Codex leaf). In `nextBranch` and `previousBranch` (`src/state/store/tree.ts`), after the existing descent into a fork one ply ahead, `parent` and `branchIndex` are recomputed from the updated position, so the cycle runs over the fork's children instead of the old single-child parent. The descent rule and `nextBranching`/`previousBranching` are unchanged.
+* **Proof:** new tree-store tests in `src/state/store/tree.test.ts`, for each direction: on `1. e4 e5 (1... c5)` from `e4` the cursor reaches `c5` at `[0,1]` (red before: received `[0,0]`; green after); controls for a parent-level fork (`1. e4 (1. d4) e5` from `e4` reaches `d4`) and three-sibling wrap-around pass before and after. 143 tests pass across the tree-store test files and `CompleteMoveCell.test.tsx`. Review r1: correctness, root-cause, tests, code-quality, chess-semantics APPROVED.
+* **Rejected:** extracting one shared `cycleBranch(state, direction)` helper for both actions (minimalism lens should-fix): the duplication predates this fix, and folding it into a two-line-per-action bug fix widens the diff in a file kept close to upstream; the two actions stay parallel and both are covered by the new tests.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"1d9943cac79055e68b159a04a8bb609363d5a91801e32750981f3a3549b85ef8","header_sha256":"b9e2c90f0bba94c45888533e6580f7e59040d7711c967f9cae76528237ff523b","header_status":"handled","input_sha256":"51447d8db14690604c54fdbbf040198241256814feb2cc4428349673369a3362","kind":"mutation-receipt","operation":"0be9cecf8fd34523e30878d36b35b0bd9f454bb17959d3df86d5f7fa49ce9336","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-11"],"target":"f-20261011-11","v":1} -->
 
 ---
 
