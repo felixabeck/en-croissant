@@ -14,6 +14,8 @@ import { type FenError, makeFen, parseFen } from "chessops/fen";
 import { useStore } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSWRConfig } from "swr";
+import { workspaceErrorMessage } from "../files/workspaceError";
 import { match } from "ts-pattern";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { addRecentFileAtom } from "@/state/atoms";
@@ -61,6 +63,7 @@ export default function ImportModal({
   setTabs: SetTabs;
 }) {
   const { t } = useTranslation();
+  const listingCache = useSWRConfig();
   const [pgn, setPgn] = useState("");
   const [fen, setFen] = useState("");
   const [file, setFile] = useState<FileMetadata | null>(null);
@@ -83,6 +86,21 @@ export default function ImportModal({
       mountedRef.current = false;
     };
   }, []);
+
+  function reportImportError(cause: unknown, fieldError = false) {
+    // A tab switch can unmount the owner's page while an import is pending.
+    if (mountedRef.current) {
+      const message = workspaceErrorMessage(
+        cause,
+        cause instanceof Error ? cause.message : String(cause),
+        t,
+      );
+      if (fieldError) setError(message);
+      else setSubmitError(message);
+    } else {
+      notifyUnlessCancelled(t("Common.Error"), cause, "files");
+    }
+  }
 
   function replaceImportedTab(
     submittingOwnerId: string,
@@ -121,9 +139,10 @@ export default function ImportModal({
                 },
                 workspace,
                 parent: workspace,
+                listingCache,
               });
               if (newFile.isErr) {
-                setError(newFile.error.message);
+                reportImportError(newFile.error, true);
                 return;
               }
               fileInfo = newFile.value;
@@ -172,6 +191,7 @@ export default function ImportModal({
               content: { kind: "text", pgn },
               workspace,
               parent: workspace,
+              listingCache,
             });
             if (created.isErr) throw created.error;
             await openFile(created.value, setTabs);
@@ -235,12 +255,7 @@ export default function ImportModal({
         );
       }
     } catch (e) {
-      // A tab switch unmounts the owner's page mid-import; its inline error would then be lost.
-      if (mountedRef.current) {
-        setSubmitError(e instanceof Error ? e.message : String(e));
-      } else {
-        notifyUnlessCancelled(t("Common.Error"), e);
-      }
+      reportImportError(e);
     } finally {
       setInFlightCount((count) => count - 1);
     }

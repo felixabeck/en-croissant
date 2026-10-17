@@ -581,6 +581,7 @@
     "Files.MoveToTrash": "Çöp kutusuna taşı",
     "Files.MoveToTrashConfirm": "{{name}} çöp kutusuna taşınsın mı?",
     "Files.NoSelection": "Dosya seçilmedi",
+    "Files.OperationAndCleanupFailed": "Dosya işlemi ve temizleme başarısız oldu. Dosyalar veya klasörler kalmış olabilir. Yeniden denemeden önce koleksiyonu kontrol edin.",
     "Files.OperationFailed": "Dosya işlemi tamamlanamadı. Lütfen tekrar deneyin.",
     "Files.Reload": "Yeniden yükle",
     "Files.RemoveGame": "Oyunu kaldır",

@@ -2,7 +2,11 @@ import { StrictMode, act, type ReactNode, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import useSWR, { SWRConfig, type Cache, type KeyedMutator } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { runningNativeRequest, useNativeRequestOwner } from "./useNativeRequestOwner";
+import {
+  runningNativeRequest,
+  supersedeNativeRequest,
+  useNativeRequestOwner,
+} from "./useNativeRequestOwner";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -162,6 +166,22 @@ function heldRequestPage() {
 }
 
 describe("native SWR request ownership", () => {
+  test("captured cache supersession drains the old generation without a live hook callback", async () => {
+    const { Page, cache, fetcher, oldWork, signals, oldOutcome } = heldRequestPage();
+    await render(<Page present />);
+    await act(async () => supersedeNativeRequest(cache, "databases"));
+    expect(signals[0].aborted).toBe(true);
+    expect(oldOutcome).toHaveBeenCalledOnce();
+    expect(oldOutcome.mock.calls[0][0]).toMatchObject({
+      name: "AbortError",
+      message: "Cancellation",
+    });
+    expect(runningNativeRequest(cache, "databases")).toBeUndefined();
+    await act(async () => oldWork.resolve("late"));
+    expect(oldOutcome).toHaveBeenCalledOnce();
+    expect(cache.get("databases")?.data).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   test("runningNativeRequest skips abandoned signal-ignoring work", async () => {
     const { Page, cache, signals, fetcher, oldOutcome, supersede } = heldRequestPage();
     await render(<Page present />);

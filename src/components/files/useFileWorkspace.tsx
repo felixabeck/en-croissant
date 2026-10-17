@@ -8,7 +8,7 @@ import { Box, Button, Center, Group, Select, Stack, Text, TextInput } from "@man
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
@@ -19,6 +19,8 @@ import ConfirmModal from "../common/ConfirmModal";
 import AppModal from "../common/AppModal";
 import type { Entry, FileType } from "./file";
 import { FILE_TYPES, workspaceEntryToEntry } from "./file";
+import { workspaceErrorMessage } from "./workspaceError";
+import { reconcileWorkspaceListing, workspaceListingKey } from "./workspaceListing";
 
 const fileAction = { file: "file", folder: "folder", rename: "rename", edit: "edit" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
@@ -46,6 +48,7 @@ export function useFileWorkspace(
   selectedWorkspaceKey?: string,
 ) {
   const { t } = useTranslation();
+  const listingCache = useSWRConfig();
   const compactDialog = useScaledMaxWidth(COMPACT_DIALOG_WIDTH_EM);
   const fileTypeOptions = FILE_TYPES.map(({ value, translationKey }) => ({
     value,
@@ -72,7 +75,7 @@ export function useFileWorkspace(
   useEffect(() => {
     if (action) actionInputRef.current?.focus();
   }, [action]);
-  const workspaceKey = workspace ? ["file-workspace", workspace] : null;
+  const workspaceKey = workspace ? workspaceListingKey(workspace) : null;
   const workspaceOwner = useNativeRequestOwner(workspaceKey);
   const { data, error, mutate } = useSWR(workspaceKey, async () =>
     workspaceOwner!.run(async (signal) =>
@@ -130,18 +133,25 @@ export function useFileWorkspace(
   ].find((entry) => fileWorkspaceKey(entry.handle) === moveTarget)?.handle;
   async function moveEntry(entry: Entry, destination: Entry["handle"]) {
     if (moveInFlight.current) return;
+    if (!workspace) return;
+    const submittingWorkspace = workspace;
+    const submittingKey = workspaceListingKey(submittingWorkspace);
+    const submittingCache = listingCache;
     moveInFlight.current = true;
     setMoving(true);
     setActionError("");
     setSelectedEntry(entry);
     try {
       await runAppliedMutationWithRefresh(
-        () => tauri.moveWorkspaceEntry(workspace!, entry.handle, destination),
-        mutate,
+        () => tauri.moveWorkspaceEntry(submittingWorkspace, entry.handle, destination),
+        (cleanupFailure) =>
+          cleanupFailure
+            ? reconcileWorkspaceListing(submittingWorkspace, submittingCache)
+            : submittingCache.mutate(submittingKey),
       );
       setMoveTarget(null);
-    } catch {
-      setActionError(operationFailed);
+    } catch (cause) {
+      setActionError(workspaceErrorMessage(cause, operationFailed, t));
     } finally {
       moveInFlight.current = false;
       setMoving(false);
@@ -150,6 +160,9 @@ export function useFileWorkspace(
   async function submitAction() {
     const nameUnchanged = selected?.type === "file" && name === selected.name;
     if (!workspace || !parent) return;
+    const submittingWorkspace = workspace;
+    const submittingKey = workspaceListingKey(submittingWorkspace);
+    const submittingCache = listingCache;
     const editing = action === fileAction.edit || action === fileAction.rename;
     if (
       !name.trim() &&
@@ -174,34 +187,40 @@ export function useFileWorkspace(
       return;
     }
     try {
-      await runAppliedMutationWithRefresh(async () => {
-        if (action === fileAction.file)
-          await tauri.createWorkspaceFile(
-            workspace,
-            parent,
-            name,
-            { type: "game", tags: [] },
-            {
-              kind: "text",
-              pgn: "*",
-            },
-          );
-        if (action === fileAction.folder)
-          await tauri.createWorkspaceDirectory(workspace, parent, name);
-        if (editing && selected?.type === "file") {
-          const metadata = {
-            type: chosenType,
-            tags: selected.metadata.tags,
-          };
-          if (nameUnchanged)
-            await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
-          else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
-        }
-      }, mutate);
+      await runAppliedMutationWithRefresh(
+        async () => {
+          if (action === fileAction.file)
+            await tauri.createWorkspaceFile(
+              workspace,
+              parent,
+              name,
+              { type: "game", tags: [] },
+              {
+                kind: "text",
+                pgn: "*",
+              },
+            );
+          if (action === fileAction.folder)
+            await tauri.createWorkspaceDirectory(workspace, parent, name);
+          if (editing && selected?.type === "file") {
+            const metadata = {
+              type: chosenType,
+              tags: selected.metadata.tags,
+            };
+            if (nameUnchanged)
+              await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
+            else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
+          }
+        },
+        (cleanupFailure) =>
+          cleanupFailure
+            ? reconcileWorkspaceListing(submittingWorkspace, submittingCache)
+            : submittingCache.mutate(submittingKey),
+      );
       setAction(null);
       setName("");
-    } catch {
-      setActionError(operationFailed);
+    } catch (cause) {
+      setActionError(workspaceErrorMessage(cause, operationFailed, t));
     }
   }
   async function clearTrashAndRelist() {

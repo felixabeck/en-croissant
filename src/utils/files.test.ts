@@ -50,6 +50,8 @@ import {
 import type { Tab } from "@/utils/tabs";
 import { createFile, ensureFileWorkspace, openFile, pickPgnFile, writeFileGame } from "./files";
 
+const listingCache = { cache: new Map(), mutate: vi.fn() };
+
 afterEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
@@ -195,6 +197,7 @@ test.each([
         ]);
 
         const result = await createFile({
+            listingCache,
             filename: "game.pgn",
             filetype: "game",
             workspace,
@@ -229,6 +232,7 @@ describe("createFile content", () => {
         mocks.createWorkspaceFile.mockResolvedValueOnce(created);
 
         await createFile({
+            listingCache,
             filename: "created",
             filetype: "game",
             content,
@@ -249,6 +253,7 @@ describe("createFile content", () => {
         mocks.createWorkspaceFile.mockResolvedValueOnce(created);
 
         await createFile({
+            listingCache,
             filename: "created",
             filetype: "game",
             workspace,

@@ -473,6 +473,81 @@ const structuredAppliedPayloads = [
     },
 ];
 
+describe("cleanup reconciliation", () => {
+    test.each([false, true])(
+        "refresh preserves cleanup rejection when refresh fails=%s",
+        async (fails) => {
+            const cause = new TauriCommandError({
+                tag: "backend-error",
+                category: "operation-and-cleanup",
+                message: "native diagnostic",
+            });
+            const refresh = vi.fn(async () => {
+                if (fails) throw new Error("listing failed");
+            });
+            await expect(
+                runAppliedMutationWithRefresh(async () => {
+                    throw cause;
+                }, refresh),
+            ).rejects.toBe(cause);
+            expect(refresh).toHaveBeenCalledExactlyOnceWith(cause);
+            expect(normalizeError(cause)).toMatchObject({
+                category: "unexpected",
+                backendCategory: "operation-and-cleanup",
+            });
+        },
+    );
+
+    test.each([false, true])(
+        "cleanup never recovers an object when reconciliation fails=%s",
+        async (fails) => {
+            const cause = new TauriCommandError({
+                tag: "backend-error",
+                category: "operation-and-cleanup",
+                message: "native diagnostic",
+            });
+            const recover = vi.fn(async () => "leftover");
+            const reconcile = vi.fn(async () => {
+                if (fails) throw new Error("listing failed");
+                return "leftover";
+            });
+            await expect(
+                runWithAppliedRecovery(
+                    async () => {
+                        throw cause;
+                    },
+                    recover,
+                    reconcile,
+                ),
+            ).rejects.toBe(cause);
+            expect(reconcile).toHaveBeenCalledOnce();
+            expect(recover).not.toHaveBeenCalled();
+        },
+    );
+
+    test("cleanup without an explicit reconciliation callback does not run recovery or destructive effects", async () => {
+        const cause = {
+            tag: "backend-error",
+            category: "operation-and-cleanup",
+            message: "native diagnostic",
+        };
+        const recover = vi.fn(async () => "leftover");
+        const refresh = vi.fn();
+        await expect(
+            runWithAppliedRecovery(async () => {
+                throw cause;
+            }, recover),
+        ).rejects.toBe(cause);
+        await expect(
+            runDestructiveWithRefresh(async () => {
+                throw cause;
+            }, refresh),
+        ).rejects.toBe(cause);
+        expect(recover).not.toHaveBeenCalled();
+        expect(refresh).not.toHaveBeenCalled();
+    });
+});
+
 describe("runAppliedMutationWithRefresh", () => {
     test("refreshes and resolves an applied-despite-error mutation", async () => {
         const refresh = vi.fn();

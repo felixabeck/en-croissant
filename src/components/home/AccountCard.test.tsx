@@ -40,6 +40,20 @@ installMatchMediaStub();
 import { TauriCommandError } from "@/platform/tauri";
 import { AccountCard, ensureAccountDatabaseHandle } from "./AccountCard";
 
+test("cleanup create does not run account database recovery", async () => {
+  const cause = new TauriCommandError({
+    tag: "backend-error",
+    category: "operation-and-cleanup",
+    message: "native failure",
+  });
+  mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+  mocks.listWorkspaceDatabases.mockResolvedValueOnce([]);
+  mocks.createWorkspaceDatabase.mockRejectedValueOnce(cause);
+  await expect(ensureAccountDatabaseHandle(undefined, "Felix", "lichess")).rejects.toBe(cause);
+  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledOnce();
+  expect(mocks.listWorkspaceDatabases).toHaveBeenCalledOnce();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   getDefaultStore().set(accountDownloadsInFlightAtom, new Map());

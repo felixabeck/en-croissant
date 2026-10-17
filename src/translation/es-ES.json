@@ -589,6 +589,7 @@
     "Files.MoveToTrash": "Mover a la papelera",
     "Files.MoveToTrashConfirm": "¿Mover {{name}} a la papelera?",
     "Files.NoSelection": "Ningún archivo seleccionado",
+    "Files.OperationAndCleanupFailed": "La operación de archivo y la limpieza han fallado. Pueden quedar archivos o carpetas. Revisa la colección antes de volver a intentarlo.",
     "Files.OperationFailed": "No se pudo completar la operación de archivo. Inténtalo de nuevo.",
     "Files.Reload": "Recargar archivo",
     "Files.RemoveGame": "Eliminar partida",

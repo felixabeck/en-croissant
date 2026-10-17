@@ -581,6 +581,7 @@
     "Files.MoveToTrash": "In den Papierkorb verschieben",
     "Files.MoveToTrashConfirm": "{{name}} in den Papierkorb verschieben?",
     "Files.NoSelection": "Keine Datei ausgewählt",
+    "Files.OperationAndCleanupFailed": "Der Dateivorgang und die anschließende Bereinigung sind fehlgeschlagen. Dateien oder Ordner können zurückgeblieben sein. Prüfe die Sammlung, bevor du es erneut versuchst.",
     "Files.OperationFailed": "Der Dateivorgang konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
     "Files.Reload": "Erneut laden",
     "Files.RemoveGame": "Partie entfernen",

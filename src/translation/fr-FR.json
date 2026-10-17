@@ -589,6 +589,7 @@
     "Files.MoveToTrash": "Déplacer vers la corbeille",
     "Files.MoveToTrashConfirm": "Déplacer {{name}} vers la corbeille ?",
     "Files.NoSelection": "Aucun fichier sélectionné",
+    "Files.OperationAndCleanupFailed": "L’opération sur les fichiers et le nettoyage ont échoué. Des fichiers ou dossiers peuvent subsister. Vérifiez la collection avant de réessayer.",
     "Files.OperationFailed": "L’opération sur le fichier n’a pas pu être effectuée. Réessayez.",
     "Files.Reload": "Recharger le fichier",
     "Files.RemoveGame": "Supprimer la partie",

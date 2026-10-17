@@ -11,9 +11,6 @@ const fixtures = vi.hoisted(() => ({
   storeSet: vi.fn(),
 }));
 
-vi.mock("@/platform/errors", () => ({
-  normalizeError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
-}));
 vi.mock("@/state/atoms", () => ({
   activeTabAtom: Symbol("active-tab"),
   addRecentFileAtom: Symbol("add-recent-file"),
@@ -32,7 +29,11 @@ vi.mock("jotai", () => ({
   useSetAtom: () => vi.fn(),
   useStore: () => ({ set: fixtures.storeSet }),
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  }),
+}));
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -45,7 +46,12 @@ vi.mock("@mantine/core", () => ({
   Text: ({ children, ...props }: HTMLAttributes<HTMLSpanElement>) => (
     <span {...props}>{children}</span>
   ),
-  TextInput: (props: InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
+  TextInput: ({ error, ...props }: InputHTMLAttributes<HTMLInputElement> & { error?: string }) => (
+    <label>
+      <input {...props} />
+      {error && <span role="alert">{error}</span>}
+    </label>
+  ),
 }));
 
 import CreateRepertoireModal from "./CreateRepertoireModal";
@@ -82,6 +88,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.restoreAllMocks();
   container.remove();
 });
 
@@ -100,7 +107,6 @@ async function submitRepertoire() {
       .querySelector("form")!
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   });
-  await vi.waitFor(() => expect(fixtures.openFile).toHaveBeenCalledOnce());
 }
 
 test("keeps the modal state and metadata untouched when tab admission is refused", async () => {
@@ -131,4 +137,30 @@ test("acknowledges practice and recent metadata after successful admission", asy
   expect(fixtures.storeSet).toHaveBeenCalledTimes(2);
   expect(fixtures.navigate).toHaveBeenCalledWith({ to: "/" });
   expect(setOpened).toHaveBeenCalledWith(false);
+});
+
+test("cleanup creation preserves repertoire name and blocks all success continuations", async () => {
+  const { tauri, TauriCommandError } = await import("@/platform/tauri");
+  const cause = new TauriCommandError({
+    tag: "backend-error",
+    category: "operation-and-cleanup",
+    message: "private diagnostic",
+  });
+  const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(cause);
+  const list = vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
+  fixtures.createFile.mockImplementation(
+    (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
+  );
+  await submitRepertoire();
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+    "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.",
+  );
+  expect(container.querySelector("input")?.value).toBe("White");
+  expect(create).toHaveBeenCalledOnce();
+  expect(list).toHaveBeenCalledOnce();
+  expect(fixtures.openFile).not.toHaveBeenCalled();
+  expect(fixtures.storeSet).not.toHaveBeenCalled();
+  expect(fixtures.navigate).not.toHaveBeenCalled();
+  expect(setOpened).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain("private diagnostic");
 });

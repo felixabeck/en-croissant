@@ -51,6 +51,11 @@ async function supersedeRequest(cache: object, identity: string): Promise<void> 
     await Promise.allSettled(generations.map((generation) => generation.promise));
 }
 
+/** Retires deliveries for the captured cache and key, including work ignoring native abort. */
+export function supersedeNativeRequest(cache: object, key: Key): Promise<void> {
+    return supersedeRequest(cache, unstable_serialize(key));
+}
+
 /** Observes only live generations without starting or sharing a revalidation fetch. */
 export function runningNativeRequest(cache: object, key: Key): Promise<void> | undefined {
     const shared = requestsByCache.get(cache)?.get(unstable_serialize(key));
@@ -151,7 +156,7 @@ export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner |
     );
 
     const supersede = useCallback(async () => {
-        if (identity !== null) await supersedeRequest(cache, identity);
+        if (identity !== null) await supersedeNativeRequest(cache, identity);
     }, [cache, identity]);
     return identity === null ? null : { run, supersede };
 }

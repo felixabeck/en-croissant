@@ -341,15 +341,32 @@ export async function runDestructiveWithRefresh<T>(
     }
 }
 
+export function isOperationAndCleanup(error: unknown): boolean {
+    return normalizeError(error).backendCategory === "operation-and-cleanup";
+}
+
+async function reconcileAndRethrow(
+    cause: unknown,
+    reconcile: () => unknown | Promise<unknown>,
+): Promise<never> {
+    try {
+        await reconcile();
+    } catch {
+        // Reconciliation cannot replace the original operation and cleanup failure.
+    }
+    throw cause;
+}
+
 export async function runAppliedMutationWithRefresh<T>(
     run: () => Promise<T>,
-    refresh: () => unknown | Promise<unknown>,
+    refresh: (cleanupFailure?: unknown) => unknown | Promise<unknown>,
 ): Promise<T | undefined> {
     try {
         const result = await run();
         await refresh();
         return result;
     } catch (cause) {
+        if (isOperationAndCleanup(cause)) return reconcileAndRethrow(cause, () => refresh(cause));
         if (normalizeError(cause).category !== "applied-despite-error") throw cause;
         try {
             await refresh();
@@ -363,10 +380,12 @@ export async function runAppliedMutationWithRefresh<T>(
 export async function runWithAppliedRecovery<T>(
     run: () => Promise<T>,
     recover: () => Promise<T | undefined>,
+    reconcile?: () => unknown | Promise<unknown>,
 ): Promise<T> {
     try {
         return await run();
     } catch (cause) {
+        if (isOperationAndCleanup(cause) && reconcile) return reconcileAndRethrow(cause, reconcile);
         if (normalizeError(cause).category !== "applied-despite-error") throw cause;
         try {
             const recovered = await recover();

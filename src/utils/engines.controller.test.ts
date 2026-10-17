@@ -174,6 +174,17 @@ describe("engine registration recovery", () => {
         expect(native.registerInstalledEngine).toHaveBeenCalledTimes(1);
     });
 
+    it("does not run registration recovery for cleanup failure", async () => {
+        const failure = new TauriCommandError({
+            tag: "backend-error",
+            category: "operation-and-cleanup",
+            message: "native failure",
+        });
+        native.registerInstalledEngine.mockRejectedValueOnce(failure);
+        await expect(registerInstalledEngineHandle(root, "stockfish")).rejects.toBe(failure);
+        expect(native.registerInstalledEngine).toHaveBeenCalledOnce();
+    });
+
     it("keeps the recovered handle when installing a default engine", async () => {
         const manifest: DefaultEngine = {
             type: "local",

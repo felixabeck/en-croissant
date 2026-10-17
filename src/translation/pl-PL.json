@@ -597,6 +597,7 @@
     "Files.MoveToTrash": "Przenieś do kosza",
     "Files.MoveToTrashConfirm": "Przenieść {{name}} do kosza?",
     "Files.NoSelection": "Nie wybrano pliku",
+    "Files.OperationAndCleanupFailed": "Operacja na pliku i sprzątanie nie powiodły się. Mogły pozostać pliki lub foldery. Sprawdź kolekcję przed ponowną próbą.",
     "Files.OperationFailed": "Nie udało się wykonać operacji na pliku. Spróbuj ponownie.",
     "Files.Reload": "Wczytaj plik ponownie",
     "Files.RemoveGame": "Usuń partię",

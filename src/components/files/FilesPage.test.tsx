@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   data: [] as Array<unknown> | undefined,
   cardMounts: [] as string[],
   error: undefined as unknown,
+  realSWR: false,
+  workspace: undefined as unknown,
 }));
 const stateAtoms = vi.hoisted(() => ({
   fileWorkspaceAtom: {},
@@ -53,7 +55,7 @@ vi.mock("jotai", () => ({
   },
   useAtom: (atom: object) =>
     atom === stateAtoms.fileWorkspaceAtom
-      ? [workspace, mocks.setWorkspace]
+      ? [mocks.workspace ?? workspace, mocks.setWorkspace]
       : ["", mocks.setWorkspaceDisplayName],
 }));
 vi.mock("@/state/atoms", () => stateAtoms);
@@ -61,7 +63,14 @@ vi.mock("swr", async () => {
   const actual = await vi.importActual<typeof import("swr")>("swr");
   return {
     ...actual,
-    default: () => ({ data: mocks.data, error: mocks.error, mutate: mocks.mutate }),
+    default: (...args: Parameters<typeof actual.default>) =>
+      mocks.realSWR
+        ? actual.default(...args)
+        : { data: mocks.data, error: mocks.error, mutate: mocks.mutate },
+    useSWRConfig: () => {
+      const config = actual.useSWRConfig();
+      return mocks.realSWR ? config : { ...config, mutate: mocks.mutate };
+    },
   };
 });
 vi.mock("react-i18next", () => ({
@@ -178,6 +187,9 @@ vi.mock("./DirectoryTree", () => ({
   }) => (
     <>
       <span data-testid="tree" data-search={search} data-filter={filter} />
+      <span data-testid="entries">
+        {(files as { name: string }[]).map((file) => file.name).join(",")}
+      </span>
       <output>{selectedFile?.name || "No selection"}</output>
       <button type="button" onClick={() => setSelectedFile(files[0])}>
         Select sample file
@@ -231,7 +243,7 @@ vi.mock("./FileCard", async () => {
   };
 });
 
-const workspace = { id: { id: "workspace-token" }, kind: "fileWorkspace" };
+const workspace = { id: { id: "workspace-token" }, kind: "fileWorkspace" } as const;
 const entry = {
   type: "file",
   handle: { id: { id: "entry-token" }, kind: "fileWorkspace" },
@@ -253,6 +265,8 @@ import { useFileWorkspace } from "./useFileWorkspace";
 import DirectoryTree from "./DirectoryTree";
 import type { Entry } from "./file";
 import { Input, Select } from "@mantine/core";
+import { SWRConfig, unstable_serialize, useSWRConfig } from "swr";
+import { workspaceListingKey, type WorkspaceListingCache } from "./workspaceListing";
 function FilesPage() {
   const [selected, setSelected] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
@@ -287,7 +301,252 @@ function FilesPage() {
   );
 }
 
-function commandError(category: "durability" | "partial-removal", message: string) {
+const cleanupCopy =
+  "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.";
+const nativeLeftover = {
+  handle: { id: { id: "leftover" }, kind: "fileWorkspace" },
+  kind: "directory",
+  name: "Leftover",
+  children: [],
+  metadata: null,
+  gameCount: null,
+  lastModified: 1,
+};
+const nativeFile = {
+  ...nativeLeftover,
+  handle: entry.handle,
+  kind: "file",
+  name: entry.name,
+  metadata: entry.metadata,
+  gameCount: 2,
+};
+const nativeDestination = { ...nativeLeftover, handle: destination.handle, name: destination.name };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+async function realWorkspace() {
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  mocks.realSWR = true;
+  const cache = new Map();
+  let config!: WorkspaceListingCache;
+  function Capture() {
+    config = useSWRConfig();
+    return <FilesPage />;
+  }
+  async function render() {
+    await act(async () =>
+      root.render(
+        <SWRConfig
+          value={{
+            provider: () => cache,
+            shouldRetryOnError: false,
+            revalidateOnFocus: false,
+            dedupingInterval: 0,
+          }}
+        >
+          <Capture />
+        </SWRConfig>,
+      ),
+    );
+  }
+  await render();
+  return { cache, config, render };
+}
+
+test.each(["file", "folder", "rename", "metadata", "move"] as const)(
+  "cleanup %s reconciles real SWR and preserves failure state",
+  async (action) => {
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce([nativeFile, nativeDestination])
+      .mockResolvedValue([nativeFile, nativeDestination, nativeLeftover]);
+    const command = {
+      file: mocks.createWorkspaceFile,
+      folder: mocks.createWorkspaceDirectory,
+      rename: mocks.renameWorkspaceFile,
+      metadata: mocks.writeWorkspaceFileMetadata,
+      move: mocks.moveWorkspaceEntry,
+    }[action];
+    command.mockRejectedValueOnce(commandError("operation-and-cleanup", "private diagnostic"));
+    await realWorkspace();
+    if (action === "file" || action === "folder")
+      click(action === "file" ? "Create file" : "Create folder");
+    else {
+      click("Select sample file");
+      click(action === "rename" ? "Rename" : action === "metadata" ? "Files.EditMetadata" : "Move");
+    }
+    if (action !== "move")
+      await setDialogName(action === "metadata" ? entry.name : "Keep this name");
+    if (action === "metadata") {
+      const select = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
+      await act(async () => {
+        select.value = "repertoire";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    }
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    expect(command).toHaveBeenCalledOnce();
+    expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="entries"]')?.textContent).toContain("Leftover");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(cleanupCopy);
+    expect(container.textContent).not.toContain(
+      "The file operation could not be completed. Please try again.",
+    );
+    expect(container.textContent).not.toContain("private diagnostic");
+    expect(
+      (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
+    ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Keep this name");
+  },
+);
+
+test("cleanup failed relist keeps its original visible warning and entered name", async () => {
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockResolvedValueOnce([])
+    .mockRejectedValue(new Error("relist unavailable"));
+  mocks.createWorkspaceDirectory.mockRejectedValueOnce(
+    commandError("operation-and-cleanup", "private diagnostic"),
+  );
+  await realWorkspace();
+  click("Create folder");
+  await setDialogName("Keep this name");
+  await act(async () => dialogButton("Confirm").click());
+  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(cleanupCopy);
+  expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
+    "Keep this name",
+  );
+  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+  expect(mocks.createWorkspaceDirectory).toHaveBeenCalledOnce();
+  expect(container.textContent).not.toContain("relist unavailable");
+});
+
+test("cleanup drains an old native listing and late resolution cannot overwrite the fresh leftover", async () => {
+  const old = deferred<unknown[]>();
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockReturnValueOnce(old.promise)
+    .mockResolvedValueOnce([nativeLeftover]);
+  mocks.createWorkspaceDirectory.mockRejectedValueOnce(
+    commandError("operation-and-cleanup", "private diagnostic"),
+  );
+  const { cache } = await realWorkspace();
+  click("Create folder");
+  await setDialogName("Leftover");
+  await act(async () => dialogButton("Confirm").click());
+  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+  expect(mocks.listFileWorkspace.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
+  await act(async () => old.resolve([]));
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
+  expect(cache.get(unstable_serialize(workspaceListingKey(workspace))).data[0].name).toBe(
+    "Leftover",
+  );
+  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(cleanupCopy);
+});
+
+test("cleanup reconciles captured A while switched B keeps its own listing and A reloads on return", async () => {
+  const freshA = deferred<unknown[]>();
+  const pendingMutation = deferred<void>();
+  const other = { id: { id: "workspace-B" }, kind: "fileWorkspace" } as const;
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ ...nativeLeftover, name: "B only" }])
+    .mockReturnValueOnce(freshA.promise)
+    .mockResolvedValue([nativeLeftover]);
+  mocks.createWorkspaceDirectory.mockReturnValueOnce(pendingMutation.promise);
+  const { cache, render } = await realWorkspace();
+  click("Create folder");
+  await setDialogName("Leftover");
+  await act(async () => dialogButton("Confirm").click());
+  mocks.workspace = other;
+  await render();
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B only");
+  await act(async () =>
+    pendingMutation.reject(commandError("operation-and-cleanup", "private diagnostic")),
+  );
+  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(3);
+  await act(async () => freshA.resolve([nativeLeftover]));
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B only");
+  expect(cache.get(unstable_serialize(workspaceListingKey(workspace))).data).toBeUndefined();
+  expect(mocks.listFileWorkspace.mock.calls.map(([handle]) => handle)).toEqual([
+    workspace,
+    other,
+    workspace,
+  ]);
+  mocks.workspace = workspace;
+  await render();
+  await vi.waitFor(() =>
+    expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover"),
+  );
+  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(4);
+  expect(mocks.createWorkspaceDirectory).toHaveBeenCalledOnce();
+});
+
+test("cleanup rejection after switching pending mutation A to B reconciles only A", async () => {
+  const pendingMutation = deferred<void>();
+  const other = { id: { id: "pending-mutation-workspace-B" }, kind: "fileWorkspace" } as const;
+  const bEntry = { ...nativeLeftover, name: "B listing" };
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([bEntry])
+    .mockResolvedValueOnce([nativeLeftover]);
+  mocks.createWorkspaceDirectory.mockReturnValueOnce(pendingMutation.promise);
+  const { cache, render } = await realWorkspace();
+  click("Create folder");
+  await setDialogName("A leftover");
+  await act(async () => dialogButton("Confirm").click());
+  expect(mocks.createWorkspaceDirectory).toHaveBeenCalledExactlyOnceWith(
+    workspace,
+    workspace,
+    "A leftover",
+  );
+
+  mocks.workspace = other;
+  await render();
+  expect(mocks.listFileWorkspace.mock.calls.map(([handle]) => handle)).toEqual([workspace, other]);
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B listing");
+  const bKey = unstable_serialize(workspaceListingKey(other));
+  const bData = cache.get(bKey).data;
+  expect(bData).toEqual([expect.objectContaining({ name: "B listing" })]);
+
+  await act(async () =>
+    pendingMutation.reject(commandError("operation-and-cleanup", "private A diagnostic")),
+  );
+
+  expect(mocks.listFileWorkspace.mock.calls.map(([handle]) => handle)).toEqual([
+    workspace,
+    other,
+    workspace,
+  ]);
+  expect(mocks.createWorkspaceDirectory).toHaveBeenCalledOnce();
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B listing");
+  expect(cache.get(bKey).data).toBe(bData);
+  expect(cache.get(bKey).error).toBeUndefined();
+  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(cleanupCopy);
+  expect(container.textContent).not.toContain(
+    "The file operation could not be completed. Please try again.",
+  );
+  expect(container.textContent).not.toContain("private A diagnostic");
+  expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
+    "A leftover",
+  );
+});
+
+function commandError(
+  category: "durability" | "partial-removal" | "operation-and-cleanup",
+  message: string,
+) {
   return new TauriCommandError({
     tag: "backend-error",
     category,
@@ -340,6 +599,8 @@ async function completeTrash() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.realSWR = false;
+  mocks.workspace = undefined;
   mocks.data = [entry, destination];
   mocks.cardMounts = [];
   mocks.error = undefined;

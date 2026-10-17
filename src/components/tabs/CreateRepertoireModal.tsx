@@ -4,6 +4,8 @@ import { INITIAL_FEN } from "chessops/fen";
 import { useAtom } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSWRConfig } from "swr";
+import { workspaceErrorMessage } from "../files/workspaceError";
 import { normalizeError } from "@/platform/errors";
 import { tabsAtom } from "@/state/atoms";
 import { headersToPGN } from "@/utils/chess";
@@ -18,6 +20,7 @@ export default function CreateRepertoireModal({
   setOpened: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const { t } = useTranslation();
+  const listingCache = useSWRConfig();
   const [name, setName] = useState("");
   const [color, setColor] = useState<"white" | "black">("white");
   const [error, setError] = useState("");
@@ -52,10 +55,11 @@ export default function CreateRepertoireModal({
         content: { kind: "text", pgn },
         workspace,
         parent: workspace,
+        listingCache,
       });
 
       if (result.isErr) {
-        setError(result.error.message);
+        setError(workspaceErrorMessage(result.error, result.error.message, t));
         return;
       }
 
@@ -69,7 +73,7 @@ export default function CreateRepertoireModal({
       setError("");
       setOpened(false);
     } catch (error) {
-      setError(normalizeError(error).message);
+      setError(workspaceErrorMessage(error, normalizeError(error).message, t));
     }
   }
 

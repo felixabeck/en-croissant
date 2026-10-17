@@ -581,6 +581,7 @@
     "Files.MoveToTrash": "Move to trash",
     "Files.MoveToTrashConfirm": "Move {{name}} to trash?",
     "Files.NoSelection": "No file selected",
+    "Files.OperationAndCleanupFailed": "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.",
     "Files.OperationFailed": "The file operation could not be completed. Please try again.",
     "Files.Reload": "Reload file",
     "Files.RemoveGame": "Remove game",

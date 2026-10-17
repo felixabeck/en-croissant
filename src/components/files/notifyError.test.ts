@@ -31,6 +31,25 @@ test("notifies a real failure", () => {
     });
 });
 
+test("files cleanup notifications select localized copy without changing other domains", () => {
+    const cause = {
+        tag: "backend-error",
+        category: "operation-and-cleanup",
+        message: "private diagnostic",
+    };
+    notifyUnlessCancelled("Error", cause, "files");
+    expect(notifications.show).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            message:
+                "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.",
+        }),
+    );
+    notifyUnlessCancelled("Error", cause, "engine");
+    expect(notifications.show).toHaveBeenLastCalledWith(
+        expect.objectContaining({ message: "private diagnostic" }),
+    );
+});
+
 test("does not treat abort-like diagnostics as picker cancellation", () => {
     notifyUnlessCancelled("Common.Error", new Error("connection aborted"));
     expect(notifications.show).toHaveBeenCalledWith({

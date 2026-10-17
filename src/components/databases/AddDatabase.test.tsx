@@ -143,6 +143,25 @@ vi.mock("@tabler/icons-react", () => ({ IconAlertCircle: () => null, IconX: () =
 
 import { TauriCommandError } from "@/platform/tauri";
 import { convertLocalDatabase } from "./AddDatabase";
+
+test("cleanup create does not recover, convert or publish a created database", async () => {
+  const { TauriCommandError } = await import("@/platform/tauri");
+  const cause = new TauriCommandError({
+    tag: "backend-error",
+    category: "operation-and-cleanup",
+    message: "native failure",
+  });
+  mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+  mocks.createWorkspaceDatabase.mockRejectedValueOnce(cause);
+  const onCreated = vi.fn();
+  await expect(
+    convertLocalDatabase("conversion:cleanup", [], "Imported", undefined, onCreated),
+  ).rejects.toBe(cause);
+  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledOnce();
+  expect(mocks.listWorkspaceDatabases).not.toHaveBeenCalled();
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+  expect(onCreated).not.toHaveBeenCalled();
+});
 import AddDatabase from "./AddDatabase";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

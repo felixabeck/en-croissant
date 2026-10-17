@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
 import germanCatalogue from "../src/translation/de-DE.json" with { type: "json" };
+import englishCatalogue from "../src/translation/en-US.json" with { type: "json" };
 import {
     databaseCommands,
     expect,
@@ -17,6 +18,101 @@ import {
 
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
 const germanListingCopy = germanCatalogue.translation;
+
+for (const locale of ["en-US", "de-DE"] as const) {
+    for (const relistFails of [false, true]) {
+        test(`workspace cleanup: ${locale}, relist fails=${relistFails}, 320px and 200%`, async ({
+            page,
+            mockScenario,
+            assertNoHorizontalOverflow,
+            capture,
+        }) => {
+            const copy =
+                locale === "de-DE" ? germanCatalogue.translation : englishCatalogue.translation;
+            const leftover = { ...openingDirectory, name: "Leftover" };
+            await page.setViewportSize({ width: 320, height: 900 });
+            await page.addInitScript((language) => {
+                localStorage.setItem("font-size", "200");
+                localStorage.setItem("i18nextLng", language);
+            }, locale);
+            await mockScenario({
+                commands: filesWorkspaceCommands([], {
+                    create_workspace_directory: {
+                        error: {
+                            tag: "backend-error",
+                            category: "operation-and-cleanup",
+                            message: "private cleanup diagnostic",
+                        },
+                    },
+                    list_file_workspace: {
+                        outcomes: [
+                            { result: [] },
+                            relistFails
+                                ? {
+                                      error: {
+                                          tag: "backend-error",
+                                          category: "io",
+                                          message: "private relist diagnostic",
+                                      },
+                                  }
+                                : { result: [leftover] },
+                        ],
+                    },
+                }),
+            });
+            await page.goto("/library");
+            await page
+                .getByRole("button", { name: copy["Files.ChooseCollection"], exact: true })
+                .click();
+            await expect
+                .poll(() =>
+                    page.evaluate(
+                        () =>
+                            window.__E2E_TAURI__
+                                .invocations()
+                                .filter(({ command }) => command === "list_file_workspace").length,
+                    ),
+                )
+                .toBe(1);
+            await page
+                .getByRole("button", { name: copy["Files.CreateFolder"], exact: true })
+                .click();
+            const dialog = page.getByRole("dialog", {
+                name: copy["Files.CreateFolder"],
+                exact: true,
+            });
+            const name = dialog.getByRole("textbox", { name: copy["Common.Name"], exact: true });
+            await name.fill("Leftover");
+            await dialog.getByRole("button", { name: copy["Common.Confirm"], exact: true }).click();
+            await expect(dialog).toContainText(copy["Files.OperationAndCleanupFailed"]);
+            await expect(dialog).not.toContainText(copy["Files.OperationFailed"]);
+            await expect(name).toHaveValue("Leftover");
+            await expect(
+                page.getByRole("treeitem", { name: "Leftover", exact: true, includeHidden: true }),
+            ).toHaveCount(relistFails ? 0 : 1);
+            const commands = await page.evaluate(() =>
+                window.__E2E_TAURI__.invocations().map(({ command }) => command),
+            );
+            expect(
+                commands.filter((command) => command === "create_workspace_directory"),
+            ).toHaveLength(1);
+            expect(commands.filter((command) => command === "list_file_workspace")).toHaveLength(2);
+            await expect(page.locator("body")).not.toContainText("private cleanup diagnostic");
+            await expect(page.locator("body")).not.toContainText("private relist diagnostic");
+            await dialog
+                .getByRole("button", { name: copy["Common.Confirm"], exact: true })
+                .scrollIntoViewIfNeeded();
+            await assertDialogWithinViewport(dialog);
+            await assertNothingClipped(dialog, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            if (!relistFails)
+                await expect(dialog).toHaveScreenshot(`workspace-cleanup-320-200-${locale}.png`);
+            await capture(
+                `workspace-cleanup-${locale}-${relistFails ? "relist-failed" : "reconciled"}`,
+            );
+        });
+    }
+}
 
 async function assertNativeTextValueReachable(input: Locator, expectedValue: string) {
     await input.focus();

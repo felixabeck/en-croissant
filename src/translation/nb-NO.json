@@ -581,6 +581,7 @@
     "Files.MoveToTrash": "Flytt til papirkurven",
     "Files.MoveToTrashConfirm": "Flytte {{name}} til papirkurven?",
     "Files.NoSelection": "Ingen fil valgt",
+    "Files.OperationAndCleanupFailed": "Filoperasjonen og oppryddingen mislyktes. Filer eller mapper kan være igjen. Kontroller samlingen før du prøver igjen.",
     "Files.OperationFailed": "Filoperasjonen kunne ikke fullføres. Prøv igjen.",
     "Files.Reload": "Last inn filen på nytt",
     "Files.RemoveGame": "Fjern parti",

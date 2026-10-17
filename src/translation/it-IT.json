@@ -589,6 +589,7 @@
     "Files.MoveToTrash": "Sposta nel cestino",
     "Files.MoveToTrashConfirm": "Spostare {{name}} nel cestino?",
     "Files.NoSelection": "Nessun file selezionato",
+    "Files.OperationAndCleanupFailed": "L’operazione sui file e la pulizia non sono riuscite. Potrebbero essere rimasti file o cartelle. Controlla la raccolta prima di riprovare.",
     "Files.OperationFailed": "Impossibile completare l'operazione sul file. Riprova.",
     "Files.Reload": "Aggiorna file",
     "Files.RemoveGame": "Rimuovi partita",

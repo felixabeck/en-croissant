@@ -6,6 +6,10 @@ import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
 import type { FileMetadata, FileType } from "@/components/files/file";
+import {
+    reconcileWorkspaceListing,
+    type WorkspaceListingCache,
+} from "@/components/files/workspaceListing";
 import type {
     FileWorkspaceHandle,
     WorkspaceFileContent,
@@ -164,12 +168,14 @@ export async function createFile({
     content,
     workspace,
     parent,
+    listingCache,
 }: {
     filename: string;
     filetype: FileType;
     content?: WorkspaceFileContent;
     workspace: FileWorkspaceHandle;
     parent: FileWorkspaceHandle;
+    listingCache: WorkspaceListingCache;
 }): Promise<Result<FileMetadata>> {
     try {
         const expected = filename.toLowerCase();
@@ -188,6 +194,7 @@ export async function createFile({
                     const actual = candidate.name.toLowerCase();
                     return actual === expected || actual === withoutPgn;
                 }),
+            () => reconcileWorkspaceListing(workspace, listingCache),
         );
         if (!entry.metadata || entry.gameCount === null)
             return Result.err(Error("Native workspace returned incomplete file metadata"));

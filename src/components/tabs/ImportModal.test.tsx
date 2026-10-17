@@ -52,7 +52,11 @@ vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: fixtures.notifyUnlessCancelled,
   runUnlessCancelled: async (_title: string, action: () => Promise<void>) => action(),
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  }),
+}));
 vi.mock("../common/AppModal", () => ({
   default: ({
     children,
@@ -341,6 +345,10 @@ test("saving an imported PGN copies its source before submitting the reloaded fi
     },
     workspace,
     parent: workspace,
+    listingCache: expect.objectContaining({
+      cache: expect.anything(),
+      mutate: expect.any(Function),
+    }),
   });
   expect(fixtures.loadFileGame).toHaveBeenCalledTimes(2);
   expect(fixtures.loadFileGame).toHaveBeenNthCalledWith(1, fixtures.file.handle, 0);
@@ -370,6 +378,112 @@ test("a rejected game-0 preflight creates no copied file", async () => {
   expect(fixtures.createFile).not.toHaveBeenCalled();
   expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });
+
+test.each(["saved file", "pasted PGN"])(
+  "cleanup importing %s retains values and blocks success continuations",
+  async (branch) => {
+    const { tauri, TauriCommandError } = await import("@/platform/tauri");
+    const cause = new TauriCommandError({
+      tag: "backend-error",
+      category: "operation-and-cleanup",
+      message: "private diagnostic",
+    });
+    const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(cause);
+    const list = vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
+    fixtures.ensureFileWorkspace.mockResolvedValue({
+      id: { id: "workspace" },
+      kind: "fileWorkspace",
+    });
+    fixtures.createFile.mockImplementation(
+      (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
+    );
+    const setOpen = await renderModal();
+    if (branch === "saved file") {
+      await chooseFile();
+      await act(async () =>
+        host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click(),
+      );
+    } else {
+      const textarea = host.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+          textarea,
+          linkPgn,
+        );
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await clickSubmit();
+    expect(host.textContent).toContain(
+      "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.",
+    );
+    expect(host.textContent).not.toContain("private diagnostic");
+    const retainedValue =
+      branch === "saved file" ? input("Common.Name").value : host.querySelector("textarea")?.value;
+    expect(retainedValue).toBe(branch === "saved file" ? "selected.pgn" : linkPgn);
+    expect(create).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledOnce();
+    expect(fixtures.openFile).not.toHaveBeenCalled();
+    expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+    expect(fixtures.storeSet).not.toHaveBeenCalled();
+    expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(setOpen).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["saved file", "pasted PGN"])(
+  "cleanup importing %s after unmount uses the files notification",
+  async (branch) => {
+    const { tauri, TauriCommandError } = await import("@/platform/tauri");
+    const cause = new TauriCommandError({
+      tag: "backend-error",
+      category: "operation-and-cleanup",
+      message: "private diagnostic",
+    });
+    const held = deferred<never>();
+    const create = vi.spyOn(tauri, "createWorkspaceFile").mockImplementationOnce(async () => {
+      await held.promise;
+      throw cause;
+    });
+    vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
+    fixtures.ensureFileWorkspace.mockResolvedValue({
+      id: { id: "workspace" },
+      kind: "fileWorkspace",
+    });
+    fixtures.createFile.mockImplementation(
+      (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
+    );
+    await renderModal();
+    if (branch === "saved file") {
+      await chooseFile();
+      await act(async () =>
+        host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click(),
+      );
+    } else {
+      const textarea = host.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+          textarea,
+          linkPgn,
+        );
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await clickSubmit();
+    expect(create).toHaveBeenCalledOnce();
+    await act(async () => root.unmount());
+    rootMounted = false;
+    await act(async () => held.resolve(undefined as never));
+    expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+      "Common.Error",
+      cause,
+      "files",
+    );
+    expect(fixtures.openFile).not.toHaveBeenCalled();
+    expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+    expect(fixtures.storeSet).not.toHaveBeenCalled();
+  },
+);
 
 test("Link import parses and submits its tree once with the owner and analysis fields", async () => {
   const seed = vi.spyOn(tabStorage, "seed");
@@ -665,7 +779,7 @@ test("reports an import failure through a notification after the modal unmounts"
     await request.promise;
   });
   await vi.waitFor(() => expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledOnce());
-  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error, "files");
   expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });
 
@@ -698,6 +812,10 @@ test("pasted PGN uses the text content variant and still opens through file admi
 
   expect(fixtures.createFile).toHaveBeenCalledWith({
     filename: expect.stringMatching(/^import-/),
+    listingCache: expect.objectContaining({
+      cache: expect.anything(),
+      mutate: expect.any(Function),
+    }),
     filetype: "game",
     content: { kind: "text", pgn },
     workspace,

@@ -2,6 +2,7 @@ import { notifications } from "@mantine/notifications";
 import i18n from "@/i18n";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { rootFailureMessage, type RootFailureDomain } from "./listingFailure";
+import { workspaceErrorMessage } from "./workspaceError";
 
 export function notifyUnlessCancelled(
     title: string,
@@ -10,10 +11,12 @@ export function notifyUnlessCancelled(
 ): void {
     const visible = errorUnlessCancelled(error);
     if (visible) {
+        const fallback =
+            (domain ? rootFailureMessage(domain, visible) : undefined) ?? visible.message;
         notifications.show({
             color: "red",
             title,
-            message: (domain ? rootFailureMessage(domain, visible) : undefined) ?? visible.message,
+            message: domain === "files" ? workspaceErrorMessage(visible, fallback) : fallback,
         });
     }
 }

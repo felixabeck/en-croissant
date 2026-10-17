@@ -573,6 +573,7 @@
     "Files.MoveToTrash": "移至回收站",
     "Files.MoveToTrashConfirm": "要将 {{name}} 移至回收站吗？",
     "Files.NoSelection": "未选择文件",
+    "Files.OperationAndCleanupFailed": "文件操作和清理均失败。可能有文件或文件夹残留。请在重试前检查集合。",
     "Files.OperationFailed": "无法完成文件操作，请重试。",
     "Files.Reload": "重新加载文件",
     "Files.RemoveGame": "删除对局",
