@@ -1480,7 +1480,7 @@ No other R1 repair is deferred. Closure review will judge the actual committed d
 
 ### Raw workspace repair report
 
-```text
+````text
 Repaired R1-C1, R1-M1 and R1-Q1. All changes remain unstaged.
 
 Changed paths:
@@ -1512,11 +1512,11 @@ It first exited **1** with four assertion failures, then **0** with four passes.
 An initial test-harness draft timed out. I corrected its duplicate-call wait before obtaining the clean red evidence. Initial formatting and lint findings were also repaired. **No final red remains.**
 
 Existing workspace-switch, inactive-cache, completed-fetch and predecessor-flight regressions remain green. Dependency helpers were inspected without edits. Concurrent tab/state work was preserved. No scope deviations, browser work, broad gates, staging, commits or pushes.
-```
+````
 
 ### Raw append repair report
 
-```text
+````text
 R1-E1 admitted-append error repair completed, left unstaged
 
 The repair reuses commitWorkspaceAtom → tabsAtom's existing canonical onSaved acknowledgement. updateTabById and useTabActions now carry an optional acknowledgement of the canonical persisted Tab. appendStoreGame retains that exact successor and installs the matching local stamp, dirty state, append marker and freshness at the acknowledgement boundary, before workspace subscriber errors escape. It does not reconstruct a transaction or infer admission from a thrown exception or a current-tab readback.
@@ -1589,7 +1589,7 @@ append-format-final.log: exit 0, all 7 files formatted correctly. append-lint-fi
 All logs, patch, hashes and this report are under /tmp/build-cad8d11a-cleanup/. No broad related-test, type, pre-review or integrated gate command was run. No browser, screenshots, snapshots, dependencies, floors, baselines, tasks, native source or generated bindings were changed. Root retains integrated proof ownership.
 
 No scope deviation. The concurrently changed Group4 files were observed in git status only and were neither edited nor reversed by this repair. No additional qualifying defect was discovered. An incidental search for vitest.config.* found no file and returned exit 2, with no effect on proof selection or execution. All repository changes remain unstaged, with no commit or push.
-```
+````
 
 
 ## Diff closure round 2 at 06b2e1a1
@@ -1792,7 +1792,7 @@ family as the code. Root remains integration, arbitration, browser and release o
 
 ### Raw second append repair report
 
-```text
+````text
 R4 append completion repair completed, left unstaged
 
 Scope base: 6c58bdd8e104fc9b59600e8bf3e736c33f42b465. The canonical acknowledgement introduced in a9c367b6 remains intact. Root owns integration review, records, broad tests, browser, screenshots, commits and push.
@@ -1886,7 +1886,7 @@ pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/utils/tabs.test.ts src/co
 All three commands exited 0. append-r4-format.log reports all 5 files correctly formatted. append-r4-lint.log reports 0 warnings and 0 errors across all 5 files. git diff --check also passed. append-r4-index.log is empty, proving no staged changes.
 
 No scope deviation or additional qualifying defect. Only the five named repository paths changed. No browser, screenshots, broad related/type/pre-review/mutation gates, agents, skills, records edits, staging, commits or push were performed. Root must independently review the final diff, run its integrated union/related/pre-review proof and complete browser obligations, including R1-T1. This report and proof artifacts are temporary files outside the repository.
-```
+````
 
 
 ## Diff closure round3 at 594ecebf
@@ -2081,7 +2081,7 @@ family as the code. No fallback, capacity retry or scope deviation in this test 
 
 ### Raw test extraction report
 
-```text
+````text
 R3-M1 shared foreign-owner test scenario extraction completed
 
 Read lens-minimalism-r3.txt completely. Root accepted the shared scenario extraction under the domain-concept reuse rule. This change is structural only, with no new tests or production changes. Work started from clean HEAD 594ecebf4fd2fab01d984bbbd0f054b69c70e9f6.
@@ -2111,7 +2111,7 @@ All commands exited 0. Proof logs under /tmp/build-cad8d11a-cleanup/:
 - append-r3-extraction-lint.log: 0 warnings and 0 errors on the one changed file
 
 git status and git diff --name-only show only the assigned test path. git diff --cached --stat is empty. No functional source reversal or new mirroring tests were needed or performed for this structural extraction. No agents, skills, records, browser, screenshots, related/type/broad gates, staging, commit or push were used. No scope deviation or new finding. Root retains independent suite/pre-review verification and the R1-T1 screenshot obligation.
-```
+````
 
 
 ## Diff closure round4 at d24cf400
