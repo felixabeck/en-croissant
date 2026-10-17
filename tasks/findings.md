@@ -15593,7 +15593,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### Replaying an existing terminal move changes the Result header without marking the game dirty
 
-* **ID:** f-20261010-30 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-30 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** `src/state/store/tree.ts` (`makeMove`, around754..771), Board autosave and unsaved-close consumers.
 * **Defect:** R6 correctness review found that replaying an existing terminal child can update the Result header while leaving dirtyfalse. Play Qg7# from7k/5Q2/6K1/8/8/8/8/8 w - - 99 1, set Result to*, save, return to the start and replay Qg7#. The header becomes1-0 but autosave and close confirmation miss the changed content. Source orig ine401958e according to the witness, separate from repaired mate/draw priority.
@@ -15601,6 +15601,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** Actual store replay regression must observe changed Result and dirtytrue after a saved edited header. Ordinary existing-child replay with unchanged Result and disabled adjudication retain clean state. Removing the production dirty-on-header-change behavior must fail its semantic assertion with exit1 and restore full proof green. Run tree/parser proof, pre-review and contract.
 * **Related:** f-20261010-23 repairs checkmate priority. This is the distinct inherited dirty-state consequence, not a reopened compression failure.
 * **Found by:** Canonical R6 review-correctness, /tmp/build-game-opening-3b67c3b9/lens-correctness-r6.txt, 2026-10-10. Root source trace pending. Plan authorship and arbitration shared one context. Detection used the same model family as code.
+
+Fixed by `fix(chess): mark replayed result changes dirty` (already on master). Re-verified from the current master tip on 2026-10-17: the store replay regression in `src/state/store/tree.test.ts` observes the changed Result and `dirty: true` after a saved edited header (white/black checkmate at clock 100, fifty-move, stalemate, insufficient material, threefold), and the ordinary existing-child replay with unchanged Result and disabled adjudication stays clean. Source fault: with only the production dirty-on-header-change assignment removed, the suite exited 1 with 6 semantic failures (118 passed); restored, 124 passed. Tree/parser proof: `src/utils/tests/chess.test.ts`, `src/utils/tests/chessops.test.ts` and the tree store suites, 234 passed. `pnpm checks:pre-review` ran clean on this tree (no relevant changed paths), and contract runs in this close's push gates.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"bb2a14044655d53e0a29e18ca2db34cdca41d4b502a1fc3179cf682570d81a7f","header_sha256":"8177abb54e42f1339209577f14ec1fc3f7c4b4b1d9d2881c8645e7b29f0ba1e1","header_status":"handled","input_sha256":"a7e815aaff91e47eb5a41c96ef93318ec382de7e38a127faf2ecb62bec72dcdd","kind":"mutation-receipt","operation":"5dc7fdc42d491e7d1e94684a49bf9fd66b11392d05485089bec2f984e4213ff5","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-30"],"target":"f-20261010-30","v":1} -->
 
 ---
 
