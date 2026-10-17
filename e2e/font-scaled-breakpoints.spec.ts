@@ -236,16 +236,46 @@ async function assertSettingRow(control: Locator, compact: boolean) {
                 control.evaluate((element) => {
                     const rowElement = element.parentElement!;
                     const style = getComputedStyle(rowElement);
+                    const copy = element.previousElementSibling!;
+                    const copyBox = copy.getBoundingClientRect();
+                    const textBoxes = Array.from(copy.children, (text) =>
+                        text.getBoundingClientRect(),
+                    );
+                    const textHeight =
+                        Math.max(...textBoxes.map((box) => box.bottom)) -
+                        Math.min(...textBoxes.map((box) => box.top));
+                    const controlBox = element.getBoundingClientRect();
+                    const controlGap = controlBox.top - copyBox.bottom;
                     const contentWidth =
                         rowElement.getBoundingClientRect().width -
                         parseFloat(style.borderLeftWidth) -
                         parseFloat(style.borderRightWidth) -
                         parseFloat(style.paddingLeft) -
                         parseFloat(style.paddingRight);
-                    return Math.abs(element.getBoundingClientRect().width - contentWidth);
+                    return {
+                        fullWidth: Math.abs(controlBox.width - contentWidth) <= 1,
+                        textBoxCount: textBoxes.length,
+                        copyFitsText: Math.abs(copyBox.height - textHeight) <= 2,
+                        controlFollowsCopy: Math.abs(controlGap - parseFloat(style.rowGap)) <= 2,
+                    };
                 }),
             )
-            .toBeLessThanOrEqual(1);
+            .toEqual({
+                fullWidth: true,
+                textBoxCount: 2,
+                copyFitsText: true,
+                controlFollowsCopy: true,
+            });
+    } else {
+        await expect
+            .poll(() =>
+                control.evaluate(
+                    (element) =>
+                        element.getBoundingClientRect().left -
+                        element.previousElementSibling!.getBoundingClientRect().right,
+                ),
+            )
+            .toBeGreaterThanOrEqual(0);
     }
 }
 

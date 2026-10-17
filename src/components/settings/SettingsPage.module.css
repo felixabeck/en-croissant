@@ -98,6 +98,10 @@
     gap: var(--mantine-spacing-sm);
   }
 
+  .settingCopy {
+    flex: 0 0 auto;
+  }
+
   .settingControl {
     width: 100%;
     min-width: 0;
