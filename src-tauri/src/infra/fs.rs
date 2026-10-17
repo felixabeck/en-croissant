@@ -3293,22 +3293,11 @@ mod win {
         parent: &File,
         name: &OsStr,
     ) -> Result<AtomicFileOutcome, Error> {
-        drop(
-            open_windows_child(
-                parent,
-                name,
-                FILE_CREATE,
-                DIRECTORY_ACCESS,
-                null(),
-                true,
-                true,
-            )
-            .map_err(map_create_collision)?,
-        );
+        drop(create_directory_child(parent, name)?);
         Ok(super::parent_sync_as_atomic_outcome(parent))
     }
 
-    pub(super) fn create_staging_directory(parent: &File, name: &OsStr) -> Result<File, Error> {
+    pub(super) fn create_directory_child(parent: &File, name: &OsStr) -> Result<File, Error> {
         open_windows_child(
             parent,
             name,
@@ -5439,13 +5428,16 @@ pub(crate) struct OwnedStagingDir {
     armed: bool,
 }
 
+const STAGING_DIRECTORY_CREATE_ATTEMPTS: usize = 32;
+
 impl OwnedStagingDir {
     /// Exclusively creates a randomized private sibling through the retained authority parent.
     /// Unix mkdir/open is not atomic against substitution between the individual syscalls.
-    /// No cleanup is armed until the no-follow child and its parent entry have one identity.
+    /// Cleanup is armed once the no-follow child's identity is known. The following parent-entry
+    /// assertion guards that binding, and identity-checked cleanup preserves a substituted entry.
     pub(crate) fn create_in(parent: &File, prefix: &str) -> Result<Self, Error> {
         let parent = parent.try_clone()?;
-        for _ in 0..32 {
+        for _ in 0..STAGING_DIRECTORY_CREATE_ATTEMPTS {
             let leaf = staging_directory_name(prefix);
             single_leaf(&leaf)?;
             #[cfg(unix)]
@@ -5453,7 +5445,7 @@ impl OwnedStagingDir {
                 rustix::fs::mkdirat(&parent, &leaf, rustix::fs::Mode::from_raw_mode(0o700))
                     .map_err(|error| io(error.into()));
             #[cfg(windows)]
-            let created = win::create_staging_directory(&parent, &leaf);
+            let created = win::create_directory_child(&parent, &leaf);
             let created = match created {
                 Ok(created) => created,
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -6946,7 +6938,9 @@ mod tests {
         }
         drop(staging);
         assert!(!root.path().join("owned").exists());
-        STAGING_DIRECTORY_NAMES.with(|slot| *slot.borrow_mut() = vec!["collision".into(); 32]);
+        STAGING_DIRECTORY_NAMES.with(|slot| {
+            *slot.borrow_mut() = vec!["collision".into(); STAGING_DIRECTORY_CREATE_ATTEMPTS]
+        });
         let error = OwnedStagingDir::create_in(&parent, ".archive")
             .err()
             .unwrap();

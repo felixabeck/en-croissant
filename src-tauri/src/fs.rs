@@ -740,7 +740,7 @@ where
     let mut file = crate::infra::blocking::BLOCKING_GATEWAY
         .spawn_cancellable(cancellation.clone(), move |_| {
             #[cfg(test)]
-            run_archive_payload_hook(&setup_path);
+            run_path_hook(&ARCHIVE_PAYLOAD_HOOKS, &setup_path);
             #[cfg(test)]
             run_archive_payload_create_fault(&setup_path)?;
             let file = tempfile::tempfile()?;
@@ -762,7 +762,7 @@ where
     )
     .await;
     #[cfg(test)]
-    run_archive_payload_network_done_hook(&path);
+    run_path_hook(&ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS, &path);
     // Accepted workflows own the file across the network await. Once it exists, admission
     // must drain even after cancellation so every network result closes it on this worker.
     crate::infra::blocking::BLOCKING_GATEWAY
@@ -775,7 +775,7 @@ where
                     return Err(Error::Cancellation);
                 }
                 #[cfg(test)]
-                run_core_after_pin_hook(&path);
+                run_path_hook(&CORE_AFTER_PIN_HOOKS, &path);
                 let kind = sniff_download_payload(&mut file)?;
                 let is_zip = kind == DownloadPayloadKind::Zip;
                 let is_tar = kind == DownloadPayloadKind::Tar;
@@ -807,7 +807,7 @@ where
                 }
             })();
             #[cfg(test)]
-            run_archive_payload_cleanup_hook(&terminal_path);
+            run_path_hook(&ARCHIVE_PAYLOAD_CLEANUP_HOOKS, &terminal_path);
             outcome
         })
         .await
@@ -1929,41 +1929,6 @@ fn run_archive_payload_created_hook(target: &Path, file: &std::fs::File) {
     }
 }
 
-#[cfg(test)]
-fn run_archive_payload_network_done_hook(target: &Path) {
-    let hook = ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS
-        .lock()
-        .unwrap()
-        .remove(target);
-    if let Some(hook) = hook {
-        hook(target);
-    }
-}
-
-#[cfg(test)]
-fn run_archive_payload_cleanup_hook(target: &Path) {
-    let hook = ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().remove(target);
-    if let Some(hook) = hook {
-        hook(target);
-    }
-}
-
-#[cfg(test)]
-fn run_archive_payload_hook(target: &Path) {
-    let hook = ARCHIVE_PAYLOAD_HOOKS.lock().unwrap().remove(target);
-    if let Some(hook) = hook {
-        hook(target);
-    }
-}
-
-#[cfg(test)]
-fn run_archive_gzip_scratch_hook(parent: &Path) {
-    let hook = ARCHIVE_GZIP_SCRATCH_HOOKS.lock().unwrap().remove(parent);
-    if let Some(hook) = hook {
-        hook(parent);
-    }
-}
-
 /// Keyed by the unique test target so a different blocking worker cannot consume the hook.
 #[cfg(test)]
 fn set_core_after_pin_hook(path: &Path, hook: Option<CoreAfterPinHook>) {
@@ -1976,8 +1941,11 @@ fn set_core_after_pin_hook(path: &Path, hook: Option<CoreAfterPinHook>) {
 }
 
 #[cfg(test)]
-fn run_core_after_pin_hook(path: &Path) {
-    let hook = CORE_AFTER_PIN_HOOKS.lock().unwrap().remove(path);
+fn run_path_hook(
+    hooks: &std::sync::Mutex<std::collections::BTreeMap<PathBuf, CoreAfterPinHook>>,
+    path: &Path,
+) {
+    let hook = hooks.lock().unwrap().remove(path);
     if let Some(hook) = hook {
         hook(path);
     }
@@ -2105,7 +2073,7 @@ fn prepare_gz_cancellable(
     // Bound the entire decompressed stream (headers and padding included) before tar
     // publication. The tar extractor still enforces entry count and per-entry limits.
     #[cfg(test)]
-    run_archive_gzip_scratch_hook(dest_parent);
+    run_path_hook(&ARCHIVE_GZIP_SCRATCH_HOOKS, dest_parent);
     #[cfg(not(test))]
     let _ = dest_parent;
     let mut tar_file = tempfile::tempfile()?;
@@ -5791,89 +5759,303 @@ mod tests {
         assert_archive_terminal_cleanup_waits_for_admission(true).await;
     }
 
-    /// Linux observes anonymous O_TMPFILE writes too, which a directory listing cannot see.
-    #[cfg(target_os = "linux")]
-    fn archive_write_watch(path: &Path) -> std::fs::File {
-        use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
-        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-        assert!(
-            fd >= 0,
-            "inotify_init1: {}",
-            std::io::Error::last_os_error()
-        );
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        let watch = unsafe {
-            libc::inotify_add_watch(
-                fd,
-                path.as_ptr(),
-                libc::IN_CREATE
-                    | libc::IN_MODIFY
-                    | libc::IN_CLOSE_WRITE
-                    | libc::IN_MOVED_TO
-                    | libc::IN_DELETE,
-            )
-        };
-        assert!(
-            watch >= 0,
-            "inotify_add_watch: {}",
-            std::io::Error::last_os_error()
-        );
-        file
+    /// Retains native observation of child changes, including scratch removed before inspection.
+    /// Self renames are excluded so moving the watched replacement into place is not a write.
+    struct ArchiveWriteObserver {
+        #[cfg(target_os = "linux")]
+        inotify: std::fs::File,
+        #[cfg(target_os = "macos")]
+        queue: std::fs::File,
+        #[cfg(target_os = "macos")]
+        _directory: std::fs::File,
+        // This notification handle must use FindCloseChangeNotification, not CloseHandle.
+        // Its integer representation also lets the hook share the owned observer across workers.
+        #[cfg(windows)]
+        notification: isize,
     }
 
-    #[cfg(target_os = "linux")]
-    fn assert_no_archive_writes(mut watch: &std::fs::File) {
-        let mut events = [0u8; 8192];
-        match watch.read(&mut events) {
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            result => panic!("replacement root received temporary writes: {result:?}"),
+    impl ArchiveWriteObserver {
+        #[cfg(target_os = "linux")]
+        fn new(path: &Path) -> Self {
+            use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+            let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            assert!(
+                fd >= 0,
+                "inotify_init1: {}",
+                std::io::Error::last_os_error()
+            );
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            let watch = unsafe {
+                libc::inotify_add_watch(
+                    fd,
+                    path.as_ptr(),
+                    libc::IN_CREATE
+                        | libc::IN_MODIFY
+                        | libc::IN_CLOSE_WRITE
+                        | libc::IN_MOVED_TO
+                        | libc::IN_DELETE,
+                )
+            };
+            assert!(
+                watch >= 0,
+                "inotify_add_watch: {}",
+                std::io::Error::last_os_error()
+            );
+            Self { inotify: file }
+        }
+
+        #[cfg(target_os = "macos")]
+        fn new(path: &Path) -> Self {
+            use std::os::{
+                fd::{AsRawFd, FromRawFd},
+                unix::ffi::OsStrExt,
+            };
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            let fd = unsafe { libc::open(path.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
+            assert!(fd >= 0, "vnode open: {}", std::io::Error::last_os_error());
+            let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+            let fd = unsafe { libc::kqueue() };
+            assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+            let queue = unsafe { std::fs::File::from_raw_fd(fd) };
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+            let change = libc::kevent {
+                ident: directory.as_raw_fd() as _,
+                filter: libc::EVFILT_VNODE,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: libc::NOTE_WRITE,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            let result =
+                unsafe { libc::kevent(fd, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+            assert_eq!(
+                result,
+                0,
+                "vnode registration: {}",
+                std::io::Error::last_os_error()
+            );
+            Self {
+                queue,
+                _directory: directory,
+            }
+        }
+
+        #[cfg(windows)]
+        fn new(path: &Path) -> Self {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::{
+                Foundation::INVALID_HANDLE_VALUE,
+                Storage::FileSystem::{
+                    FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_DIR_NAME,
+                    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+                    FILE_NOTIFY_CHANGE_SIZE,
+                },
+            };
+            let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let handle = unsafe {
+                FindFirstChangeNotificationW(
+                    path.as_ptr(),
+                    0,
+                    FILE_NOTIFY_CHANGE_FILE_NAME
+                        | FILE_NOTIFY_CHANGE_DIR_NAME
+                        | FILE_NOTIFY_CHANGE_SIZE
+                        | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                )
+            };
+            assert_ne!(
+                handle,
+                INVALID_HANDLE_VALUE,
+                "directory notification: {}",
+                std::io::Error::last_os_error()
+            );
+            Self {
+                notification: handle as isize,
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn saw_writes(&self, timeout: Duration) -> bool {
+            use std::os::fd::AsRawFd;
+            let mut poll = libc::pollfd {
+                fd: self.inotify.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let result =
+                unsafe { libc::poll(&mut poll, 1, timeout.as_millis().try_into().unwrap()) };
+            assert!(
+                result >= 0,
+                "inotify poll: {}",
+                std::io::Error::last_os_error()
+            );
+            if result == 0 {
+                return false;
+            }
+            let mut events = [0u8; 8192];
+            let count = (&self.inotify).read(&mut events).unwrap();
+            assert!(count > 0, "inotify must return the signalled child events");
+            true
+        }
+
+        #[cfg(target_os = "macos")]
+        fn saw_writes(&self, timeout: Duration) -> bool {
+            use std::os::fd::AsRawFd;
+            let timeout = libc::timespec {
+                tv_sec: timeout.as_secs().try_into().unwrap(),
+                tv_nsec: timeout.subsec_nanos().into(),
+            };
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            let count = unsafe {
+                libc::kevent(
+                    self.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &mut event,
+                    1,
+                    &timeout,
+                )
+            };
+            assert!(
+                count >= 0,
+                "vnode observation: {}",
+                std::io::Error::last_os_error()
+            );
+            if count == 0 {
+                return false;
+            }
+            let event_error = event.data;
+            assert_eq!(
+                event.flags & libc::EV_ERROR,
+                0,
+                "vnode event error: {}",
+                event_error
+            );
+            assert_ne!(event.fflags & libc::NOTE_WRITE, 0);
+            true
+        }
+
+        #[cfg(windows)]
+        fn saw_writes(&self, timeout: Duration) -> bool {
+            use windows_sys::Win32::{
+                Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                System::Threading::WaitForSingleObject,
+            };
+            match unsafe {
+                WaitForSingleObject(
+                    self.notification as HANDLE,
+                    timeout.as_millis().try_into().unwrap(),
+                )
+            } {
+                WAIT_OBJECT_0 => true,
+                WAIT_TIMEOUT => false,
+                result => panic!(
+                    "directory observation failed: {result}, {}",
+                    std::io::Error::last_os_error()
+                ),
+            }
+        }
+
+        fn assert_no_writes(&self) {
+            assert!(
+                !self.saw_writes(Duration::ZERO),
+                "replacement root received temporary writes"
+            );
         }
     }
 
-    #[cfg(unix)]
-    async fn assert_archive_staging_authority_replaced_root(symlink: bool, during_gzip: bool) {
-        for (payload, member) in [
-            (zip_payload(), "engine.bin"),
-            (raw_tar_payload(), "stockfish/engine"),
-            (gzip_tar_payload(b"engine"), "stockfish/engine"),
-        ] {
-            if during_gzip && !payload.starts_with(&[0x1f, 0x8b]) {
-                continue;
+    #[cfg(windows)]
+    impl Drop for ArchiveWriteObserver {
+        fn drop(&mut self) {
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::FindCloseChangeNotification(
+                    self.notification as windows_sys::Win32::Foundation::HANDLE,
+                );
             }
-            let dir = tempdir().unwrap();
-            let (authority, destination, engine_root, _) = engine_destination(&dir);
-            let moved = dir.path().join("authorized-moved");
-            let replacement = dir.path().join("replacement");
+        }
+    }
+
+    #[test]
+    fn archive_staging_authority_observer_detects_anonymous_scratch_write_and_drop() {
+        let dir = tempdir().unwrap();
+        let watched = dir.path().canonicalize().unwrap().join("replacement");
+        std::fs::create_dir(&watched).unwrap();
+        let observer = ArchiveWriteObserver::new(&watched);
+        observer.assert_no_writes();
+        let moved = watched.with_file_name("engine-root");
+        std::fs::rename(&watched, &moved).unwrap();
+        observer.assert_no_writes();
+        let mut scratch = tempfile::tempfile_in(&moved).unwrap();
+        scratch.write_all(b"transient anonymous payload").unwrap();
+        scratch.sync_all().unwrap();
+        drop(scratch);
+        assert!(leaves(&moved).is_empty());
+        assert!(
+            observer.saw_writes(Duration::from_secs(5)),
+            "native observer missed actual tempfile_in write/drop"
+        );
+    }
+
+    #[test]
+    fn archive_staging_authority_observer_detects_named_directory_create_and_drop() {
+        let dir = tempdir().unwrap();
+        let watched = dir.path().canonicalize().unwrap().join("replacement");
+        std::fs::create_dir(&watched).unwrap();
+        let observer = ArchiveWriteObserver::new(&watched);
+        observer.assert_no_writes();
+        let moved = watched.with_file_name("engine-root");
+        std::fs::rename(&watched, &moved).unwrap();
+        observer.assert_no_writes();
+        drop(tempfile::tempdir_in(&moved).unwrap());
+        assert!(leaves(&moved).is_empty());
+        assert!(
+            observer.saw_writes(Duration::from_secs(5)),
+            "native observer missed actual named directory create/drop"
+        );
+    }
+
+    struct ArchiveReplacementProbe {
+        root: PathBuf,
+        moved: PathBuf,
+        replacement: PathBuf,
+        watch: Arc<ArchiveWriteObserver>,
+        swapped: Arc<AtomicBool>,
+        inspected_on: Arc<Mutex<Option<std::thread::ThreadId>>>,
+    }
+
+    impl ArchiveReplacementProbe {
+        fn new(root: PathBuf) -> Self {
+            let moved = root.with_file_name("authorized-moved");
+            let replacement = root.with_file_name("replacement");
             std::fs::create_dir(&replacement).unwrap();
             std::fs::write(replacement.join("foreign"), b"keep").unwrap();
-            #[cfg(target_os = "linux")]
-            let watch = Arc::new(archive_write_watch(&replacement));
-            let swapped = Arc::new(AtomicBool::new(false));
-            let observed = Arc::new(AtomicBool::new(false));
-            let hook_root = engine_root.clone();
-            let hook_moved = moved.clone();
-            let hook_replacement = replacement.clone();
-            let hook_swapped = swapped.clone();
-            let hook_observed = observed.clone();
-            #[cfg(target_os = "linux")]
-            let hook_watch = watch.clone();
-            let hook: CoreAfterPinHook = Box::new(move |_| {
-                std::fs::rename(&hook_root, &hook_moved).unwrap();
-                if symlink {
-                    std::os::unix::fs::symlink(&hook_replacement, &hook_root).unwrap();
-                } else {
-                    std::fs::rename(&hook_replacement, &hook_root).unwrap();
-                }
-                hook_swapped.store(true, Ordering::SeqCst);
+            let watch = Arc::new(ArchiveWriteObserver::new(&replacement));
+            Self {
+                root,
+                moved,
+                replacement,
+                watch,
+                swapped: Arc::new(AtomicBool::new(false)),
+                inspected_on: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn install_hooks(&self, symlink: bool, during_gzip: bool, member: &'static str) {
+            let hook_root = self.root.clone();
+            let hook_moved = self.moved.clone();
+            let hook_watch = Arc::downgrade(&self.watch);
+            let inspected_on = self.inspected_on.clone();
+            let arm_inspection: CoreAfterPinHook = Box::new(move |_| {
                 set_archive_pre_install_hook(Some(Box::new(move |_| {
                     assert_eq!(
                         leaves(&hook_root),
                         vec!["foreign"],
                         "replacement root must contain no temporary entry before publication"
                     );
-                    #[cfg(target_os = "linux")]
-                    assert_no_archive_writes(&hook_watch);
+                    hook_watch.upgrade().unwrap().assert_no_writes();
                     let staging = leaves(&hook_moved);
                     assert_eq!(
                         staging.len(),
@@ -5885,20 +6067,97 @@ mod tests {
                         std::fs::read(hook_moved.join(&staging[0]).join(member)).unwrap(),
                         b"engine"
                     );
-                    hook_observed.store(true, Ordering::SeqCst);
+                    *inspected_on.lock().unwrap() = Some(std::thread::current().id());
                 })));
             });
+            let hook_root = self.root.clone();
+            let hook_moved = self.moved.clone();
+            let hook_replacement = self.replacement.clone();
+            let hook_swapped = self.swapped.clone();
+            let swap: CoreAfterPinHook = Box::new(move |_| {
+                std::fs::rename(&hook_root, &hook_moved).unwrap();
+                if symlink {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&hook_replacement, &hook_root).unwrap();
+                    #[cfg(windows)]
+                    unreachable!("symlink replacement cases are Unix-only");
+                } else {
+                    std::fs::rename(&hook_replacement, &hook_root).unwrap();
+                }
+                hook_swapped.store(true, Ordering::SeqCst);
+            });
             if during_gzip {
-                ARCHIVE_GZIP_SCRATCH_HOOKS
-                    .lock()
-                    .unwrap()
-                    .insert(engine_root.clone(), hook);
+                ARCHIVE_GZIP_SCRATCH_HOOKS.lock().unwrap().insert(
+                    self.root.clone(),
+                    Box::new(move |path| {
+                        swap(path);
+                        arm_inspection(path);
+                    }),
+                );
             } else {
                 ARCHIVE_PAYLOAD_HOOKS
                     .lock()
                     .unwrap()
-                    .insert(engine_root.join("installed"), hook);
+                    .insert(self.root.join("installed"), swap);
+                set_core_after_pin_hook(&self.root.join("installed"), Some(arm_inspection));
             }
+        }
+
+        fn assert_finished(&self, result: &Result<(), Error>) -> std::thread::ThreadId {
+            assert!(self.swapped.load(Ordering::SeqCst));
+            let inspected_on = *self.inspected_on.lock().unwrap();
+            assert!(
+                inspected_on.is_some(),
+                "pre-publication inspection was not executed"
+            );
+            assert!(
+                matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
+                "replaced authority root must refuse publication: {result:?}"
+            );
+            assert_eq!(leaves(&self.root), vec!["foreign"]);
+            assert_eq!(std::fs::read(self.root.join("foreign")).unwrap(), b"keep");
+            assert!(
+                leaves(&self.moved).is_empty(),
+                "refused publication must clean the authorized staging entry"
+            );
+            self.watch.assert_no_writes();
+            inspected_on.unwrap()
+        }
+    }
+
+    impl Drop for ArchiveReplacementProbe {
+        fn drop(&mut self) {
+            let target = self.root.join("installed");
+            for (hooks, key) in [
+                (&CORE_AFTER_PIN_HOOKS, &target),
+                (&ARCHIVE_PAYLOAD_HOOKS, &target),
+                (&ARCHIVE_GZIP_SCRATCH_HOOKS, &self.root),
+            ] {
+                hooks
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(key);
+            }
+            ARCHIVE_PAYLOAD_CREATED_HOOKS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&target);
+        }
+    }
+
+    async fn assert_archive_staging_authority_replaced_root(symlink: bool, during_gzip: bool) {
+        for (payload, member) in [
+            (zip_payload(), "engine.bin"),
+            (raw_tar_payload(), "stockfish/engine"),
+            (gzip_tar_payload(b"engine"), "stockfish/engine"),
+        ] {
+            if during_gzip && !payload.starts_with(&[0x1f, 0x8b]) {
+                continue;
+            }
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let probe = ArchiveReplacementProbe::new(engine_root);
+            probe.install_hooks(symlink, during_gzip, member);
             let integrity = unsigned_test_integrity(&payload);
             let state = AppState {
                 http_transport: Arc::new(zip_response(payload)),
@@ -5921,23 +6180,7 @@ mod tests {
                 Box::new(accept_any_integrity),
             )
             .await;
-            assert!(swapped.load(Ordering::SeqCst));
-            assert!(
-                observed.load(Ordering::SeqCst),
-                "preparation must reach the pre-publication boundary"
-            );
-            assert!(
-                matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
-                "replaced authority root must refuse publication: {result:?}"
-            );
-            assert_eq!(leaves(&engine_root), vec!["foreign"]);
-            assert_eq!(std::fs::read(engine_root.join("foreign")).unwrap(), b"keep");
-            assert!(
-                leaves(&moved).is_empty(),
-                "refused publication must clean the authorized staging entry"
-            );
-            #[cfg(target_os = "linux")]
-            assert_no_archive_writes(&watch);
+            probe.assert_finished(&result);
         }
     }
 
@@ -5947,7 +6190,6 @@ mod tests {
         assert_archive_staging_authority_replaced_root(true, false).await;
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn archive_staging_authority_different_directory_before_payload_has_zero_replacement_writes(
     ) {
@@ -5960,11 +6202,151 @@ mod tests {
         assert_archive_staging_authority_replaced_root(true, true).await;
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn archive_staging_authority_different_directory_during_gzip_has_zero_replacement_writes()
     {
         assert_archive_staging_authority_replaced_root(false, true).await;
+    }
+
+    struct WorkerSwitchArchiveTransport {
+        response: MockTransport,
+        setup_thread: Arc<Mutex<Option<std::thread::ThreadId>>>,
+        available_thread: Mutex<Option<std::thread::ThreadId>>,
+        releases: Mutex<Vec<Option<std::sync::mpsc::Sender<()>>>>,
+        workers: Mutex<Vec<tokio::task::JoinHandle<std::thread::ThreadId>>>,
+    }
+
+    impl WorkerSwitchArchiveTransport {
+        fn release_all(&self) {
+            self.releases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+
+        async fn finish(&self) {
+            self.release_all();
+            let workers = std::mem::take(&mut *self.workers.lock().unwrap());
+            for worker in workers {
+                worker.await.unwrap();
+            }
+        }
+    }
+
+    // This guard releases both workers even if request, core execution or an assertion panics.
+    // The test's private runtime then waits for the actual blocking jobs during shutdown.
+    struct ReleaseArchiveWorkerHolds(Arc<WorkerSwitchArchiveTransport>);
+
+    impl Drop for ReleaseArchiveWorkerHolds {
+        fn drop(&mut self) {
+            self.0.release_all();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DownloadTransport for WorkerSwitchArchiveTransport {
+        async fn request(&self, url: &str, headers: HeaderMap) -> Result<DownloadResponse, Error> {
+            let setup_thread = self.setup_thread.lock().unwrap().unwrap();
+            let mut starts = Vec::new();
+            for _ in 0..2 {
+                let (release, held) = std::sync::mpsc::channel();
+                self.releases.lock().unwrap().push(Some(release));
+                let (started, entered) = tokio::sync::oneshot::channel();
+                self.workers
+                    .lock()
+                    .unwrap()
+                    .push(tokio::task::spawn_blocking(move || {
+                        let thread = std::thread::current().id();
+                        let _ = started.send(thread);
+                        let _ = held.recv();
+                        thread
+                    }));
+                starts.push(entered);
+            }
+            let mut threads = Vec::new();
+            for entered in starts {
+                threads.push(
+                    tokio::time::timeout(Duration::from_secs(5), entered)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+            assert_ne!(threads[0], threads[1]);
+            let held_setup = threads
+                .iter()
+                .position(|thread| *thread == setup_thread)
+                .expect("the two occupied workers must include the actual setup thread");
+            let other = 1 - held_setup;
+            // Leave setup occupied. Join the released other worker before returning ZIP bytes,
+            // so the terminal gateway job has exactly that worker available in this pool.
+            drop(self.releases.lock().unwrap()[other].take());
+            let released_worker = self.workers.lock().unwrap().remove(other);
+            assert_eq!(released_worker.await.unwrap(), threads[other]);
+            *self.available_thread.lock().unwrap() = Some(threads[other]);
+            self.response.request(url, headers).await
+        }
+    }
+
+    #[test]
+    fn archive_staging_authority_worker_switch_keeps_pre_publication_inspection() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(2)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let _exclusive_gateway_test = ARCHIVE_GATEWAY_TEST_LOCK.lock().await;
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
+            let probe = ArchiveReplacementProbe::new(engine_root.clone());
+            probe.install_hooks(false, false, "engine.bin");
+            let payload = zip_payload();
+            let integrity = unsigned_test_integrity(&payload);
+            let setup_thread = Arc::new(Mutex::new(None));
+            let setup_at_hook = setup_thread.clone();
+            ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().insert(
+                engine_root.join("installed"),
+                Box::new(move |_| {
+                    *setup_at_hook.lock().unwrap() = Some(std::thread::current().id());
+                }),
+            );
+            let transport = Arc::new(WorkerSwitchArchiveTransport {
+                response: zip_response(payload),
+                setup_thread: setup_thread.clone(),
+                available_thread: Mutex::new(None),
+                releases: Mutex::new(Vec::new()),
+                workers: Mutex::new(Vec::new()),
+            });
+            let _release_on_exit = ReleaseArchiveWorkerHolds(transport.clone());
+            let state = AppState {
+                http_transport: transport.clone(),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            let (job, lease) = test_download_lease(&state);
+            let result = download_engine_archive_core(
+                "authority-worker-switch".into(),
+                "https://example.com/engine.zip".into(),
+                destination,
+                "installed".into(),
+                job,
+                integrity,
+                app.handle().clone(),
+                state,
+                lease.token(),
+                lease.commit_gate(),
+                Box::new(accept_any_integrity),
+            ).await;
+            transport.finish().await;
+            let setup_thread = setup_thread.lock().unwrap().unwrap();
+            let terminal_thread = transport.available_thread.lock().unwrap().unwrap();
+            eprintln!("archive worker switch: setup={setup_thread:?}, available={terminal_thread:?}, inspection={:?}", probe.inspected_on.lock().unwrap());
+            let inspected_on = probe.assert_finished(&result);
+            assert_eq!(inspected_on, terminal_thread, "inspection must run on the forced terminal worker");
+            assert_ne!(inspected_on, setup_thread, "setup must stay on the other worker");
+        });
     }
 
     #[tokio::test]

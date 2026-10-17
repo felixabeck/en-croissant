@@ -116,8 +116,9 @@ fn open_windows_path_chain(
 /// Result of a successful resolution. It retains the exact opened file when
 /// present, the verified directory handle for directory targets, and the
 /// parent handle plus authority-validated leaf needed for relative operations.
-/// Those handles stay private and are used only with that retained leaf, so a
-/// resolution cannot be used to reach a sibling.
+/// Those handles stay private and operate on that retained leaf. DownloadArchive
+/// additionally permits creating a randomized private staging sibling through its
+/// operation-checked door, without exposing the parent or accepting an arbitrary target.
 pub struct ResolvedPath {
     operation: PathOperation,
     file: Option<OwnedFile>,
