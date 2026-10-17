@@ -355,6 +355,9 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
                     ));
                 }
                 for game in games.games {
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
                     let pgn = game
                         .pgn
                         .filter(|pgn| !pgn.trim().is_empty())
@@ -911,6 +914,93 @@ mod tests {
             ProgressState::Cancelled
         );
         assert_eq!(std::fs::read(root.join("cancel.pgn")).unwrap(), b"previous");
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_final_archive_fetch_stops_before_staging() {
+        struct CancelOnDropArchiveStream {
+            body: Option<Bytes>,
+            state: AppState,
+            job_id: String,
+        }
+
+        impl futures_util::Stream for CancelOnDropArchiveStream {
+            type Item = Result<Bytes, Error>;
+
+            fn poll_next(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Self::Item>> {
+                std::task::Poll::Ready(self.get_mut().body.take().map(Ok))
+            }
+        }
+
+        impl Drop for CancelOnDropArchiveStream {
+            fn drop(&mut self) {
+                assert!(self
+                    .state
+                    .operations
+                    .cancel_download(&self.job_id, "test")
+                    .unwrap());
+            }
+        }
+
+        struct CancelAfterArchiveTransport {
+            requests: AtomicUsize,
+            archive: Mutex<Option<DownloadResponse>>,
+        }
+
+        #[async_trait]
+        impl DownloadTransport for CancelAfterArchiveTransport {
+            async fn request(
+                &self,
+                url: &str,
+                headers: HeaderMap,
+            ) -> Result<DownloadResponse, Error> {
+                assert!(headers.is_empty());
+                if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(response(INDEX));
+                }
+                assert_eq!(url, "https://api.chess.com/pub/player/felix/games/2026/09");
+                self.archive
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or_else(|| Error::InvalidInput("unexpected request".into()))
+            }
+        }
+
+        let transport = Arc::new(CancelAfterArchiveTransport {
+            requests: AtomicUsize::new(0),
+            archive: Mutex::new(None),
+        });
+        let (_dir, state, destination, root, app) = export_fixture(transport.clone());
+        std::fs::write(root.join("cancel.pgn"), b"previous").unwrap();
+        let job_id = state.operations.prepare_download("test").unwrap();
+        let body = br#"{"games":[{"pgn":"1. e4 e5"},{"pgn":"1. d4 d5"}]}"#;
+        *transport.archive.lock().unwrap() = Some(DownloadResponse {
+            status: 200,
+            headers: HeaderMap::new(),
+            content_length: Some(body.len() as u64),
+            stream: Box::pin(CancelOnDropArchiveStream {
+                body: Some(Bytes::from_static(body)),
+                state: state.clone(),
+                job_id: job_id.clone(),
+            }),
+        });
+        let task = tokio::spawn(run_owned_export(
+            destination,
+            "cancel.pgn".into(),
+            job_id.clone(),
+            app.handle().clone(),
+            state.clone(),
+            Duration::from_secs(2),
+        ));
+        assert!(matches!(task.await.unwrap(), Err(Error::Cancellation)));
+        assert_eq!(transport.requests.load(Ordering::SeqCst), 2);
+        wait_for_progress(&state, &job_id, ProgressState::Cancelled).await;
+        assert_eq!(std::fs::read(root.join("cancel.pgn")).unwrap(), b"previous");
+        wait_for_operation_drain(&state).await;
     }
 
     #[tokio::test]
