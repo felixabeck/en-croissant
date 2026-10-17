@@ -2112,3 +2112,228 @@ All commands exited 0. Proof logs under /tmp/build-cad8d11a-cleanup/:
 
 git status and git diff --name-only show only the assigned test path. git diff --cached --stat is empty. No functional source reversal or new mirroring tests were needed or performed for this structural extraction. No agents, skills, records, browser, screenshots, related/type/broad gates, staging, commit or push were used. No scope deviation or new finding. Root retains independent suite/pre-review verification and the R1-T1 screenshot obligation.
 ```
+
+
+## Diff closure round4 at d24cf400
+
+All eight required read-only reports completed. R3-M1 is CLOSED by correctness, root-cause,
+minimalism, code-quality, tests and records. Error-handling and persisted-state are correctly
+NOT APPLICABLE to the equivalent test-only fixture extraction. No new issue was found.
+The sole Fix adoption in this round is the repeated R1-T1 baseline obligation, not a new
+unique defect. REVIEWED_THROUGH is d24cf4009c16a4b6d989fcc5ba06340866e1bbab.
+Plan authorship and arbitration shared one context. Detection used the same OpenAI family
+as the code. Raw verdicts follow unchanged.
+
+### Raw correctness closure report, round4
+
+```text
+R3-M1 CLOSED — The shared helper preserves both replacement branches, reentrant guard, captured witnesses, conflict transition, thrown messages and cleanup. Both callers retain their distinct candidates and assertions.
+
+R2-C1/C2/E1 remain CLOSED. No new correctness defects found.
+
+Canonical proof completed with exit 0: 264 tests passed and all selected pre-review lanes passed.
+
+Limitations: static review, no tests rerun. R1-T1 browser proof remains OPEN. Review shares the implementation’s OpenAI model family. Confidence: 97.
+
+VERDICT: APPROVED
+```
+
+### Raw root-cause closure report, round4
+
+```text
+R3-M1 CLOSED — the shared helper preserves the real subscription, foreign-owner replacement, thrown failure and cleanup in both scenarios. Both parameter rows and caller-specific assertions remain intact.
+
+No symptom masking or reintroduced prior defect found. R2-C1/C2/E1 and earlier source closures remain intact.
+
+Verified the canonical completion record reports exit 0, with 264 tests passing across five files and all selected pre-review lanes passing.
+
+R1-T1 NOT CLOSED — the two cleanup screenshot baselines remain browser-stage obligations.
+
+Read-only review. No tests run or files changed. Detection used the same OpenAI model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### Raw error-handling closure report, round4
+
+```text
+NOT APPLICABLE: The delta only extracts shared test setup and intentional throwing subscribers. It changes no production failure handling or error surfacing.
+
+VERDICT: APPROVED
+```
+
+### Raw minimalism closure report, round4
+
+```text
+R3-M1 CLOSED — both tests use `subscribeForeignRecoveryReplacement` for subscription, replacement, witnesses and cleanup. All three parameters serve existing caller differences. Separate assertions remain intact.
+
+No new bloat or duplication findings. No files added. The five-line net increase removes duplicated scenario logic without speculative machinery.
+
+Canonical proof records exit 0, 264 tests passed and all selected pre-review lanes passed. R1-T1 remains OPEN for browser proof. Review was read-only and used the same OpenAI model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### Raw code-quality closure report, round4
+
+```text
+R3-M1 CLOSED — both recovery tests use the shared subscription/replacement/cleanup fixture, with caller-specific assertions preserved. No new readability or local-consistency findings.
+
+R1-Q1 remains CLOSED. R1-T1 remains NOT CLOSED, pending browser proof.
+
+Canonical completion record reports exit 0, 264 passing tests and passing pre-review lanes. Read-only review, no files changed or tests run. Detection shares the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+```
+
+### Raw tests closure report, round4
+
+```text
+R3-M1 CLOSED — Extraction preserves both physical/origin rows, real Jotai subscriptions and caller-specific assertions. Foreign-owner error propagation would fail the registered completion assertion or direct notification-suppression assertion. No new delta verification gaps found.
+
+Canonical proof confirms exit 0, 264 tests across five files and passing pre-review lanes. CI’s coverage selector includes this test file.
+
+[blocker] e2e/async-errors.spec.ts:109 — R1-T1 NOT CLOSED. Required English and German cleanup screenshot baselines remain absent. The existing unit proof cannot detect layout regressions or close O4’s browser obligation. (confidence: 100)
+
+Read-only review. No tests rerun or files changed. Review shares the implementation’s OpenAI model family.
+
+VERDICT: REVISE
+```
+
+### Raw persisted-state closure report, round4
+
+```text
+NOT APPLICABLE: The delta only extracts shared test setup and cleanup. Storage keys, seed/read operations, tab retargeting, and persistence assertions remain equivalent. No production persistence or tab lifecycle behavior changes.
+
+VERDICT: APPROVED
+```
+
+### Raw records closure report, round4
+
+```text
+R1-R1/R2/R3 CLOSED — Prior record corrections remain intact.
+R3-M1 CLOSED — Both callers share the subscription/replacement fixture, preserving assertions, candidates and test declarations.
+R2-C1/C2/E1 and R1-C1/E1/M1/Q1 remain CLOSED.
+R1-T1 NOT CLOSED — Both required cleanup baselines remain absent and explicitly open.
+
+No new records findings. All eight raw round3 reports and the extraction report are preserved exactly. Canonical completion confirms exit 0, 264 tests and seven passing pre-review lanes. Mutation logs confirm three 100% scores, including tree-path timeout detections.
+
+Hosted CI status remains unverifiable without live queries. No writes or gates performed. Review shares the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+```
+
+
+## Browser and actual product proof
+
+The initial canonical container command was
+`pnpm test:e2e:container --project=async-errors --project=workspace-tabs`.
+Attempt browser-initial.uorfGi exited1 with exactly two missing planned baselines and34
+passing cases. Both complete error reports identify absent expected images, no existing
+snapshot difference. Playwright wrote actuals and the new expected files. Root inspected
+both actual dialog crops, all four cleanup captures across locale and relist outcomes,
+and both fresh first-save captures for destination counts0 and3. Copy, wrapping and buttons
+remain readable and reachable at320px and200% text. Saved moves e4/e5 and the entered comment
+remain visible. Initial artifacts were retained before any update reset the output directory.
+
+After that inspection, canonical
+`pnpm test:e2e:update --project=async-errors --grep 'workspace cleanup'` passed all4 cases in
+browser-update.xu3ZiQ. Both generated PNG hashes were exactly equal to the inspected initial
+images. No other baseline changed. The complete affected-project command then passed all36
+cases in browser-confirm.tV1UAC. Raw copies are under browser-initial-artifacts,
+browser-update-artifacts and browser-confirm-artifacts in the run directory.
+
+Commit4eaaea86 retains exactly these two new canonical snapshots:
+- e2e/async-errors.spec.ts-snapshots/workspace-cleanup-320-200-en-US-async-errors.png
+- e2e/async-errors.spec.ts-snapshots/workspace-cleanup-320-200-de-DE-async-errors.png
+
+Native attempt native-proof.zSubTl passed `pnpm build` and `pnpm verify:app --screenshot
+/tmp/build-cad8d11a-cleanup/native-final.png`. Release compilation took51.50s. The actual
+product run reported118 successful checks and ended `all checks passed`. It drove real Rust
+IPC, native PGN/database/practice access, document reload and window close. Application
+pid2175237 and recorded WebKit service pids2175303/2175347 did not exist after close.
+Shutdown, sound cleanup and reservation cancellation passed. Root inspected the final native
+screenshot and its database-card, database-game, file-game and info-panel-discard captures.
+The two database captures include intentional existing quota-error staging, not a newly
+observed product failure. Native GTK menus, picker widgets and decorations were not verified.
+No changed native chrome requires a new manual check.
+
+The native and container proofs ran against the current production source at d24cf400.
+Only the two new PNG assets were added afterward, with unchanged inspected bytes. No source
+changed during or after these runs. The browser-verification stage is complete. R1-T1 now
+has its required evidence and awaits explicit screenshot closure review before final gates.
+
+## Withdrawn root counterexample and focused plan round5
+
+Root initially noticed BoardsPage's inline two-argument updater and incorrectly inferred
+that a fresh none-origin board could invoke Save through its pending-close dialog. This
+was announced as A1 and sent for focused review before any source, test, decision or finding
+mutation. The reviewer found the missing reachability premise. Root then traced the full
+close guard, origin helper, NewTabHome creation, both real Save callers and registered
+recovery. BoardsPage.tsx119 opens pending close only for isPersistentGameOrigin, whose
+helper explicitly excludes none. The fresh Analysis Board retains none. The registered
+unavailable recovery action uses FileFreshnessGate's correctly acknowledged hook, not that
+inline updater. BoardAnalysis's actual fresh Save and compatibility modal already receive
+the canonical useTabActions updater. The proposed first-save pending-close counterexample
+therefore cannot execute on this production path.
+
+A1 disposition: Skip, false execution-path premise, withdrawn before implementation. No
+qualifying product defect was established, no new finding or d15 decision was recorded,
+and no guard, prop, source file or test was changed. Do not implement the historical draft.
+The source and native proof remain valid. Existing product policy for transient close is
+preserved, not expanded to make a proposed regression reachable.
+
+The focused plan report contains two valid confidence100 findings about that unused draft.
+P5-1: the proposed journey is unreachable. P5-2: the round-five packet lacks the required
+generated ROUND/DELTA/REVISED/SETTLED re-review block. Both are adopted Fix dispositions
+resolved by withdrawing the candidate before implementation, with withdrawn=true and the
+reasons above. No plan approval or protocol-complete re-review coverage is claimed for it.
+Its raw VERDICT remains REVISE. This is a completed rejection/withdrawal round, not an
+unfinished implementation or a reopened production Fix. Plan adoption counts continue
+r1=3 r2=0 r3=0 r4=0 r5=2, with the two round5 adoptions withdrawn and no production change.
+The two inherited unique plan issues remain closed. These two draft/process findings are
+separate from them and from all cumulative diff findings.
+
+The exact withdrawn candidate and raw report follow for attribution and recovery. The
+canonical adopted primary plan was never changed. Plan authorship and arbitration shared
+one context. Detection used the same OpenAI model family as the code.
+
+### Withdrawn candidate, never an implementation instruction
+
+```text
+# Canonical tab updates in the actual pending-close flow
+
+A1 is an in-scope first-save integration defect found by root after source closure round4, before publication. At current d24cf400, BoardsPage passes ConfirmChangesModal an inline two-argument updater that maps tabs through setTabs. It discards UpdateTab's optional third canonical-admission callback. ConfirmChangesModal passes that updater to saveToFile. Append commits the new origin but receives no acknowledgement, returns superseded and leaves its append marker and stamp unfinished. This is a certain everyday fresh-board Save-on-close failure. The duplicate mapping predates this run, but its incompatibility is a missed consumer of the acknowledgement contract introduced at a9c367b6. Existing BoardsPage tests mock ConfirmChangesModal and therefore cannot detect it. Existing Modal regressions use its correct fallback or a specially forwarding updater.
+
+The adopted primary mandate and decisions remain unchanged. This corrects the first-save co-located finding f-20261011-08 and d-20261017-14's exact canonical acknowledgement requirement. Do not add a transaction, schema, registry, user action, copy or new updater implementation.
+
+## O1 One production updater boundary for Modal saves
+
+ConfirmChangesModal should obtain live getTab and updateTab from the existing useTabActions hook in its own workspace provider. Remove its redundant optional injected updateTab prop and the custom local fallback plumbing. Both BoardsPage and BoardAnalysis stop supplying this redundant prop. Route normal Save and unavailable-recovery ownership checks through the same existing canonical live tab access. Keep captured pending-close store and logical/physical ownership semantics unchanged. Direct BoardAnalysis Save continues using the same hook independently, sharing the implementation rather than owning a different updater.
+
+## O2 Actual page-level proof of Save on close
+
+Add a canonical container regression through the real BoardsPage and ConfirmChangesModal, not a duplicate forwarding adapter. Starting from a fresh board with moves and a comment, close the dirty tab and choose Save. Select the existing mocked export destination with nonzero game count. Prove exactly one append at that counted index, the captured PGN with moves/comment, and actual completed tab close with a usable New Tab. Capture the completed flow without adding a new screenshot baseline. The pre-fix code must fail the retained close assertion after its native append. Keep current direct Save count0/count3 journeys.
+
+Migrate existing Modal tests to the production hook instead of injected updater props. Preserve meaningful failure, physical-owner, subscriber, pending-close, late-edit, refusal and later-CAS assertions. Do not replace real workspace refusal with a test-only fake acknowledgement. Remove implementation-only spy assertions where the prop disappears, replacing them with actual state/behavior assertions when necessary. Retain all current functional source-reversal regressions.
+
+## O3 Verification and closure
+
+The writer runs relevant existing BoardsPage/Modal/BoardAnalysis/append/atoms suites, type/format/lint, and the one new canonical container journey. Retain the new test while reversing only the current Git-derived production fix, no offsets, exact source/test hashes, reproduce actual missing close, restore and pass. Root runs the integrated unit/related/pre-review proof before path-scoped commit and closure review. New fixture or source boundaries must be inspected rather than mirrored by assertions.
+
+The initial browser run passed34 and failed only2 missing planned baselines, which were inspected and generated. All36 affected cases passed after the two-only targeted update. Those two baseline bytes must remain unchanged. The first native run is still running on the pre-correction revision, so it cannot stand as final proof after this source correction. Rerun relevant browser flows and native build/verify after source closure. R1-T1 remains for final screenshot closure. CI stays open until hosted proof after the code push.
+```
+
+### Raw focused plan round5 report
+
+```text
+[blocker] /tmp/build-cad8d11a-cleanup/append-consumer-mechanism-r5.md:13 — A1 NOT CLOSED. The proposed fresh-board journey cannot reach Save-on-close. `src/components/tabs/BoardsPage.tsx:119` opens the dialog only for persistent origins, while `src/utils/tabs.ts:65` excludes `none`. Opening a fresh analysis board preserves that origin at `src/components/tabs/NewTabHome.tsx:192`. O1 leaves this guard unchanged, so O2 fails before any append and cannot satisfy O3’s required reversal failure after append. Existing BoardsPage tests conceal this dependency by mocking the guard at `src/components/tabs/BoardsPage.test.tsx:167`. Resolve the reachable-flow premise and scope before implementation. (confidence: 100)
+
+R1-T1 NOT CLOSED — Candidate line 21 retains final screenshot closure as pending. This static review supplies no additional browser evidence. (confidence: 100)
+
+[blocker] /tmp/build-cad8d11a-cleanup/append-consumer-mechanism-r5.md:1 — The round-five packet omits the required generated `ROUND`, `DELTA`, `REVISED`, `SETTLED` block. Prior focused review is preserved at `tasks/handoffs/2026-10-17-workspace-cleanup-review.md:1734`, and `/home/felixb/.claude/references/review-lens-contract.md:245` requires this block for re-review. The narrative correction description cannot replace it, so scoped delta coverage cannot be claimed. (confidence: 100)
+
+Limitation: static source review only, no tests run or files changed. Detection shares the implementation’s OpenAI model family. O1’s existing hook forwards canonical acknowledgement correctly at `src/utils/tabs.ts:93`, but that does not resolve O2’s unreachable journey. (confidence: 98)
+
+VERDICT: REVISE
+```
