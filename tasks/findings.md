@@ -16509,3 +16509,20 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Proof:** Three targeted green container runs each passed the journey. Reversing only the alignment action through a Git-derived patch, retaining both starting offsets and all assertions, failed at conversion-active.png with 20,432 differing pixels. Exact restoration applied without offsets, cmp and SHA-256 matched saved source, and the journey passed again. Pre-review passed and the complete container suite passed all 132 cases. Root viewed the original hosted expected/actual/diff images, the intentional source-reversal diff and restored active/pending captures. Evidence: /tmp/build-cad8d11a/scroll-repair-leaf.
 * **Release ownership:** This commit repairs the red Linux Test job 117212677478 in source run 38972100180. Its hosted confirmation remains a release obligation of this active push invocation, with fresh review and full affected frontend gates before pushing. The source finding is handled on the reproduced red/green proof, not a claim that the still-red remote has already been replaced. The defect originated in published conditional alignment b27500105 and capture a98d07e58, both before this catalog task. Decision d-20261017-01 records the chosen capture contract and reversal path.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"6325278c475d28ee76e3b5382ffdcba2129e30c600aef2526c7c361c1fdaa7bc","header_sha256":"46009ad741dd6da534d01db832026ecdcddfef5b7db6ca482cb7cc2f327c0c10","header_status":"handled","input_sha256":"ece9d3fb175e5d7509b17089fcb2268d94fceacf0c7056918b53c3de541a9879","kind":"mutation-receipt","operation":"96483edd9a13d0c467607c1e070cc210d2a6bdefa5da919776f065a4ca04a01e","options":{"section":null},"request_id_sha256":null,"results":["f-20261017-01"],"target":"f-20261017-01","v":1} -->
+
+---
+
+## 2026-10-17 — filed through the inbox spool
+
+### Add Engine clips the active Extracting label beside Cancel even at desktop width
+
+* **ID:** f-20261017-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-70cf6b9c-198c-470c-ab65-8ef53ff6ecc6-1.jsonl
+* **Impact class:** ux
+* **Where:** `src/components/engines/CatalogEngineCard.tsx` add layout and `src/components/common/ProgressButton.tsx` nowrap action/Cancel group.
+* **Defect:** The pinned container browser journey captured the real Add Engine action during post-transfer finalization at 1440 by 900. The English Extracting label is visibly truncated to Extracti while Cancel occupies the adjacent width. The reopened idle Install label fits. Screenshot: `artifacts/frontend-audit/test-results/accounts-puzzles-engines-a-cb021-add-engine-download-catalog-accounts-puzzles-engines/engine-add-active-finalization.png`, produced by `pnpm test:e2e:container --project=accounts-puzzles-engines` during the f-20261002-07 run.
+* **Failure scenario:** Open Add Engine, install a catalog engine, and wait in configuration after the native transfer succeeds. The button and Cancel share the narrow card action width and the user cannot read the full finalization label, even at the ordinary desktop viewport.
+* **Spotted outside diff:** f-20261002-07 screenshot inspection, production diff only adds the succeeded-fill activity predicate and leaves card width, label styling and Cancel layout unchanged.
+* **Open question:** How should the shared catalog card allocate action, Cancel and portrait width across supported viewports and font scales so active labels remain readable without moving the clipping elsewhere?
+* **Related:** f-20261001-05 concerns missing installed portraits, and handled f-20261015-06 concerns the Engines editor. Neither covers catalog action width. No evidenced shared Root. This separate layout-design question is deferred under push-review-policy section 4 while the adopted stale-success mandate remains unchanged.
+* **Found by:** Codex screenshot inspection in full-auto drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6, 2026-10-17.
