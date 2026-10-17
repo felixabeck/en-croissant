@@ -8456,3 +8456,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
 * **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d7abbcba85622e9687bdc01786164d1609f2bce91ac4ae64bfa4e4b2ab6f872e","input_sha256":"dcc8c37e7f433915f17c95c8e0f7836a72da4abf0388dba4893d82aa01aeeeaf","kind":"mutation-receipt","operation":"003f853ddeaa991bce14af3adcd8fc9fb28c003025a04b11369b0965f1fab10f","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-08 — Workspace cleanup renderer contract, choice 4
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 4?
+* **Governs:** f-20261003-09
+* **Chosen:** Canonicalize the existing workspace cache key only where O2 needs both a reader and invalidator. No new job registry, retry service, tool, gate or dependency. The new key-sharing code can be removed with these two consumers if their cache integration is replaced.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"aba0eb4e01948cdae60d2e240da6cb812f91ec1db1a738f315ba74ae00f54c38","input_sha256":"1669443eb368babd2f0926d9db4b962ab06f205a29cfe5855da6c61dfaf25436","kind":"mutation-receipt","operation":"196ca26e3201c19533acfcbef3b3cb39772f1b15e212e593b0ba895eccfd41f6","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-08"],"target":"decisions-ledger","v":1} -->
