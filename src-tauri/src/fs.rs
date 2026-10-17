@@ -6017,12 +6017,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn archive_staging_authority_retained_parent_creates_only_in_moved_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("root");
+        let moved = root.with_file_name("moved");
+        let replacement = root.with_file_name("replacement");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(replacement.join("foreign"), b"keep").unwrap();
+        let observer = ArchiveWriteObserver::new(&replacement);
+        let parent = crate::infra::fs::open_parent_no_follow(&root.join("installed")).unwrap();
+        let identity = crate::infra::path_authority::opened_file_identity(&parent).unwrap();
+        observer.assert_no_writes();
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::rename(&replacement, &root).unwrap();
+        observer.assert_no_writes();
+
+        let staging = crate::infra::fs::OwnedStagingDir::create_in(&parent, ".archive").unwrap();
+        let (_, leaf, _) = staging.binding();
+        assert_eq!(staging.parent_identity().unwrap(), identity);
+        assert_eq!(leaves(&moved), vec![leaf.to_str().unwrap()]);
+        assert!(moved.join(leaf).is_dir());
+        assert_eq!(leaves(&root), vec!["foreign"]);
+        assert_eq!(std::fs::read(root.join("foreign")).unwrap(), b"keep");
+        observer.assert_no_writes();
+
+        drop(staging);
+        assert!(leaves(&moved).is_empty());
+        assert_eq!(leaves(&root), vec!["foreign"]);
+        assert_eq!(std::fs::read(root.join("foreign")).unwrap(), b"keep");
+        observer.assert_no_writes();
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ArchiveReplacementOutcome {
+        Swapped,
+        #[cfg(windows)]
+        Protected(i32),
+    }
+
+    impl ArchiveReplacementOutcome {
+        fn roots<'a>(
+            self,
+            root: &'a Path,
+            moved: &'a Path,
+            _replacement: &'a Path,
+        ) -> (&'a Path, &'a Path) {
+            match self {
+                Self::Swapped => (moved, root),
+                #[cfg(windows)]
+                Self::Protected(code) => {
+                    use windows_sys::Win32::Foundation::{
+                        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+                    };
+                    assert!(
+                        code == ERROR_SHARING_VIOLATION as i32
+                            || code == ERROR_LOCK_VIOLATION as i32,
+                        "held authority must record an exact Windows sharing refusal: {code}"
+                    );
+                    assert!(!moved.exists(), "refused rename must leave no moved root");
+                    (root, _replacement)
+                }
+            }
+        }
+    }
+
     struct ArchiveReplacementProbe {
         root: PathBuf,
         moved: PathBuf,
         replacement: PathBuf,
+        root_identity: (u64, u64),
         watch: Arc<ArchiveWriteObserver>,
-        swapped: Arc<AtomicBool>,
+        outcome: Arc<Mutex<Option<ArchiveReplacementOutcome>>>,
         inspected_on: Arc<Mutex<Option<std::thread::ThreadId>>>,
     }
 
@@ -6033,12 +6100,17 @@ mod tests {
             std::fs::create_dir(&replacement).unwrap();
             std::fs::write(replacement.join("foreign"), b"keep").unwrap();
             let watch = Arc::new(ArchiveWriteObserver::new(&replacement));
+            let root_identity = crate::infra::path_authority::opened_file_identity(
+                &crate::infra::fs::open_parent_no_follow(&root.join("installed")).unwrap(),
+            )
+            .unwrap();
             Self {
                 root,
                 moved,
                 replacement,
+                root_identity,
                 watch,
-                swapped: Arc::new(AtomicBool::new(false)),
+                outcome: Arc::new(Mutex::new(None)),
                 inspected_on: Arc::new(Mutex::new(None)),
             }
         }
@@ -6046,17 +6118,32 @@ mod tests {
         fn install_hooks(&self, symlink: bool, during_gzip: bool, member: &'static str) {
             let hook_root = self.root.clone();
             let hook_moved = self.moved.clone();
+            let hook_replacement = self.replacement.clone();
+            let root_identity = self.root_identity;
+            let outcome = self.outcome.clone();
             let hook_watch = Arc::downgrade(&self.watch);
             let inspected_on = self.inspected_on.clone();
             let arm_inspection: CoreAfterPinHook = Box::new(move |_| {
                 set_archive_pre_install_hook(Some(Box::new(move |_| {
+                    let outcome = outcome.lock().unwrap().expect("root rename was attempted");
+                    let (authorized, outside) =
+                        outcome.roots(&hook_root, &hook_moved, &hook_replacement);
                     assert_eq!(
-                        leaves(&hook_root),
+                        crate::infra::path_authority::opened_file_identity(
+                            &crate::infra::fs::open_parent_no_follow(&authorized.join("installed"))
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                        root_identity,
+                        "staging must remain in the original authorized root object"
+                    );
+                    assert_eq!(
+                        leaves(outside),
                         vec!["foreign"],
                         "replacement root must contain no temporary entry before publication"
                     );
                     hook_watch.upgrade().unwrap().assert_no_writes();
-                    let staging = leaves(&hook_moved);
+                    let staging = leaves(authorized);
                     assert_eq!(
                         staging.len(),
                         1,
@@ -6064,7 +6151,7 @@ mod tests {
                     );
                     assert!(staging[0].starts_with(".archive"));
                     assert_eq!(
-                        std::fs::read(hook_moved.join(&staging[0]).join(member)).unwrap(),
+                        std::fs::read(authorized.join(&staging[0]).join(member)).unwrap(),
                         b"engine"
                     );
                     *inspected_on.lock().unwrap() = Some(std::thread::current().id());
@@ -6073,18 +6160,39 @@ mod tests {
             let hook_root = self.root.clone();
             let hook_moved = self.moved.clone();
             let hook_replacement = self.replacement.clone();
-            let hook_swapped = self.swapped.clone();
+            let outcome = self.outcome.clone();
             let swap: CoreAfterPinHook = Box::new(move |_| {
-                std::fs::rename(&hook_root, &hook_moved).unwrap();
-                if symlink {
-                    #[cfg(unix)]
-                    std::os::unix::fs::symlink(&hook_replacement, &hook_root).unwrap();
-                    #[cfg(windows)]
-                    unreachable!("symlink replacement cases are Unix-only");
-                } else {
-                    std::fs::rename(&hook_replacement, &hook_root).unwrap();
-                }
-                hook_swapped.store(true, Ordering::SeqCst);
+                let observed = match std::fs::rename(&hook_root, &hook_moved) {
+                    Ok(()) => {
+                        if symlink {
+                            #[cfg(unix)]
+                            std::os::unix::fs::symlink(&hook_replacement, &hook_root).unwrap();
+                            #[cfg(windows)]
+                            unreachable!("symlink replacement cases are Unix-only");
+                        } else {
+                            std::fs::rename(&hook_replacement, &hook_root).unwrap();
+                        }
+                        ArchiveReplacementOutcome::Swapped
+                    }
+                    Err(error) => {
+                        #[cfg(windows)]
+                        {
+                            use windows_sys::Win32::Foundation::{
+                                ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+                            };
+                            assert!(
+                                matches!(error.raw_os_error(), Some(code)
+                                    if code == ERROR_SHARING_VIOLATION as i32
+                                        || code == ERROR_LOCK_VIOLATION as i32),
+                                "unexpected authority root rename error: {error}"
+                            );
+                            ArchiveReplacementOutcome::Protected(error.raw_os_error().unwrap())
+                        }
+                        #[cfg(not(windows))]
+                        panic!("authorized root rename must succeed: {error}");
+                    }
+                };
+                *outcome.lock().unwrap() = Some(observed);
             });
             if during_gzip {
                 ARCHIVE_GZIP_SCRATCH_HOOKS.lock().unwrap().insert(
@@ -6103,23 +6211,56 @@ mod tests {
             }
         }
 
-        fn assert_finished(&self, result: &Result<(), Error>) -> std::thread::ThreadId {
-            assert!(self.swapped.load(Ordering::SeqCst));
+        fn assert_finished(
+            &self,
+            result: &Result<(), Error>,
+            _member: &str,
+        ) -> std::thread::ThreadId {
+            let outcome = self
+                .outcome
+                .lock()
+                .unwrap()
+                .expect("root rename was attempted");
             let inspected_on = *self.inspected_on.lock().unwrap();
             assert!(
                 inspected_on.is_some(),
                 "pre-publication inspection was not executed"
             );
-            assert!(
-                matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
-                "replaced authority root must refuse publication: {result:?}"
+            let (authorized, outside) = outcome.roots(&self.root, &self.moved, &self.replacement);
+            assert_eq!(
+                crate::infra::path_authority::opened_file_identity(
+                    &crate::infra::fs::open_parent_no_follow(&authorized.join("installed"))
+                        .unwrap(),
+                )
+                .unwrap(),
+                self.root_identity
             );
-            assert_eq!(leaves(&self.root), vec!["foreign"]);
-            assert_eq!(std::fs::read(self.root.join("foreign")).unwrap(), b"keep");
-            assert!(
-                leaves(&self.moved).is_empty(),
-                "refused publication must clean the authorized staging entry"
-            );
+            match outcome {
+                ArchiveReplacementOutcome::Swapped => {
+                    assert!(
+                        matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
+                        "replaced authority root must refuse publication: {result:?}"
+                    );
+                    assert!(
+                        leaves(authorized).is_empty(),
+                        "refused publication must clean the authorized staging entry"
+                    );
+                }
+                #[cfg(windows)]
+                ArchiveReplacementOutcome::Protected(_) => {
+                    assert!(
+                        result.is_ok(),
+                        "protected authority must install: {result:?}"
+                    );
+                    assert_eq!(leaves(authorized), vec!["installed"]);
+                    assert_eq!(
+                        std::fs::read(authorized.join("installed").join(_member)).unwrap(),
+                        b"engine"
+                    );
+                }
+            }
+            assert_eq!(leaves(outside), vec!["foreign"]);
+            assert_eq!(std::fs::read(outside.join("foreign")).unwrap(), b"keep");
             self.watch.assert_no_writes();
             inspected_on.unwrap()
         }
@@ -6180,7 +6321,7 @@ mod tests {
                 Box::new(accept_any_integrity),
             )
             .await;
-            probe.assert_finished(&result);
+            probe.assert_finished(&result, member);
         }
     }
 
@@ -6343,7 +6484,7 @@ mod tests {
             let setup_thread = setup_thread.lock().unwrap().unwrap();
             let terminal_thread = transport.available_thread.lock().unwrap().unwrap();
             eprintln!("archive worker switch: setup={setup_thread:?}, available={terminal_thread:?}, inspection={:?}", probe.inspected_on.lock().unwrap());
-            let inspected_on = probe.assert_finished(&result);
+            let inspected_on = probe.assert_finished(&result, "engine.bin");
             assert_eq!(inspected_on, terminal_thread, "inspection must run on the forced terminal worker");
             assert_ne!(inspected_on, setup_thread, "setup must stay on the other worker");
         });
