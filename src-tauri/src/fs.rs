@@ -4849,6 +4849,12 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    fn is_windows_sharing_or_lock_violation(code: i32) -> bool {
+        use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+        code == ERROR_SHARING_VIOLATION as i32 || code == ERROR_LOCK_VIOLATION as i32
+    }
+
     async fn assert_core_parent_swap_conflict(payload: Vec<u8>, member: &str) {
         let root = tempdir().unwrap();
         let parent = root.path().join("parent");
@@ -4905,15 +4911,10 @@ mod tests {
                     std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
                 );
                 #[cfg(windows)]
-                let rename_refused = {
-                    use windows_sys::Win32::Foundation::{
-                        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
-                    };
-                    rename_refused
-                        || matches!(error.raw_os_error(), Some(code)
-                            if code == ERROR_SHARING_VIOLATION as i32
-                                || code == ERROR_LOCK_VIOLATION as i32)
-                };
+                let rename_refused = rename_refused
+                    || error
+                        .raw_os_error()
+                        .is_some_and(is_windows_sharing_or_lock_violation);
                 assert!(
                     rename_refused,
                     "parent rename must be refused by the held handle: {error}"
@@ -6068,12 +6069,8 @@ mod tests {
                 Self::Swapped => (moved, root),
                 #[cfg(windows)]
                 Self::Protected(code) => {
-                    use windows_sys::Win32::Foundation::{
-                        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
-                    };
                     assert!(
-                        code == ERROR_SHARING_VIOLATION as i32
-                            || code == ERROR_LOCK_VIOLATION as i32,
+                        is_windows_sharing_or_lock_violation(code),
                         "held authority must record an exact Windows sharing refusal: {code}"
                     );
                     assert!(!moved.exists(), "refused rename must leave no moved root");
@@ -6177,13 +6174,10 @@ mod tests {
                     Err(error) => {
                         #[cfg(windows)]
                         {
-                            use windows_sys::Win32::Foundation::{
-                                ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
-                            };
                             assert!(
-                                matches!(error.raw_os_error(), Some(code)
-                                    if code == ERROR_SHARING_VIOLATION as i32
-                                        || code == ERROR_LOCK_VIOLATION as i32),
+                                error
+                                    .raw_os_error()
+                                    .is_some_and(is_windows_sharing_or_lock_violation),
                                 "unexpected authority root rename error: {error}"
                             );
                             ArchiveReplacementOutcome::Protected(error.raw_os_error().unwrap())
