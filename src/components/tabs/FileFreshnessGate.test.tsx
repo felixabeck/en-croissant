@@ -627,14 +627,52 @@ test.each([false, true])(
   },
 );
 
+function subscribeForeignRecoveryReplacement(
+  kind: "physical" | "origin",
+  candidate: ReturnType<typeof defaultTree>,
+  failureMessage: string,
+) {
+  const replacement: {
+    replaced: boolean;
+    foreign?: Tab;
+    treeKey?: string;
+    current?: ReturnType<typeof treeStore.getState>;
+  } = { replaced: false };
+  const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+    if (replacement.replaced) return;
+    replacement.replaced = true;
+    const admitted = jotaiStore.get(tabsAtom)[0]!;
+    const foreign = {
+      ...admitted,
+      ...(kind === "physical"
+        ? { treeKey: crypto.randomUUID() }
+        : { gameOrigin: fileTab.gameOrigin }),
+    };
+    const treeKey = getTabTreeKey(foreign);
+    replacement.foreign = foreign;
+    replacement.treeKey = treeKey;
+    tabStorage.seed(treeKey, candidate);
+    jotaiStore.set(tabsAtom, [foreign], undefined, () =>
+      retargetTreeStore(tabId, treeKey, candidate),
+    );
+    replacement.current = treeStore.getState();
+    setFileFreshness(tabId, "conflict");
+    throw new Error(failureMessage);
+  });
+  return {
+    replacement,
+    cleanup() {
+      unsubscribe();
+      if (replacement.treeKey && replacement.treeKey !== tabId)
+        tabStorage.remove(replacement.treeKey);
+    },
+  };
+}
+
 test.each(["physical", "origin"] as const)(
   "recovery suppresses subscriber failure after reentrant foreign %s replacement",
   async (kind) => {
     const { pending, completion } = await startPendingAppend(true);
-    let replaced = false;
-    let replacement!: ReturnType<typeof treeStore.getState>;
-    let foreign!: Tab;
-    let treeKey: string | undefined;
     const candidate = {
       ...defaultTree(),
       sourceStamp: emptyStamp,
@@ -642,40 +680,25 @@ test.each(["physical", "origin"] as const)(
       appendAttempted: true,
     };
     candidate.root.comment = "Reentrant recovery replacement";
-    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
-      if (replaced) return;
-      replaced = true;
-      const admitted = jotaiStore.get(tabsAtom)[0]!;
-      foreign = {
-        ...admitted,
-        ...(kind === "physical"
-          ? { treeKey: crypto.randomUUID() }
-          : { gameOrigin: fileTab.gameOrigin }),
-      };
-      treeKey = getTabTreeKey(foreign);
-      tabStorage.seed(treeKey, candidate);
-      jotaiStore.set(tabsAtom, [foreign], undefined, () =>
-        retargetTreeStore(tabId, treeKey!, candidate),
-      );
-      replacement = treeStore.getState();
-      setFileFreshness(tabId, "conflict");
-      throw new Error("Foreign recovery subscriber failure");
-    });
+    const { replacement, cleanup } = subscribeForeignRecoveryReplacement(
+      kind,
+      candidate,
+      "Foreign recovery subscriber failure",
+    );
     try {
       await act(async () =>
         pending.resolve({ stamp: changedStamp, revision: "obsolete-admitted" }),
       );
       expect(await completion).toEqual({ result: false });
-      expect(replaced).toBe(true);
-      expect(jotaiStore.get(tabsAtom)[0]).toEqual(foreign);
-      expect(treeStore.getState()).toBe(replacement);
+      expect(replacement.replaced).toBe(true);
+      expect(jotaiStore.get(tabsAtom)[0]).toEqual(replacement.foreign);
+      expect(treeStore.getState()).toBe(replacement.current);
       expect(getFileFreshness(tabId).state).toBe("conflict");
       expect(host.textContent).not.toContain("Foreign recovery subscriber failure");
       tabStorage.flush();
-      expect(new TabStorageRepository().read(treeKey!)?.state).toMatchObject(candidate);
+      expect(new TabStorageRepository().read(replacement.treeKey!)?.state).toMatchObject(candidate);
     } finally {
-      unsubscribe();
-      if (treeKey && treeKey !== tabId) tabStorage.remove(treeKey);
+      cleanup();
     }
   },
 );
@@ -758,9 +781,6 @@ test.each(["physical", "origin"] as const)(
   "direct recovery suppresses notification after foreign %s replacement throws",
   async (kind) => {
     const { pending } = await startPendingAppend(false);
-    let replaced = false;
-    let replacement!: ReturnType<typeof treeStore.getState>;
-    let key: string | undefined;
     const candidate = {
       ...defaultTree(),
       dirty: true,
@@ -768,36 +788,21 @@ test.each(["physical", "origin"] as const)(
       appendAttempted: false,
     };
     candidate.root.comment = "Foreign direct recovery";
-    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
-      if (replaced) return;
-      replaced = true;
-      const admitted = jotaiStore.get(tabsAtom)[0]!;
-      const foreign = {
-        ...admitted,
-        ...(kind === "physical"
-          ? { treeKey: crypto.randomUUID() }
-          : { gameOrigin: fileTab.gameOrigin }),
-      };
-      key = getTabTreeKey(foreign);
-      tabStorage.seed(key, candidate);
-      jotaiStore.set(tabsAtom, [foreign], undefined, () =>
-        retargetTreeStore(tabId, key!, candidate),
-      );
-      replacement = treeStore.getState();
-      setFileFreshness(tabId, "conflict");
-      throw new Error("Foreign direct subscriber failed");
-    });
+    const { replacement, cleanup } = subscribeForeignRecoveryReplacement(
+      kind,
+      candidate,
+      "Foreign direct subscriber failed",
+    );
     try {
       await act(async () =>
         pending.resolve({ stamp: changedStamp, revision: "foreign-direct-admitted" }),
       );
-      expect(replaced).toBe(true);
-      expect(treeStore.getState()).toBe(replacement);
+      expect(replacement.replaced).toBe(true);
+      expect(treeStore.getState()).toBe(replacement.current);
       expect(mocks.showNotification).not.toHaveBeenCalled();
       expect(host.textContent).not.toContain("Foreign direct subscriber failed");
     } finally {
-      unsubscribe();
-      if (key && key !== tabId) tabStorage.remove(key);
+      cleanup();
     }
   },
 );
