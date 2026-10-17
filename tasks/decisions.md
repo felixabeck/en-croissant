@@ -8415,3 +8415,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** an independently authorized failed-terminal finding may change that policy with its own evidence. This planner does not adopt or close a joiner.
 * **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b08b80f66ffb1e7282996538ff70461efff0f18ab5717407a56ab6ff875ebf83","input_sha256":"0d7cf547dd3c3c04047c167ec30ffc777949780c2b8400cf1d607d637ee4e5d7","kind":"mutation-receipt","operation":"6c67b76d776a37096f7f728ada0879318ea1e1086fc3a64b18ea2917fd8f0b67","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-04 — Why preserve failed-terminal presentation in the stale-success fix?
+
+* **Governs:** f-20261002-07
+* **Question:** Why preserve failed-terminal presentation while fixing unowned succeeded fill?
+* **Chosen:** Keep d-20261017-03's succeeded-only predicate and correct its rationale. Failed-terminal rendering stays as asserted by the existing shared-button test.
+* **Rejected:** Broadening this fix to hide failed fill, or treating the portrait joiner as authority for failed-terminal behavior.
+* **Reason:** The pinned mandate concerns retained success. ProgressButton.test.tsx explicitly expects a failed-terminal fill and that contract is unchanged. The co-located f-20261001-05 concerns missing installed engine portraits, as its entry and EnginesPage.tsx show. The adopted plan incorrectly associated that unrelated joiner with failed-progress presentation, and that detail was copied into d-20261017-03. This corrects the factual premise without changing the chosen implementation or reversing a behavior decision.
+* **Reversal path:** Change failed-terminal presentation only through independently authorized failed-progress work with its own proof.
+* **Decided by:** Codex, autonomously under full auto in drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"dfd258e23a5c0c2b349fce2abf43e636644cb23c4cfbf2eceb19e10d5971e869","input_sha256":"b99d98a0880df55c0b72c1586267f1d1856f2271ed3c2ca1bd6477eef5465e48","kind":"mutation-receipt","operation":"8b6d07dee96bb5f7add109a4ec6cd9b42b90ca9972658ff36639a3bda354d241","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-04"],"target":"decisions-ledger","v":1} -->
