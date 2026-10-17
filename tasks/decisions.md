@@ -8404,3 +8404,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** replace the button visibility rule only with an equally correct design proven through the same rejected-clear/remount, finalization and ownerless-Running regressions. The adopter records this decision before implementation.
 * **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"37aba2755e14abeb254db5b0dc6e23dbbe94179f17d0bfca40fbdf5b902b61ff","input_sha256":"44bb78279e598eb884e2297d46e98b992df71b0a63cca351d1908577f105b32a","kind":"mutation-receipt","operation":"cf3bd12ded641c99c7a479f66870139097cec145967a0c4e3f7134fd88ea73a7","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-03 — Should the shared change also redesign failed-terminal presentation?
+
+* **Governs:** f-20261002-07
+* **Question:** Should the shared change also redesign failed-terminal presentation?
+* **Chosen:** suppress only unowned succeeded fill.
+* **Rejected:** gating every terminal fill on activity in this plan.
+* **Reason:** the pinned defect concerns retained success, and failed progress has an explicit existing expectation plus an unassigned co-located finding.
+* **Reversal path:** an independently authorized failed-terminal finding may change that policy with its own evidence. This planner does not adopt or close a joiner.
+* **Decided by:** Codex, adopting the reviewed plan under full auto, drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b08b80f66ffb1e7282996538ff70461efff0f18ab5717407a56ab6ff875ebf83","input_sha256":"0d7cf547dd3c3c04047c167ec30ffc777949780c2b8400cf1d607d637ee4e5d7","kind":"mutation-receipt","operation":"6c67b76d776a37096f7f728ada0879318ea1e1086fc3a64b18ea2917fd8f0b67","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-03"],"target":"decisions-ledger","v":1} -->
