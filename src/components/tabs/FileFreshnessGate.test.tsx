@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   readFileGame: vi.fn(),
   reportPersistError: vi.fn(),
   writeGame: vi.fn(),
+  showNotification: vi.fn(),
   translate: vi.fn((key: string) => key),
 }));
 
@@ -51,6 +52,7 @@ vi.mock("@/utils/chess", async (importOriginal) => ({
   parsePGN: mocks.parsePGN,
 }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.showNotification } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: mocks.translate }) }));
 vi.mock("@mantine/core", () => ({
   Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
@@ -573,6 +575,7 @@ test.each([false, true])(
       expect(await completion).toMatchObject({
         error: { message: expect.stringContaining(failure.message) },
       });
+      expect(mocks.showNotification).not.toHaveBeenCalled();
     } finally {
       unsubscribe();
     }
@@ -673,6 +676,128 @@ test.each(["physical", "origin"] as const)(
     } finally {
       unsubscribe();
       if (treeKey && treeKey !== tabId) tabStorage.remove(treeKey);
+    }
+  },
+);
+
+test("direct recovery notifies once when admitted subscriber failure hides its panel", async () => {
+  const { pending } = await startPendingAppend(false);
+  const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+    throw new Error("Direct recovery workspace subscriber failed");
+  });
+  try {
+    await act(async () => pending.resolve({ stamp: changedStamp, revision: "direct-subscriber" }));
+  } finally {
+    unsubscribe();
+  }
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+  expect(mocks.showNotification).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: expect.stringContaining("Direct recovery workspace subscriber failed"),
+  });
+  expect(treeStore.getState()).toMatchObject({
+    dirty: false,
+    sourceStamp: changedStamp,
+    appendAttempted: false,
+  });
+});
+
+test.each(["success", "failure"] as const)(
+  "settled admitted %s releases controls and admits another direct recovery",
+  async (outcome) => {
+    const { pending } = await startPendingAppend(false);
+    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+      if (outcome === "failure") throw new Error("Settled recovery subscriber failed");
+    });
+    try {
+      await act(async () => pending.resolve({ stamp: changedStamp, revision: "settled-admitted" }));
+    } finally {
+      unsubscribe();
+    }
+    expect(getFileFreshness(tabId).state).toBe("verified");
+    await act(async () => setFileFreshness(tabId, "conflict"));
+    expect(button("FileFreshness.ReloadFromDisk").disabled).toBe(false);
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+    await act(async () => setFileFreshness(tabId, "unavailable"));
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+    expect(button("Tab.Close").disabled).toBe(false);
+    const second = deferred<AppendResult>();
+    mocks.pickPgnFile.mockResolvedValueOnce({ ...file, numGames: 8 });
+    mocks.writeGame.mockReturnValueOnce(second.promise);
+    await act(async () => button("FileFreshness.SaveAsNewGame").click());
+    expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+    expect(mocks.writeGame).toHaveBeenLastCalledWith(file.handle, 8, expect.any(String), {
+      kind: "append",
+    });
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(true);
+    expect(button("Tab.Close").disabled).toBe(true);
+    await act(async () => button("FileFreshness.SaveAsNewGame").click());
+    expect(mocks.writeGame).toHaveBeenCalledTimes(2);
+    await act(async () => second.resolve({ stamp: emptyStamp, revision: "second-admitted" }));
+    await act(async () => setFileFreshness(tabId, "unavailable"));
+    expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
+    expect(button("Tab.Close").disabled).toBe(false);
+  },
+);
+
+test("unmounted direct recovery suppresses its late failure notification and UI cleanup", async () => {
+  const { pending, signal } = await startPendingAppend(false);
+  const current = treeStore.getState();
+  const freshness = getFileFreshness(tabId);
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  await act(async () => pending.reject(new Error("Late direct recovery failure")));
+  expect(mocks.showNotification).not.toHaveBeenCalled();
+  expect(treeStore.getState()).toBe(current);
+  expect(getFileFreshness(tabId)).toBe(freshness);
+  expect(host.textContent).toBe("");
+});
+
+test.each(["physical", "origin"] as const)(
+  "direct recovery suppresses notification after foreign %s replacement throws",
+  async (kind) => {
+    const { pending } = await startPendingAppend(false);
+    let replaced = false;
+    let replacement!: ReturnType<typeof treeStore.getState>;
+    let key: string | undefined;
+    const candidate = {
+      ...defaultTree(),
+      dirty: true,
+      sourceStamp: emptyStamp,
+      appendAttempted: false,
+    };
+    candidate.root.comment = "Foreign direct recovery";
+    const unsubscribe = jotaiStore.sub(tabsAtom, () => {
+      if (replaced) return;
+      replaced = true;
+      const admitted = jotaiStore.get(tabsAtom)[0]!;
+      const foreign = {
+        ...admitted,
+        ...(kind === "physical"
+          ? { treeKey: crypto.randomUUID() }
+          : { gameOrigin: fileTab.gameOrigin }),
+      };
+      key = getTabTreeKey(foreign);
+      tabStorage.seed(key, candidate);
+      jotaiStore.set(tabsAtom, [foreign], undefined, () =>
+        retargetTreeStore(tabId, key!, candidate),
+      );
+      replacement = treeStore.getState();
+      setFileFreshness(tabId, "conflict");
+      throw new Error("Foreign direct subscriber failed");
+    });
+    try {
+      await act(async () =>
+        pending.resolve({ stamp: changedStamp, revision: "foreign-direct-admitted" }),
+      );
+      expect(replaced).toBe(true);
+      expect(treeStore.getState()).toBe(replacement);
+      expect(mocks.showNotification).not.toHaveBeenCalled();
+      expect(host.textContent).not.toContain("Foreign direct subscriber failed");
+    } finally {
+      unsubscribe();
+      if (key && key !== tabId) tabStorage.remove(key);
     }
   },
 );
@@ -780,6 +905,7 @@ test("cancelled and stale appends leave the conflicting tree available for retry
   expect(treeStore.getState().appendAttempted).toBe(false);
   expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
   expect(host.textContent).toContain("FileFreshness.AppendChanged");
+  expect(mocks.showNotification).not.toHaveBeenCalled();
 });
 
 test.each([

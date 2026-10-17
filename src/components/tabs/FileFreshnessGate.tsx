@@ -127,8 +127,8 @@ function FileBackedGate({
     viewMountedRef.current = true;
     return () => {
       viewMountedRef.current = false;
+      // The action retains its controller lease until its own finally releases it.
       actionControllerRef.current?.abort();
-      actionControllerRef.current = null;
     };
   }, [tabId, fileKey, gameNumber, store]);
 
@@ -236,9 +236,11 @@ function FileBackedGate({
       try {
         return await run(controller.signal);
       } finally {
-        pendingActionRef.current = false;
-        if (actionControllerRef.current === controller) actionControllerRef.current = null;
-        if (!controller.signal.aborted) setPendingAction(null);
+        if (actionControllerRef.current === controller) {
+          actionControllerRef.current = null;
+          pendingActionRef.current = false;
+          if (viewMountedRef.current) setPendingAction(null);
+        }
       }
     },
     [],
@@ -325,6 +327,9 @@ function FileBackedGate({
             setPanelError(normalized.message);
           }
           if (throwOnFailure) throw normalized;
+          if (getFileFreshness(tabId).state === "verified") {
+            notifyUnlessCancelled(t("Common.Error"), normalized);
+          }
           return false;
         }
       });

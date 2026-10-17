@@ -13,6 +13,7 @@ import {
   setFileFreshness,
 } from "@/state/fileFreshness";
 import { defaultTree } from "@/utils/treeReducer";
+import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
 import ConfirmChangesModal from "./ConfirmChangesModal";
 import FileFreshnessGate from "./FileFreshnessGate";
 
@@ -145,6 +146,72 @@ test("a successful background save forwards the receipt to the captured pending 
     jotaiStore.get(tabsAtom).find((tab) => tab.value === backgroundTab.value)?.gameOrigin.kind,
   ).toBe("file");
   expect(onSaved).toHaveBeenCalledOnce();
+});
+
+test("first-save pending close retains a no-throw subscriber edit and saves it later with game CAS", async () => {
+  treeStore.getState().setComment("Captured first save");
+  const onSaved = vi.fn();
+  const onCancel = vi.fn();
+  function PendingCloseHarness() {
+    const tabs = useAtomValue(tabsAtom);
+    const liveTab = tabs.find((tab) => tab.value === backgroundTab.value)!;
+    const [pending, setPending] = useState(true);
+    return (
+      <ConfirmChangesModal
+        pendingClose={pending ? { tabId: backgroundTab.value, store: treeStore } : null}
+        tab={liveTab}
+        onCancel={onCancel}
+        onDiscard={vi.fn()}
+        onSaved={() => {
+          onSaved();
+          setPending(false);
+        }}
+      />
+    );
+  }
+  await act(async () =>
+    root.render(
+      <Provider store={jotaiStore}>
+        <PendingCloseHarness />
+      </Provider>,
+    ),
+  );
+  const unsubscribe = jotaiStore.sub(tabsAtom, () =>
+    treeStore.getState().setComment("No-throw close subscriber edit"),
+  );
+  try {
+    await saveAndClose();
+  } finally {
+    unsubscribe();
+  }
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(onCancel).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain("Tab.SaveSuperseded");
+  expect(treeStore.getState()).toMatchObject({
+    dirty: true,
+    sourceStamp: "b".repeat(64),
+    appendAttempted: false,
+    root: { comment: "No-throw close subscriber edit" },
+  });
+  tabStorage.flush();
+  expect(new TabStorageRepository().read(backgroundTab.value)?.state).toMatchObject({
+    dirty: true,
+    root: { comment: "No-throw close subscriber edit" },
+  });
+  mocks.writeGame.mockResolvedValueOnce({
+    stamp: "c".repeat(64),
+    revision: "close-subscriber-cas",
+  });
+  await saveAndClose();
+  expect(mocks.writeGame).toHaveBeenLastCalledWith(
+    { id: { id: "saved" }, kind: "fileWorkspace" },
+    1,
+    expect.stringContaining("No-throw close subscriber edit"),
+    { kind: "game", stamp: "b".repeat(64) },
+  );
+  expect(mocks.pickPgnFile).toHaveBeenCalledOnce();
+  expect(onSaved).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
 });
 
 test("a failed fresh background append keeps its captured pending close open", async () => {

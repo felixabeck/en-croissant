@@ -699,7 +699,6 @@ export async function appendStoreGame({
             sameOrigin(current.gameOrigin, successor.gameOrigin)
         );
     };
-    let unchanged = false;
     try {
         const admitted = updateTab(
             tab.value,
@@ -713,7 +712,7 @@ export async function appendStoreGame({
                 successor = saved;
                 onAdmitted?.(saved);
                 if (!ownsSuccessor()) return;
-                unchanged = serializeStoreTree(store) === pgn;
+                const unchanged = serializeStoreTree(store) === pgn;
                 if (unchanged) store.getState().save(stamp);
                 else {
                     store.getState().setSourceStamp(stamp);
@@ -730,7 +729,8 @@ export async function appendStoreGame({
         throw error;
     }
     if (!ownsSuccessor()) return "superseded";
-    return unchanged ? "saved" : "edited";
+    // Workspace observers can edit after acknowledgement finalized the written snapshot.
+    return !store.getState().dirty && serializeStoreTree(store) === pgn ? "saved" : "edited";
 }
 
 export async function saveToFile({

@@ -1151,6 +1151,106 @@ test.each([
     }
 });
 
+test.each(["none", "file"] as const)(
+    "%s-origin append rechecks no-throw subscriber edits before reporting saved",
+    async (kind) => {
+        Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+        const id = crypto.randomUUID();
+        const workspace = createStore();
+        const owner: Tab = {
+            value: id,
+            name: "Subscriber owner",
+            type: "analysis",
+            gameOrigin:
+                kind === "none"
+                    ? { kind: "none" }
+                    : { kind: "file", file: targetFile(), gameNumber: 2 },
+        };
+        const tree = { ...defaultTree(), dirty: true };
+        tree.root.comment = "Written snapshot";
+        tabStorage.seed(id, tree);
+        const store = createTreeStore(id);
+        workspace.set(tabsAtom, [owner], id);
+        let actions!: ReturnType<typeof useTabActions>;
+        function Probe() {
+            actions = useTabActions();
+            return null;
+        }
+        const host = document.createElement("div");
+        const root = createRoot(host);
+        let unsubscribe = () => {};
+        try {
+            await act(async () =>
+                root.render(createElement(Provider, { store: workspace }, createElement(Probe))),
+            );
+            unsubscribe = workspace.sub(tabsAtom, () =>
+                store.getState().setComment("No-throw subscriber edit"),
+            );
+            const pgn = serializeStoreTree(store);
+            mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+            mocks.writeGame.mockResolvedValueOnce({ stamp: stampB, revision: "subscriber-edited" });
+            const saving =
+                kind === "none"
+                    ? saveToFile({ tab: owner, store, ...actions, isUserSave: true })
+                    : appendStoreGame({
+                          tab: owner,
+                          store,
+                          ...actions,
+                          selected: targetFile(),
+                          pgn,
+                          isCurrent: () => sameTabOwner(actions.getTab(id), owner),
+                          prepareMessage: "Could not prepare append",
+                      });
+            await expect(saving).resolves.toBe(kind === "none" ? "superseded" : "edited");
+            unsubscribe();
+            expect(store.getState()).toMatchObject({
+                dirty: true,
+                sourceStamp: stampB,
+                appendAttempted: false,
+                root: { comment: "No-throw subscriber edit" },
+            });
+            expect(actions.getTab(id)?.gameOrigin).toMatchObject({ kind: "file", gameNumber: 8 });
+            tabStorage.flush();
+            expect(new TabStorageRepository().read(id)?.state).toMatchObject({
+                dirty: true,
+                sourceStamp: stampB,
+                appendAttempted: false,
+                root: { comment: "No-throw subscriber edit" },
+            });
+            closeTreeStore(id);
+            const cold = createTreeStore(id);
+            expect(cold.getState()).toMatchObject({
+                dirty: true,
+                sourceStamp: stampB,
+                appendAttempted: false,
+                root: { comment: "No-throw subscriber edit" },
+            });
+            mocks.writeGame.mockResolvedValueOnce({
+                stamp: stampC,
+                revision: "subscriber-edit-saved",
+            });
+            await expect(
+                saveToFile({ tab: actions.getTab(id), store: cold, ...actions, isUserSave: true }),
+            ).resolves.toBe("saved");
+            expect(mocks.writeGame).toHaveBeenLastCalledWith(
+                destinationHandle,
+                8,
+                expect.stringContaining("No-throw subscriber edit"),
+                { kind: "game", stamp: stampB },
+            );
+            expect(
+                mocks.writeGame.mock.calls.filter((call) => call[3].kind === "append"),
+            ).toHaveLength(1);
+        } finally {
+            unsubscribe();
+            await act(async () => root.unmount());
+            closeTreeStore(id);
+            tabStorage.remove(id);
+            removeFileFreshness(id);
+        }
+    },
+);
+
 test("fresh picker cancellation leaves the board unchanged", async () => {
     const fixture = saveFixture({ kind: "none", stamp: null });
     const before = fixture.store.getState();
