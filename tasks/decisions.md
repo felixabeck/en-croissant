@@ -8476,3 +8476,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
 * **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"301cd17ecbefcbaf7283b046ded5692225f35547b9eb88187bbfcea78f773801","input_sha256":"3dc9d8ff230df444c9938d8128219b905b9ab0d345f9190695d2d62d841454e7","kind":"mutation-receipt","operation":"80383a867193daca04997339cb824abd93831b03a7bcbb3b102398152f9e2cbe","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-10 — Workspace cleanup renderer contract, choice 6
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 6?
+* **Governs:** f-20261003-09
+* **Chosen:** This remains build tier: the open question involves failure versus success recovery and cache/form integration across distinct callers. Existing decisions settle taxonomy and backend compensation, but do not settle this renderer reconciliation contract.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4fe50e1b7c516eaa0887f3b8ebbe9a537806aab05f3a470f2fe2acc655898cbd","input_sha256":"60c97cc804271c46a270aaf34135cb0154ad5a8baf3a8a5a25768abe59bc7b1e","kind":"mutation-receipt","operation":"3edf983ddc4a09c6b8814a5ac145d2ac701b9c782a8944a8858e9b98b0d893e2","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-10"],"target":"decisions-ledger","v":1} -->
