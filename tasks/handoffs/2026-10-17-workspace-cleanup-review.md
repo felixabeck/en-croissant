@@ -2430,3 +2430,77 @@ Hosted CI remains unverifiable without live queries. Final push gates remain pen
 
 VERDICT: APPROVED
 ```
+
+
+## Source release, full gates and hosted confirmation
+
+The final records-only round6 APPROVED without findings before gates. Its raw report follows.
+This was one mechanical read-only selected-executor lens, not another source fan-out.
+Round6 diff adoptions are0, giving r1=8 r2=5 r3=2 r4=1 r5=0 r6=0.
+
+```text
+No findings. All eight reports match exactly. Adoption counts, closure commits, ledger statuses and baseline evidence support the summary.
+
+Hosted CI remains unverifiable without live queries. Final gates remain pending. No writes or gates performed.
+
+VERDICT: APPROVED
+```
+
+Fetch/rebase before final gates was a no-op. Upstream stayed244cfec5 and reviewed source
+HEAD stayedbcabc821. Kit parity passed. All37 carried/owned unpublished commits were reviewed,
+including initial13c08703. Root verified the expected SSH remote, no pushurl override,
+origin/master tracking and opted-in master target. Every own commit uses Codex and the required
+drain committer email, with Felix's author unchanged.
+
+Canonical `pnpm gates:push -- --rust --frontend --bindings` completed with all12 lane exits0
+on clean reviewed bcabc821ebb269a6c8f06f4b12bb9981b35ee3b5. Attempt push-gate.1w0JGd was
+polled to0 and its actual original-DRAIN_GATE_DIR completion recorded green. Root checked
+unchanged clean HEAD before publication. Lane durations: mutation guard0.2s, Rust setup0.0s,
+production frontend build6.5s, bindings9.9s, contract98.0s, Rust lint72.2s, Rust tests92.1s,
+Rust coverage154.8s, frontend coverage62.6s, bundle0.4s, complete browser46.6s, mutation734.5s.
+Whole final-gates stage wall971s. Native tests passed2448 with2 existing ignored cases.
+Frontend coverage passed4226 tests across212 files. Complete browser suite passed138 cases.
+All three mutation packages scored100%, with timeout mutants detected in tree-path.
+Coverage floors, baselines, bundle budgets and capabilities were not relaxed.
+
+The pre-push remote check returned1 only for old Linux job117268930189 at244cfec5, owned by
+open f-20261017-03. This push carried its independently reproduced and reviewed source repair,
+so the explicit owning-repair exception applied. Root pushed exactly
+`git push origin HEAD:refs/heads/master`, without force, branch publication, PR, tag or deployment.
+The push landed and HEAD equalled origin/master atbcabc821ebb269a6c8f06f4b12bb9981b35ee3b5.
+
+Test run39009621659 then verified that exact SHA:
+- 117329136253 rust-platform (macos-latest, x86_64-apple-darwin): success
+- 117329136299 rust-macos-test: success
+- 117329136328 rust-platform (macos-latest, aarch64-apple-darwin): success
+- 117329136406 test: success
+- 117329136413 rust-windows-test: success
+- 117329136439 rust-platform (windows-latest, x86_64-pc-windows-msvc): success
+
+All six jobs and the whole workflow concluded success. The repaired hosted browser step
+and final Linux mutation step both passed. Root's exact-SHA CI watcher required every job
+success, including Linux for this owning repair, with no skipped or neutral result accepted.
+`pnpm ci:remote:check` subsequently exited0 and reported every newest completed upstream Test
+job successful. Source CI proof is no longer pending. No manual workflow was dispatched.
+
+The existing release installer ran from the exact clean pushed source SHA after all five
+named native/platform checks and hosted browser contracts were green, while the final Linux
+mutation confirmation continued. Its build took51.40s and installed at2026-10-17T08:33:43+02:00.
+Root polled install-source.Ytxbjv to0 and rechecked VERSION after full CI succeeded:
+commitbcabc821ebb269a6c8f06f4b12bb9981b35ee3b5, provenance reviewed. HEAD still equalled its
+upstream and the tree was clean. Only then did the source push stage end `install verified`.
+This local install is not a release or deployment.
+
+The newly knowable CI closure and this evidence are published next through an ordinary
+records-only push. That range changes records only, with independent mechanical review and
+contract/kit gates. The declared post-push jobs in both the project skill and released
+29cf694a kit.toml remote-ci.chessfable are rust-windows-test, rust-macos-test and the three
+rust-platform matrix jobs. Those five exact-SHA jobs remain mandatory for record-only tips.
+The complete source Linux result above already proves the actual CI repair. Further automatic
+Linux runs on unchanged source are not asserted complete before they finish. Any known
+non-success job still refuses a push under the upstream check.
+
+Plan authorship and arbitration shared one context. Detection and code used the same OpenAI
+model family in separate selected-executor sessions. No source, test, asset, dependency,
+workflow or policy changed after the verified source push. The next record closure is not
+an early promise of CI success, it records the actual successful hosted result above.
