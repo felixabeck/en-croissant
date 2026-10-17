@@ -351,6 +351,7 @@ impl ProdOAuthServices {
         &self,
         access_token: &str,
         deadline: tokio::time::Instant,
+        #[cfg(test)] retained_body_bytes: Option<&std::sync::atomic::AtomicUsize>,
     ) -> LichessRevocationOutcome {
         use LichessRevocationOutcome::*;
         // One deadline owns both requests and all response reads. Dropping this future on
@@ -401,9 +402,17 @@ impl ProdOAuthServices {
                 match response.chunk().await {
                     Ok(Some(chunk)) => {
                         if chunk.len() > MAX_TOKEN_TEST_RESPONSE_BYTES - body.len() {
+                            #[cfg(test)]
+                            if let Some(counter) = retained_body_bytes {
+                                counter.store(body.len(), std::sync::atomic::Ordering::Relaxed);
+                            }
                             return Rejected;
                         }
                         body.extend_from_slice(&chunk);
+                        #[cfg(test)]
+                        if let Some(counter) = retained_body_bytes {
+                            counter.store(body.len(), std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => return Unreachable,
@@ -485,6 +494,8 @@ impl OAuthServices for ProdOAuthServices {
         self.revoke_token_before(
             access_token,
             tokio::time::Instant::now() + REVOCATION_TIMEOUT,
+            #[cfg(test)]
+            None,
         )
         .await
     }
@@ -952,7 +963,7 @@ fn callback_page(result: CallbackResult) -> Html<&'static str> {
 mod tests {
     use super::*;
     use axum::http::Uri;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct RejectingCredentialStore;
 
@@ -1509,89 +1520,6 @@ mod tests {
         }
     }
 
-    fn limit_revocation_send_buffer(stream: &tokio::net::TcpStream) {
-        const REQUESTED: i32 = 4096;
-        #[cfg(unix)]
-        let effective = {
-            use std::os::fd::AsRawFd;
-            let fd = stream.as_raw_fd();
-            let set = unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_SNDBUF,
-                    &REQUESTED as *const i32 as *const libc::c_void,
-                    std::mem::size_of_val(&REQUESTED) as libc::socklen_t,
-                )
-            };
-            assert_eq!(set, 0, "setsockopt SO_SNDBUF");
-            let mut value = 0i32;
-            let mut len = std::mem::size_of_val(&value) as libc::socklen_t;
-            let get = unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_SNDBUF,
-                    &mut value as *mut i32 as *mut libc::c_void,
-                    &mut len,
-                )
-            };
-            assert_eq!(get, 0, "getsockopt SO_SNDBUF");
-            value
-        };
-        #[cfg(windows)]
-        let effective = {
-            use std::os::windows::io::AsRawSocket;
-            #[link(name = "ws2_32")]
-            extern "system" {
-                fn setsockopt(
-                    socket: usize,
-                    level: i32,
-                    name: i32,
-                    value: *const u8,
-                    len: i32,
-                ) -> i32;
-                fn getsockopt(
-                    socket: usize,
-                    level: i32,
-                    name: i32,
-                    value: *mut u8,
-                    len: *mut i32,
-                ) -> i32;
-            }
-            const SOL_SOCKET: i32 = 0xffff;
-            const SO_SNDBUF: i32 = 0x1001;
-            let socket = stream.as_raw_socket() as usize;
-            let set = unsafe {
-                setsockopt(
-                    socket,
-                    SOL_SOCKET,
-                    SO_SNDBUF,
-                    &REQUESTED as *const i32 as *const u8,
-                    std::mem::size_of_val(&REQUESTED) as i32,
-                )
-            };
-            assert_eq!(set, 0, "setsockopt SO_SNDBUF");
-            let mut value = 0i32;
-            let mut len = std::mem::size_of_val(&value) as i32;
-            let get = unsafe {
-                getsockopt(
-                    socket,
-                    SOL_SOCKET,
-                    SO_SNDBUF,
-                    &mut value as *mut i32 as *mut u8,
-                    &mut len,
-                )
-            };
-            assert_eq!(get, 0, "getsockopt SO_SNDBUF");
-            value
-        };
-        assert!(
-            effective > 0 && effective <= 256 * 1024,
-            "send buffer stayed large: {effective}"
-        );
-    }
-
     #[tokio::test]
     async fn production_revocation_bounds_streaming_confirmation_and_distinguishes_read_failure() {
         use tokio::io::AsyncWriteExt;
@@ -1638,10 +1566,9 @@ mod tests {
                 .await
                 .unwrap();
             confirmation.write_all(oversize.as_bytes()).await.unwrap();
-            // A loopback send buffer can absorb 16 MiB on Windows even after the
-            // client stops reading. Shrink it so the trailer completes only if
-            // the client keeps consuming the body.
-            limit_revocation_send_buffer(&confirmation);
+            // Windows loopback can accept this trailer into the receive window
+            // after the client has stopped. The retained-byte counter is the
+            // proof that those bytes were not kept.
             let trailing_body = vec![b' '; 16 * 1024 * 1024];
             tokio::time::timeout(
                 Duration::from_secs(2),
@@ -1649,15 +1576,23 @@ mod tests {
             )
             .await
         };
-        let (extra_write, outcome) = tokio::time::timeout(Duration::from_secs(3), async {
-            tokio::join!(server, services.revoke_token("loopback-private-secret"))
+        let retained = AtomicUsize::new(usize::MAX);
+        let (_extra_write, outcome) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                server,
+                services.revoke_token_before(
+                    "loopback-private-secret",
+                    tokio::time::Instant::now() + REVOCATION_TIMEOUT,
+                    Some(&retained),
+                )
+            )
         })
         .await
         .expect("revocation must stop reading the over-cap loopback response");
         assert_eq!(outcome, Rejected);
         assert!(
-            !matches!(extra_write, Ok(Ok(()))),
-            "the reader must stop before the trailing body write succeeds"
+            retained.load(Ordering::Relaxed) <= MAX_TOKEN_TEST_RESPONSE_BYTES,
+            "retained revocation body exceeded the cap"
         );
         assert_token_free_outcome(outcome, "loopback-private-secret");
     }
@@ -1698,7 +1633,8 @@ mod tests {
                 server,
                 services.revoke_token_before(
                     "loopback-private-secret",
-                    tokio::time::Instant::now() + Duration::from_millis(120)
+                    tokio::time::Instant::now() + Duration::from_millis(120),
+                    None,
                 )
             )
         })
