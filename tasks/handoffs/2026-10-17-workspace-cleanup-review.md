@@ -1451,3 +1451,142 @@ Unverifiable: current hosted CI status and original planning artifacts under the
 
 VERDICT: REVISE
 ```
+
+
+## Round 1 repairs and independent integrated proof
+
+Source repairs are committed as `9afc2fd7` for R1-C1/M1/Q1 and `a9c367b6` for R1-E1.
+Root inspected all twelve changed paths, each complete leaf report, the Git-derived reversal
+patches and clean no-offset application logs. Four delayed-listing regressions and seven
+append-subscriber regressions failed with only production fixes reversed and tests retained.
+The exact source and test hashes matched after restoration. The initial harness draft,
+conditional-expect lint corrections and successful final runs remain in the raw leaf evidence.
+
+Independent root command `root-r1-repair-proof.sh` passed 573 targeted tests in 18 files,
+2181 related tests in 103 files, then every `pnpm checks:pre-review` lane. Canonical attempt
+`gate-r1-repair-proof.v9XBV6` completed `0 r1-repair-proof c978309218b0dd272e40e3fe8e6eaa533e443db9`.
+This checked the owned repair worktree before its source commits, not a final clean push tree.
+Pre-review lane exits were all zero. Frontend build 9.2s, format/lint 2.5s, frontend mapping
+0.4s, backend mapping 1.0s, Windows compile/lint 10.2s, bundle 0.5s, changed-file mutation
+680.5s. All three selected mutation packages scored 100%. Tree-path included detected timeout
+mutants, so this is not a claim that no mutation timed out. The gate waited for a shared heavy
+slot before admission. Its waiting interval is overhead, not active implementation time.
+
+Both source repairs were independent sensitive write leaves at gpt-6.1-sol/high, with no
+fallback or capacity retry. Root was the arbiter and integration owner. Plan authorship and
+arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+R1-T1 remains OPEN until the browser stage retains and inspects the two planned baselines.
+No other R1 repair is deferred. Closure review will judge the actual committed delta.
+
+### Raw workspace repair report
+
+```text
+Repaired R1-C1, R1-M1 and R1-Q1. All changes remain unstaged.
+
+Changed paths:
+
+- [workspaceListing.ts](/home/felixb/Projekte/chessfable.worktrees/drain/src/components/files/workspaceListing.ts) now invalidates, then awaits no-data SWR revalidation.
+- [workspaceListing.test.tsx](/home/felixb/Projekte/chessfable.worktrees/drain/src/components/files/workspaceListing.test.tsx) holds real native listings through success and failure, proving pending settlement and original error identity.
+- [useFileWorkspace.tsx](/home/felixb/Projekte/chessfable.worktrees/drain/src/components/files/useFileWorkspace.tsx) shares one render-scoped refresh callback between move and submit.
+- [FilesPage.test.tsx](/home/felixb/Projekte/chessfable.worktrees/drain/src/components/files/FilesPage.test.tsx) proves move remains pending and rejects duplicate admission while reconciliation is held.
+- [ImportModal.test.tsx](/home/felixb/Projekte/chessfable.worktrees/drain/src/components/tabs/ImportModal.test.tsx) uses `deferred<void>()` and a truthful release.
+
+Proof commands:
+
+```bash
+pnpm exec vitest run src/components/files/ src/components/tabs/ImportModal.test.tsx src/hooks/useNativeRequestOwner.test.tsx
+pnpm exec oxfmt --check src/components/files/workspaceListing.ts src/components/files/workspaceListing.test.tsx src/components/files/useFileWorkspace.tsx src/components/files/FilesPage.test.tsx src/components/tabs/ImportModal.test.tsx
+pnpm exec oxlint --deny-warnings src/components/files/workspaceListing.ts src/components/files/workspaceListing.test.tsx src/components/files/useFileWorkspace.tsx src/components/files/FilesPage.test.tsx src/components/tabs/ImportModal.test.tsx
+```
+
+All exited **0**. Vitest passed **252 tests across 10 files**. Formatting passed. Lint reported zero warnings and errors. Logs: [tests](/tmp/build-cad8d11a-cleanup/workspace-repair-proof-final.log), [formatting](/tmp/build-cad8d11a-cleanup/workspace-repair-oxfmt-final.log), [lint](/tmp/build-cad8d11a-cleanup/workspace-repair-oxlint-final.log).
+
+C1 red/green command:
+
+```bash
+pnpm exec vitest run src/components/files/workspaceListing.test.tsx src/components/files/FilesPage.test.tsx -t 'delayed real SWR listing'
+```
+
+It first exited **1** with four assertion failures, then **0** with four passes. Reversing only the [Git-derived source patch](/tmp/build-cad8d11a-cleanup/workspace-c1-source.patch) using `git apply -R --verbose` reproduced all four failures with tests retained. Restoration used `git apply --verbose`. Both applied cleanly without offsets. SHA-256 checks confirmed exact restoration. Evidence: [before-fix red](/tmp/build-cad8d11a-cleanup/workspace-c1-before-fix-red.log), [green](/tmp/build-cad8d11a-cleanup/workspace-c1-first-green.log), [reversal red](/tmp/build-cad8d11a-cleanup/workspace-c1-reversed-red.log), [reverse apply](/tmp/build-cad8d11a-cleanup/workspace-c1-reverse-apply.log), [restore apply](/tmp/build-cad8d11a-cleanup/workspace-c1-restore-apply.log).
+
+An initial test-harness draft timed out. I corrected its duplicate-call wait before obtaining the clean red evidence. Initial formatting and lint findings were also repaired. **No final red remains.**
+
+Existing workspace-switch, inactive-cache, completed-fetch and predecessor-flight regressions remain green. Dependency helpers were inspected without edits. Concurrent tab/state work was preserved. No scope deviations, browser work, broad gates, staging, commits or pushes.
+```
+
+### Raw append repair report
+
+```text
+R1-E1 admitted-append error repair completed, left unstaged
+
+The repair reuses commitWorkspaceAtom → tabsAtom's existing canonical onSaved acknowledgement. updateTabById and useTabActions now carry an optional acknowledgement of the canonical persisted Tab. appendStoreGame retains that exact successor and installs the matching local stamp, dirty state, append marker and freshness at the acknowledgement boundary, before workspace subscriber errors escape. It does not reconstruct a transaction or infer admission from a thrown exception or a current-tab readback.
+
+saveToFile follows the acknowledged completion owner when normalizing a first-save failure. Recovery carries the same acknowledgement into its existing failure path. Its post-admission check uses the live view, store and acknowledged physical/origin owner, because React's own successful origin rerender can abort the old action signal before the rejection resumes. Pre-admission signal checks remain in place. A genuinely foreign physical or origin owner suppresses old completion and errors.
+
+The implementation keeps the existing logical tab, physical tree key, cached store and spread-forward tab metadata. No persisted schema, native change, journal, registry, user action or locale key was added. The recovery pending-close flow stays open after failure or newer edits, then saves the later edits through game CAS. Temporary-file Save As retains its existing target-slot CAS. Null readback and refused admission retain durable append uncertainty.
+
+Changed repository paths, all owned by this repair:
+
+- src/state/atoms.ts: carry canonical admission through updateTabById
+- src/utils/tabs.ts: facade acknowledgement, admitted append finalization and first-save failure ownership
+- src/utils/tabs.test.ts: real provider/Jotai first-save regressions, foreign replacement/throw suppression and real workspace persistence refusal, plus existing fixture acknowledgement forwarding
+- src/components/tabs/FileFreshnessGate.tsx: acknowledged recovery failure ownership
+- src/components/tabs/FileFreshnessGate.test.tsx: real subscriber failure with and without newer edits, later game CAS, durable local state, and foreign physical/origin replacement with throw
+- src/components/tabs/ConfirmChangesModal.tsx: forward the same acknowledgement in the existing fallback updater
+- src/components/tabs/ConfirmChangesModal.test.tsx: updater fixture forwarding and real recovery subscriber failure that keeps close pending until later edits are CAS saved
+
+Additional inspected callers and boundaries:
+
+- src/components/boards/BoardAnalysis.tsx and BoardAnalysis.test.tsx: existing production Save already consumes useTabActions and normalized SaveResult failures, no production edit required
+- src/state/tabScope.tsx: useOwnerTab's ordinary metadata updater does not request append acknowledgement, no edit required
+- src/utils/tabs.ts: appendBlankGame and replaceFileGame already use canonical workspace acknowledgement for their existing physical-generation contract, retained
+- src/state/atoms.ts: currentTabAtom's ordinary metadata update remains compatible
+- src/utils/files.ts: writeFileGame delegates through the existing withFileWrite/native facade, openFile context was inspected, no edit
+- src/state/workspace.ts: saveWorkspace validates and returns the canonical persisted workspace
+- src/state/store/tree.ts: existing save, setSourceStamp and setAppendAttempted actions
+- src/state/fileFreshness.ts and src/platform/errors.ts: existing recovery registration and normalized failure contract
+- src/state/atoms.test.ts and e2e/workspace-tabs.spec.ts inspected, no changes. Physical generation remains unchanged, so the e2e ownership assertion needs no update
+
+Read the assigned six rules, CHESS_LOGIC_MAP.md, push-review-policy.md section 5, decisions d-20261017-14, d-20261017-12 and d-20261010-10, the finding report and root's review-runtime-witness.mjs/.log. No skills or agents were used.
+
+Proof commands and results:
+
+The full assigned targeted command was:
+
+```sh
+pnpm exec vitest run src/utils/tabs.test.ts src/state/atoms.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx src/components/boards/BoardAnalysis.test.tsx
+```
+
+- append-targeted-initial.log: exit 1, 249 passed and 3 failed. One fixture assertion did not carry the new acknowledgement argument. Two real recovery subscriber cases exposed suppression by the signal aborted on successful origin rerender. Both issues were corrected
+- append-targeted-second.log: exit 0, 252 passed across 5 files
+- append-targeted-green.log: exit 0, 255 passed across 5 files after adding foreign reentrant recovery and pending-close regressions
+- append-targeted-pre-revert.log: exit 0, 255 passed across 5 files after lint-driven assertion restructuring
+- append-targeted-restored-green.log: exit 0, 255 passed across 5 files after exact restoration
+
+Fix-revert proof retained every test and reversed only the four changed production files through the current Git-derived patch:
+
+```sh
+git diff HEAD -- src/utils/tabs.ts src/state/atoms.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/ConfirmChangesModal.tsx > /tmp/build-cad8d11a-cleanup/append-fix.patch
+git apply -R --verbose /tmp/build-cad8d11a-cleanup/append-fix.patch
+pnpm exec vitest run src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx -t 'first-save provider preserves admitted subscriber failure|recovery provider preserves admitted subscriber failure|recovery suppresses subscriber failure|unavailable recovery keeps close pending after an admitted subscriber failure'
+git apply --verbose /tmp/build-cad8d11a-cleanup/append-fix.patch
+sha256sum -c /tmp/build-cad8d11a-cleanup/append-before-revert.sha256
+```
+
+append-fix-revert.log and append-fix-restore.log show all four paths applied cleanly, with no offsets. After reversal, git diff HEAD for those source paths was empty. append-fix-reverted-red.log records exit 1, 7 failed, 3 passed and 171 skipped. Both none-origin owned subscriber failures incorrectly returned superseded. Both recovery owned subscriber failures returned false instead of the original normalized failure. The pending-close test lost the original error. Both reentrant origin-return cases leaked the obsolete error. Physical replacement suppression and real persistence refusal remained passing controls. These are actual installed Jotai workspace subscriptions, not mocked update failures.
+
+append-before-revert.sha256 records the four production files and all three changed test files. All seven reported OK after restoration. Tests stayed in place throughout. git diff --cached --stat stayed empty.
+
+Final formatting and lint commands:
+
+```sh
+pnpm exec oxfmt --check src/utils/tabs.ts src/utils/tabs.test.ts src/state/atoms.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.tsx src/components/tabs/ConfirmChangesModal.test.tsx
+pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/utils/tabs.test.ts src/state/atoms.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.tsx src/components/tabs/ConfirmChangesModal.test.tsx
+```
+
+append-format-final.log: exit 0, all 7 files formatted correctly. append-lint-final.log: exit 0, 0 warnings and 0 errors across all 7 files. The earlier append-lint.log had 11 conditional-expect warnings, corrected through deterministic assertion helpers and a direct expected-value assertion. Formatting was applied only to these owned paths using pnpm exec oxfmt --write. git diff --check also passed.
+
+All logs, patch, hashes and this report are under /tmp/build-cad8d11a-cleanup/. No broad related-test, type, pre-review or integrated gate command was run. No browser, screenshots, snapshots, dependencies, floors, baselines, tasks, native source or generated bindings were changed. Root retains integrated proof ownership.
+
+No scope deviation. The concurrently changed Group4 files were observed in git status only and were neither edited nor reversed by this repair. No additional qualifying defect was discovered. An incidental search for vitest.config.* found no file and returned exit 2, with no effect on proof selection or execution. All repository changes remain unstaged, with no commit or push.
+```
