@@ -8446,3 +8446,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
 * **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c4c6d76192432fafe0fc4e816ae53b2df003799832aa5969e477ef37dc3c8c80","input_sha256":"7a13e162c7c15a756c871f058b0d8ff791493b54290ca23708e0eb3f4b3f3ad7","kind":"mutation-receipt","operation":"e4c9217151506624dcb0e67a3904ca164388f18ff8f0fde3669ecf999febcf4d","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-07 — Workspace cleanup renderer contract, choice 3
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 3?
+* **Governs:** f-20261003-09
+* **Chosen:** Use an explicit cleanup callback in the recovery helper. Rejected invoking the existing recover callback because registerInstalledEngine performs a second command. Rejected globally broadening destructive callbacks because they publish success-side effects. Reversal requires pure, documented callbacks at every affected caller.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d7abbcba85622e9687bdc01786164d1609f2bce91ac4ae64bfa4e4b2ab6f872e","input_sha256":"dcc8c37e7f433915f17c95c8e0f7836a72da4abf0388dba4893d82aa01aeeeaf","kind":"mutation-receipt","operation":"003f853ddeaa991bce14af3adcd8fc9fb28c003025a04b11369b0965f1fab10f","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-07"],"target":"decisions-ledger","v":1} -->
