@@ -497,6 +497,7 @@ where
             }
         }
 
+        let authorization_sent = headers.contains_key(reqwest::header::AUTHORIZATION);
         let res = tokio::select! {
             _ = cancellation.cancelled() => return Err(Error::Cancellation),
             response = tokio::time::timeout(DOWNLOAD_REQUEST_TIMEOUT, transport.request(req_url.as_str(), headers)) => response
@@ -525,7 +526,12 @@ where
         }
 
         if !(200..300).contains(&res.status) {
-            return Err(Error::InvalidInput(format!("HTTP status {}", res.status)));
+            return Err(Error::RemoteHttpRejection(
+                crate::error::RemoteHttpRejection {
+                    status: res.status,
+                    authorization_sent,
+                },
+            ));
         }
 
         break res;
@@ -3896,8 +3902,109 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(
             res.unwrap_err().to_string(),
-            "Invalid input: HTTP status 500"
+            "Remote HTTP request rejected: status 500"
         );
+    }
+
+    fn rejected_response(status: u16, polled: Arc<AtomicBool>) -> DownloadResponse {
+        DownloadResponse {
+            status,
+            headers: HeaderMap::new(),
+            content_length: Some(u64::MAX),
+            stream: Box::pin(futures_util::stream::poll_fn(move |_| {
+                polled.store(true, Ordering::SeqCst);
+                Poll::Ready(Some(Ok(bytes::Bytes::from_static(b"private remote body"))))
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_http_rejection_uses_final_request_headers_before_polling_body() {
+        for (status, category) in [
+            (400, "network"),
+            (401, "authentication"),
+            (403, "permission"),
+            (404, "missing-resource"),
+            (429, "network"),
+            (500, "network"),
+            (503, "network"),
+        ] {
+            for (token, redirect, authorization_sent) in [
+                (None, None, false),
+                (Some("private_token"), None, true),
+                (
+                    Some("private_token"),
+                    Some("https://lichess.org/other"),
+                    true,
+                ),
+                (
+                    Some("private_token"),
+                    Some("https://example.com/other"),
+                    false,
+                ),
+                // An invalid header is never sent, even when a token was supplied.
+                (Some("private\ntoken"), None, false),
+            ] {
+                let mut file = tempfile::tempfile().unwrap();
+                let polled = Arc::new(AtomicBool::new(false));
+                let mut responses = vec![];
+                if let Some(location) = redirect {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        reqwest::header::LOCATION,
+                        HeaderValue::from_static(location),
+                    );
+                    responses.push(Ok(DownloadResponse {
+                        status: 302,
+                        headers,
+                        content_length: None,
+                        stream: Box::pin(futures_util::stream::empty()),
+                    }));
+                }
+                responses.push(Ok(rejected_response(status, polled.clone())));
+                let mock = MockTransport {
+                    responses: Mutex::new(responses),
+                    requests_seen: Mutex::new(vec![]),
+                };
+                let error = download_payload_network(
+                    OpClass::Lichess,
+                    reqwest::Url::parse("https://lichess.org/private_account").unwrap(),
+                    &mut file,
+                    &mock,
+                    token,
+                    None,
+                    CancellationToken::new(),
+                    None,
+                    |_| panic!("rejection must precede payload progress"),
+                )
+                .await
+                .unwrap_err();
+                assert!(!polled.load(Ordering::SeqCst));
+                assert_eq!(file.metadata().unwrap().len(), 0);
+                assert_eq!(
+                    serde_json::to_value(&error).unwrap(),
+                    serde_json::json!({
+                        "tag": "backend-error", "category": category,
+                        "message": format!("Remote HTTP request rejected: status {status}"),
+                        "remoteHttpRejection": {"status": status, "authorizationSent": authorization_sent}
+                    })
+                );
+                assert_eq!(
+                    error.diagnostic(),
+                    format!("Remote HTTP request rejected: status {status}")
+                );
+                let requests = mock.requests_seen.lock().unwrap();
+                assert_eq!(requests.len(), if redirect.is_some() { 2 } else { 1 });
+                assert_eq!(
+                    requests
+                        .last()
+                        .unwrap()
+                        .1
+                        .contains_key(reqwest::header::AUTHORIZATION),
+                    authorization_sent
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -7573,6 +7680,84 @@ mod tests {
             responses: std::sync::Mutex::new(vec![Ok(mock_successful_response(payload))]),
             requests_seen: std::sync::Mutex::new(vec![]),
         })
+    }
+
+    #[tokio::test]
+    async fn remote_http_rejection_leaves_account_export_unpublished_and_releases_operation() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, root) = test_downloads_destination(&dir);
+        let registry = dir.path().join("path-authority.json");
+        assert!(!registry.try_exists().unwrap());
+        let target = root.join("games.pgn");
+        std::fs::write(&target, b"previous export").unwrap();
+        let identity_before = std::fs::metadata(&target).unwrap();
+        let polled = Arc::new(AtomicBool::new(false));
+        let state = AppState {
+            http_transport: Arc::new(MockTransport {
+                responses: Mutex::new(vec![Ok(rejected_response(401, polled.clone()))]),
+                requests_seen: Mutex::new(vec![]),
+            }),
+            ..AppState::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let (job_id, lease) = test_download_lease(&state);
+        let error = download_to_destination(
+            &job_id,
+            "https://lichess.org/api/games/user/private_account",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            Some("private_token"),
+            None,
+            job_id.clone(),
+            lease,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::json!({
+                "tag": "backend-error", "category": "authentication",
+                "message": "Remote HTTP request rejected: status 401",
+                "remoteHttpRejection": {"status": 401, "authorizationSent": true}
+            })
+        );
+        assert!(!polled.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read(&target).unwrap(), b"previous export");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            identity_before.modified().unwrap()
+        );
+        assert_eq!(leaves(&root), vec!["games.pgn"]);
+        assert!(!registry.try_exists().unwrap());
+        state
+            .pgn_path_authority
+            .with_mut(|authority| {
+                assert!(!authority.has_pending_artifact_filename(Path::new("games.pgn")));
+            })
+            .unwrap();
+        let progress = state.progress_state.get(&job_id).unwrap().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert!(progress.finished);
+        assert!(!state.operations.cancel_download(&job_id, "test").unwrap());
+        let next = state.operations.prepare_download("test").unwrap();
+        let next_lease = state
+            .operations
+            .claim_download(
+                &next,
+                "test",
+                "test download",
+                &job_id,
+                &job_id,
+                false,
+                MAX_ACTIVE_DOWNLOADS,
+            )
+            .unwrap();
+        drop(next_lease);
     }
 
     #[tokio::test]

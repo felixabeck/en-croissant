@@ -125,7 +125,12 @@ async fn fetch_bounded(
         }
     };
     if !(200..300).contains(&response.status) {
-        return Err(Error::InvalidInput("Chess.com request was rejected".into()));
+        return Err(Error::RemoteHttpRejection(
+            crate::error::RemoteHttpRejection {
+                status: response.status,
+                authorization_sent: false,
+            },
+        ));
     }
     if response
         .content_length
@@ -430,7 +435,8 @@ mod tests {
 
     #[async_trait]
     impl DownloadTransport for MockTransport {
-        async fn request(&self, url: &str, _: HeaderMap) -> Result<DownloadResponse, Error> {
+        async fn request(&self, url: &str, headers: HeaderMap) -> Result<DownloadResponse, Error> {
+            assert!(headers.is_empty());
             self.requests.lock().unwrap().push(url.into());
             self.response
                 .lock()
@@ -684,6 +690,56 @@ mod tests {
             Some((2024, 9))
         );
         assert!(first_archive_month(Some(-1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn remote_http_rejection_is_anonymous_and_never_polls_body() {
+        for (status, category) in [
+            (301, "network"),
+            (400, "network"),
+            (401, "authentication"),
+            (403, "permission"),
+            (404, "missing-resource"),
+            (429, "network"),
+            (500, "network"),
+            (503, "network"),
+        ] {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let body_polls = polls.clone();
+            let transport = Arc::new(MockTransport {
+                response: Mutex::new(Some(DownloadResponse {
+                    status,
+                    headers: HeaderMap::new(),
+                    content_length: Some(u64::MAX),
+                    stream: Box::pin(futures_util::stream::poll_fn(move |_| {
+                        body_polls.fetch_add(1, Ordering::SeqCst);
+                        std::task::Poll::Ready(Some(Ok(Bytes::from_static(b"private remote body"))))
+                    })),
+                })),
+                requests: Mutex::new(Vec::new()),
+            });
+            let state = AppState {
+                http_transport: transport,
+                ..Default::default()
+            };
+            let url = archive_index_url("private_player").unwrap();
+            let error = fetch_bounded(&state, url, MAX_INDEX_BYTES, &CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert_eq!(polls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                serde_json::to_value(&error).unwrap(),
+                serde_json::json!({
+                    "tag": "backend-error", "category": category,
+                    "message": format!("Remote HTTP request rejected: status {status}"),
+                    "remoteHttpRejection": {"status": status, "authorizationSent": false}
+                })
+            );
+            assert_eq!(
+                error.diagnostic(),
+                format!("Remote HTTP request rejected: status {status}")
+            );
+        }
     }
 
     #[tokio::test]

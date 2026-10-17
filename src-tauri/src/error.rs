@@ -124,6 +124,23 @@ pub enum ErrorPayloadTag {
     EngineFailure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHttpRejection {
+    pub status: u16,
+    pub authorization_sent: bool,
+}
+
+impl std::fmt::Display for RemoteHttpRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Remote HTTP request rejected: status {}",
+            self.status
+        )
+    }
+}
+
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
@@ -136,6 +153,9 @@ pub struct ErrorPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub engine_failure: Option<crate::engine::EngineTerminalSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub remote_http_rejection: Option<RemoteHttpRejection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -175,6 +195,9 @@ pub enum Error {
 
     #[error("network failure")]
     Reqwest(#[source] Box<reqwest::Error>),
+
+    #[error("{0}")]
+    RemoteHttpRejection(RemoteHttpRejection),
 
     #[error(transparent)]
     ChessPosition(Box<shakmaty::PositionError<Chess>>),
@@ -479,6 +502,12 @@ impl Error {
             }
             Self::Tauri(_) | Self::TauriOpener(_) => ErrorCategory::Platform,
             Self::Reqwest(_) => ErrorCategory::Network,
+            Self::RemoteHttpRejection(detail) => match detail.status {
+                401 => ErrorCategory::Authentication,
+                403 => ErrorCategory::Permission,
+                404 => ErrorCategory::MissingResource,
+                _ => ErrorCategory::Network,
+            },
             Self::ChessPosition(_)
             | Self::IllegalUciMove(_)
             | Self::ParseSan(_)
@@ -557,6 +586,15 @@ impl Error {
             Self::RootFailure { error, .. } => error.is_engine_failure(),
             Self::EngineFailure { .. } => true,
             _ => false,
+        }
+    }
+
+    pub(crate) fn remote_http_rejection(&self) -> Option<RemoteHttpRejection> {
+        match self {
+            Self::Shared(error) => error.remote_http_rejection(),
+            Self::RootFailure { error, .. } => error.remote_http_rejection(),
+            Self::RemoteHttpRejection(detail) => Some(*detail),
+            _ => None,
         }
     }
 
@@ -974,6 +1012,7 @@ impl serde::Serialize for Error {
             message: self.to_string(),
             root_failure: self.root_failure(),
             engine_failure: self.engine_failure_snapshot().cloned(),
+            remote_http_rejection: self.remote_http_rejection(),
         }
         .serialize(serializer)
     }
@@ -1385,6 +1424,65 @@ mod tests {
         assert_eq!(payload["category"], "network");
         assert_eq!(payload["message"], "network failure");
         assert!(!serialized.contains("http"));
+    }
+
+    #[test]
+    fn remote_http_rejection_contract_preserves_only_safe_facts() {
+        for status in (100..600).filter(|status| !(200..300).contains(status)) {
+            let category = match status {
+                401 => "authentication",
+                403 => "permission",
+                404 => "missing-resource",
+                _ => "network",
+            };
+            for authorization_sent in [false, true] {
+                let detail = RemoteHttpRejection {
+                    status,
+                    authorization_sent,
+                };
+                let error = Error::RemoteHttpRejection(detail);
+                let message = format!("Remote HTTP request rejected: status {status}");
+                assert_eq!(error.to_string(), message);
+                assert_eq!(error.diagnostic(), message);
+                let expected = serde_json::json!({
+                    "tag": "backend-error",
+                    "category": category,
+                    "message": message,
+                    "remoteHttpRejection": {"status": status, "authorizationSent": authorization_sent}
+                });
+                assert_eq!(serde_json::to_value(&error).unwrap(), expected);
+                let shared = Error::Shared(std::sync::Arc::new(error));
+                assert_eq!(serde_json::to_value(&shared).unwrap(), expected);
+                let labelled = shared.with_root_failure(RootFailure::Unusable);
+                let mut labelled_expected = expected;
+                labelled_expected["rootFailure"] = serde_json::json!("unusable");
+                assert_eq!(serde_json::to_value(&labelled).unwrap(), labelled_expected);
+                assert_eq!(labelled.diagnostic(), message);
+            }
+        }
+    }
+
+    #[test]
+    fn remote_http_rejection_detail_is_absent_for_other_and_combined_errors() {
+        let remote = || {
+            Error::RemoteHttpRejection(RemoteHttpRejection {
+                status: 401,
+                authorization_sent: true,
+            })
+        };
+        for error in [
+            Error::InvalidInput("example".into()),
+            Error::Cancellation,
+            Error::EngineRetired,
+            Error::with_cleanup(remote(), Err(Error::Cancellation)),
+            Error::with_cleanup(Error::Cancellation, Err(remote())),
+        ] {
+            let payload = serde_json::to_value(&error).unwrap();
+            assert!(payload.get("remoteHttpRejection").is_none());
+            if matches!(error, Error::OperationAndCleanup { .. }) {
+                assert_eq!(payload["category"], "operation-and-cleanup");
+            }
+        }
     }
 
     #[test]
