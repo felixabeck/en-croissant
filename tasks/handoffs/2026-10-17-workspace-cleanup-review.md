@@ -2048,3 +2048,67 @@ Hosted CI status remains unverifiable without live queries. No writes or gates p
 
 VERDICT: APPROVED
 ```
+
+
+## Round3 test-only repair and independent proof
+
+Commit18a051ea extracts the shared foreign-owner test scenario in one existing test file.
+No production code or test declaration changed. Both registered and direct scenarios retain
+their exact candidate state, error message, parameter rows and separate assertions.
+The net line count increased by5, so the benefit is one shared domain setup rather than the
+reviewer's estimated line reduction. Root inspected the complete diff and unchanged declarations.
+
+The same writer's assigned five-file suite passed264 cases, format and zero-warning lint.
+Root independently passed the same264 cases, then every pre-review lane. Canonical attempt
+`gate-r3-repair-proof.8HJcNR` completed
+`0 r3-repair-proof fb2385fabde9e2eff526084a1fc3873252a63c1a` before source commit.
+Frontend build23.0s, format/lint6.1s, frontend mapping1.0s, backend mapping2.5s, Windows
+compile/lint15.3s, bundle1.0s, changed-file mutation794.8s. All three selected mutation
+packages scored100%, with detected tree-path timeout mutants. No functional reversal or new
+mirroring tests were introduced for this structural extraction. R3-M1 requires closure review.
+R1-T1 remains OPEN for browser baselines. No other unresolved source issue remains.
+
+The CI finding f-20261017-03 explicitly requires a successful hosted result and a green
+`pnpm ci:remote:check` after the repair reaches upstream. It therefore remains OPEN through
+the first code push. This run owns its old red job and repairs it in that push. After actual
+hosted proof, close it through the writer and publish those newly knowable records through
+an ordinary records-only push with its required independent review and contract gates.
+Do not use an early closure note as a substitute for hosted proof. The usual final run-ledger
+row follows completion under the coordination-record contract.
+
+Plan authorship and arbitration shared one context. Detection used the same OpenAI model
+family as the code. No fallback, capacity retry or scope deviation in this test repair.
+
+### Raw test extraction report
+
+```text
+R3-M1 shared foreign-owner test scenario extraction completed
+
+Read lens-minimalism-r3.txt completely. Root accepted the shared scenario extraction under the domain-concept reuse rule. This change is structural only, with no new tests or production changes. Work started from clean HEAD 594ecebf4fd2fab01d984bbbd0f054b69c70e9f6.
+
+The only changed repository path is /home/felixb/Projekte/chessfable.worktrees/drain/src/components/tabs/FileFreshnessGate.test.tsx.
+
+subscribeForeignRecoveryReplacement now owns the shared real Jotai workspace subscription, reentrant guard, physical/origin foreign-owner construction, tree seeding, store retargeting, captured foreign owner/current tree/physical key, conflict freshness transition, throwing subscriber and cleanup. It takes the replacement kind, each caller's exact candidate tree and its existing failure message. Its cleanup unsubscribes and removes only the separate physical tree key, preserving the existing logical key cleanup ownership.
+
+Both registered and direct recovery cases use this fixture. Their candidate state, comments, failure messages, native completion revisions and caller-specific assertions remain unchanged in meaning. The registered case still asserts false completion, actual replacement, exact foreign owner, exact tree-store state identity, conflict freshness, suppressed panel error and matching durable candidate. The direct case still asserts actual replacement, exact tree-store state identity, suppressed notification and suppressed panel error. Candidate appendAttempted remains true in registered recovery and false in direct recovery. Both physical/origin parameter rows are retained.
+
+No assertion was removed or weakened. Only references to the shared fixture's captured state replaced the former local variable references. No test declaration was added or removed. Before/after rg declaration snapshots are byte-identical, recorded in append-r3-test-declarations-before.txt and append-r3-test-declarations-after.txt. append-r3-test-declarations.diff is 0 bytes. The existing physical/origin parameter arrays and test names are unchanged in the diff. The full assigned suite retains exactly 264 passing cases across five files.
+
+Commands and results:
+
+```sh
+pnpm exec oxfmt --write src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec vitest run src/utils/tabs.test.ts src/state/atoms.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx src/components/boards/BoardAnalysis.test.tsx
+pnpm exec oxfmt --check src/components/tabs/FileFreshnessGate.test.tsx
+pnpm exec oxlint --deny-warnings src/components/tabs/FileFreshnessGate.test.tsx
+git diff --check
+```
+
+All commands exited 0. Proof logs under /tmp/build-cad8d11a-cleanup/:
+
+- append-r3-extraction-targeted.log: 5 test files passed, 264 tests passed, unchanged case count
+- append-r3-extraction-format.log: the one matched file is correctly formatted
+- append-r3-extraction-lint.log: 0 warnings and 0 errors on the one changed file
+
+git status and git diff --name-only show only the assigned test path. git diff --cached --stat is empty. No functional source reversal or new mirroring tests were needed or performed for this structural extraction. No agents, skills, records, browser, screenshots, related/type/broad gates, staging, commit or push were used. No scope deviation or new finding. Root retains independent suite/pre-review verification and the R1-T1 screenshot obligation.
+```
