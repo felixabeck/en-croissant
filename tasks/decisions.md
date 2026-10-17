@@ -8585,3 +8585,34 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Required Windows Test job 117365568547 on 2addbb6d measured sharing violation 32 at the shared probe's unconditional rename in three cases. The authority opener deliberately omits FILE_SHARE_DELETE, and existing core parent-swap tests already recognize protected success. The original observer positive controls passed on Windows. Distinguishing the two actual native contracts preserves d-20261017-18's replacement coverage without changing the product boundary. Reversal path: replace either witness only with equivalent native proof of its operation and cleanup contract, and review any future production sharing-policy change separately.
 * **Decided by:** Codex, autonomously under full auto from the native CI evidence. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"7fe35a549222a4cb11d51f608613487a3d3c64bf53a786466272de2dc54dad0f","input_sha256":"1a19f4528d28da65083df2bbeb8369ca43ddf05792d2f85d49b396643721fce5","kind":"mutation-receipt","operation":"79b1c4af8efbc50a3c378930e267a118d147e88212a82e28427f2503a243b7b3","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-20"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-21 — Which typed detail carries a remote HTTP rejection for an account export?
+
+* **Question:** Which typed detail carries a remote HTTP rejection for an account export?
+* **Governs:** f-20261004-01
+* **Chosen:** One optional compact detail on the existing error payload, numeric status plus whether authorization was sent, mapped through the existing seven renderer categories.
+* **Rejected:** A new category for each HTTP class; reusing the OAuthFailure string; parsing English messages for a status.
+* **Reason:** The status must survive exactly, an authenticated rejection must be distinguishable from an anonymous one, and d-20260904-06 keeps the seven-category renderer mapping. The detail is optional, so existing payloads stay compatible, and it is not persisted.
+* **Reversal:** Replace this optional detail at the same native and facade boundary and update its consumers. No persistence migration.
+* **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, adopting the reviewed plan for f-20261004-01 · **Superseded-by:** -
+
+### d-20261017-22 — Which native category carries HTTP 429 and HTTP 403 on a remote rejection?
+
+* **Question:** Which native category carries HTTP 429 and HTTP 403 on a remote rejection?
+* **Governs:** f-20261004-01
+* **Chosen:** 429 uses Network. 403 uses Permission. 401 uses Authentication, 404 uses MissingResource, 5xx and every other terminal rejection use Network.
+* **Rejected:** 429 as ResourceLimit, because that category maps to validation, which is the defect. 403 as OAuthFailure, because denied access does not establish invalid credentials.
+* **Reason:** The user-facing category must stop calling a remote rejection invalid input. ResourceLimit would put rate limiting back into validation. OAuthFailure would tell the user the credential is invalid when the server only denied access.
+* **Reversal:** Change the single native classification match and the shared guidance policy together.
+* **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, adopting the reviewed plan for f-20261004-01 · **Superseded-by:** -
+
+### d-20261017-23 — Where does localized guidance for a remote HTTP rejection live?
+
+* **Question:** Where does localized guidance for a remote HTTP rejection live?
+* **Governs:** f-20261004-01
+* **Chosen:** One shared mapper at the existing notifyUnlessCancelled, after the cancellation filter, the domain-root or visible-message fallback, and the files-only workspace cleanup replacement. It applies only when the error carries the remote detail, has no rootFailure label, and is not operation-and-cleanup.
+* **Rejected:** A catch in each provider. Translating inside payload normalization.
+* **Reason:** Both account exports already reach this notifier. Normalization must keep locale-independent protocol facts. Account exports use the database domain, so they never enter the files cleanup sentence, and a remote 404 must not become a missing local folder.
+* **Reversal:** Move the one mapper to a future shared notification owner and update its callers.
+* **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, adopting the reviewed plan for f-20261004-01 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":29,"effect_sha256":"32a61d89f74c664db43cf61bcde4d9f37bb487691b4615362b0d5f50ae8c9614","input_sha256":"4a1c4b65cb166635cc5ebedfe01636fbfb8d9bd6d0d4736fa5aabc2e0f4a16f0","kind":"mutation-receipt","operation":"9322cfe3583f5352efc9aabc8e0da16e6ca6c8417cd6d12c9b5ec2940cef4346","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-21","d-20261017-22","d-20261017-23"],"target":"decisions-ledger","v":1} -->
