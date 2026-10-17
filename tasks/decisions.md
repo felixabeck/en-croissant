@@ -8436,3 +8436,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
 * **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"9e506899c4d30b46224f4c7b66ff56184d600876835d82d6f4c8b3b683d1d195","input_sha256":"53cb46bd6488aa4ef36001d69a6d99367826c3d3377cde27361eeaff912e2cfe","kind":"mutation-receipt","operation":"af49ebad8aaddf947ef085d28d2076c5cfe2d74a0e8f3e47a4b63681c18775cb","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-06 — Workspace cleanup renderer contract, choice 2
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 2?
+* **Governs:** f-20261003-09
+* **Chosen:** Keep backendCategory as the discriminator and add a localized workspace message. Rejected an eighth UI category or global normalization message rewrite. d-20260904-06 fixes the two-level taxonomy, superseding d-20260901-34. d-20260831-01 fixes the applied category name.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c4c6d76192432fafe0fc4e816ae53b2df003799832aa5969e477ef37dc3c8c80","input_sha256":"7a13e162c7c15a756c871f058b0d8ff791493b54290ca23708e0eb3f4b3f3ad7","kind":"mutation-receipt","operation":"e4c9217151506624dcb0e67a3904ca164388f18ff8f0fde3669ecf999febcf4d","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-06"],"target":"decisions-ledger","v":1} -->
