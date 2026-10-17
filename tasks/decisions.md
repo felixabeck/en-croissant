@@ -8627,3 +8627,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal:** Remove the remote-rejection style override in notifyError.ts and re-record the three remote-http snapshots.
 * **Decided by:** drain session c4b0c8d3-5b61-4923-9021-379d0cb630de, during implementation of f-20261004-01 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e0cfc2a6378eb459bd993f1e9795a3a786f0b548bcc68ef063edbe4565d1033a","input_sha256":"d80885c69ef843475a3c32a7939356f6827779d726f8ce3866a61efcf9d87e27","kind":"mutation-receipt","operation":"336bdfd7dc184edfb96fb388a87e914fdeeed7a991f51aff44c6b2933d263323","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-24"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-25 — Does a rejected Lichess credential count as confirmed unusable?
+
+* **Question:** When Lichess answers a token DELETE with 401, including a body of `No such token`, has that credential been confirmed unusable?
+* **Governs:** f-20261004-04
+* **Chosen:** Only a successful DELETE, or one follow-up POST to `https://lichess.org/api/token/test` whose HTTP 200 JSON maps the exact submitted token to null, counts as confirmed. DELETE 401 alone stays unconfirmed. Already-invalid, once confirmed that way, counts as revoked for pending and `allRevoked`.
+* **Rejected:** Treating every 401 or `No such token` body as a dead token — Lichess uses that same response when signature policy rejects an existing token. Also rejected: leaving a provider-confirmed invalid token pending, which keeps warning that a sign-in might still work after Lichess has said it does not.
+* **Reason:** Lichess overloads both the 401 status and `NoSuchToken`, while token-test is a separate documented invalidity result. The extra request runs only after 401, adds no retry loop, and shares the existing 30-second budget. Reversal path: revise the confirmation mechanism with new provider evidence and its native loopback regression.
+* **Decided by:** Grok, drain session 9b4ca0a2-495f-4f97-bf05-cc3f0d28a35e, full auto, adopted plan of f-20261004-04 · **Superseded-by:** -
+
+### d-20261017-26 — How does a revocation reason cross IPC without the token?
+
+* **Question:** How does a sanitised revocation kind reach account removal and the legacy-token command without exposing the token or replacing the existing removal facts?
+* **Governs:** f-20261004-04
+* **Chosen:** One closed outcome enum (revoked, already_invalid, unreachable, rate_limited, rejected) returned as successful command data by both commands. Account removal keeps `revocation_pending` and `durability_uncertain`, derives pending from the outcome, and adds the outcome as an optional field that is absent only when no local token needed a provider attempt.
+* **Rejected:** Provider response strings, matching on `Error` text, a separate mapping in each caller, and replacing the two independent removal facts from d-20260831-20.
+* **Reason:** d-20260831-20 still holds, and f-20261004-04 is new evidence that the pending bit alone drops the distinction the user and the diagnostic need. Reversal path: change the typed outcome contract and regenerate both consumers together.
+* **Decided by:** Grok, drain session 9b4ca0a2-495f-4f97-bf05-cc3f0d28a35e, full auto, adopted plan of f-20261004-04 · **Superseded-by:** -
+
+### d-20261017-27 — How much of the logout and startup failure presentation changes?
+
+* **Question:** What does the user see when local logout or legacy-storage erasure cannot confirm provider revocation?
+* **Governs:** f-20261004-04
+* **Chosen:** Reason warnings on the existing logout card and the existing startup failure view, using one shared localized mapping. Pending logout says local logout completed and names unreachable, rate-limited, or rejected, with no retry of the deleted handle and no promise of a background retry. Startup keeps fail-closed behaviour and reports every distinct unresolved kind. Confirmed revoked and already-invalid outcomes do not warn, and the all-revoked sentence says the sign-in no longer works at Lichess.
+* **Rejected:** A new retry service, a new account-management screen, and leaving the pending bit as the only user-visible fact.
+* **Reason:** The finding requires the user and the diagnostic to tell those cases apart, and d-20261004-11 already requires the visible fail-closed startup. Reversal path: change the presentation while keeping the truthful pending state and token-free diagnostics.
+* **Decided by:** Grok, drain session 9b4ca0a2-495f-4f97-bf05-cc3f0d28a35e, full auto, adopted plan of f-20261004-04 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"40ca789da6172187ce7fe987835e2bd9e5569eb38d854bfc01582c164a41e138","input_sha256":"d3911850b6b7d7494fcf62b5ad2f7f5e9effb5c0a874686458eeb0431f247307","kind":"mutation-receipt","operation":"7cd22ed785cceecafbed40f3a24d3585bc76212130fbb0936f98475cd971665f","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-25","d-20261017-26","d-20261017-27"],"target":"decisions-ledger","v":1} -->
