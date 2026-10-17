@@ -1303,6 +1303,19 @@ mod tests {
         ));
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(staging_dir.path().is_dir());
+        resolved.operation = PathOperation::ReadPgn;
+        assert!(matches!(
+            resolved.create_archive_staging(),
+            Err(Error::InvalidInput(message))
+                if message == "resolved capability is not an archive destination"
+        ));
+        assert!(matches!(
+            resolved.atomic_install_download_dir(&mut staging),
+            Err(Error::InvalidInput(message))
+                if message == "resolved capability is not an archive destination"
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(staging_dir.path().is_dir());
     }
 
     #[test]
