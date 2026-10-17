@@ -8466,3 +8466,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
 * **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"aba0eb4e01948cdae60d2e240da6cb812f91ec1db1a738f315ba74ae00f54c38","input_sha256":"1669443eb368babd2f0926d9db4b962ab06f205a29cfe5855da6c61dfaf25436","kind":"mutation-receipt","operation":"196ca26e3201c19533acfcbef3b3cb39772f1b15e212e593b0ba895eccfd41f6","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261017-09 — Workspace cleanup renderer contract, choice 5
+
+* **Question:** Which renderer contract applies to workspace operation-and-cleanup failures, choice 5?
+* **Governs:** f-20261003-09
+* **Chosen:** Capture the listing key and cache explicitly, and retire or drain pre-mutation listing work at the cleanup reconciliation boundary. Rejected relying on bound mutate or a shared live generation. Review issue I1 has a measured workspace-switch counterexample, and I2 has a direct source trace through useNativeRequestOwner.run. Reversal requires a replacement cache/request API that guarantees both ownership and post-mutation freshness. The broader f-20261004-09 stays open for unrelated consumers.
+* **Rejected:** Alternatives stated in the chosen contract above.
+* **Reason:** Adopted reviewed plan O1–O4 at 13c08703 under full auto. Reversal paths and supporting decisions are preserved above.
+* **Decided by:** Codex, autonomously under full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"301cd17ecbefcbaf7283b046ded5692225f35547b9eb88187bbfcea78f773801","input_sha256":"3dc9d8ff230df444c9938d8128219b905b9ab0d345f9190695d2d62d841454e7","kind":"mutation-receipt","operation":"80383a867193daca04997339cb824abd93831b03a7bcbb3b102398152f9e2cbe","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-09"],"target":"decisions-ledger","v":1} -->
