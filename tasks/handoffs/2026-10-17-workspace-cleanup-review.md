@@ -1887,3 +1887,164 @@ All three commands exited 0. append-r4-format.log reports all 5 files correctly 
 
 No scope deviation or additional qualifying defect. Only the five named repository paths changed. No browser, screenshots, broad related/type/pre-review/mutation gates, agents, skills, records edits, staging, commits or push were performed. Root must independently review the final diff, run its integrated union/related/pre-review proof and complete browser obligations, including R1-T1. This report and proof artifacts are temporary files outside the repository.
 ```
+
+
+## Diff closure round3 at 594ecebf
+
+All eight canonical read-only lenses completed successfully. Correctness, root-cause,
+error-handling, tests and persisted-state explicitly CLOSED R2-C1, R2-C2 and R2-E1.
+They inspected the actual original drain gate completion after its full path was supplied.
+The earlier R1 source and records closures remain intact. No new production defect was found.
+
+Two prefixed lens findings received Fix dispositions. R3-M1 is the minimalism finding about
+duplicated foreign-owner setup in the registered and direct recovery tests. R1-T1 is the
+repeated still-open two-baseline obligation, not a newly opened unique defect. R3-M1 is a
+new correction-created test-structure issue in the 5ef60d10 test delta. Both test callers must
+share their real subscription, replacement, tree seeding, retargeting and cleanup fixture,
+while preserving separate caller-specific assertions. No production redesign is authorized.
+No Skip or Defer. REVIEWED_THROUGH is594ecebf4fd2fab01d984bbbd0f054b69c70e9f6.
+
+Root resumed the same source writer for a bounded one-file test extraction, fix-7,
+gpt-6.1-sol/high. Existing264 cases, formatting, lint and root independent pre-review proof
+must pass before its commit and closure review. No new test or functional source reversal is
+needed for this structural reuse. R1-T1 remains OPEN for browser generation and inspection.
+Plan authorship and arbitration shared one context. Detection used the same OpenAI model
+family as the code. No fallback or capacity retry in this round.
+
+### Raw correctness closure report, round3
+
+```text
+R2-C1 CLOSED — `appendStoreGame` rechecks acknowledged ownership, current dirty state and PGN after subscribers return. First-save and pending-close regressions preserve subscriber edits and later save them through game CAS.
+
+R2-C2 CLOSED — Identity cleanup retains the controller lease. Its matching `finally` releases pending controls after success or failure, with mounted-view protection.
+
+R2-E1 CLOSED — Owned direct recovery failures notify when verified children hide the panel. Registered callers retain error ownership, and foreign replacement/unmount suppress obsolete notifications.
+
+No new correctness defects found. Earlier closures remain intact.
+
+Confirmed canonical root completion exit 0, with 582 targeted tests, 2,190 related tests and all selected pre-review lanes passing.
+
+Limitations: static source review, no tests rerun or files changed. Browser toast rendering was not verified. R1-T1 remains OPEN for the two required screenshots. Review shares the implementation’s OpenAI model family (confidence: 95).
+
+VERDICT: APPROVED
+```
+
+### Raw root-cause closure report, round3
+
+```text
+R2-C1 CLOSED — `src/utils/tabs.ts:731–733` checks acknowledged ownership, current dirty state and current PGN after workspace subscribers return. Both append consumers share this boundary. Regression proof covers retained edits, pending close, cold readback and later game CAS.
+
+R2-E1 CLOSED — `src/components/tabs/FileFreshnessGate.tsx:329–332` routes owned direct failures through the existing notification channel when verified children hide the panel. Registered callers retain their error ownership. Foreign replacement and unmount suppression remain covered.
+
+R2-C2 CLOSED — `FileFreshnessGate.tsx:126–133` retains controller identity through cancellation. Its matching `finally` releases pending controls while respecting unmount. Tests cover admitted success and failure, subsequent recovery and duplicate-click refusal.
+
+R1-C1/E1/M1/Q1 closures remain intact. No root-cause defects or reintroduced prior fixes found in this delta.
+
+Examined source-only reversal logs show six behavioral failures and five passing controls, followed by 264 restored passes. The explicitly supplied canonical gate completed with exit 0, including 582 targeted tests, 2,190 related tests and pre-review checks.
+
+R1-T1 NOT CLOSED — both cleanup screenshot baselines remain browser-stage obligations. Notification evidence proves facade delivery, not browser rendering.
+
+Read-only review. No tests executed or files changed. Detection used the same OpenAI model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### Raw error-handling closure report, round3
+
+```text
+R2-E1 CLOSED — `FileFreshnessGate.tsx:330` notifies owned direct recovery failures when the panel is hidden. Registered callers retain the thrown error without duplicate notification. Tests cover the actual button, notification payload and obsolete-owner suppression.
+
+R2-C2 CLOSED — `FileFreshnessGate.tsx:239` releases pending state for the matching controller after success or failure, including aborted origin transitions. Tests prove enabled controls, another admitted append and duplicate-click refusal.
+
+R2-C1 CLOSED — `tabs.ts:732` rechecks ownership, dirty state and PGN after subscribers return. Pending close remains open until a later CAS saves the edit.
+
+No new error-handling defects found. Canonical completion and log confirm exit 0, 582 targeted tests, 2,190 related tests and passing pre-review lanes.
+
+Read-only review, same OpenAI model family as implementation. Browser rendering was not verified here. R1-T1 remains OPEN for browser closure (confidence: 100).
+
+VERDICT: APPROVED
+```
+
+### Raw minimalism closure report, round3
+
+```text
+R1-M1 CLOSED — `useFileWorkspace.tsx:85` still shares one captured-workspace refresh callback between move and submit.
+
+[should-fix] src/components/tabs/FileFreshnessGate.test.tsx:757 — The new direct-recovery test duplicates lines 630–680’s foreign-owner subscription, physical/origin replacement, tree seeding, retargeting and cleanup. Extract that scenario into one shared fixture parameterized by replacement kind and candidate state, retaining separate caller-specific assertions. Both tests would use it, removing roughly 25–35 lines without losing coverage (confidence: 96).
+
+No added files or speculative production abstractions. The remaining tests exercise distinct completion, notification and pending-control contracts.
+
+Verified the canonical receipt: exit 0, 582 targeted tests, 2,190 related tests and all selected pre-review lanes passed. This review ran no tests and changed no files. R1-T1 remains OPEN for browser proof. Detection used the same OpenAI model family as implementation.
+
+VERDICT: REVISE
+```
+
+### Raw code-quality closure report, round3
+
+```text
+R1-Q1 CLOSED — `src/components/tabs/ImportModal.test.tsx:443` retains `deferred<void>()`, resolved without a cast.
+
+No new readability or local-consistency findings in the five-file delta after inspecting enclosing code and siblings.
+
+Canonical gate receipt confirms exit 0, 582 targeted tests, 2,190 related tests and passing pre-review lanes.
+
+R1-T1 remains NOT CLOSED, pending browser screenshot proof. This review does not close it.
+
+Read-only review, no files changed or tests run. Detection shares the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+```
+
+### Raw tests closure report, round3
+
+```text
+R2-C1 CLOSED — `tabs.test.ts:1204` rejects premature saved results for both append consumers. `ConfirmChangesModal.test.tsx:187` asserts no close, retained dirty edits and later CAS saving. Source-only reversal fails all three cases.
+
+R2-E1 CLOSED — `FileFreshnessGate.test.tsx:694` asserts exactly one notification with the original failure after the actual direct-button action. Registered recovery, foreign-owner and unmount cases assert suppression. Reversal produces zero notifications.
+
+R2-C2 CLOSED — `FileFreshnessGate.test.tsx:720` asserts enabled controls after admitted success and failure, then exercises a second held append and duplicate-click refusal. Reversal leaves controls disabled in both cases.
+
+Earlier R1 closures remain intact. No new delta verification gaps found. Vitest selectors include these tests, and CI runs the suite through `pnpm test:coverage`. The explicitly supplied canonical gate receipt records exit 0, with 582 targeted tests, 2,190 related tests and all selected pre-review lanes passing.
+
+[blocker] e2e/async-errors.spec.ts:109 — R1-T1 NOT CLOSED. Both required cleanup screenshot baselines remain absent. These assertions cannot distinguish correct layout from a visual regression until the English and German baselines are generated, inspected and retained. Unit proof does not close O4. (confidence: 100)
+
+Read-only review, no tests rerun or files changed. Detection used the same OpenAI model family as the implementation.
+
+VERDICT: REVISE
+```
+
+### Raw persisted-state closure report, round3
+
+```text
+R1-E1 CLOSED for persistence — canonical acknowledgement still finalizes the exact admitted owner’s stamp and append marker before workspace subscribers run.
+
+R2-C1 CLOSED — `src/utils/tabs.ts:732` rechecks ownership, current dirty state and PGN after subscribers return. Regressions prove dirty cold readback, pending-close retention and later game CAS without another append.
+
+R2-C2 CLOSED for tab lifecycle — the controller retains its identity until its own finally releases pending controls, with mounted-view protection.
+
+No new in-scope defects found. Physical storage keys, encoding, hydration and lifecycle flushing agree.
+
+Verified the original `gate-r2-repair-proof.2C8yo2` completion and log: exit 0, 582 targeted tests, 2,190 related tests and all selected pre-review lanes passed. No files changed or tests run by this reviewer. Review used the same OpenAI model family as implementation.
+
+VERDICT: APPROVED
+```
+
+### Raw records closure report, round3
+
+```text
+R1-R1 CLOSED — The local-resolution annotation still supersedes the earlier reproduction step.
+R1-R2 CLOSED — The clipping finding retains its normative Proof bullet.
+R1-R3 CLOSED — Inherited history remains before execution. Earlier record bytes are preserved unchanged.
+
+R2-C1 CLOSED — Source rechecks acknowledged ownership, current dirty state and PGN after subscribers return. Retained regressions cover dirty readback and later CAS.
+R2-E1 CLOSED — Direct recovery uses the existing notification facade when its panel is hidden. Registered failures remain caller-owned.
+R2-C2 CLOSED — Controller identity survives cancellation until its own finally releases pending state. Success, failure and subsequent recovery tests support the record.
+
+R1-T1 NOT CLOSED — Both cleanup PNG baselines remain absent and explicitly OPEN for browser verification.
+
+No new records findings. All eight raw round2 reports and the repair report are preserved exactly. The canonical receipt confirms exit 0, 582 targeted tests, 2,190 related tests and seven passing pre-review lanes.
+
+Hosted CI status remains unverifiable without live queries. No writes or gates performed. Review shares the implementation’s OpenAI model family.
+
+VERDICT: APPROVED
+```
