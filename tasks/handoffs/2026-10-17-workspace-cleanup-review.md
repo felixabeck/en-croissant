@@ -1590,3 +1590,179 @@ All logs, patch, hashes and this report are under /tmp/build-cad8d11a-cleanup/. 
 
 No scope deviation. The concurrently changed Group4 files were observed in git status only and were neither edited nor reversed by this repair. No additional qualifying defect was discovered. An incidental search for vitest.config.* found no file and returned exit 2, with no effect on proof selection or execution. All repository changes remain unstaged, with no commit or push.
 ```
+
+
+## Diff closure round 2 at 06b2e1a1
+
+All eight selected-executor read-only lenses completed. R1-C1, R1-E1, R1-M1, R1-Q1 and
+R1-R1/R2/R3 are CLOSED by their witnesses. R1-T1 remains OPEN for the planned browser stage.
+Three distinct dependent append issues were retained, all Fix. R2-C1 is a correction-created
+saved-result gap at a9c367b6, where a non-throwing subscriber can add an unsaved edit after the
+acknowledgement-time snapshot check. R2-E1 is the dependent visibility gap for a direct
+recovery button after admitted failure changes freshness to verified. R2-C2 is a pre-existing
+pending-action cleanup guard exposed by legitimate origin adoption, witnessed by correctness
+and error-handling. Root confirmed the same aborted-signal guard in published base244cfec5.
+Do not attribute that guard as newly introduced by the acknowledgement repair.
+
+Five lens findings received Fix dispositions in this round. They comprise the three distinct
+issues above, the second witness of R2-C2, and the repeated still-open R1-T1. This adoption
+count is not a count of newly opened unique issues. No Skip or Defer. REVIEWED_THROUGH is
+06b2e1a1a608b128fb2d8a996dc3ac5ec298a720. Some lenses could not locate the external canonical
+gate receipt and disclosed that limitation. Root had polled its actual original-DRAIN_GATE_DIR
+completion to zero and inspected the full summary, not a similarly named scratch directory.
+
+Because append completion had dependent defects after its first repair, root stopped source
+patching, wrote the focused mechanism note below and obtained a fresh-context review-plan
+judgment through canonical launcher lens-plan-r4. It APPROVED with no findings. This is
+focused plan round4 after inherited rounds1–3, with r4=0 adoptions, not a fresh plan lineage.
+The post-review note changed only attribution of R2-C2 after the source-history check.
+Plan authorship and arbitration shared one context. Detection used the same OpenAI model
+family as the code. Source correction and actual regression closure remain pending.
+
+### Raw correctness closure report, round2
+
+```text
+R1-C1 CLOSED — Reconciliation invalidates without revalidation, then awaits no-data mutate. Delayed real-SWR success and rejection cases hold the caller and move guard pending.
+
+R1-E1 CLOSED — Canonical admission now finalizes the acknowledged successor before workspace subscribers run and preserves owned subscriber failures.
+
+[blocker] src/utils/tabs.ts:733 — `unchanged` is calculated before workspace subscribers run and never checked again. If a subscriber edits the tree after origin admission without throwing, the tree becomes dirty but append returns `"saved"`. First-save `saveToFile` forwards that result, and ConfirmChangesModal closes the tab despite unsaved edits. Recheck the current tree before returning saved. (confidence: 96)
+
+[blocker] src/components/tabs/FileFreshnessGate.tsx:241 — When recovery adopts a different file/game, the identity effect aborts the old action controller. The repaired completion path explicitly handles this ordering, but `runAction` skips clearing `pendingAction` for that aborted controller. The mounted gate retains `"append"` after completion. On the next conflict or unavailable state, Reload, Save as new game and Close remain disabled despite no pending operation. (confidence: 92)
+
+Limitations: Static review only, no tests executed. The named integrated gate completion/log was unavailable at the supplied location, so its result was not independently verified. R1-T1 remains OPEN.
+
+VERDICT: REVISE
+```
+
+### Raw root-cause closure report, round2
+
+```text
+R1-C1 CLOSED — `workspaceListing.ts:22` now invalidates before awaiting no-data revalidation. This fixes premature settlement at the shared boundary used by Files actions and `createFile`. Source reversal produced four delayed-listing failures, restoration passed. Captured-workspace and stale-generation protections remain intact.
+
+R1-E1 CLOSED — `tabs.ts:704` finalizes the acknowledged successor before workspace subscribers run. Both first-save and recovery preserve owned failures and suppress foreign-owner completion. Source reversal produced seven failures, restoration passed 255 tests, including newer edits, persistence refusal, later CAS and pending close.
+
+No root-cause defects or reintroduced prior fixes found in the closure delta. Independent integrated proof completed with exit 0, including 573 targeted and 2,181 related tests.
+
+R1-T1 remains OPEN for the two required browser screenshots. This source review does not close it.
+
+Review ran on the same OpenAI model family as the implementation. No files changed.
+
+VERDICT: APPROVED
+```
+
+### Raw error-handling closure report, round2
+
+```text
+R1-E1 CLOSED — Canonical acknowledgement finalizes the exact successor before subscriber errors escape. First-save and registered recovery callers preserve the normalized failure. Reversal logs show seven failures, restored proof passes 255 tests, and independent integrated proof completed successfully.
+
+R1-C1 CLOSED — Reconciliation awaits native listing settlement and preserves the original cleanup error on relist failure.
+
+[blocker] src/components/tabs/FileFreshnessGate.tsx:325 — Direct “Save as new game” still hides an admitted subscriber failure. Append finalization sets freshness to `verified`, so this catch stores the error in `panelError`, but the verified branch renders only children. The button discards the returned `false`, leaving no visible error or notification. The new recovery regressions exercise the throwing registered caller, missing this button path. (confidence: 98)
+
+[should-fix] src/components/tabs/FileFreshnessGate.tsx:241 — Recovery admission changes the origin and aborts the old controller during rerender, as documented by the repair evidence. This guard then skips clearing `pendingAction`. After the admitted subscriber failure, a later conflict displays disabled recovery controls because `"append"` remains pending despite the operation having settled. (confidence: 91)
+
+VERDICT: REVISE
+```
+
+### Raw minimalism closure report, round2
+
+```text
+R1-M1 CLOSED — `useFileWorkspace.tsx:85` defines one render-scoped `refreshWorkspace` closure, used by move at line 150 and submit at line 210. It preserves captured workspace, key and cache ownership while removing the duplicated dispatch.
+
+No new bloat or duplication findings. The closure delta adds no files. First save and recovery share `appendStoreGame` and reuse the existing canonical workspace acknowledgement.
+
+Static, read-only review. No files changed or tests run. Detection used the same OpenAI model family as the implementation.
+
+VERDICT: APPROVED
+```
+
+### Raw code-quality closure report, round2
+
+```text
+R1-Q1 CLOSED — `src/components/tabs/ImportModal.test.tsx:443` now uses `deferred<void>()` and resolves without a cast.
+
+No new readability or local-consistency findings. No files changed.
+
+Limitation: the named integrated gate receipt was not located, so its success was not independently confirmed. R1-T1 remains open. Review used the same model family as the code.
+
+VERDICT: APPROVED
+```
+
+### Raw tests closure report, round2
+
+```text
+R1-C1 CLOSED — Real-SWR assertions keep `createFile` and move pending until the delayed listing settles, preserve the cleanup error, and block duplicate moves. Source-only reversal produced four failures.
+
+R1-E1 CLOSED — Actual Jotai subscriber regressions assert retained failure, finalized stamp and append marker, preserved newer edits, foreign-owner suppression, and later CAS saving. Source-only reversal produced seven failures.
+
+Root proof completed with exit 0: 573 targeted tests, 2,181 related tests, and pre-review checks. No new delta test gaps found. Detection used the same OpenAI model family as the implementation.
+
+[blocker] e2e/async-errors.spec.ts:109 — R1-T1 NOT CLOSED. Both required English and German cleanup screenshot baselines remain absent. These assertions cannot distinguish correct rendering from a layout regression until the baselines are generated, inspected and retained. O4 remains an open browser-stage obligation. (confidence: 100)
+
+VERDICT: REVISE
+```
+
+### Raw persisted-state closure report, round2
+
+```text
+R1-E1 CLOSED for persistence — canonical acknowledgement now finalizes the admitted owner’s stamp and append marker before workspace observers run. Regressions cover persisted readback, newer edits, refusal and foreign replacement.
+
+No new in-scope defects found. Writer/reader encoding, physical tree keys and lifecycle flushing agree. No files changed or tests run.
+
+Limitation: the named `gate-r1-repair-proof.v9XBV6` receipt was not located, so integrated gate success was not independently confirmed.
+
+VERDICT: APPROVED
+```
+
+### Raw records closure report, round2
+
+```text
+R1-R1 CLOSED — `tasks/findings.md:16551` supersedes the earlier reproduction step. Commit `4fc9520f`, retained reversal evidence and canonical green completion support it. Hosted confirmation remains pending.
+
+R1-R2 CLOSED — `tasks/findings.md:16529` supplies normative Proof without claiming existing clipping assertions or a completed repair.
+
+R1-R3 CLOSED — Inherited history precedes execution at handoff line 1156. Its preserved body matches the supplied SHA-256 `b0cd2ebd9562f37333490783084b0ee44c5f9654f222fbe2b20c5bad9025892c`.
+
+R1-T1 NOT CLOSED — Both cleanup baselines remain absent and explicitly OPEN for browser verification.
+
+No new records findings. Hosted CI status remains unverifiable without live queries. No writes or gates performed.
+
+VERDICT: APPROVED
+```
+
+### Focused mechanism note, round4
+
+# Append completion after canonical workspace acknowledgement
+
+The primary adopted plan and fixed mandate remain unchanged. This focused mechanism correction owns R2-C1, R2-C2 and R2-E1. The error-handling lens also witnesses R2-C2 as its second finding. R1-E1 is closed for acknowledgement, local persistence and preserving the normalized result. R2-C1 is a correction-created gap of the acknowledgement-time saved calculation at a9c367b6. R2-E1 is a newly exposed visibility dependency of that repair. R2-C2 is a pre-existing action cleanup guard exposed by the same legitimate origin transition, not attributed as newly introduced. R1-T1 remains the browser obligation.
+
+The existing canonical acknowledgement remains the only source of admitted ownership. It installs the exact persisted successor and finalizes captured-write stamp, durable append marker and freshness before workspace observers can throw. No journal, schema, registry, transaction reconstruction or additional user action is proposed.
+
+## O1 Current edits determine saved completion
+
+After updateTab and all synchronous workspace subscribers return, a successful append must still own the acknowledged successor and the current tree must match the written snapshot with no dirty edits before it reports saved. A subscriber that makes a new edit without throwing must retain that dirty edit and return the existing edited/superseded result. Both direct Save and pending-close consumers then stay open. Later deliberate Save uses game CAS at the adopted slot, without another append. A subscriber failure remains a failure even when canonical persistence and local finalization succeeded.
+
+## O2 The direct recovery button exposes owned failures
+
+The existing registered recovery caller throws to its caller, which already displays the normalized error. The direct Save as new game button must expose the same owned failure even when successful finalization has changed freshness to verified and removed the recovery panel. Use the existing notification channel for that now-hidden error, preserve existing visible panel feedback where it remains visible, and avoid duplicate notifications. Do not suppress a failure solely because the acknowledged origin rerender aborted the old signal. Exact foreign physical/origin owners still suppress obsolete errors and completion effects. No new copy is proposed.
+
+## O3 Pending controls belong to the action, independently of cancellation
+
+Use the existing action controller identity as the action lease. Cancellation fences obsolete async effects, but abort during successful origin adoption must not prevent that action from releasing its pending state. Retain the controller identity until its own finally releases the pending ref and UI when mounted. A settled prior action cannot clear a different current action. Unmount cleanup aborts without updating an unmounted view. No new process, registry or persisted state is required. Both successful and failed admitted append settle to enabled controls on a later conflict or unavailable state.
+
+## Proof
+
+Use real Jotai/provider subscriptions and actual shared append consumers. Cover admitted subscriber edits without throwing, first-save Save result and pending close, durable dirty readback and later CAS. Exercise the direct recovery button with subscriber failure and verify its existing notification exactly once, plus foreign-owner suppression. After admitted success and failure, drive a later conflict or unavailable state and prove controls enabled and a new recovery operation admitted. Include overlap ownership and unmount safety at the existing controller boundary where needed.
+
+Retain all current subscriber-throw, refusal, uncertainty, cold-reload and foreign-owner tests. Functional repairs require source-only Git-derived reversal with tests retained, no offsets, exact hash restoration and green scoped proof. Root runs the integrated related and pre-review gate before source commit and another scoped closure review. Browser baselines follow source closure. Complete native/browser/final gates and push obligations are unchanged.
+
+### Raw focused mechanism review
+
+```text
+No plan defects found in mechanism-r4. O1–O3 address R2-C1, R2-C2 and R2-E1 through the existing shared append and controller boundaries. The proposed behavioral tests can detect all three defects.
+
+Limitation: static mechanism review only. Source closure remains pending implementation and regression proof at a later revision (confidence: 95).
+
+VERDICT: APPROVED
+```
