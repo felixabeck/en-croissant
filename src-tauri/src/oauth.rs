@@ -1511,10 +1511,12 @@ mod tests {
 
     #[tokio::test]
     async fn production_revocation_bounds_streaming_confirmation_and_distinguishes_read_failure() {
+        use tokio::io::AsyncWriteExt;
         use LichessRevocationOutcome::*;
+        let prefix = r#"{"loopback-private-secret":null}"#;
         let exact_cap = format!(
-            "{{\"loopback-private-secret\":null}}{}",
-            " ".repeat(MAX_TOKEN_TEST_RESPONSE_BYTES - 32)
+            "{prefix}{}",
+            " ".repeat(MAX_TOKEN_TEST_RESPONSE_BYTES - prefix.len())
         );
         assert_eq!(exact_cap.len(), MAX_TOKEN_TEST_RESPONSE_BYTES);
         let oversize = format!("{exact_cap} ");
@@ -1524,13 +1526,54 @@ mod tests {
             (revocation_response("200 OK", &oversize), Rejected),
             // No Content-Length: enforce the cap on chunks, not just response headers.
             (format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{oversize}\r\n0\r\n\r\n", oversize.len()), Rejected),
-            (format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{oversize}"), Rejected),
             // A declared length is not trusted as evidence that the complete JSON arrived.
             ("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"loopback-private-secret\":null}".into(), Unreachable),
         ] {
             let (_, outcome) = loopback_revocation(vec![revocation_response("401 Unauthorized", ""), response]).await;
             assert_eq!(outcome, expected);
         }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let services = ProdOAuthServices::with_token_urls(
+            Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
+            format!("{origin}/api/token"),
+            format!("{origin}/api/token/test"),
+        );
+        let server = async {
+            let (mut delete, _) = listener.accept().await.unwrap();
+            read_revocation_request(&mut delete).await;
+            delete
+                .write_all(revocation_response("401 Unauthorized", "").as_bytes())
+                .await
+                .unwrap();
+            drop(delete);
+            let (mut confirmation, _) = listener.accept().await.unwrap();
+            read_revocation_request(&mut confirmation).await;
+            confirmation
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            confirmation.write_all(oversize.as_bytes()).await.unwrap();
+            // Exceed socket buffering so reading until EOF lets this write succeed.
+            let trailing_body = vec![b' '; 16 * 1024 * 1024];
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                confirmation.write_all(&trailing_body),
+            )
+            .await
+        };
+        let (extra_write, outcome) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(server, services.revoke_token("loopback-private-secret"))
+        })
+        .await
+        .expect("revocation must stop reading the over-cap loopback response");
+        assert_eq!(outcome, Rejected);
+        assert!(
+            !matches!(extra_write, Ok(Ok(()))),
+            "the reader must stop before the trailing body write succeeds"
+        );
+        assert_token_free_outcome(outcome, "loopback-private-secret");
     }
 
     #[tokio::test]

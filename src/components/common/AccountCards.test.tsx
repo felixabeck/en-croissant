@@ -232,6 +232,29 @@ describe("Lichess account removal", () => {
     },
   );
 
+  test.each([null, "unexpected_revocation_outcome"])(
+    "completes local logout for %s and shows the unconfirmed warning",
+    async (outcome) => {
+      mocks.removeLichessAccount.mockResolvedValue({
+        state: "removed",
+        revocation_pending: true,
+        revocation_outcome: outcome,
+        durability_uncertain: false,
+      });
+      await renderCards();
+      await logout();
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+      expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+      expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+      expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
+        message: "Home.Accounts.RevocationPending Lichess.Revocation.Unconfirmed",
+        color: "orange",
+      });
+      if (outcome !== null)
+        expect(mocks.notificationsShow.mock.calls[0][0].message).not.toContain(outcome);
+    },
+  );
+
   test.each(["revoked", "already_invalid", null])(
     "%s needs no pending warning",
     async (outcome) => {
