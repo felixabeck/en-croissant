@@ -1509,6 +1509,89 @@ mod tests {
         }
     }
 
+    fn limit_revocation_send_buffer(stream: &tokio::net::TcpStream) {
+        const REQUESTED: i32 = 4096;
+        #[cfg(unix)]
+        let effective = {
+            use std::os::fd::AsRawFd;
+            let fd = stream.as_raw_fd();
+            let set = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &REQUESTED as *const i32 as *const libc::c_void,
+                    std::mem::size_of_val(&REQUESTED) as libc::socklen_t,
+                )
+            };
+            assert_eq!(set, 0, "setsockopt SO_SNDBUF");
+            let mut value = 0i32;
+            let mut len = std::mem::size_of_val(&value) as libc::socklen_t;
+            let get = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &mut value as *mut i32 as *mut libc::c_void,
+                    &mut len,
+                )
+            };
+            assert_eq!(get, 0, "getsockopt SO_SNDBUF");
+            value
+        };
+        #[cfg(windows)]
+        let effective = {
+            use std::os::windows::io::AsRawSocket;
+            #[link(name = "ws2_32")]
+            extern "system" {
+                fn setsockopt(
+                    socket: usize,
+                    level: i32,
+                    name: i32,
+                    value: *const u8,
+                    len: i32,
+                ) -> i32;
+                fn getsockopt(
+                    socket: usize,
+                    level: i32,
+                    name: i32,
+                    value: *mut u8,
+                    len: *mut i32,
+                ) -> i32;
+            }
+            const SOL_SOCKET: i32 = 0xffff;
+            const SO_SNDBUF: i32 = 0x1001;
+            let socket = stream.as_raw_socket() as usize;
+            let set = unsafe {
+                setsockopt(
+                    socket,
+                    SOL_SOCKET,
+                    SO_SNDBUF,
+                    &REQUESTED as *const i32 as *const u8,
+                    std::mem::size_of_val(&REQUESTED) as i32,
+                )
+            };
+            assert_eq!(set, 0, "setsockopt SO_SNDBUF");
+            let mut value = 0i32;
+            let mut len = std::mem::size_of_val(&value) as i32;
+            let get = unsafe {
+                getsockopt(
+                    socket,
+                    SOL_SOCKET,
+                    SO_SNDBUF,
+                    &mut value as *mut i32 as *mut u8,
+                    &mut len,
+                )
+            };
+            assert_eq!(get, 0, "getsockopt SO_SNDBUF");
+            value
+        };
+        assert!(
+            effective > 0 && effective <= 256 * 1024,
+            "send buffer stayed large: {effective}"
+        );
+    }
+
     #[tokio::test]
     async fn production_revocation_bounds_streaming_confirmation_and_distinguishes_read_failure() {
         use tokio::io::AsyncWriteExt;
@@ -1555,7 +1638,10 @@ mod tests {
                 .await
                 .unwrap();
             confirmation.write_all(oversize.as_bytes()).await.unwrap();
-            // Exceed socket buffering so reading until EOF lets this write succeed.
+            // A loopback send buffer can absorb 16 MiB on Windows even after the
+            // client stops reading. Shrink it so the trailer completes only if
+            // the client keeps consuming the body.
+            limit_revocation_send_buffer(&confirmation);
             let trailing_body = vec![b' '; 16 * 1024 * 1024];
             tokio::time::timeout(
                 Duration::from_secs(2),
