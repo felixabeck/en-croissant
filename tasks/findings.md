@@ -16526,3 +16526,20 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Open question:** How should the shared catalog card allocate action, Cancel and portrait width across supported viewports and font scales so active labels remain readable without moving the clipping elsewhere?
 * **Related:** f-20261001-05 concerns missing installed portraits, and handled f-20261015-06 concerns the Engines editor. Neither covers catalog action width. No evidenced shared Root. This separate layout-design question is deferred under push-review-policy section 4 while the adopted stale-success mandate remains unchanged.
 * **Found by:** Codex screenshot inspection in full-auto drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6, 2026-10-17.
+
+---
+
+## 2026-10-17 — filed through the inbox spool
+
+### Remote CI Test job is red at the published stale-progress run record
+
+* **ID:** f-20261017-03 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** d2947652-9889-4173-ae73-08678f8fc65f · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-d2947652-9889-4173-ae73-08678f8fc65f-1.jsonl
+* **Impact class:** tooling
+* **Where:** `.github/workflows/test.yml`, Test run 38989637851, job 117268930189, head `244cfec527ecba4e2a3ed66ad41ae1b469809cc1`.
+* **Defect:** `pnpm ci:remote:check` exited 1 on 2026-10-17 and reported the upstream `test` job as failure. The published branch therefore has a required red CI result, blocking the next ordinary push under the shared push policy.
+* **Spotted outside diff:** yes, release prerequisite discovered while implementing f-20261003-09.
+* **Failure scenario:** an ordinary push checks newest completed upstream jobs, receives this failure and refuses publication.
+* **Proof:** read the failed job logs, reproduce its failing command locally, then repair and prove the affected final gates and hosted result. `pnpm ci:remote:check` must return 0 after the repair reaches upstream.
+* **Related:** f-20261016-01 is handled and predates this run. No shared root cause is established.
+* **Found by:** Codex root, release prerequisite check for f-20261003-09, 2026-10-17. https://github.com/felixabeck/en-croissant/actions/runs/38989637851/job/117268930189
