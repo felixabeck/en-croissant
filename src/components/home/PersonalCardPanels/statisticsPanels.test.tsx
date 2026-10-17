@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PlayerGameInfo } from "@/bindings";
 
 dayjs.extend(customParseFormat);
@@ -75,7 +75,7 @@ vi.mock("@/utils/tabs", () => ({ createTab: vi.fn(), runTabCreation: vi.fn() }))
 vi.mock("@/utils/treeReducer", () => ({ countMainPly: vi.fn(), defaultTree: vi.fn() }));
 
 import OpeningsPanel from "./OpeningsPanel";
-import OverviewPanel from "./OverviewPanel";
+import OverviewPanel, { fillMissingMonths } from "./OverviewPanel";
 import RatingsPanel from "./RatingsPanel";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -202,6 +202,89 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.useRealTimers();
+});
+
+describe.each(["America/New_York", "Europe/Berlin"])("fillMissingMonths in %s", (timezone) => {
+  test.each([
+    {
+      name: "2026-09 through 2026-10",
+      input: [
+        { name: "2026-09", count: 5 },
+        { name: "2026-10", count: 1 },
+      ],
+      expected: [
+        { name: "2026-09", count: 5 },
+        { name: "2026-10", count: 1 },
+      ],
+    },
+    {
+      name: "2026-10 through 2026-11 across autumn DST",
+      input: [
+        { name: "2026-10", count: 2 },
+        { name: "2026-11", count: 3 },
+      ],
+      expected: [
+        { name: "2026-10", count: 2 },
+        { name: "2026-11", count: 3 },
+      ],
+    },
+    {
+      name: "2025-12 through 2026-02 across a year boundary with unsorted input",
+      input: [
+        { name: "2026-02", count: 4 },
+        { name: "2025-12", count: 2 },
+      ],
+      expected: [
+        { name: "2025-12", count: 2 },
+        { name: "2026-01", count: 0 },
+        { name: "2026-02", count: 4 },
+      ],
+    },
+    {
+      name: "2026-07 through 2026-09 with a missing month filled with zero",
+      input: [
+        { name: "2026-07", count: 3 },
+        { name: "2026-09", count: 5 },
+      ],
+      expected: [
+        { name: "2026-07", count: 3 },
+        { name: "2026-08", count: 0 },
+        { name: "2026-09", count: 5 },
+      ],
+    },
+    {
+      name: "2026-09 as a single month",
+      input: [{ name: "2026-09", count: 7 }],
+      expected: [{ name: "2026-09", count: 7 }],
+    },
+    { name: "empty input", input: [], expected: [] },
+    {
+      name: "2026-?? alongside 2026-09 keeps the valid month",
+      input: [
+        { name: "2026-??", count: 1 },
+        { name: "2026-09", count: 5 },
+      ],
+      expected: [{ name: "2026-09", count: 5 }],
+    },
+    {
+      name: "only invalid month keys returns no buckets",
+      input: [
+        { name: "2026-??", count: 1 },
+        { name: "2026-00", count: 2 },
+        { name: "2026-13", count: 3 },
+        { name: "2026-9", count: 4 },
+        { name: "2026-09suffix", count: 5 },
+      ],
+      expected: [],
+    },
+  ])("$name", ({ input, expected }) => {
+    vi.stubEnv("TZ", timezone);
+    try {
+      expect(fillMissingMonths(input)).toEqual(expected);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 test("Overview sums duplicate daily keys into result totals and month buckets", async () => {

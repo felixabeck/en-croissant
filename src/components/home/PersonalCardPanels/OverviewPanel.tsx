@@ -19,24 +19,25 @@ import { summarizeDailyStats } from "./dailyStatsSummary";
 import TimeControlSelector from "./TimeControlSelector";
 import WebsiteAccountSelector from "./WebsiteAccountSelector";
 
-function fillMissingMonths(
+export function fillMissingMonths(
   data: { name: string; count: number }[],
 ): { name: string; count: number }[] {
-  if (data.length === 0) return data;
+  const validData = data.filter(({ name }) => /^\d{4}-(0[1-9]|1[0-2])$/.test(name));
+  if (validData.length === 0) return [];
 
-  data.sort((a, b) => a.name.localeCompare(b.name));
+  validData.sort((a, b) => a.name.localeCompare(b.name));
 
   const monthStrings: string[] = [];
-  const startDate = new Date(`${data[0].name}-01`);
-  const endDate = new Date(`${data[data.length - 1].name}-01`);
+  const [startYear, startMonth] = validData[0].name.split("-").map(Number);
+  const [endYear, endMonth] = validData[validData.length - 1].name.split("-").map(Number);
+  const lastMonth = endYear * 12 + endMonth - 1;
 
-  const timezoneOffset = new Date().getTimezoneOffset() * 60 * 1000; // milliseconds
-  const currDate = new Date(startDate);
-  while (currDate <= endDate) {
-    const localCurrDate = new Date(currDate.getTime() - timezoneOffset);
-    const monthString = localCurrDate.toISOString().slice(0, 7);
-    monthStrings.push(monthString);
-    currDate.setMonth(currDate.getMonth() + 1);
+  for (let month = startYear * 12 + startMonth - 1; month <= lastMonth; month++) {
+    const year = Math.floor(month / 12);
+    const monthOfYear = (month % 12) + 1;
+    monthStrings.push(
+      `${year.toString().padStart(4, "0")}-${monthOfYear.toString().padStart(2, "0")}`,
+    );
   }
 
   const dataMap = new Map(data.map((item) => [item.name, item.count]));
