@@ -15091,7 +15091,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 
 ### Player and tournament ArrowDown navigation indexes beyond the loaded page
 
-* **ID:** f-20261010-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 08351eaf-aeac-45f2-aac0-9ca5f71e144a · output /home/felixb/.claude/drain-plans/chessfable-0a459a4f/slot-1/run/attempt-08351eaf-aeac-45f2-aac0-9ca5f71e144a-1.jsonl
 * **Where:** `src/components/databases/PlayerTable.tsx:48-55`, `src/components/databases/TournamentTable.tsx:44-51`.
 * **Defect:** both ArrowDown handlers compare the next index against total database result count, then read the loaded page array at that index. At the last row of a 25-row page with more than 25 results, the guard passes for index 25 and reading `.id` from the absent row throws.
@@ -15099,6 +15099,10 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Related:** f-20261001-09 changes pane geometry, not selection paging. This independently existing page-navigation defect is a named pre-change limit of the layout plan. No duplicate was found in the ledger or the two pending entries checked before filing.
 * **Proof:** component regression tests exercising ArrowDown at the last loaded row with total count greater than page length, first/last boundaries and selection changes, with no thrown exception or invalid selection.
 * **Found by:** Codex locate probe 1 and orchestrator source confirmation during layout planning, 2026-10-10. Plan authorship and arbitration shared one context. Detection ran on the same model family as prospective code.
+* **Handled:** commit "fix(databases): keep arrow-key selection inside the loaded page" (Grok Bot side lane, Codex leaf). New `src/components/databases/pageSelection.ts` (`getAdjacentRecordId(records, selectedId, direction)`) returns the id of the adjacent loaded record, or nothing at the page boundaries or without a selection. The ArrowUp and ArrowDown handlers of `PlayerTable.tsx` and `TournamentTable.tsx` use it, so ArrowDown is bounded by the loaded page instead of the total result count. Paging and id-based selection are unchanged; `count` still drives the paginator.
+* **Proof:** new `src/components/databases/PlayerTournamentTable.test.tsx` for both tables: ArrowDown at the last loaded row with a total count above the page length keeps the selection without throwing (before the fix both tables threw `TypeError` reading `id`), plus middle movement, first/last boundaries, row-click selection changes, an absent selection and an empty page. Before: 2 failed, 12 passed; after: 14 passed. Review r1: correctness, root-cause, tests, minimalism APPROVED; code-quality asked to rename the helper (it first read as a page id), fixed and approved in r2.
+* **Rejected:** bounding each of the four handlers inline (four copies of the same bound; the shared helper is smaller to keep correct).
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"e9f0405272c3a1107e98a8dc208a0a52e8fe6a5a42d553b3c4e2a11aa9a28d93","header_sha256":"b7a6db15b32551e4ddc62afafc9491e9399d39cc0709b961e280473ea5e685da","header_status":"handled","input_sha256":"48eb6c7b97a8d245e8314ca1a6affd8bc8c434c1cc069d697381afc3b5f55ea8","kind":"mutation-receipt","operation":"855254798bebba455d3f4470ac06f0f81422dbd656ffd679210742b8dd1016ae","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-04"],"target":"f-20261010-04","v":1} -->
 
 ### Tauri security review lens directs reviewers to the retired path_authority.rs file
 
