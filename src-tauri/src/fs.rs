@@ -1929,7 +1929,7 @@ fn run_archive_payload_created_hook(target: &Path, file: &std::fs::File) {
     }
 }
 
-/// Keyed by the unique test target so a different blocking worker cannot consume the hook.
+/// Keyed by the unique test target so a different operation cannot consume the hook.
 #[cfg(test)]
 fn set_core_after_pin_hook(path: &Path, hook: Option<CoreAfterPinHook>) {
     let mut hooks = CORE_AFTER_PIN_HOOKS.lock().unwrap();

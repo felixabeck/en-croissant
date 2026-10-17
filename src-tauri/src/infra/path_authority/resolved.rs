@@ -233,18 +233,21 @@ impl ResolvedPath {
         self.operation
     }
 
-    /// Creates a private archive sibling through this operation's retained parent.
-    pub(crate) fn create_archive_staging(
-        &self,
-    ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
+    fn checked_archive_parent(&self) -> Result<&fs::File, Error> {
         if self.operation != PathOperation::DownloadArchive {
             return Err(Error::InvalidInput(
                 "resolved capability is not an archive destination".into(),
             ));
         }
-        let parent = self.parent().ok_or_else(|| {
-            Error::InvalidInput("archive destination has no retained parent".into())
-        })?;
+        self.parent()
+            .ok_or_else(|| Error::InvalidInput("archive destination has no retained parent".into()))
+    }
+
+    /// Creates a private archive sibling through this operation's retained parent.
+    pub(crate) fn create_archive_staging(
+        &self,
+    ) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
+        let parent = self.checked_archive_parent()?;
         crate::infra::fs::OwnedStagingDir::create_in(parent, ".archive")
     }
 
@@ -253,14 +256,7 @@ impl ResolvedPath {
         &self,
         staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
-        if self.operation != PathOperation::DownloadArchive {
-            return Err(Error::InvalidInput(
-                "resolved capability is not an archive destination".into(),
-            ));
-        }
-        let parent = self.parent().ok_or_else(|| {
-            Error::InvalidInput("archive destination has no retained parent".into())
-        })?;
+        let parent = self.checked_archive_parent()?;
         let leaf = self.leaf().ok_or_else(|| {
             Error::InvalidInput("archive destination has no retained leaf".into())
         })?;
@@ -1267,6 +1263,8 @@ mod tests {
     #[test]
     fn archive_staging_authority_requires_archive_operation_and_retained_parent() {
         let dir = tempfile::tempdir().unwrap();
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut staging = crate::infra::fs::OwnedStagingDir::adopt(&staging_dir).unwrap();
         let parent =
             crate::infra::fs::open_parent_no_follow(&dir.path().join("installed")).unwrap();
         let mut resolved = ResolvedPath {
@@ -1281,16 +1279,30 @@ mod tests {
         };
         assert!(matches!(
             resolved.create_archive_staging(),
-            Err(Error::InvalidInput(_))
+            Err(Error::InvalidInput(message))
+                if message == "resolved capability is not an archive destination"
+        ));
+        assert!(matches!(
+            resolved.atomic_install_download_dir(&mut staging),
+            Err(Error::InvalidInput(message))
+                if message == "resolved capability is not an archive destination"
         ));
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(staging_dir.path().is_dir());
         resolved.operation = PathOperation::DownloadArchive;
         resolved.parent = None;
         assert!(matches!(
             resolved.create_archive_staging(),
-            Err(Error::InvalidInput(_))
+            Err(Error::InvalidInput(message))
+                if message == "archive destination has no retained parent"
+        ));
+        assert!(matches!(
+            resolved.atomic_install_download_dir(&mut staging),
+            Err(Error::InvalidInput(message))
+                if message == "archive destination has no retained parent"
         ));
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(staging_dir.path().is_dir());
     }
 
     #[test]
