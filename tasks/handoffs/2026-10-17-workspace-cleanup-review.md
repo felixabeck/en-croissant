@@ -1766,3 +1766,124 @@ Limitation: static mechanism review only. Source closure remains pending impleme
 
 VERDICT: APPROVED
 ```
+
+
+## Round2 append repair implementation and root proof
+
+The same sensitive writer resumed its original thread as fix-6, gpt-6.1-sol/high, with no
+fallback or capacity retry. Source commit5ef60d10 changes only the shared append helper and
+recovery gate plus three existing test files. Canonical acknowledgement remains intact.
+The complete raw report follows. Root inspected all five changed paths, both production
+reversal hunks, no-offset application logs and exact source/test restoration hashes.
+Six actual functional regressions failed both before correction and under source-only reversal.
+Five ownership, registered-failure and unmount controls passed in the reversal run.
+The restored targeted suite passed264 tests in5files, formatting and zero-warning lint.
+
+Independent root proof passed582 targeted tests in18files and2190 related tests in103files.
+All seven pre-review lanes passed. Canonical original drain attempt gate-r2-repair-proof.2C8yo2
+completed `0 r2-repair-proof 6c58bdd8e104fc9b59600e8bf3e736c33f42b465` before source commit.
+Frontend build7.5s, format/lint2.3s, frontend mapping0.4s, backend mapping1.0s, Windows
+compile/lint9.6s, bundle0.5s, changed-file mutation659.0s. All three mutation packages scored
+100%, with detected timeout mutants in tree-path. This is pre-review proof of the owned
+repair tree, not the final clean push gate. The R2-C1/C2/E1 source repairs now require closure
+review. R1-T1 is still honestly OPEN for browser generation and inspection of the two new PNGs.
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model
+family as the code. Root remains integration, arbitration, browser and release owner.
+
+### Raw second append repair report
+
+```text
+R4 append completion repair completed, left unstaged
+
+Scope base: 6c58bdd8e104fc9b59600e8bf3e736c33f42b465. The canonical acknowledgement introduced in a9c367b6 remains intact. Root owns integration review, records, broad tests, browser, screenshots, commits and push.
+
+Read the approved mechanism append-mechanism-r4.md, the complete lens-plan-r4.txt and both raw R2 correctness/error-handling reports before writing. The focused reviewer approved O1–O3 without corrections, so no additional root disposition was required. The assigned rules, architecture map, policy section 5 and decisions remain the applicable contract.
+
+Changed repository paths, and no others:
+
+- /home/felixb/Projekte/chessfable.worktrees/drain/src/utils/tabs.ts
+- /home/felixb/Projekte/chessfable.worktrees/drain/src/utils/tabs.test.ts
+- /home/felixb/Projekte/chessfable.worktrees/drain/src/components/tabs/FileFreshnessGate.tsx
+- /home/felixb/Projekte/chessfable.worktrees/drain/src/components/tabs/FileFreshnessGate.test.tsx
+- /home/felixb/Projekte/chessfable.worktrees/drain/src/components/tabs/ConfirmChangesModal.test.tsx
+
+Mechanism and caller behavior:
+
+- R2-C1 / O1: appendStoreGame still acknowledges the exact canonical successor and finalizes the captured write stamp, dirty state, append marker and freshness before workspace observers throw. Its acknowledgement-time unchanged check is now local to that finalization. After updateTab and synchronous subscribers return, the function verifies successor ownership again and reports saved only when the current tree is not dirty and serializes to the captured PGN. Otherwise it returns edited. First-save saveToFile maps edited to its existing superseded result, which keeps ConfirmChangesModal's pending close open. Recovery retains its existing dirty check. Deliberate later Save uses the acknowledged slot's game CAS
+- R2-E1 / O2: an owned direct recovery failure still uses the existing panel where visible. When finalization has made freshness verified and hidden that panel, it also passes the normalized failure to the existing notifyUnlessCancelled/Mantine notification channel. Registered throwing recovery throws before this notification branch, keeping display caller-owned and preventing duplicate notifications. Existing exact foreign physical/origin owner checks continue suppressing obsolete failures
+- R2-C2 / O3: identity-effect cleanup aborts the existing controller without discarding its identity. That action's finally releases the pending ref, controller and mounted UI only if the current controller still matches. Aborted successful adoption therefore settles its controls. Unmount prevents a UI state update. The identity check also prevents an old finally from clearing a different action's controller
+
+No semantic atoms change, persistence reconstruction, journal, registry, schema, native change, new action or copy was needed. ConfirmChangesModal.tsx and BoardAnalysis.tsx were inspected and require no production change because their existing SaveResult and normalized-failure behavior carries the corrected results. The existing notifyError.ts channel and tree.ts save/dirty actions were inspected as direct dependencies, with no edits.
+
+Meaningful regression coverage:
+
+- Real provider/Jotai no-throw subscriber edits for both none-origin first save and file-origin shared append, truthful completion, dirty tree and stamp/marker consistency, cold store readback and later game CAS
+- Actual ConfirmChangesModal pending-close behavior on first save, including keeping the dialog open after the subscriber edit and closing only after a later deliberate game CAS saves it
+- Actual direct Save as new game button, an admitted workspace subscriber failure and exactly one notification with the existing title and original normalized error message
+- Existing registered recovery subscriber-failure tests now also assert that they emit no notification, while retaining their propagated failure and later CAS coverage
+- Actual enabled Reload/Save/Close controls on later conflict/unavailable states after both admitted success and admitted failure. A second direct recovery reaches native append at the new count, stays disabled while pending, rejects a duplicate click and releases controls again after settlement
+- Direct physical/origin foreign replacement with a throwing real workspace subscriber suppresses notification and preserves the foreign tree
+- Direct unmount suppresses a late error notification and preserves the tree/freshness. Existing registered unmount, all-owner, uncertainty, refusal, cold-reload and late-edit cases remain in the five-file suite
+
+Notification proof asserts the actual notification facade's payload at its Mantine show boundary. It does not claim browser rendering of the toast. Controls and the pending-close dialog are asserted in rendered component tests. Browser proof remains root-owned.
+
+Exact proof commands and logs, all under /tmp/build-cad8d11a-cleanup/:
+
+Initial real red, before any production repair:
+
+```sh
+pnpm exec vitest run src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx -t 'no-throw|direct recovery notifies once|settled admitted|direct recovery suppresses notification'
+```
+
+append-r4-before-fix-red.log: exit 1, 6 failed, 2 passed, 181 skipped. R2-C1 produced saved instead of superseded for first save, saved instead of edited for shared file append, and an unexpected pending-close onSaved call. R2-E1 produced zero notifications. R2-C2 left Reload disabled after both success and failure. These were valid functional witnesses. There was no invalid preliminary harness attempt.
+
+Assigned five-file command:
+
+```sh
+pnpm exec vitest run src/utils/tabs.test.ts src/state/atoms.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx src/components/boards/BoardAnalysis.test.tsx
+```
+
+- append-r4-initial-green.log: exit 0, 263 passed across 5 files after the production repair
+- append-r4-targeted-green.log: exit 0, 264 passed across 5 files after adding direct unmount coverage and formatting
+- append-r4-restored-targeted-green.log: exit 0, 264 passed across 5 files after the exact source/test restoration
+
+Retained-test fix-revert proof:
+
+```sh
+git diff HEAD -- src/utils/tabs.ts src/components/tabs/FileFreshnessGate.tsx > /tmp/build-cad8d11a-cleanup/append-r4-fix.patch
+sha256sum src/utils/tabs.ts src/components/tabs/FileFreshnessGate.tsx src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx > /tmp/build-cad8d11a-cleanup/append-r4-before-revert.sha256
+sha256sum src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx > /tmp/build-cad8d11a-cleanup/append-r4-retained-tests.sha256
+git apply -R --verbose /tmp/build-cad8d11a-cleanup/append-r4-fix.patch
+git diff HEAD -- src/utils/tabs.ts src/components/tabs/FileFreshnessGate.tsx > /tmp/build-cad8d11a-cleanup/append-r4-reverted-production.diff
+sha256sum -c /tmp/build-cad8d11a-cleanup/append-r4-retained-tests.sha256
+pnpm exec vitest run src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx -t 'no-throw|direct recovery notifies once|settled admitted|direct recovery suppresses notification|unmounted direct recovery|recovery provider preserves admitted subscriber failure'
+git apply --verbose /tmp/build-cad8d11a-cleanup/append-r4-fix.patch
+sha256sum -c /tmp/build-cad8d11a-cleanup/append-r4-before-revert.sha256
+```
+
+append-r4-revert.log and append-r4-restore.log show both production paths applied cleanly, with no offsets. Only the current Git-derived implementation hunks were reversed. The canonical acknowledgement in HEAD was never reversed. append-r4-reverted-production.diff is exactly 0 bytes. append-r4-retained-tests-check.log proves all three test files stayed byte-identical while the fix was removed.
+
+append-r4-fix-reverted-red.log: exit 1, the same 6 functional failures, 5 passed and 179 skipped. The 5 passing controls are the two registered owned-failure cases, two direct foreign-owner suppression cases and direct unmount suppression. Source restoration then passed the full 264-test command.
+
+append-r4-restoration-check.log reports OK for all five paths. Exact SHA-256 values before reversal and after restoration:
+
+```text
+f4ded2beac36db724c660471a73090f479956f08a88d9b525a7f0f5b3c0285d7  src/utils/tabs.ts
+654b8a8d788b0725e2679d3d0ee2290a821b5bd7e6db986b35534cf2ca428cc8  src/components/tabs/FileFreshnessGate.tsx
+4b313c88a462cf82425e1bb8a34c6990a1b0d217458b879b8ef08ff86694a0dc  src/utils/tabs.test.ts
+e13b4cf366e6ba2e3bbe4182f5f510aabdca60ee32e11169080d34bfd0bcfc42  src/components/tabs/FileFreshnessGate.test.tsx
+11551f479302469da7479a18e8bf6aa13e5106b5eebd049e6908ccaec9cd1952  src/components/tabs/ConfirmChangesModal.test.tsx
+```
+
+Formatting and lint:
+
+```sh
+pnpm exec oxfmt --write src/utils/tabs.ts src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx
+pnpm exec oxfmt --check src/utils/tabs.ts src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx
+pnpm exec oxlint --deny-warnings src/utils/tabs.ts src/utils/tabs.test.ts src/components/tabs/FileFreshnessGate.tsx src/components/tabs/FileFreshnessGate.test.tsx src/components/tabs/ConfirmChangesModal.test.tsx
+```
+
+All three commands exited 0. append-r4-format.log reports all 5 files correctly formatted. append-r4-lint.log reports 0 warnings and 0 errors across all 5 files. git diff --check also passed. append-r4-index.log is empty, proving no staged changes.
+
+No scope deviation or additional qualifying defect. Only the five named repository paths changed. No browser, screenshots, broad related/type/pre-review/mutation gates, agents, skills, records edits, staging, commits or push were performed. Root must independently review the final diff, run its integrated union/related/pre-review proof and complete browser obligations, including R1-T1. This report and proof artifacts are temporary files outside the repository.
+```
