@@ -1,8 +1,8 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { SWRConfig } from "swr";
+import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { DatabaseHandle, Event as Tournament } from "@/bindings";
+import type { DatabaseHandle, NormalizedGame, Event as Tournament } from "@/bindings";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 
 const mocks = vi.hoisted(() => ({ getTournamentGames: vi.fn(), notify: vi.fn() }));
@@ -17,7 +17,60 @@ vi.mock("jotai", () => ({ useAtom: () => [[], vi.fn()], useSetAtom: () => vi.fn(
 vi.mock("@/state/atoms", () => ({ activeTabAtom: {}, tabsAtom: {} }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@tabler/icons-react", () => ({ IconEye: () => null }));
-vi.mock("mantine-datatable", () => ({ DataTable: () => null }));
+// Keep the table boundary interactive and render the records supplied by TournamentCard.
+vi.mock("mantine-datatable", () => ({
+  DataTable: ({
+    records,
+    page,
+    totalRecords,
+    recordsPerPage,
+    recordsPerPageOptions,
+    onRecordsPerPageChange,
+    onPageChange,
+    onSortStatusChange,
+  }: {
+    records: NormalizedGame[];
+    page?: number;
+    totalRecords: number;
+    recordsPerPage: number;
+    recordsPerPageOptions: number[];
+    onRecordsPerPageChange: (size: number) => void;
+    onPageChange: (page: number) => void;
+    onSortStatusChange: (sort: { columnAccessor: string; direction: "desc" }) => void;
+  }) =>
+    page === undefined ? null : (
+      <div>
+        <table>
+          <tbody>
+            {records.map((game) => (
+              <tr key={game.id}>
+                <td>{game.white}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <output>{`Page ${page} of ${Math.max(1, Math.ceil(totalRecords / recordsPerPage))}, size ${recordsPerPage}, total ${totalRecords}`}</output>
+        {recordsPerPageOptions.map((size) => (
+          <button key={size} type="button" onClick={() => onRecordsPerPageChange(size)}>
+            {`Size ${size}`}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={page >= Math.ceil(totalRecords / recordsPerPage)}
+          onClick={() => onPageChange(page + 1)}
+        >
+          Next page
+        </button>
+        <button
+          type="button"
+          onClick={() => onSortStatusChange({ columnAccessor: "ply_count", direction: "desc" })}
+        >
+          Sort plies descending
+        </button>
+      </div>
+    ),
+}));
 vi.mock("@/components/common/IconAction", () => ({ IconAction: () => null }));
 vi.mock("@/utils/tabs", () => ({ createTab: vi.fn() }));
 vi.mock("@mantine/core", () => ({
@@ -39,8 +92,16 @@ const file = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
 let root: Root;
 let container: HTMLDivElement;
 const cache = new Map();
+let refreshGames: () => Promise<unknown>;
+
+function TestCard({ database }: { database: DatabaseHandle }) {
+  const { mutate } = useSWRConfig();
+  refreshGames = () => mutate((key) => Array.isArray(key) && key[0] === "tournament-games");
+  return <TournamentCard tournament={tournament} file={database} />;
+}
 
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   cache.clear();
   vi.clearAllMocks();
   container = document.createElement("div");
@@ -51,6 +112,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.unstubAllGlobals();
 });
 
 async function render(database: DatabaseHandle) {
@@ -58,7 +120,7 @@ async function render(database: DatabaseHandle) {
     root.render(
       <SWRConfig value={{ provider: () => cache }}>
         <DatabaseViewStateContext.Provider value={{} as never}>
-          <TournamentCard tournament={tournament} file={database} />
+          <TestCard database={database} />
         </DatabaseViewStateContext.Provider>
       </SWRConfig>,
     ),
@@ -95,3 +157,104 @@ test("TournamentCard surfaces a genuine lookup failure", async () => {
   await render(file("failed"));
   await vi.waitFor(() => expect(mocks.notify).toHaveBeenCalledWith("Common.Error", failure));
 });
+
+function games(count = 60): NormalizedGame[] {
+  return Array.from({ length: count }, (_, index): NormalizedGame => {
+    const id = index + 1;
+    return {
+      id,
+      white: `White ${id}`,
+      white_id: id,
+      black: `Black ${id}`,
+      black_id: id + 100,
+      date: new Date(Date.UTC(2026, 0, id)).toISOString().slice(0, 10),
+      ply_count: id,
+      result: "1-0",
+      event: "Candidates",
+      event_id: tournament.id,
+      site: "Test",
+      site_id: 1,
+      fen: "",
+      moves: "",
+    };
+  }).reverse();
+}
+
+async function click(label: string) {
+  const button = Array.from(container.querySelectorAll("button")).find(
+    (element) => element.textContent === label,
+  );
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+}
+
+function expectPage(page: number, size: number, ids: number[], total = 60) {
+  expect(Array.from(container.querySelectorAll("tbody tr"), (row) => row.textContent)).toEqual(
+    ids.map((id) => `White ${id}`),
+  );
+  expect(container.querySelector("output")?.textContent).toBe(
+    `Page ${page} of ${Math.max(1, Math.ceil(total / size))}, size ${size}, total ${total}`,
+  );
+}
+
+const ids = (start: number, end: number) =>
+  Array.from({ length: end - start + 1 }, (_, index) => start + index);
+
+async function renderGames() {
+  mocks.getTournamentGames.mockResolvedValue({ data: games() });
+  await render(file("pagination"));
+  await vi.waitFor(() => expectPage(1, 25, ids(1, 25)));
+}
+
+test("page size 10 displays games 11–20 on the second page", async () => {
+  await renderGames();
+  await click("Size 10");
+  await click("Next page");
+  expectPage(2, 10, ids(11, 20));
+});
+
+test("page size 50 displays 50 games and the remaining games on page two", async () => {
+  await renderGames();
+  await click("Size 50");
+  expectPage(1, 50, ids(1, 50));
+  await click("Next page");
+  expectPage(2, 50, ids(51, 60));
+});
+
+test("changing page size on a later page resets the paginator and displayed records", async () => {
+  await renderGames();
+  await click("Next page");
+  await click("Next page");
+  expectPage(3, 25, ids(51, 60));
+  await click("Size 50");
+  expectPage(1, 50, ids(1, 50));
+  await click("Next page");
+  await click("Size 10");
+  expectPage(1, 10, ids(1, 10));
+});
+
+test("sorting orders the games before selecting the displayed page", async () => {
+  await renderGames();
+  await click("Size 10");
+  await click("Next page");
+  await click("Sort plies descending");
+  expectPage(2, 10, ids(41, 50).reverse());
+});
+
+test.each([
+  { count: 40, page: 2, displayed: ids(26, 40) },
+  { count: 0, page: 1, displayed: [] },
+])(
+  "a result count of $count clamps the page and displayed records",
+  async ({ count, page, displayed }) => {
+    await renderGames();
+    await click("Next page");
+    await click("Next page");
+    expectPage(3, 25, ids(51, 60));
+    mocks.getTournamentGames.mockResolvedValue({ data: games(count) });
+    await act(async () => {
+      await refreshGames();
+    });
+    await vi.waitFor(() => expectPage(page, 25, displayed, count));
+  },
+);

@@ -107,7 +107,12 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
     (a, b) => b.points - a.points || a.name.localeCompare(b.name, "en", { sensitivity: "base" }),
   );
 
-  const paginatedGames = sortedGames.slice((page - 1) * 25, (page - 1) * 25 + 25);
+  const lastPage = Math.max(1, Math.ceil(sortedGames.length / pageSize));
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, lastPage));
+  }, [lastPage]);
+
+  const paginatedGames = sortedGames.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <Paper shadow="sm" p="sm" withBorder h="100%">
@@ -136,7 +141,10 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
               records={paginatedGames}
               totalRecords={sortedGames.length}
               recordsPerPage={pageSize}
-              onRecordsPerPageChange={setPageSize}
+              onRecordsPerPageChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
               recordsPerPageOptions={[10, 25, 50]}
               page={page}
               onPageChange={setPage}
