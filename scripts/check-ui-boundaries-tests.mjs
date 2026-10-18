@@ -21,7 +21,7 @@ async function runChecker(listedPath, prepare) {
     fakeGit,
     `#!/bin/sh
 case "$*" in
-  *"--others"*) ;;
+  *"--others"*|*"--deleted"*) ;;
   *)
     case " $* " in
       *" -z "*) printf '%s\\000' '${listedPath}' ;;

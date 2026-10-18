@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
@@ -120,6 +120,18 @@ describe("untranslated UI literal gate", () => {
 });
 
 describe("untranslated UI literal file discovery", () => {
+  test("scans live components when another tracked component is deleted in the working tree", async () => {
+    const root = await workspace();
+    const deleted = "src/components/Deleted.tsx";
+    writeFileSync(join(root, deleted), "<Text>Deleted copy</Text>;\n");
+    gitTrack(root, deleted);
+    rmSync(join(root, deleted));
+
+    await expect(checkUntranslatedJsx(root)).resolves.toEqual([
+      'src/components/Tracked.tsx: "Tracked copy"',
+    ]);
+  });
+
   test("scans tracked, untracked and symlinked components and skips test files", async () => {
     const root = await workspace();
     writeFileSync(join(root, "Linked.tsx"), "<Text>Linked copy</Text>;\n");

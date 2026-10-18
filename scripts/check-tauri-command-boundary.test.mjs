@@ -576,11 +576,11 @@ describe("native-location and asset-protocol boundaries", () => {
 });
 
 describe("working-tree enumeration and reads", () => {
-  test("uses the exact tracked and untracked git argv and deduplicates", () => {
+  test("uses the exact untracked, tracked and deleted git argv and deduplicates", () => {
     const calls = [];
     const runGit = (command, args, options) => {
       calls.push([command, args, options]);
-      const records = ["src/foo.ts", "src/shared.ts"];
+      const records = args.includes("--deleted") ? [] : ["src/foo.ts", "src/shared.ts"];
       const stdout = args.includes("-z") ? `${records.join("\0")}\0` : `${records.join("\n")}\n`;
       return { status: 0, stdout };
     };
@@ -591,6 +591,7 @@ describe("working-tree enumeration and reads", () => {
     expect(calls.map(([, args]) => args)).toEqual([
       ["ls-files", "--others", "--exclude-standard", "-z", "--", "src"],
       ["ls-files", "-z", "--", "src"],
+      ["ls-files", "--deleted", "-z", "--", "src"],
     ]);
   });
 

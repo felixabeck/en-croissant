@@ -11,6 +11,7 @@ import {
   FS_SURFACE_ALLOWLIST,
   INITIAL_FS_SURFACE_COUNTS,
   listRustSources,
+  runReleaseSurfaceCheck,
 } from "./check-rust-release-surface.mjs";
 import {
   allowedSource,
@@ -136,13 +137,24 @@ pub(crate) trait AtomicWriterInjector {}
       ),
     ).toEqual([]);
   });
-  test("the checker exits non-zero when a tracked Rust input cannot be read", async () => {
+  test("the checker accepts a tracked Rust input deleted in the working tree", async () => {
     const result = await runCheckerOver([
       { path: "src-tauri/src/missing.rs", contents: "pub struct Gone;\n", removeAfterStage: true },
     ]);
 
-    expectCliStatus(result, 1);
-    expect(result.stderr).toContain("Cannot read Rust source src-tauri/src/missing.rs");
+    expectCliStatus(result, 0);
+    expect(result.stderr).toBe("");
+  });
+  test("the checker rejects a listed Rust input that cannot be read", () => {
+    expect(() =>
+      runReleaseSurfaceCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src-tauri/src/unreadable.rs"],
+        readFile: () => {
+          throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        },
+      }),
+    ).toThrow("Cannot read Rust source src-tauri/src/unreadable.rs: permission denied");
   });
   test("the CLI reports unparseable cfg predicates as R5 violations", async () => {
     const result = await runCheckerOver([

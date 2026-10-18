@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
@@ -9,7 +9,7 @@ const temporaryRoot = testTempRoots(afterAll);
 
 /**
  * The walker is the single enumeration primitive every gate checker now shares,
- * so its two queries are proven here once rather than re-derived in each
+ * so its queries are proven here once rather than re-derived in each
  * checker's suite (`f-20260901-16`).
  */
 async function workspace() {
@@ -44,14 +44,27 @@ describe("working-tree file enumeration", () => {
     ).toContain("src/ignored.ts");
   });
 
-  test("the default call keeps its two NUL-delimited git queries", () => {
+  test("omits tracked files deleted in the working tree while retaining live files", async () => {
+    const root = await workspace();
+    const deleted = "src/deleted.ts";
+    writeFileSync(join(root, deleted), "export const deleted = 5;\n");
+    gitTrack(root, deleted);
+    rmSync(join(root, deleted));
+
+    expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).toEqual([
+      "src/nested/untracked.ts",
+      "src/tracked.ts",
+    ]);
+  });
+
+  test("the default call keeps its NUL-delimited git queries with deletions last", () => {
     const calls = [];
     listWorkingTreeFiles({
       workspaceRoot: "/fixture",
       pathspec: "src",
       runGit: (_command, args) => {
         calls.push(args);
-        const records = ["src/foo.ts", "src/shared.ts"];
+        const records = args.includes("--deleted") ? [] : ["src/foo.ts", "src/shared.ts"];
         const stdout = args.includes("-z") ? `${records.join("\0")}\0` : `${records.join("\n")}\n`;
         return { status: 0, stdout, stderr: "" };
       },
@@ -59,7 +72,37 @@ describe("working-tree file enumeration", () => {
     expect(calls).toEqual([
       ["ls-files", "--others", "--exclude-standard", "-z", "--", "src"],
       ["ls-files", "-z", "--", "src"],
+      ["ls-files", "--deleted", "-z", "--", "src"],
     ]);
+  });
+
+  test("untracked-only enumeration does not query the index or deletions", () => {
+    const calls = [];
+    expect(
+      listWorkingTreeFiles({
+        workspaceRoot: "/fixture",
+        pathspec: "src",
+        untrackedOnly: true,
+        runGit: (_command, args) => {
+          calls.push(args);
+          return { status: 0, stdout: "src/untracked.ts\0" };
+        },
+      }),
+    ).toEqual(["src/untracked.ts"]);
+    expect(calls).toEqual([["ls-files", "--others", "--exclude-standard", "-z", "--", "src"]]);
+  });
+
+  test("fails loudly when the deleted-file query fails", () => {
+    expect(() =>
+      listWorkingTreeFiles({
+        workspaceRoot: "/fixture",
+        pathspec: "src",
+        runGit: (_command, args) =>
+          args.includes("--deleted")
+            ? { status: 128, stderr: "fatal: deletions unavailable" }
+            : { status: 0, stdout: "src/live.ts\0" },
+      }),
+    ).toThrow("git ls-files --deleted -z -- src failed (fatal: deletions unavailable)");
   });
 
   test("reports a tracked file whose only sibling is ignored", async () => {

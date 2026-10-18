@@ -15,8 +15,9 @@ export function listWorkingTreeFiles({
           ? [["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", pathspec]]
           : []),
         ["ls-files", "-z", "--", pathspec],
+        ["ls-files", "--deleted", "-z", "--", pathspec],
       ];
-  const paths = [];
+  const paths = new Set();
 
   for (const args of commands) {
     const result = runGit("git", args, { cwd: workspaceRoot, encoding: "utf8" });
@@ -29,8 +30,13 @@ export function listWorkingTreeFiles({
         `Cannot enumerate working-tree files: git ${args.join(" ")} failed (${detail})`,
       );
     }
-    paths.push(...String(result.stdout ?? "").split("\0"));
+    for (const path of String(result.stdout ?? "")
+      .split("\0")
+      .filter(Boolean)) {
+      if (args.includes("--deleted")) paths.delete(path);
+      else paths.add(path);
+    }
   }
 
-  return [...new Set(paths.filter(Boolean))];
+  return [...paths];
 }
