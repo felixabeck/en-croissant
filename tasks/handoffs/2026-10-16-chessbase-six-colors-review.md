@@ -1,6 +1,28 @@
 # Six-color ChessBase drawing review
 
-## Current delivery-resumption checkpoint — October 18, 2026
+## Integration review and browser checkpoint — October 18, 2026
+
+This checkpoint supersedes the earlier October 18 current-delivery-resumption checkpoint for review and browser status. Candidate `d09558e6601c0b13855a054562a8df83c3d61065` is atop `origin/master` at `9240ccb1`. Integration review and browser verification are complete. Final full frontend push gates, ordinary master push, exact-SHA required hosted jobs and reviewed installation remain pending. No delivery is complete.
+
+### Cumulative review and repair
+
+Fresh cumulative R1 had nine reviews. Eight found no issues. The tests review raised T1 (confidence 97, should-fix), a test-coverage gap rather than observed incorrect production behavior. The suggested Fix was adopted. A source-only Git-derived patch changing `counts.set(key, 1)` made both legacy and current existing-pair tests fail with expected 2, received 3, exit 1. Exact restoration produced no production diff and a matching SHA256. The full storage suite passed 155 tests with exit 0. Root independently repeated 155 passing tests. After a formatting-only repair, the suite passed 155 again. No separate product finding was opened.
+
+Pre-review R1 passed. Repair-r2 failed formatting, then the remaining owned gate was intentionally stopped with exit 143. After formatting the file, repair-r3 completed and passed on the dirty test repair. All selected lanes exited 0. Storage and tree mutation scores were 100%. Tree/path had seven timeouts and no survivors.
+
+R2 correctness, root-cause, tests and persisted-state reports were all APPROVED. T1 is CLOSED and no new findings were raised. `diff_adopted_per_round r1=1 r2=0`.
+
+### Browser proof
+
+On `d09558e6`, `pnpm test:e2e:container --project=board-keyboard` passed 6/6. Six literal SVG colors were verified for arrows and circles. Root inspected the screenshot and copied it to `/tmp/chessfable-six-color-integration-20261018/verified-six-color-board.png`. No existing snapshots moved and no GTK chrome check was required.
+
+### Provenance and remaining delivery
+
+Plan authorship and arbitration shared one context. Detection used the same model family as the code in separate Codex sessions. The original source author was gpt-6.1-sol/high. The new repair used the same model at high. All read-only code and record lenses used gpt-6.1-sol/medium. There was no executor fallback and no model fallback. All new scratch evidence is in `/tmp/chessfable-six-color-integration-20261018/`.
+
+Final full frontend push gates, ordinary master push, exact-SHA required hosted jobs and reviewed installation remain pending. No delivery has occurred.
+
+## Historical delivery-resumption checkpoint — October18,2026
 
 This checkpoint explicitly supersedes the October 16 delivery-blocked checkpoint below. Felix explicitly requested integration on October 18. Original tip `2c9b32a9` was rebased onto `origin/master` at `9240ccb1`, producing rebased tip `99fcaf6b`. The only conflict was an additive insertion in `tasks/build-ledger.md`, resolved by preserving both sides' rows.
 
@@ -323,3 +345,111 @@ No new record defects found in the repair.
 Limitation: Original screenshots, repertoire provenance and live CI history were not independently verified. No files changed. Review used the same model family as the code.
 
 VERDICT: APPROVED
+
+## Historical integration review reports — October 18, 2026
+
+### Cumulative review round 1
+
+#### lens-correctness-r1.txt
+
+No correctness defects found in the parser, exporter, hydration logic, or touched callers.
+
+Limitation: runtime rendering was not executed in this read-only review (confidence: 100). Review used the same model family as the code author, in a separate session.
+
+VERDICT: APPROVED
+
+#### lens-root-cause-r1.txt
+
+No findings. The diff removes whole-list rejection, shares six-color identities across parsing, export and rendering, and retains hydrated drawings without bypassing corruption validation. Touched-line history revealed no reintroduced prior fix.
+
+Evidence includes inherited October 16 failing-before/passing-after results. This review was read-only and used the same model family as the implementation.
+
+VERDICT: APPROVED
+
+#### lens-tests-r1.txt
+
+[should-fix] src/state/store/tabStorage.test.ts:736 — Hydration seeds only one existing shape per identity, leaving multiset counting unguarded. Replacing the count increment with `counts.set(key, 1)` would pass these tests but add a third orange arrow when storage already contains two matching arrows and commands contain two matching entries. Add an assertion that hydration retains exactly two. (confidence: 97)
+
+VERDICT: APPROVED
+
+#### lens-minimalism-r1.txt
+
+No bloat or duplication findings above 80 confidence.
+
+Minimum-diff counterfactuals: `drawings.ts` supplies shared parsing and conversion for import and hydration. `drawings.test.ts` isolates residual-byte preservation and legacy normalization. Neither added file has a materially smaller equivalent retaining that coverage.
+
+Review used the same OpenAI model family as the implementation.
+
+VERDICT: APPROVED
+
+#### lens-code-quality-r1.txt
+
+No readability or local-consistency defects found at confidence ≥80.
+
+Review ran in a separate Codex context on the same OpenAI family as the code, without family separation.
+
+VERDICT: APPROVED
+
+#### lens-error-handling-r1.txt
+
+No error-handling defects found in the reviewed paths. Review ran in a separate context on the same OpenAI model family as the code.
+
+VERDICT: APPROVED
+
+#### lens-chess-semantics-r1.txt
+
+No chess-domain invariant violations found in the annotation parsing, tree hydration, or surrounding position and path flows.
+
+Review ran in a separate Codex context on the same model family as the code.
+
+VERDICT: APPROVED
+
+#### lens-persisted-state-r1.txt
+
+No reportable defects found in saved-tab encoding, drawing hydration, storage key scope, or tab lifecycle.
+
+VERDICT: APPROVED
+
+#### lens-records-r1.txt
+
+No findings. Record-only rebase deltas preserve the original edits, and local source, history and retained proof support the claims.
+
+Unverifiable: live CI, original repertoire provenance/counts, executor provenance and root’s screenshot inspection. Review shares implementation’s model family. No writes, gates or live calls performed.
+
+VERDICT: APPROVED
+
+### Cumulative review round 2
+
+#### lens-correctness-r2.txt
+
+T1 CLOSED — Both legacy and current fixtures exercise two existing identical arrows against two matching command entries. Fresh reads and migration preserve exactly two arrows. Supplied mutation evidence shows both cases fail with length 3 when counting is broken, then all 155 tests pass after restoration. Production source is unchanged. (confidence: 99)
+
+No correctness defects found in the repair delta or its affected dependencies.
+
+VERDICT: APPROVED
+
+#### lens-root-cause-r2.txt
+
+T1 CLOSED — Both legacy and current tests exercise two existing identical arrows against two matching commands. The supplied mutation collapses the count to one and produces three arrows, failing both cases. Restoring the increment passes all 155 tests. Repeated reads, persisted output and migration remain stable (confidence: 99).
+
+No symptom patch or reintroduced prior defect found. Production source is unchanged by the closure delta.
+
+Review used a separate Codex context, with the same model family as authorship/arbitration.
+
+VERDICT: APPROVED
+
+#### lens-tests-r2.txt
+
+T1 CLOSED — `src/state/store/tabStorage.test.ts:797` asserts exactly two arrows for both legacy and current hydration. The supplied mutation log confirms replacing the increment with `counts.set(key, 1)` fails both cases with three arrows. Further assertions verify exact shapes, persisted output and repeated-read stability. Normal Vitest selectors include these tests. No repair-delta findings.
+
+VERDICT: APPROVED
+
+#### lens-persisted-state-r2.txt
+
+T1 CLOSED — Both new cases verify two existing identical arrows remain exactly two through legacy/current hydration, three fresh reads, durable writeback and repeated migration. Supplied mutation evidence fails both cases with three arrows. Both green logs show 155 passing tests. Production source is unchanged.
+
+No persistence defects found in the repair delta or affected dependencies. Review used a separate Codex context within the same model family.
+
+VERDICT: APPROVED
+
+End of verbatim review reports.
