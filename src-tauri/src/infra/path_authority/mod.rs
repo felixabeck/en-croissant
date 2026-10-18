@@ -840,12 +840,8 @@ impl CapabilityDirectory {
 
     /// One descriptor-relative read of this directory, on both platforms.
     ///
-    /// Every method on this type is live on Windows since `f-20260914-08`: the walk that drives
-    /// them, `file_workspace.rs::collect_tree_entries`, is no longer `#[cfg(unix)]` and neither
-    /// are the helpers it calls. `map_db3_children_cancellable` is the other caller.
-    /// `capability_directory` itself is still refused off unix for every operation except
-    /// `PathOperation::ReadPgn` (obligation B3b), so the database and puzzle listings reach this
-    /// code only on unix for now — that gate is `f-20260914-09`, not a property of this type.
+    /// `probe_listing_root_failure` uses this fail-fast reader to re-check the root.
+    /// Listing walks use `listing_entries` to preserve named child stat failures.
     pub(crate) fn entries(
         &self,
         cancellation: &CancellationToken,
@@ -4534,6 +4530,48 @@ pub(crate) struct DirectoryListingSnapshot {
     entries: Vec<StoredEntry>,
 }
 
+fn listing_paths_match(recorded: &Path, path: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        recorded == path
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::path::Component;
+
+        let fold = |unit: u16| {
+            if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) {
+                unit + u16::from(b'a' - b'A')
+            } else {
+                unit
+            }
+        };
+        let mut recorded = recorded.components();
+        let mut path = path.components();
+        loop {
+            match (recorded.next(), path.next()) {
+                (None, None) => return true,
+                (Some(left), Some(right)) => {
+                    let matches = match (left, right) {
+                        (Component::Prefix(_), Component::Prefix(_))
+                        | (Component::Normal(_), Component::Normal(_)) => left
+                            .as_os_str()
+                            .encode_wide()
+                            .map(fold)
+                            .eq(right.as_os_str().encode_wide().map(fold)),
+                        _ => left == right,
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
 impl DirectoryListingSnapshot {
     /// Match only the pre-walk paths, without observing the filesystem again.
     pub(crate) fn retained_ids(
@@ -4547,7 +4585,15 @@ impl DirectoryListingSnapshot {
                 .fold(self.root.clone(), |path, leaf| path.join(leaf));
             for stored in &self.entries {
                 let recorded = stored.path.to_path()?;
-                if recorded == path || (*recursive && recorded.starts_with(&path)) {
+                let descendant = *recursive
+                    && if cfg!(windows) {
+                        recorded
+                            .ancestors()
+                            .any(|ancestor| listing_paths_match(ancestor, &path))
+                    } else {
+                        recorded.starts_with(&path)
+                    };
+                if listing_paths_match(&recorded, &path) || descendant {
                     retained.insert(stored.id.id.clone());
                 }
             }
@@ -11475,6 +11521,55 @@ pub(crate) mod portable_tests {
                 .insert(entry.stored.id.id.clone(), entry);
         }
         require_durable(authority.save()?)
+    }
+
+    #[test]
+    fn listing_child_paths_match_ascii_case_only_on_windows() {
+        assert_eq!(
+            listing_paths_match(Path::new("root/folder"), Path::new("root/Folder")),
+            cfg!(windows)
+        );
+        assert!(!listing_paths_match(
+            Path::new("root/ä"),
+            Path::new("root/Ä")
+        ));
+    }
+
+    #[test]
+    fn listing_child_recursive_case_retains_snapshot_ids_only_on_windows() -> Result<(), Error> {
+        let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+        fs::create_dir(root.join("folder"))?;
+        fs::write(root.join("folder/child.pgn"), b"*")?;
+        let mut ids = Vec::new();
+        for (components, is_dir) in [
+            (vec![OsString::from("folder")], true),
+            (
+                vec![OsString::from("folder"), OsString::from("child.pgn")],
+                false,
+            ),
+        ] {
+            let path = components
+                .iter()
+                .fold(root.clone(), |path, leaf| path.join(leaf));
+            let child = identity(&path)?;
+            let parent = identity(path.parent().unwrap())?;
+            let prepared = authority.prepare_workspace_listing_child(
+                &workspace,
+                &components,
+                "child",
+                IdentityBinding::from_pairs((child.a, child.b), (parent.a, parent.b)),
+                is_dir,
+                PathOperation::ReadPgn,
+            )?;
+            ids.push(authority.publish_prepared_entry(prepared)?.id);
+        }
+        let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+        assert_eq!(snapshot.entries.len(), 2);
+        let retained = snapshot.retained_ids(&[(vec![OsString::from("Folder")], true)])?;
+        assert_eq!(retained.contains(&ids[0].id), cfg!(windows));
+        assert_eq!(retained.contains(&ids[1].id), cfg!(windows));
+        assert_eq!(retained.len(), if cfg!(windows) { 2 } else { 0 });
+        Ok(())
     }
 
     #[test]
@@ -25892,6 +25987,39 @@ mod workspace_directory_enumeration_tests {
             }
             fs::set_permissions(root.join("a.db3"), fs::Permissions::from_mode(0o600)).unwrap();
         }
+    }
+
+    #[test]
+    fn listing_child_database_named_stat_permission_is_unread() {
+        let (_directory, root, mut authority, handle) = db3_root_fixture(Db3ListingKind::Database);
+        let Db3RootHandle::Database(root_handle) = handle else {
+            unreachable!()
+        };
+        let before = authority
+            .list_database_children_cancellable(&root_handle, &CancellationToken::new())
+            .unwrap();
+        let original = before.entries[0].handle.path_ref().clone();
+        fs::write(root.join("healthy.db3"), b"healthy").unwrap();
+        crate::infra::fs::set_listing_child_stat_hook(Some(Box::new(|name, kind| {
+            (name == OsStr::new("a.db3"))
+                .then(|| (kind, std::io::ErrorKind::PermissionDenied.into()))
+        })));
+        let result =
+            authority.list_database_children_cancellable(&root_handle, &CancellationToken::new());
+        crate::infra::fs::set_listing_child_stat_hook(None);
+        let listing = result.unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].filename, "healthy.db3");
+        assert_eq!(listing.unread.len(), 1);
+        assert_eq!(listing.unread[0].filename, "a.db3");
+        assert_eq!(listing.unread[0].category, ErrorCategory::Permission);
+        authority
+            .resolve(&original, PathOperation::DatabaseRead, &[])
+            .unwrap();
+        let payload = serde_json::to_value(listing).unwrap();
+        assert!(payload["unread"][0].get("handle").is_none());
+        assert!(payload["unread"][0].get("path").is_none());
+        assert!(!payload.to_string().contains(root.to_str().unwrap()));
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -243,6 +243,12 @@ export async function query_players(
     );
 }
 
+function databaseReadErrorMessage(permission: boolean, missing: boolean): string {
+    if (permission) return i18n.t("Databases.LoadError.Permission");
+    if (missing) return i18n.t("Databases.LoadError.Missing");
+    return i18n.t("Databases.LoadError.Title");
+}
+
 export async function getDatabases(options: { signal?: AbortSignal } = {}): Promise<DatabaseList> {
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
@@ -256,12 +262,10 @@ export async function getDatabases(options: { signal?: AbortSignal } = {}): Prom
         root,
         unread: databases.unread.map(({ filename, category }) => ({
             filename,
-            error:
-                category === "permission"
-                    ? i18n.t("Databases.LoadError.Permission")
-                    : category === "missing-resource"
-                      ? i18n.t("Databases.LoadError.Missing")
-                      : i18n.t("Databases.LoadError.Title"),
+            error: databaseReadErrorMessage(
+                category === "permission",
+                category === "missing-resource",
+            ),
         })),
     };
 }
@@ -291,12 +295,11 @@ async function getDatabase(
         let error: string;
         if (primaryFailure.message === DATABASE_NOT_INITIALIZED) {
             error = i18n.t("Databases.ImportUnfinished");
-        } else if (primaryFailure.category === "permission") {
-            error = i18n.t("Databases.LoadError.Permission");
-        } else if (primaryFailure.category === "not-found") {
-            error = i18n.t("Databases.LoadError.Missing");
         } else {
-            error = i18n.t("Databases.LoadError.Title");
+            error = databaseReadErrorMessage(
+                primaryFailure.category === "permission",
+                primaryFailure.category === "not-found",
+            );
         }
         return {
             type: "error",

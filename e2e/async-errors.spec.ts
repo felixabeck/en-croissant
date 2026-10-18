@@ -166,7 +166,7 @@ for (const locale of ["en-US", "de-DE"] as const) {
                     },
                     list_file_workspace: {
                         outcomes: [
-                            { result: [] },
+                            { result: { entries: [], unread: [] } },
                             relistFails
                                 ? {
                                       error: {
@@ -175,7 +175,7 @@ for (const locale of ["en-US", "de-DE"] as const) {
                                           message: "private relist diagnostic",
                                       },
                                   }
-                                : { result: [leftover] },
+                                : { result: { entries: [leftover], unread: [] } },
                         ],
                     },
                 }),

@@ -4,10 +4,16 @@ import useSWR, { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
+import type { SuccessDatabaseInfo } from "@/utils/db";
 
 installResizeObserverStub();
 
-const mocks = vi.hoisted(() => ({ getDatabases: vi.fn(), setDatabase: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  getDatabases: vi.fn(),
+  setDatabase: vi.fn(),
+  clearDatabase: vi.fn(),
+  database: undefined as SuccessDatabaseInfo | undefined,
+}));
 
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
@@ -50,14 +56,16 @@ vi.mock("@mantine/core", () => ({
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({ children }: { children: ReactNode }) => <button>{children}</button>,
 }));
-vi.mock("./GameTable", () => ({ default: () => null }));
-vi.mock("./PlayerTable", () => ({ default: () => null }));
-vi.mock("./TournamentTable", () => ({ default: () => null }));
+vi.mock("./GameTable", () => ({ default: () => <div>games table</div> }));
+vi.mock("./PlayerTable", () => ({ default: () => <div>players table</div> }));
+vi.mock("./TournamentTable", () => ({ default: () => <div>tournaments table</div> }));
 vi.mock("@/state/store/database", () => {
   const state = {
-    database: null,
+    get database() {
+      return mocks.database;
+    },
     activeTab: "games",
-    clearDatabase: vi.fn(),
+    clearDatabase: mocks.clearDatabase,
     setActiveTab: vi.fn(),
     setDatabase: mocks.setDatabase,
   };
@@ -105,6 +113,8 @@ beforeEach(() => {
   cache.clear();
   mocks.getDatabases.mockReset();
   mocks.setDatabase.mockReset();
+  mocks.clearDatabase.mockReset();
+  mocks.database = undefined;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -118,6 +128,75 @@ afterEach(async () => {
 async function render(view: boolean, peer: boolean, onData = vi.fn()) {
   await act(async () => root.render(<Tree view={view} peer={peer} onData={onData} />));
 }
+
+const selectedDatabase: SuccessDatabaseInfo = {
+  type: "success",
+  file: { id: { id: "db-1" }, kind: "database" },
+  filename: "selected.db3",
+  title: "Selected database",
+  description: "",
+  player_count: 0,
+  event_count: 0,
+  game_count: 0,
+  storage_size: "0",
+  indexed: false,
+};
+
+test.each([
+  {
+    unread: [{ filename: "selected.db3", error: "Unread permission sentence" }],
+    message: "Unread permission sentence",
+  },
+  {
+    unread: [
+      { filename: "selected.db3", error: "First unread error" },
+      { filename: "selected.db3", error: "Second unread error" },
+    ],
+    message: "Databases.LoadError.Title",
+  },
+])("preserves the selected unread database and shows $message", async ({ unread, message }) => {
+  mocks.database = selectedDatabase;
+  mocks.getDatabases.mockResolvedValue({ databases: [], unread });
+  await render(true, false);
+
+  expect(mocks.clearDatabase).not.toHaveBeenCalled();
+  expect(mocks.setDatabase).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+  expect(container.querySelector("a")?.getAttribute("href")).toBe("/library");
+  expect(container.textContent).not.toMatch(/games table|players table|tournaments table/);
+  expect(container.textContent).not.toContain("Databases.NoSelection");
+});
+
+test.each([
+  { filename: "another.db3", handleId: "db-1" },
+  { filename: "selected.db3", handleId: "other-database" },
+])(
+  "clears a selection without both the route and unread filename match: %j",
+  async ({ filename, handleId }) => {
+    mocks.database = { ...selectedDatabase, file: { id: { id: handleId }, kind: "database" } };
+    mocks.getDatabases.mockResolvedValue({
+      databases: [],
+      unread: [{ filename, error: "Unread error" }],
+    });
+    await render(true, false);
+
+    expect(mocks.clearDatabase).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Databases.NoSelection");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  },
+);
+
+test("a whole-list failure preserves the selection and uses the listing failure path", async () => {
+  mocks.database = selectedDatabase;
+  mocks.getDatabases.mockRejectedValue(new Error("listing failed"));
+  await render(true, false);
+
+  expect(mocks.clearDatabase).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "Could not load databases. Please try again.",
+  );
+  expect(container.querySelector('[role="alert"] button')?.textContent).toBe("Retry");
+});
 
 test.each([
   {

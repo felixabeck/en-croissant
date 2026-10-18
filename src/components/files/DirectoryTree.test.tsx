@@ -3,8 +3,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
 import { activeTabAtom, expandedDirectoriesAtom, fileWorkspaceAtom, tabsAtom } from "@/state/atoms";
-import { workspaceListingToEntries, type Entry, type UsableEntry } from "./file";
-import DirectoryTree from "./DirectoryTree";
+import { workspaceListingToEntries, type Entry, type FileMetadata, type UsableEntry } from "./file";
+import DirectoryTree, { childUnreadableMessage } from "./DirectoryTree";
+import type { ErrorCategory } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), notify: vi.fn(), openFile: vi.fn() }));
 
@@ -167,7 +168,8 @@ test("unread siblings with colliding display names keep separate focus and no fi
   expect(rows).toHaveLength(3);
   for (const row of rows.slice(0, 2)) {
     expect(row.textContent).toContain("�.pgn");
-    expect(row.textContent).toContain("Common.ConfirmationError.unexpected");
+    expect(row.textContent).toContain("Files.ChildUnreadable.Permission");
+    expect(row.textContent).not.toContain("Common.ConfirmationError.unexpected");
     expect(row.draggable).toBe(false);
     expect(row.querySelector("button")).toBeNull();
     await key(row, "Enter");
@@ -184,6 +186,46 @@ test("unread siblings with colliding display names keep separate focus and no fi
   expect(document.activeElement).toBe(rows[2]);
   await key(rows[2], "Enter");
   expect(mocks.openFile).toHaveBeenCalledWith(rootFile, expect.anything());
+});
+
+test.each<[ErrorCategory, string]>([
+  ["permission", "Files.ChildUnreadable.Permission"],
+  ["invalid-input", "Files.ChildUnreadable.Invalid"],
+  ["parsing", "Files.ChildUnreadable.Invalid"],
+  ["resource-limit", "Files.ChildUnreadable.TooLarge"],
+  ["io", "Files.ChildUnreadable.Title"],
+  ["durability", "Files.ChildUnreadable.Title"],
+  ["missing-resource", "Files.ChildUnreadable.Title"],
+])("file child category %s selects %s", (category, key) => {
+  expect(childUnreadableMessage(category, (value) => value)).toBe(key);
+});
+
+test("an invalid sidecar shows the file-child sentence and keeps its file openable", async () => {
+  const store = createStore();
+  const file: Entry = { ...rootFile, readError: "invalid-input" };
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root.render(
+      <Provider store={store}>
+        <DirectoryTree
+          files={[file]}
+          selectedFile={null}
+          setSelectedFile={vi.fn()}
+          onRequestDelete={vi.fn()}
+          search=""
+          filter=""
+        />
+      </Provider>,
+    ),
+  );
+  const row = item("Root");
+  expect(row.textContent).toContain("Files.ChildUnreadable.Invalid");
+  expect(row.textContent).not.toContain("Common.ConfirmationError.unexpected");
+  expect(row.draggable).toBe(true);
+  await key(row, "Enter");
+  expect(mocks.openFile).toHaveBeenCalledWith(file, expect.anything());
 });
 
 const handle = (id: string) => ({ id: { id }, kind: "fileWorkspace" }) as UsableEntry["handle"];
@@ -203,7 +245,7 @@ const directory: Entry = {
     },
   ],
 };
-const rootFile: Entry = {
+const rootFile: FileMetadata = {
   type: "file",
   handle: handle("opaque-root-file"),
   name: "Root",

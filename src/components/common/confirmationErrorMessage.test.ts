@@ -51,3 +51,23 @@ test("an unknown native failure uses the localized generic message", async () =>
         ),
     ).toBe("Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.");
 });
+
+test("every shipped catalogue has localized file-child unreadable sentences", () => {
+    const catalogues = shippedCatalogues();
+    const english = catalogues.find(({ locale }) => locale === "en-US")!.translation;
+    const keys = [
+        "Files.ChildUnreadable.Permission",
+        "Files.ChildUnreadable.Invalid",
+        "Files.ChildUnreadable.TooLarge",
+        "Files.ChildUnreadable.Title",
+    ];
+    for (const { locale, translation } of catalogues) {
+        for (const key of keys) {
+            expect(translation[key], `${locale}:${key}`).toBeTypeOf("string");
+            expect(translation[key].trim(), `${locale}:${key}`).not.toBe("");
+            if (!locale.startsWith("en-")) {
+                expect(translation[key], `${locale}:${key}`).not.toBe(english[key]);
+            }
+        }
+    }
+});

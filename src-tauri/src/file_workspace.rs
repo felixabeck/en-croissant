@@ -843,17 +843,28 @@ fn collect_tree_entries(
     })?
 }
 
+fn workspace_entry_mut<'a>(
+    entries: &'a mut [WorkspaceEntry],
+    handle: &FileWorkspaceHandle,
+) -> Option<&'a mut WorkspaceEntry> {
+    for entry in entries {
+        if &entry.handle == handle {
+            return Some(entry);
+        }
+        if let Some(found) = workspace_entry_mut(&mut entry.children, handle) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn set_workspace_game_count(
     entries: &mut [WorkspaceEntry],
     handle: &FileWorkspaceHandle,
     game_count: i32,
 ) {
-    for entry in entries {
-        if &entry.handle == handle {
-            entry.game_count = Some(game_count);
-            return;
-        }
-        set_workspace_game_count(&mut entry.children, handle, game_count);
+    if let Some(entry) = workspace_entry_mut(entries, handle) {
+        entry.game_count = Some(game_count);
     }
 }
 
@@ -862,12 +873,8 @@ fn set_workspace_read_error(
     handle: &FileWorkspaceHandle,
     category: ErrorCategory,
 ) {
-    for entry in entries {
-        if &entry.handle == handle {
-            entry.read_error = Some(category);
-            return;
-        }
-        set_workspace_read_error(&mut entry.children, handle, category);
+    if let Some(entry) = workspace_entry_mut(entries, handle) {
+        entry.read_error = Some(category);
     }
 }
 
@@ -877,7 +884,7 @@ fn listing_count_error(error: Error) -> Result<ErrorCategory, Error> {
             error.category(),
             ErrorCategory::Permission | ErrorCategory::Parsing
         ) || matches!(error.unlabelled(), Error::Io(io) if io.kind() == std::io::ErrorKind::InvalidData)
-            || matches!(error.unlabelled(), Error::ResourceLimit(message) if message == "PGN count exceeds IPC limit"))
+            || matches!(error.unlabelled(), Error::ResourceLimit(message) if message == pgn::COUNT_LIMIT_MESSAGE))
     {
         Ok(error.category())
     } else {
@@ -7644,7 +7651,7 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn listing_child_count_classifier_aborts_transient_and_unclassified_failures() {
+    fn listing_child_listing_count_error_aborts_transient_and_unclassified_failures() {
         for error in [
             Error::Cancellation,
             Error::Conflict("replacement".into()),
@@ -7656,8 +7663,7 @@ mod workspace_directory_enumeration_tests {
             assert!(listing_count_error(error).is_err());
         }
         assert_eq!(
-            listing_count_error(Error::ResourceLimit("PGN count exceeds IPC limit".into()))
-                .unwrap(),
+            listing_count_error(Error::ResourceLimit(pgn::COUNT_LIMIT_MESSAGE.into())).unwrap(),
             ErrorCategory::ResourceLimit
         );
     }

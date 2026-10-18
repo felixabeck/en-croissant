@@ -12,7 +12,7 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { IconAction } from "@/components/common/IconAction";
-import { confirmationErrorMessage } from "@/components/common/ConfirmModal";
+import type { ErrorCategory } from "@/bindings";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
 import { openFile } from "@/utils/files";
@@ -30,6 +30,20 @@ export type CollectionPeer = {
   onOpen?: () => void;
 };
 type VisibleEntry = { entry: Entry | CollectionPeer; depth: number };
+export function childUnreadableMessage(category: ErrorCategory, t: (key: string) => string) {
+  switch (category) {
+    case "permission":
+      return t("Files.ChildUnreadable.Permission");
+    case "invalid-input":
+    case "parsing":
+      return t("Files.ChildUnreadable.Invalid");
+    case "resource-limit":
+      return t("Files.ChildUnreadable.TooLarge");
+    default:
+      return t("Files.ChildUnreadable.Title");
+  }
+}
+
 function entryKey(entry: Entry | CollectionPeer) {
   return entry.type === "database"
     ? `database:${entry.key}`
@@ -272,10 +286,7 @@ export default function DirectoryTree({
               {node.name}
             </Text>
             <Text size="sm" c="red" className="wrap-anywhere">
-              {confirmationErrorMessage(
-                { tag: "backend-error", category: node.category, message: "" },
-                t,
-              )}
+              {childUnreadableMessage(node.category, t)}
             </Text>
           </Group>
         ) : (
@@ -306,10 +317,7 @@ export default function DirectoryTree({
             )}
             {node.type === "file" && node.readError && (
               <Text size="sm" c="red" className="wrap-anywhere">
-                {confirmationErrorMessage(
-                  { tag: "backend-error", category: node.readError, message: "" },
-                  t,
-                )}
+                {childUnreadableMessage(node.readError, t)}
               </Text>
             )}
             {isDirectory && (

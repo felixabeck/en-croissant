@@ -89,6 +89,22 @@ describe("database capability UI mapping", () => {
 });
 
 describe("production database metadata pipeline", () => {
+    it.each([
+        ["permission", "Databases.LoadError.Permission"],
+        ["missing-resource", "Databases.LoadError.Missing"],
+        ["invalid-input", "Databases.LoadError.Title"],
+        ["io", "Databases.LoadError.Title"],
+    ])("maps an unread %s child to %s without metadata hydration", async (category, key) => {
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [],
+            unread: [{ filename: "unread.db3", category }],
+        });
+        expect((await getDatabases()).unread).toEqual([
+            { filename: "unread.db3", error: i18n.t(key) },
+        ]);
+        expect(mocks.getDbInfo).not.toHaveBeenCalled();
+    });
+
     it("returns unread children and the original root without reading their database info", async () => {
         const root = { id: { id: "unread-root" }, kind: "databaseRoot" };
         mocks.getDatabaseWorkspace.mockResolvedValue(root);

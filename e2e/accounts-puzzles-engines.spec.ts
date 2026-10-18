@@ -251,7 +251,10 @@ for (const state of ["partial", "failed"] as const) {
         await mockScenario({
             commands: {
                 list_workspace_databases: {
-                    result: [summaryLichessDatabase, summaryChessComDatabase],
+                    result: {
+                        entries: [summaryLichessDatabase, summaryChessComDatabase],
+                        unread: [],
+                    },
                 },
                 get_db_info: {
                     // Accounts and the summary read metadata concurrently, each in database order.

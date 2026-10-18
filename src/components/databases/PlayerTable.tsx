@@ -106,7 +106,7 @@ function PlayerTable() {
                 onChange={(v) =>
                   setQuery({
                     ...query,
-                    range: [query.range?.[0] ?? 0, (v || ELO_FILTER_MAX) as number],
+                    range: [query.range?.[0] ?? 0, (v === "" ? ELO_FILTER_MAX : v) as number],
                   })
                 }
               />

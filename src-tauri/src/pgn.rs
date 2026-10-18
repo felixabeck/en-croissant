@@ -1097,6 +1097,8 @@ fn observe_count_hook(repository: &PgnRepository) -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) const COUNT_LIMIT_MESSAGE: &str = "PGN count exceeds IPC limit";
+
 fn count_after_scan(
     games: Arc<[GameRange]>,
     cancellation: &CancellationToken,
@@ -1104,8 +1106,7 @@ fn count_after_scan(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    i32::try_from(games.len())
-        .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
+    i32::try_from(games.len()).map_err(|_| Error::ResourceLimit(COUNT_LIMIT_MESSAGE.into()))
 }
 
 pub async fn count_pgn_games_core(

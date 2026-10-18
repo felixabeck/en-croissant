@@ -17,6 +17,7 @@ import { useDatabaseList } from "@/hooks/useDatabaseList";
 import { resolveDatabaseRoute } from "./databaseRoute";
 import { listingFailure } from "@/components/files/listingFailure";
 import { databaseLoadFailureMessage } from "./databaseLoadFailure";
+import { databaseHandleKey } from "@/utils/db";
 import { useElementSize } from "@mantine/hooks";
 import { useAtomValue } from "jotai";
 import { fontSizeAtom } from "@/state/atoms";
@@ -41,14 +42,24 @@ function DatabaseView() {
     () => resolveDatabaseRoute(databases?.databases, databaseId, database),
     [databases, databaseId, database],
   );
+  const unreadMatches = useMemo(
+    () =>
+      resolution.status === "not_found" &&
+      database &&
+      databaseHandleKey(database.file) === databaseId
+        ? (databases?.unread.filter((row) => row.filename === database.filename) ?? [])
+        : [],
+    [resolution, database, databaseId, databases],
+  );
+  const preserveUnread = unreadMatches.length > 0;
 
   useEffect(() => {
     if (resolution.status === "synchronizing") {
       activeDatabaseViewStore.getState().setDatabase(resolution.database);
-    } else if (resolution.status === "not_found" && database) {
+    } else if (resolution.status === "not_found" && database && !preserveUnread) {
       activeDatabaseViewStore.getState().clearDatabase();
     }
-  }, [database, resolution]);
+  }, [database, resolution, preserveUnread]);
 
   if (resolution.status === "loading" || resolution.status === "synchronizing") {
     return (
@@ -76,8 +87,14 @@ function DatabaseView() {
     return (
       <Box p="sm" h="100%">
         <Center ref={ref} h="100%">
-          <Stack align="center">
-            <Text c="dimmed">{t("Databases.NoSelection")}</Text>
+          <Stack align="center" role={preserveUnread ? "alert" : undefined}>
+            <Text c={preserveUnread ? "red" : "dimmed"} className="wrap-anywhere">
+              {preserveUnread
+                ? unreadMatches.length === 1
+                  ? unreadMatches[0].error
+                  : t("Databases.LoadError.Title")
+                : t("Databases.NoSelection")}
+            </Text>
             <Link to="/library">{t("Library.Title", { defaultValue: "Library" })}</Link>
           </Stack>
         </Center>

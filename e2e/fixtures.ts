@@ -542,13 +542,16 @@ export function databaseCommands(
 ): NonNullable<MockScenario["commands"]> {
     return {
         list_workspace_databases: {
-            result: [
-                {
-                    handle: { id: { id }, kind: "database" },
-                    filename,
-                    availability: "available",
-                },
-            ],
+            result: {
+                entries: [
+                    {
+                        handle: { id: { id }, kind: "database" },
+                        filename,
+                        availability: "available",
+                    },
+                ],
+                unread: [],
+            },
         },
         get_db_info: { result: { filename, ...info } },
     };
@@ -566,7 +569,7 @@ export function filesWorkspaceCommands(
                 availability: "available",
             },
         },
-        list_file_workspace: { results: listResults },
+        list_file_workspace: { results: listResults.map((entries) => ({ entries, unread: [] })) },
         ...overrides,
     };
 }
@@ -645,7 +648,7 @@ const tauriBootstrap = () => {
         repair_practice_deck: { result: null },
         list_practice_decks: { result: { decks: [], anomalies: [] } },
         get_database_workspace: { result: { id: { id: "database-root" }, kind: "databaseRoot" } },
-        list_workspace_databases: { result: [] },
+        list_workspace_databases: { result: { entries: [], unread: [] } },
         cancel_conversion: { result: true },
         release_conversion: { result: null },
         get_opening_from_fens: { result: [] },
