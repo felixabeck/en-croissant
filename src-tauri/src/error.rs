@@ -298,6 +298,13 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Invalid input: {kind}")]
+    NativeFolderSelection {
+        kind: &'static str,
+        #[source]
+        cause: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error("The game changed on disk")]
     StaleGame,
 
@@ -389,6 +396,19 @@ impl Error {
 }
 
 impl Error {
+    /// Keeps the folder conversion cause in native diagnostics, outside the public message.
+    pub(crate) fn native_folder_selection(
+        kind: &'static str,
+        cause: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        let error = Self::NativeFolderSelection {
+            kind,
+            cause: Box::new(cause),
+        };
+        log::error!("{}", error.diagnostic());
+        error
+    }
+
     /// Task panic payloads belong to native diagnostics, never public messages.
     pub(crate) fn task_join(
         context: &'static str,
@@ -437,7 +457,9 @@ impl Error {
                 std::io::ErrorKind::InvalidInput => Some(RootFailure::Unusable),
                 _ => None,
             },
-            Self::InvalidInput(_) => Some(RootFailure::Unusable),
+            Self::InvalidInput(_) | Self::NativeFolderSelection { .. } => {
+                Some(RootFailure::Unusable)
+            }
             Self::Conflict(_) => Some(RootFailure::Changed),
             _ => None,
         }
@@ -518,9 +540,10 @@ impl Error {
             | Self::ParseSan(_)
             | Self::IllegalSan(_) => ErrorCategory::ChessData,
             Self::Diesel(_) | Self::R2d2(_) => ErrorCategory::Database,
-            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => {
-                ErrorCategory::InvalidInput
-            }
+            Self::SystemTime(_)
+            | Self::InvalidInput(_)
+            | Self::NativeFolderSelection { .. }
+            | Self::InvalidColor(_) => ErrorCategory::InvalidInput,
             Self::StaleGame => ErrorCategory::StaleGame,
             Self::NoStdin
             | Self::NoStdout
@@ -1134,6 +1157,48 @@ impl Drop for LogCaptureScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_native_folder_selection_redaction(kind: &'static str, marker: &str) {
+        let capture = LogCaptureScope::start();
+        let cause = format!("folder conversion rejected {marker}");
+        let error = Error::native_folder_selection(kind, std::io::Error::other(cause.clone()));
+        let serialized = serde_json::to_string(&error).expect("serialize folder selection error");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("folder selection payload");
+        assert!(!serialized.contains(marker));
+        assert!(!serialized.contains(&cause));
+        assert_eq!(payload["message"], format!("Invalid input: {kind}"));
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(error.to_string(), format!("Invalid input: {kind}"));
+        assert_eq!(error.category(), ErrorCategory::InvalidInput);
+        assert_eq!(error.root_failure_reason(), Some(RootFailure::Unusable));
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(payload.as_object().expect("error object").len(), 3);
+        assert!(error.diagnostic().contains(&cause));
+        assert!(std::error::Error::source(&error)
+            .expect("conversion source")
+            .to_string()
+            .contains(&cause));
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Error && record.message.contains(&cause)
+        }));
+    }
+
+    #[test]
+    fn native_folder_selection_redacts_native_phrase_and_logs_cause() {
+        assert_native_folder_selection_redaction(
+            "invalid native folder selection",
+            "/private/secret-folder-selection-native",
+        );
+    }
+
+    #[test]
+    fn native_folder_selection_redacts_database_phrase_and_logs_cause() {
+        assert_native_folder_selection_redaction(
+            "invalid database folder selection",
+            "/private/secret-folder-selection-database",
+        );
+    }
 
     #[test]
     fn workspace_file_name_taken_payload_marks_only_the_owned_conflict() {

@@ -945,7 +945,7 @@ async fn issue_download_destination(
             .ok_or(Error::Cancellation)?
             .into_path()
             .map_err(|error| {
-                Error::InvalidInput(format!("invalid native folder selection: {error}"))
+                Error::native_folder_selection("invalid native folder selection", error)
             })
     })
     .await
@@ -1026,7 +1026,7 @@ async fn issue_database_workspace(
             .ok_or(Error::Cancellation)?
             .into_path()
             .map_err(|error| {
-                Error::InvalidInput(format!("invalid database folder selection: {error}"))
+                Error::native_folder_selection("invalid database folder selection", error)
             })
     })
     .await
@@ -3097,6 +3097,34 @@ mod tests {
             .messages()
             .iter()
             .any(|message| message.contains(&cause)));
+    }
+
+    #[test]
+    fn native_folder_selection_commands_use_the_shared_redacting_helper() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+
+        for (source, signature) in [
+            (
+                include_str!("main.rs"),
+                "async fn issue_download_destination(",
+            ),
+            (
+                include_str!("main.rs"),
+                "async fn issue_database_workspace(",
+            ),
+            (
+                include_str!("file_workspace.rs"),
+                "pub async fn issue_file_workspace(",
+            ),
+        ] {
+            let body = body_at_indent(source, signature);
+            assert!(
+                body.contains("Error::native_folder_selection("),
+                "{signature}"
+            );
+            assert!(!body.contains("Error::InvalidInput"), "{signature}");
+            assert!(!body.contains("{error}"), "{signature}");
+        }
     }
 
     #[test]
