@@ -1,5 +1,13 @@
 # Six-color ChessBase drawing review
 
+## Current delivery-resumption checkpoint — October 18, 2026
+
+This checkpoint explicitly supersedes the October 16 delivery-blocked checkpoint below. Felix explicitly requested integration on October 18. Original tip `2c9b32a9` was rebased onto `origin/master` at `9240ccb1`, producing rebased tip `99fcaf6b`. The only conflict was an additive insertion in `tasks/build-ledger.md`, resolved by preserving both sides' rows.
+
+`git range-diff` reports implementation `f93aab8d` → `5422a56d` and endpoint test `cb078a6c` → `f3734de9` unchanged (`=`). Record-only range-diff changes require fresh closure. `pnpm ci:remote:check` exited 0 on October 18, and all newest completed Test jobs succeeded on master. Prior blocker `f-20261016-01` is handled in the current ledger.
+
+Integration review, browser verification, full frontend push gates, push, required hosted jobs and installation are pending. No delivery is complete. Plan authorship and arbitration shared one context. Detection runs used the same model family as the code in separate Codex sessions.
+
 Task: f-20261016-02. Felix approved six-color drawing support, independent per-entry parsing, original color-code preservation and exact repertoire examples, full auto executor Codex, in a separate worktree.
 
 Original base: 1a4305ed99259c861c266d85284aebbe048634c9.
