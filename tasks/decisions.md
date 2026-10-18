@@ -8705,3 +8705,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** No existing contract folds workspace names. Reversal: a product decision that asks for case-insensitive workspace names.
 * **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, adopted plan for f-20261003-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"ac0c073b9027b261347b85e987103172be4b591caf39d9bd7cd089d00c5796ed","input_sha256":"212bde86222cfa3e15c9f93aa79a167ac69667cc73b8499aed5528f69b0d5f1b","kind":"mutation-receipt","operation":"5575c87a0acde5f7a2f16ae1fbcff96cda2eb2cd743582545e7980f575400082","options":{"section":null},"request_id_sha256":null,"results":["d-20261018-01","d-20261018-02","d-20261018-03","d-20261018-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261018-05 — Does exclusive workspace-file create replace the atomic-replace publication sentence in d-20260927-01?
+
+* **Question:** Does the one-command Text and Copy shape in d-20260927-01 still publish through atomic replace?
+* **Governs:** f-20261003-07
+* **Chosen:** The one-command shape stands. Create publication is exclusive create, `atomic_create_at_identified_with_precommit` for the PGN and `atomic_create_at_identified` for the sidecar, not atomic replace. The sentence in d-20260927-01 that says the copy streams through the existing atomic replace is narrowed by this decision. That record stays in force for the one-command shape and keeps Superseded-by: -.
+* **Rejected:** Superseding all of d-20260927-01, and a second command for copy.
+* **Reason:** d-20261018-01 and d-20261018-03 require exclusive create for both contents. The rest of d-20260927-01 was not reopened. Reversal: a later decision that restores replace publication.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, review repair for f-20261003-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e8237ffb13840e0130110a8c120d4778dd9b96924d570ef75249b45a174eb4b7","input_sha256":"45ae8e6965e146274f74bc48694e5074d0468920cb2ba17d2a678e25be0cab93","kind":"mutation-receipt","operation":"4c108d0eeab7382d8d0418a75e1ba87c99dac8239c99291a3336a27860537e7e","options":{"section":null},"request_id_sha256":"f988f1b951b7ebdd86e9583e848dfa1a63e499e1c381d5d02f375e7577747005","results":["d-20261018-05"],"target":"decisions-ledger","v":1} -->
