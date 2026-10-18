@@ -156,6 +156,9 @@ pub struct ErrorPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub remote_http_rejection: Option<RemoteHttpRejection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub name_taken: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -167,6 +170,8 @@ pub enum RootFailure {
     Permission,
     TooLarge,
 }
+
+pub(crate) const WORKSPACE_FILE_NAME_TAKEN: &str = "workspace file already exists";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -1013,6 +1018,9 @@ impl serde::Serialize for Error {
             root_failure: self.root_failure(),
             engine_failure: self.engine_failure_snapshot().cloned(),
             remote_http_rejection: self.remote_http_rejection(),
+            name_taken:
+                matches!(self, Self::Conflict(message) if message == WORKSPACE_FILE_NAME_TAKEN)
+                    .then_some(true),
         }
         .serialize(serializer)
     }
@@ -1126,6 +1134,30 @@ impl Drop for LogCaptureScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_file_name_taken_payload_marks_only_the_owned_conflict() {
+        let error = Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into());
+        let payload = serde_json::to_value(&error).expect("name-taken payload");
+        assert_eq!(payload["category"], "conflict");
+        assert_eq!(
+            payload["message"],
+            format!("Conflict: {WORKSPACE_FILE_NAME_TAKEN}")
+        );
+        assert_eq!(payload["nameTaken"], true);
+        for error in [
+            Error::Conflict("target was created concurrently".into()),
+            Error::Conflict(format!("{WORKSPACE_FILE_NAME_TAKEN} elsewhere")),
+            Error::InvalidInput(WORKSPACE_FILE_NAME_TAKEN.into()),
+            Error::with_cleanup(
+                Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into()),
+                Err(Error::InvalidInput("cleanup failed".into())),
+            ),
+        ] {
+            let payload = serde_json::to_value(error).expect("other payload");
+            assert!(payload.get("nameTaken").is_none());
+        }
+    }
 
     #[test]
     fn engine_failure_tag_preserves_optional_snapshot_and_native_cleanup_diagnostics() {

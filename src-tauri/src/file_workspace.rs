@@ -989,6 +989,9 @@ fn create_workspace_file_blocking(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    let info_leaf = sidecar_leaf(&target_leaf)?;
+    crate::infra::fs::ensure_atomic_create_available_at(parent_dir, &target_leaf)?;
+    crate::infra::fs::ensure_atomic_create_available_at(parent_dir, &info_leaf)?;
     let source_snapshot = match &content {
         WorkspaceFileContent::Text { .. } => None,
         WorkspaceFileContent::Copy { source, revision } => {
@@ -1013,7 +1016,7 @@ fn create_workspace_file_blocking(
     let source_size = source_snapshot
         .as_ref()
         .map(|snapshot| snapshot.revision.size);
-    let installed = crate::infra::fs::atomic_replace_at_identified_with_precommit(
+    let installed = crate::infra::fs::atomic_create_at_identified_with_precommit(
         parent_dir,
         &target_leaf,
         || {
@@ -1065,9 +1068,8 @@ fn create_workspace_file_blocking(
         installed.outcome,
         crate::error::DurabilityStage::WorkspacePgnCreation,
     );
-    let info_leaf = sidecar_leaf(&target_leaf)?;
     let sidecar =
-        match crate::infra::fs::atomic_replace_at_identified(parent_dir, &info_leaf, |file| {
+        match crate::infra::fs::atomic_create_at_identified(parent_dir, &info_leaf, |file| {
             use std::io::Write;
             file.write_all(&metadata_bytes).map_err(Error::from)
         }) {
@@ -4887,6 +4889,183 @@ mod tests {
     }
 
     #[test]
+    fn workspace_file_name_taken_text_and_copy_preserve_existing_registered_file() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let existing = create_named_text(&state, &workspace, "existing", "1. d4 *")
+            .expect("registered destination");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, b"1. e4 *").expect("source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+        let sidecar_before = fs::read(root.join("existing.info")).unwrap();
+        for content in [
+            WorkspaceFileContent::Text {
+                pgn: "1. c4 *".into(),
+            },
+            WorkspaceFileContent::Copy {
+                source: source.clone(),
+                revision,
+            },
+        ] {
+            let error = create_workspace_file_blocking(
+                workspace.clone(),
+                workspace.clone(),
+                "existing".into(),
+                WorkspaceMetadata::default(),
+                content,
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &state.pgn_repository,
+                &CancellationToken::new(),
+            )
+            .expect_err("existing destination");
+            assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+            assert_eq!(fs::read(root.join("existing.pgn")).unwrap(), b"1. d4 *");
+            assert_eq!(
+                fs::read(root.join("existing.info")).unwrap(),
+                sidecar_before
+            );
+            assert_eq!(fs::read(&source_path).unwrap(), b"1. e4 *");
+            assert_eq!(
+                fs::read(directory.path().join("registry.json")).unwrap(),
+                registry_before
+            );
+            resolve_created_pgn(&state, &existing.handle);
+        }
+        assert_workspace_entry_names(&root, &["existing.info", "existing.pgn", "source.pgn"]);
+    }
+
+    #[test]
+    fn workspace_file_name_taken_orphan_sidecar_refuses_before_pgn_publication() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        fs::write(root.join("game.info"), b"orphan sidecar").unwrap();
+        let _injector = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::TempfileCreate, 0),
+        ));
+        let error = create_named_text(&state, &workspace, "game", "*").unwrap_err();
+        assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+        assert_eq!(fs::read(root.join("game.info")).unwrap(), b"orphan sidecar");
+        assert_workspace_entry_names(&root, &["game.info"]);
+        assert!(!registry_has_display_name(&directory, "game"));
+    }
+
+    #[test]
+    fn workspace_file_name_taken_directories_are_invalid_at_either_leaf() {
+        for leaf in ["game.pgn", "game.info"] {
+            let (directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            fs::create_dir(root.join(leaf)).unwrap();
+            fs::write(root.join(leaf).join("kept"), b"directory child").unwrap();
+            let error = create_named_text(&state, &workspace, "game", "*").unwrap_err();
+            assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+            assert_eq!(
+                fs::read(root.join(leaf).join("kept")).unwrap(),
+                b"directory child"
+            );
+            assert_workspace_entry_names(&root, &[leaf]);
+            assert!(!registry_has_display_name(&directory, "game"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_file_name_taken_symlinks_are_invalid_at_either_leaf() {
+        for leaf in ["game.pgn", "game.info"] {
+            let (directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let outside = directory.path().join("outside");
+            fs::write(&outside, b"outside bytes").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join(leaf)).unwrap();
+            let error = create_named_text(&state, &workspace, "game", "*").unwrap_err();
+            assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+            assert!(fs::symlink_metadata(root.join(leaf))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(outside).unwrap(), b"outside bytes");
+            assert_workspace_entry_names(&root, &[leaf]);
+            assert!(!registry_has_display_name(&directory, "game"));
+        }
+    }
+
+    #[test]
+    fn workspace_file_name_taken_hard_links_preserve_the_other_names_bytes() {
+        for leaf in ["game.pgn", "game.info"] {
+            let (directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let outside = directory.path().join("outside");
+            fs::write(&outside, b"hard-linked bytes").unwrap();
+            fs::hard_link(&outside, root.join(leaf)).unwrap();
+            let error = create_named_text(&state, &workspace, "game", "*").unwrap_err();
+            assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+            assert_eq!(fs::read(outside).unwrap(), b"hard-linked bytes");
+            assert_eq!(fs::read(root.join(leaf)).unwrap(), b"hard-linked bytes");
+            assert_workspace_entry_names(&root, &[leaf]);
+            assert!(!registry_has_display_name(&directory, "game"));
+        }
+    }
+
+    #[test]
+    fn workspace_file_name_taken_free_text_and_copy_succeed() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let text = create_named_text(&state, &workspace, "text", "1. e4 *").unwrap();
+        let revision = source_revision(&state, &text.handle);
+        let copy = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            "copy".into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Copy {
+                source: text.handle.clone(),
+                revision,
+            },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &state.pgn_repository,
+            &CancellationToken::new(),
+        )
+        .expect("free copy");
+        for entry in [&text, &copy] {
+            assert_eq!(entry.game_count, Some(1));
+            assert!(registry_has_display_name(&directory, &entry.name));
+            resolve_created_pgn(&state, &entry.handle);
+        }
+        assert_eq!(fs::read(root.join("text.pgn")).unwrap(), b"1. e4 *");
+        assert_eq!(fs::read(root.join("copy.pgn")).unwrap(), b"1. e4 *");
+        assert_workspace_entry_names(&root, &["copy.info", "copy.pgn", "text.info", "text.pgn"]);
+    }
+
+    #[test]
+    fn workspace_file_name_taken_sidecar_after_pgn_install_rolls_back_only_new_pgn() {
+        struct PlantSidecar(PathBuf);
+        impl AtomicWriterInjector for PlantSidecar {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::PostRenameMetadata {
+                    fs::write(&self.0, b"winning sidecar")?;
+                }
+                Ok(())
+            }
+        }
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let _injector = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+            PlantSidecar(root.join("game.info")),
+        ));
+        let error = create_named_text(&state, &workspace, "game", "1. e4 *").unwrap_err();
+        assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+        assert_eq!(
+            fs::read(root.join("game.info")).unwrap(),
+            b"winning sidecar"
+        );
+        assert_workspace_entry_names(&root, &["game.info"]);
+        assert!(!registry_has_display_name(&directory, "game"));
+    }
+
+    #[test]
     fn create_workspace_file_rolls_back_its_pgn_when_the_sidecar_fails() {
         let (_directory, root, result) = create_game_under_sidecar_fault(false);
         assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
@@ -5840,8 +6019,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_workspace_file_cancellation_after_last_chunk_preserves_existing_destination() {
-        let (_directory, state, workspace) = workspace_state();
+    async fn copy_workspace_file_cancellation_after_last_chunk_workspace_file_name_taken_is_checked_first(
+    ) {
+        let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let source_path = root.join("source.pgn");
         fs::write(&source_path, b"one final chunk").expect("write source");
@@ -5851,14 +6031,38 @@ mod tests {
         let existing_info = b"previous sidecar bytes";
         fs::write(root.join("existing.pgn"), existing_pgn).expect("write destination");
         fs::write(root.join("existing.info"), existing_info).expect("write sidecar");
+        let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
         let cancellation = CancellationToken::new();
+        let (hook, _entered, _release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace.clone(),
+            workspace.clone(),
+            source.clone(),
+            "existing",
+            revision.clone(),
+            cancellation.clone(),
+            hook,
+        );
+        let (result, chunks) = tokio::time::timeout(Duration::from_secs(2), copy)
+            .await
+            .expect("existing name refuses before chunk hook")
+            .expect("join refused copy");
+        let error = result.expect_err("name taken before copying");
+        assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+        assert_eq!(chunks, 0);
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            registry_before
+        );
+
         let (hook, entered, release) = pgn::BoundedHook::new();
         let copy = create_copy_with_chunk_hook(
             &state,
             workspace.clone(),
             workspace,
             source,
-            "existing",
+            "free",
             revision,
             cancellation.clone(),
             hook,
@@ -5872,6 +6076,13 @@ mod tests {
         assert_eq!(chunks, 1);
         assert_eq!(fs::read(root.join("existing.pgn")).unwrap(), existing_pgn);
         assert_eq!(fs::read(root.join("existing.info")).unwrap(), existing_info);
+        assert_eq!(fs::read(source_path).unwrap(), b"one final chunk");
+        assert!(!root.join("free.pgn").exists());
+        assert!(!root.join("free.info").exists());
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            registry_before
+        );
         assert_workspace_entry_names(&root, &["existing.info", "existing.pgn", "source.pgn"]);
     }
 

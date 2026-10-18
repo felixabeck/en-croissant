@@ -9,7 +9,10 @@
 //! detection before that window, not compare-and-swap semantics. Commits never follow a target
 //! link or leave the opened parent directory.
 
-use crate::{error::Error, infra::inode_ownership::OwnedFile};
+use crate::{
+    error::{Error, WORKSPACE_FILE_NAME_TAKEN},
+    infra::inode_ownership::OwnedFile,
+};
 #[cfg(unix)]
 use std::time::Duration;
 // `temp.flush()` in replace_at_driver is platform-neutral, so this trait must be in scope on
@@ -687,10 +690,21 @@ struct TempMetadata {
     modified_seconds: i64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AtomicFileMode {
+    Replace,
+    Create,
+}
+
 trait AtomicReplaceAdapter {
     type Target;
 
-    fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error>;
+    fn target_stat(
+        &self,
+        dir: &File,
+        target: &OsStr,
+        mode: AtomicFileMode,
+    ) -> Result<Option<Self::Target>, Error>;
     fn is_regular(&self, target: &Self::Target) -> bool;
     fn target_identity(&self, target: &Self::Target) -> (u64, u64);
     fn create_temp(
@@ -716,6 +730,7 @@ trait AtomicReplaceAdapter {
         temp_name: &OsStr,
         target: &OsStr,
         replace: bool,
+        mode: AtomicFileMode,
     ) -> Result<(), Error>;
     fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error>;
     fn cleanup(&self, dir: &File, temp_name: &OsStr, temp: &mut OwnedFile, primary: Error)
@@ -993,10 +1008,40 @@ fn install_leaf(path: &Path) -> Result<&OsStr, Error> {
         .ok_or_else(|| Error::InvalidInput("directory install needs a leaf name".into()))
 }
 
+fn initial_atomic_target<A: AtomicReplaceAdapter>(
+    adapter: &A,
+    dir: &File,
+    target: &OsStr,
+    mode: AtomicFileMode,
+) -> Result<Option<A::Target>, Error> {
+    let result = adapter.target_stat(dir, target, mode);
+    record_durability("target_stat:initial");
+    match result? {
+        Some(target) if !adapter.is_regular(&target) => Err(Error::InvalidInput(
+            "target must be a regular file, not a link or special file".into(),
+        )),
+        Some(_) if mode == AtomicFileMode::Create => {
+            Err(Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into()))
+        }
+        target => Ok(target),
+    }
+}
+
+/// Early refusal only. The create driver's no-replace rename is the publication boundary.
+pub(crate) fn ensure_atomic_create_available_at(parent: &File, leaf: &OsStr) -> Result<(), Error> {
+    single_leaf(leaf)?;
+    #[cfg(unix)]
+    let adapter = unix::UnixAdapter;
+    #[cfg(windows)]
+    let adapter = win::WindowsAdapter;
+    initial_atomic_target(&adapter, parent, leaf, AtomicFileMode::Create).map(|_| ())
+}
+
 fn replace_at_driver<A, F, P>(
     adapter: A,
     dir: File,
     target_name: OsString,
+    mode: AtomicFileMode,
     precommit: P,
     write_fn: F,
 ) -> Result<AtomicInstalledFile, Error>
@@ -1006,18 +1051,7 @@ where
     P: FnOnce() -> Result<(), Error>,
 {
     let target_name_ref = target_name.as_os_str();
-    let original = {
-        let result = adapter.target_stat(&dir, target_name_ref);
-        record_durability("target_stat:initial");
-        match result? {
-            Some(target) if !adapter.is_regular(&target) => {
-                return Err(Error::InvalidInput(
-                    "target must be a regular file, not a link or special file".into(),
-                ));
-            }
-            target => target,
-        }
-    };
+    let original = initial_atomic_target(&adapter, &dir, target_name_ref, mode)?;
 
     #[cfg(test)]
     inject_atomic_file(AtomicFileFaultPoint::TempfileCreate)?;
@@ -1095,7 +1129,7 @@ where
             &adapter, &dir, &temp_name, &mut temp, error,
         ));
     }
-    let current = adapter.target_stat(&dir, target_name_ref);
+    let current = adapter.target_stat(&dir, target_name_ref, mode);
     record_durability("target_stat:revalidation");
     let current = match current {
         Ok(current) => current,
@@ -1113,7 +1147,14 @@ where
                 &dir,
                 &temp_name,
                 &mut temp,
-                Error::Conflict("target was created concurrently".into()),
+                Error::Conflict(
+                    if mode == AtomicFileMode::Create {
+                        WORKSPACE_FILE_NAME_TAKEN
+                    } else {
+                        "target was created concurrently"
+                    }
+                    .into(),
+                ),
             ))
         }
         (Some(_), None) => {
@@ -1173,7 +1214,8 @@ where
         &mut temp,
         &temp_name,
         target_name_ref,
-        original.is_some(),
+        mode == AtomicFileMode::Replace && original.is_some(),
+        mode,
     ) {
         return Err(cleanup_with_adapter(
             &adapter, &dir, &temp_name, &mut temp, error,
@@ -1914,12 +1956,17 @@ mod unix {
         }
     }
 
-    struct UnixAdapter;
+    pub(super) struct UnixAdapter;
 
     impl AtomicReplaceAdapter for UnixAdapter {
         type Target = fs::Stat;
 
-        fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error> {
+        fn target_stat(
+            &self,
+            dir: &File,
+            target: &OsStr,
+            _mode: AtomicFileMode,
+        ) -> Result<Option<Self::Target>, Error> {
             target_stat(dir, target)
         }
 
@@ -1985,12 +2032,20 @@ mod unix {
             temp_name: &OsStr,
             target: &OsStr,
             replace: bool,
+            mode: AtomicFileMode,
         ) -> Result<(), Error> {
             if replace {
                 fs::renameat(dir, temp_name, dir, target).map_err(|error| io(error.into()))
             } else {
-                fs::renameat_with(dir, temp_name, dir, target, RenameFlags::NOREPLACE)
-                    .map_err(|error| io(error.into()))
+                fs::renameat_with(dir, temp_name, dir, target, RenameFlags::NOREPLACE).map_err(
+                    |error| {
+                        if mode == AtomicFileMode::Create && error == rustix::io::Errno::EXIST {
+                            Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into())
+                        } else {
+                            io(error.into())
+                        }
+                    },
+                )
             }
         }
 
@@ -2036,6 +2091,7 @@ mod unix {
             UnixAdapter,
             dir,
             target_name,
+            AtomicFileMode::Replace,
             move || {
                 let current = open_dir_no_follow(&logical_parent)?;
                 let metadata = current.metadata().map_err(io)?;
@@ -2053,6 +2109,7 @@ mod unix {
     pub(super) fn replace_at<F, P>(
         dir: File,
         target_name: OsString,
+        mode: AtomicFileMode,
         precommit: P,
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
@@ -2060,7 +2117,7 @@ mod unix {
         F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
-        replace_at_driver(UnixAdapter, dir, target_name, precommit, write_fn)
+        replace_at_driver(UnixAdapter, dir, target_name, mode, precommit, write_fn)
     }
 
     fn sync_tree(dir: &File, depth: usize) -> Result<(), Error> {
@@ -2419,6 +2476,7 @@ mod win {
     pub(super) struct Target {
         handle: File,
         identity: (u64, u64),
+        regular: bool,
     }
 
     struct PrivateSecurityDescriptor {
@@ -2684,26 +2742,47 @@ mod win {
         }
     }
 
-    fn open_target(dir: &File, name: &OsStr) -> Result<File, Error> {
-        open_windows_child(dir, name, FILE_OPEN, TARGET_ACCESS, null(), false, true)
-    }
-
-    fn target_stat(dir: &File, name: &OsStr) -> Result<Option<Target>, Error> {
-        let handle = match open_target(dir, name) {
+    fn target_stat(
+        dir: &File,
+        name: &OsStr,
+        mode: AtomicFileMode,
+    ) -> Result<Option<Target>, Error> {
+        // Exclusive create observes directories too, so the driver's regular-file guard can
+        // reject them as InvalidInput before allocating a temporary. Replacement keeps its
+        // existing non-directory open and access requirements.
+        let handle = match crate::infra::path_authority::open_windows_child_with_kind(
+            dir,
+            name,
+            FILE_OPEN,
+            if mode == AtomicFileMode::Create {
+                READ_ONLY_ACCESS
+            } else {
+                TARGET_ACCESS
+            },
+            null(),
+            if mode == AtomicFileMode::Create {
+                WindowsChildKind::FileOrDirectory
+            } else {
+                WindowsChildKind::NonDirectory
+            },
+            true,
+        ) {
             Ok(handle) => handle,
             Err(error) if error.is_missing_entry() => return Ok(None),
             Err(error) => return Err(error),
         };
         let identity = opened_file_identity(&handle)?;
-        Ok(Some(Target { handle, identity }))
+        let regular = unsafe { GetFileType(handle.as_raw_handle() as HANDLE) == FILE_TYPE_DISK }
+            && (mode == AtomicFileMode::Replace || handle.metadata().map_err(io)?.is_file());
+        Ok(Some(Target {
+            handle,
+            identity,
+            regular,
+        }))
     }
 
     fn target_regular(target: &Target) -> bool {
-        // FILE_NON_DIRECTORY_FILE only excludes directories: devices, volumes, pipes and mailslots
-        // are all "non-directory" objects and were accepted here, so the driver's "target must be
-        // a regular file, not a link or special file" guard was vacuous on Windows while the unix
-        // arm really checked. FILE_TYPE_DISK is what separates a file on disk from those.
-        unsafe { GetFileType(target.handle.as_raw_handle() as HANDLE) == FILE_TYPE_DISK }
+        target.regular
     }
 
     fn temp_name() -> OsString {
@@ -2812,6 +2891,24 @@ mod win {
         target: &OsStr,
         replace: bool,
     ) -> Result<(), Error> {
+        rename_child_with_mode(
+            dir,
+            temp,
+            _temp_name,
+            target,
+            replace,
+            AtomicFileMode::Replace,
+        )
+    }
+
+    fn rename_child_with_mode(
+        dir: &File,
+        temp: &mut impl crate::infra::inode_ownership::NativeFile,
+        _temp_name: &OsStr,
+        target: &OsStr,
+        replace: bool,
+        mode: AtomicFileMode,
+    ) -> Result<(), Error> {
         super::single_leaf(target)?;
         // FILE_RENAME_INFORMATION is a variable-length structure: FileName is declared [u16; 1]
         // but carries the whole leaf, so it cannot be written as a plain value and the buffer is
@@ -2867,6 +2964,11 @@ mod win {
             )
         };
         if status != 0 {
+            if mode == AtomicFileMode::Create
+                && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
+            {
+                return Err(Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into()));
+            }
             return Err(windows_open_status_error(status));
         }
         Ok(())
@@ -4190,8 +4292,13 @@ mod win {
     impl AtomicReplaceAdapter for WindowsAdapter {
         type Target = Target;
 
-        fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error> {
-            target_stat(dir, target)
+        fn target_stat(
+            &self,
+            dir: &File,
+            target: &OsStr,
+            mode: AtomicFileMode,
+        ) -> Result<Option<Self::Target>, Error> {
+            target_stat(dir, target, mode)
         }
 
         fn is_regular(&self, target: &Self::Target) -> bool {
@@ -4242,8 +4349,9 @@ mod win {
             temp_name: &OsStr,
             target: &OsStr,
             replace: bool,
+            mode: AtomicFileMode,
         ) -> Result<(), Error> {
-            rename_child(dir, temp, temp_name, target, replace)
+            rename_child_with_mode(dir, temp, temp_name, target, replace, mode)
         }
 
         fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
@@ -4344,6 +4452,7 @@ mod win {
             WindowsAdapter,
             dir,
             target_name,
+            AtomicFileMode::Replace,
             move || {
                 let current = open_directory_path(logical_parent, false)?;
                 let current_identity = opened_file_identity(&current)?;
@@ -4365,6 +4474,7 @@ mod win {
     pub(super) fn replace_at<F, P>(
         dir: File,
         target_name: OsString,
+        mode: AtomicFileMode,
         precommit: P,
         write_fn: F,
     ) -> Result<AtomicInstalledFile, Error>
@@ -4372,7 +4482,7 @@ mod win {
         F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
-        replace_at_driver(WindowsAdapter, dir, target_name, precommit, write_fn)
+        replace_at_driver(WindowsAdapter, dir, target_name, mode, precommit, write_fn)
     }
 }
 
@@ -5248,12 +5358,63 @@ where
     F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
+    atomic_publish_at_identified_with_precommit(
+        parent,
+        leaf,
+        AtomicFileMode::Replace,
+        precommit,
+        write_fn,
+    )
+}
+
+pub(crate) fn atomic_create_at_identified<F>(
+    parent: &File,
+    leaf: &OsStr,
+    write_fn: F,
+) -> Result<AtomicInstalledFile, Error>
+where
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
+{
+    atomic_create_at_identified_with_precommit(parent, leaf, || Ok(()), write_fn)
+}
+
+pub(crate) fn atomic_create_at_identified_with_precommit<F, P>(
+    parent: &File,
+    leaf: &OsStr,
+    precommit: P,
+    write_fn: F,
+) -> Result<AtomicInstalledFile, Error>
+where
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
+    P: FnOnce() -> Result<(), Error>,
+{
+    atomic_publish_at_identified_with_precommit(
+        parent,
+        leaf,
+        AtomicFileMode::Create,
+        precommit,
+        write_fn,
+    )
+}
+
+fn atomic_publish_at_identified_with_precommit<F, P>(
+    parent: &File,
+    leaf: &OsStr,
+    mode: AtomicFileMode,
+    precommit: P,
+    write_fn: F,
+) -> Result<AtomicInstalledFile, Error>
+where
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
+    P: FnOnce() -> Result<(), Error>,
+{
     single_leaf(leaf)?;
     #[cfg(unix)]
     {
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
+            mode,
             precommit,
             write_fn,
         )
@@ -5269,6 +5430,7 @@ where
         win::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
+            mode,
             precommit,
             write_fn,
         )
@@ -9267,6 +9429,79 @@ mod tests {
             }
             other => panic!("expected structured cleanup error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn workspace_file_name_taken_at_revalidation_and_at_rename_cleans_temporary_file() {
+        for point in [
+            AtomicFileFaultPoint::PreCommitRevalidate,
+            AtomicFileFaultPoint::Rename,
+        ] {
+            let root = tempfile::tempdir().expect("tempdir");
+            let target = root.path().join("target");
+            let parent = open_parent_no_follow(&target).expect("parent");
+            let _injector = install_test_atomic_file_injector(Arc::new(Mutation {
+                point,
+                target: target.clone(),
+                #[cfg(not(windows))]
+                parent: root.path().to_path_buf(),
+                action: "create",
+            }));
+            clear_durability_log();
+            let error = atomic_create_at_identified(&parent, OsStr::new("target"), |file| {
+                file.write_all(b"new").map_err(io)
+            })
+            .expect_err("competing creator wins");
+            let payload = serde_json::to_value(&error).expect("error payload");
+            assert_eq!(payload["category"], "conflict");
+            assert_eq!(payload["nameTaken"], true);
+            assert!(durability_log().contains(&"target_stat:revalidation"));
+            assert_eq!(std::fs::read(&target).expect("winner"), b"racer");
+            assert_eq!(std::fs::read_dir(root.path()).expect("entries").count(), 1);
+        }
+    }
+
+    #[test]
+    fn workspace_file_name_taken_initial_refusal_precedes_temporary_file_creation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let parent = open_parent_no_follow(&target).expect("parent");
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _injector = install_test_atomic_file_injector(Arc::new(Fault(
+            Some(AtomicFileFaultPoint::TempfileCreate),
+            None,
+            calls.clone(),
+        )));
+        let error = atomic_create_at_identified(&parent, OsStr::new("target"), |_| {
+            panic!("existing target must be refused before writing")
+        })
+        .expect_err("name taken");
+        assert_eq!(serde_json::to_value(error).unwrap()["nameTaken"], true);
+        assert!(calls.lock().expect("calls").is_empty());
+        assert_eq!(std::fs::read(target).expect("old bytes"), b"old");
+    }
+
+    #[test]
+    fn workspace_file_name_taken_keeps_other_rename_failures_as_io() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = open_parent_no_follow(&root.path().join("target")).expect("parent");
+        let _injector = install_test_atomic_file_injector(Arc::new(Fault(
+            Some(AtomicFileFaultPoint::Rename),
+            None,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+        )));
+        let error = atomic_create_at_identified(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect_err("injected I/O error");
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+        assert_eq!(std::fs::read_dir(root.path()).expect("entries").count(), 0);
+    }
+
+    #[test]
+    fn workspace_file_name_taken_preserves_replacing_rename_race_contract() {
+        file_revalidation_races_are_conflicts_and_actual_rename_failure_is_preserved();
     }
 
     #[test]
