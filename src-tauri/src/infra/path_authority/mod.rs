@@ -269,6 +269,7 @@ mod windows_tests {
                             &filename,
                             display,
                             observed,
+                            true,
                         )?
                     };
                     Ok((entry, ()))
@@ -7444,6 +7445,7 @@ impl PathAuthority {
                     &filename,
                     display_name.clone(),
                     identity,
+                    true,
                 )?;
                 let id = entry.id();
                 Ok((
@@ -7470,8 +7472,13 @@ impl PathAuthority {
         display_name: impl Into<String>,
         observed: (u64, u64),
     ) -> Result<DatabaseHandle, Error> {
-        let prepared =
-            self.prepare_database_listing_child(root, filename, display_name.into(), observed)?;
+        let prepared = self.prepare_database_listing_child(
+            root,
+            filename,
+            display_name.into(),
+            observed,
+            false,
+        )?;
         let commit = self.publish_prepared_entry(prepared)?;
         require_durable(commit.durability)?;
         Ok(DatabaseHandle::new(commit.id))
@@ -7483,6 +7490,10 @@ impl PathAuthority {
         filename: &OsStr,
         display_name: impl Into<String>,
         observed: (u64, u64),
+        // Listing labels a root-acquisition failure so the per-child classifier
+        // cannot treat a removed root as a vanished child. Registration and create
+        // keep the unlabelled error.
+        label_root_acquisition: bool,
     ) -> Result<PreparedEntry, Error> {
         validate_windows_database_leaf(filename)?;
         let components = vec![filename.to_os_string()];
@@ -7500,6 +7511,7 @@ impl PathAuthority {
             display_name.into(),
             &resolved,
             resolved_identity,
+            label_root_acquisition,
         )
     }
 
@@ -7517,6 +7529,7 @@ impl PathAuthority {
             display_name,
             resolved,
             expected_identity,
+            false,
         )?;
         let commit = self.publish_prepared_entry(prepared)?;
         require_durable(commit.durability)?;
@@ -7530,6 +7543,7 @@ impl PathAuthority {
         display_name: String,
         resolved: &ResolvedPath,
         expected_identity: VerifiedIdentity,
+        label_root_acquisition: bool,
     ) -> Result<PreparedEntry, Error> {
         if resolved.parent().is_none() || resolved.leaf().is_none() {
             return Err(Error::InvalidInput(
@@ -7538,9 +7552,13 @@ impl PathAuthority {
         }
         let (a, b) = resolved.parent_identity()?;
         let parent_identity = Identity { a, b };
-        let root_path = self
-            .database_root_path(root)
-            .map_err(Error::label_root_failure)?;
+        let root_path = self.database_root_path(root).map_err(|error| {
+            if label_root_acquisition {
+                error.label_root_failure()
+            } else {
+                error
+            }
+        })?;
         let path = root_path.join(filename);
         let validated_identity =
             validate_target(&path, PathClass::PersistentFile).map_err(|error| {
