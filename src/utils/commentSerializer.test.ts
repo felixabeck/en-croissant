@@ -341,6 +341,382 @@ test("refuses adapter and serialization exceptions without throwing or returning
     ).toEqual({ saved: false });
 });
 
+test.each([
+    {
+        name: "linked break beside trailing emphasis space",
+        input: [
+            { text: "a", marks: ["bold"] },
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "a" },
+            { text: "\n", marks: [url] },
+            { text: " ", marks: ["italic"] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold"] },
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "a" },
+            { text: "\n", marks: [url] },
+            { text: " " },
+        ],
+        source: "**a***~~a~~*a[\n](https://x.y) ",
+    },
+    {
+        name: "linked whitespace in separate runs",
+        input: [
+            { text: " ", marks: [url] },
+            { text: " ", marks: ["strike", url] },
+            { text: "\n" },
+            { text: " ", marks: [url] },
+        ],
+        wanted: [
+            { text: " ", marks: [url] },
+            { text: " ", marks: [url] },
+            { text: "\n" },
+            { text: " ", marks: [url] },
+        ],
+        source: "[  ](https://x.y)\n[ ](https://x.y)",
+    },
+    {
+        name: "outer strike around nested linked underline",
+        input: [
+            { text: " ", marks: ["bold", "italic", url] },
+            { text: " ", marks: ["italic"] },
+            { text: "a", marks: ["strike", "underline"] },
+            { text: "a", marks: ["bold", "italic", "strike", "underline", url] },
+            { text: "a", marks: ["italic", "strike"] },
+        ],
+        wanted: [
+            { text: " ", marks: [url] },
+            { text: " " },
+            { text: "a", marks: ["strike", "underline"] },
+            { text: "a", marks: [url, "bold", "italic", "strike", "underline"] },
+            { text: "a", marks: ["italic", "strike"] },
+        ],
+        source: "[ ](https://x.y) ~~++a[***a***](https://x.y)++*a*~~",
+    },
+    {
+        name: "separate link runs across a plain gap",
+        input: [
+            { text: "b", marks: ["italic"] },
+            { text: "b", marks: ["underline"] },
+            { text: "a", marks: ["strike", url] },
+            { text: " ", marks: [url] },
+            { text: "b", marks: ["italic", url] },
+            { text: " ", marks: ["strike", "underline"] },
+            { text: "b", marks: ["bold", "italic", url] },
+        ],
+        wanted: [
+            { text: "b", marks: ["italic"] },
+            { text: "b", marks: ["underline"] },
+            { text: "a", marks: [url, "strike"] },
+            { text: " ", marks: [url] },
+            { text: "b", marks: [url, "italic"] },
+            { text: " " },
+            { text: "b", marks: [url, "bold", "italic"] },
+        ],
+        source: "*b*++b++[~~a~~ *b*](https://x.y) [***b***](https://x.y)",
+    },
+    {
+        name: "crossing emphasis around whitespace",
+        input: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "b", marks: ["bold"] },
+            { text: " ", marks: ["bold", "italic", "strike"] },
+            { text: "b", marks: ["bold", "italic", url] },
+            { text: "a", marks: ["italic", "underline"] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "b", marks: ["bold"] },
+            { text: " ", marks: ["bold"] },
+            { text: "b", marks: [url, "bold", "italic"] },
+            { text: "a", marks: ["italic", "underline"] },
+        ],
+        source: "***a*b [*b*](https://x.y)**++*a*++",
+    },
+    {
+        name: "outer emphasis spanning a linked break",
+        input: [
+            { text: "\n", marks: ["bold", "italic", url] },
+            { text: "a", marks: ["bold", "italic", "underline", url] },
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: ["italic", "underline"] },
+            { text: "b", marks: ["bold", "strike", "underline", url] },
+        ],
+        wanted: [
+            { text: "\n", marks: [url, "bold", "italic"] },
+            { text: "a", marks: [url, "bold", "italic", "underline"] },
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: ["italic", "underline"] },
+            { text: "b", marks: [url, "bold", "strike", "underline"] },
+        ],
+        source: "***[\n++a++](https://x.y)a**++a++*++[**~~b~~**](https://x.y)++",
+    },
+    {
+        name: "same link attributes on separate lines",
+        input: [
+            { text: "\n", marks: [url] },
+            { text: " ", marks: [url] },
+            { text: "b", marks: ["bold"] },
+            { text: " " },
+            { text: " ", marks: ["bold", "underline", url] },
+        ],
+        wanted: [
+            { text: "\n", marks: [url] },
+            { text: " ", marks: [url] },
+            { text: "b", marks: ["bold"] },
+            { text: " " },
+            { text: " ", marks: [url, "underline"] },
+        ],
+        source: "[\n ](https://x.y)**b** ++[ ](https://x.y)++",
+    },
+    {
+        name: "outer strike crossing a linked underline",
+        input: [
+            { text: "b", marks: ["strike"] },
+            { text: "b", marks: ["strike", "underline", url] },
+            { text: "a", marks: ["italic", "underline", url] },
+            { text: " ", marks: ["strike"] },
+            { text: "a", marks: ["strike", url] },
+            { text: "a", marks: ["bold", "strike", "underline"] },
+        ],
+        wanted: [
+            { text: "b", marks: ["strike"] },
+            { text: "b", marks: [url, "strike", "underline"] },
+            { text: "a", marks: [url, "italic", "underline"] },
+            { text: " " },
+            { text: "a", marks: [url, "strike"] },
+            { text: "a", marks: ["bold", "strike", "underline"] },
+        ],
+        source: "~~b~~++[~~b~~*a*](https://x.y)++ ~~[a](https://x.y)++**a**++~~",
+    },
+    {
+        name: "italic crossing bold into a longer link",
+        input: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: ["italic", "underline", url] },
+            { text: "a", marks: ["strike", url] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: [url, "italic", "underline"] },
+            { text: "a", marks: [url, "strike"] },
+        ],
+        source: "***a***[++*a*++~~a~~](https://x.y)",
+    },
+    {
+        name: "nested emphasis beside an adjacent link",
+        input: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: ["bold", "strike"] },
+            { text: "b", marks: ["bold", "italic", "strike", "underline"] },
+            { text: "b", marks: ["bold", url] },
+            { text: "b", marks: ["strike", url] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold", "italic"] },
+            { text: "a", marks: ["bold", "strike"] },
+            { text: "b", marks: ["bold", "italic", "strike", "underline"] },
+            { text: "b", marks: [url, "bold"] },
+            { text: "b", marks: [url, "strike"] },
+        ],
+        source: "***a*~~a++*b*++~~**[**b**~~b~~](https://x.y)",
+    },
+    {
+        name: "separate emphasis runs",
+        input: [
+            { text: "a", marks: ["bold"] },
+            { text: "b" },
+            { text: "a", marks: ["italic", url] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold"] },
+            { text: "b" },
+            { text: "a", marks: [url, "italic"] },
+        ],
+        source: "**a**b[*a*](https://x.y)",
+    },
+    {
+        name: "trailing linked whitespace across a break",
+        input: [
+            { text: "b", marks: ["italic", url] },
+            { text: " ", marks: ["bold"] },
+            { text: "\n", marks: [url] },
+            { text: " ", marks: ["strike", "underline", url] },
+        ],
+        wanted: [
+            { text: "b", marks: [url, "italic"] },
+            { text: " " },
+            { text: "\n", marks: [url] },
+            { text: " ", marks: [url] },
+        ],
+        source: "[*b*](https://x.y) [\n ](https://x.y)",
+    },
+    {
+        name: "emphasis ending before a second link",
+        input: [
+            { text: "\n", marks: ["italic", "strike", url] },
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "\n", marks: ["underline", url] },
+        ],
+        wanted: [
+            { text: "\n", marks: [url, "italic", "strike"] },
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "\n", marks: [url] },
+        ],
+        source: "*~~[\n](https://x.y)a~~*[\n](https://x.y)",
+    },
+    {
+        name: "adjacent disjoint emphasis",
+        input: [
+            { text: "b", marks: ["bold"] },
+            { text: "b", marks: ["italic", url] },
+        ],
+        wanted: [
+            { text: "b", marks: ["bold"] },
+            { text: "b", marks: [url, "italic"] },
+        ],
+        source: "**b**[*b*](https://x.y)",
+    },
+    {
+        name: "crossing emphasis at a link edge",
+        input: [
+            { text: "a", marks: ["bold", url] },
+            { text: "a", marks: ["bold", "strike", "underline", url] },
+            { text: "a", marks: ["bold", "italic", "strike", "underline", url] },
+            { text: "a", marks: ["italic"] },
+            { text: "b", marks: ["strike"] },
+            { text: " ", marks: [url] },
+            { text: "a", marks: ["bold", "underline"] },
+        ],
+        wanted: [
+            { text: "a", marks: [url, "bold"] },
+            { text: "a", marks: [url, "bold", "strike", "underline"] },
+            { text: "a", marks: [url, "bold", "italic", "strike", "underline"] },
+            { text: "a", marks: ["italic"] },
+            { text: "b", marks: ["strike"] },
+            { text: " ", marks: [url] },
+            { text: "a", marks: ["bold", "underline"] },
+        ],
+        source: "[**a++~~a~~++**](https://x.y)*++[**~~a~~**](https://x.y)++a*~~b~~[ ](https://x.y)++**a**++",
+    },
+    {
+        name: "strike across separate linked lines",
+        input: [
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "b" },
+            { text: "b", marks: ["bold", "strike"] },
+            { text: "\n", marks: ["strike", "underline", url] },
+            { text: " ", marks: ["bold", url] },
+        ],
+        wanted: [
+            { text: "a", marks: ["italic", "strike"] },
+            { text: "b" },
+            { text: "b", marks: ["bold", "strike"] },
+            { text: "\n", marks: [url, "strike"] },
+            { text: " ", marks: [url] },
+        ],
+        source: "*~~a~~*b~~**b**[\n](https://x.y)~~[ ](https://x.y)",
+    },
+    {
+        name: "crossing italic and bold at whitespace edges",
+        input: [
+            { text: "b", marks: ["italic", "underline"] },
+            { text: "b", marks: ["bold", "italic", url] },
+            { text: "a", marks: ["bold"] },
+            { text: " ", marks: ["bold", "strike", "underline"] },
+        ],
+        wanted: [
+            { text: "b", marks: ["italic", "underline"] },
+            { text: "b", marks: [url, "bold", "italic"] },
+            { text: "a", marks: ["bold"] },
+            { text: " " },
+        ],
+        source: "++*b*++**[*b*](https://x.y)a** ",
+    },
+    {
+        name: "link spanning a break through underline",
+        input: [
+            { text: "b", marks: ["underline", url] },
+            { text: "\n", marks: ["underline", url] },
+            { text: "b", marks: ["bold", "underline", url] },
+            { text: "a", marks: ["bold", "italic", "strike", "underline"] },
+            { text: "b", marks: ["italic", "underline"] },
+        ],
+        wanted: [
+            { text: "b", marks: [url, "underline"] },
+            { text: "\n", marks: [url] },
+            { text: "b", marks: [url, "bold", "underline"] },
+            { text: "a", marks: ["bold", "italic", "strike", "underline"] },
+            { text: "b", marks: ["italic", "underline"] },
+        ],
+        source: "[++b++\n++**b**++](https://x.y)++***~~a~~**b*++",
+    },
+    {
+        name: "several disjoint emphasis and link runs",
+        input: [
+            { text: "a", marks: ["bold", "underline"] },
+            { text: "b", marks: ["strike"] },
+            { text: "b", marks: ["italic", "strike", url] },
+            { text: "a", marks: ["bold", "italic", url] },
+            { text: "b", marks: ["strike"] },
+            { text: "a", marks: ["bold", "underline", url] },
+            { text: "a", marks: ["bold"] },
+        ],
+        wanted: [
+            { text: "a", marks: ["bold", "underline"] },
+            { text: "b", marks: ["strike"] },
+            { text: "b", marks: [url, "italic", "strike"] },
+            { text: "a", marks: [url, "bold", "italic"] },
+            { text: "b", marks: ["strike"] },
+            { text: "a", marks: [url, "bold", "underline"] },
+            { text: "a", marks: ["bold"] },
+        ],
+        source: "++**a**++~~b~~[*~~b~~**a***](https://x.y)~~b~~**++[a](https://x.y)++a**",
+    },
+    {
+        name: "shifted bold and italic runs",
+        input: [
+            { text: "b", marks: ["bold"] },
+            { text: "a", marks: ["bold", "italic", url] },
+            { text: "a", marks: ["italic", "strike", url] },
+            { text: " " },
+        ],
+        wanted: [
+            { text: "b", marks: ["bold"] },
+            { text: "a", marks: [url, "bold", "italic"] },
+            { text: "a", marks: [url, "italic", "strike"] },
+            { text: " " },
+        ],
+        source: "**b***[**a**~~a~~](https://x.y)* ",
+    },
+    {
+        name: "leading linked underline whitespace across a break",
+        input: [
+            { text: " ", marks: ["underline", url] },
+            { text: "\n", marks: [url] },
+            { text: "a", marks: ["bold", "strike", "underline"] },
+            { text: "a" },
+            { text: "a", marks: ["bold", "underline", url] },
+            { text: " ", marks: ["italic"] },
+            { text: " " },
+        ],
+        wanted: [
+            { text: " ", marks: [url] },
+            { text: "\n", marks: [url] },
+            { text: "a", marks: ["bold", "strike", "underline"] },
+            { text: "a" },
+            { text: "a", marks: [url, "bold", "underline"] },
+            { text: " " },
+            { text: " " },
+        ],
+        source: "[ \n](https://x.y)++**~~a~~**++a++[**a**](https://x.y)++  ",
+    },
+])("keeps canonical text and coverage for $name", ({ input, wanted, source }) => {
+    expect.hasAssertions();
+    roundTrip(input, wanted, source);
+});
+
 test("fixed-seed strings and overlapping layouts survive independently of text node splits", () => {
     let state = 0x20261018;
     const random = (limit: number) => {
@@ -405,6 +781,57 @@ test("normalization keeps the input document intact", () => {
     ]);
     expect(flattenCommentDocument(normalizeCommentDocument(input))).toEqual(oracle);
     expect(input).toEqual(before);
+});
+
+test.each([
+    { input: { type: "notDoc" }, error: "Expected a comment document" },
+    { input: { type: "doc", content: [{ type: "heading" }] }, error: "Unsupported comment block" },
+    {
+        input: {
+            type: "doc",
+            content: [{ type: "paragraph", content: [{ type: "image", text: "x" }] }],
+        },
+        error: "Unsupported comment node",
+    },
+    {
+        input: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text" }] }] },
+        error: "Unsupported comment node",
+    },
+    { input: document([{ text: "x", marks: ["unsupported"] }]), error: "Unsupported comment mark" },
+    {
+        input: document([{ text: "x", marks: [JSON.stringify(["link", 42, null])] }]),
+        error: "Invalid comment link",
+    },
+    {
+        input: document([{ text: "x", marks: [JSON.stringify(["link", "https://x.y", 42])] }]),
+        error: "Invalid comment title",
+    },
+    {
+        input: {
+            type: "doc",
+            content: [
+                {
+                    type: "paragraph",
+                    content: [{ type: "text", text: "x", marks: [{ type: "link" }] }],
+                },
+            ],
+        },
+        error: "Invalid comment link",
+    },
+])("rejects malformed comment input: $error", ({ input, error }) => {
+    expect(() => serializeComment(input)).toThrow(error);
+    expect(compareCommentDocument(input, [reparse])).toEqual({ saved: false });
+});
+
+test("an absent document content is an empty comment", () => {
+    expect(serializeComment({ type: "doc" })).toBe("");
+    expect(flattenCommentDocument({ type: "doc" })).toEqual({ text: "", marks: [] });
+});
+
+test("does not replace the character after a www prefix unless it is a dot", () => {
+    expect.hasAssertions();
+    roundTrip([{ text: "wwwx" }], undefined, "wwwx");
+    roundTrip([{ text: "WWW.a.test" }], undefined, "WWW\\.a.test");
 });
 
 test("normalization never drops emphasis or link coverage on a break", () => {

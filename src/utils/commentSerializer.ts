@@ -78,44 +78,38 @@ function normalize(paragraph: Character[]): Character[] {
         for (const [start, end] of runs(characters, mark)) {
             const canKeepSpace = (index: number) =>
                 mark === "underline" &&
-                characters[index].marks.some(
-                    (candidate) =>
-                        candidate.startsWith('["link",') &&
-                        runs(characters, candidate).some(
-                            ([first, last]) =>
-                                first <= index &&
-                                index < last &&
-                                !characters
-                                    .slice(first, last)
-                                    .some((character) => character.text === "\n"),
-                        ),
+                characters[index].marks.some((candidate) => {
+                    if (!candidate.startsWith('["link",')) return false;
+                    // This character carries the link, so its run is the last one
+                    // starting at or before it. Earlier runs may cover other lines.
+                    const [first, last] = runs(characters, candidate).findLast(
+                        ([first]) => first <= index,
+                    )!;
+                    return !characters
+                        .slice(first, last)
+                        .some((character) => character.text === "\n");
+                });
+            const flanking = characters
+                .slice(start, end)
+                .map(
+                    (character, offset) =>
+                        /[^\S\n]/u.test(character.text) && !canKeepSpace(start + offset),
                 );
-            let first = start;
-            let last = end - 1;
-            while (
-                first <= last &&
-                /[^\S\n]/u.test(characters[first].text) &&
-                !canKeepSpace(first)
-            ) {
-                remove(first++, mark);
-            }
-            while (last >= first && /[^\S\n]/u.test(characters[last].text) && !canKeepSpace(last)) {
-                remove(last--, mark);
-            }
+            const first = flanking.indexOf(false);
+            const last = flanking.lastIndexOf(false);
+            flanking.forEach((_, offset) => {
+                if (offset < first || offset > last) remove(start + offset, mark);
+            });
         }
     }
     return characters;
 }
 
 function formatting(paragraphs: Character[][]): CommentFormatting {
-    const characters = paragraphs.flatMap((paragraph, index): Character[] =>
+    const characters = paragraphs.flatMap((paragraph, index) =>
         index === 0
             ? paragraph
-            : [
-                  { text: "\n", marks: [], hardBreak: false },
-                  { text: "\n", marks: [], hardBreak: false },
-                  ...paragraph,
-              ],
+            : [{ text: "\n", marks: [] }, { text: "\n", marks: [] }, ...paragraph],
     );
     return {
         text: characters.map((character) => character.text).join(""),
@@ -151,7 +145,7 @@ function literal(character: Character, index: number, characters: Character[]): 
         /[\\*_[\]~<>:()]/u.test(character.text) ||
         (character.text === "+" &&
             [characters[index - 1], characters[index + 1]].some(
-                (neighbor) => neighbor?.text === "+" && !neighbor.hardBreak,
+                (neighbor) => neighbor?.text === "+",
             )) ||
         (character.text === "!" && characters[index + 1]?.text === "[")
     )
@@ -184,33 +178,28 @@ function render(characters: Character[]): string {
     const marks = [...new Set(characters.flatMap((character) => character.marks))];
     const priority = (mark: string) => {
         if (mark === "underline") return 1;
-        if (mark.startsWith('["link",')) return 2;
         return ["italic", "bold", "strike"].indexOf(mark) + 3;
     };
-    const candidates = marks
-        .flatMap((mark) =>
-            runs(characters, mark).map(([start, end]) => ({
-                mark,
-                start,
-                end,
-                priority:
-                    priority(mark) -
-                    (characters.slice(start, end).some((character) => character.text === "\n")
-                        ? 10
-                        : 0),
-            })),
-        )
-        .sort((left, right) => left.priority - right.priority || left.start - right.start);
+    const candidates = marks.flatMap((mark) =>
+        runs(characters, mark).map(([start, end]) => ({
+            mark,
+            start,
+            end,
+            priority:
+                priority(mark) -
+                (characters.slice(start, end).some((character) => character.text === "\n")
+                    ? 10
+                    : 0),
+        })),
+    );
     for (const candidate of candidates) {
         if (
             (candidate.mark === "bold" || candidate.mark === "italic") &&
             candidates.some(
                 (other) =>
                     (other.mark === "bold" || other.mark === "italic") &&
-                    other.mark !== candidate.mark &&
                     other.start < candidate.start &&
-                    candidate.start < other.end &&
-                    other.end < candidate.end,
+                    candidate.start < other.end,
             )
         ) {
             candidate.priority -= 1.5;
@@ -226,7 +215,7 @@ function render(characters: Character[]): string {
         );
         if (splitsWhitespace) candidate.priority -= 6;
     }
-    candidates.sort((left, right) => left.priority - right.priority || left.start - right.start);
+    candidates.sort((left, right) => left.priority - right.priority);
     const selected = candidates.find(
         (candidate) =>
             !candidates.some(

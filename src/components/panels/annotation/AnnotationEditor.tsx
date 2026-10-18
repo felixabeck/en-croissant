@@ -29,11 +29,11 @@ import { getNodeAtPath } from "@/utils/treeReducer";
 const CommentEscape = Extension.create({
   name: "commentEscape",
   markdownTokenName: "escape",
-  parseMarkdown: (token, helpers) => helpers.createTextNode(token.text ?? ""),
+  parseMarkdown: (token, helpers) => helpers.createTextNode(token.text!),
 });
 
-function includeHardBreakMarks(parsed: MarkdownParseResult): MarkdownParseResult {
-  if (!parsed || Array.isArray(parsed) || !("mark" in parsed)) return parsed;
+export function includeHardBreakMarks(parsed: MarkdownParseResult): MarkdownParseResult {
+  if (!("mark" in parsed)) return parsed;
   const mark = { type: parsed.mark, ...(parsed.attrs ? { attrs: parsed.attrs } : {}) };
   // Tiptap applies the enclosing mark to text only. Complete that same parse
   // result for breaks before the manager handles the text, without a transaction.
@@ -48,23 +48,19 @@ function includeHardBreakMarks(parsed: MarkdownParseResult): MarkdownParseResult
 
 const CommentStarterKit = StarterKit.extend({
   addExtensions() {
-    return (this.parent?.() ?? []).map((extension) => {
+    return this.parent!().map((extension) => {
       if (extension.name === "paragraph") {
         return extension.extend({
-          // A literal &nbsp; is comment text, not Tiptap's empty-paragraph sentinel.
-          parseMarkdown: (token, helpers) =>
-            helpers.createNode("paragraph", undefined, helpers.parseInline(token.tokens ?? [])),
+          // The manager's paragraph fallback keeps literal &nbsp; as comment text.
+          parseMarkdown: () => undefined,
         });
       }
-      if (["link", "bold", "italic", "strike"].includes(extension.name)) {
-        const parseMarkdown = getExtensionField(extension, "parseMarkdown")!;
-        return extension.extend({
-          parseMarkdown(token, helpers) {
-            return includeHardBreakMarks(parseMarkdown(token, helpers));
-          },
-        });
-      }
-      return extension;
+      const parseMarkdown = getExtensionField(extension, "parseMarkdown");
+      return extension.extend({
+        parseMarkdown:
+          parseMarkdown &&
+          ((token, helpers) => includeHardBreakMarks(parseMarkdown(token, helpers))),
+      });
     });
   },
 });
@@ -72,7 +68,7 @@ const CommentStarterKit = StarterKit.extend({
 const notationMarkdown = createCommentMarkdown();
 
 // Mirror Comment's rendered text and marks, including raw disallowed links.
-function parseNotationComment(source: string): JSONContent {
+export function parseNotationComment(source: string): JSONContent {
   const inline = (
     tokens: CommentMarkdownToken[],
     marks: NonNullable<JSONContent["marks"]> = [],
@@ -81,22 +77,21 @@ function parseNotationComment(source: string): JSONContent {
       const type = { strong: "bold", em: "italic", del: "strike", underline: "underline" }[
         token.type
       ];
-      if (token.type === "link" && !/^(?:https?:|mailto:)/i.test(token.href ?? "")) {
+      if (token.type === "link" && !/^(?:https?:|mailto:)/i.test(token.href!)) {
         return [{ type: "text", text: token.raw, marks }];
       }
       if (type || token.type === "link") {
         const mark = type
           ? { type }
           : { type: "link", attrs: { href: token.href, title: token.title ?? null } };
-        return inline(token.tokens ?? [], [...marks, mark]);
+        return inline(token.tokens!, [...marks, mark]);
       }
       if (token.type === "br") return [{ type: "hardBreak", marks }];
-      if (["paragraph", "text", "escape"].includes(token.type)) {
-        return token.tokens
-          ? inline(token.tokens, marks)
-          : [{ type: "text", text: token.text ?? "", marks }];
-      }
-      return [{ type: "text", text: token.type === "space" ? "\n" : token.raw, marks }];
+      // The comment lexer disables block constructs, HTML and images. The
+      // remaining tokens are paragraphs, text and decoded escapes.
+      return token.tokens
+        ? inline(token.tokens, marks)
+        : [{ type: "text", text: token.text!, marks }];
     });
   return {
     type: "doc",
@@ -110,7 +105,7 @@ function AnnotationEditor() {
   "use no memo";
   // The React compiler would retain the mutable Marked instance across editor recreations.
   const { t } = useTranslation();
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [saveFailed, setSaveFailed] = useState<boolean>();
 
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
@@ -121,7 +116,6 @@ function AnnotationEditor() {
   const spellCheck = useAtomValue(spellCheckAtom);
   const editor = useEditor(
     {
-      autofocus: false,
       extensions: [
         CommentStarterKit.configure({
           heading: false,
@@ -135,7 +129,6 @@ function AnnotationEditor() {
           code: false,
           underline: false,
           link: {
-            autolink: true,
             openOnClick: false,
           },
         }),
@@ -149,7 +142,6 @@ function AnnotationEditor() {
             name: "underline",
             level: "inline",
             // Undefined inherits the parent's tokenizer. This defined no-op suppresses it.
-            start: () => -1,
             tokenize: () => undefined,
           },
         }),
@@ -171,13 +163,13 @@ function AnnotationEditor() {
         setSaveFailed(!result.saved);
       },
     },
-    [position.join(",")],
+    [position.join()],
   );
 
-  const nodeIdentity = `${position.join(",")}:${currentNode.fen}`;
+  const nodeIdentity = `${position.join()}:${currentNode.fen}`;
   useEffect(() => {
     if (!editor) return;
-    const comment = currentNode.comment || "";
+    const comment = currentNode.comment;
     const expected = flattenCommentDocument(normalizeCommentDocument(editor.getJSON()));
     // Equivalent source spellings must not replace the document or move its caret.
     const matches = [editor.markdown!.parse(comment), parseNotationComment(comment)].every(

@@ -1,5 +1,6 @@
 import { MantineProvider } from "@mantine/core";
-import type { Editor, JSONContent } from "@tiptap/react";
+import { Editor, type JSONContent } from "@tiptap/react";
+import * as tiptap from "@tiptap/react";
 import { Provider, createStore } from "jotai";
 import { marked } from "marked";
 import { act } from "react";
@@ -19,10 +20,14 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import { defaultTree } from "@/utils/treeReducer";
 import { createCommentMarkdown } from "@/utils/commentMarkdown";
 import { flattenCommentDocument } from "@/utils/commentSerializer";
-import AnnotationEditor from "./AnnotationEditor";
+import AnnotationEditor, { includeHardBreakMarks, parseNotationComment } from "./AnnotationEditor";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
+vi.mock("@tiptap/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tiptap/react")>();
+  return { ...actual, useEditor: vi.fn(actual.useEditor) };
+});
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -87,6 +92,181 @@ function observeSetContent() {
     },
   };
 }
+
+function observeInitialContent() {
+  const getCommands = Object.getOwnPropertyDescriptor(Editor.prototype, "commands")!.get!;
+  const setContent = vi.fn();
+  vi.spyOn(Editor.prototype, "commands", "get").mockImplementation(function (this: Editor) {
+    const commands: Editor["commands"] = getCommands.call(this);
+    return {
+      ...commands,
+      setContent: (...args: Parameters<Editor["commands"]["setContent"]>) => {
+        setContent(...args);
+        return commands.setContent(...args);
+      },
+    };
+  });
+  return setContent;
+}
+
+test.each(["", "**x**", "&nbsp;", "a  \nb"])(
+  "opening %j uses the editor load without a sync transaction",
+  async (source) => {
+    const setContent = observeInitialContent();
+    await mount(source);
+    expect(setContent).not.toHaveBeenCalled();
+    expect(writeComment).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  },
+);
+
+test("an empty editor shows its translated placeholder and excludes block extensions", async () => {
+  await mount("");
+  expect(editorElement().querySelector("p")?.getAttribute("data-placeholder")).toBe(
+    "Board.Annotate.WriteHere",
+  );
+  expect(Object.keys(editor().schema.nodes).sort()).toEqual([
+    "doc",
+    "hardBreak",
+    "paragraph",
+    "text",
+  ]);
+  const names = editor().extensionManager.extensions.map((extension) => extension.name);
+  expect(names).toContain("commentEscape");
+  expect(names).not.toContain("listKeymap");
+});
+
+test("the panel can render while the editor is unavailable", async () => {
+  const useEditor = vi.mocked(tiptap.useEditor);
+  const implementation = useEditor.getMockImplementation()!;
+  useEditor.mockReturnValue(null as unknown as Editor);
+  try {
+    await mount("stored comment");
+    expect(writeComment).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    useEditor.mockImplementation(implementation);
+  }
+});
+
+test("typing a URL autolinks it without opening it when clicked", async () => {
+  await mount("");
+  await act(async () => editor().commands.insertContent("https://x.y "));
+  const anchor = editorElement().querySelector("a")!;
+  expect(anchor.getAttribute("href")).toBe("https://x.y");
+  const open = vi.spyOn(window, "open").mockImplementation(() => null);
+  const event = new MouseEvent("click", { button: 0 });
+  Object.defineProperty(event, "target", { value: anchor });
+  await act(async () => {
+    editor().view.someProp("handleClick", (handler) => handler(editor().view, 2, event));
+  });
+  expect(open).not.toHaveBeenCalled();
+});
+
+test("sync requires agreement from the editor and notation adapters", async () => {
+  const setContent = observeInitialContent();
+  const source = "[draft](ftp://x.y)";
+  await mount(source);
+  expect(setContent).toHaveBeenCalledExactlyOnceWith(source, {
+    contentType: "markdown",
+    emitUpdate: false,
+  });
+  expect(writeComment).not.toHaveBeenCalled();
+  expect(store.getState().currentNode().comment).toBe(source);
+});
+
+test("replacing the position's board clears its refused draft even with the same stored comment", async () => {
+  await mount("stored comment");
+  await act(async () =>
+    editor().commands.setContent(
+      draftDocument([{ text: "draft", marks: [link("https://x.y", "")] }]),
+    ),
+  );
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Board.Annotate.SaveFailed");
+  const { setContent } = observeSetContent();
+  await act(async () => {
+    const root = store.getState().root;
+    store.setState({ root: { ...root, fen: root.fen.replace(" w ", " b ") } });
+  });
+  expect(setContent).toHaveBeenCalledExactlyOnceWith("stored comment", {
+    contentType: "markdown",
+    emitUpdate: false,
+  });
+  expect(editor().getText()).toBe("stored comment");
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(writeComment).not.toHaveBeenCalled();
+});
+
+test.each([
+  { type: "text", text: "plain" },
+  { type: "paragraph", content: [{ type: "hardBreak" }] },
+  [{ type: "text", text: "plain" }],
+])("the hard-break load helper leaves non-mark parse results intact: %j", (parsed) => {
+  expect(includeHardBreakMarks(parsed)).toBe(parsed);
+});
+
+test.each([undefined, []])(
+  "the hard-break load helper accepts empty mark content: %j",
+  (content) => {
+    expect(includeHardBreakMarks({ mark: "bold", content })).toEqual({ mark: "bold", content: [] });
+  },
+);
+
+test("the hard-break load helper preserves existing marks and applies enclosing attributes recursively", () => {
+  const parsed = {
+    mark: "link",
+    attrs: { href: "https://x.y", title: "title" },
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "a", marks: [{ type: "bold" }] },
+          { type: "hardBreak", marks: [{ type: "strike" }] },
+          { type: "hardBreak" },
+        ],
+      },
+    ],
+  };
+  const before = structuredClone(parsed);
+  expect(includeHardBreakMarks(parsed)).toEqual({
+    ...parsed,
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "a", marks: [{ type: "bold" }] },
+          { type: "hardBreak", marks: [{ type: "strike" }, link("https://x.y", "title")] },
+          { type: "hardBreak", marks: [link("https://x.y", "title")] },
+        ],
+      },
+    ],
+  });
+  expect(includeHardBreakMarks({ mark: "underline", content: [{ type: "hardBreak" }] })).toEqual({
+    mark: "underline",
+    content: [{ type: "hardBreak", marks: [{ type: "underline" }] }],
+  });
+  expect(parsed).toEqual(before);
+});
+
+test.each(["http://x.y", "https://x.y", "HTTPS://x.y", "mailto:x@y.test"])(
+  "the notation adapter keeps allowed link text and attributes: %s",
+  (href) => {
+    const source = `[x](${href} "title")`;
+    expect(flattenCommentDocument(parseNotationComment(source))).toEqual(
+      expectedFormatting([{ text: "x", marks: [link(href, "title")] }]),
+    );
+  },
+);
+
+test.each(["ftp://x.y", "xhttps://x.y", "/relative", "javascript:alert(1)"])(
+  "the notation adapter renders the entire source of a disallowed link: %s",
+  (href) => {
+    const source = `[**x**](${href})`;
+    expect(flattenCommentDocument(parseNotationComment(`++${source}++`))).toEqual(
+      expectedFormatting([{ text: source, marks: [underline] }]),
+    );
+  },
+);
 
 test("keeps inline controls and removes every block control", async () => {
   await mount("59. Olvidé mi preparación.");
