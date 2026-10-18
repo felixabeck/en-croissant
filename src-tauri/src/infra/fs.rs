@@ -2793,7 +2793,14 @@ mod win {
     }
 
     fn target_regular(target: &Target) -> bool {
+        // FILE_NON_DIRECTORY_FILE only excludes directories: devices, volumes, pipes and mailslots
+        // are all "non-directory" objects and were accepted here, so the driver's "target must be
+        // a regular file, not a link or special file" guard was vacuous on Windows while the unix
+        // arm really checked. FILE_TYPE_DISK is what separates a file on disk from those.
+        // Create-mode opens may be directories. `target.regular` is false for those, so a
+        // directory stays InvalidInput rather than a name-taken conflict.
         target.regular
+            && unsafe { GetFileType(target.handle.as_raw_handle() as HANDLE) == FILE_TYPE_DISK }
     }
 
     fn temp_name() -> OsString {

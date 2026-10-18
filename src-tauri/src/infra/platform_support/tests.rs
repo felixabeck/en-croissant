@@ -1373,7 +1373,7 @@ fn windows_nt_name_interpreters_guard_a_single_leaf() {
         "NT child primitive must guard a single leaf"
     );
     let source = source_for("infra/fs.rs");
-    let rename = compact(&source[braced_body(source, "pub(super) fn rename_child(")]);
+    let rename = compact(&source[braced_body(source, "fn rename_child_with_mode(")]);
     assert!(rename.contains("super::single_leaf(target)?"), "{rename}");
 }
 
