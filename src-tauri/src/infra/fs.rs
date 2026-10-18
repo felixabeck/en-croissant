@@ -1008,6 +1008,14 @@ fn install_leaf(path: &Path) -> Result<&OsStr, Error> {
         .ok_or_else(|| Error::InvalidInput("directory install needs a leaf name".into()))
 }
 
+fn atomic_create_collision_error(is_regular: bool) -> Error {
+    if is_regular {
+        Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into())
+    } else {
+        Error::InvalidInput("target must be a regular file, not a link or special file".into())
+    }
+}
+
 fn initial_atomic_target<A: AtomicReplaceAdapter>(
     adapter: &A,
     dir: &File,
@@ -1141,20 +1149,17 @@ where
     };
     match (original.as_ref(), current) {
         (None, None) => {}
-        (None, Some(_)) => {
+        (None, Some(actual)) => {
             return Err(cleanup_with_adapter(
                 &adapter,
                 &dir,
                 &temp_name,
                 &mut temp,
-                Error::Conflict(
-                    if mode == AtomicFileMode::Create {
-                        WORKSPACE_FILE_NAME_TAKEN
-                    } else {
-                        "target was created concurrently"
-                    }
-                    .into(),
-                ),
+                if mode == AtomicFileMode::Create {
+                    atomic_create_collision_error(adapter.is_regular(&actual))
+                } else {
+                    Error::Conflict("target was created concurrently".into())
+                },
             ))
         }
         (Some(_), None) => {
@@ -2040,7 +2045,13 @@ mod unix {
                 fs::renameat_with(dir, temp_name, dir, target, RenameFlags::NOREPLACE).map_err(
                     |error| {
                         if mode == AtomicFileMode::Create && error == rustix::io::Errno::EXIST {
-                            Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into())
+                            match self.target_stat(dir, target, mode) {
+                                Ok(Some(actual)) => {
+                                    atomic_create_collision_error(self.is_regular(&actual))
+                                }
+                                Ok(None) => io(error.into()),
+                                Err(error) => error,
+                            }
                         } else {
                             io(error.into())
                         }
@@ -2967,7 +2978,9 @@ mod win {
             if mode == AtomicFileMode::Create
                 && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
             {
-                return Err(Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into()));
+                if let Some(actual) = target_stat(dir, target, mode)? {
+                    return Err(atomic_create_collision_error(target_regular(&actual)));
+                }
             }
             return Err(windows_open_status_error(status));
         }
@@ -8755,6 +8768,9 @@ mod tests {
             }
             match self.action {
                 "create" => std::fs::write(&self.target, b"racer"),
+                "directory" => std::fs::create_dir(&self.target),
+                #[cfg(unix)]
+                "symlink" => std::os::unix::fs::symlink("replacement", &self.target),
                 "replace" => {
                     std::fs::remove_file(&self.target)?;
                     #[cfg(unix)]
@@ -9482,6 +9498,68 @@ mod tests {
         assert_eq!(std::fs::read(target).expect("old bytes"), b"old");
     }
 
+    fn assert_create_rejects_nonregular_race(point: AtomicFileFaultPoint, action: &'static str) {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target");
+        let parent = open_parent_no_follow(&target).expect("parent");
+        let _injector = install_test_atomic_file_injector(Arc::new(Mutation {
+            point,
+            target: target.clone(),
+            #[cfg(not(windows))]
+            parent: root.path().to_path_buf(),
+            action,
+        }));
+        let error = atomic_create_at_identified(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect_err("non-regular competing node must be rejected");
+        assert!(
+            matches!(&error, Error::InvalidInput(message)
+                if message == "target must be a regular file, not a link or special file"),
+            "{error:?}"
+        );
+        let payload = serde_json::to_value(&error).expect("error payload");
+        assert_eq!(payload["category"], "invalid-input");
+        assert!(payload.get("nameTaken").is_none(), "{payload}");
+        let metadata = std::fs::symlink_metadata(&target).expect("preserved target");
+        match action {
+            "directory" => {
+                assert!(metadata.is_dir());
+                assert_eq!(std::fs::read_dir(&target).expect("directory").count(), 0);
+            }
+            #[cfg(unix)]
+            "symlink" => {
+                assert!(metadata.file_type().is_symlink());
+                assert_eq!(
+                    std::fs::read_link(&target).expect("link"),
+                    Path::new("replacement")
+                );
+            }
+            _ => unreachable!("test action"),
+        }
+        let entries: Vec<_> = std::fs::read_dir(root.path())
+            .expect("entries")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(entries, vec![OsString::from("target")]);
+    }
+
+    #[test]
+    fn workspace_file_name_taken_rejects_directories_at_revalidation_and_at_rename() {
+        for point in [
+            AtomicFileFaultPoint::PreCommitRevalidate,
+            AtomicFileFaultPoint::Rename,
+        ] {
+            assert_create_rejects_nonregular_race(point, "directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_file_name_taken_rejects_symlinks_at_revalidation() {
+        assert_create_rejects_nonregular_race(AtomicFileFaultPoint::PreCommitRevalidate, "symlink");
+    }
+
     #[test]
     fn workspace_file_name_taken_keeps_other_rename_failures_as_io() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -9497,11 +9575,6 @@ mod tests {
         .expect_err("injected I/O error");
         assert!(matches!(error, Error::Io(_)), "{error:?}");
         assert_eq!(std::fs::read_dir(root.path()).expect("entries").count(), 0);
-    }
-
-    #[test]
-    fn workspace_file_name_taken_preserves_replacing_rename_race_contract() {
-        file_revalidation_races_are_conflicts_and_actual_rename_failure_is_preserved();
     }
 
     #[test]

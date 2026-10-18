@@ -3128,6 +3128,19 @@ mod tests {
     }
 
     #[test]
+    fn create_workspace_file_publishes_through_exclusive_create() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+
+        let body = body_at_indent(
+            include_str!("file_workspace.rs"),
+            "fn create_workspace_file_blocking(",
+        );
+        assert!(body.contains("atomic_create_at_identified_with_precommit("));
+        assert!(body.contains("atomic_create_at_identified("));
+        assert!(!body.contains("atomic_replace_at_identified"));
+    }
+
+    #[test]
     fn native_log_targets_never_include_the_webview() {
         use crate::infra::blocking::source_scan::body_at_indent;
 

@@ -24,20 +24,24 @@ test("name-taken copy uses the typed flag and the English catalogue", async () =
     expect(workspaceErrorMessage(error, "fallback")).toBe(i18n.t("Common.NameAlreadyUsed"));
 });
 
-test.each([{}, { nameTaken: undefined }, { nameTaken: false }, { nameTaken: null }])(
-    "nameTaken %j is omitted and preserves the fallback",
-    async (detail) => {
-        const translator = await catalogueI18n("en-US");
-        const error = new TauriCommandError({
-            tag: "backend-error",
-            category: "conflict",
-            message: "unrelated diagnostic",
-            ...detail,
-        });
-        expect(normalizeError(error)).not.toHaveProperty("nameTaken");
-        expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe("fallback");
-    },
-);
+test.each([
+    {},
+    { nameTaken: undefined },
+    { nameTaken: false },
+    { nameTaken: null },
+    { nameTaken: 1 as unknown as boolean },
+    { nameTaken: "true" as unknown as boolean },
+])("nameTaken %j is omitted and preserves the fallback", async (detail) => {
+    const translator = await catalogueI18n("en-US");
+    const error = new TauriCommandError({
+        tag: "backend-error",
+        category: "conflict",
+        message: "unrelated diagnostic",
+        ...detail,
+    });
+    expect(normalizeError(error)).not.toHaveProperty("nameTaken");
+    expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe("fallback");
+});
 
 test.each([
     "Conflict: workspace file already exists",
