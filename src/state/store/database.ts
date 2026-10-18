@@ -3,7 +3,7 @@ import { z } from "zod";
 import { createStore, useStore } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { GameQuery, PlayerQuery, TournamentQuery } from "@/bindings";
-import type { SuccessDatabaseInfo } from "@/utils/db";
+import { ELO_FILTER_MAX, type SuccessDatabaseInfo } from "@/utils/db";
 import { databaseHandleSchema } from "@/utils/pathCapabilities";
 
 // Hydrated selections supply identity only. DatabaseView gets display metadata from the
@@ -56,9 +56,9 @@ const defaultGamesState: DatabaseViewStore["games"] = {
     selectedGame: undefined,
     query: {
         player1: undefined,
-        range1: [0, 3000],
+        range1: [0, ELO_FILTER_MAX],
         player2: undefined,
-        range2: [0, 3000],
+        range2: [0, ELO_FILTER_MAX],
         sides: "WhiteBlack",
         outcome: undefined,
         options: {

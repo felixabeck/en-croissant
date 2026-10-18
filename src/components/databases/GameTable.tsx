@@ -26,7 +26,7 @@ import { gameRowActivation, useGameOpen } from "@/components/common/gameOpen";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { tabsAtom } from "@/state/atoms";
-import { query_games } from "@/utils/db";
+import { ELO_FILTER_MAX, query_games } from "@/utils/db";
 import { createTab, runTabCreation } from "@/utils/tabs";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameCard from "./GameCard";
@@ -146,11 +146,11 @@ function GameTable() {
                     <RangeSlider
                       step={10}
                       min={0}
-                      max={3000}
+                      max={ELO_FILTER_MAX}
                       marks={[
                         { value: 1000, label: String(1000) },
                         { value: 2000, label: String(2000) },
-                        { value: 3000, label: String(3000) },
+                        { value: ELO_FILTER_MAX, label: String(ELO_FILTER_MAX) },
                       ]}
                       value={query.range1 ?? undefined}
                       onChangeEnd={(value) => setQuery({ ...query, range1: value })}
@@ -161,11 +161,11 @@ function GameTable() {
                     <RangeSlider
                       step={10}
                       min={0}
-                      max={3000}
+                      max={ELO_FILTER_MAX}
                       marks={[
                         { value: 1000, label: String(1000) },
                         { value: 2000, label: String(2000) },
-                        { value: 3000, label: String(3000) },
+                        { value: ELO_FILTER_MAX, label: String(ELO_FILTER_MAX) },
                       ]}
                       value={query.range2 ?? undefined}
                       onChangeEnd={(value) => setQuery({ ...query, range2: value })}

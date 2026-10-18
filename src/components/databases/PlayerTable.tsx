@@ -9,7 +9,7 @@ import { useStore } from "zustand";
 import type { Player, PlayerSort } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { query_players } from "@/utils/db";
+import { ELO_FILTER_MAX, query_players } from "@/utils/db";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
 import { getAdjacentRecordId } from "./pageSelection";
@@ -90,23 +90,23 @@ function PlayerTable() {
                 onChange={(v) =>
                   setQuery({
                     ...query,
-                    range: [(v || 0) as number, query.range?.[1] ?? 3000],
+                    range: [(v || 0) as number, query.range?.[1] ?? ELO_FILTER_MAX],
                   })
                 }
                 min={0}
-                max={3000}
+                max={ELO_FILTER_MAX}
                 step={100}
               />
               <NumberInput
                 label={t("Databases.Player.MaxELO")}
                 value={query.range?.[1]}
                 min={0}
-                max={3000}
+                max={ELO_FILTER_MAX}
                 step={100}
                 onChange={(v) =>
                   setQuery({
                     ...query,
-                    range: [query.range?.[0] ?? 0, (v || 3000) as number],
+                    range: [query.range?.[0] ?? 0, (v || ELO_FILTER_MAX) as number],
                   })
                 }
               />

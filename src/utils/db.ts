@@ -182,8 +182,10 @@ export type Speed =
     | "Correspondence"
     | "Unknown";
 
+export const ELO_FILTER_MAX = 3000;
+
 function normalizeRange(range?: [number, number] | null): [number, number] | undefined {
-    if (!range || range[1] - range[0] === 3000) {
+    if (!range || (range[0] === 0 && range[1] === ELO_FILTER_MAX)) {
         return undefined;
     }
     return range;

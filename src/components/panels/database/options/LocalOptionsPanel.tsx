@@ -22,6 +22,7 @@ import { Chessground } from "@/chessground/Chessground";
 import PiecesGrid from "@/components/boards/PiecesGrid";
 import { PlayerSearchInput } from "@/components/databases/PlayerSearchInput";
 import { localOptionsFamily } from "@/state/atoms";
+import { ELO_FILTER_MAX } from "@/utils/db";
 
 const YEAR_PRESETS = [1, 3, 5, 10];
 
@@ -165,13 +166,13 @@ function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
         <RangeSlider
           step={10}
           min={0}
-          max={3000}
+          max={ELO_FILTER_MAX}
           marks={[
             { value: 1000, label: String(1000) },
             { value: 2000, label: String(2000) },
-            { value: 3000, label: String(3000) },
+            { value: ELO_FILTER_MAX, label: String(ELO_FILTER_MAX) },
           ]}
-          value={eloDraft ?? options.elo ?? [0, 3000]}
+          value={eloDraft ?? options.elo ?? [0, ELO_FILTER_MAX]}
           onChange={setEloDraft}
           onChangeEnd={(value) => {
             // Commit once per drag so the search does not rerun on every tick.

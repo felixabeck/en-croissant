@@ -72,7 +72,7 @@ export type LocalOptions = {
   start_date?: string;
   end_date?: string;
   result: "any" | "whitewon" | "draw" | "blackwon";
-  /** Elo band both players must satisfy; `[0, 3000]` or absent means no filter. */
+  /** Elo band both players must satisfy; `[0, ELO_FILTER_MAX]` or absent means no filter. */
   elo?: [number, number];
   /** Drop games whose event name contains blitz, bullet, or armageddon. */
   exclude_fast_events?: boolean;

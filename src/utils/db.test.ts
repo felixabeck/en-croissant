@@ -33,6 +33,7 @@ import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import {
     DATABASE_NOT_INITIALIZED,
+    ELO_FILTER_MAX,
     databaseHandleFromKey,
     databaseHandleKey,
     defaultDatabaseProgressId,
@@ -599,14 +600,21 @@ describe("searchPosition query mapping", () => {
         expect(query.range2).toEqual([1850, 2350]);
     });
 
-    it("omits both ranges when the slider is untouched or at [0, 3000]", async () => {
-        for (const elo of [undefined, [0, 3000] as [number, number]]) {
+    it("omits both ranges when the slider is untouched or at [0, ELO_FILTER_MAX]", async () => {
+        for (const elo of [undefined, [0, ELO_FILTER_MAX] as [number, number]]) {
             mocks.searchPosition.mockClear();
             const query = await sentQuery(localOptions({ elo }));
 
             expect(query).not.toHaveProperty("range1");
             expect(query).not.toHaveProperty("range2");
         }
+    });
+
+    it("keeps a width-3000 Elo band that does not start at zero", async () => {
+        const query = await sentQuery(localOptions({ elo: [1, 3001] }));
+
+        expect(query.range1).toEqual([1, 3001]);
+        expect(query.range2).toEqual([1, 3001]);
     });
 
     it("omits wanted_result when the explorer result is any", async () => {
