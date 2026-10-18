@@ -69,8 +69,6 @@ function configForBounds(config: Config, { width, height }: DOMRect): Config {
 export function Chessground({ ref, ...props }: ChessgroundProps) {
   const boardRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
-  const propsRef = useRef(props);
-  propsRef.current = props;
 
   const moveMethod = useAtomValue(moveMethodAtom);
   const configRef = useRef<Config>(props);
@@ -114,16 +112,8 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
     if (element == null) return;
     let { width, height } = element.getBoundingClientRect();
     const chessgroundApi = NativeChessground(element, {
-      ...configForBounds(propsRef.current, element.getBoundingClientRect()),
+      ...configForBounds(configRef.current, element.getBoundingClientRect()),
       addDimensionsCssVarsTo: element,
-      events: {
-        ...propsRef.current.events,
-        change: () => {
-          if (propsRef.current.setBoardFen) {
-            propsRef.current.setBoardFen(chessgroundApi.getFen());
-          }
-        },
-      },
     });
     apiRef.current = chessgroundApi;
     const observer = new ResizeObserver(() => {
@@ -133,7 +123,9 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
       height = bounds.height;
       if (width > 0 && height > 0) {
         chessgroundApi.state.dom.bounds.clear();
-        chessgroundApi.set(configForBounds(configRef.current, bounds));
+        // A 0×0 box paints squares as lines with NaN coordinates.
+        // Use setAutoShapes because api.set with a fen replaces drawable.shapes.
+        chessgroundApi.setAutoShapes(configRef.current.drawable?.autoShapes ?? []);
       }
     });
     observer.observe(element);

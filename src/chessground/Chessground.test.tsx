@@ -7,6 +7,7 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 const api = {
   destroy: vi.fn(),
   set: vi.fn(),
+  setAutoShapes: vi.fn(),
   playPremove: vi.fn(() => false),
   cancelPremove: vi.fn(),
   selectSquare: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock("@lichess-org/chessground", () => ({ Chessground: createChessground }));
 afterEach(() => {
   api.destroy.mockClear();
   api.set.mockClear();
+  api.setAutoShapes.mockClear();
   api.state.dom.bounds.clear.mockClear();
   createChessground.mockClear();
   observed.clear();
@@ -117,16 +119,35 @@ test("defers saved shapes until the observed board has positive bounds", async (
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).not.toHaveBeenCalled();
 
-  vi.spyOn(element, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 400, 400));
+  const getBounds = vi
+    .spyOn(element, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(0, 0, 400, 400));
   api.set.mockClear();
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
-  expect(api.set).toHaveBeenCalledExactlyOnceWith(
-    expect.objectContaining({ drawable: { autoShapes: [savedShape] } }),
-  );
+  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([savedShape]);
+  expect(api.set).not.toHaveBeenCalled();
+
+  const nextShape = { orig: "a2", dest: "a4", brush: "red" } as const;
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground drawable={{ autoShapes: [nextShape] }} />
+      </MantineProvider>,
+    );
+  });
+  getBounds.mockReturnValue(new DOMRect(0, 0, 500, 500));
+  api.set.mockClear();
+  api.setAutoShapes.mockClear();
+  api.state.dom.bounds.clear.mockClear();
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
-  expect(api.set).toHaveBeenCalledTimes(1);
+  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([nextShape]);
+  expect(api.set).not.toHaveBeenCalled();
+  await act(async () => onResize());
+  expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
+  expect(api.setAutoShapes).toHaveBeenCalledTimes(1);
+  expect(api.set).not.toHaveBeenCalled();
 
   await act(async () => root.unmount());
   expect(observed.size).toBe(0);
