@@ -8767,3 +8767,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Restore the unmarked-`++` drop, or move serialization back into the editor, only through a later decision.
 * **Decided by:** Grok, drain `full auto` review repair for f-20261013-02 (session 335eccbb-6501-4219-bbfc-8e07fa041de7), 2026-10-18 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"5d361dc40bf07930beab8b80fd24cd640606b660ff38f34346393de19ea18cea","input_sha256":"cfa7b357af0407b1bc588f68c29f17ff012d46b407694ef6337eb2c436490524","kind":"mutation-receipt","operation":"9dd4ff9cd86a0945991f069db04b541d238e8d225ed24945a7dc419332ef4e78","options":{"section":null},"request_id_sha256":null,"results":["d-20261018-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261018-11 — Should the read-only library preview display the saved graphical commentary already stored on the current node?
+
+* **Question:** Should the read-only library preview display the saved graphical commentary already stored on the current node?
+* **Governs:** f-20261016-03
+* **Chosen:** Yes. PreviewBoard's autoShapes array is the continuation chooser arrows, then the shapes of the node getNodeAtPath already returns. Both Files and the database preview use that one board. viewOnly stays true, and the drawable prop keeps continuationBrushes, which already includes the six PGN color brushes.
+* **Rejected:** Leave the preview blank. That is the filed defect. The same preview already shows the comment prose those drawing commands were removed from, and the main board and the puzzle board already append the stored shapes. Also rejected: show saved shapes only while the chooser is closed, and drop either shape when two arrows share squares. Both would make the preview disagree with the main board's concatenation. Also rejected: a preview-only palette or a user-drawing control.
+* **Reason:** The shapes are already on the tree node after parse. The missing step is one array on the shared preview board. d-20261016-22 already fixed which brush name each supported color uses. Reversal path: stop appending the current node's shapes in PreviewBoard and remove the assertions added for this finding. No stored game changes.
+* **Decided by:** Grok, drain full auto build adopting the reviewed plan for f-20261016-03 (session c0fed4cf-4a65-4a98-94ad-e9fae1d6fea1), 2026-10-18 · **Superseded-by:** -
+
+### d-20261018-12 — What proves annotation and continuation overlap on the library preview?
+
+* **Question:** What proves annotation and continuation overlap on the library preview?
+* **Governs:** f-20261016-03
+* **Chosen:** A component assertion that a colliding continuation arrow and a saved arrow are both present, continuation first, plus a Files preview SVG assertion that one disjoint saved arrow, one saved square, and both continuation arrows are visible together, then that choosing the continuation shows only the destination node's shape.
+* **Rejected:** A pixel comparison of two arrows on the same squares. Chessground's paint order is not this contract. Also rejected: a second database e2e that mounts the same PreviewBoard, and a new screenshot baseline.
+* **Reason:** The overlap contract is the array order and membership. The SVG assertion shows that those shapes were painted, using the selector the analysis drawing test already uses. Reversal path: remove the component overlap assertion and the Files preview SVG assertion added for this finding.
+* **Decided by:** Grok, drain full auto build adopting the reviewed plan for f-20261016-03 (session c0fed4cf-4a65-4a98-94ad-e9fae1d6fea1), 2026-10-18 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"eac1d667f36b77b1da3b4a53a0e6f53cfb6f01edd1fe2774c05580331ef91046","input_sha256":"43c049ad23665449c08b443a6da5e6f1db36d9b2e7e54db59233b716c14abbb7","kind":"mutation-receipt","operation":"9e0a3894a66eb3de2cb27a633d3cae0eb6608c558cd4dd721355da240fb16ae7","options":{"section":null},"request_id_sha256":null,"results":["d-20261018-11","d-20261018-12"],"target":"decisions-ledger","v":1} -->
