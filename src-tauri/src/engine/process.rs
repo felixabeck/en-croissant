@@ -5100,13 +5100,17 @@ std::thread_local! {
 type SpawnChildObserver = Box<dyn FnOnce(Option<u32>) + Send>;
 
 #[cfg(all(test, unix))]
+type SpawnChildObserverRegistration = (Arc<()>, SpawnChildObserver);
+
+#[cfg(all(test, unix))]
 struct SpawnChildObserverGuard {
     command_target: std::path::PathBuf,
+    registration_id: Arc<()>,
 }
 
 #[cfg(all(test, unix))]
 static SPAWN_CHILD_OBSERVERS: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<std::path::PathBuf, SpawnChildObserver>>,
+    std::sync::Mutex<HashMap<std::path::PathBuf, SpawnChildObserverRegistration>>,
 > = std::sync::OnceLock::new();
 
 #[cfg(test)]
@@ -5128,29 +5132,44 @@ fn set_spawn_child_observer(
         .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
         .lock()
         .unwrap();
-    observers.insert(command_target.clone(), observer);
-    SpawnChildObserverGuard { command_target }
+    let registration_id = Arc::new(());
+    observers.insert(command_target.clone(), (registration_id.clone(), observer));
+    SpawnChildObserverGuard {
+        command_target,
+        registration_id,
+    }
 }
 
 #[cfg(all(test, unix))]
 impl Drop for SpawnChildObserverGuard {
     fn drop(&mut self) {
-        SPAWN_CHILD_OBSERVERS
+        let mut observers = SPAWN_CHILD_OBSERVERS
             .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
             .lock()
-            .unwrap()
-            .remove(&self.command_target);
+            .unwrap();
+        // An executable fd can be reused while its consumed observer's guard is still alive.
+        if observers
+            .get(&self.command_target)
+            .is_some_and(|(id, _)| Arc::ptr_eq(id, &self.registration_id))
+        {
+            observers.remove(&self.command_target);
+        }
     }
 }
 
 #[cfg(all(test, unix))]
-fn observe_spawned_child(child: &Child, command_target: &std::path::Path) {
-    let observer = SPAWN_CHILD_OBSERVERS
+fn take_spawn_child_observer(command_target: &std::path::Path) -> Option<SpawnChildObserver> {
+    SPAWN_CHILD_OBSERVERS
         .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
-        .remove(command_target);
-    if let Some(observer) = observer {
+        .remove(command_target)
+        .map(|(_, observer)| observer)
+}
+
+#[cfg(all(test, unix))]
+fn observe_spawned_child(child: &Child, command_target: &std::path::Path) {
+    if let Some(observer) = take_spawn_child_observer(command_target) {
         observer(child.id());
     }
 }
@@ -15650,6 +15669,39 @@ mod tests {
             .expect("spawn observer must see a real child pid");
         assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
         assert_child_is_reaped(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_child_observer_guard_preserves_replacement_registration() {
+        let command_target = std::path::PathBuf::from("spawn-child-observer-guard-replacement");
+        let first_guard = set_spawn_child_observer(command_target.clone(), Box::new(|_| {}));
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+        let _second_guard = set_spawn_child_observer(
+            command_target.clone(),
+            Box::new(move |pid| pid_tx.send(pid).unwrap()),
+        );
+
+        drop(first_guard);
+
+        let observer = take_spawn_child_observer(&command_target)
+            .expect("dropping a stale guard must preserve the replacement observer");
+        observer(Some(42));
+        assert_eq!(pid_rx.try_recv().unwrap(), Some(42));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_child_observer_guard_removes_owned_registration() {
+        let command_target = std::path::PathBuf::from("spawn-child-observer-guard-owner-cleanup");
+        let guard = set_spawn_child_observer(command_target.clone(), Box::new(|_| {}));
+
+        drop(guard);
+
+        assert!(
+            take_spawn_child_observer(&command_target).is_none(),
+            "dropping the owning guard must remove its unconsumed observer"
+        );
     }
 
     #[cfg(unix)]
