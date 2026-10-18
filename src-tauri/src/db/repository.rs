@@ -7361,14 +7361,14 @@ mod bound_sqlite_witnesses {
             .list_database_children_cancellable(&database_root, &CancellationToken::new())
             .expect("listing a pooled database must not open its leaf");
         assert!(observed.load(Ordering::SeqCst));
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].filename, "held.db3");
+        assert_eq!(children.entries.len(), 1);
+        assert_eq!(children.entries[0].filename, "held.db3");
         assert_sqlite_shared_read_lock_is_held(&probe);
         #[cfg(target_os = "linux")]
         assert_eq!(open_descriptor_count(target.identity()), before);
 
         let listed_target = authority
-            .database_file_target(&children[0].handle, PathOperation::DatabaseRead)
+            .database_file_target(&children.entries[0].handle, PathOperation::DatabaseRead)
             .unwrap();
         assert_eq!(listed_target.identity(), target.identity());
         let usable = repository.connection(&listed_target, None).unwrap();

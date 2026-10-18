@@ -30,6 +30,7 @@ import {
 } from "@/state/atoms";
 import {
   getDatabases,
+  type DatabaseList,
   manifestDatabaseInstallCard,
   type DownloadableDatabaseInfo,
   useDefaultDatabases,
@@ -70,7 +71,7 @@ export async function convertLocalDatabase(
   const dbPath = await runWithAppliedRecovery(
     () => tauri.createWorkspaceDatabase(root, filename),
     async () =>
-      (await tauri.listWorkspaceDatabases(root)).find(
+      (await tauri.listWorkspaceDatabases(root)).entries.find(
         (candidate) => candidate.filename === filename,
       )?.handle,
   );
@@ -114,7 +115,7 @@ function AddDatabase({
   opened: boolean;
   setOpened: (opened: boolean) => void;
   disableLocalConversion: boolean;
-  setDatabases: KeyedMutator<DatabaseInfo[]>;
+  setDatabases: KeyedMutator<DatabaseList>;
 }) {
   const { t } = useTranslation();
   const setConversionState = useSetAtom(databaseConversionStateAtom);
@@ -277,7 +278,7 @@ function DatabaseCard({
   progressId,
   initInstalled,
 }: {
-  setDatabases: KeyedMutator<DatabaseInfo[]>;
+  setDatabases: KeyedMutator<DatabaseList>;
   database: DownloadableDatabaseInfo;
   progressId: string;
   initInstalled: boolean;

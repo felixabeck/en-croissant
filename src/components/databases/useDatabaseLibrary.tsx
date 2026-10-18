@@ -54,6 +54,7 @@ import {
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
 import { databaseLoadFailureMessage } from "./databaseLoadFailure";
+import { capabilityKey } from "@/utils/pathCapabilities";
 
 export function useDatabaseLibrary(
   selected: string | null,
@@ -69,7 +70,12 @@ export function useDatabaseLibrary(
     }
   }, []);
 
-  const { data: databases, error, mutate, owner: databaseOwner } = useDatabaseList();
+  const { data, error, mutate, owner: databaseOwner } = useDatabaseList();
+  const databases = data?.databases;
+  const unread = (data?.unread ?? []).map((item, index) => ({
+    ...item,
+    key: `${capabilityKey(data!.root)}:unread:${index}`,
+  }));
   const failure = listingFailure(error);
   const loadFailureMessage = databaseLoadFailureMessage(error, t);
   const needsFolder = failure !== "silent" && failure !== "retry";
@@ -166,6 +172,17 @@ export function useDatabaseLibrary(
   return {
     databases,
     visibleDatabases,
+    unread,
+    renderUnreadRow: (item: (typeof unread)[number]) => (
+      <Stack key={item.key} gap="xs" miw={0}>
+        <Text fw={500} fz="sm" className="wrap-anywhere">
+          {item.filename}
+        </Text>
+        <Text c="red" size="sm" className="wrap-anywhere">
+          {item.error}
+        </Text>
+      </Stack>
+    ),
     selectedDatabase,
     failure,
     conversionInProgress,

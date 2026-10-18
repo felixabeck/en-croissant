@@ -185,17 +185,20 @@ test.each([
         const parent = { id: { id: "parent" }, kind: "fileWorkspace" } as const;
         const handle = { id: { id: "created" }, kind: "fileWorkspace" };
         mocks.createWorkspaceFile.mockRejectedValueOnce(rejection);
-        mocks.listFileWorkspace.mockResolvedValueOnce([
-            {
-                handle,
-                kind: "file",
-                name: listedName,
-                children: [],
-                metadata: { type: "game", tags: [] },
-                gameCount: 1,
-                lastModified: 42,
-            },
-        ]);
+        mocks.listFileWorkspace.mockResolvedValueOnce({
+            entries: [
+                {
+                    handle,
+                    kind: "file",
+                    name: listedName,
+                    children: [],
+                    metadata: { type: "game", tags: [] },
+                    gameCount: 1,
+                    lastModified: 42,
+                },
+            ],
+            unread: [{ name: listedName, kind: "file", category: "permission", parent: null }],
+        });
 
         const result = await createFile({
             listingCache,

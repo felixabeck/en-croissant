@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { createFile } from "@/utils/files";
 import { TauriCommandError } from "@/platform/tauri";
-import { workspaceEntryToEntry } from "./file";
+import { workspaceListingToEntries } from "./file";
 import { workspaceListingKey, type WorkspaceListingCache } from "./workspaceListing";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -45,7 +45,7 @@ function Reader({ visible }: { visible: boolean }) {
   const owner = useNativeRequestOwner(visible ? key : null);
   const { data } = useSWR(visible ? key : null, () =>
     owner!.run(async (signal) =>
-      (await native.listFileWorkspace(workspace, { signal })).map(workspaceEntryToEntry),
+      workspaceListingToEntries(await native.listFileWorkspace(workspace, { signal }), workspace),
     ),
   );
   return (
@@ -89,7 +89,9 @@ test.each([false, true])(
     });
     const listing = deferred<(typeof leftover)[]>();
     native.createWorkspaceFile.mockRejectedValueOnce(cause);
-    native.listFileWorkspace.mockResolvedValueOnce([]).mockReturnValueOnce(listing.promise);
+    native.listFileWorkspace
+      .mockResolvedValueOnce({ entries: [], unread: [] })
+      .mockReturnValueOnce(listing.promise.then((entries) => ({ entries, unread: [] })));
     const cache = new Map();
     await act(async () =>
       root.render(
@@ -133,7 +135,7 @@ test("inactive createFile invalidates only its owning provider and fetches on ne
     message: "private diagnostic",
   });
   native.createWorkspaceFile.mockRejectedValueOnce(cause);
-  native.listFileWorkspace.mockResolvedValue([leftover]);
+  native.listFileWorkspace.mockResolvedValue({ entries: [leftover], unread: [] });
   const cache = new Map([[unstable_serialize(key), { data: [{ name: "stale" }] }]]);
   const foreignCache = new Map([[unstable_serialize(key), { data: [{ name: "foreign" }] }]]);
   async function render(visible: boolean) {
@@ -170,7 +172,9 @@ test("inactive cleanup retires SWR's completed pre-mutation fetch before immedia
     message: "private diagnostic",
   });
   native.createWorkspaceFile.mockRejectedValueOnce(cause);
-  native.listFileWorkspace.mockResolvedValueOnce([]).mockResolvedValue([leftover]);
+  native.listFileWorkspace
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockResolvedValue({ entries: [leftover], unread: [] });
   const cache = new Map();
   async function render(visible: boolean) {
     await act(async () =>

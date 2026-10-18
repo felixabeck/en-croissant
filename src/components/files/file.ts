@@ -1,6 +1,11 @@
 import { z } from "zod";
-import type { FileWorkspaceHandle, WorkspaceEntry } from "@/bindings";
-import { fileWorkspaceHandleSchema } from "@/utils/pathCapabilities";
+import type {
+    ErrorCategory,
+    FileWorkspaceHandle,
+    WorkspaceEntry,
+    WorkspaceListing,
+} from "@/bindings";
+import { capabilityKey, fileWorkspaceHandleSchema } from "@/utils/pathCapabilities";
 
 const fileTypeSchema = z.enum(["repertoire", "game", "tournament", "puzzle", "other"]);
 export type FileType = z.infer<typeof fileTypeSchema>;
@@ -27,30 +32,46 @@ export const fileMetadataSchema = z.object({
     numGames: z.number(),
     metadata: fileInfoMetadataSchema,
     lastModified: z.number(),
+    readError: z.custom<ErrorCategory>().optional(),
 });
 export type FileMetadata = z.infer<typeof fileMetadataSchema>;
 
 export type Directory = {
     type: "directory";
     handle: FileWorkspaceHandle;
-    children: (FileMetadata | Directory)[];
+    children: Entry[];
     name: string;
     lastModified: number;
 };
 
-export type Entry = FileMetadata | Directory;
+export type UnreadableEntry = {
+    type: "unreadable";
+    name: string;
+    category: ErrorCategory;
+    key: string;
+};
+export type UsableEntry = FileMetadata | Directory;
+export type Entry = UsableEntry | UnreadableEntry;
 
-export function workspaceEntryToEntry(entry: WorkspaceEntry): Entry {
+export function workspaceEntryToEntry(entry: WorkspaceEntry, unreadKey = ""): Entry {
     if (entry.kind === "directory") {
         return {
             type: "directory",
             handle: entry.handle,
             name: entry.name,
-            children: entry.children.map(workspaceEntryToEntry),
+            children: convertEntries(entry.children, entry.handle),
             lastModified: Number(entry.lastModified),
         };
     }
     if (!entry.metadata || entry.gameCount === null) {
+        if (entry.readError) {
+            return {
+                type: "unreadable",
+                name: entry.name,
+                category: entry.readError,
+                key: unreadKey,
+            };
+        }
         throw new Error("Native workspace returned an incomplete PGN entry");
     }
     return {
@@ -60,5 +81,49 @@ export function workspaceEntryToEntry(entry: WorkspaceEntry): Entry {
         numGames: entry.gameCount,
         metadata: { type: entry.metadata.type, tags: entry.metadata.tags },
         lastModified: Number(entry.lastModified),
+        ...(entry.readError ? { readError: entry.readError } : {}),
     };
+}
+
+function convertEntries(entries: WorkspaceEntry[], parent: FileWorkspaceHandle): Entry[] {
+    let unreadIndex = 0;
+    return entries.map((entry) =>
+        workspaceEntryToEntry(
+            entry,
+            entry.readError && (!entry.metadata || entry.gameCount === null)
+                ? `${capabilityKey(parent)}:unread:${unreadIndex++}`
+                : "",
+        ),
+    );
+}
+
+/** Attach handle-free children only to parents prepared by this listing. */
+export function workspaceListingToEntries(
+    listing: WorkspaceListing,
+    root: FileWorkspaceHandle,
+): Entry[] {
+    const entries = convertEntries(listing.entries, root);
+    const parents = new Map<string, Entry[]>([[capabilityKey(root), entries]]);
+    const visit = (nodes: Entry[]) => {
+        for (const entry of nodes) {
+            if (entry.type === "directory") {
+                parents.set(capabilityKey(entry.handle), entry.children);
+                visit(entry.children);
+            }
+        }
+    };
+    visit(entries);
+    for (const unread of listing.unread) {
+        const parent = unread.parent ?? root;
+        const siblings = parents.get(capabilityKey(parent));
+        if (!siblings) throw new Error("Native workspace returned an unprepared parent");
+        const index = siblings.filter((entry) => entry.type === "unreadable").length;
+        siblings.push({
+            type: "unreadable",
+            name: unread.name,
+            category: unread.category,
+            key: `${capabilityKey(parent)}:unread:${index}`,
+        });
+    }
+    return entries;
 }

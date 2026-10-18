@@ -374,8 +374,8 @@ test.each(["file", "folder", "rename", "metadata", "move"] as const)(
   async (action) => {
     mocks.listFileWorkspace
       .mockReset()
-      .mockResolvedValueOnce([nativeFile, nativeDestination])
-      .mockResolvedValue([nativeFile, nativeDestination, nativeLeftover]);
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockResolvedValue({ entries: [nativeFile, nativeDestination, nativeLeftover], unread: [] });
     const command = {
       file: mocks.createWorkspaceFile,
       folder: mocks.createWorkspaceDirectory,
@@ -421,8 +421,8 @@ test.each([false, true])(
     const listing = deferred<unknown[]>();
     mocks.listFileWorkspace
       .mockReset()
-      .mockResolvedValueOnce([nativeFile, nativeDestination])
-      .mockReturnValueOnce(listing.promise);
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockReturnValueOnce(listing.promise.then((entries) => ({ entries, unread: [] })));
     mocks.moveWorkspaceEntry.mockRejectedValueOnce(
       commandError("operation-and-cleanup", "private diagnostic"),
     );
@@ -431,7 +431,7 @@ test.each([false, true])(
     let moving!: Promise<void>;
     let duplicate: Promise<void> | undefined;
     await act(async () => {
-      moving = controller.listProps.onMove(entry as Entry, destination as Entry).then(() => {
+      moving = controller.listProps.onMove(entry as Entry, destination as Entry)!.then(() => {
         settled = true;
       });
     });
@@ -465,7 +465,7 @@ test.each([false, true])(
 test("cleanup failed relist keeps its original visible warning and entered name", async () => {
   mocks.listFileWorkspace
     .mockReset()
-    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce({ entries: [], unread: [] })
     .mockRejectedValue(new Error("relist unavailable"));
   mocks.createWorkspaceDirectory.mockRejectedValueOnce(
     commandError("operation-and-cleanup", "private diagnostic"),
@@ -487,8 +487,8 @@ test("cleanup drains an old native listing and late resolution cannot overwrite 
   const old = deferred<unknown[]>();
   mocks.listFileWorkspace
     .mockReset()
-    .mockReturnValueOnce(old.promise)
-    .mockResolvedValueOnce([nativeLeftover]);
+    .mockReturnValueOnce(old.promise.then((entries) => ({ entries, unread: [] })))
+    .mockResolvedValueOnce({ entries: [nativeLeftover], unread: [] });
   mocks.createWorkspaceDirectory.mockRejectedValueOnce(
     commandError("operation-and-cleanup", "private diagnostic"),
   );
@@ -513,10 +513,10 @@ test("cleanup reconciles captured A while switched B keeps its own listing and A
   const other = { id: { id: "workspace-B" }, kind: "fileWorkspace" } as const;
   mocks.listFileWorkspace
     .mockReset()
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([{ ...nativeLeftover, name: "B only" }])
-    .mockReturnValueOnce(freshA.promise)
-    .mockResolvedValue([nativeLeftover]);
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockResolvedValueOnce({ entries: [{ ...nativeLeftover, name: "B only" }], unread: [] })
+    .mockReturnValueOnce(freshA.promise.then((entries) => ({ entries, unread: [] })))
+    .mockResolvedValue({ entries: [nativeLeftover], unread: [] });
   mocks.createWorkspaceDirectory.mockReturnValueOnce(pendingMutation.promise);
   const { cache, render } = await realWorkspace();
   click("Create folder");
@@ -552,9 +552,9 @@ test("cleanup rejection after switching pending mutation A to B reconciles only 
   const bEntry = { ...nativeLeftover, name: "B listing" };
   mocks.listFileWorkspace
     .mockReset()
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([bEntry])
-    .mockResolvedValueOnce([nativeLeftover]);
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockResolvedValueOnce({ entries: [bEntry], unread: [] })
+    .mockResolvedValueOnce({ entries: [nativeLeftover], unread: [] });
   mocks.createWorkspaceDirectory.mockReturnValueOnce(pendingMutation.promise);
   const { cache, render } = await realWorkspace();
   click("Create folder");

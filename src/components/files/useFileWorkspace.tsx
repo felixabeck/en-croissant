@@ -17,8 +17,8 @@ import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import FileCard from "./FileCard";
 import ConfirmModal from "../common/ConfirmModal";
 import AppModal from "../common/AppModal";
-import type { Entry, FileType } from "./file";
-import { FILE_TYPES, workspaceEntryToEntry } from "./file";
+import type { Entry, UsableEntry, FileType } from "./file";
+import { FILE_TYPES, workspaceListingToEntries } from "./file";
 import { workspaceErrorMessage } from "./workspaceError";
 import { reconcileWorkspaceListing, workspaceListingKey } from "./workspaceListing";
 
@@ -31,9 +31,14 @@ const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // The threshold follows the app font scale, measured in scaled root-em.
 const COMPACT_DIALOG_WIDTH_EM = 30;
 
-function findEntry(entries: Entry[], key: string, kind: Entry["type"]): Entry | null {
+function findEntry(entries: Entry[], key: string, kind: Entry["type"]): UsableEntry | null {
   for (const entry of entries) {
-    if (entry.type === kind && fileWorkspaceKey(entry.handle) === key) return entry;
+    if (
+      entry.type !== "unreadable" &&
+      entry.type === kind &&
+      fileWorkspaceKey(entry.handle) === key
+    )
+      return entry;
     if (entry.type === "directory") {
       const child = findEntry(entry.children, key, kind);
       if (child) return child;
@@ -61,10 +66,10 @@ export function useFileWorkspace(
   const [name, setName] = useState("");
   const [fileType, setFileType] = useState<FileType>("other");
   const [actionError, setActionError] = useState("");
-  const [trashed, setTrashed] = useState<Entry | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null);
-  const [restoreTarget, setRestoreTarget] = useState<Entry | null>(null);
-  const [purgeTarget, setPurgeTarget] = useState<Entry | null>(null);
+  const [trashed, setTrashed] = useState<UsableEntry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UsableEntry | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<UsableEntry | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<UsableEntry | null>(null);
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
   const operationFailed = t("Files.OperationFailed", {
@@ -79,7 +84,7 @@ export function useFileWorkspace(
   const workspaceOwner = useNativeRequestOwner(workspaceKey);
   const { data, error, mutate } = useSWR(workspaceKey, async () =>
     workspaceOwner!.run(async (signal) =>
-      (await tauri.listFileWorkspace(workspace!, { signal })).map(workspaceEntryToEntry),
+      workspaceListingToEntries(await tauri.listFileWorkspace(workspace!, { signal }), workspace!),
     ),
   );
   const refreshWorkspace = (cleanupFailure?: unknown) => {
@@ -101,9 +106,11 @@ export function useFileWorkspace(
       ? selectedEntry
       : null;
   const selected =
-    ownedEntry && data
-      ? findEntry(data, fileWorkspaceKey(ownedEntry.handle), ownedEntry.type)
-      : ownedEntry;
+    ownedEntry?.type === "unreadable"
+      ? null
+      : ownedEntry && data
+        ? findEntry(data, fileWorkspaceKey(ownedEntry.handle), ownedEntry.type)
+        : ownedEntry;
   function chooseWorkspace() {
     return picker.run(async () => {
       const result = await runUnlessCancelled(
@@ -137,7 +144,8 @@ export function useFileWorkspace(
       : []),
     ...destinationDirectories,
   ].find((entry) => fileWorkspaceKey(entry.handle) === moveTarget)?.handle;
-  async function moveEntry(entry: Entry, destination: Entry["handle"]) {
+  async function moveEntry(entry: Entry, destination: UsableEntry["handle"]) {
+    if (entry.type === "unreadable") return;
     if (moveInFlight.current) return;
     if (!workspace) return;
     moveInFlight.current = true;
@@ -315,13 +323,18 @@ export function useFileWorkspace(
       files: failure === "silent" ? (data ?? []) : [],
       selectedFile: selected,
       setSelectedFile: setSelectedEntry,
-      onRequestDelete: (entry: Entry) => setDeleteTarget(entry),
+      onRequestDelete: (entry: Entry) => {
+        if (entry.type !== "unreadable") setDeleteTarget(entry);
+      },
       onRequestMove: (entry: Entry) => {
+        if (entry.type === "unreadable") return;
         setActionError("");
         setSelectedEntry(entry);
         setMoveTarget(fileWorkspaceKey(workspace!));
       },
-      onMove: (entry: Entry, destination: Entry) => moveEntry(entry, destination.handle),
+      onMove: (entry: Entry, destination: Entry) => {
+        if (destination.type !== "unreadable") return moveEntry(entry, destination.handle);
+      },
     },
     detail: (
       <>

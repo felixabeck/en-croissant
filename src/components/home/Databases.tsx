@@ -28,19 +28,22 @@ import {
   getDatabases,
   query_players,
   type ManagedDatabaseInfo,
+  type DatabaseList,
 } from "@/utils/db";
+import { capabilityKey } from "@/utils/pathCapabilities";
 import { accountDatabaseFilename } from "./accountDatabase";
 import { collectSequential } from "@/utils/collectSequential";
 import { sessionPlayerName, type Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
 
+type PersonalUnread = { type: "unread"; filename: string; error: string; key: string };
 type PersonalDatabase = {
-  db: ManagedDatabaseInfo;
+  db: ManagedDatabaseInfo | PersonalUnread;
   username: string;
 };
 
-function databaseLabel(db: ManagedDatabaseInfo): string {
+function databaseLabel(db: PersonalDatabase["db"]): string {
   return db.type === "success" ? db.title || db.filename : db.filename;
 }
 
@@ -65,20 +68,20 @@ function sessionAccountDatabase(
 }
 
 interface PersonalInfo {
-  db: ManagedDatabaseInfo;
+  db: Extract<ManagedDatabaseInfo, { type: "success" }>;
   info: PlayerGameInfo;
 }
 
 interface PersonalSummary {
   entries: PersonalInfo[];
-  failed: ManagedDatabaseInfo[];
+  failed: PersonalDatabase["db"][];
 }
 
 function StatisticsNotice({
   failed,
   incomplete = false,
 }: {
-  failed: ManagedDatabaseInfo[];
+  failed: PersonalDatabase["db"][];
   incomplete?: boolean;
 }) {
   const { t } = useTranslation();
@@ -97,6 +100,13 @@ function StatisticsNotice({
         defaultValue: "These databases could not be read: {{databases}}",
         databases: failed.map(databaseLabel).join(", "),
       })}
+      {failed
+        .filter((db): db is PersonalUnread => db.type === "unread")
+        .map((db) => (
+          <Text key={db.key} size="sm" className="wrap-anywhere">
+            {db.filename}: {db.error}
+          </Text>
+        ))}
     </Alert>
   );
 }
@@ -106,7 +116,7 @@ function personalInfoProgressKey(name: string, databases: PersonalDatabase[]): s
   return JSON.stringify([
     "personalInfo",
     name,
-    databases.map(({ db }) => databaseHandleKey(db.file)),
+    databases.map(({ db }) => (db.type === "unread" ? db.key : databaseHandleKey(db.file))),
   ]);
 }
 
@@ -145,7 +155,7 @@ function Databases() {
     databasesKey,
     () =>
       databasesOwner!.run(async (signal) => {
-        let dbs: ManagedDatabaseInfo[];
+        let dbs: DatabaseList;
         try {
           dbs = await getDatabases({ signal });
         } catch (cause) {
@@ -159,12 +169,26 @@ function Databases() {
           }
           throw cause;
         }
-        return dbs.flatMap((db) => {
+        const readable: PersonalDatabase[] = dbs.databases.flatMap((db) => {
           const account = sessions
             .map(sessionAccountDatabase)
             .find((account) => db.filename === account?.filename);
           return account ? [{ db, username: account.username }] : [];
         });
+        const unread: PersonalDatabase[] = dbs.unread.flatMap((db, index) => {
+          const account = sessions
+            .map(sessionAccountDatabase)
+            .find((account) => db.filename === account?.filename);
+          return account && dbs.unread.filter((item) => item.filename === db.filename).length === 1
+            ? [
+                {
+                  db: { ...db, type: "unread", key: `${capabilityKey(dbs.root)}:unread:${index}` },
+                  username: account.username,
+                },
+              ]
+            : [];
+        });
+        return [...readable, ...unread];
       }),
   );
 
@@ -186,7 +210,13 @@ function Databases() {
         ownedProgressByKey.set(progressKey, map);
         const candidates = playerDatabases;
         const { values, failures } = await collectSequential(
-          candidates.filter(({ db }) => db.type === "success"),
+          candidates.filter(
+            (
+              item,
+            ): item is PersonalDatabase & {
+              db: Extract<ManagedDatabaseInfo, { type: "success" }>;
+            } => item.db.type === "success",
+          ),
           async ({ db, username }) => {
             const players = await query_players(
               db.file,
@@ -222,7 +252,15 @@ function Databases() {
         return {
           entries: values.filter((entry): entry is PersonalInfo => entry !== null),
           failed: candidates
-            .filter((item) => item.db.type === "error" || failedItems.has(item))
+            .filter(
+              (item) =>
+                item.db.type !== "success" ||
+                failedItems.has(
+                  item as PersonalDatabase & {
+                    db: Extract<ManagedDatabaseInfo, { type: "success" }>;
+                  },
+                ),
+            )
             .map(({ db }) => db),
         };
       }),

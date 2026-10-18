@@ -177,7 +177,11 @@ beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   vi.clearAllMocks();
-  mocks.getDatabases.mockResolvedValue([]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getLichessAccount.mockResolvedValue({ username: "player" });
   mocks.getChessComAccount.mockResolvedValue({});
   mocks.authenticateLichess.mockResolvedValue({ ok: false });

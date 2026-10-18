@@ -189,7 +189,13 @@ beforeEach(() => {
   mocks.withConversionTicket.mockReset().mockImplementation((run) => run("conversion-ticket"));
   mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
   mocks.logError.mockReset().mockResolvedValue(undefined);
-  mocks.getDatabases.mockReset().mockResolvedValue([]);
+  mocks.getDatabases
+    .mockReset()
+    .mockResolvedValue({
+      databases: [],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
   getDefaultStore().set(databaseConversionStateAtom, []);
   getDefaultStore().set(databaseConversionRefreshFailedAtom, false);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
@@ -249,13 +255,16 @@ test.each([
     const source = { id: { id: "source" }, kind: "fileWorkspace" } as const;
     mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
     mocks.createWorkspaceDatabase.mockRejectedValue(rejection);
-    mocks.listWorkspaceDatabases.mockResolvedValue([
-      {
-        handle,
-        filename: "00000000-0000-4000-8000-000000000001.db3",
-        availability: "available",
-      },
-    ]);
+    mocks.listWorkspaceDatabases.mockResolvedValue({
+      entries: [
+        {
+          handle,
+          filename: "00000000-0000-4000-8000-000000000001.db3",
+          availability: "available",
+        },
+      ],
+      unread: [],
+    });
     mocks.convertPgn.mockResolvedValue(undefined);
     const onCreated = vi.fn();
 
@@ -291,7 +300,11 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
   mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
   mocks.databaseDownloadDestination.mockResolvedValue(destination);
   mocks.downloadFile.mockResolvedValue(undefined);
-  mocks.getDatabases.mockResolvedValue(databases);
+  mocks.getDatabases.mockResolvedValue({
+    databases: databases,
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   const { setDatabases } = await renderAddDatabase();
 
   await act(async () => mocks.progressButtonProps!.onClick());
@@ -308,7 +321,7 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
   expect(mocks.downloadFile.mock.calls[0]?.[0]).not.toBe("db_0");
   expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
   expect(mocks.getDatabases).toHaveBeenCalledOnce();
-  expect(setDatabases).toHaveBeenCalledWith(databases);
+  expect(setDatabases).toHaveBeenCalledWith(expect.objectContaining({ databases, unread: [] }));
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
@@ -501,7 +514,11 @@ test("does not notify when cancellation loses the completed-job race", async () 
   );
   mocks.databaseDownloadDestination.mockResolvedValue({ id: { id: "destination" } });
   mocks.downloadFile.mockResolvedValue(undefined);
-  mocks.getDatabases.mockResolvedValue([]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await renderAddDatabase();
   await act(async () => mocks.progressButtonProps!.onClick());
   await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
@@ -676,7 +693,11 @@ test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshL
         indexed: false,
       },
     ];
-    mocks.getDatabases.mockResolvedValue(remaining);
+    mocks.getDatabases.mockResolvedValue({
+      databases: remaining,
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     const setDatabases = vi.fn().mockResolvedValue(undefined);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     if (secondaryFailure === "delete" || secondaryFailure === "logger") {
@@ -700,7 +721,15 @@ test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshL
     expect(setDatabases.mock.calls).toEqual(
       secondaryFailure === "getDatabases" || secondaryFailure === "refreshLogger"
         ? []
-        : [[remaining]],
+        : [
+            [
+              {
+                databases: remaining,
+                unread: [],
+                root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+              },
+            ],
+          ],
     );
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
       color: "red",
@@ -812,7 +841,13 @@ test("cancel during target creation skips native dispatch and retains the row th
   expect(mocks.getDatabases).not.toHaveBeenCalled();
   await act(async () => deleted());
   expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
-  await act(async () => refreshed([]));
+  await act(async () =>
+    refreshed({
+      databases: [],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+    } as never),
+  );
   expect(store.get(databaseConversionStateAtom)).toEqual([]);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
@@ -878,7 +913,19 @@ test.each([false, true])(
     expect(mocks.getDatabases).toHaveBeenCalledOnce();
     expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
     expect(setOpened.mock.calls).toEqual([[false]]);
-    expect(setDatabases.mock.calls).toEqual(refreshFails ? [] : [[[]]]);
+    expect(setDatabases.mock.calls).toEqual(
+      refreshFails
+        ? []
+        : [
+            [
+              {
+                databases: [],
+                unread: [],
+                root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+              },
+            ],
+          ],
+    );
     expect(mocks.notify.mock.calls).toEqual(
       refreshFails
         ? [

@@ -5,7 +5,7 @@
 //! path or sends one back for a PGN operation.
 
 use crate::{
-    error::Error,
+    error::{Error, ErrorCategory},
     infra::blocking::BLOCKING_GATEWAY,
     infra::cancellable_lock::lock_std_cancellable,
     infra::path_authority::{
@@ -96,8 +96,25 @@ pub struct WorkspaceEntry {
     pub name: String,
     pub children: Vec<WorkspaceEntry>,
     pub metadata: Option<WorkspaceMetadata>,
+    pub read_error: Option<ErrorCategory>,
     pub game_count: Option<i32>,
     pub last_modified: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceUnread {
+    pub name: String,
+    pub kind: Option<WorkspaceEntryKind>,
+    pub category: ErrorCategory,
+    pub parent: Option<FileWorkspaceHandle>,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceListing {
+    pub entries: Vec<WorkspaceEntry>,
+    pub unread: Vec<WorkspaceUnread>,
 }
 
 fn validate_name(name: &str) -> Result<&str, Error> {
@@ -474,11 +491,11 @@ fn collect_tree_entries(
     pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
     token: &CancellationToken,
-) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
+) -> Result<(WorkspaceListing, Vec<FileWorkspaceHandle>), Error> {
     struct Staged {
         components: Vec<std::ffi::OsString>,
         name: String,
-        identity: (u64, u64),
+        identity: Option<(u64, u64)>,
         parent_identity: (u64, u64),
         last_modified: i64,
         body: StagedBody,
@@ -486,7 +503,8 @@ fn collect_tree_entries(
 
     enum StagedBody {
         Directory(Vec<Staged>),
-        File(WorkspaceMetadata),
+        File(WorkspaceMetadata, Option<ErrorCategory>),
+        Unread(Option<WorkspaceEntryKind>, ErrorCategory),
     }
 
     fn confirm_staged(dir: &CapabilityDirectory, entry: &DirectoryEntry) -> Result<(), Error> {
@@ -516,29 +534,73 @@ fn collect_tree_entries(
             return Err(Error::Cancellation);
         }
         let parent_identity = dir.identity()?;
-        let mut entries = dir.entries(token, &mut |name| name != OsStr::new(TRASH_DIRECTORY))?;
+        let listing =
+            dir.listing_entries(token, &mut |name| name != OsStr::new(TRASH_DIRECTORY))?;
         if token.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        // `OsStrExt::as_bytes` does not exist on Windows; `as_encoded_bytes` yields the
-        // identical sequence on unix, so the listing order and every snapshot are preserved.
-        entries.sort_by(|left, right| {
-            left.name
-                .as_os_str()
-                .as_encoded_bytes()
-                .cmp(right.name.as_os_str().as_encoded_bytes())
-        });
+        let mut entries: Vec<_> = listing
+            .entries
+            .into_iter()
+            .map(|entry| (entry.name.clone(), Ok(entry)))
+            .chain(
+                listing
+                    .unread
+                    .into_iter()
+                    .map(|(name, kind, error)| (name, Err((kind, error)))),
+            )
+            .collect();
+        entries
+            .sort_by(|(left, _), (right, _)| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
         let mut staged = Vec::new();
-        for entry in entries {
+        for (leaf, observation) in entries {
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
+            let display = leaf.to_string_lossy().into_owned();
+            let mut child_components = components.clone();
+            child_components.push(leaf);
+            let entry = match observation {
+                Ok(entry) => entry,
+                Err((kind, error)) => {
+                    if let Some(category) =
+                        crate::infra::path_authority::listing_child_outcome(error)?
+                    {
+                        let kind = match kind {
+                            Some(DirectoryEntryKind::Directory) => {
+                                Some(WorkspaceEntryKind::Directory)
+                            }
+                            Some(DirectoryEntryKind::RegularFile) => {
+                                if !display.to_ascii_lowercase().ends_with(".pgn") {
+                                    continue;
+                                }
+                                Some(WorkspaceEntryKind::File)
+                            }
+                            Some(DirectoryEntryKind::Other) => continue,
+                            None => None,
+                        };
+                        check_directory_listing_bound(
+                            *staged_count,
+                            MAX_DIRECTORY_LISTING_ENTRIES,
+                        )?;
+                        *staged_count += 1;
+                        staged.push(Staged {
+                            components: child_components,
+                            name: display.clone(),
+                            identity: None,
+                            parent_identity,
+                            last_modified: 0,
+                            body: StagedBody::Unread(kind, category),
+                        });
+                    }
+                    continue;
+                }
+            };
             let is_directory = match entry.kind {
                 DirectoryEntryKind::Directory => true,
                 DirectoryEntryKind::RegularFile => false,
                 DirectoryEntryKind::Other => continue,
             };
-            let display = entry.name.to_string_lossy().into_owned();
             if !is_directory && !display.to_ascii_lowercase().ends_with(".pgn") {
                 continue;
             }
@@ -550,49 +612,102 @@ fn collect_tree_entries(
             }
             check_directory_listing_bound(*staged_count, MAX_DIRECTORY_LISTING_ENTRIES)?;
             *staged_count += 1;
-            let mut child_components = components.clone();
-            child_components.push(entry.name.clone());
-            if is_directory {
-                let last_modified = listed_mtime(&entry);
-                let child = dir.open_child_directory(&entry)?;
-                let children = walk(
-                    &child,
-                    child_components.clone(),
-                    depth + 1,
-                    token,
-                    staged_count,
-                )?;
-                if token.is_cancelled() {
-                    return Err(Error::Cancellation);
+            let body = (|| {
+                if is_directory {
+                    let child = dir.open_child_directory(&entry)?;
+                    let children = walk(
+                        &child,
+                        child_components.clone(),
+                        depth + 1,
+                        token,
+                        staged_count,
+                    )?;
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    confirm_staged(dir, &entry)?;
+                    Ok(StagedBody::Directory(children))
+                } else {
+                    // A sidecar failure cannot hide a replacement of the PGN itself.
+                    let metadata = metadata_from(dir, &entry);
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    confirm_staged(dir, &entry)?;
+                    match metadata {
+                        Ok(metadata) => Ok(StagedBody::File(metadata, None)),
+                        Err(error)
+                            if error.root_failure().is_none()
+                                && (error.category() == ErrorCategory::Permission
+                                    || matches!(error.unlabelled(), Error::InvalidInput(message) if message == "invalid PGN metadata")
+                                    || matches!(error.unlabelled(), Error::ResourceLimit(message) if message == METADATA_LIMIT_MESSAGE)) =>
+                        {
+                            Ok(StagedBody::File(
+                                WorkspaceMetadata::default(),
+                                Some(error.category()),
+                            ))
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
-                confirm_staged(dir, &entry)?;
-                staged.push(Staged {
-                    components: child_components,
-                    name: display,
-                    identity: entry.identity,
-                    parent_identity,
-                    last_modified,
-                    body: StagedBody::Directory(children),
-                });
+            })();
+            let body = match body {
+                Ok(body) => body,
+                Err(error) => match crate::infra::path_authority::listing_child_outcome(error)? {
+                    None => continue,
+                    Some(category) => StagedBody::Unread(
+                        Some(if is_directory {
+                            WorkspaceEntryKind::Directory
+                        } else {
+                            WorkspaceEntryKind::File
+                        }),
+                        category,
+                    ),
+                },
+            };
+            let name = if matches!(body, StagedBody::File(..)) {
+                display.trim_end_matches(".pgn").to_string()
             } else {
-                let name = display.trim_end_matches(".pgn").to_string();
-                let last_modified = listed_mtime(&entry);
-                let metadata = metadata_from(dir, &entry)?;
-                if token.is_cancelled() {
-                    return Err(Error::Cancellation);
-                }
-                confirm_staged(dir, &entry)?;
-                staged.push(Staged {
-                    components: child_components,
-                    name,
-                    identity: entry.identity,
-                    parent_identity,
-                    last_modified,
-                    body: StagedBody::File(metadata),
-                });
-            }
+                display
+            };
+            staged.push(Staged {
+                components: child_components,
+                name,
+                identity: Some(entry.identity),
+                parent_identity,
+                last_modified: listed_mtime(&entry),
+                body,
+            });
         }
         Ok(staged)
+    }
+
+    struct Preparation {
+        missing: Vec<FileWorkspaceHandle>,
+        prepared: Vec<PreparedEntry>,
+        unread: Vec<WorkspaceUnread>,
+        retained_paths: Vec<(Vec<std::ffi::OsString>, bool)>,
+    }
+
+    impl Preparation {
+        fn unread(
+            &mut self,
+            entry: &Staged,
+            kind: Option<WorkspaceEntryKind>,
+            category: ErrorCategory,
+            parent: Option<FileWorkspaceHandle>,
+        ) {
+            // Unknown enumerated types retain descendants without guessing or publishing a handle.
+            let recursive = kind != Some(WorkspaceEntryKind::File);
+            self.retained_paths
+                .push((entry.components.clone(), recursive));
+            self.unread.push(WorkspaceUnread {
+                name: entry.name.clone(),
+                kind,
+                category,
+                parent,
+            });
+        }
     }
 
     fn prepare_staged(
@@ -600,13 +715,17 @@ fn collect_tree_entries(
         path_authority: &mut PathAuthority,
         workspace: &FileWorkspaceHandle,
         token: &CancellationToken,
-        missing: &mut Vec<FileWorkspaceHandle>,
-        prepared: &mut Vec<PreparedEntry>,
+        parent: Option<FileWorkspaceHandle>,
+        preparation: &mut Preparation,
     ) -> Result<Vec<WorkspaceEntry>, Error> {
         let mut result = Vec::new();
         for entry in staged {
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
+            }
+            if let StagedBody::Unread(kind, category) = &entry.body {
+                preparation.unread(&entry, kind.clone(), *category, parent.clone());
+                continue;
             }
             #[cfg(test)]
             WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| {
@@ -615,32 +734,56 @@ fn collect_tree_entries(
                 }
             });
             let is_dir = matches!(entry.body, StagedBody::Directory(_));
-            let registration = path_authority.prepare_workspace_listing_child(
+            let identity = entry
+                .identity
+                .ok_or_else(|| Error::InvalidInput("listing observation is missing".into()))?;
+            let registration = match path_authority.prepare_workspace_listing_child(
                 workspace,
                 &entry.components,
                 entry.name.clone(),
-                IdentityBinding::from_pairs(entry.identity, entry.parent_identity),
+                IdentityBinding::from_pairs(identity, entry.parent_identity),
                 is_dir,
                 PathOperation::ReadPgn,
-            )?;
+            ) {
+                Ok(registration) => registration,
+                Err(error) => {
+                    if let Some(category) =
+                        crate::infra::path_authority::listing_child_outcome(error)?
+                    {
+                        preparation.unread(
+                            &entry,
+                            Some(if is_dir {
+                                WorkspaceEntryKind::Directory
+                            } else {
+                                WorkspaceEntryKind::File
+                            }),
+                            category,
+                            parent.clone(),
+                        );
+                    }
+                    continue;
+                }
+            };
             let handle = FileWorkspaceHandle::new(registration.id());
-            prepared.push(registration);
+            preparation.prepared.push(registration);
             if !is_dir {
-                missing.push(handle.clone());
+                preparation.missing.push(handle.clone());
             }
-            let (metadata, nested) = match entry.body {
+            let (metadata, read_error, nested) = match entry.body {
                 StagedBody::Directory(children) => (
+                    None,
                     None,
                     prepare_staged(
                         children,
                         path_authority,
                         workspace,
                         token,
-                        missing,
-                        prepared,
+                        Some(handle.clone()),
+                        preparation,
                     )?,
                 ),
-                StagedBody::File(metadata) => (Some(metadata), Vec::new()),
+                StagedBody::File(metadata, error) => (Some(metadata), error, Vec::new()),
+                StagedBody::Unread(..) => continue,
             };
             result.push(WorkspaceEntry {
                 handle,
@@ -652,6 +795,7 @@ fn collect_tree_entries(
                 name: entry.name,
                 children: nested,
                 metadata,
+                read_error,
                 game_count: None,
                 last_modified: entry.last_modified,
             });
@@ -659,29 +803,43 @@ fn collect_tree_entries(
         Ok(result)
     }
 
-    let (root, snapshot) = {
-        pgn_path_authority.with_mut(|path_authority| {
-            let root = path_authority
-                .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
-            let snapshot = path_authority
-                .workspace_listing_snapshot(workspace, OsStr::new(TRASH_DIRECTORY))?;
-            Ok::<_, Error>((root, snapshot))
-        })??
-    };
+    let (root, snapshot) = pgn_path_authority.with_mut(|path_authority| {
+        let root =
+            path_authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+        let snapshot =
+            path_authority.workspace_listing_snapshot(workspace, OsStr::new(TRASH_DIRECTORY))?;
+        Ok::<_, Error>((root, snapshot))
+    })??;
     let staged = walk(&root, Vec::new(), 0, token, &mut 0)?;
-    let mut missing = Vec::new();
-    let mut prepared = Vec::new();
+    let mut preparation = Preparation {
+        missing: Vec::new(),
+        prepared: Vec::new(),
+        unread: Vec::new(),
+        retained_paths: Vec::new(),
+    };
     pgn_path_authority.with_mut(|path_authority| {
         let entries = prepare_staged(
             staged,
             path_authority,
             workspace,
             token,
-            &mut missing,
-            &mut prepared,
+            None,
+            &mut preparation,
         )?;
-        path_authority.commit_directory_listing(snapshot, prepared, token)?;
-        Ok((entries, missing))
+        let retained = snapshot.retained_ids(&preparation.retained_paths)?;
+        path_authority.commit_directory_listing(
+            snapshot,
+            preparation.prepared,
+            &retained,
+            token,
+        )?;
+        Ok((
+            WorkspaceListing {
+                entries,
+                unread: preparation.unread,
+            },
+            preparation.missing,
+        ))
     })?
 }
 
@@ -696,6 +854,34 @@ fn set_workspace_game_count(
             return;
         }
         set_workspace_game_count(&mut entry.children, handle, game_count);
+    }
+}
+
+fn set_workspace_read_error(
+    entries: &mut [WorkspaceEntry],
+    handle: &FileWorkspaceHandle,
+    category: ErrorCategory,
+) {
+    for entry in entries {
+        if &entry.handle == handle {
+            entry.read_error = Some(category);
+            return;
+        }
+        set_workspace_read_error(&mut entry.children, handle, category);
+    }
+}
+
+fn listing_count_error(error: Error) -> Result<ErrorCategory, Error> {
+    if error.root_failure().is_none()
+        && (matches!(
+            error.category(),
+            ErrorCategory::Permission | ErrorCategory::Parsing
+        ) || matches!(error.unlabelled(), Error::Io(io) if io.kind() == std::io::ErrorKind::InvalidData)
+            || matches!(error.unlabelled(), Error::ResourceLimit(message) if message == "PGN count exceeds IPC limit"))
+    {
+        Ok(error.category())
+    } else {
+        Err(error)
     }
 }
 
@@ -763,14 +949,14 @@ pub(crate) async fn list_file_workspace_core(
     authority_arc: &SharedPathAuthority,
     repository: &crate::pgn::PgnRepository,
     cancellation: &CancellationToken,
-) -> Result<Vec<WorkspaceEntry>, Error> {
+) -> Result<WorkspaceListing, Error> {
     let result = async {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
         let pgn_path_authority = authority_arc.clone();
         let workspace_for_tree = workspace.clone();
-        let (mut entries, missing) = BLOCKING_GATEWAY
+        let (mut listing, missing) = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
                 collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
             })
@@ -785,18 +971,29 @@ pub(crate) async fn list_file_workspace_core(
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            let resolved = {
-                authority_arc.with_mut(|authority| {
-                    authority.resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
-                })??
-            };
-            let game_count = pgn::count_pgn_games_core(resolved, cancellation, repository).await?;
-            set_workspace_game_count(&mut entries, &handle, game_count);
+            let count = async {
+                let resolved = {
+                    authority_arc.with_mut(|authority| {
+                        authority.resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+                    })??
+                };
+                pgn::count_pgn_games_core(resolved, cancellation, repository).await
+            }
+            .await;
+            match count {
+                Ok(game_count) => {
+                    set_workspace_game_count(&mut listing.entries, &handle, game_count)
+                }
+                Err(error) => {
+                    let category = listing_count_error(error)?;
+                    set_workspace_read_error(&mut listing.entries, &handle, category);
+                }
+            }
         }
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        Ok(entries)
+        Ok(listing)
     }
     .await;
     match result {
@@ -832,7 +1029,7 @@ pub async fn list_file_workspace(
     ticket: Option<String>,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<WorkspaceEntry>, Error> {
+) -> Result<WorkspaceListing, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "list_file_workspace")?;
     let cancellation = operation.token();
     let authority_arc = state.pgn_path_authority.clone();
@@ -1144,6 +1341,7 @@ fn create_workspace_file_blocking(
         name,
         children: vec![],
         metadata: Some(metadata),
+        read_error: None,
         game_count: Some(game_count),
         last_modified: installed.modified_seconds,
     };
@@ -1256,6 +1454,7 @@ fn create_workspace_directory_inner(
         name,
         children: vec![],
         metadata: None,
+        read_error: None,
         game_count: None,
         last_modified: modified_seconds,
     };
@@ -2340,6 +2539,7 @@ mod tests {
         )
         .expect("list completed create");
         let created = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "completed")
             .expect("created entry is registered");
@@ -4589,25 +4789,26 @@ mod tests {
         // Sorted by raw name bytes, sidecars and non-PGN files dropped, the trash bucket hidden.
         assert_eq!(
             entries
+                .entries
                 .iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
             ["a", "b", "nested"]
         );
-        let a = &entries[0];
+        let a = &entries.entries[0];
         assert_eq!(a.kind, WorkspaceEntryKind::File);
         assert_eq!(a.metadata.as_ref().expect("a metadata").tags, ["trusted"]);
         assert_eq!(
             a.last_modified,
             enumerated_workspace_entry(&root, "a.pgn").modified_seconds
         );
-        let b = &entries[1];
+        let b = &entries.entries[1];
         assert_eq!(b.kind, WorkspaceEntryKind::File);
         assert_eq!(
             b.metadata.as_ref().expect("b metadata").tags,
             Vec::<String>::new()
         );
-        let nested_entry = &entries[2];
+        let nested_entry = &entries.entries[2];
         assert_eq!(nested_entry.kind, WorkspaceEntryKind::Directory);
         assert_eq!(
             nested_entry
@@ -5192,6 +5393,7 @@ mod tests {
         )
         .expect("list registered file");
         let created = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "reg-sync")
             .expect("registered");
@@ -5428,7 +5630,11 @@ mod tests {
             &CancellationToken::new(),
         )
         .expect("listing registers the installed PGN");
-        assert!(listed.0.iter().any(|entry| entry.name == "stale-limit"));
+        assert!(listed
+            .0
+            .entries
+            .iter()
+            .any(|entry| entry.name == "stale-limit"));
         app.state::<AppState>()
             .operations
             .seal_and_request_cancellation()
@@ -5460,6 +5666,7 @@ mod tests {
         )
         .expect("listing after retry");
         let matches: Vec<_> = entries
+            .entries
             .iter()
             .filter(|entry| entry.name == "stale-limit")
             .collect();
@@ -6310,7 +6517,11 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let sub_entry = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let sub_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "sub")
+            .unwrap();
         let listed = sub_entry
             .children
             .iter()
@@ -6369,7 +6580,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let child = entries[0].children[0].handle.clone();
+        let child = entries.entries[0].children[0].handle.clone();
         assert!(mutation_target(&state.pgn_path_authority, &child).is_ok());
 
         let old = root.join("sub.old");
@@ -6420,7 +6631,11 @@ mod tests {
         set_workspace_listing_pre_register_hook(None);
         let (entries, _) = result.expect("registration stores the enumerated parent identity");
         assert!(swapped.load(std::sync::atomic::Ordering::SeqCst));
-        let sub_entry = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let sub_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "sub")
+            .unwrap();
         let child = sub_entry
             .children
             .iter()
@@ -6454,7 +6669,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let sub_handle = entries[0].handle.clone();
+        let sub_handle = entries.entries[0].handle.clone();
         let expected_parent = mutation_target(&state.pgn_path_authority, &sub_handle)
             .unwrap()
             .identity;
@@ -6514,8 +6729,16 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let source = entries.iter().find(|entry| entry.name == "a").unwrap();
-        let destination = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let source = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "a")
+            .unwrap();
+        let destination = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "sub")
+            .unwrap();
         let destination_target =
             mutation_target(&state.pgn_path_authority, &destination.handle).unwrap();
         let expected_parent = crate::infra::path_authority::opened_file_identity(
@@ -6571,8 +6794,13 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let source = entries.iter().find(|entry| entry.name == "move").unwrap();
+        let source = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "move")
+            .unwrap();
         let destination = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "destination")
             .unwrap();
@@ -6614,7 +6842,11 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        let outer = entries.iter().find(|entry| entry.name == "outer").unwrap();
+        let outer = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "outer")
+            .unwrap();
         let child = outer
             .children
             .iter()
@@ -6622,6 +6854,7 @@ mod tests {
             .unwrap();
         let original_child_parent = workspace_child_parent_identity(&state, &workspace, "outer");
         let directory_destination = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "destination")
             .unwrap();
@@ -6691,6 +6924,51 @@ mod root_failure_tests {
             FileWorkspaceHandle::new(id),
             root,
         )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listing_child_root_stream_failure_labels_the_command_and_preserves_registry() {
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFaultPoint, RemovalInjector};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct StreamPermission(Arc<AtomicUsize>);
+        impl RemovalInjector for StreamPermission {
+            fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+                if point == RemovalFaultPoint::BeforeDirOpen {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                Ok(None)
+            }
+        }
+
+        let (directory, registry, workspace, root) = root_failure_fixture();
+        fs::write(root.join("known.pgn"), b"*").unwrap();
+        collect_tree_entries(&registry, &workspace, &CancellationToken::new()).unwrap();
+        let before = fs::read(directory.path().join("registry.json")).unwrap();
+        fs::write(root.join("new.pgn"), b"*").unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let _guard = scoped_test_removal_injector(Arc::new(StreamPermission(attempts.clone())));
+        let result = list_file_workspace_core(
+            &workspace,
+            &registry,
+            &pgn::PgnRepository::default(),
+            &CancellationToken::new(),
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::Permission);
+        assert_eq!(error.root_failure(), Some(RootFailure::Permission));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "the listing and the root probe must both reach the directory stream"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]
@@ -6949,39 +7227,23 @@ mod root_failure_tests {
 
     #[cfg(unix)]
     #[test]
-    fn root_failure_child_removed_between_readdir_and_statat_is_unlabelled() {
-        let (directory, registry, workspace, root) = root_failure_fixture();
+    fn root_failure_listing_child_stat_miss_is_omitted_without_a_root_failure() {
+        let (_directory, registry, workspace, root) = root_failure_fixture();
         fs::write(root.join("child.pgn"), b"*").unwrap();
         fs::write(root.join("intact.pgn"), b"*").unwrap();
-        let registry_bytes = fs::read(directory.path().join("registry.json")).unwrap();
+        collect_tree_entries(&registry, &workspace, &CancellationToken::new()).unwrap();
         let child = root.join("child.pgn");
         crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
             if name == OsStr::new("child.pgn") {
                 fs::remove_file(&child).unwrap();
             }
         })));
-        let original =
-            collect_tree_entries(&registry, &workspace, &CancellationToken::new()).unwrap_err();
-        crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(|_| {
-            panic!("the root probe must not stat any child");
-        })));
-        assert_eq!(original.category(), ErrorCategory::MissingResource);
-        let diagnostic = original.diagnostic();
-        let error = probe_listing_root_failure(
-            &registry,
-            workspace.path_ref(),
-            PathOperation::ReadPgn,
-            original,
-            &CancellationToken::new(),
-        );
+        let listing = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
         crate::infra::fs::set_read_directory_pre_stat_hook(None);
-        assert_eq!(error.root_failure(), None);
-        assert_eq!(error.to_string(), "I/O failure");
-        assert_eq!(error.diagnostic(), diagnostic);
-        assert_eq!(
-            fs::read(directory.path().join("registry.json")).unwrap(),
-            registry_bytes
-        );
+        let (listing, _) = listing.unwrap();
+        assert!(listing.unread.is_empty());
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].name, "intact");
     }
 }
 
@@ -7026,6 +7288,378 @@ mod workspace_directory_enumeration_tests {
             FileWorkspaceHandle::new(id),
             root,
         )
+    }
+
+    #[test]
+    fn listing_child_named_stat_permission_uses_enumerated_kind_and_retains_snapshot_ids() {
+        for (directory_child, unknown_kind) in [(false, false), (true, false), (true, true)] {
+            let (_directory, authority, workspace, root) = workspace_fixture();
+            let child = root.join("blocked.pgn");
+            if directory_child {
+                fs::create_dir(&child).unwrap();
+                fs::write(child.join("inner.pgn"), b"*").unwrap();
+            } else {
+                fs::write(&child, b"*").unwrap();
+            }
+            fs::write(root.join("healthy.pgn"), b"*").unwrap();
+            let (before, _) =
+                collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+            let healthy = before
+                .entries
+                .iter()
+                .find(|entry| entry.name == "healthy")
+                .unwrap()
+                .handle
+                .clone();
+            let blocked = before
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.name
+                        == if directory_child {
+                            "blocked.pgn"
+                        } else {
+                            "blocked"
+                        }
+                })
+                .unwrap();
+            let mut retained = vec![blocked.handle.clone()];
+            retained.extend(blocked.children.iter().map(|entry| entry.handle.clone()));
+            crate::infra::fs::set_listing_child_stat_hook(Some(Box::new(move |name, kind| {
+                (name == OsStr::new("blocked.pgn")).then(|| {
+                    (
+                        if unknown_kind { None } else { kind },
+                        std::io::ErrorKind::PermissionDenied.into(),
+                    )
+                })
+            })));
+            let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+            crate::infra::fs::set_listing_child_stat_hook(None);
+            let (listing, missing) = result.unwrap();
+            assert_eq!(listing.entries.len(), 1);
+            assert_eq!(listing.entries[0].handle, healthy);
+            assert_eq!(missing, vec![healthy]);
+            assert_eq!(listing.unread.len(), 1);
+            let unread = &listing.unread[0];
+            assert_eq!(unread.name, "blocked.pgn");
+            assert_eq!(unread.category, ErrorCategory::Permission);
+            assert_eq!(
+                unread.kind,
+                if unknown_kind {
+                    None
+                } else {
+                    Some(if directory_child {
+                        WorkspaceEntryKind::Directory
+                    } else {
+                        WorkspaceEntryKind::File
+                    })
+                }
+            );
+            let payload = serde_json::to_value(&listing).unwrap();
+            assert!(payload["unread"][0].get("handle").is_none());
+            assert!(payload["unread"][0].get("path").is_none());
+            authority
+                .with_mut(|authority| {
+                    for handle in retained {
+                        authority
+                            .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+                            .unwrap();
+                    }
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn listing_child_named_stat_regular_file_retains_only_the_named_snapshot_id() {
+        let (directory, authority, workspace, root) = workspace_fixture();
+        let child = root.join("blocked.pgn");
+        fs::create_dir(&child).unwrap();
+        fs::write(child.join("inner.pgn"), b"*").unwrap();
+        fs::write(root.join("healthy.pgn"), b"*").unwrap();
+        collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+        let before = authority
+            .raw_for_test()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let blocked = before
+            .iter()
+            .find(|(name, _, _)| name == "blocked.pgn")
+            .unwrap()
+            .clone();
+        fs::rename(&child, directory.path().join("old-directory")).unwrap();
+        fs::write(&child, b"*").unwrap();
+        crate::infra::fs::set_listing_child_stat_hook(Some(Box::new(|name, kind| {
+            (name == OsStr::new("blocked.pgn")).then(|| {
+                assert_eq!(kind, Some(DirectoryEntryKind::RegularFile));
+                (kind, std::io::ErrorKind::PermissionDenied.into())
+            })
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        crate::infra::fs::set_listing_child_stat_hook(None);
+        let (listing, _) = result.unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.unread.len(), 1);
+        assert_eq!(listing.unread[0].kind, Some(WorkspaceEntryKind::File));
+        let after = authority
+            .raw_for_test()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(after.contains(&blocked));
+        assert!(!after.iter().any(|(name, _, _)| name == "inner"));
+    }
+
+    #[tokio::test]
+    async fn listing_child_permission_retains_file_and_directory_descendants_without_handles() {
+        use std::os::unix::fs::PermissionsExt;
+        for directory_child in [false, true] {
+            let (_directory, authority, workspace, root) = workspace_fixture();
+            let child = root.join(if directory_child {
+                "blocked"
+            } else {
+                "blocked.pgn"
+            });
+            if directory_child {
+                fs::create_dir(&child).unwrap();
+                fs::write(child.join("inner.pgn"), b"*").unwrap();
+            } else {
+                fs::write(&child, b"*").unwrap();
+            }
+            fs::write(root.join("healthy.pgn"), b"*").unwrap();
+            let (before, _) =
+                collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+            let healthy = before
+                .entries
+                .iter()
+                .find(|entry| entry.name == "healthy")
+                .unwrap()
+                .handle
+                .clone();
+            let blocked = before
+                .entries
+                .iter()
+                .find(|entry| entry.name == "blocked")
+                .unwrap();
+            let mut retained = vec![blocked.handle.clone()];
+            retained.extend(blocked.children.iter().map(|entry| entry.handle.clone()));
+            fs::set_permissions(&child, fs::Permissions::from_mode(0o000)).unwrap();
+            let listing = list_file_workspace_core(
+                &workspace,
+                &authority,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await;
+            fs::set_permissions(
+                &child,
+                fs::Permissions::from_mode(if directory_child { 0o700 } else { 0o600 }),
+            )
+            .unwrap();
+            let listing = listing.unwrap();
+            assert_eq!(
+                listing
+                    .entries
+                    .iter()
+                    .find(|entry| entry.name == "healthy")
+                    .unwrap()
+                    .handle,
+                healthy
+            );
+            if directory_child {
+                assert_eq!(listing.unread.len(), 1);
+                assert_eq!(listing.unread[0].category, ErrorCategory::Permission);
+                assert_eq!(listing.unread[0].parent, None);
+            } else {
+                let blocked = listing
+                    .entries
+                    .iter()
+                    .find(|entry| entry.name == "blocked")
+                    .unwrap();
+                assert_eq!(blocked.read_error, Some(ErrorCategory::Permission));
+                assert_eq!(blocked.game_count, None);
+                assert_eq!(blocked.handle, retained[0]);
+            }
+            let payload = serde_json::to_value(&listing).unwrap();
+            assert!(payload["unread"][0].get("handle").is_none());
+            assert!(payload["unread"][0].get("path").is_none());
+            assert!(!payload.to_string().contains(root.to_str().unwrap()));
+            authority
+                .with_mut(|authority| {
+                    for handle in retained {
+                        authority
+                            .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+                            .unwrap();
+                    }
+                })
+                .unwrap();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn listing_child_file_lossy_names_keep_two_read_error_rows() {
+        use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let names = [
+            std::ffi::OsString::from_vec(vec![0x80, b'.', b'p', b'g', b'n']),
+            std::ffi::OsString::from_vec(vec![0x81, b'.', b'p', b'g', b'n']),
+        ];
+        for name in &names {
+            fs::write(root.join(name), b"*").unwrap();
+            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let result = list_file_workspace_core(
+            &workspace,
+            &authority,
+            &pgn::PgnRepository::default(),
+            &CancellationToken::new(),
+        )
+        .await;
+        for name in &names {
+            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let listing = result.unwrap();
+        assert_eq!(listing.entries.len(), 2);
+        assert_eq!(listing.entries[0].name, listing.entries[1].name);
+        assert_ne!(listing.entries[0].handle, listing.entries[1].handle);
+        assert!(listing
+            .entries
+            .iter()
+            .all(|entry| entry.read_error == Some(ErrorCategory::Permission)
+                && entry.game_count.is_none()));
+        assert!(!serde_json::to_string(&listing)
+            .unwrap()
+            .contains(root.to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn listing_child_sidecar_errors_keep_default_metadata_and_openable_games() {
+        for (bytes, category) in [
+            (b"not JSON".to_vec(), ErrorCategory::InvalidInput),
+            (
+                vec![b'x'; MAX_WORKSPACE_METADATA_BYTES + 1],
+                ErrorCategory::ResourceLimit,
+            ),
+        ] {
+            let (_directory, authority, workspace, root) = workspace_fixture();
+            fs::write(root.join("a.pgn"), b"[Event \"A\"]\n\n*\n").unwrap();
+            fs::write(root.join("a.info"), bytes).unwrap();
+            let token = CancellationToken::new();
+            let repository = pgn::PgnRepository::default();
+            let listing = list_file_workspace_core(&workspace, &authority, &repository, &token)
+                .await
+                .unwrap();
+            assert!(listing.unread.is_empty());
+            let file = &listing.entries[0];
+            assert_eq!(file.read_error, Some(category));
+            assert_eq!(file.metadata, Some(WorkspaceMetadata::default()));
+            assert_eq!(file.game_count, Some(1));
+            let resolved = authority
+                .with_mut(|authority| {
+                    authority.resolve(file.handle.path_ref(), PathOperation::ReadPgn, &[])
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                pgn::read_games_core(resolved, 0, 0, &token, &repository)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn listing_child_sidecar_permission_still_confirms_and_counts_the_pgn() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        fs::write(root.join("a.pgn"), b"*").unwrap();
+        let sidecar = root.join("a.info");
+        fs::write(&sidecar, b"unread").unwrap();
+        fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = list_file_workspace_core(
+            &workspace,
+            &authority,
+            &pgn::PgnRepository::default(),
+            &CancellationToken::new(),
+        )
+        .await;
+        fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600)).unwrap();
+        let listing = result.unwrap();
+        assert!(listing.unread.is_empty());
+        assert_eq!(listing.entries[0].game_count, Some(1));
+        assert_eq!(
+            listing.entries[0].metadata,
+            Some(WorkspaceMetadata::default())
+        );
+        assert_eq!(
+            listing.entries[0].read_error,
+            Some(ErrorCategory::Permission)
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_child_invalid_scanner_data_keeps_handle_and_counts_siblings() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        fs::write(root.join("bad.pgn"), b"[Event \"A\"]\n\n{ open\n").unwrap();
+        fs::write(root.join("healthy.pgn"), b"*").unwrap();
+        let listing = list_file_workspace_core(
+            &workspace,
+            &authority,
+            &pgn::PgnRepository::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(listing.unread.is_empty());
+        let bad = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "bad")
+            .unwrap();
+        assert_eq!(bad.game_count, None);
+        assert_eq!(bad.read_error, Some(ErrorCategory::Io));
+        assert_eq!(
+            listing
+                .entries
+                .iter()
+                .find(|entry| entry.name == "healthy")
+                .unwrap()
+                .game_count,
+            Some(1)
+        );
+        authority
+            .with_mut(|authority| {
+                authority.resolve(bad.handle.path_ref(), PathOperation::ReadPgn, &[])
+            })
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn listing_child_count_classifier_aborts_transient_and_unclassified_failures() {
+        for error in [
+            Error::Cancellation,
+            Error::Conflict("replacement".into()),
+            Error::from(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            Error::from(std::io::Error::from(std::io::ErrorKind::Other)),
+            Error::ResourceLimit("directory bound".into())
+                .with_root_failure(crate::error::RootFailure::TooLarge),
+        ] {
+            assert!(listing_count_error(error).is_err());
+        }
+        assert_eq!(
+            listing_count_error(Error::ResourceLimit("PGN count exceeds IPC limit".into()))
+                .unwrap(),
+            ErrorCategory::ResourceLimit
+        );
     }
 
     #[test]
@@ -7085,6 +7719,7 @@ mod workspace_directory_enumeration_tests {
         let (entries, missing) =
             collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
         let top_names = entries
+            .entries
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>();
@@ -7095,10 +7730,18 @@ mod workspace_directory_enumeration_tests {
         #[cfg(target_os = "macos")]
         let expected_top_names = ["B.PGN", "a", "nested"];
         assert_eq!(top_names, expected_top_names);
-        let a_entry = entries.iter().find(|entry| entry.name == "a").unwrap();
+        let a_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "a")
+            .unwrap();
         assert_eq!(a_entry.kind, WorkspaceEntryKind::File);
         assert_eq!(a_entry.metadata.as_ref().unwrap().tags, ["trusted"]);
-        let nested_entry = entries.iter().find(|entry| entry.name == "nested").unwrap();
+        let nested_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "nested")
+            .unwrap();
         assert_eq!(nested_entry.kind, WorkspaceEntryKind::Directory);
         assert_eq!(nested_entry.children.len(), 1);
         assert_eq!(nested_entry.children[0].name, "inner");
@@ -7111,7 +7754,7 @@ mod workspace_directory_enumeration_tests {
             }
         }
         let mut listed = Vec::new();
-        flatten(&entries, &mut listed);
+        flatten(&entries.entries, &mut listed);
         // APFS cannot store non-UTF-8 file names
         #[cfg(not(target_os = "macos"))]
         let expected_missing = 5;
@@ -7221,6 +7864,7 @@ mod workspace_directory_enumeration_tests {
         assert!(
             collect_tree_entries(&registry, &workspace, &CancellationToken::new())?
                 .0
+                .entries
                 .is_empty()
         );
         fs::write(root.join("overflow.pgn"), b"*")?;
@@ -7242,7 +7886,7 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn directory_listing_bound_workspace_staged_nodes_are_bounded_across_directories(
+    fn directory_listing_bound_workspace_listing_child_staged_nodes_are_bounded_across_directories(
     ) -> Result<(), Error> {
         let (_directory, registry, workspace, root) = workspace_fixture();
         let before = registry
@@ -7277,7 +7921,7 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn directory_listing_bound_workspace_count_failure_and_late_cancellation_keep_snapshot(
+    async fn directory_listing_bound_workspace_listing_child_count_failure_and_late_cancellation_keep_snapshot(
     ) -> Result<(), Box<dyn std::error::Error>> {
         for cancel_count in [false, true] {
             let (_directory, registry, workspace, root) = workspace_fixture();
@@ -7317,7 +7961,9 @@ mod workspace_directory_enumeration_tests {
             if cancel_count {
                 assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
             } else {
-                assert!(result.is_err(), "game count must reject malformed UTF-8");
+                let listing = result?;
+                assert_eq!(listing.entries[0].game_count, None);
+                assert_eq!(listing.entries[0].read_error, Some(ErrorCategory::Io));
             }
             assert_eq!(
                 registry
@@ -7394,7 +8040,7 @@ mod workspace_directory_enumeration_tests {
         })));
         let result = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
         set_capability_directory_post_entries_hook(None);
-        assert!(result?.0.is_empty());
+        assert!(result?.0.entries.is_empty());
         let mut lock = registry.raw_for_test().lock().unwrap();
         let authority = lock
             .as_mut()
@@ -7443,7 +8089,7 @@ mod workspace_directory_enumeration_tests {
         let authority = SharedPathAuthority::installed(authority);
         let (entries, _) =
             collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
-        assert_eq!(entries[0].name, "a");
+        assert_eq!(entries.entries[0].name, "a");
     }
 
     #[test]
@@ -7546,6 +8192,7 @@ mod workspace_directory_enumeration_tests {
         match result {
             Ok((entries, _)) => {
                 let metadata = entries
+                    .entries
                     .iter()
                     .find(|entry| entry.name == "sub")
                     .and_then(|entry| entry.children.iter().find(|child| child.name == "a"))
@@ -7650,41 +8297,50 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn collect_tree_entries_propagates_a_vanished_entry() {
-        let (_directory, authority, workspace, root) = workspace_fixture();
-        let sub = root.join("sub");
-        fs::create_dir(&sub).unwrap();
-        let pgn = sub.join("a.pgn");
-        fs::write(&pgn, b"*").unwrap();
-        let before = authority
-            .raw_for_test()
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        let pgn_for_hook = pgn.clone();
-        crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
-            if name == OsStr::new("a.pgn") && pgn_for_hook.exists() {
-                fs::remove_file(&pgn_for_hook).unwrap();
+    fn collect_tree_entries_listing_child_omits_vanished_names_and_retires_ids() {
+        for nested in [false, true] {
+            let (_directory, authority, workspace, root) = workspace_fixture();
+            let parent = if nested {
+                root.join("sub")
+            } else {
+                root.clone()
+            };
+            if nested {
+                fs::create_dir(&parent).unwrap();
             }
-        })));
-        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
-        crate::infra::fs::set_read_directory_pre_stat_hook(None);
-        assert!(result.is_err());
-        let after = authority
-            .raw_for_test()
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        assert_eq!(after, before);
-        assert!(!after
-            .iter()
-            .any(|(name, _, _)| name == "sub" || name == "a"));
+            let pgn = parent.join("a.pgn");
+            fs::write(&pgn, b"*").unwrap();
+            fs::write(parent.join("sibling.pgn"), b"*").unwrap();
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+            let pgn_for_hook = pgn.clone();
+            crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
+                if name == OsStr::new("a.pgn") {
+                    fs::remove_file(&pgn_for_hook).unwrap();
+                }
+            })));
+            let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+            crate::infra::fs::set_read_directory_pre_stat_hook(None);
+            let (listing, _) = result.unwrap();
+            assert!(listing.unread.is_empty());
+            let children = if nested {
+                &listing.entries[0].children
+            } else {
+                &listing.entries
+            };
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].name, "sibling");
+            let after = authority
+                .raw_for_test()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .persistent_snapshot_for_test();
+            assert!(!after.iter().any(|(name, _, _)| name == "a"));
+            assert!(after.iter().any(|(name, _, _)| name == "sibling"));
+            assert_eq!(after.iter().any(|(name, _, _)| name == "sub"), nested);
+        }
     }
-
     #[test]
     fn collect_tree_entries_cancels_after_an_empty_snapshot() {
         let (_directory, authority, workspace, root) = workspace_fixture();
@@ -7747,6 +8403,7 @@ mod workspace_directory_enumeration_tests {
         let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
             .expect("a pre-1970 PGN must be listed, not refused");
         let listed = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "old")
             .expect("the pre-1970 PGN must appear in the tree");
@@ -7761,6 +8418,7 @@ mod workspace_directory_enumeration_tests {
         let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
             .expect("a pre-1970 directory must be listed, not refused");
         let listed = entries
+            .entries
             .iter()
             .find(|entry| entry.name == "sub")
             .expect("the pre-1970 directory must appear in the tree");
@@ -7791,11 +8449,11 @@ mod workspace_directory_enumeration_tests {
             .unwrap();
         let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
             .expect("a non-PGN entry is skipped, not refused");
-        assert!(entries.is_empty(), "{entries:?}");
+        assert!(entries.entries.is_empty(), "{entries:?}");
     }
 
     #[test]
-    fn directory_listing_bound_workspace_depth_still_wins() {
+    fn directory_listing_bound_workspace_listing_child_depth_still_wins() {
         let (_directory, authority, workspace, root) = workspace_fixture();
         let mut current = root;
         for index in 0..MAX_WORKSPACE_LISTING_DEPTH {
@@ -7804,7 +8462,7 @@ mod workspace_directory_enumeration_tests {
         }
         let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
         let (entries, _) = result.unwrap();
-        let mut cursor = &entries[0];
+        let mut cursor = &entries.entries[0];
         for index in 1..MAX_WORKSPACE_LISTING_DEPTH {
             cursor = &cursor.children[0];
             assert_eq!(cursor.name, format!("d{index}"));
@@ -7887,20 +8545,29 @@ mod workspace_directory_enumeration_tests {
         let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
         set_workspace_listing_pre_register_hook(None);
         let (entries, _) = result.unwrap();
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.entries.len(), 5);
         assert_eq!(
             entries
+                .entries
                 .iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
             ["a", "b", "c", "deep", "sub"]
         );
         for name in ["a", "b", "c"] {
-            let entry = entries.iter().find(|entry| entry.name == name).unwrap();
+            let entry = entries
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap();
             assert_eq!(entry.kind, WorkspaceEntryKind::File);
             assert!(entry.children.is_empty());
         }
-        let deep_entry = entries.iter().find(|entry| entry.name == "deep").unwrap();
+        let deep_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "deep")
+            .unwrap();
         assert_eq!(deep_entry.kind, WorkspaceEntryKind::Directory);
         assert_eq!(
             deep_entry
@@ -7910,7 +8577,11 @@ mod workspace_directory_enumeration_tests {
                 .collect::<Vec<_>>(),
             ["d"]
         );
-        let sub_entry = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let sub_entry = entries
+            .entries
+            .iter()
+            .find(|entry| entry.name == "sub")
+            .unwrap();
         assert_eq!(sub_entry.kind, WorkspaceEntryKind::Directory);
         assert_eq!(
             sub_entry
@@ -7933,7 +8604,7 @@ mod workspace_directory_enumeration_tests {
                 assert_refusing(authority, &entry.children);
             }
         }
-        assert_refusing(authority.as_mut().unwrap(), &entries);
+        assert_refusing(authority.as_mut().unwrap(), &entries.entries);
     }
 
     #[test]

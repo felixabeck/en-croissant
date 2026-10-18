@@ -126,9 +126,10 @@ beforeEach(() => {
   ]);
   mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
   const handle = { id: { id: "database" }, kind: "database" };
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle, filename: "Felix_chesscom.db3", availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [{ handle, filename: "Felix_chesscom.db3", availability: "available" }],
+    unread: [],
+  });
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
   mocks.issueDownloadDestination.mockResolvedValue({ id: "destination" });
   mocks.downloadChessCom.mockResolvedValue({
@@ -191,7 +192,7 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
   expect(downloadButton().disabled).toBe(true);
   await act(async () => refresh.resolve(newInfo));
   expect(host.textContent).toContain("8 / 8");
-  expect(cache.get("databases")?.data).toEqual(newDatabases);
+  expect(cache.get("databases")?.data?.databases).toEqual(newDatabases);
   expect(downloadButton().disabled).toBe(false);
 
   // DatabasesPage's mutate() must not rejoin L after the cleanup refresh.
@@ -206,7 +207,7 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
 
   expect(host.textContent).toContain("8 / 8");
   expect(host.textContent).not.toContain("3 / 3");
-  expect(cache.get("databases")?.data).toEqual(newDatabases);
+  expect(cache.get("databases")?.data?.databases).toEqual(newDatabases);
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 });
@@ -254,7 +255,7 @@ test("a remount that retires a pending import refresh receives the new counts af
 
     expect(host.textContent).toContain("8 / 8");
     expect(host.textContent).not.toContain("3 / 3");
-    expect(cache.get("databases")?.data).toEqual([
+    expect(cache.get("databases")?.data?.databases).toEqual([
       { type: "success", ...newInfo, file: { id: { id: "database" }, kind: "database" } },
     ]);
     expect(downloadButton().disabled).toBe(false);
@@ -289,9 +290,10 @@ test("a root switch retires a pending successful import refresh and keeps root B
     expect(downloadButton().disabled).toBe(true);
 
     mocks.getDatabaseWorkspace.mockResolvedValue(rootB);
-    mocks.listWorkspaceDatabases.mockResolvedValue([
-      { handle: rootBHandle, filename: "Felix_chesscom.db3", availability: "available" },
-    ]);
+    mocks.listWorkspaceDatabases.mockResolvedValue({
+      entries: [{ handle: rootBHandle, filename: "Felix_chesscom.db3", availability: "available" }],
+      unread: [],
+    });
     // Use DatabasesPage's root-switch sequence in this same SWR provider/cache.
     await act(async () => switchRoot());
     await act(async () => {
@@ -303,7 +305,7 @@ test("a root switch retires a pending successful import refresh and keeps root B
     expect(mocks.getDbInfo).toHaveBeenLastCalledWith(rootBHandle);
     expect(host.textContent).toContain("13 / 13");
     expect(host.textContent).not.toContain("8 / 8");
-    expect(cache.get("databases")?.data).toEqual([
+    expect(cache.get("databases")?.data?.databases).toEqual([
       { type: "success", ...rootBInfo, file: rootBHandle },
     ]);
     expect(downloadButton().disabled).toBe(false);

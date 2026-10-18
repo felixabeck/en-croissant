@@ -184,7 +184,7 @@ async getDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload>>
     else return { status: "error", error: e  as any };
 }
 },
-async listWorkspaceDatabases(root: DatabaseRootHandle, ticket: string | null) : Promise<Result<DatabaseDescriptor[], ErrorPayload>> {
+async listWorkspaceDatabases(root: DatabaseRootHandle, ticket: string | null) : Promise<Result<DatabaseListing, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_workspace_databases", { root, ticket }) };
 } catch (e) {
@@ -308,7 +308,7 @@ async issueFileWorkspace() : Promise<Result<FileWorkspaceDescriptor, ErrorPayloa
     else return { status: "error", error: e  as any };
 }
 },
-async listFileWorkspace(workspace: FileWorkspaceHandle, ticket: string | null) : Promise<Result<WorkspaceEntry[], ErrorPayload>> {
+async listFileWorkspace(workspace: FileWorkspaceHandle, ticket: string | null) : Promise<Result<WorkspaceListing, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_file_workspace", { workspace, ticket }) };
 } catch (e) {
@@ -1220,6 +1220,7 @@ export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; ava
 export type DatabaseHandle = { id: PathRef; kind: DatabaseHandleKind }
 export type DatabaseHandleKind = "database"
 export type DatabaseInfo = { title: string; description: string; player_count: number; event_count: number; game_count: number; storage_size: string; filename: string; indexed: boolean }
+export type DatabaseListing = { entries: DatabaseDescriptor[]; unread: DatabaseUnread[] }
 /**
  * Opaque handle for a database root.  A root is the only capability that may
  * create or discover database children; the renderer never supplies a path or
@@ -1227,6 +1228,7 @@ export type DatabaseInfo = { title: string; description: string; player_count: n
  */
 export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
+export type DatabaseUnread = { filename: string; category: ErrorCategory }
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
 export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "PgnCacheInvalidation" | "PgnCapabilityRebind" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspaceDirectoryCreation" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
 /**
@@ -1463,11 +1465,13 @@ name: string;
  * The default value of this string option.
  */
 default: string | null } }
-export type WorkspaceEntry = { handle: FileWorkspaceHandle; kind: WorkspaceEntryKind; name: string; children: WorkspaceEntry[]; metadata: WorkspaceMetadata | null; gameCount: number | null; lastModified: bigint }
+export type WorkspaceEntry = { handle: FileWorkspaceHandle; kind: WorkspaceEntryKind; name: string; children: WorkspaceEntry[]; metadata: WorkspaceMetadata | null; readError: ErrorCategory | null; gameCount: number | null; lastModified: bigint }
 export type WorkspaceEntryKind = "file" | "directory"
 export type WorkspaceFileContent = { kind: "text"; pgn: string } | { kind: "copy"; source: FileWorkspaceHandle; revision: string }
 export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" | "other"
+export type WorkspaceListing = { entries: WorkspaceEntry[]; unread: WorkspaceUnread[] }
 export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
+export type WorkspaceUnread = { name: string; kind: WorkspaceEntryKind | null; category: ErrorCategory; parent: FileWorkspaceHandle | null }
 export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "append" }
 export type WriteStamp = { stamp: string | null; revision: string | null }
 

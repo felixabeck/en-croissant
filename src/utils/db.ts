@@ -8,6 +8,7 @@ import useSWR, { type Arguments, type ScopedMutator } from "swr";
 import {
     type DatabaseInfo,
     type DatabaseHandle,
+    type DatabaseRootHandle,
     type GameQuery,
     type NormalizedGame,
     type Player,
@@ -24,6 +25,11 @@ import i18n from "i18next";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
+export type DatabaseList = {
+    databases: ManagedDatabaseInfo[];
+    unread: { filename: string; error: string }[];
+    root: DatabaseRootHandle;
+};
 
 /** Collect original cache keys through SWR's public matcher without changing or revalidating them. */
 export async function collectSWRKeys(
@@ -235,17 +241,27 @@ export async function query_players(
     );
 }
 
-export async function getDatabases(
-    options: { signal?: AbortSignal } = {},
-): Promise<ManagedDatabaseInfo[]> {
+export async function getDatabases(options: { signal?: AbortSignal } = {}): Promise<DatabaseList> {
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
     const { values } = await collectSequential(
-        databases,
+        databases.entries,
         (database, index) => getDatabase(database.handle, database.filename, index, options.signal),
         { signal: options.signal, operation: "getDatabases metadata" },
     );
-    return values;
+    return {
+        databases: values,
+        root,
+        unread: databases.unread.map(({ filename, category }) => ({
+            filename,
+            error:
+                category === "permission"
+                    ? i18n.t("Databases.LoadError.Permission")
+                    : category === "missing-resource"
+                      ? i18n.t("Databases.LoadError.Missing")
+                      : i18n.t("Databases.LoadError.Title"),
+        })),
+    };
 }
 
 async function getDatabase(

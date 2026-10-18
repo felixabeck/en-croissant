@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
 import type { ArtifactPublication } from "@/bindings";
 import english from "@/translation/en-US.json";
-import type { ManagedDatabaseInfo } from "@/utils/db";
+import type { DatabaseList, ManagedDatabaseInfo } from "@/utils/db";
 import { accountDownloadsInFlightAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
@@ -136,7 +136,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
 let host: HTMLDivElement;
 let store: ReturnType<typeof createStore>;
-let cache: Map<string, State<ManagedDatabaseInfo[]>>;
+let cache: Map<string, State<DatabaseList>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -144,7 +144,11 @@ beforeEach(() => {
   store = createStore();
   cache = new Map();
   mocks.progress.mockResolvedValue(vi.fn());
-  mocks.getDatabases.mockResolvedValue([]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.logFailureSafely.mockResolvedValue(undefined);
   host = document.createElement("div");
   document.body.append(host);
@@ -306,9 +310,10 @@ function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") 
   mocks.downloadChessCom.mockResolvedValue(publication);
   mocks.downloadLichess.mockResolvedValue(publication);
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle, filename: `Felix_${type}.db3`, availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [{ handle, filename: `Felix_${type}.db3`, availability: "available" }],
+    unread: [],
+  });
   mocks.startProgress.mockResolvedValue(lease);
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockResolvedValue(undefined);
@@ -410,7 +415,11 @@ test.each(["chesscom", "lichess"] as const)(
     );
     mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
     const databases = accountDatabases(type);
-    mocks.getDatabases.mockResolvedValue(databases);
+    mocks.getDatabases.mockResolvedValue({
+      databases: databases,
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     await renderCard({ type, accountHandle: "account" });
 
     await act(async () => downloadButton().click());
@@ -427,7 +436,11 @@ test.each(["chesscom", "lichess"] as const)(
     await act(async () => resolveDeletion());
 
     expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-    expect(cachedDatabases()).toEqual(databases);
+    expect(cachedDatabases()).toEqual({
+      databases,
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+    });
     expect(mocks.notify).not.toHaveBeenCalled();
     expect(downloadButton().disabled).toBe(false);
     expect(downloadButton().getAttribute("data-pending")).toBeNull();
@@ -553,7 +566,7 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   configureSuccessfulDownload();
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   const deletion = deferred<void>();
-  const refresh = deferred<ManagedDatabaseInfo[]>();
+  const refresh = deferred<DatabaseList>();
   mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
   mocks.getDatabases.mockReturnValue(refresh.promise);
   await renderCard();
@@ -582,7 +595,11 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
   expect(downloadButton().disabled).toBe(true);
   expect(downloadButton().getAttribute("data-pending")).toBe("true");
-  const databases = accountDatabases();
+  const databases: DatabaseList = {
+    databases: accountDatabases(),
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+  };
   await act(async () => refresh.resolve(databases));
   expect(cachedDatabases()).toEqual(databases);
   expect(downloadButton().disabled).toBe(false);
@@ -598,10 +615,13 @@ test("concurrent account downloads retain each other's pending state", async () 
   const conversionB = deferred<void>();
   const handleA = { id: { id: "database-a" }, kind: "database" as const };
   const handleB = { id: { id: "database-b" }, kind: "database" as const };
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle: handleA, filename: "Felix_chesscom.db3", availability: "available" },
-    { handle: handleB, filename: "Alex_chesscom.db3", availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [
+      { handle: handleA, filename: "Felix_chesscom.db3", availability: "available" },
+      { handle: handleB, filename: "Alex_chesscom.db3", availability: "available" },
+    ],
+    unread: [],
+  });
   mocks.startProgress.mockImplementation(async (id: string) => ({ id, generation: 1n }));
   mocks.convertPgn
     .mockReturnValueOnce(conversionA.promise)
@@ -714,13 +734,21 @@ test("a failed deleteEmptyGames refreshes databases and notifies the cleanup err
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   mocks.deleteEmptyGames.mockRejectedValue(new Error("cleanup failed"));
   const databases = accountDatabases();
-  mocks.getDatabases.mockResolvedValue(databases);
+  mocks.getDatabases.mockResolvedValue({
+    databases: databases,
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(cachedDatabases()).toEqual(databases);
+  expect(cachedDatabases()).toEqual({
+    databases,
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+  });
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
     title: "Common.Error",
@@ -733,21 +761,29 @@ test("a failed deleteEmptyGames refreshes databases and notifies the cleanup err
 test("a failed convertPgn refreshes the newly created database and skips cleanup", async () => {
   configureSuccessfulDownload();
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-  mocks.listWorkspaceDatabases.mockResolvedValue([]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({ entries: [], unread: [] });
   mocks.createWorkspaceDatabase.mockResolvedValue({
     id: { id: "database" },
     kind: "database",
   });
   mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
   const databases = accountDatabases();
-  mocks.getDatabases.mockResolvedValue(databases);
+  mocks.getDatabases.mockResolvedValue({
+    databases: databases,
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.createWorkspaceDatabase).toHaveBeenCalledTimes(1);
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(cachedDatabases()).toEqual(databases);
+  expect(cachedDatabases()).toEqual({
+    databases,
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+  });
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
@@ -1037,9 +1073,10 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   mocks.issueDownloadDestination.mockResolvedValue(destination);
   mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle, filename: "Felix_chesscom.db3", availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [{ handle, filename: "Felix_chesscom.db3", availability: "available" }],
+    unread: [],
+  });
   let ticket!: string;
   mocks.startProgress.mockImplementation(async () => {
     ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;
@@ -1089,9 +1126,10 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   mocks.issueDownloadDestination.mockResolvedValue(destination);
   mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle, filename: "Felix_chesscom.db3", availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [{ handle, filename: "Felix_chesscom.db3", availability: "available" }],
+    unread: [],
+  });
   let ticket!: string;
   mocks.startProgress.mockImplementation(async () => {
     ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;

@@ -1114,7 +1114,7 @@ async fn list_workspace_databases(
     ticket: Option<String>,
     window: WebviewWindow,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
+) -> Result<crate::infra::path_authority::DatabaseListing, Error> {
     let operation = native_read_operation(ticket, &window, &state, "list_workspace_databases")?;
     let cancellation = operation.token();
     let authority = state.pgn_path_authority.clone();
@@ -1143,7 +1143,7 @@ fn list_workspace_databases_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::DatabaseRootHandle,
     cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
+) -> Result<crate::infra::path_authority::DatabaseListing, Error> {
     let result = (|| {
         authority.with_mut(|authority| {
             authority.list_database_children_cancellable(&root, cancellation)

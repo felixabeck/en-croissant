@@ -195,7 +195,7 @@ export async function createFile({
                     content ?? { kind: "text", pgn: makePgn(defaultGame()) },
                 ),
             async () =>
-                (await tauri.listFileWorkspace(parent)).find((candidate) => {
+                (await tauri.listFileWorkspace(parent)).entries.find((candidate) => {
                     const actual = candidate.name.toLowerCase();
                     return actual === expected || actual === withoutPgn;
                 }),

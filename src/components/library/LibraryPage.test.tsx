@@ -5,7 +5,7 @@ import { createStore, Provider } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { fileWorkspaceAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { activeDatabaseViewStore } from "@/state/store/database";
-import type { Entry } from "@/components/files/file";
+import { workspaceListingToEntries, type Entry } from "@/components/files/file";
 import type { ManagedDatabaseInfo } from "@/utils/db";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
@@ -14,6 +14,7 @@ import LibraryPage from "./LibraryPage";
 const mocks = vi.hoisted(() => ({
   files: [] as Entry[] | undefined,
   databases: [] as ManagedDatabaseInfo[] | undefined,
+  unread: [] as { filename: string; error: string }[],
   fileError: undefined as unknown,
   databaseError: undefined as unknown,
   fileMutate: vi.fn(),
@@ -29,7 +30,17 @@ vi.mock("swr", async () => ({
   ...(await vi.importActual<typeof import("swr")>("swr")),
   default: (key: unknown) =>
     key === "databases"
-      ? { data: mocks.databases, error: mocks.databaseError, mutate: mocks.databaseMutate }
+      ? {
+          data: mocks.databases
+            ? {
+                databases: mocks.databases,
+                unread: mocks.unread,
+                root: { id: { id: "library-db-root" }, kind: "databaseRoot" },
+              }
+            : undefined,
+          error: mocks.databaseError,
+          mutate: mocks.databaseMutate,
+        }
       : { data: key ? mocks.files : undefined, error: mocks.fileError, mutate: mocks.fileMutate },
 }));
 vi.mock("react-i18next", async () => {
@@ -123,6 +134,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.files = [file];
   mocks.databases = [database];
+  mocks.unread = [];
   mocks.fileError = undefined;
   mocks.databaseError = undefined;
   mocks.fileMutate.mockResolvedValue(undefined);
@@ -144,6 +156,62 @@ afterEach(async () => {
 function rows() {
   return [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')];
 }
+
+test("unread peers use root and index keys, show category copy and leave healthy siblings usable", async () => {
+  mocks.unread = [
+    { filename: "�.db3", error: "ChessFable is not allowed to read this database file" },
+    { filename: "�.db3", error: "ChessFable is not allowed to read this database file" },
+  ];
+  mocks.files = workspaceListingToEntries(
+    {
+      entries: [],
+      unread: [
+        { name: "�.pgn", kind: "file", category: "permission", parent: null },
+        { name: "�.pgn", kind: "file", category: "permission", parent: null },
+      ],
+    },
+    workspace,
+  );
+  await render();
+  const unreadRows = rows().filter((row) => row.getAttribute("aria-label")?.startsWith("�"));
+  expect(unreadRows).toHaveLength(4);
+  for (const row of unreadRows) {
+    expect(row.draggable).toBe(false);
+    expect(row.querySelector("button")).toBeNull();
+    await act(async () => {
+      row.click();
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "m", bubbles: true }));
+      row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+  }
+  expect(mocks.openFile).not.toHaveBeenCalled();
+  expect(mocks.navigate).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.textContent).not.toContain("Files could not be loaded");
+  expect(host.textContent).toContain("The action could not be completed. Please try again.");
+  expect(host.textContent).toContain("ChessFable is not allowed to read this database file");
+  for (const row of unreadRows) {
+    await act(async () => {
+      row.focus();
+      row.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: rows().at(-1) === row ? "ArrowUp" : "ArrowDown",
+          bubbles: true,
+        }),
+      );
+    });
+    expect(document.activeElement).not.toBe(row);
+  }
+  const healthy = rows().find((row) => row.getAttribute("aria-label") === "Same name")!;
+  await act(async () =>
+    healthy.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+  );
+  expect(mocks.navigate).toHaveBeenCalledWith({
+    to: "/databases/$databaseId",
+    params: { databaseId: "same-id" },
+  });
+});
 async function click(element: HTMLElement) {
   await act(async () => element.click());
 }

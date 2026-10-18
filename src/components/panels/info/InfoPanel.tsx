@@ -114,7 +114,7 @@ function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
   const { t } = useTranslation();
   const { data: databases, isLoading } = useDatabaseList();
 
-  const dbInfo = databases?.find((db) => sameDatabaseHandle(db.file, path));
+  const dbInfo = databases?.databases.find((db) => sameDatabaseHandle(db.file, path));
   const navigate = useNavigate();
   const setActiveDatabase = useActiveDatabaseViewStore((store) => store.setDatabase);
 

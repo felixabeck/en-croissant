@@ -140,7 +140,7 @@ function DatabasePanel() {
 
   const { data: databases } = useDatabaseList(db === "local");
 
-  const dbSelectData = (databases ?? [])
+  const dbSelectData = (databases?.databases ?? [])
     .filter((d) => d.type === "success")
     .map((d) => ({ value: databaseHandleKey(d.file), label: d.title || d.filename }));
   const selectedReferenceDatabase = referenceDatabase ? databaseHandleKey(referenceDatabase) : null;
@@ -214,7 +214,7 @@ function DatabasePanel() {
               value={selectedReferenceDatabase}
               onChange={async (value) => {
                 await tauri.clearGames();
-                setReferenceDatabase(databaseHandleFromKey(databases ?? [], value));
+                setReferenceDatabase(databaseHandleFromKey(databases?.databases ?? [], value));
               }}
               placeholder={t("Board.Database.SelectReference")}
               size="sm"

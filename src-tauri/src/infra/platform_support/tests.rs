@@ -1559,6 +1559,8 @@ fn directory_listing_bound_options_survive_platform_wrappers() {
     let unix =
         compact(&unix_source[braced_body(unix_source, "pub(crate) fn read_directory_entries_at(")]);
     assert!(source[..starts[0]].trim_end().ends_with("#[cfg(unix)]"));
+    assert!(unix.contains("read_directory_entries_with_stat_errors("));
+    let unix = compact(&source[braced_body(source, "fn read_directory_entries_with_stat_errors(")]);
     assert!(unix.contains(
         "ifletSome(limit)=limit{check_directory_listing_bound(observed,limit)?;observed+=1;}"
     ));
@@ -1594,7 +1596,7 @@ fn directory_listing_bound_options_survive_platform_wrappers() {
         whole
             .matches("Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES)")
             .count(),
-        1
+        2
     );
     let capability = compact(&authority[braced_body(authority, "impl CapabilityDirectory")]);
     assert!(capability.contains("read_directory_entries_at(&self.directory,cancellation,Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),keep,)"));
@@ -3306,10 +3308,10 @@ fn workspace_bodies_are_single_ungated_delegations() {
         ),
         (
             "fn collect_tree_entries(",
-            "fncollect_tree_entries(pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(Vec<WorkspaceEntry>,Vec<FileWorkspaceHandle>),Error>",
+            "fncollect_tree_entries(pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(WorkspaceListing,Vec<FileWorkspaceHandle>),Error>",
             &[
                 ".capability_directory(workspace.path_ref(),PathOperation::ReadPgn)?",
-                "dir.entries(token,&mut|name|",
+                "dir.listing_entries(token,&mut|name|",
                 "dir.open_child_directory(&entry)?",
                 "dir.confirm_entry(entry)",
             ],

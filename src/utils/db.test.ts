@@ -88,6 +88,33 @@ describe("database capability UI mapping", () => {
 });
 
 describe("production database metadata pipeline", () => {
+    it("returns unread children and the original root without reading their database info", async () => {
+        const root = { id: { id: "unread-root" }, kind: "databaseRoot" };
+        mocks.getDatabaseWorkspace.mockResolvedValue(root);
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [
+                { handle: handle("healthy"), filename: "healthy.db3", availability: "available" },
+            ],
+            unread: [
+                { filename: "�.db3", category: "permission" },
+                { filename: "�.db3", category: "permission" },
+            ],
+        });
+        mocks.getDbInfo.mockResolvedValue(database("healthy"));
+        const result = await getDatabases();
+        expect(result.root).toBe(root);
+        expect(result.databases).toHaveLength(1);
+        expect(result.unread).toEqual([
+            { filename: "�.db3", error: i18n.t("Databases.LoadError.Permission") },
+            { filename: "�.db3", error: i18n.t("Databases.LoadError.Permission") },
+        ]);
+        expect(mocks.getDbInfo).toHaveBeenCalledExactlyOnceWith(handle("healthy"));
+        expect(
+            result.unread.every(
+                (item) => !("file" in item) && !("key" in item) && !("path" in item),
+            ),
+        ).toBe(true);
+    });
     it("persists and rehydrates exact native decimal metadata through the facade and plain JSON", async () => {
         const metadata: Awaited<ReturnType<typeof tauri.getDbInfo>> = {
             filename: "exact.db3",
@@ -99,11 +126,14 @@ describe("production database metadata pipeline", () => {
             storage_size: "9007199254740993",
             indexed: false,
         };
-        mocks.listWorkspaceDatabases.mockResolvedValue([
-            { handle: handle("exact"), filename: metadata.filename, availability: "available" },
-        ]);
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [
+                { handle: handle("exact"), filename: metadata.filename, availability: "available" },
+            ],
+            unread: [],
+        });
         mocks.getDbInfo.mockResolvedValue(metadata);
-        const [managed] = await getDatabases();
+        const [managed] = (await getDatabases()).databases;
         expect(managed).toEqual({ ...metadata, type: "success", file: handle("exact") });
         if (managed?.type !== "success") throw new Error("expected successful managed metadata");
 
@@ -135,7 +165,7 @@ describe("production database metadata pipeline", () => {
             filename: `db-${index}.db3`,
             availability: "available" as const,
         }));
-        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        mocks.listWorkspaceDatabases.mockResolvedValue({ entries: descriptors, unread: [] });
         let active = 0;
         let maximumActive = 0;
         mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) => {
@@ -155,7 +185,7 @@ describe("production database metadata pipeline", () => {
             };
         });
 
-        const result = await getDatabases();
+        const { databases: result } = await getDatabases();
         expect(result).toHaveLength(130);
         expect(result.every((item) => item.type === "success")).toBe(true);
         expect(result.map((item) => item.file.id.id)).toEqual(
@@ -170,7 +200,7 @@ describe("production database metadata pipeline", () => {
             filename: `${id}.db3`,
             availability: "available" as const,
         }));
-        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        mocks.listWorkspaceDatabases.mockResolvedValue({ entries: descriptors, unread: [] });
         mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) => {
             if (file.id.id === "failed")
                 throw new Error("metadata unavailable at /private/database.db3");
@@ -185,7 +215,7 @@ describe("production database metadata pipeline", () => {
             };
         });
 
-        const result = await getDatabases();
+        const { databases: result } = await getDatabases();
         expect(result.map((item) => item.file.id.id)).toEqual(["one", "failed", "three"]);
         expect(result.map((item) => item.type)).toEqual(["success", "error", "success"]);
         expect(result[1]).toEqual({
@@ -232,20 +262,23 @@ describe("production database metadata pipeline", () => {
                 resources: { [locale]: catalogue },
             });
             const t = vi.spyOn(i18n, "t").mockImplementation(translator.t);
-            mocks.listWorkspaceDatabases.mockResolvedValue([
-                {
-                    handle: handle("unreadable"),
-                    filename: "unreadable.db3",
-                    availability: "available",
-                },
-            ]);
+            mocks.listWorkspaceDatabases.mockResolvedValue({
+                entries: [
+                    {
+                        handle: handle("unreadable"),
+                        filename: "unreadable.db3",
+                        availability: "available",
+                    },
+                ],
+                unread: [],
+            });
             mocks.getDbInfo.mockRejectedValueOnce({
                 tag: "backend-error",
                 category,
                 message,
             });
 
-            const result = await getDatabases();
+            const { databases: result } = await getDatabases();
             expect(result).toEqual([
                 {
                     type: "error",
@@ -280,19 +313,22 @@ describe("production database metadata pipeline", () => {
                 resources: { [locale]: catalogue },
             });
             const t = vi.spyOn(i18n, "t").mockImplementation(translator.t);
-            mocks.listWorkspaceDatabases.mockResolvedValue([
-                {
-                    handle: handle("unfinished"),
-                    filename: "unfinished.db3",
-                    availability: "available",
-                },
-            ]);
+            mocks.listWorkspaceDatabases.mockResolvedValue({
+                entries: [
+                    {
+                        handle: handle("unfinished"),
+                        filename: "unfinished.db3",
+                        availability: "available",
+                    },
+                ],
+                unread: [],
+            });
             mocks.getDbInfo.mockRejectedValueOnce({
                 tag: "backend-error",
                 category: "invalid-input",
                 message: "Invalid input: Database has not been initialized yet",
             });
-            const result = await getDatabases();
+            const { databases: result } = await getDatabases();
             expect(result).toEqual([
                 {
                     type: "error",
@@ -314,13 +350,14 @@ describe("production database metadata pipeline", () => {
     );
 
     it("propagates a metadata cancellation without returning an error card or logging", async () => {
-        mocks.listWorkspaceDatabases.mockResolvedValue(
-            ["one", "two"].map((id) => ({
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: ["one", "two"].map((id) => ({
                 handle: handle(id),
                 filename: `${id}.db3`,
                 availability: "available",
             })),
-        );
+            unread: [],
+        });
         const cancellation = {
             tag: "backend-error",
             category: "cancellation",
@@ -333,13 +370,16 @@ describe("production database metadata pipeline", () => {
     });
 
     it("keeps an error entry when diagnostic logging rejects and sanitizes its fallback", async () => {
-        mocks.listWorkspaceDatabases.mockResolvedValue([
-            { handle: handle("broken"), filename: "broken.db3", availability: "available" },
-        ]);
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [
+                { handle: handle("broken"), filename: "broken.db3", availability: "available" },
+            ],
+            unread: [],
+        });
         mocks.getDbInfo.mockRejectedValueOnce(new Error("unreadable /private/database.db3"));
         mocks.logError.mockRejectedValueOnce(new Error("logger failed /private/log.txt"));
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-        expect(await getDatabases()).toEqual([
+        expect((await getDatabases()).databases).toEqual([
             {
                 type: "error",
                 file: handle("broken"),
@@ -360,9 +400,10 @@ describe("production database metadata pipeline", () => {
 
     it("owner cancellation during rejected metadata propagates without diagnostics", async () => {
         const controller = new AbortController();
-        mocks.listWorkspaceDatabases.mockResolvedValue([
-            { handle: handle("one"), filename: "one.db3", availability: "available" },
-        ]);
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [{ handle: handle("one"), filename: "one.db3", availability: "available" }],
+            unread: [],
+        });
         mocks.getDbInfo.mockImplementationOnce(async () => {
             controller.abort();
             throw new Error("metadata unavailable");
@@ -380,7 +421,7 @@ describe("production database metadata pipeline", () => {
             filename: `${id}.db3`,
             availability: "available" as const,
         }));
-        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        mocks.listWorkspaceDatabases.mockResolvedValue({ entries: descriptors, unread: [] });
         let resolveFirst!: (value: object) => void;
         mocks.getDbInfo.mockReturnValueOnce(
             new Promise((resolve) => {
@@ -406,9 +447,10 @@ describe("production database metadata pipeline", () => {
 
     it("cancellation immediately after final metadata resolution rejects without diagnostics", async () => {
         const controller = new AbortController();
-        mocks.listWorkspaceDatabases.mockResolvedValue([
-            { handle: handle("only"), filename: "only.db3", availability: "available" },
-        ]);
+        mocks.listWorkspaceDatabases.mockResolvedValue({
+            entries: [{ handle: handle("only"), filename: "only.db3", availability: "available" }],
+            unread: [],
+        });
         let resolveMetadata!: (value: object) => void;
         mocks.getDbInfo.mockReturnValue(
             new Promise((resolve) => {

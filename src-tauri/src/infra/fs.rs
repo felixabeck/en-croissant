@@ -264,14 +264,29 @@ pub(crate) fn enumerated_directory_entry_for_test(parent: &File, leaf: &OsStr) -
 type ReadDirectoryPreStatHook = Box<dyn FnMut(&OsStr)>;
 
 #[cfg(all(test, unix))]
+type ListingChildStatHook = Box<
+    dyn FnMut(
+        &OsStr,
+        Option<DirectoryEntryKind>,
+    ) -> Option<(Option<DirectoryEntryKind>, std::io::Error)>,
+>;
+
+#[cfg(all(test, unix))]
 std::thread_local! {
     static READ_DIRECTORY_PRE_STAT_HOOK: std::cell::RefCell<Option<ReadDirectoryPreStatHook>> =
+        const { std::cell::RefCell::new(None) };
+    static LISTING_CHILD_STAT_HOOK: std::cell::RefCell<Option<ListingChildStatHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(all(test, unix))]
 pub(crate) fn set_read_directory_pre_stat_hook(hook: Option<ReadDirectoryPreStatHook>) {
     READ_DIRECTORY_PRE_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn set_listing_child_stat_hook(hook: Option<ListingChildStatHook>) {
+    LISTING_CHILD_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[cfg(unix)]
@@ -281,6 +296,47 @@ pub(crate) fn read_directory_entries_at(
     limit: Option<usize>,
     keep: &mut dyn FnMut(&OsStr) -> bool,
 ) -> Result<Vec<DirectoryEntry>, Error> {
+    read_directory_entries_with_stat_errors(dir, cancellation, limit, keep, &mut |_, _, error| {
+        Err(error)
+    })
+}
+
+/// Named stat failures belong to children. Stream, bound and cancellation failures remain fatal.
+#[derive(Debug, Default)]
+pub(crate) struct ListingDirectoryEntries {
+    pub(crate) entries: Vec<DirectoryEntry>,
+    pub(crate) unread: Vec<(OsString, Option<DirectoryEntryKind>, Error)>,
+}
+
+#[cfg(unix)]
+pub(crate) fn read_listing_directory_entries_at(
+    dir: &File,
+    cancellation: &CancellationToken,
+    limit: Option<usize>,
+    keep: &mut dyn FnMut(&OsStr) -> bool,
+) -> Result<ListingDirectoryEntries, Error> {
+    let mut unread = Vec::new();
+    let entries = read_directory_entries_with_stat_errors(
+        dir,
+        cancellation,
+        limit,
+        keep,
+        &mut |name, kind, error| {
+            unread.push((name, kind, error));
+            Ok(())
+        },
+    )?;
+    Ok(ListingDirectoryEntries { entries, unread })
+}
+
+#[cfg(unix)]
+fn read_directory_entries_with_stat_errors(
+    dir: &File,
+    cancellation: &CancellationToken,
+    limit: Option<usize>,
+    keep: &mut dyn FnMut(&OsStr) -> bool,
+    stat_error: &mut dyn FnMut(OsString, Option<DirectoryEntryKind>, Error) -> Result<(), Error>,
+) -> Result<Vec<DirectoryEntry>, Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType};
     use std::os::unix::ffi::OsStringExt;
 
@@ -289,7 +345,7 @@ pub(crate) fn read_directory_entries_at(
     }
     let mut result = Vec::new();
     let mut observed = 0;
-    unix::walk_directory(dir, |bytes, _ino| {
+    unix::walk_directory(dir, |bytes, _ino, file_type| {
         let name = OsString::from_vec(bytes.to_vec());
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
@@ -310,8 +366,24 @@ pub(crate) fn read_directory_entries_at(
                 hook(&name);
             }
         });
-        let stat = rfs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|error| Error::Io(Box::new(error.into())))?;
+        let listed_kind = match file_type {
+            FileType::Directory => Some(DirectoryEntryKind::Directory),
+            FileType::RegularFile => Some(DirectoryEntryKind::RegularFile),
+            FileType::Unknown => None,
+            _ => Some(DirectoryEntryKind::Other),
+        };
+        #[cfg(all(test, unix))]
+        if let Some((kind, error)) = LISTING_CHILD_STAT_HOOK.with(|slot| {
+            slot.borrow_mut()
+                .as_mut()
+                .and_then(|hook| hook(&name, listed_kind))
+        }) {
+            return stat_error(name, kind, error.into());
+        }
+        let stat = match rfs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(error) => return stat_error(name, listed_kind, Error::Io(Box::new(error.into()))),
+        };
         let kind = match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => DirectoryEntryKind::Directory,
             FileType::RegularFile => DirectoryEntryKind::RegularFile,
@@ -341,6 +413,19 @@ pub(crate) fn read_directory_entries_at(
     keep: &mut dyn FnMut(&OsStr) -> bool,
 ) -> Result<Vec<DirectoryEntry>, Error> {
     win::read_directory_entries(dir, cancellation, limit, keep)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_listing_directory_entries_at(
+    dir: &File,
+    cancellation: &CancellationToken,
+    limit: Option<usize>,
+    keep: &mut dyn FnMut(&OsStr) -> bool,
+) -> Result<ListingDirectoryEntries, Error> {
+    Ok(ListingDirectoryEntries {
+        entries: win::read_directory_entries(dir, cancellation, limit, keep)?,
+        unread: Vec::new(),
+    })
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -1557,7 +1642,7 @@ mod unix {
 
     pub(super) fn walk_directory(
         dir: &File,
-        mut visit: impl FnMut(&[u8], u64) -> Result<(), Error>,
+        mut visit: impl FnMut(&[u8], u64, fs::FileType) -> Result<(), Error>,
     ) -> Result<(), Error> {
         #[cfg(not(target_os = "linux"))]
         refuse_union_mount(dir)?;
@@ -1575,7 +1660,7 @@ mod unix {
             let entry = entry.map_err(|error| io(error.into()))?;
             let bytes = entry.file_name().to_bytes();
             if bytes != b"." && bytes != b".." {
-                visit(bytes, entry.ino())?;
+                visit(bytes, entry.ino(), entry.file_type())?;
             }
         }
         #[cfg(test)]
@@ -2132,7 +2217,7 @@ mod unix {
     }
 
     fn sync_tree(dir: &File, depth: usize) -> Result<(), Error> {
-        walk_directory(dir, |bytes, _ino| {
+        walk_directory(dir, |bytes, _ino, _kind| {
             let name = std::ffi::OsString::from_vec(bytes.to_vec());
             let stat =
                 fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| io(e.into()))?;
@@ -2249,7 +2334,7 @@ mod unix {
                         "directory cleanup entry changed concurrently".into(),
                     ));
                 }
-                walk_directory(&child, |bytes, ino| {
+                walk_directory(&child, |bytes, ino, _kind| {
                     #[cfg(test)]
                     inject_removal(RemovalFaultPoint::BeforeChildStat)?;
                     remove_tree_at(
@@ -5574,7 +5659,7 @@ pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
         return Err(parent_child_mismatch());
     }
     let mut found = false;
-    unix::walk_directory(&parent, |bytes, ino| {
+    unix::walk_directory(&parent, |bytes, ino, _kind| {
         if found || ino != child.1 {
             return Ok(());
         }
@@ -7995,7 +8080,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(temp.path().join("file"), b"file").expect("file");
         let directory = File::open(temp.path()).expect("directory");
-        unix::walk_directory(&directory, |_, _| Ok(())).expect("ordinary tempdir walk");
+        unix::walk_directory(&directory, |_, _, _| Ok(())).expect("ordinary tempdir walk");
     }
 
     #[cfg(target_os = "macos")]

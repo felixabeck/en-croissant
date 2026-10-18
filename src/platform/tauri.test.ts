@@ -505,7 +505,10 @@ describe("tauri command facade", () => {
         mocks.readGames.mockResolvedValue({ status: "ok", data: page });
         mocks.deleteGame.mockResolvedValue({ status: "ok", data: null });
         mocks.lexPgn.mockResolvedValue({ status: "ok", data: [] });
-        mocks.listFileWorkspace.mockResolvedValue({ status: "ok", data: [] });
+        mocks.listFileWorkspace.mockResolvedValue({
+            status: "ok",
+            data: { entries: [], unread: [] },
+        });
 
         const signal = new AbortController().signal;
         const fileHandle = { id: { id: "f1" }, kind: "fileWorkspace" as const };

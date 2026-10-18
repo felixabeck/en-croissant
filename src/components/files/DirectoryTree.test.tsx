@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
 import { activeTabAtom, expandedDirectoriesAtom, fileWorkspaceAtom, tabsAtom } from "@/state/atoms";
-import type { Entry } from "./file";
+import { workspaceListingToEntries, type Entry, type UsableEntry } from "./file";
 import DirectoryTree from "./DirectoryTree";
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), notify: vi.fn(), openFile: vi.fn() }));
@@ -57,7 +57,136 @@ vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: mocks.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-const handle = (id: string) => ({ id: { id }, kind: "fileWorkspace" }) as Entry["handle"];
+test("verified count failures lose their row handles while counted sidecar failures stay openable", () => {
+  const workspace = handle("count-root");
+  const entries = workspaceListingToEntries(
+    {
+      entries: [
+        {
+          handle: handle("prepared-parent"),
+          name: "Folder",
+          kind: "directory",
+          metadata: null,
+          gameCount: null,
+          lastModified: 0n,
+          readError: null,
+          children: [
+            {
+              handle: handle("failed-count"),
+              name: "Failed",
+              kind: "file",
+              children: [],
+              metadata: { type: "other", tags: [] },
+              gameCount: null,
+              lastModified: 0n,
+              readError: "io",
+            },
+            {
+              handle: handle("counted"),
+              name: "Counted",
+              kind: "file",
+              children: [],
+              metadata: { type: "other", tags: [] },
+              gameCount: 1,
+              lastModified: 0n,
+              readError: "invalid-input",
+            },
+          ],
+        },
+      ],
+      unread: [
+        {
+          name: "Unverified",
+          kind: "file",
+          category: "permission",
+          parent: handle("prepared-parent"),
+        },
+      ],
+    },
+    workspace,
+  );
+  expect(entries[0].type).toBe("directory");
+  if (entries[0].type !== "directory") throw new Error("Expected directory");
+  expect(entries[0].children).toEqual([
+    { type: "unreadable", name: "Failed", category: "io", key: "prepared-parent:unread:0" },
+    expect.objectContaining({
+      type: "file",
+      handle: handle("counted"),
+      numGames: 1,
+      readError: "invalid-input",
+    }),
+    {
+      type: "unreadable",
+      name: "Unverified",
+      category: "permission",
+      key: "prepared-parent:unread:1",
+    },
+  ]);
+});
+
+test("unread siblings with colliding display names keep separate focus and no file actions", async () => {
+  const workspace = handle("unread-root");
+  const entries = workspaceListingToEntries(
+    {
+      entries: [],
+      unread: [
+        { name: "�.pgn", kind: "file", category: "permission", parent: null },
+        { name: "�.pgn", kind: "file", category: "permission", parent: null },
+      ],
+    },
+    workspace,
+  );
+  expect(entries.map((entry) => entry.type === "unreadable" && entry.key)).toEqual([
+    "unread-root:unread:0",
+    "unread-root:unread:1",
+  ]);
+  expect(entries.every((entry) => !("handle" in entry))).toBe(true);
+  const store = createStore();
+  store.set(expandedDirectoriesAtom, []);
+  const selected = vi.fn();
+  const moved = vi.fn();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root.render(
+      <Provider store={store}>
+        <DirectoryTree
+          files={[...entries, rootFile]}
+          selectedFile={null}
+          setSelectedFile={selected}
+          onRequestDelete={vi.fn()}
+          onRequestMove={moved}
+          search=""
+          filter=""
+        />
+      </Provider>,
+    ),
+  );
+  const rows = treeitems();
+  expect(rows).toHaveLength(3);
+  for (const row of rows.slice(0, 2)) {
+    expect(row.textContent).toContain("�.pgn");
+    expect(row.textContent).toContain("Common.ConfirmationError.unexpected");
+    expect(row.draggable).toBe(false);
+    expect(row.querySelector("button")).toBeNull();
+    await key(row, "Enter");
+    await key(row, "m");
+    act(() => row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  }
+  expect(selected).not.toHaveBeenCalled();
+  expect(moved).not.toHaveBeenCalled();
+  expect(mocks.openFile).not.toHaveBeenCalled();
+  act(() => rows[0].focus());
+  await key(rows[0], "ArrowDown");
+  expect(document.activeElement).toBe(rows[1]);
+  await key(rows[1], "ArrowDown");
+  expect(document.activeElement).toBe(rows[2]);
+  await key(rows[2], "Enter");
+  expect(mocks.openFile).toHaveBeenCalledWith(rootFile, expect.anything());
+});
+
+const handle = (id: string) => ({ id: { id }, kind: "fileWorkspace" }) as UsableEntry["handle"];
 const directory: Entry = {
   type: "directory",
   handle: handle("opaque-folder"),

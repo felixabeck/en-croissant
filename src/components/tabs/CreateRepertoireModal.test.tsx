@@ -1,6 +1,7 @@
 import { act, type HTMLAttributes, type InputHTMLAttributes } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { tauri, TauriCommandError } from "@/platform/tauri";
 
 const fixtures = vi.hoisted(() => ({
   createFile: vi.fn(),
@@ -61,6 +62,9 @@ vi.mock("@mantine/core", () => ({
 }));
 
 import CreateRepertoireModal from "./CreateRepertoireModal";
+
+// Load the real recovery facade before a test starts, so its module loading cannot outlive a test.
+const actualFiles = await vi.importActual<typeof import("@/utils/files")>("@/utils/files");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -146,17 +150,16 @@ test("acknowledges practice and recent metadata after successful admission", asy
 });
 
 test("cleanup creation preserves repertoire name and blocks all success continuations", async () => {
-  const { tauri, TauriCommandError } = await import("@/platform/tauri");
   const cause = new TauriCommandError({
     tag: "backend-error",
     category: "operation-and-cleanup",
     message: "private diagnostic",
   });
   const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(cause);
-  const list = vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
-  fixtures.createFile.mockImplementation(
-    (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
-  );
+  const list = vi
+    .spyOn(tauri, "listFileWorkspace")
+    .mockResolvedValueOnce({ entries: [], unread: [] });
+  fixtures.createFile.mockImplementation(actualFiles.createFile);
   await submitRepertoire();
   expect(container.querySelector('[role="alert"]')?.textContent).toBe(
     "The file operation failed, and cleanup also failed. Files or folders may remain. Check the collection before trying again.",
@@ -184,7 +187,6 @@ test.each([
     hidden: "Name already used",
   },
 ])("repertoire conflict $message preserves its name and shows $expected", async (failure) => {
-  const { tauri, TauriCommandError } = await import("@/platform/tauri");
   const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(
     new TauriCommandError({
       tag: "backend-error",
@@ -193,9 +195,7 @@ test.each([
       ...("nameTaken" in failure ? { nameTaken: failure.nameTaken } : {}),
     }),
   );
-  fixtures.createFile.mockImplementation(
-    (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
-  );
+  fixtures.createFile.mockImplementation(actualFiles.createFile);
   await submitRepertoire();
 
   expect(container.querySelector('[role="alert"]')?.textContent).toBe(failure.expected);

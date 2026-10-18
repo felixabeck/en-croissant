@@ -13,7 +13,7 @@ use crate::infra::fs::{
 };
 use crate::infra::inode_ownership::{FileMetadata, OwnedFile};
 use crate::{
-    error::Error,
+    error::{Error, ErrorCategory},
     infra::fs::{
         atomic_replace, read_bounded_bytes, AtomicFileOutcome, DirectoryEntry, DirectoryEntryKind,
         VerifiedDir,
@@ -140,30 +140,55 @@ pub(crate) const PGN_FILE_DIALOG_GRANT_USES: u32 = 128;
 pub(crate) const PICKER_DIALOG_GRANT_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Only absence and persistent permission failures can be isolated before the snapshot commit.
+pub(crate) fn listing_child_outcome(error: Error) -> Result<Option<ErrorCategory>, Error> {
+    if error.root_failure().is_some() {
+        return Err(error);
+    }
+    if error.is_missing_entry() {
+        return Ok(None);
+    }
+    if error.category() == ErrorCategory::Permission {
+        return Ok(Some(ErrorCategory::Permission));
+    }
+    Err(error)
+}
+
 fn map_db3_children_cancellable<T>(
-    root: CapabilityDirectory,
+    root: &CapabilityDirectory,
     cancellation: &CancellationToken,
-    mut map: impl FnMut(OsString, String, (u64, u64)) -> Result<T, Error>,
+    mut map: impl FnMut(OsString, String, Result<(u64, u64), Error>) -> Result<Option<T>, Error>,
 ) -> Result<Vec<T>, Error> {
-    let mut children: Vec<(String, DirectoryEntry)> = root
-        .entries(cancellation, &mut |name| {
-            Path::new(name).extension() == Some(OsStr::new("db3"))
-        })?
+    let listing = root.listing_entries(cancellation, &mut |name| {
+        name.as_encoded_bytes().len() > 4 && name.as_encoded_bytes().ends_with(b".db3")
+    })?;
+    let mut children: Vec<_> = listing
+        .entries
         .into_iter()
         .filter(|entry| entry.kind == DirectoryEntryKind::RegularFile)
-        .map(|entry| (entry.name.to_string_lossy().into_owned(), entry))
+        .map(|entry| (entry.name, Ok(entry.identity)))
+        .chain(
+            listing
+                .unread
+                .into_iter()
+                .map(|(name, _, error)| (name, Err(error))),
+        )
         .collect();
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    children.sort_by(|(left, _), (right, _)| left.cmp(right));
+    children.sort_by(|(left, _), (right, _)| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
 
     let mut mapped = Vec::with_capacity(children.len());
-    for (display_name, entry) in children {
+    for (name, identity) in children {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        mapped.push(map(entry.name, display_name, entry.identity)?);
+        let display_name = name.to_string_lossy().into_owned();
+        if let Some(child) = map(name, display_name, identity)? {
+            mapped.push(child);
+        }
     }
     Ok(mapped)
 }
@@ -190,6 +215,76 @@ mod windows_tests {
             Storage::FileSystem::SYNCHRONIZE,
         },
     };
+
+    #[test]
+    fn listing_child_windows_prepare_permission_is_partial_only_for_databases() {
+        for puzzle in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root_path = directory.path().join("root");
+            fs::create_dir(&root_path).unwrap();
+            fs::write(root_path.join("blocked.db3"), b"blocked").unwrap();
+            fs::write(root_path.join("healthy.db3"), b"healthy").unwrap();
+            let mut authority =
+                PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap();
+            let (root, purpose, operation) = if puzzle {
+                let root = authority
+                    .get_or_create_puzzle_root(&root_path, "Puzzles", None)
+                    .unwrap();
+                (
+                    root.path_ref().clone(),
+                    EntryPurpose::PuzzleFile,
+                    PathOperation::PuzzleRead,
+                )
+            } else {
+                let root = authority
+                    .get_or_create_database_root(&root_path, "Databases", None)
+                    .unwrap();
+                (
+                    root.path_ref().clone(),
+                    EntryPurpose::DatabaseFile,
+                    PathOperation::DatabaseRead,
+                )
+            };
+            let before = authority.persistent.clone();
+            let result = authority.reconcile_db3_listing(
+                &root,
+                purpose,
+                operation,
+                &CancellationToken::new(),
+                |authority, filename, display, observed| {
+                    if filename == OsStr::new("blocked.db3") {
+                        return Err(
+                            std::io::Error::from(std::io::ErrorKind::PermissionDenied).into()
+                        );
+                    }
+                    let entry = if puzzle {
+                        authority.prepare_puzzle_listing_child(
+                            &PuzzleRootHandle::new(root.clone()),
+                            &filename,
+                            observed,
+                        )?
+                    } else {
+                        authority.prepare_database_listing_child(
+                            &DatabaseRootHandle::new(root.clone()),
+                            &filename,
+                            display,
+                            observed,
+                        )?
+                    };
+                    Ok((entry, ()))
+                },
+            );
+            if puzzle {
+                assert_eq!(result.unwrap_err().category(), ErrorCategory::Permission);
+                assert!(authority.persistent == before);
+            } else {
+                let (entries, unread) = result.unwrap();
+                assert_eq!(entries.len(), 1);
+                assert_eq!(unread.len(), 1);
+                assert_eq!(unread[0].category, ErrorCategory::Permission);
+            }
+        }
+    }
 
     #[test]
     fn missing_entry_windows_open_status_producer() {
@@ -757,6 +852,27 @@ impl CapabilityDirectory {
         keep: &mut dyn FnMut(&OsStr) -> bool,
     ) -> Result<Vec<DirectoryEntry>, Error> {
         let entries = read_directory_entries_at(
+            &self.directory,
+            cancellation,
+            Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
+            keep,
+        )?;
+        #[cfg(all(test, unix))]
+        CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        Ok(entries)
+    }
+
+    /// Listing-only reader. Other authority consumers retain the fail-fast `entries` contract.
+    pub(crate) fn listing_entries(
+        &self,
+        cancellation: &CancellationToken,
+        keep: &mut dyn FnMut(&OsStr) -> bool,
+    ) -> Result<crate::infra::fs::ListingDirectoryEntries, Error> {
+        let entries = crate::infra::fs::read_listing_directory_entries_at(
             &self.directory,
             cancellation,
             Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
@@ -2141,6 +2257,20 @@ pub struct DatabaseDescriptor {
     pub handle: DatabaseHandle,
     pub filename: String,
     pub availability: PathAvailability,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseUnread {
+    pub filename: String,
+    pub category: ErrorCategory,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseListing {
+    pub entries: Vec<DatabaseDescriptor>,
+    pub unread: Vec<DatabaseUnread>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -4400,7 +4530,30 @@ struct Entry {
 
 /// Records only identities eligible for this listing before its unlocked walk.
 pub(crate) struct DirectoryListingSnapshot {
+    root: PathBuf,
     entries: Vec<StoredEntry>,
+}
+
+impl DirectoryListingSnapshot {
+    /// Match only the pre-walk paths, without observing the filesystem again.
+    pub(crate) fn retained_ids(
+        &self,
+        unread: &[(Vec<OsString>, bool)],
+    ) -> Result<BTreeSet<String>, Error> {
+        let mut retained = BTreeSet::new();
+        for (components, recursive) in unread {
+            let path = components
+                .iter()
+                .fold(self.root.clone(), |path, leaf| path.join(leaf));
+            for stored in &self.entries {
+                let recorded = stored.path.to_path()?;
+                if recorded == path || (*recursive && recorded.starts_with(&path)) {
+                    retained.insert(stored.id.id.clone());
+                }
+            }
+        }
+        Ok(retained)
+    }
 }
 
 pub(crate) struct PreparedEntry {
@@ -4666,7 +4819,10 @@ impl PathAuthority {
                 entries.push(entry.stored.clone());
             }
         }
-        Ok(DirectoryListingSnapshot { entries })
+        Ok(DirectoryListingSnapshot {
+            root: root_path,
+            entries,
+        })
     }
 
     pub(crate) fn workspace_listing_snapshot(
@@ -4686,6 +4842,7 @@ impl PathAuthority {
         &self,
         snapshot: &DirectoryListingSnapshot,
         prepared: &[PreparedEntry],
+        retained: &BTreeSet<String>,
     ) -> BTreeMap<String, Entry> {
         let reused: BTreeSet<_> = prepared
             .iter()
@@ -4696,6 +4853,7 @@ impl PathAuthority {
         let mut candidate = self.persistent.clone();
         for recorded in &snapshot.entries {
             if !reused.contains(recorded.id.id.as_str())
+                && !retained.contains(&recorded.id.id)
                 && candidate.get(&recorded.id.id).is_some_and(|current| {
                     current.stored.path == recorded.path
                         && current.stored.identity == recorded.identity
@@ -4721,12 +4879,13 @@ impl PathAuthority {
         &mut self,
         snapshot: DirectoryListingSnapshot,
         prepared: Vec<PreparedEntry>,
+        retained: &BTreeSet<String>,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let candidate = self.listing_candidate(&snapshot, &prepared);
+        let candidate = self.listing_candidate(&snapshot, &prepared, retained);
         let admission = |entries: &BTreeMap<String, Entry>| {
             self.registry_admission_snapshot(
                 entries,
@@ -4754,7 +4913,7 @@ impl PathAuthority {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let candidate = self.listing_candidate(&snapshot, &prepared);
+        let candidate = self.listing_candidate(&snapshot, &prepared, retained);
         let durability = if candidate != self.persistent {
             self.commit_candidate(candidate, None)?
         } else {
@@ -7107,6 +7266,7 @@ impl PathAuthority {
                 ))
             },
         )
+        .map(|(entries, _)| entries)
     }
 
     fn reconcile_db3_listing<T>(
@@ -7121,21 +7281,45 @@ impl PathAuthority {
             String,
             (u64, u64),
         ) -> Result<(PreparedEntry, T), Error>,
-    ) -> Result<Vec<T>, Error> {
+    ) -> Result<(Vec<T>, Vec<DatabaseUnread>), Error> {
         let snapshot = self.directory_listing_snapshot(root, &[purpose], false, None)?;
         let root_directory = self.capability_directory(root, operation)?;
         let mut prepared = Vec::new();
+        let mut unread = Vec::new();
+        let mut unread_paths = Vec::new();
         let children = map_db3_children_cancellable(
-            root_directory,
+            &root_directory,
             cancellation,
             |filename, display_name, identity| {
-                let (entry, child) = adapt(self, filename, display_name, identity)?;
-                prepared.push(entry);
-                Ok(child)
+                let result = identity.and_then(|identity| {
+                    let prepared = adapt(self, filename.clone(), display_name.clone(), identity)?;
+                    // Probe read access without opening a Unix leaf held by SQLite.
+                    let probed = probe_regular_file_at(&root_directory.directory, &filename)?;
+                    refuse_unobserved(VerifiedIdentity::from_pair(probed.identity), identity)?;
+                    Ok(prepared)
+                });
+                match result {
+                    Ok((entry, child)) => {
+                        prepared.push(entry);
+                        Ok(Some(child))
+                    }
+                    Err(error) if purpose == EntryPurpose::PuzzleFile => Err(error),
+                    Err(error) => {
+                        if let Some(category) = listing_child_outcome(error)? {
+                            unread_paths.push((vec![filename], false));
+                            unread.push(DatabaseUnread {
+                                filename: display_name,
+                                category,
+                            });
+                        }
+                        Ok(None)
+                    }
+                }
             },
         )?;
-        self.commit_directory_listing(snapshot, prepared, cancellation)?;
-        Ok(children)
+        let retained = snapshot.retained_ids(&unread_paths)?;
+        self.commit_directory_listing(snapshot, prepared, &retained, cancellation)?;
+        Ok((children, unread))
     }
 
     pub(crate) fn puzzle_download_destination(
@@ -7202,7 +7386,7 @@ impl PathAuthority {
         &mut self,
         root: &DatabaseRootHandle,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DatabaseDescriptor>, Error> {
+    ) -> Result<DatabaseListing, Error> {
         self.reconcile_db3_listing(
             root.path_ref(),
             EntryPurpose::DatabaseFile,
@@ -7226,6 +7410,7 @@ impl PathAuthority {
                 ))
             },
         )
+        .map(|(entries, unread)| DatabaseListing { entries, unread })
     }
 
     /// Registers an exact database child after validating it relative to the
@@ -11329,7 +11514,12 @@ pub(crate) mod portable_tests {
             let new = directory_listing_bound_prepare(&mut authority, &workspace, &root, "a.pgn")?;
             let new_id = new.id();
             assert!(!new.reused);
-            authority.commit_directory_listing(snapshot, vec![new], &CancellationToken::new())?;
+            authority.commit_directory_listing(
+                snapshot,
+                vec![new],
+                &BTreeSet::new(),
+                &CancellationToken::new(),
+            )?;
             assert_eq!(authority.persistent.len(), capacity);
             assert!(!authority.persistent.contains_key(&old_id.id));
             assert!(authority.persistent.contains_key(&new_id.id));
@@ -11347,6 +11537,7 @@ pub(crate) mod portable_tests {
             let relisted = authority.commit_directory_listing(
                 snapshot,
                 vec![reused],
+                &BTreeSet::new(),
                 &CancellationToken::new(),
             );
             crate::infra::fs::set_test_atomic_file_injector(None);
@@ -11388,7 +11579,12 @@ pub(crate) mod portable_tests {
         let before = authority.persistent.clone();
         let disk = fs::read(&authority.registry_path)?;
         assert!(matches!(
-            authority.commit_directory_listing(snapshot, prepared, &CancellationToken::new()),
+            authority.commit_directory_listing(
+                snapshot,
+                prepared,
+                &BTreeSet::new(),
+                &CancellationToken::new()
+            ),
             Err(Error::ResourceLimit(_))
         ));
         assert!(authority.persistent == before);
@@ -11452,7 +11648,12 @@ pub(crate) mod portable_tests {
         fs::write(root.join("late.pgn"), b"*")?;
         let late = directory_listing_bound_prepare(&mut authority, &workspace, &root, "late.pgn")?;
         let late_id = authority.publish_prepared_entry(late)?.id;
-        authority.commit_directory_listing(snapshot, vec![], &CancellationToken::new())?;
+        authority.commit_directory_listing(
+            snapshot,
+            vec![],
+            &BTreeSet::new(),
+            &CancellationToken::new(),
+        )?;
         assert!(!authority.persistent.contains_key(&ids[0].id));
         for id in [
             &ids[1],
@@ -11535,7 +11736,12 @@ pub(crate) mod portable_tests {
                 kind,
                 token: token.clone(),
             })));
-            let result = authority.commit_directory_listing(snapshot, vec![reused, fresh], &token);
+            let result = authority.commit_directory_listing(
+                snapshot,
+                vec![reused, fresh],
+                &BTreeSet::new(),
+                &token,
+            );
             set_test_atomic_file_injector(None);
             match kind {
                 ReuseFaultKind::WriteFailure => assert!(matches!(result, Err(Error::Io(_)))),
@@ -11603,6 +11809,7 @@ pub(crate) mod portable_tests {
             let result = authority.commit_directory_listing(
                 snapshot,
                 vec![prepared],
+                &BTreeSet::new(),
                 &CancellationToken::new(),
             );
             set_test_atomic_file_injector(None);
@@ -11629,7 +11836,7 @@ pub(crate) mod portable_tests {
         let token = CancellationToken::new();
         token.cancel();
         assert!(matches!(
-            authority.commit_directory_listing(snapshot, vec![prepared], &token),
+            authority.commit_directory_listing(snapshot, vec![prepared], &BTreeSet::new(), &token),
             Err(Error::Cancellation)
         ));
         assert!(authority.persistent == before);
@@ -13244,20 +13451,20 @@ mod tests {
         let listed = authority
             .list_database_children_cancellable(&root, &CancellationToken::new())
             .unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].handle, created);
+        assert_eq!(listed.entries.len(), 1);
+        assert_eq!(listed.entries[0].handle, created);
         let expected_parent = authority
             .capability_directory(root.path_ref(), PathOperation::DatabaseRead)
             .unwrap()
             .identity()
             .unwrap();
         assert_eq!(
-            authority.parent_identity_for_test(listed[0].handle.path_ref()),
+            authority.parent_identity_for_test(listed.entries[0].handle.path_ref()),
             Some(expected_parent)
         );
         assert!(authority
             .resolve(
-                listed[0].handle.path_ref(),
+                listed.entries[0].handle.path_ref(),
                 PathOperation::DatabaseRead,
                 &[]
             )
@@ -21348,6 +21555,7 @@ mod tests {
             authority
                 .list_database_children_cancellable(&root, &CancellationToken::new())
                 .unwrap()
+                .entries
                 .iter()
                 .filter(|item| item.filename == "created.db3")
                 .count(),
@@ -25516,6 +25724,7 @@ mod workspace_directory_enumeration_tests {
                 .list_database_children_cancellable(root, token)
                 .map(|entries| {
                     entries
+                        .entries
                         .into_iter()
                         .map(|entry| entry.handle.path_ref().clone())
                         .collect()
@@ -25640,6 +25849,82 @@ mod workspace_directory_enumeration_tests {
             .iter()
             .all(|id| !authority.persistent.contains_key(&id.id)));
         Ok(())
+    }
+
+    #[test]
+    fn listing_child_permission_is_unread_for_database_and_fatal_for_puzzle() {
+        use std::os::unix::fs::PermissionsExt;
+        for kind in [Db3ListingKind::Database, Db3ListingKind::Puzzle] {
+            let (_directory, root, mut authority, handle) = db3_root_fixture(kind);
+            let original = directory_listing_bound_list_db3(
+                &mut authority,
+                &handle,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let before = authority.persistent.clone();
+            let disk = fs::read(&authority.registry_path).unwrap();
+            fs::write(root.join("healthy.db3"), b"healthy").unwrap();
+            fs::set_permissions(root.join("a.db3"), fs::Permissions::from_mode(0o000)).unwrap();
+            match &handle {
+                Db3RootHandle::Database(root_handle) => {
+                    let listing = authority
+                        .list_database_children_cancellable(root_handle, &CancellationToken::new())
+                        .unwrap();
+                    assert_eq!(listing.entries.len(), 1);
+                    assert_eq!(listing.entries[0].filename, "healthy.db3");
+                    assert_eq!(listing.unread.len(), 1);
+                    assert_eq!(listing.unread[0].category, ErrorCategory::Permission);
+                    assert!(authority.persistent.contains_key(&original[0].id));
+                    let payload = serde_json::to_value(listing).unwrap();
+                    assert!(payload["unread"][0].get("handle").is_none());
+                    assert!(payload["unread"][0].get("path").is_none());
+                    assert!(!payload.to_string().contains(root.to_str().unwrap()));
+                }
+                Db3RootHandle::Puzzle(root_handle) => {
+                    let error = authority
+                        .list_puzzle_children_cancellable(root_handle, &CancellationToken::new())
+                        .unwrap_err();
+                    assert_eq!(error.category(), ErrorCategory::Permission);
+                    assert!(authority.persistent == before);
+                    assert_eq!(fs::read(&authority.registry_path).unwrap(), disk);
+                }
+            }
+            fs::set_permissions(root.join("a.db3"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn listing_child_database_lossy_names_remain_distinct_without_paths() {
+        use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+        let (_directory, root, mut authority, handle) = db3_root_fixture(Db3ListingKind::Database);
+        let Db3RootHandle::Database(root_handle) = handle else {
+            unreachable!()
+        };
+        let names = [
+            OsString::from_vec(b"\x80.db3".to_vec()),
+            OsString::from_vec(b"\x81.db3".to_vec()),
+        ];
+        for name in &names {
+            fs::write(root.join(name), b"db").unwrap();
+            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let listing = authority
+            .list_database_children_cancellable(&root_handle, &CancellationToken::new())
+            .unwrap();
+        for name in &names {
+            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.unread.len(), 2);
+        assert_eq!(listing.unread[0].filename, listing.unread[1].filename);
+        let payload = serde_json::to_value(listing).unwrap();
+        assert!(payload["unread"].as_array().unwrap().iter().all(|row| row
+            .as_object()
+            .unwrap()
+            .len()
+            == 2));
     }
 
     #[test]
@@ -25893,6 +26178,7 @@ mod workspace_directory_enumeration_tests {
         let expected = ["C.db3", "a.db3", "b.db3"];
         assert_eq!(
             databases
+                .entries
                 .iter()
                 .map(|entry| entry.filename.as_str())
                 .collect::<Vec<_>>(),
@@ -25915,7 +26201,7 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .identity()
             .unwrap();
-        for entry in &databases {
+        for entry in &databases.entries {
             assert_eq!(
                 authority.parent_identity_for_test(entry.handle.path_ref()),
                 Some(database_parent)

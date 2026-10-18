@@ -287,7 +287,13 @@ describe("InfoPanel game loading and cancellation", () => {
     mocks.notify.mockReset();
     mocks.logError.mockReset().mockResolvedValue(undefined);
     mocks.beforeDelete.mockReset();
-    mocks.getDatabases.mockReset().mockResolvedValue([]);
+    mocks.getDatabases
+      .mockReset()
+      .mockResolvedValue({
+        databases: [],
+        unread: [],
+        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+      });
     mocks.navigate.mockReset().mockResolvedValue(undefined);
     mocks.useActualGameSelector = false;
     mocks.writeGame
@@ -860,7 +866,11 @@ describe("InfoPanel game loading and cancellation", () => {
       storage_size: "0",
       indexed: false,
     };
-    mocks.getDatabases.mockResolvedValue([database]);
+    mocks.getDatabases.mockResolvedValue({
+      databases: [database],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     let resolveNavigation!: () => void;
     mocks.navigate.mockReturnValueOnce(
       new Promise<void>((resolve) => {

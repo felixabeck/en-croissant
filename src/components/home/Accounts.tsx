@@ -35,7 +35,7 @@ function Accounts() {
   const { data } = useDatabaseList();
   // Account management remains usable without an import destination. The Library page's
   // database source region owns the visible retry/error state for the shared database workspace.
-  const databases = data ?? [];
+  const databases = data?.databases ?? [];
   const [open, setOpen] = useState(false);
 
   const addChessComSession = useCallback(

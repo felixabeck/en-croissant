@@ -13,12 +13,15 @@ function DatabasesPage() {
       {source.status}
       {!source.databases && source.failure === "silent" && <span data-testid="loading" />}
       {source.visibleDatabases.map(source.renderRow)}
-      {source.databases?.length === 0 && source.failure === "silent" && (
-        <>
-          <span>No databases installed</span>
-          <span>Add a database to get started</span>
-        </>
-      )}
+      {source.unread.map(source.renderUnreadRow)}
+      {source.databases?.length === 0 &&
+        source.unread.length === 0 &&
+        source.failure === "silent" && (
+          <>
+            <span>No databases installed</span>
+            <span>Add a database to get started</span>
+          </>
+        )}
       {source.detail}
       {source.dialogs}
     </>
@@ -193,10 +196,13 @@ function alert() {
 test.each(["sibling opener", "card double-click"])(
   "%s synchronizes the same active database before navigation and error-card double-click is a no-op",
   async (gesture) => {
-    mocks.listWorkspaceDatabases.mockResolvedValue([
-      entry,
-      { ...entry, handle: { id: { id: "broken-db" }, kind: "database" }, filename: "broken.db3" },
-    ]);
+    mocks.listWorkspaceDatabases.mockResolvedValue({
+      entries: [
+        entry,
+        { ...entry, handle: { id: { id: "broken-db" }, kind: "database" }, filename: "broken.db3" },
+      ],
+      unread: [],
+    });
     mocks.getDbInfo
       .mockResolvedValueOnce({
         title: "Available",
@@ -219,7 +225,7 @@ test.each(["sibling opener", "card double-click"])(
     const errorCard = cards.find((card) => card.textContent?.includes("broken.db3"))!;
     const database = cache
       .get("databases")
-      ?.data.find((item: SuccessDatabaseInfo) => item.type === "success");
+      ?.data.databases.find((item: SuccessDatabaseInfo) => item.type === "success");
     expect(database.file).toEqual(entry.handle);
     let activeDatabase: SuccessDatabaseInfo | undefined;
     const activeAtNavigation: (SuccessDatabaseInfo | undefined)[] = [];
@@ -273,7 +279,7 @@ beforeEach(() => {
   document.body.append(host);
   root = createRoot(host);
   mocks.getDatabaseWorkspace.mockResolvedValue(folder("old"));
-  mocks.listWorkspaceDatabases.mockResolvedValue([]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({ entries: [], unread: [] });
   mocks.getDbInfo.mockResolvedValue({
     title: "New root content",
     filename: "new.db3",
@@ -328,14 +334,14 @@ describe("listing failure copy and state", () => {
     "%s over a cached empty listing shows only its appropriate state",
     async (outcome) => {
       await render();
-      expect(cache.get("databases")?.data).toEqual([]);
+      expect(cache.get("databases")?.data).toMatchObject({ databases: [], unread: [] });
       mocks.listWorkspaceDatabases.mockRejectedValue(
         outcome === "cancellation"
           ? new DOMException("Cancellation", "AbortError")
           : failure("too-large"),
       );
       await act(async () => revalidate());
-      expect(cache.get("databases")?.data).toEqual([]);
+      expect(cache.get("databases")?.data).toMatchObject({ databases: [], unread: [] });
       expect(host.textContent?.includes("No databases installed")).toBe(outcome === "cancellation");
       expect(host.textContent?.includes("Add a database to get started")).toBe(
         outcome === "cancellation",
@@ -356,9 +362,18 @@ describe("listing failure copy and state", () => {
       );
       if (cached)
         cache.set("databases", {
-          data: [
-            { type: "success", file: entry.handle, title: "Cached database", filename: "old.db3" },
-          ],
+          data: {
+            databases: [
+              {
+                type: "success",
+                file: entry.handle,
+                title: "Cached database",
+                filename: "old.db3",
+              },
+            ],
+            unread: [],
+            root: folder("cached-root"),
+          },
         });
       await render();
       if (cached) await act(async () => revalidate());
@@ -372,9 +387,13 @@ describe("listing failure copy and state", () => {
   );
   test("failure keeps cached data next to its alert", async () => {
     cache.set("databases", {
-      data: [
-        { type: "success", file: entry.handle, title: "Cached database", filename: "old.db3" },
-      ],
+      data: {
+        databases: [
+          { type: "success", file: entry.handle, title: "Cached database", filename: "old.db3" },
+        ],
+        unread: [],
+        root: folder("cached-root"),
+      },
     });
     mocks.listWorkspaceDatabases.mockRejectedValue(failure("permission"));
     await render();
@@ -394,7 +413,7 @@ describe("database folder recovery", () => {
     expect(choose()).toBeDefined();
   }
   function newListing() {
-    mocks.listWorkspaceDatabases.mockResolvedValue([entry]);
+    mocks.listWorkspaceDatabases.mockResolvedValue({ entries: [entry], unread: [] });
   }
   test("click issues a folder, relists its root and clears the alert", async () => {
     await failedListing();
@@ -425,7 +444,10 @@ describe("database folder recovery", () => {
     const old = deferred<unknown>();
     if (stage === "root acquisition")
       mocks.getDatabaseWorkspace.mockImplementationOnce(() => old.promise);
-    else mocks.listWorkspaceDatabases.mockImplementationOnce(() => old.promise);
+    else
+      mocks.listWorkspaceDatabases.mockImplementationOnce(() =>
+        old.promise.then((entries) => ({ entries, unread: [] })),
+      );
     let oldRevalidation!: Promise<unknown>;
     await act(async () => {
       oldRevalidation = revalidate();

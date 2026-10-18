@@ -1138,7 +1138,7 @@ async fn content_validation_production_database_lister_excludes_integrity_stamp(
     let listed = authority
         .list_database_children_cancellable(&root, &CancellationToken::new())
         .unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].handle, handle);
-    assert_eq!(listed[0].filename, "games.db3");
+    assert_eq!(listed.entries.len(), 1);
+    assert_eq!(listed.entries[0].handle, handle);
+    assert_eq!(listed.entries[0].filename, "games.db3");
 }

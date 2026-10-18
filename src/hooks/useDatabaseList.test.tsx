@@ -137,7 +137,11 @@ test("superseding a pending listing never retries its cancellation", async () =>
 });
 
 test("a disabled subscription makes no request", async () => {
-  vi.mocked(getDatabases).mockResolvedValue([]);
+  vi.mocked(getDatabases).mockResolvedValue({
+    databases: [],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await render(<Consumer enabled={false} />);
   await advance(60_000);
   expect(getDatabases).not.toHaveBeenCalled();
@@ -158,7 +162,13 @@ test("a consumer reading only isLoading observes completion", async () => {
   }
   await render(<LoadingConsumer />);
   expect(container.textContent).toBe("loading");
-  await act(async () => resolve([]));
+  await act(async () =>
+    resolve({
+      databases: [],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
+    }),
+  );
   expect(container.textContent).toBe("settled");
 });
 

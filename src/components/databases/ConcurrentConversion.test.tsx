@@ -402,12 +402,17 @@ beforeEach(() => {
     },
   );
   mocks.progress.mockResolvedValue(() => undefined);
-  mocks.getDatabases.mockResolvedValue([successDatabase(handleB, "Existing")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [successDatabase(handleB, "Existing")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
   mocks.createWorkspaceDatabase.mockResolvedValue(handleA);
-  mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle: accountHandle, filename: "Felix_chesscom.db3", availability: "available" },
-  ]);
+  mocks.listWorkspaceDatabases.mockResolvedValue({
+    entries: [{ handle: accountHandle, filename: "Felix_chesscom.db3", availability: "available" }],
+    unread: [],
+  });
   mocks.issuePgnWorkspace.mockResolvedValue({ handle: localPgn, displayName: "imported.pgn" });
   mocks.pickPgnFile.mockResolvedValue({ handle: addGamesPgn, name: "more.pgn" });
   mocks.editDbInfo.mockResolvedValue(undefined);
@@ -489,16 +494,20 @@ test("the database overview preserves a database set after mount", async () => {
 });
 
 test("DatabasesPage error cards have Delete but no reference toggle; successful cards retain the toggle", async () => {
-  mocks.getDatabases.mockResolvedValue([
-    {
-      type: "error",
-      file: handleA,
-      filename: "unfinished.db3",
-      error: "Import unfinished",
-      indexed: false,
-    },
-    successDatabase(handleB, "Existing"),
-  ]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [
+      {
+        type: "error",
+        file: handleA,
+        filename: "unfinished.db3",
+        error: "Import unfinished",
+        indexed: false,
+      },
+      successDatabase(handleB, "Existing"),
+    ],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   store.set(referenceDbAtom, null);
   await renderRoute();
   const errorCard = host.querySelector<HTMLButtonElement>(
@@ -636,7 +645,12 @@ test.each(["delete", "refresh", "both"])(
     if (failure !== "refresh")
       mocks.deleteDatabase.mockRejectedValueOnce(new Error("cleanup failed"));
     if (failure !== "delete") mocks.getDatabases.mockRejectedValue(new Error("reload failed"));
-    else mocks.getDatabases.mockResolvedValue([unfinished]);
+    else
+      mocks.getDatabases.mockResolvedValue({
+        databases: [unfinished],
+        unread: [],
+        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+      });
     await act(async () => convertCalls[0].reject(new Error("Cancellation")));
     expect(conversionState()).toEqual([]);
     expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(handleA);
@@ -648,9 +662,11 @@ test.each(["delete", "refresh", "both"])(
     const retry = buttonByText("Databases.LoadRetry");
     expect(Boolean(retry)).toBe(failure !== "delete");
     if (retry) {
-      mocks.getDatabases.mockResolvedValue(
-        failure === "both" ? [unfinished] : [successDatabase(handleB, "Existing")],
-      );
+      mocks.getDatabases.mockResolvedValue({
+        databases: failure === "both" ? [unfinished] : [successDatabase(handleB, "Existing")],
+        unread: [],
+        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+      });
       await act(async () => retry.click());
     }
     const unfinishedCard = host.querySelector<HTMLButtonElement>(
@@ -699,7 +715,11 @@ test.each(["new import", "add games"])(
     expect(retry).toBeTruthy();
     const refreshed = [successDatabase(handleB, "Existing")];
     if (route === "new import") refreshed.push(successDatabase(handleA, "Imported"));
-    mocks.getDatabases.mockResolvedValue(refreshed);
+    mocks.getDatabases.mockResolvedValue({
+      databases: refreshed,
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     await act(async () => retry.click());
 
     expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
@@ -771,10 +791,11 @@ test.each(
 )(
   "$route $outcome removes only its own entry beside Add games",
   async ({ account, target, title, source, startup, outcome }) => {
-    mocks.getDatabases.mockResolvedValue([
-      successDatabase(target, title),
-      successDatabase(handleB, "Existing"),
-    ]);
+    mocks.getDatabases.mockResolvedValue({
+      databases: [successDatabase(target, title), successDatabase(handleB, "Existing")],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     await renderRoute(account);
     for (const step of startup) await step();
     assertConversionCall(0);
@@ -1021,7 +1042,11 @@ test("selecting an existing database does not write its settings", async () => {
 
 test("editing the database name writes once after the debounce and reloads the list", async () => {
   let database = successDatabase(handleB, "Existing");
-  mocks.getDatabases.mockImplementation(async () => [database]);
+  mocks.getDatabases.mockImplementation(async () => ({
+    databases: [database],
+    unread: [],
+    root: workspaceRoot,
+  }));
   mocks.editDbInfo.mockImplementation(async (_file: DatabaseHandle, title: string) => {
     database = { ...database, title };
   });
@@ -1037,7 +1062,11 @@ test("editing the database name writes once after the debounce and reloads the l
 
 test("editing only the database description writes once after the debounce with the unchanged title", async () => {
   let database = successDatabase(handleB, "Existing");
-  mocks.getDatabases.mockImplementation(async () => [database]);
+  mocks.getDatabases.mockImplementation(async () => ({
+    databases: [database],
+    unread: [],
+    root: workspaceRoot,
+  }));
   mocks.editDbInfo.mockImplementation(
     async (_file: DatabaseHandle, _title: string, description: string) => {
       database = { ...database, description };
@@ -1150,7 +1179,11 @@ test.each([
   "a $outcome index toggle from indexed=$indexed re-enables the checkbox",
   async ({ outcome, indexed }) => {
     const database = { ...successDatabase(handleB, "Existing"), indexed };
-    mocks.getDatabases.mockResolvedValue([database]);
+    mocks.getDatabases.mockResolvedValue({
+      databases: [database],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     const action = indexed ? mocks.deleteIndexes : mocks.createIndexes;
     const otherAction = indexed ? mocks.createIndexes : mocks.deleteIndexes;
     let resolveIndex!: () => void;
@@ -1176,7 +1209,11 @@ test.each([
     if (outcome === "failed") {
       await act(async () => rejectIndex(new Error("index failed")));
     } else {
-      mocks.getDatabases.mockResolvedValue([{ ...database, indexed: !indexed }]);
+      mocks.getDatabases.mockResolvedValue({
+        databases: [{ ...database, indexed: !indexed }],
+        unread: [],
+        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+      });
       await act(async () => resolveIndex());
     }
     expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + (outcome === "failed" ? 0 : 1));

@@ -395,7 +395,9 @@ test.each(["saved file", "pasted PGN"])(
       message: "private diagnostic",
     });
     const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(cause);
-    const list = vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
+    const list = vi
+      .spyOn(tauri, "listFileWorkspace")
+      .mockResolvedValueOnce({ entries: [], unread: [] });
     fixtures.ensureFileWorkspace.mockResolvedValue({
       id: { id: "workspace" },
       kind: "fileWorkspace",
@@ -550,7 +552,7 @@ test.each(["saved file", "pasted PGN"])(
       await held.promise;
       throw cause;
     });
-    vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce([]);
+    vi.spyOn(tauri, "listFileWorkspace").mockResolvedValueOnce({ entries: [], unread: [] });
     fixtures.ensureFileWorkspace.mockResolvedValue({
       id: { id: "workspace" },
       kind: "fileWorkspace",

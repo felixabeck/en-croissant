@@ -79,14 +79,14 @@ export async function ensureAccountDatabaseHandle(
   if (existing) return existing;
   const root = await tauri.getDatabaseWorkspace();
   const filename = accountDatabaseFilename(title, type);
-  const registered = (await tauri.listWorkspaceDatabases(root)).find(
+  const registered = (await tauri.listWorkspaceDatabases(root)).entries.find(
     (candidate) => candidate.filename === filename,
   );
   if (registered) return registered.handle;
   return runWithAppliedRecovery(
     () => tauri.createWorkspaceDatabase(root, filename),
     async () =>
-      (await tauri.listWorkspaceDatabases(root)).find(
+      (await tauri.listWorkspaceDatabases(root)).entries.find(
         (candidate) => candidate.filename === filename,
       )?.handle,
   );

@@ -84,30 +84,49 @@ export default function LibraryPage() {
     databases.convertingSelected,
   ]);
   const normalizedSearch = search.trim().toLowerCase();
-  const peers: CollectionPeer[] = databases.visibleDatabases
-    .filter(
-      (item) =>
-        (!filter || filter === "database") &&
-        (!normalizedSearch ||
-          [
-            item.filename,
-            item.type === "success" ? item.title : item.error,
-            item.type === "success" ? item.description : "",
-          ].some((value) => value.toLowerCase().includes(normalizedSearch))),
-    )
-    .map((item) => ({
-      type: "database",
-      key: databaseHandleKey(item.file),
-      name: item.type === "success" ? item.title : item.filename,
-      selected: selection?.kind === "database" && selection.key === databaseHandleKey(item.file),
-      onSelect: () => setSelection({ kind: "database", key: databaseHandleKey(item.file) }),
-      onOpen: () => databases.openDatabase(item),
-      content: databases.renderRow(item),
-    }));
+  const peers: CollectionPeer[] = [
+    ...databases.visibleDatabases
+      .filter(
+        (item) =>
+          (!filter || filter === "database") &&
+          (!normalizedSearch ||
+            [
+              item.filename,
+              item.type === "success" ? item.title : item.error,
+              item.type === "success" ? item.description : "",
+            ].some((value) => value.toLowerCase().includes(normalizedSearch))),
+      )
+      .map((item) => ({
+        type: "database" as const,
+        key: databaseHandleKey(item.file),
+        name: item.type === "success" ? item.title : item.filename,
+        selected: selection?.kind === "database" && selection.key === databaseHandleKey(item.file),
+        onSelect: () => setSelection({ kind: "database", key: databaseHandleKey(item.file) }),
+        onOpen: () => databases.openDatabase(item),
+        content: databases.renderRow(item),
+      })),
+    ...databases.unread
+      .filter(
+        (item) =>
+          (!filter || filter === "database") &&
+          (!normalizedSearch ||
+            [item.filename, item.error].some((value) =>
+              value.toLowerCase().includes(normalizedSearch),
+            )),
+      )
+      .map((item) => ({
+        type: "database" as const,
+        key: item.key,
+        name: item.filename,
+        selected: false,
+        content: databases.renderUnreadRow(item),
+      })),
+  ];
   const loadedEmpty =
     files.workspace &&
     files.data?.length === 0 &&
     databases.databases?.length === 0 &&
+    databases.unread.length === 0 &&
     files.failure === "silent" &&
     databases.failure === "silent";
   const filteredEmpty = (normalizedSearch || filter) && visibleCount === 0;

@@ -137,7 +137,11 @@ beforeEach(() => {
     session,
     { player: "Magnus", updatedAt: 1, chessCom: { username: "Magnus", stats: {} } },
   ]);
-  mocks.getDatabases.mockResolvedValue([database("db-1")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.query_players.mockResolvedValue({
     data: [{ id: 7, name: "Magnus", elo: null }],
     count: 1,
@@ -221,7 +225,11 @@ test("an owned ProgressEvent moves the bar when another player's database is pre
   ]);
   const bobDatabase = { ...database("db-1"), filename: "bob_lichess.db3" };
   const aliceDatabase = { ...database("db-2"), filename: "alice_chesscom.db3" };
-  mocks.getDatabases.mockResolvedValue([bobDatabase, aliceDatabase]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [bobDatabase, aliceDatabase],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
 
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce());
@@ -260,7 +268,11 @@ test("a ProgressEvent under a foreign PlayerCard id does not move the bar", asyn
 });
 
 test("two owned ids average", async () => {
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo
     .mockResolvedValueOnce({ site_stats_data: [] })
     .mockReturnValueOnce(new Promise(() => undefined));
@@ -327,7 +339,11 @@ test("merges aggregate records from two databases without dropping duplicate key
       },
     ],
   };
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo
     .mockResolvedValueOnce({ site_stats_data: [firstRecord] })
     .mockResolvedValueOnce({ site_stats_data: [secondRecord] });
@@ -396,7 +412,11 @@ test("a foreign event arriving before any id is registered renders 0% not NaN%",
 });
 
 test("unmount while query_players is held cancels it and admits no info or later pair", async () => {
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   let querySignal!: AbortSignal;
   mocks.query_players.mockImplementation(
     (_file: unknown, _query: unknown, options: { signal: AbortSignal }) =>
@@ -419,7 +439,11 @@ test("unmount while query_players is held cancels it and admits no info or later
 });
 
 test("unmount while getPlayersGameInfo is held cancels it and admits no subsequent pair", async () => {
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.query_players.mockResolvedValue({
     data: [{ id: 7, name: "Magnus", elo: null }],
     count: 1,
@@ -446,7 +470,11 @@ test("unmount while getPlayersGameInfo is held cancels it and admits no subseque
 });
 
 test("ordinary failed personal item retains successful sibling and reports a diagnostic", async () => {
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.query_players
     .mockRejectedValueOnce(new Error("player lookup failed"))
     .mockResolvedValueOnce({ data: [{ id: 8, name: "Magnus", elo: null }], count: 1 });
@@ -460,12 +488,38 @@ test("ordinary failed personal item retains successful sibling and reports a dia
   expect(mocks.logError).toHaveBeenCalledWith(expect.stringContaining("(Magnus Lichess)"));
 });
 
+test.each([1, 2])(
+  "an unread account name is personal only when unique (%i rows)",
+  async (count) => {
+    mocks.getDatabases.mockResolvedValue({
+      databases: [],
+      unread: Array.from({ length: count }, () => ({
+        filename: "Magnus_lichess.db3",
+        error: "ChessFable is not allowed to read this database file",
+      })),
+      root: { id: { id: "account-root" }, kind: "databaseRoot" },
+    });
+    await renderDatabases();
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        count === 1 ? "Home.Databases.Failed.Title" : "Home.Databases.Empty.Title",
+      ),
+    );
+    expect(container.textContent?.includes("Magnus_lichess.db3")).toBe(count === 1);
+    expect(
+      container.textContent?.includes("ChessFable is not allowed to read this database file"),
+    ).toBe(count === 1);
+    expect(mocks.query_players).not.toHaveBeenCalled();
+  },
+);
+
 test("a failed statistics read visibly marks partial statistics and retains only the healthy records", async () => {
   const firstRecord = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
-  mocks.getDatabases.mockResolvedValue([
-    Object.freeze(database("db-1")),
-    Object.freeze(database("db-2")),
-  ]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [Object.freeze(database("db-1")), Object.freeze(database("db-2"))],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo
     .mockResolvedValueOnce({ site_stats_data: [firstRecord] })
     .mockRejectedValueOnce(new Error("statistics unreadable"));
@@ -483,7 +537,11 @@ test("a failed statistics read visibly marks partial statistics and retains only
 });
 
 test("all failed statistics reads render every failed name instead of no games", async () => {
-  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo.mockRejectedValue(new Error("statistics unreadable"));
   await renderDatabases();
   await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Failed.Title"));
@@ -509,7 +567,11 @@ function metadataError(id: string) {
 
 test("a metadata failure names its filename beside the healthy statistics without another log", async () => {
   const firstRecord = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
-  mocks.getDatabases.mockResolvedValue([database("db-1"), metadataError("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), metadataError("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [firstRecord] });
   await renderDatabases();
   await vi.waitFor(() =>
@@ -522,7 +584,11 @@ test("a metadata failure names its filename beside the healthy statistics withou
 });
 
 test("only metadata failures render the failed state and every filename without another log", async () => {
-  mocks.getDatabases.mockResolvedValue([metadataError("db-1"), metadataError("db-2")]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [metadataError("db-1"), metadataError("db-2")],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await renderDatabases();
   await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Failed.Title"));
   expect(container.textContent).toContain("Magnus_lichess.db3, Magnus_chesscom.db3");
@@ -533,9 +599,11 @@ test("only metadata failures render the failed state and every filename without 
 });
 
 test("an imported database with an account title or username substring is excluded", async () => {
-  mocks.getDatabases.mockResolvedValue([
-    { ...database("db-1"), filename: "OtherMagnus_lichess.db3" },
-  ]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [{ ...database("db-1"), filename: "OtherMagnus_lichess.db3" }],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await renderDatabases();
   await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Empty.Title"));
   expect(mocks.query_players).not.toHaveBeenCalled();
@@ -546,9 +614,11 @@ test("a renamed account database remains included by filename with the owning us
   getDefaultStore().set(sessionsAtom, [
     { ...session, player: "Player alias", lichess: { ...session.lichess, username: "magnus" } },
   ]);
-  mocks.getDatabases.mockResolvedValue([
-    Object.freeze({ ...database("db-1"), title: "My downloaded games" }),
-  ]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [Object.freeze({ ...database("db-1"), title: "My downloaded games" })],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [] });
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
@@ -569,7 +639,11 @@ test("the default player uses the session username when account username casing 
   ]);
   const accountDatabase = database("db-1");
   const record = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
-  mocks.getDatabases.mockResolvedValue([accountDatabase]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [accountDatabase],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [record] });
 
   await renderDatabases();
@@ -609,7 +683,11 @@ test.each([false, true])(
     const bobDatabase = { ...database("db-2"), title: "", filename: "carol_lichess.db3" };
     const aliceRecord = { site: "Lichess", player: "bob", daily: [], openings: [] };
     const bobRecord = { site: "Lichess", player: "carol", daily: [], openings: [] };
-    mocks.getDatabases.mockResolvedValue([aliceDatabase, bobDatabase]);
+    mocks.getDatabases.mockResolvedValue({
+      databases: [aliceDatabase, bobDatabase],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => {
       if (file.id.id === "db-1") {
         return { site_stats_data: [aliceRecord] };
@@ -664,7 +742,11 @@ test("changing session membership refetches the selected player's summary with u
   const aliceDatabase = { ...database("db-2"), filename: "alice_chesscom.db3" };
   const bobRecord = { site: "Lichess", player: "bob", daily: [], openings: [] };
   const aliceRecord = { site: "Chess.com", player: "alice", daily: [], openings: [] };
-  mocks.getDatabases.mockResolvedValue([bobDatabase, aliceDatabase]);
+  mocks.getDatabases.mockResolvedValue({
+    databases: [bobDatabase, aliceDatabase],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => ({
     site_stats_data: [file.id.id === "db-1" ? bobRecord : aliceRecord],
   }));

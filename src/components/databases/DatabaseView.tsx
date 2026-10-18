@@ -38,7 +38,7 @@ function DatabaseView() {
   const { data: databases, error, mutate } = useDatabaseList();
 
   const resolution = useMemo(
-    () => resolveDatabaseRoute(databases, databaseId, database),
+    () => resolveDatabaseRoute(databases?.databases, databaseId, database),
     [databases, databaseId, database],
   );
 

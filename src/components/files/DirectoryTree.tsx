@@ -12,6 +12,7 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { IconAction } from "@/components/common/IconAction";
+import { confirmationErrorMessage } from "@/components/common/ConfirmModal";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
 import { openFile } from "@/utils/files";
@@ -25,20 +26,27 @@ export type CollectionPeer = {
   name: string;
   selected: boolean;
   content: React.ReactNode;
-  onSelect: () => void;
-  onOpen: () => void;
+  onSelect?: () => void;
+  onOpen?: () => void;
 };
 type VisibleEntry = { entry: Entry | CollectionPeer; depth: number };
 function entryKey(entry: Entry | CollectionPeer) {
   return entry.type === "database"
     ? `database:${entry.key}`
-    : `${entry.type}:${fileWorkspaceKey(entry.handle)}`;
+    : entry.type === "unreadable"
+      ? entry.key
+      : `${entry.type}:${fileWorkspaceKey(entry.handle)}`;
 }
 
 export function filteredTree(files: Entry[], search: string, filter: string): Entry[] {
   const normalizedSearch = search.trim().toLowerCase();
   const visit = (nodes: Entry[]): Entry[] =>
     nodes.reduce<Entry[]>((result, node) => {
+      if (node.type === "unreadable") {
+        if (!filter && (!normalizedSearch || node.name.toLowerCase().includes(normalizedSearch)))
+          result.push(node);
+        return result;
+      }
       if (node.type === "file") {
         const matchesType = !filter || node.metadata.type === filter;
         const matchesSearch =
@@ -122,7 +130,7 @@ export default function DirectoryTree({
   const render = ({ entry: node, depth }: VisibleEntry): React.ReactNode => {
     const isDirectory = node.type === "directory";
     const handleKey = entryKey(node);
-    const expansionKey = node.type === "database" ? "" : fileWorkspaceKey(node.handle);
+    const expansionKey = node.type === "directory" ? fileWorkspaceKey(node.handle) : "";
     const open = expanded.includes(expansionKey);
     return (
       <Box
@@ -195,25 +203,29 @@ export default function DirectoryTree({
           }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            if (node.type === "database") node.onSelect();
-            else setSelectedFile(node);
+            if (node.type === "database") node.onSelect?.();
+            else if (node.type !== "unreadable") setSelectedFile(node);
             if (isDirectory)
               setExpanded((old) =>
                 open ? old.filter((id) => id !== expansionKey) : [...old, expansionKey],
               );
             else if (event.key === "Enter") {
-              if (node.type === "database") node.onOpen();
+              if (node.type === "database") node.onOpen?.();
               else if (node.type === "file") openEntry(node);
             }
           }
-          if (event.key.toLowerCase() === "m" && node.type !== "database") {
+          if (
+            event.key.toLowerCase() === "m" &&
+            node.type !== "database" &&
+            node.type !== "unreadable"
+          ) {
             event.preventDefault();
             onRequestMove?.(node);
           }
         }}
         onClick={() => {
-          if (node.type === "database") node.onSelect();
-          else setSelectedFile(node);
+          if (node.type === "database") node.onSelect?.();
+          else if (node.type !== "unreadable") setSelectedFile(node);
           if (isDirectory)
             setExpanded((old) =>
               open ? old.filter((id) => id !== expansionKey) : [...old, expansionKey],
@@ -222,9 +234,9 @@ export default function DirectoryTree({
         onDoubleClick={() => {
           if (node.type === "file") openEntry(node);
         }}
-        draggable={node.type !== "database"}
+        draggable={node.type === "file" || node.type === "directory"}
         onDragStart={(event) => {
-          if (node.type !== "database")
+          if (node.type === "file" || node.type === "directory")
             event.dataTransfer.setData(
               "application/x-en-croissant-handle",
               fileWorkspaceKey(node.handle),
@@ -239,12 +251,14 @@ export default function DirectoryTree({
           const source = visible.find(
             (item) =>
               item.entry.type !== "database" &&
+              item.entry.type !== "unreadable" &&
               fileWorkspaceKey(item.entry.handle) ===
                 event.dataTransfer.getData("application/x-en-croissant-handle"),
           )?.entry;
           if (
             source &&
             source.type !== "database" &&
+            source.type !== "unreadable" &&
             fileWorkspaceKey(source.handle) !== fileWorkspaceKey(node.handle)
           )
             void onMove(source, node);
@@ -252,6 +266,18 @@ export default function DirectoryTree({
       >
         {node.type === "database" ? (
           node.content
+        ) : node.type === "unreadable" ? (
+          <Group gap="xs" py={4}>
+            <Text size="sm" className="wrap-anywhere">
+              {node.name}
+            </Text>
+            <Text size="sm" c="red" className="wrap-anywhere">
+              {confirmationErrorMessage(
+                { tag: "backend-error", category: node.category, message: "" },
+                t,
+              )}
+            </Text>
+          </Group>
         ) : (
           <Group gap="xs" py={4} style={{ cursor: "pointer" }}>
             <>
@@ -268,7 +294,7 @@ export default function DirectoryTree({
             <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
               {node.name}
             </Text>
-            {!isDirectory && (
+            {node.type === "file" && (
               <>
                 <Badge size="xs" color="blue.9">
                   {node.numGames}
@@ -277,6 +303,14 @@ export default function DirectoryTree({
                   {t(FILE_TYPES.find((type) => type.value === node.metadata.type)!.translationKey)}
                 </LibraryTypeBadge>
               </>
+            )}
+            {node.type === "file" && node.readError && (
+              <Text size="sm" c="red" className="wrap-anywhere">
+                {confirmationErrorMessage(
+                  { tag: "backend-error", category: node.readError, message: "" },
+                  t,
+                )}
+              </Text>
             )}
             {isDirectory && (
               <LibraryTypeBadge>{t("Library.Folder", { defaultValue: "Folder" })}</LibraryTypeBadge>

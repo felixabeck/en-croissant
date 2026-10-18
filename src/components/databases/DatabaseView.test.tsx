@@ -160,7 +160,11 @@ test("retry reloads a matching database and leaves the failure state", async () 
     storage_size: "0",
     indexed: false,
   };
-  mocks.getDatabases.mockResolvedValueOnce([database]);
+  mocks.getDatabases.mockResolvedValueOnce({
+    databases: [database],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   await act(async () => retry!.click());
 
   expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
