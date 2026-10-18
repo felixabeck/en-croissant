@@ -189,7 +189,7 @@ test("unread peers use root and index keys, show category copy and leave healthy
   expect(mocks.navigate).not.toHaveBeenCalled();
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(host.textContent).not.toContain("Files could not be loaded");
-  expect(host.textContent).toContain("The action could not be completed. Please try again.");
+  expect(host.textContent).toContain("ChessFable is not allowed to read this file.");
   expect(host.textContent).toContain("ChessFable is not allowed to read this database file");
   for (const row of unreadRows) {
     await act(async () => {

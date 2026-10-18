@@ -1181,11 +1181,12 @@ test.each([
                 const positionResult = validateMoveSequence(fen, ["e2e4"]);
                 expect(positionResult.success).toBe(false);
                 if (positionResult.success) throw new Error("Expected invalid position rejection");
+                const detail =
+                    errorKey === "Errors.InvalidBoard"
+                        ? catalogue["Errors.InvalidBoard"]
+                        : catalogue["Errors.EmptyBoard"];
                 expect(positionResult.error.message).toBe(
-                    catalogue["Board.Analysis.InvalidPosition"].replace(
-                        "{{error}}",
-                        catalogue[errorKey],
-                    ),
+                    catalogue["Board.Analysis.InvalidPosition"].replace("{{error}}", detail),
                 );
                 expect(positionResult.error.message).not.toContain(fen);
             }

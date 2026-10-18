@@ -61,13 +61,16 @@ test("every shipped catalogue has localized file-child unreadable sentences", ()
         "Files.ChildUnreadable.TooLarge",
         "Files.ChildUnreadable.Title",
     ];
-    for (const { locale, translation } of catalogues) {
+    for (const { translation } of catalogues) {
         for (const key of keys) {
-            expect(translation[key], `${locale}:${key}`).toBeTypeOf("string");
-            expect(translation[key].trim(), `${locale}:${key}`).not.toBe("");
-            if (!locale.startsWith("en-")) {
-                expect(translation[key], `${locale}:${key}`).not.toBe(english[key]);
-            }
+            const value = translation[key];
+            expect(value).toBeTypeOf("string");
+            expect(value.trim()).not.toBe("");
+        }
+    }
+    for (const { translation } of catalogues.filter(({ locale }) => !locale.startsWith("en-"))) {
+        for (const key of keys) {
+            expect(translation[key]).not.toBe(english[key]);
         }
     }
 });
