@@ -8715,3 +8715,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20261018-01 and d-20261018-03 require exclusive create for both contents. The rest of d-20260927-01 was not reopened. Reversal: a later decision that restores replace publication.
 * **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, review repair for f-20261003-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e8237ffb13840e0130110a8c120d4778dd9b96924d570ef75249b45a174eb4b7","input_sha256":"45ae8e6965e146274f74bc48694e5074d0468920cb2ba17d2a678e25be0cab93","kind":"mutation-receipt","operation":"4c108d0eeab7382d8d0418a75e1ba87c99dac8239c99291a3336a27860537e7e","options":{"section":null},"request_id_sha256":"f988f1b951b7ebdd86e9583e848dfa1a63e499e1c381d5d02f375e7577747005","results":["d-20261018-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261018-06 — Does a taken workspace-file name include a directory or symlink?
+
+* **Question:** Does the name-taken conflict in d-20261018-01 apply to every existing node at the PGN or sidecar leaf?
+* **Governs:** f-20261003-07
+* **Chosen:** Name-taken applies to an existing regular file, including a hard link. A directory or symlink at either leaf is InvalidInput, "target must be a regular file, not a link or special file", is not followed, and does not set nameTaken. The same split applies when that node is already present and when it appears at revalidation or at the no-replace rename. Exclusive create and the refusal to confirm overwrite stay as d-20261018-01 states them. This decision qualifies that record and does not supersede it.
+* **Rejected:** Reporting a directory or symlink as name-taken, and following either node.
+* **Reason:** initial_atomic_target and the Create-mode revalidation and rename collision already return InvalidInput for a non-regular node. Calling that name-taken would show "Name already used" for a directory. Reversal: a later decision that asks to fold those nodes into the name-taken conflict.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, records review of f-20261003-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"459822eb0a21481de159f457f559bf1f48bacab00079853fd4a659a73cc977be","input_sha256":"c311a285bdb185ebbcfa68abc58301553d6199d29c7c92480ac8894b79f51fac","kind":"mutation-receipt","operation":"6aa9e2724b04d8b895cc52b0ff191bbaa024d6847c5b9b699d0dc2d16276234f","options":{"section":null},"request_id_sha256":"de21b2198b630eb33395bbf4f18cf42cae7e7056e33128c5fc86a2e3573ac49d","results":["d-20261018-06"],"target":"decisions-ledger","v":1} -->
