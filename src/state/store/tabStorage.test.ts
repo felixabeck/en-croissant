@@ -774,6 +774,44 @@ test.each(["legacy", "current"])(
     },
 );
 
+test.each(["legacy", "current"])(
+    "hydrates %s drawings with two existing matching arrows and keeps exactly two across reads and migration",
+    (format) => {
+        const tree = structuredClone(defaultTree());
+        const drawings = "[%cal Oe2e4,Oe2e4]";
+        tree.root.shapes = [
+            { orig: "e2", dest: "e4", brush: "orange" },
+            { orig: "e2", dest: "e4", brush: "orange" },
+        ];
+        tree.root.comment = format === "legacy" ? `Prose ${drawings}` : "Prose";
+        if (format === "legacy") {
+            delete tree.root.commands;
+            storeLegacyTree("matching-drawings", tree);
+        } else {
+            tree.root.commands = drawings;
+            persistTree("matching-drawings", tree);
+        }
+
+        for (let pass = 0; pass < 3; pass++) {
+            const restored = new TabStorageRepository().read<StoredTreeForTest>(
+                "matching-drawings",
+            )!;
+            expect(restored.state.root.shapes).toHaveLength(2);
+            expect(restored.state.root.shapes).toEqual(tree.root.shapes);
+            expect(restored.state.root.comment).toBe("Prose");
+            expect(restored.state.root.commands ?? "").toBe("");
+            expect(migrateTreeForStorage(restored.state)).toEqual(restored.state);
+
+            const persisted = deserializeStorageValue<{ state: StoredTreeForTest }>(
+                sessionStorage.getItem("matching-drawings")!,
+            )!;
+            expect(persisted.state.root.shapes).toHaveLength(2);
+            expect(persisted.state.root.commands ?? "").toBe("");
+            expect(persisted).toEqual(restored);
+        }
+    },
+);
+
 test("drawing hydration refuses an empty-string shapes field and preserves corrupt storage bytes", () => {
     const tree = treeWith((state) => {
         state.root.commands = "[%cal Oe2e4]";
