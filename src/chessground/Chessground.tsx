@@ -60,6 +60,12 @@ interface ChessgroundProps extends Config {
   ref?: Ref<ChessgroundRef>;
 }
 
+function configForBounds(config: Config, { width, height }: DOMRect): Config {
+  return width > 0 && height > 0
+    ? config
+    : { ...config, drawable: { ...config.drawable, autoShapes: [] } };
+}
+
 export function Chessground({ ref, ...props }: ChessgroundProps) {
   const boardRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
@@ -67,6 +73,25 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
   propsRef.current = props;
 
   const moveMethod = useAtomValue(moveMethodAtom);
+  const configRef = useRef<Config>(props);
+  configRef.current = {
+    ...props,
+    events: {
+      ...props.events,
+      change: () => {
+        const api = apiRef.current;
+        if (props.setBoardFen && api) props.setBoardFen(api.getFen());
+      },
+    },
+    draggable: {
+      ...props.draggable,
+      enabled: moveMethod !== "select",
+    },
+    selectable: {
+      ...props.selectable,
+      enabled: moveMethod !== "drag",
+    },
+  };
 
   useImperativeHandle(
     ref,
@@ -85,10 +110,12 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
   );
 
   useEffect(() => {
-    if (boardRef.current == null) return;
-    const chessgroundApi = NativeChessground(boardRef.current, {
-      ...propsRef.current,
-      addDimensionsCssVarsTo: boardRef.current,
+    const element = boardRef.current;
+    if (element == null) return;
+    let { width, height } = element.getBoundingClientRect();
+    const chessgroundApi = NativeChessground(element, {
+      ...configForBounds(propsRef.current, element.getBoundingClientRect()),
+      addDimensionsCssVarsTo: element,
       events: {
         ...propsRef.current.events,
         change: () => {
@@ -99,8 +126,20 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
       },
     });
     apiRef.current = chessgroundApi;
+    const observer = new ResizeObserver(() => {
+      const bounds = element.getBoundingClientRect();
+      if (bounds.width === width && bounds.height === height) return;
+      width = bounds.width;
+      height = bounds.height;
+      if (width > 0 && height > 0) {
+        chessgroundApi.state.dom.bounds.clear();
+        chessgroundApi.set(configForBounds(configRef.current, bounds));
+      }
+    });
+    observer.observe(element);
 
     return () => {
+      observer.disconnect();
       chessgroundApi.destroy();
       apiRef.current = null;
     };
@@ -110,26 +149,9 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
 
   useEffect(() => {
     const api = apiRef.current;
-    if (!api) return;
-    api.set({
-      ...props,
-      events: {
-        ...props.events,
-        change: () => {
-          if (props.setBoardFen && api) {
-            props.setBoardFen(api.getFen());
-          }
-        },
-      },
-      draggable: {
-        ...props.draggable,
-        enabled: moveMethod !== "select",
-      },
-      selectable: {
-        ...props.selectable,
-        enabled: moveMethod !== "drag",
-      },
-    });
+    const element = boardRef.current;
+    if (!api || !element) return;
+    api.set(configForBounds(configRef.current, element.getBoundingClientRect()));
   }, [props, moveMethod]);
 
   const boardImage = useAtomValue(boardImageAtom);

@@ -229,6 +229,67 @@ test("files-preview: variation chooser lies inside the preview board at its top 
         .toEqual(["a2", "b2", "c2", "d4", "e2", "f2", "g2", "h2"]);
 });
 
+test("files-preview: saved shapes stay beside chooser arrows and follow the chosen node", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: {
+                result: [
+                    { type: "Header", value: { tag: "White", value: "Weiss" } },
+                    { type: "Header", value: { tag: "Black", value: "Schwarz" } },
+                    { type: "Comment", value: "[%cal Ra2a4] [%csl Ch5]" },
+                    { type: "San", value: "e4" },
+                    { type: "ParenOpen" },
+                    { type: "San", value: "d4" },
+                    { type: "Comment", value: "[%cal Of7f5]" },
+                    { type: "ParenClose" },
+                ],
+            },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: /choose collection/i }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    const preview = page.locator(".cg-wrap");
+    await expect(preview).toBeVisible();
+    const svg = preview.locator("svg.cg-shapes");
+    const savedArrow = svg.locator("g[cgHash*=',a2,a4,red'] line");
+    const savedSquare = svg.locator("g[cgHash*=',h5,h5,cyan'] circle");
+    await expect(savedArrow).toHaveAttribute("stroke", "#882020");
+    await expect(savedSquare).toHaveAttribute("stroke", "#00bcd4");
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(1);
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    const chooser = page.getByRole("listbox", { name: "Choose a continuation" });
+    await expect(chooser.getByRole("option")).toHaveText(["1. e4", "1. d4"]);
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(3);
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(1);
+    await expect(savedArrow).toHaveAttribute("stroke", "#882020");
+    await expect(savedSquare).toHaveAttribute("stroke", "#00bcd4");
+    await expect(svg.locator("g[cgHash*=',e2,e4,continuationSelected'] line")).toHaveAttribute(
+        "marker-end",
+        "url(#arrowhead-cs)",
+    );
+    await expect(svg.locator("g[cgHash*=',d2,d4,continuationOther'] line")).toHaveAttribute(
+        "marker-end",
+        "url(#arrowhead-co)",
+    );
+
+    await chooser.getByRole("option", { name: "1. d4", exact: true }).click();
+    await expect(chooser).toBeHidden();
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(1);
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(0);
+    await expect(svg.locator("g[cgHash*=',f7,f5,orange'] line")).toHaveAttribute(
+        "stroke",
+        "#ff6600",
+    );
+    await expect(page).toHaveURL("/library");
+});
+
 test("files-preview: numbered comment prose stays inline with its moves", async ({
     page,
     mockScenario,

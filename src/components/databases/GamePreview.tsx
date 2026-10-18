@@ -206,7 +206,10 @@ function PreviewBoard() {
         <Chessground
           coordinates={false}
           viewOnly={true}
-          drawable={{ autoShapes: chooserArrows(choice), brushes: continuationBrushes }}
+          drawable={{
+            autoShapes: [...chooserArrows(choice), ...node.shapes],
+            brushes: continuationBrushes,
+          }}
           fen={fen}
           orientation={headers.orientation || "white"}
         />

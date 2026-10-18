@@ -681,6 +681,44 @@ describe("GamePreview board sizing", () => {
 
     expect(boardBox.style.width).toBe("");
   });
+  test.each([
+    { name: "Saved shapes follow the current node", orig: "a2", dest: "a4" },
+    { name: "Overlap keeps both lists", orig: "e2", dest: "e4" },
+  ])("$name", async ({ orig, dest }) => {
+    mocks.lexPgn.mockResolvedValue([
+      { type: "Comment", value: `[%cal R${orig}${dest}] [%csl Ch5]` },
+      { type: "San", value: "e4" },
+      { type: "Comment", value: "[%cal Of7f5]" },
+      { type: "ParenOpen" },
+      { type: "San", value: "d4" },
+      { type: "ParenClose" },
+    ]);
+    await renderRecord(recordA);
+    const board = selectedBoard();
+    const savedShapes = [
+      { orig, dest, brush: "red" },
+      { orig: "h5", dest: "h5", brush: "cyan" },
+    ];
+    expect(JSON.parse(board.dataset.shapes!)).toEqual(savedShapes);
+    expect(board.dataset.fen).toBe(INITIAL_FEN);
+    await act(async () =>
+      (container.querySelector("[data-testid='move-controls']") as HTMLElement).click(),
+    );
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+    expect(board.dataset.fen).toBe(INITIAL_FEN);
+    expect(JSON.parse(board.dataset.shapes!)).toEqual([
+      { orig: "e2", dest: "e4", brush: "continuationSelected" },
+      { orig: "d2", dest: "d4", brush: "continuationOther" },
+      ...savedShapes,
+    ]);
+    await wheelNext();
+    expect(board.dataset.fen).toContain("4P3");
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(JSON.parse(board.dataset.shapes!)).toEqual([
+      { orig: "f7", dest: "f5", brush: "orange" },
+    ]);
+  });
+
   test("preview chooser shares its frame and draws every continuation", async () => {
     mocks.lexPgn.mockResolvedValue([
       { type: "San", value: "e4" },
