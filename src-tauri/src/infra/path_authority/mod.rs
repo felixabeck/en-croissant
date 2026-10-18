@@ -161,7 +161,7 @@ fn map_db3_children_cancellable<T>(
     mut map: impl FnMut(OsString, String, Result<(u64, u64), Error>) -> Result<Option<T>, Error>,
 ) -> Result<Vec<T>, Error> {
     let listing = root.listing_entries(cancellation, &mut |name| {
-        name.as_encoded_bytes().len() > 4 && name.as_encoded_bytes().ends_with(b".db3")
+        Path::new(name).extension() == Some(OsStr::new("db3"))
     })?;
     let mut children: Vec<_> = listing
         .entries
@@ -178,7 +178,7 @@ fn map_db3_children_cancellable<T>(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    children.sort_by(|(left, _), (right, _)| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
+    children.sort_by(|(left, _), (right, _)| left.to_string_lossy().cmp(&right.to_string_lossy()));
 
     let mut mapped = Vec::with_capacity(children.len());
     for (name, identity) in children {
@@ -7538,7 +7538,9 @@ impl PathAuthority {
         }
         let (a, b) = resolved.parent_identity()?;
         let parent_identity = Identity { a, b };
-        let root_path = self.database_root_path(root)?;
+        let root_path = self
+            .database_root_path(root)
+            .map_err(Error::label_root_failure)?;
         let path = root_path.join(filename);
         let validated_identity =
             validate_target(&path, PathClass::PersistentFile).map_err(|error| {
