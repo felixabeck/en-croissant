@@ -29,11 +29,17 @@ vi.mock("jotai", () => ({
   useSetAtom: () => vi.fn(),
   useStore: () => ({ set: fixtures.storeSet }),
 }));
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  }),
-}));
+vi.mock("react-i18next", async () => {
+  const { default: catalogue } = await import("@/translation/en-US.json");
+  return {
+    useTranslation: () => ({
+      t: (key: string, options?: { defaultValue?: string }) =>
+        key === "Common.NameAlreadyUsed"
+          ? catalogue.translation["Common.NameAlreadyUsed"]
+          : (options?.defaultValue ?? key),
+    }),
+  };
+});
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -163,4 +169,35 @@ test("cleanup creation preserves repertoire name and blocks all success continua
   expect(fixtures.navigate).not.toHaveBeenCalled();
   expect(setOpened).not.toHaveBeenCalled();
   expect(container.textContent).not.toContain("private diagnostic");
+});
+
+test.each([
+  { nameTaken: true, message: "unrelated diagnostic", expected: "Name already used" },
+  {
+    message: "Conflict: workspace file already exists",
+    expected: "Conflict: workspace file already exists",
+  },
+])("repertoire conflict $message preserves its name and shows $expected", async (failure) => {
+  const { tauri, TauriCommandError } = await import("@/platform/tauri");
+  const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(
+    new TauriCommandError({
+      tag: "backend-error",
+      category: "conflict",
+      message: failure.message,
+      ...("nameTaken" in failure ? { nameTaken: failure.nameTaken } : {}),
+    }),
+  );
+  fixtures.createFile.mockImplementation(
+    (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
+  );
+  await submitRepertoire();
+
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(failure.expected);
+  if (!failure.nameTaken) expect(container.textContent).not.toContain("Name already used");
+  expect(container.querySelector("input")?.value).toBe("White");
+  expect(create).toHaveBeenCalledOnce();
+  expect(fixtures.openFile).not.toHaveBeenCalled();
+  expect(fixtures.storeSet).not.toHaveBeenCalled();
+  expect(fixtures.navigate).not.toHaveBeenCalled();
+  expect(setOpened).not.toHaveBeenCalled();
 });

@@ -52,11 +52,17 @@ vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: fixtures.notifyUnlessCancelled,
   runUnlessCancelled: async (_title: string, action: () => Promise<void>) => action(),
 }));
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  }),
-}));
+vi.mock("react-i18next", async () => {
+  const { default: catalogue } = await import("@/translation/en-US.json");
+  return {
+    useTranslation: () => ({
+      t: (key: string, options?: { defaultValue?: string }) =>
+        key === "Common.NameAlreadyUsed"
+          ? catalogue.translation["Common.NameAlreadyUsed"]
+          : (options?.defaultValue ?? key),
+    }),
+  };
+});
 vi.mock("../common/AppModal", () => ({
   default: ({
     children,
@@ -430,6 +436,85 @@ test.each(["saved file", "pasted PGN"])(
     expect(setOpen).not.toHaveBeenCalled();
   },
 );
+
+test.each([
+  {
+    branch: "saved file",
+    nameTaken: true,
+    message: "unrelated diagnostic",
+    expected: "Name already used",
+  },
+  {
+    branch: "pasted PGN",
+    nameTaken: true,
+    message: "unrelated diagnostic",
+    expected: "Name already used",
+  },
+  {
+    branch: "saved file",
+    message: "Conflict: source PGN changed",
+    expected: "Conflict: source PGN changed",
+  },
+])("$branch conflict $message retains input and shows $expected", async (failure) => {
+  const { tauri, TauriCommandError } = await import("@/platform/tauri");
+  const create = vi.spyOn(tauri, "createWorkspaceFile").mockRejectedValueOnce(
+    new TauriCommandError({
+      tag: "backend-error",
+      category: "conflict",
+      message: failure.message,
+      ...("nameTaken" in failure ? { nameTaken: failure.nameTaken } : {}),
+    }),
+  );
+  fixtures.ensureFileWorkspace.mockResolvedValue({
+    id: { id: "workspace" },
+    kind: "fileWorkspace",
+  });
+  fixtures.createFile.mockImplementation(
+    (await vi.importActual<typeof import("@/utils/files")>("@/utils/files")).createFile,
+  );
+  const setOpen = await renderModal();
+  if (failure.branch === "saved file") {
+    await chooseFile();
+    await act(async () =>
+      host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click(),
+    );
+    await setInputValue(input("Common.Name"), "Keep this name.pgn");
+  } else {
+    const textarea = host.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea,
+        linkPgn,
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  await clickSubmit();
+
+  expect(host.textContent).toContain(failure.expected);
+  if (failure.branch === "saved file") {
+    expect(host.querySelector('[data-testid="error-Common.Name"]')?.textContent).toBe(
+      failure.expected,
+    );
+    expect(input("Common.Name").value).toBe("Keep this name.pgn");
+    expect(fixtures.loadFileGame).toHaveBeenCalledOnce();
+  } else {
+    expect(host.querySelector('input[aria-label="Common.Name"]')).toBeNull();
+    expect(host.querySelector('[data-testid="error-Common.Name"]')).toBeNull();
+    expect(submitButton().nextElementSibling?.textContent).toBe(failure.expected);
+    expect(host.querySelector("textarea")?.value).toBe(linkPgn);
+    expect(fixtures.loadFileGame).not.toHaveBeenCalled();
+  }
+  if (!failure.nameTaken) expect(host.textContent).not.toContain("Name already used");
+  expect(modalElement().dataset.opened).toBe("true");
+  expect(create).toHaveBeenCalledOnce();
+  expect(fixtures.openFile).not.toHaveBeenCalled();
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+  expect(fixtures.storeSet).not.toHaveBeenCalled();
+  expect(fixtures.setTabs).not.toHaveBeenCalled();
+  expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(setOpen).not.toHaveBeenCalled();
+});
 
 test.each(["saved file", "pasted PGN"])(
   "cleanup importing %s after unmount uses the files notification",

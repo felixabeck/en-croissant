@@ -73,12 +73,17 @@ vi.mock("swr", async () => {
     },
   };
 });
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string; name?: string }) =>
-      options?.defaultValue?.replace("{{name}}", options.name || "") || key,
-  }),
-}));
+vi.mock("react-i18next", async () => {
+  const { default: catalogue } = await import("@/translation/en-US.json");
+  return {
+    useTranslation: () => ({
+      t: (key: string, options?: { defaultValue?: string; name?: string }) =>
+        key === "Common.NameAlreadyUsed"
+          ? catalogue.translation["Common.NameAlreadyUsed"]
+          : options?.defaultValue?.replace("{{name}}", options.name || "") || key,
+    }),
+  };
+});
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/i18n", () => ({
   default: {
@@ -887,6 +892,39 @@ test("applied-despite-error create refreshes and closes without operationFailed"
   expect(container.textContent).not.toContain(
     "The file operation could not be completed. Please try again.",
   );
+});
+
+test.each([
+  { nameTaken: true, message: "unrelated diagnostic", expected: "Name already used" },
+  {
+    message: "Conflict: source PGN changed",
+    expected: "The file operation could not be completed. Please try again.",
+  },
+])("create conflict $message keeps its name and shows $expected", async (failure) => {
+  mocks.createWorkspaceFile.mockRejectedValueOnce(
+    new TauriCommandError({
+      tag: "backend-error",
+      category: "conflict",
+      message: failure.message,
+      ...("nameTaken" in failure ? { nameTaken: failure.nameTaken } : {}),
+    }),
+  );
+  click("Create file");
+  await settle();
+  await setDialogName("created");
+  await act(async () => dialogButton("Confirm").click());
+
+  const dialog = container.querySelector('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+  expect(dialog?.querySelector("input")?.value).toBe("created");
+  expect(dialog?.querySelector('[role="alert"]')?.textContent).toBe(failure.expected);
+  expect(container.textContent).not.toContain(
+    failure.nameTaken
+      ? "The file operation could not be completed. Please try again."
+      : "Name already used",
+  );
+  expect(mocks.createWorkspaceFile).toHaveBeenCalledOnce();
+  expect(mocks.mutate).not.toHaveBeenCalled();
 });
 
 test("applied-despite-error move refreshes and clears the move", async () => {

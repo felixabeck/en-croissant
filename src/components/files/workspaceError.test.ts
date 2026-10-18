@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import type { SupportedLocale } from "@/i18n";
+import i18n, { type SupportedLocale } from "@/i18n";
+import { normalizeError } from "@/platform/errors";
 import { catalogueI18n, shippedCatalogues } from "@/tests/catalogues";
 import { TauriCommandError } from "@/platform/tauri";
 import { workspaceErrorMessage } from "./workspaceError";
@@ -8,6 +9,57 @@ const cleanup = new TauriCommandError({
     tag: "backend-error",
     category: "operation-and-cleanup",
     message: "unrelated diagnostic",
+});
+
+test("name-taken copy uses the typed flag and the English catalogue", async () => {
+    const translator = await catalogueI18n("en-US");
+    const error = new TauriCommandError({
+        tag: "backend-error",
+        category: "conflict",
+        message: "unrelated diagnostic",
+        nameTaken: true,
+    });
+    expect(normalizeError(error).nameTaken).toBe(true);
+    expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe("Name already used");
+    expect(workspaceErrorMessage(error, "fallback")).toBe(i18n.t("Common.NameAlreadyUsed"));
+});
+
+test.each([{}, { nameTaken: undefined }, { nameTaken: false }, { nameTaken: null }])(
+    "nameTaken %j is omitted and preserves the fallback",
+    async (detail) => {
+        const translator = await catalogueI18n("en-US");
+        const error = new TauriCommandError({
+            tag: "backend-error",
+            category: "conflict",
+            message: "unrelated diagnostic",
+            ...detail,
+        });
+        expect(normalizeError(error)).not.toHaveProperty("nameTaken");
+        expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe("fallback");
+    },
+);
+
+test.each([
+    "Conflict: workspace file already exists",
+    "Conflict: source PGN changed",
+    "Conflict: workspace destination changed",
+])("conflict message %s without the flag preserves the fallback", async (message) => {
+    const translator = await catalogueI18n("en-US");
+    const error = new TauriCommandError({ tag: "backend-error", category: "conflict", message });
+    expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe("fallback");
+});
+
+test("cleanup copy takes priority over the name-taken flag", async () => {
+    const translator = await catalogueI18n("en-US");
+    const error = new TauriCommandError({
+        tag: "backend-error",
+        category: "operation-and-cleanup",
+        message: "unrelated diagnostic",
+        nameTaken: true,
+    });
+    expect(workspaceErrorMessage(error, "fallback", translator.t)).toBe(
+        translator.t("Files.OperationAndCleanupFailed"),
+    );
 });
 
 test.each(shippedCatalogues())(

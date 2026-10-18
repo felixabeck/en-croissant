@@ -25,6 +25,7 @@ export type AppError = {
     rootFailure?: RootFailure;
     engineFailure?: EngineTerminalSnapshot;
     remoteHttpRejection?: RemoteHttpRejection;
+    nameTaken?: true;
 };
 
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
@@ -229,6 +230,7 @@ export function normalizeError(error: unknown): AppError {
             category: BACKEND_CATEGORY[error.category],
             backendCategory: error.category,
             message: redact(error.message),
+            ...(error.nameTaken === true ? { nameTaken: true } : {}),
             ...(typeof rejection === "object" &&
             rejection !== null &&
             typeof rejection.status === "number" &&
