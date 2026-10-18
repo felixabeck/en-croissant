@@ -189,13 +189,11 @@ beforeEach(() => {
   mocks.withConversionTicket.mockReset().mockImplementation((run) => run("conversion-ticket"));
   mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
   mocks.logError.mockReset().mockResolvedValue(undefined);
-  mocks.getDatabases
-    .mockReset()
-    .mockResolvedValue({
-      databases: [],
-      unread: [],
-      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
-    });
+  mocks.getDatabases.mockReset().mockResolvedValue({
+    databases: [],
+    unread: [],
+    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+  });
   getDefaultStore().set(databaseConversionStateAtom, []);
   getDefaultStore().set(databaseConversionRefreshFailedAtom, false);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");

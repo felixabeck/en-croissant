@@ -287,13 +287,11 @@ describe("InfoPanel game loading and cancellation", () => {
     mocks.notify.mockReset();
     mocks.logError.mockReset().mockResolvedValue(undefined);
     mocks.beforeDelete.mockReset();
-    mocks.getDatabases
-      .mockReset()
-      .mockResolvedValue({
-        databases: [],
-        unread: [],
-        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
-      });
+    mocks.getDatabases.mockReset().mockResolvedValue({
+      databases: [],
+      unread: [],
+      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+    });
     mocks.navigate.mockReset().mockResolvedValue(undefined);
     mocks.useActualGameSelector = false;
     mocks.writeGame
