@@ -7,6 +7,7 @@ vi.mock("@mantine/core", () => ({
 }));
 
 import Comment from "./Comment";
+import { parseNotationComment } from "@/utils/commentNotation";
 import {
   commentDialectCases,
   commentDomText,
@@ -91,6 +92,28 @@ test("keeps the move-like prefix as text before strong formatting", async () => 
   expect(container.querySelector("strong")?.textContent).toBe("x");
   expect(container.querySelector(forbiddenCommentElements)).toBeNull();
 });
+
+test.each(["\n\n", "\n\n\n\n"])(
+  "preserves the view's block-space newline and the notation document for %j",
+  async (separator) => {
+    const source = `**a**${separator}++b++`;
+    await act(async () => root.render(<Comment comment={source} />));
+
+    expect(container.firstElementChild?.innerHTML).toBe(
+      "<p><strong>a</strong></p>\n<p><u>b</u></p>",
+    );
+    expect(parseNotationComment(source)).toEqual({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "a", marks: [{ type: "bold" }] }] },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "b", marks: [{ type: "underline" }] }],
+        },
+      ],
+    });
+  },
+);
 
 test("wraps formatted siblings together and keeps text outside underline pairs", async () => {
   await act(async () =>

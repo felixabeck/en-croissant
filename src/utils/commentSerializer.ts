@@ -174,11 +174,27 @@ function wrap(mark: string, content: string): string {
     return `[${content}](${destination}${suffix})`;
 }
 
+// Lower priority is wrapped outside a run it does not strictly contain.
+// Ranks: underline 1, link 2, italic 3, bold 4, strike 5.
+// LINE_BREAK_OUTER_BIAS exceeds strike minus underline, so a mark that
+// covers a newline is outside every mark that stays on one line.
+// CROSSING_EMPHASIS_BIAS exceeds the gap between adjacent emphasis ranks
+// and, subtracted from italic, stays between underline and link.
+// WHITESPACE_BOUNDARY_BIAS exceeds strike minus underline and is smaller
+// than LINE_BREAK_OUTER_BIAS, so emphasis that splits another run at a
+// whitespace boundary is outside underline and link, while a newline-
+// spanning mark stays further outside.
+const UNDERLINE_PRIORITY = 1;
+const EMPHASIS_PRIORITY_ORIGIN = 3;
+const LINE_BREAK_OUTER_BIAS = 10;
+const CROSSING_EMPHASIS_BIAS = 1.5;
+const WHITESPACE_BOUNDARY_BIAS = 6;
+
 function render(characters: Character[]): string {
     const marks = [...new Set(characters.flatMap((character) => character.marks))];
     const priority = (mark: string) => {
-        if (mark === "underline") return 1;
-        return ["italic", "bold", "strike"].indexOf(mark) + 3;
+        if (mark === "underline") return UNDERLINE_PRIORITY;
+        return ["italic", "bold", "strike"].indexOf(mark) + EMPHASIS_PRIORITY_ORIGIN;
     };
     const candidates = marks.flatMap((mark) =>
         runs(characters, mark).map(([start, end]) => ({
@@ -188,7 +204,7 @@ function render(characters: Character[]): string {
             priority:
                 priority(mark) -
                 (characters.slice(start, end).some((character) => character.text === "\n")
-                    ? 10
+                    ? LINE_BREAK_OUTER_BIAS
                     : 0),
         })),
     );
@@ -202,7 +218,7 @@ function render(characters: Character[]): string {
                     candidate.start < other.end,
             )
         ) {
-            candidate.priority -= 1.5;
+            candidate.priority -= CROSSING_EMPHASIS_BIAS;
         }
         if (!["bold", "italic", "strike"].includes(candidate.mark)) continue;
         const splitsWhitespace = candidates.some((other) =>
@@ -213,7 +229,7 @@ function render(characters: Character[]): string {
                     /\s/u.test(characters[boundary - 1].text + characters[boundary].text),
             ),
         );
-        if (splitsWhitespace) candidate.priority -= 6;
+        if (splitsWhitespace) candidate.priority -= WHITESPACE_BOUNDARY_BIAS;
     }
     candidates.sort((left, right) => left.priority - right.priority);
     const selected = candidates.find(

@@ -1,6 +1,7 @@
 export const mutationPackages = Object.freeze({
   "annotate-comment": [
     "src/utils/commentSerializer.ts",
+    "src/utils/commentNotation.ts",
     "src/components/panels/annotation/AnnotationEditor.tsx",
   ],
   "game-practice": [

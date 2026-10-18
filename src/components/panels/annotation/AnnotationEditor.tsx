@@ -18,7 +18,8 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { spellCheckAtom } from "@/state/atoms";
-import { createCommentMarkdown, type CommentMarkdownToken } from "@/utils/commentMarkdown";
+import { createCommentMarkdown } from "@/utils/commentMarkdown";
+import { parseNotationComment } from "@/utils/commentNotation";
 import {
   compareCommentDocument,
   flattenCommentDocument,
@@ -65,41 +66,7 @@ const CommentStarterKit = StarterKit.extend({
   },
 });
 
-const notationMarkdown = createCommentMarkdown();
-
-// Mirror Comment's rendered text and marks, including raw disallowed links.
-export function parseNotationComment(source: string): JSONContent {
-  const inline = (
-    tokens: CommentMarkdownToken[],
-    marks: NonNullable<JSONContent["marks"]> = [],
-  ): JSONContent[] =>
-    tokens.flatMap((token): JSONContent[] => {
-      const type = { strong: "bold", em: "italic", del: "strike", underline: "underline" }[
-        token.type
-      ];
-      if (token.type === "link" && !/^(?:https?:|mailto:)/i.test(token.href!)) {
-        return [{ type: "text", text: token.raw, marks }];
-      }
-      if (type || token.type === "link") {
-        const mark = type
-          ? { type }
-          : { type: "link", attrs: { href: token.href, title: token.title ?? null } };
-        return inline(token.tokens!, [...marks, mark]);
-      }
-      if (token.type === "br") return [{ type: "hardBreak", marks }];
-      // The comment lexer disables block constructs, HTML and images. The
-      // remaining tokens are paragraphs, text and decoded escapes.
-      return token.tokens
-        ? inline(token.tokens, marks)
-        : [{ type: "text", text: token.text!, marks }];
-    });
-  return {
-    type: "doc",
-    content: (notationMarkdown.lexer(source) as CommentMarkdownToken[])
-      .filter((token) => token.type !== "space")
-      .map((token) => ({ type: "paragraph", content: inline([token]) })),
-  };
-}
+export { parseNotationComment } from "@/utils/commentNotation";
 
 function AnnotationEditor() {
   "use no memo";

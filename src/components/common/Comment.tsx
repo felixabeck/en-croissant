@@ -1,51 +1,48 @@
 import { Typography } from "@mantine/core";
 import { Fragment, memo, type ReactNode } from "react";
-import { createCommentMarkdown, type CommentMarkdownToken } from "@/utils/commentMarkdown";
+import { readCommentNotation, type CommentNotationNode } from "@/utils/commentNotation";
 
-// This reader owns the instance and never registers anything after creation.
-const markdown = createCommentMarkdown();
-
-function renderTokens(tokens: CommentMarkdownToken[], multipleLine: boolean): ReactNode {
-  return tokens.map((token, index) => {
-    const children = token.tokens ? renderTokens(token.tokens, multipleLine) : token.text;
+function renderNotation(nodes: CommentNotationNode[], multipleLine: boolean): ReactNode {
+  return nodes.map((node, index) => {
+    const children = "content" in node ? renderNotation(node.content, multipleLine) : undefined;
     let rendered: ReactNode;
-    switch (token.type) {
+    switch (node.type) {
       case "paragraph":
         rendered = multipleLine ? <p>{children}</p> : <span>{children}</span>;
         break;
-      case "strong":
+      case "bold":
         rendered = <strong>{children}</strong>;
         break;
-      case "em":
+      case "italic":
         rendered = <em>{children}</em>;
         break;
-      case "del":
+      case "strike":
         rendered = <del>{children}</del>;
         break;
       case "underline":
         rendered = <u>{children}</u>;
         break;
       case "link":
-        rendered = /^(?:https?:|mailto:)/i.test(token.href ?? "") ? (
-          <a href={token.href} title={token.title ?? undefined} target="_blank" rel="noreferrer">
+        rendered = (
+          <a
+            href={node.attrs.href}
+            title={node.attrs.title ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+          >
             {children}
           </a>
-        ) : (
-          token.raw
         );
         break;
-      case "br":
+      case "hardBreak":
         rendered = <br />;
         break;
       case "space":
         rendered = "\n";
         break;
       case "text":
-      case "escape":
-        rendered = children;
+        rendered = node.text;
         break;
-      default:
-        rendered = token.raw;
     }
     return <Fragment key={index}>{rendered}</Fragment>;
   });
@@ -62,7 +59,7 @@ function Comment({ comment }: { comment: string }) {
         display: multipleLine ? "block" : "inline",
       }}
     >
-      {renderTokens(markdown.lexer(comment), multipleLine)}
+      {renderNotation(readCommentNotation(comment), multipleLine)}
     </Typography>
   );
 }
