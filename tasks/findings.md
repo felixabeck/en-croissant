@@ -13732,12 +13732,15 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 ### Native folder pickers send the path-conversion diagnostic to the renderer
 
-* **ID:** f-20261003-02 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261003-02 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 955b6117-6010-4c14-a2ca-7d08516e03e4
 * **Where:** `src-tauri/src/main.rs` `issue_database_workspace` (`invalid database folder selection: {error}`), `src-tauri/src/main.rs` `issue_download_destination` (`invalid native folder selection: {error}`), and `src-tauri/src/file_workspace.rs` `issue_file_workspace` (the same `invalid native folder selection` interpolation).
 * **Defect:** when the native dialog returns a `FilePath` that `into_path` cannot convert, the raw conversion error is interpolated into `Error::InvalidInput`. `Error`'s Serialize sends that Display string to the renderer, and `runUnlessCancelled` shows it. The string can carry a native path or an OS diagnostic. Renderer redaction runs only after the diagnostic has crossed the boundary.
 * **Why it matters:** the renderer is not a place for backend path diagnostics. The same class already exists for the engine-workspace opener (`f-20260915-04`); these three picker commands are a separate site and already ship. `f-20260913-05` only changes listing copy and must not take this mapping on.
 * **Related:** `f-20260915-04` (engine opener diagnostic; different command, root `-`).
+
+Handled. issue_download_destination, issue_database_workspace and issue_file_workspace pass an into_path failure through Error::native_folder_selection. The renderer payload is the fixed invalid-input sentence. The conversion cause stays on diagnostic() and in the native log. Other into_path sites were left outside this finding. Commit e42858de. Review history: tasks/handoffs/2026-10-18-f-20261003-07-review.md. Final gates, remote CI and install are later steps, not claimed here.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"a45c8bb702780692bcd6efd9b002e2fd7e5f22a9ad6fde9a7950e9468ac4e933","header_sha256":"47ec313a8091719135110c6a53e89928493d0d5416dcd77da72f59b165e4bd09","header_status":"handled","input_sha256":"094026ebd14df21d6fe5fec91ece5aa5c8778514a012946a2fd1130a064fc730","kind":"mutation-receipt","operation":"3c4e46d9fc8459c998a493cf8bd7aae676819b47e6fd212312623a8ffe689a95","options":{"section":null},"request_id_sha256":"55f1a2eb6bffd4d26d714741567a6878ca6f2b681aab1b95fbb99fbe86909c55","results":["f-20261003-02"],"target":"f-20261003-02","v":1} -->
 
 ---
 
