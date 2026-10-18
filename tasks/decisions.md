@@ -8666,3 +8666,42 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code in separate Codex sessions.
 * **Decided by:** Codex, technical realization of Felix’s approved approach, 2026-10-16 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"8dd0dd2445766b4e014440d34457f29a2de12c2867d8f5e14b60c1e6ed287c6c","input_sha256":"2b886a364e0f4c975432dbbfe27606e5f62c39d94017134e565bb32f80babe53","kind":"mutation-receipt","operation":"59f6729bb0e0f45bbf88537a46798623b614405a345d261a77240e6e18a19aac","options":{"section":null},"request_id_sha256":null,"results":["d-20261016-22"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-18 — recorded through the decisions lock
+
+### d-20261018-01 — Should creating a workspace file refuse an existing name or ask to overwrite it?
+
+* **Question:** Should creating a workspace file refuse an existing name or ask to overwrite it?
+* **Governs:** f-20261003-07
+* **Chosen:** Exclusive create. A taken PGN or sidecar name returns one name-taken conflict, installs nothing, and registers nothing. No overwrite confirmation and no second replace command.
+* **Rejected:** A renderer confirmation that calls a distinct replace path.
+* **Reason:** Directory create, database create, d-20260924-01, and d-20261017-12 already refuse silent replacement. A confirmation would be a new destructive product interaction. Reversal: add a distinct replace command only if a later product decision asks for overwrite.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, adopted plan for f-20261003-07 · **Superseded-by:** -
+
+### d-20261018-02 — How does the renderer recognize a taken workspace-file name?
+
+* **Question:** How does the renderer recognize a taken workspace-file name?
+* **Governs:** f-20261003-07
+* **Chosen:** Optional ErrorPayload.nameTaken, omitted unless the conflict's inner string is the one constant "workspace file already exists", in which case serialization sends true. The renderer copies the flag only when the payload value is exactly true and shows Common.NameAlreadyUsed only then.
+* **Rejected:** Matching the Display string, a new AppErrorCategory, and a new Error variant.
+* **Reason:** d-20261017-11 rejects message matching, and d-20260904-06 keeps seven renderer categories. One constant at the serialize site avoids exhaustive-match churn. Reversal: introduce a variant if a later change cannot keep the flag and the constant in one place.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, adopted plan for f-20261003-07 · **Superseded-by:** -
+
+### d-20261018-03 — Does exclusive workspace-file create apply to copied content as well as typed text?
+
+* **Question:** Does exclusive workspace-file create apply to copied content as well as typed text?
+* **Governs:** f-20261003-07
+* **Chosen:** Both WorkspaceFileContent::Text and WorkspaceFileContent::Copy, through the same create command.
+* **Rejected:** Text only, or a second command for copy.
+* **Reason:** d-20260927-01 keeps Text and Copy on one command. Reversal: none inside this mandate.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, adopted plan for f-20261003-07 · **Superseded-by:** -
+
+### d-20261018-04 — Should Linux workspace file names fold case the way Windows does?
+
+* **Question:** Should Linux workspace file names fold case the way Windows does?
+* **Governs:** f-20261003-07
+* **Chosen:** Foo.pgn and foo.pgn stay distinct on Linux. Windows exclusive create already refuses case variants through the filesystem.
+* **Rejected:** Folding Linux names so they match Windows.
+* **Reason:** No existing contract folds workspace names. Reversal: a product decision that asks for case-insensitive workspace names.
+* **Decided by:** Grok, full auto, drain session 3de2c732-bf53-439b-b51c-9369214e59e6, adopted plan for f-20261003-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"ac0c073b9027b261347b85e987103172be4b591caf39d9bd7cd089d00c5796ed","input_sha256":"212bde86222cfa3e15c9f93aa79a167ac69667cc73b8499aed5528f69b0d5f1b","kind":"mutation-receipt","operation":"5575c87a0acde5f7a2f16ae1fbcff96cda2eb2cd743582545e7980f575400082","options":{"section":null},"request_id_sha256":null,"results":["d-20261018-01","d-20261018-02","d-20261018-03","d-20261018-04"],"target":"decisions-ledger","v":1} -->
