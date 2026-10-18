@@ -803,7 +803,7 @@ export default function Page() {
             },
           }}
         >
-          <Tabs.List h="100%">
+          <Tabs.List h={compactTabs ? undefined : "100%"}>
             <Tabs.Tab value="board" leftSection={<IconChess size="1rem" />}>
               {t("Settings.Board")}
             </Tabs.Tab>

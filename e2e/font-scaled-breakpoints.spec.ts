@@ -213,15 +213,81 @@ function labelledSliderControl(scope: Locator | Page, title: "Font Size" | "Volu
     return scope.locator(`div[aria-label="${title}"]:not([role="slider"])`);
 }
 
-async function assertSettingsLayout(page: Page, compact: boolean) {
-    await expect(page.getByRole("tablist")).toHaveAttribute(
-        "aria-orientation",
-        compact ? "horizontal" : "vertical",
-    );
+async function assertSettingsLayout(page: Page, compact: boolean, { initialViewport = true } = {}) {
+    const tabList = page.getByRole("tablist");
+    await expect(tabList).toHaveAttribute("aria-orientation", compact ? "horizontal" : "vertical");
     if (compact) {
         await expect(settingsRoot(page)).toHaveAttribute("data-compact", "true");
+        await expect
+            .poll(
+                () =>
+                    tabList.evaluate((element) => {
+                        const style = getComputedStyle(element);
+                        const rowHeights = new Map<number, number>();
+                        for (const tab of Array.from(element.querySelectorAll('[role="tab"]'))) {
+                            const tabStyle = getComputedStyle(tab);
+                            // Measure the label and section, since the tab box can stretch.
+                            const childBoxes = Array.from(tab.children, (child) =>
+                                child.getBoundingClientRect(),
+                            );
+                            const intrinsicHeight =
+                                Math.max(...childBoxes.map((box) => box.bottom)) -
+                                Math.min(...childBoxes.map((box) => box.top)) +
+                                parseFloat(tabStyle.paddingTop) +
+                                parseFloat(tabStyle.paddingBottom) +
+                                parseFloat(tabStyle.borderTopWidth) +
+                                parseFloat(tabStyle.borderBottomWidth);
+                            const rowTop = Math.round(tab.getBoundingClientRect().top);
+                            rowHeights.set(
+                                rowTop,
+                                Math.max(rowHeights.get(rowTop) ?? 0, intrinsicHeight),
+                            );
+                        }
+                        // Wrapped rows contribute their intrinsic heights plus gaps.
+                        const rowGap = parseFloat(style.rowGap) || 0;
+                        const tabsHeight =
+                            Array.from(rowHeights.values()).reduce(
+                                (sum, height) => sum + height,
+                                0,
+                            ) +
+                            rowGap * (rowHeights.size - 1);
+                        // clientHeight excludes borders and any horizontal scrollbar.
+                        const contentHeight =
+                            element.clientHeight -
+                            parseFloat(style.paddingTop) -
+                            parseFloat(style.paddingBottom);
+                        return Math.abs(contentHeight - tabsHeight) <= 2 * rowHeights.size;
+                    }),
+                { message: "compact Settings tab list fits its tabs" },
+            )
+            .toBe(true);
+        if (initialViewport) {
+            const heading = page.getByRole("tabpanel").locator(":scope > :first-child");
+            await expect
+                .poll(
+                    () =>
+                        heading.evaluate((element) => {
+                            const { top } = element.getBoundingClientRect();
+                            return top >= 0 && top < window.innerHeight;
+                        }),
+                    { message: "compact Settings panel heading starts within the viewport" },
+                )
+                .toBe(true);
+        }
     } else {
         await expect(settingsRoot(page)).not.toHaveAttribute("data-compact");
+        await expect
+            .poll(
+                () =>
+                    tabList.evaluate((element) =>
+                        Math.abs(
+                            element.getBoundingClientRect().height -
+                                element.parentElement!.getBoundingClientRect().height,
+                        ),
+                    ),
+                { message: "wide Settings tab list fills the Tabs root" },
+            )
+            .toBeLessThanOrEqual(1);
     }
 }
 
@@ -458,7 +524,8 @@ test("font-scaled-breakpoints: live slider change stacks Settings and database p
     // Mantine's End key commits max through onChangeEnd, the same atom update as a mouse release.
     await slider.press("End");
     await expect(slider).toHaveAttribute("aria-valuenow", "200");
-    await assertSettingsLayout(page, true);
+    // The slider interaction already scrolled the panel, so only check the tab-list layout.
+    await assertSettingsLayout(page, true, { initialViewport: false });
     await assertSettingRow(labelledSliderControl(page, "Font Size"), true);
     await assertPageNotClipped(page);
     await capture("live-settings-200");
