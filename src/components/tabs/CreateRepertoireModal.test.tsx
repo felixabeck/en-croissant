@@ -172,10 +172,16 @@ test("cleanup creation preserves repertoire name and blocks all success continua
 });
 
 test.each([
-  { nameTaken: true, message: "unrelated diagnostic", expected: "Name already used" },
+  {
+    nameTaken: true,
+    message: "unrelated diagnostic",
+    expected: "Name already used",
+    hidden: "unrelated diagnostic",
+  },
   {
     message: "Conflict: workspace file already exists",
     expected: "Conflict: workspace file already exists",
+    hidden: "Name already used",
   },
 ])("repertoire conflict $message preserves its name and shows $expected", async (failure) => {
   const { tauri, TauriCommandError } = await import("@/platform/tauri");
@@ -193,7 +199,7 @@ test.each([
   await submitRepertoire();
 
   expect(container.querySelector('[role="alert"]')?.textContent).toBe(failure.expected);
-  if (!failure.nameTaken) expect(container.textContent).not.toContain("Name already used");
+  expect(container.textContent).not.toContain(failure.hidden);
   expect(container.querySelector("input")?.value).toBe("White");
   expect(create).toHaveBeenCalledOnce();
   expect(fixtures.openFile).not.toHaveBeenCalled();
