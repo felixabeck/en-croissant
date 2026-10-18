@@ -1,5 +1,5 @@
 import { MantineProvider } from "@mantine/core";
-import type { Editor } from "@tiptap/react";
+import type { Editor, JSONContent } from "@tiptap/react";
 import { Provider, createStore } from "jotai";
 import { marked } from "marked";
 import { act } from "react";
@@ -18,6 +18,7 @@ import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { defaultTree } from "@/utils/treeReducer";
 import { createCommentMarkdown } from "@/utils/commentMarkdown";
+import { flattenCommentDocument } from "@/utils/commentSerializer";
 import AnnotationEditor from "./AnnotationEditor";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -72,6 +73,21 @@ function editor() {
   return editorElement().editor;
 }
 
+function observeSetContent() {
+  // Tiptap creates a command facade on each getter call. Observe the same facade
+  // that the component will receive, so an unexpected sync is actually counted.
+  const commands = editor().commands;
+  const facade = vi.spyOn(editor(), "commands", "get").mockReturnValue(commands);
+  const setContent = vi.spyOn(commands, "setContent");
+  return {
+    setContent,
+    restore: () => {
+      setContent.mockRestore();
+      facade.mockRestore();
+    },
+  };
+}
+
 test("keeps inline controls and removes every block control", async () => {
   await mount("59. Olvidé mi preparación.");
 
@@ -98,16 +114,16 @@ test("keeps inline controls and removes every block control", async () => {
 
 test.each(commentDialectCases)(
   "loads without writing and preserves text on edit while syntax may normalize: $name",
-  async ({ input, edited, text, editorText, formatting, absent }) => {
+  async ({ input, edited, text, formatting, absent }) => {
     await mount(input);
 
     expect(writeComment).not.toHaveBeenCalled();
     expect(store.getState().currentNode().comment).toBe(input);
     expect(editor().markdown!.instance.lexer(input)).toEqual(createCommentMarkdown().lexer(input));
     expect(editorElement().querySelector(forbiddenCommentElements)).toBeNull();
-    expect(commentDomText(editorElement())).toBe(editorText ?? text);
-    const fixture = { text, editorText, formatting, absent };
-    assertCommentFormatting(editorElement(), fixture, true);
+    expect(commentDomText(editorElement())).toBe(text);
+    const fixture = { text, formatting, absent };
+    assertCommentFormatting(editorElement(), fixture);
     await act(async () => {
       const end = editor().state.doc.content.size - 1;
       // Append an unformatted edit, independently of the preceding text's marks.
@@ -119,8 +135,8 @@ test.each(commentDialectCases)(
     await act(async () => {
       editor().commands.setContent(expected, { emitUpdate: false, contentType: "markdown" });
     });
-    expect(commentDomText(editorElement())).toBe((editorText ?? text) + "!");
-    assertCommentFormatting(editorElement(), fixture, true);
+    expect(commentDomText(editorElement())).toBe(text + "!");
+    assertCommentFormatting(editorElement(), fixture);
     const readerHost = document.createElement("div");
     const readerRoot = createRoot(readerHost);
     try {
@@ -142,41 +158,46 @@ test.each(commentDialectCases)(
   },
 );
 
-test.each(["1. ", "# ", "> ", "- ", "---", "```", "`x`"])(
-  "typing %j stays paragraph text and saves the literal markers",
-  async (marker) => {
-    await mount("seed");
-    await act(async () => {
-      editor().commands.clearContent(false);
-    });
-    expect(writeComment).not.toHaveBeenCalled();
-    // Exercise ProseMirror's text-input handlers so enabled input rules would transform markers.
-    await act(async () => {
-      const view = editor().view;
-      for (const character of marker + "typed text") {
-        const { from, to } = view.state.selection;
-        let handled = false;
-        view.someProp("handleTextInput", (handler) => {
-          handled =
-            handler(view, from, to, character, () =>
-              view.state.tr.insertText(character, from, to),
-            ) === true;
-          return handled;
-        });
-        if (!handled) view.dispatch(view.state.tr.insertText(character, from, to));
-      }
-    });
+test.each([
+  ["1. ", "1. "],
+  ["# ", "# "],
+  ["> ", "\\> "],
+  ["- ", "- "],
+  ["---", "---"],
+  ["```", "```"],
+  ["`x`", "`x`"],
+])("typing %j stays paragraph text and saves the literal markers", async (marker, source) => {
+  await mount("seed");
+  await act(async () => {
+    editor().commands.clearContent(false);
+  });
+  expect(writeComment).not.toHaveBeenCalled();
+  // Exercise ProseMirror's text-input handlers so enabled input rules would transform markers.
+  await act(async () => {
+    const view = editor().view;
+    for (const character of marker + "typed text") {
+      const { from, to } = view.state.selection;
+      let handled = false;
+      view.someProp("handleTextInput", (handler) => {
+        handled =
+          handler(view, from, to, character, () =>
+            view.state.tr.insertText(character, from, to),
+          ) === true;
+        return handled;
+      });
+      if (!handled) view.dispatch(view.state.tr.insertText(character, from, to));
+    }
+  });
 
-    expect(
-      editor()
-        .getJSON()
-        .content?.map((node) => node.type),
-    ).toEqual(["paragraph"]);
-    expect(editorElement().querySelector(forbiddenCommentElements)).toBeNull();
-    expect(editorElement().textContent).toBe(marker + "typed text");
-    expect(store.getState().currentNode().comment).toBe(marker + "typed text");
-  },
-);
+  expect(
+    editor()
+      .getJSON()
+      .content?.map((node) => node.type),
+  ).toEqual(["paragraph"]);
+  expect(editorElement().querySelector(forbiddenCommentElements)).toBeNull();
+  expect(editorElement().textContent).toBe(marker + "typed text");
+  expect(store.getState().currentNode().comment).toBe(source + "typed text");
+});
 
 function registeredCounts(instance: typeof marked) {
   return {
@@ -216,7 +237,6 @@ test("A: consecutive empty paragraphs normalize without writing a sentinel", asy
   expect(await reloadSavedComment()).toBe("x\n\ny");
   expect(commentDomText(editorElement())).toBe("x\n\ny");
   await act(async () => editor().commands.clearContent());
-  expect(editor().getMarkdown()).toBe("");
   expect(store.getState().currentNode().comment).toBe("");
 });
 
@@ -228,7 +248,6 @@ test.each(["&nbsp;", "&nbsp;  \n&nbsp;", "&nbsp;\n\n&nbsp;", "&amp;  \n&#160;"])
       const end = editor().state.doc.content.size - 1;
       editor().view.dispatch(editor().state.tr.delete(end - 1, end));
     });
-    expect(editor().getMarkdown()).toBe(source);
     expect(writeComment).toHaveBeenCalledExactlyOnceWith(source);
     await reloadSavedComment();
     expect(commentDomText(editorElement())).toBe(source.replace(/  \n/g, "\n"));
@@ -302,12 +321,12 @@ test.each(["hard", "soft"])(
 );
 
 test.each([
-  { input: "**a\nb**", expected: "++**a**++\n++**b**++", selector: "u strong" },
-  { input: "*a\nb*", expected: "++*a*++\n++*b*++", selector: "u em" },
-  { input: "~~a\nb~~", expected: "++~~a~~++\n++~~b~~++", selector: "u s" },
+  { input: "**a\nb**", expected: "**++a++\n++b++**", selector: "u strong" },
+  { input: "*a\nb*", expected: "*++a++\n++b++*", selector: "u em" },
+  { input: "~~a\nb~~", expected: "~~++a++\n++b++~~", selector: "u s" },
   {
     input: "[a\nb](https://x.y)",
-    expected: "++[a](https://x.y)++\n++[b](https://x.y)++",
+    expected: "[++a++\n++b++](https://x.y)",
     selector: "u a",
   },
 ])(
@@ -324,14 +343,12 @@ test.each([
   },
 );
 
-test.each(["a   b", "a++b"])(
+test.each(["a   b"])(
   "D: an unrepresentable authored underline preserves %j without generated delimiters",
   async (text) => {
     await mount(text);
     await act(async () => {
-      editor().commands.setTextSelection(
-        text === "a   b" ? { from: 2, to: 5 } : { from: 1, to: text.length + 1 },
-      );
+      editor().commands.setTextSelection({ from: 2, to: 5 });
       editor().commands.toggleUnderline();
     });
     expect(await reloadSavedComment()).toBe(text);
@@ -339,6 +356,311 @@ test.each(["a   b", "a++b"])(
     expect(editorElement().querySelector("u")).toBeNull();
   },
 );
+
+type Span = { text: string; marks?: NonNullable<JSONContent["marks"]>; hardBreak?: boolean };
+const underline = { type: "underline" };
+const link = (href: string, title: string | null = null) => ({
+  type: "link",
+  attrs: { href, title },
+});
+
+function draftDocument(spans: Span[]): JSONContent {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: spans.map(({ text, marks, hardBreak }) => ({
+          type: hardBreak ? "hardBreak" : "text",
+          ...(hardBreak ? {} : { text }),
+          marks,
+        })),
+      },
+    ],
+  };
+}
+
+function expectedFormatting(spans: Span[]) {
+  return {
+    text: spans.map((span) => span.text).join(""),
+    marks: spans.flatMap((span) =>
+      Array.from(span.text, () =>
+        (span.marks ?? [])
+          .map((mark) =>
+            mark.type === "link"
+              ? JSON.stringify(["link", mark.attrs!.href, mark.attrs!.title ?? null])
+              : mark.type,
+          )
+          .sort(),
+      ),
+    ),
+  };
+}
+
+// Read the actual rendered Comment, including whitespace and marks on br nodes.
+function readerFormatting(element: Element) {
+  const spans: Span[] = [];
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE || (node instanceof Element && node.tagName === "BR")) {
+      const marks: NonNullable<JSONContent["marks"]> = [];
+      for (
+        let parent = node.parentElement;
+        parent && element.contains(parent);
+        parent = parent.parentElement
+      ) {
+        const type = { STRONG: "bold", EM: "italic", DEL: "strike", U: "underline" }[
+          parent.tagName
+        ];
+        if (type) marks.push({ type });
+        if (parent.tagName === "A")
+          marks.push(link(parent.getAttribute("href")!, parent.getAttribute("title")));
+      }
+      spans.push({ text: node.nodeType === Node.TEXT_NODE ? node.textContent! : "\n", marks });
+    } else {
+      node.childNodes.forEach(visit);
+    }
+  };
+  const paragraphs = [...element.querySelectorAll("p")];
+  if (paragraphs.length)
+    paragraphs.forEach((paragraph, index) => {
+      if (index) spans.push({ text: "\n\n" });
+      visit(paragraph);
+    });
+  else visit(element);
+  return expectedFormatting(spans);
+}
+
+async function assertSavedFormatting(spans: Span[]) {
+  const wanted = expectedFormatting(spans);
+  const source = await reloadSavedComment();
+  expect(flattenCommentDocument(editor().getJSON())).toEqual(wanted);
+  const readerHost = document.createElement("div");
+  const readerRoot = createRoot(readerHost);
+  try {
+    await act(async () =>
+      readerRoot.render(
+        <MantineProvider>
+          <div data-comment-reader>
+            <Comment comment={source} />
+          </div>
+        </MantineProvider>,
+      ),
+    );
+    expect(readerFormatting(readerHost.querySelector("[data-comment-reader]")!)).toEqual(wanted);
+  } finally {
+    await act(async () => readerRoot.unmount());
+  }
+}
+
+const lossSeeds: { name: string; spans: Span[]; wanted?: Span[]; source: string }[] = [
+  {
+    name: "literal pluses beside underline",
+    spans: [{ text: "a++b" }, { text: "c", marks: [underline] }],
+    source: "a\\+\\+b++c++",
+  },
+  {
+    name: "fully underlined pluses",
+    spans: [{ text: "a++b", marks: [underline] }],
+    source: "++a\\+\\+b++",
+  },
+  { name: "unmarked bold syntax", spans: [{ text: "**x**" }], source: "\\*\\*x\\*\\*" },
+  ...["", "!"].map((edit) => ({
+    name: `adjacent distinct links beside ${JSON.stringify(edit)}`,
+    spans: [
+      { text: "a", marks: [link("https://a.test")] },
+      { text: "b", marks: [link("https://b.test")] },
+      ...(edit ? [{ text: edit }] : []),
+    ],
+    source: `[a](https://a.test)[b](https://b.test)${edit}`,
+  })),
+  {
+    name: "distinct titles",
+    spans: [
+      { text: "a", marks: [link("https://x.y", "first")] },
+      { text: "b", marks: [link("https://x.y", "second")] },
+    ],
+    source: '[a](https://x.y "first")[b](https://x.y "second")',
+  },
+  { name: "unlinked URL", spans: [{ text: "https://a.test" }], source: "https\\://a.test" },
+  {
+    name: "linked underline edge spaces",
+    spans: [{ text: " x ", marks: [underline, link("https://a.test")] }],
+    source: "++[ x ](https://a.test)++",
+  },
+  {
+    name: "only spaces underlined",
+    spans: [{ text: "a" }, { text: "   ", marks: [underline] }, { text: "b" }],
+    wanted: [{ text: "a   b" }],
+    source: "a   b",
+  },
+  {
+    name: "authored underline edge spaces",
+    spans: [{ text: " x ", marks: [underline] }],
+    wanted: [{ text: " " }, { text: "x", marks: [underline] }, { text: " " }],
+    source: " ++x++ ",
+  },
+  ...[false, true].flatMap((hardBreak) => {
+    const newline = hardBreak ? "  \n" : "\n";
+    return [
+      undefined,
+      { type: "bold" },
+      { type: "italic" },
+      { type: "strike" },
+      link("https://x.y"),
+    ].map((mark) => {
+      const letterMarks = [underline, ...(mark ? [mark] : [])];
+      const spanningMarks = mark ? [mark] : [];
+      const middle = `++a++${newline}++b++`;
+      const delimiter = { bold: "**", italic: "*", strike: "~~" }[mark?.type ?? ""];
+      return {
+        name: `${mark?.type ?? "plain underline"} across ${hardBreak ? "hard" : "soft"} break`,
+        spans: [
+          { text: "a", marks: letterMarks },
+          { text: "\n", marks: letterMarks, hardBreak },
+          { text: "b", marks: letterMarks },
+        ],
+        wanted: [
+          { text: "a", marks: letterMarks },
+          { text: "\n", marks: spanningMarks },
+          { text: "b", marks: letterMarks },
+        ],
+        source: !mark
+          ? middle
+          : mark.type === "link"
+            ? `[${middle}](https://x.y)`
+            : `${delimiter}${middle}${delimiter}`,
+      };
+    });
+  }),
+];
+
+test.each(lossSeeds)(
+  "saves and reloads exact text and marks: $name",
+  async ({ spans, wanted, source }) => {
+    await mount("previous comment");
+    await act(async () => editor().commands.setContent(draftDocument(spans)));
+    expect(writeComment).toHaveBeenCalledExactlyOnceWith(source);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await assertSavedFormatting(wanted ?? spans);
+  },
+);
+
+test("removing a URL link saves its label without recreating the link on reload", async () => {
+  await mount("[https://a.test](https://a.test)");
+  await act(async () => {
+    editor().commands.selectAll();
+    editor().commands.unsetLink();
+  });
+  expect(writeComment).toHaveBeenCalledExactlyOnceWith("https\\://a.test");
+  await assertSavedFormatting([{ text: "https://a.test" }]);
+});
+
+test.each([
+  { name: "whitespace-only underline", spans: [{ text: "   ", marks: [underline] }] },
+  { name: "empty link title", spans: [{ text: "draft", marks: [link("https://x.y", "")] }] },
+  {
+    name: "notation rejects the link protocol",
+    spans: [{ text: "draft", marks: [link("ftp://x.y")] }],
+  },
+])("refuses loss without writing or replacing the draft: $name", async ({ spans }) => {
+  await mount("stored comment");
+  const draft = editor().schema.nodeFromJSON(draftDocument(spans));
+  const { setContent, restore } = observeSetContent();
+  await act(async () =>
+    editor().view.dispatch(
+      editor().state.tr.replaceWith(0, editor().state.doc.content.size, draft.content),
+    ),
+  );
+  expect(editor().getJSON()).toEqual(draft.toJSON());
+  expect(writeComment).not.toHaveBeenCalled();
+  expect(setContent).not.toHaveBeenCalled();
+  expect(store.getState().currentNode().comment).toBe("stored comment");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Board.Annotate.SaveFailed");
+  restore();
+  await act(async () =>
+    editor().commands.setContent(draftDocument([{ text: "fixed", marks: [underline] }])),
+  );
+  expect(writeComment).toHaveBeenCalledExactlyOnceWith("++fixed++");
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("a throwing editor adapter refuses the save without changing the draft", async () => {
+  await mount("stored comment");
+  const parse = vi.spyOn(editor().markdown!, "parse").mockImplementation(() => {
+    throw new Error("parse failed");
+  });
+  const draft = editor().schema.nodeFromJSON(
+    draftDocument([{ text: "draft", marks: [underline] }]),
+  );
+  const { setContent } = observeSetContent();
+  await act(async () =>
+    editor().view.dispatch(
+      editor().state.tr.replaceWith(0, editor().state.doc.content.size, draft.content),
+    ),
+  );
+  expect(editor().getJSON()).toEqual(draft.toJSON());
+  expect(writeComment).not.toHaveBeenCalled();
+  expect(setContent).not.toHaveBeenCalled();
+  expect(store.getState().currentNode().comment).toBe("stored comment");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Board.Annotate.SaveFailed");
+  parse.mockRestore();
+});
+
+test("sync preserves the selection for equivalent stored spelling and replaces different text", async () => {
+  await mount("**x**");
+  await act(async () => editor().commands.setTextSelection(2));
+  const selection = editor().state.selection.toJSON();
+  const document = editor().getJSON();
+  const { setContent } = observeSetContent();
+  await act(async () => store.getState().setComment("__x__"));
+  expect(setContent).not.toHaveBeenCalled();
+  expect(editor().getJSON()).toEqual(document);
+  expect(editor().state.selection.toJSON()).toEqual(selection);
+  expect(store.getState().currentNode().comment).toBe("__x__");
+  await act(async () => store.getState().setComment("external text"));
+  expect(setContent).toHaveBeenCalledExactlyOnceWith("external text", {
+    contentType: "markdown",
+    emitUpdate: false,
+  });
+  expect(editor().getText()).toBe("external text");
+});
+
+test.each([
+  {
+    source: "[a  \nb](https://x.y)",
+    mark: expect.objectContaining({
+      type: "link",
+      attrs: expect.objectContaining({ href: "https://x.y", title: null }),
+    }),
+  },
+  { source: "**a  \nb**", mark: { type: "bold" } },
+  { source: "*a  \nb*", mark: { type: "italic" } },
+  { source: "~~a  \nb~~", mark: { type: "strike" } },
+])("loads the enclosing mark onto a hardBreak: $source", async ({ source, mark }) => {
+  await mount(source);
+  const hardBreak = editor()
+    .getJSON()
+    .content![0].content!.find((node) => node.type === "hardBreak");
+  expect(hardBreak).toBeDefined();
+  expect(hardBreak!.marks).toEqual([mark]);
+  expect(writeComment).not.toHaveBeenCalled();
+  expect(store.getState().currentNode().comment).toBe(source);
+});
+
+test.each([
+  { source: "1\\.", text: "1.", saved: "1.!" },
+  { source: "\\+\\+x\\+\\+", text: "++x++", saved: "\\+\\+x\\+\\+!" },
+])("loads decoded escapes and saves an edit: $source", async ({ source, text, saved }) => {
+  await mount(source);
+  expect(editor().getText()).toBe(text);
+  expect(writeComment).not.toHaveBeenCalled();
+  await act(async () => {
+    const end = editor().state.doc.content.size - 1;
+    editor().view.dispatch(editor().state.tr.insert(end, editor().schema.text("!", [])));
+  });
+  expect(writeComment).toHaveBeenCalledExactlyOnceWith(saved);
+  await assertSavedFormatting([{ text: text + "!" }]);
+});
 
 test("Mod-U keeps the underline mark and its Markdown serialization", async () => {
   await mount("x");

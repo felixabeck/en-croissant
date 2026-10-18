@@ -3,7 +3,6 @@ export type CommentDialectCase = {
     name: string;
     input: string;
     text: string;
-    editorText?: string;
     edited?: string;
     formatting: { selector: string; text: string }[];
     absent: string[];
@@ -16,63 +15,75 @@ const cases: CaseInput[] = [
     { name: "move-like prose", input: "59. Olvidé mi preparación." },
     { name: "bullet", input: "- a" },
     { name: "heading", input: "# a" },
-    { name: "quote", input: "> a" },
+    { name: "quote", input: "> a", edited: "\\> a!" },
     { name: "rule", input: "---" },
     { name: "setext heading", input: "a\n---", text: "a\n\n---", edited: "a\n\n---!" },
     { name: "indented code", input: "    indented" },
     { name: "fenced code", input: "```\nfenced text\n```" },
     { name: "inline code", input: "`x`" },
     { name: "table", input: "| a | b |\n| --- | --- |\n| c | d |" },
-    { name: "footnote", input: "call[^1]\n\n[^1]: x" },
+    { name: "footnote", input: "call[^1]\n\n[^1]: x", edited: "call\\[^1\\]\n\n\\[^1\\]\\: x!" },
     {
         name: "reference definition",
         input: "[a]: https://x.y",
-        edited: "[a]: [https://x.y](https://x.y)!",
+        edited: "\\[a\\]\\: [https\\://x.y](https://x.y)!",
         formatting: [{ selector: 'a[href="https://x.y"]', text: "https://x.y" }],
     },
     {
         name: "escaped marker",
         input: "1\\. escaped",
         text: "1. escaped",
-        editorText: "1\\. escaped",
+        edited: "1. escaped!",
     },
     { name: "paragraphs", input: "a\n\nb" },
     { name: "soft break", input: "a\nb" },
-    { name: "unpaired emphasis", input: "plain *star text" },
-    { name: "empty underline stays literal", input: "++++", text: "++++", absent: ["u"] },
+    { name: "unpaired emphasis", input: "plain *star text", edited: "plain \\*star text!" },
+    {
+        name: "empty underline stays literal",
+        input: "++++",
+        text: "++++",
+        edited: "\\+\\+\\+\\+!",
+        absent: ["u"],
+    },
     {
         name: "single-plus underline",
         input: "+++++",
+        edited: "+++++!",
         text: "+",
         formatting: [{ selector: "u", text: "+" }],
     },
     {
         name: "double-check notation",
         input: "Qh7++ Kh8 Qg8++ wins",
+        edited: "Qh7\\+\\+ Kh8 Qg8\\+\\+ wins!",
         text: "Qh7++ Kh8 Qg8++ wins",
         absent: ["u"],
     },
     {
         name: "whitespace-flanked underline stays literal",
         input: "a++ b ++c",
+        edited: "a\\+\\+ b \\+\\+c!",
         text: "a++ b ++c",
         absent: ["u"],
     },
     {
         name: "underline with leading whitespace stays literal",
         input: "++ x++",
+        edited: "\\+\\+ x\\+\\+!",
         text: "++ x++",
         absent: ["u"],
     },
     {
         name: "underline with trailing whitespace stays literal",
         input: "++x ++",
+        edited: "\\+\\+x \\+\\+!",
         text: "++x ++",
         absent: ["u"],
     },
     {
         name: "underline across a newline stays literal",
         input: "++a\nb++",
+        edited: "\\+\\+a\nb\\+\\+!",
         text: "++a\nb++",
         absent: ["u"],
     },
@@ -115,6 +126,7 @@ const cases: CaseInput[] = [
     {
         name: "unmatched underline before strong",
         input: "++a **b**",
+        edited: "\\+\\+a **b**!",
         text: "++a b",
         formatting: [{ selector: "strong", text: "b" }],
         absent: ["u"],
@@ -123,7 +135,7 @@ const cases: CaseInput[] = [
         name: "inline formatting",
         input: "**b** *i* ++u++ ~~s~~ [l](https://x.y) https://lichess.org",
         text: "b i u s l https://lichess.org",
-        edited: "**b** *i* ++u++ ~~s~~ [l](https://x.y) [https://lichess.org](https://lichess.org)!",
+        edited: "**b** *i* ++u++ ~~s~~ [l](https://x.y) [https\\://lichess.org](https://lichess.org)!",
         formatting: [
             { selector: "strong", text: "b" },
             { selector: "em", text: "i" },
@@ -131,6 +143,24 @@ const cases: CaseInput[] = [
             { selector: "del", text: "s" },
             { selector: 'a[href="https://x.y"]', text: "l" },
             { selector: 'a[href="https://lichess.org"]', text: "https://lichess.org" },
+        ],
+    },
+    {
+        name: "adjacent links with distinct destinations",
+        input: "[a](https://a.test)[b](https://b.test)",
+        text: "ab",
+        formatting: [
+            { selector: 'a[href="https://a.test"]', text: "a" },
+            { selector: 'a[href="https://b.test"]', text: "b" },
+        ],
+    },
+    {
+        name: "adjacent links with distinct titles",
+        input: '[a](https://x.y "first")[b](https://x.y "second")',
+        text: "ab",
+        formatting: [
+            { selector: 'a[title="first"]', text: "a" },
+            { selector: 'a[title="second"]', text: "b" },
         ],
     },
     {
@@ -148,7 +178,7 @@ const cases: CaseInput[] = [
             { selector: "u:last-of-type", text: "underlined" },
         ],
     },
-    { name: "raw HTML", input: "<b>x</b>" },
+    { name: "raw HTML", input: "<b>x</b>", edited: "\\<b\\>x\\</b\\>!" },
     {
         name: "strike with underline",
         input: "++~~x~~++",
@@ -171,6 +201,8 @@ const cases: CaseInput[] = [
         {
             name: `D3-1 strong across ${JSON.stringify(separator)}`,
             input: `++**a${separator}b**++`,
+            edited:
+                separator === "\n" ? "\\+\\+**a\nb**\\+\\+!" : "\\+\\+\\*\\*a\n\nb\\*\\*\\+\\+!",
             text: separator === "\n" ? `++a${separator}b++` : `++**a${separator}b**++`,
             formatting: separator === "\n" ? [{ selector: "strong", text: `a${separator}b` }] : [],
             absent: ["u"],
@@ -178,6 +210,7 @@ const cases: CaseInput[] = [
         {
             name: `D3-1 emphasis across ${JSON.stringify(separator)}`,
             input: `++*a${separator}b*++`,
+            edited: separator === "\n" ? "\\+\\+*a\nb*\\+\\+!" : "\\+\\+\\*a\n\nb\\*\\+\\+!",
             text: separator === "\n" ? `++a${separator}b++` : `++*a${separator}b*++`,
             formatting: separator === "\n" ? [{ selector: "em", text: `a${separator}b` }] : [],
             absent: ["u"],
@@ -185,6 +218,8 @@ const cases: CaseInput[] = [
         {
             name: `D3-1 strike across ${JSON.stringify(separator)}`,
             input: `++~~a${separator}b~~++`,
+            edited:
+                separator === "\n" ? "\\+\\+~~a\nb~~\\+\\+!" : "\\+\\+\\~\\~a\n\nb\\~\\~\\+\\+!",
             text: separator === "\n" ? `++a${separator}b++` : `++~~a${separator}b~~++`,
             formatting: separator === "\n" ? [{ selector: "del", text: `a${separator}b` }] : [],
             absent: ["u"],
@@ -194,7 +229,9 @@ const cases: CaseInput[] = [
             input: `++[a${separator}b](https://x.y)++`,
             text: separator === "\n" ? `++a${separator}b++` : `++[a${separator}b](https://x.y)++`,
             edited:
-                separator === "\n" ? undefined : "++[a\n\nb]([https://x.y)++](<https://x.y)++>)!",
+                separator === "\n"
+                    ? "\\+\\+[a\nb](https://x.y)\\+\\+!"
+                    : "\\+\\+\\[a\n\nb\\]\\([https\\://x.y\\)\\+\\+](<https://x.y)++>)!",
             formatting:
                 separator === "\n"
                     ? [{ selector: 'a[href="https://x.y"]', text: `a${separator}b` }]
@@ -206,7 +243,7 @@ const cases: CaseInput[] = [
         name: "underline autolink boundary",
         input: "++https://x.y/p++",
         text: "https://x.y/p",
-        edited: "++[https://x.y/p](https://x.y/p)++!",
+        edited: "++[https\\://x.y/p](https://x.y/p)++!",
         formatting: [{ selector: 'u a[href="https://x.y/p"]', text: "https://x.y/p" }],
     },
     {
@@ -219,6 +256,7 @@ const cases: CaseInput[] = [
     {
         name: "crossing strong boundary",
         input: "++**x++**",
+        edited: "++\\*\\*x++\\*\\*!",
         text: "**x**",
         formatting: [{ selector: "u", text: "**x" }],
         absent: ["strong"],
@@ -230,7 +268,7 @@ const cases: CaseInput[] = [
         edited: "++ab++!",
         formatting: [{ selector: "u", text: "ab" }],
     },
-    { name: "unmatched underline", input: "++x" },
+    { name: "unmatched underline", input: "++x", edited: "\\+\\+x!" },
     {
         name: "backticks inside underline",
         input: "++`x`++",
@@ -241,17 +279,24 @@ const cases: CaseInput[] = [
         name: "escape inside underline",
         input: "++1\\.++",
         text: "1.",
-        editorText: "1\\.",
+        edited: "++1.++!",
         formatting: [{ selector: "u", text: "1." }],
     },
     {
         name: "escaped underline delimiters",
         input: "\\+\\+x\\+\\+",
         text: "++x++",
-        editorText: "\\+\\+x\\+\\+",
     },
-    { name: "Markdown image", input: "![a](https://x.y/i)" },
-    { name: "formatted image label stays literal", input: "![**a**](u)" },
+    {
+        name: "Markdown image",
+        input: "![a](https://x.y/i)",
+        edited: "\\!\\[a\\]\\(https\\://x.y/i\\)!",
+    },
+    {
+        name: "formatted image label stays literal",
+        input: "![**a**](u)",
+        edited: "\\!\\[\\*\\*a\\*\\*\\]\\(u\\)!",
+    },
     { name: "literal entity", input: "&nbsp;" },
     { name: "literal entities in paragraphs", input: "&nbsp;\n\n&nbsp;" },
     { name: "entity among text", input: "a &nbsp; &amp; b" },
@@ -264,6 +309,7 @@ const cases: CaseInput[] = [
     {
         name: "HTML tags do not change nested configuration",
         input: "++<script>**x**</script>++",
+        edited: "++\\<script\\>**x**\\</script\\>++!",
         text: "<script>x</script>",
         formatting: [
             { selector: "u", text: "<script>x</script>" },

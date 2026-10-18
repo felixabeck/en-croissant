@@ -100,6 +100,16 @@ test("escapes literal delimiters independently of authored formatting", () => {
     );
 });
 
+test("keeps an isolated underlined plus before an unmarked edit", () => {
+    expect.hasAssertions();
+    roundTrip([{ text: "+", marks: ["underline"] }, { text: "!" }], undefined, "+++++!");
+});
+
+test("refuses an underline ending in a plus after another character", () => {
+    const input = document([{ text: "x+", marks: ["underline"] }]);
+    expect(compareCommentDocument(input, [reparse])).toEqual({ saved: false });
+});
+
 test("keeps adjacent link destinations and titles distinct beside unmarked edits", () => {
     expect.hasAssertions();
     for (const edit of ["", "!"]) {

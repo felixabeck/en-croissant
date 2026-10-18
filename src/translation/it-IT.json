@@ -100,6 +100,7 @@
     "Board.Analysis.Tablebase.WhiteWins": "Bianco vince",
     "Board.Analysis.Time": "Tempo (ms)",
     "Board.Analysis.Unpin": "Rimuovi dalla notazione",
+    "Board.Annotate.SaveFailed": "Questa annotazione non è stata salvata perché il salvataggio ne modificherebbe il testo o la formattazione. Il commento precedente rimane invariato.",
     "Board.Annotate.WriteHere": "Scrivi qui...",
     "Board.Aria.Color.black": "Nero",
     "Board.Aria.Color.white": "Bianco",

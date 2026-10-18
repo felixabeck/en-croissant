@@ -148,7 +148,11 @@ export function normalizeCommentDocument(document: JSONContent): JSONContent {
 function literal(character: Character, index: number, characters: Character[]): string {
     if (character.hardBreak) return "  \n";
     if (
-        /[\\*_[\]~+<>:()]/u.test(character.text) ||
+        /[\\*_[\]~<>:()]/u.test(character.text) ||
+        (character.text === "+" &&
+            [characters[index - 1], characters[index + 1]].some(
+                (neighbor) => neighbor?.text === "+" && !neighbor.hardBreak,
+            )) ||
         (character.text === "!" && characters[index + 1]?.text === "[")
     )
         return `\\${character.text}`;

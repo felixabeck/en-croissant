@@ -100,6 +100,7 @@
     "Board.Analysis.Tablebase.WhiteWins": "Victoire des blancs",
     "Board.Analysis.Time": "Temps (ms)",
     "Board.Analysis.Unpin": "Désépingler de la notation",
+    "Board.Annotate.SaveFailed": "Cette annotation n’a pas été enregistrée, car cela modifierait son texte ou sa mise en forme. Le commentaire précédent reste inchangé.",
     "Board.Annotate.WriteHere": "Écrire ici...",
     "Board.Aria.Color.black": "Noirs",
     "Board.Aria.Color.white": "Blancs",
