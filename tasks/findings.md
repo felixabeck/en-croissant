@@ -16690,7 +16690,7 @@ This supersedes all earlier implementation/review/native-pending status for this
 ## 2026-10-16 — filed through the inbox spool
 
 ### Library game previews ignore imported graphical annotations even for supported colors
-* **ID:** f-20261016-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261016-03 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** chessbase-six-colors-chessbase-six-colors-20261016-153044-fe41d32b
 * **Impact class:** behaviour
 * **Where:** src/components/databases/GamePreview.tsx, PreviewBoard around line 209.
@@ -16703,6 +16703,11 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Defect:** PreviewBoard obtains the current node but passes only continuation chooser arrows to Chessground. The generic Chessground wrapper forwards those props and does not inject node.shapes, so a selected annotated PGN position displays no saved arrows or square markings in the library preview.
 * **Proof:** Source trace through src/components/databases/GamePreview.tsx:209 and src/chessground/Chessground.tsx:91-132 establishes the omitted field. Proposed regression: add an annotated PGN SVG assertion to e2e/files-preview.spec.ts, run pnpm test:e2e:container --project=files-preview, require failure before saved node shapes reach autoShapes and success after. This build has not executed a preview-specific browser regression.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"2ffda7b2970598b13bd8819e63e01dfbe0b9cfa8ef1364ffaf55f48961abb41c","input_sha256":"17e7732c1f7dfc55d2616dc5af18895521b65cd781f401e4a1625d50a150bef6","kind":"mutation-receipt","operation":"6e4cf725ab3d8cb26938646d741f4257ac2c35e50d0324fa0975309ad4a460ee","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-03"],"target":"f-20261016-03","v":1} -->
+
+PreviewBoard passes continuation chooser arrows, then the current node's shapes, with the existing continuation brushes and viewOnly left true (d-20261018-11). A zero-size board withholds autoShapes. A later positive size clears cached bounds and calls setAutoShapes, so a resize does not wipe drawings on a board that passes a fen without drawable.shapes.
+
+Proof before the close: vitest on Chessground and GamePreview passed 22 tests. pnpm test:e2e:container --project=files-preview passed 9 tests, including the saved-shapes case, and wrote no snapshot diff. Pre-review exited 0 on 14bc09b4 (artifacts/gates/20261018T172305454Z-3106131). Review record: tasks/handoffs/2026-10-18-f-20261016-03-review.md. Decisions d-20261018-11 and d-20261018-12.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"a7e89a922f32c4edae6dbdb2cba5981862b1e160775fde61aa112d82f26de522","header_sha256":"1bad7f02dd594126cee18ba9ed245f0db1a9c28a8460fdddea687ccf1d0766f8","header_status":"handled","input_sha256":"4748d67085b218b5f7240f68a23379464b3cc0d0cb7e3d4a332f5b2fed760c6d","kind":"mutation-receipt","operation":"6558214ae1bf793a6bc5eb440f3d0e778c57a54dda2bc9f3555411fb624ccdb6","options":{"section":null},"request_id_sha256":null,"results":["f-20261016-03"],"target":"f-20261016-03","v":1} -->
 
 ---
 
