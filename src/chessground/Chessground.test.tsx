@@ -10,7 +10,10 @@ const api = {
   playPremove: vi.fn(() => false),
   cancelPremove: vi.fn(),
   selectSquare: vi.fn(),
-  state: { premovable: { current: undefined as string[] | undefined } },
+  state: {
+    premovable: { current: undefined as string[] | undefined },
+    dom: { bounds: { clear: vi.fn() } },
+  },
   getFen: vi.fn(() => "start"),
 };
 const createChessground = vi.fn(() => api);
@@ -18,12 +21,38 @@ const createChessground = vi.fn(() => api);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 installMatchMediaStub();
 
+const observed = new Map<Element, () => void>();
+class MockResizeObserver implements ResizeObserver {
+  private readonly elements = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {}
+
+  observe(element: Element) {
+    this.elements.add(element);
+    observed.set(element, () => this.callback([], this));
+  }
+
+  unobserve(element: Element) {
+    this.elements.delete(element);
+    observed.delete(element);
+  }
+
+  disconnect() {
+    for (const element of this.elements) observed.delete(element);
+    this.elements.clear();
+  }
+}
+Object.assign(globalThis, { ResizeObserver: MockResizeObserver });
+
 vi.mock("@lichess-org/chessground", () => ({ Chessground: createChessground }));
 
 afterEach(() => {
   api.destroy.mockClear();
   api.set.mockClear();
+  api.state.dom.bounds.clear.mockClear();
   createChessground.mockClear();
+  observed.clear();
+  vi.restoreAllMocks();
 });
 
 test("constructs Chessground once, updates it, and destroys it on unmount", async () => {
@@ -60,4 +89,45 @@ test("constructs Chessground once, updates it, and destroys it on unmount", asyn
 
   await act(async () => root.unmount());
   expect(api.destroy).toHaveBeenCalledTimes(1);
+});
+
+test("defers saved shapes until the observed board has positive bounds", async () => {
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  const { Chessground } = await import("./Chessground");
+  const savedShape = { orig: "h5", dest: "h5", brush: "cyan" } as const;
+
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground drawable={{ autoShapes: [savedShape] }} />
+      </MantineProvider>,
+    );
+  });
+  expect(createChessground).toHaveBeenCalledWith(
+    expect.any(HTMLElement),
+    expect.objectContaining({ drawable: { autoShapes: [] } }),
+  );
+  expect(api.set).toHaveBeenLastCalledWith(
+    expect.objectContaining({ drawable: { autoShapes: [] } }),
+  );
+  expect(observed.size).toBe(1);
+  const [element, onResize] = [...observed.entries()][0];
+  expect(element.getBoundingClientRect()).toMatchObject({ width: 0, height: 0 });
+  await act(async () => onResize());
+  expect(api.state.dom.bounds.clear).not.toHaveBeenCalled();
+
+  vi.spyOn(element, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 400, 400));
+  api.set.mockClear();
+  await act(async () => onResize());
+  expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
+  expect(api.set).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ drawable: { autoShapes: [savedShape] } }),
+  );
+  await act(async () => onResize());
+  expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
+  expect(api.set).toHaveBeenCalledTimes(1);
+
+  await act(async () => root.unmount());
+  expect(observed.size).toBe(0);
 });
