@@ -16937,3 +16937,16 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Evidence:** Felix reported the failure with a screenshot on 2026-10-19. OpenMoveMenu attaches its outside-click ref to MoveCell while the dropdown is rendered through Portal. Existing tests mock useClickOutside and dispatch click directly.
 * **Related:** f-20260922-08 covers earlier move-path rebasing, a different mechanism.
 * **Fix:** Delegate dismissal to Mantine Menu and prove pointer interaction in the browser, with a fix-revert regression run.
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Git enumeration CLI tests assume a filesystem-dependent Git diagnostic
+
+* **ID:** f-20261019-09 · **Status:** open · **Area:** gate-scripts · **Root:** git-discovery-diagnostic-portability · **Entry:** lens · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** `scripts/check-ipc-command-consumers.test.mjs`, `scripts/check-untranslated-jsx.test.mjs`
+* **Failure scenario:** The upstream Linux test runner reaches a filesystem boundary while discovering Git in a disposable non-repository fixture. Git prints the mount-point variant of its diagnostic. Two CLI tests expect the parent-directories variant byte-for-byte, so the test job fails and cancels macOS jobs.
+* **Evidence:** Test run 39273004421 at 6e38261b, job 118129963955, reports these two assertion failures with 4576 other tests passing.
+* **Proof:** Reproduce both Git discovery outcomes locally against the existing tests, then preserve exact checker exit and diagnostic-prefix guarantees while allowing Git's genuine environment-dependent detail.
