@@ -527,8 +527,90 @@ test("accounts-puzzles-engines: retains unsaved public cards and retries only th
                 ].includes(command),
             ),
     );
-    await notice.getByRole("button", { name: "Try saving again", exact: true }).click();
+    const retry = notice.getByRole("button", { name: "Try saving again", exact: true });
+    const title = notice.getByText("Accounts could not be saved", { exact: true });
+    const explanation = notice.getByText(
+        "Your accounts are available during this session. Unsaved account changes may be lost when you close or reload ChessFable.",
+        { exact: true },
+    );
+    async function expectNoticeReachable(width: number, height: number) {
+        expect(page.viewportSize()).toEqual({ width, height });
+        await expect(page.locator("html")).toHaveCSS("font-size", "32px");
+        await expect(notice).toHaveCSS("position", "fixed");
+        const geometry = await notice.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+                viewport: { width: window.innerWidth, height: window.innerHeight },
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                clientHeight: element.clientHeight,
+                scrollHeight: element.scrollHeight,
+            };
+        });
+        expect(geometry.viewport).toEqual({ width, height });
+        expect(geometry.left).toBeGreaterThan(0);
+        expect(geometry.top).toBeGreaterThan(0);
+        expect(geometry.right).toBeLessThan(width);
+        expect(geometry.bottom).toBeLessThan(height);
+        await expect(notice).toHaveCSS(
+            "background-color",
+            await page.locator("body").evaluate((body) => getComputedStyle(body).backgroundColor),
+        );
+        expect(geometry.scrollHeight).toBe(geometry.clientHeight);
+        await expect(title).toBeInViewport({ ratio: 1 });
+        await expect(retry).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(notice, { mode: "reachable" });
+        const titleBeforeScroll = await title.boundingBox();
+        const retryBeforeScroll = await retry.boundingBox();
+        const textGeometry = await explanation.evaluate((element) => ({
+            clientHeight: element.clientHeight,
+            scrollHeight: element.scrollHeight,
+            horizontalOverflow: element.scrollWidth - element.clientWidth,
+        }));
+        expect(textGeometry.clientHeight).toBeGreaterThan(0);
+        expect(textGeometry.horizontalOverflow).toBeLessThanOrEqual(1);
+        await explanation.focus();
+        await explanation.press("Control+End");
+        await expect
+            .poll(() => explanation.evaluate((element) => element.scrollTop))
+            .toBe(textGeometry.scrollHeight - textGeometry.clientHeight);
+        await expect(title).toBeInViewport({ ratio: 1 });
+        await expect(retry).toBeInViewport({ ratio: 1 });
+        expect(await title.boundingBox()).toEqual(titleBeforeScroll);
+        expect(await retry.boundingBox()).toEqual(retryBeforeScroll);
+        await assertNothingClipped(notice, { mode: "reachable" });
+        await explanation.press("Control+Home");
+        await expect.poll(() => explanation.evaluate((element) => element.scrollTop)).toBe(0);
+        await retry.scrollIntoViewIfNeeded();
+        await expect(title).toBeInViewport({ ratio: 1 });
+        await expect(retry).toBeInViewport({ ratio: 1 });
+        expect(
+            await retry.evaluate((button) => {
+                const rect = button.getBoundingClientRect();
+                return button.contains(
+                    document.elementFromPoint(
+                        rect.left + rect.width / 2,
+                        rect.top + rect.height / 2,
+                    ),
+                );
+            }),
+        ).toBe(true);
+        console.log(
+            `Session persistence notice ${width}x${height}: ${JSON.stringify({
+                ...geometry,
+                title: titleBeforeScroll,
+                retry: retryBeforeScroll,
+                explanation: textGeometry,
+            })}`,
+        );
+    }
+    await expectNoticeReachable(1440, 900);
+    await retry.click();
     await expect(notice).toBeVisible();
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(retry).toBeInViewport({ ratio: 1 });
     await expect(page.getByText("Latest alias", { exact: true }).first()).toBeVisible();
     await expect(
         page.locator(".mantine-Card-root").filter({ hasText: "retained-chesscom" }),
@@ -544,6 +626,11 @@ test("accounts-puzzles-engines: retains unsaved public cards and retries only th
     await page.setViewportSize({ width: 320, height: 720 });
     await expect(page.locator("html")).toHaveCSS("font-size", "32px");
     await assertNothingClipped(notice, { mode: "reachable" });
+    await expectNoticeReachable(320, 720);
+    await retry.click();
+    await expect(notice).toBeVisible();
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(retry).toBeInViewport({ ratio: 1 });
     await capture("session-persistence-unsaved-320px-200pct");
     await expect(page).toHaveScreenshot("session-persistence-unsaved-320px-200pct.png", {
         fullPage: true,

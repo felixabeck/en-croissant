@@ -19,6 +19,8 @@ export function SessionPersistenceNotice() {
   return (
     <Alert
       color="orange"
+      variant="outline"
+      bg="var(--mantine-color-body)"
       title={
         t("Accounts.Persistence.Title", {
           defaultValue: enUS.translation["Accounts.Persistence.Title"],
@@ -26,25 +28,37 @@ export function SessionPersistenceNotice() {
       }
       role="alert"
       pos="fixed"
-      bottom="xs"
-      right="xs"
+      bottom="var(--mantine-spacing-xs)"
+      right="var(--mantine-spacing-xs)"
       w="36rem"
       style={{
         // Keep dialogs and menus above this nonmodal recovery warning.
         zIndex: getDefaultZIndex("modal") - 1,
         maxWidth: "calc(100vw - 2rem)",
         maxHeight: "calc(100dvh - 2rem)",
-        overflowY: "auto",
+        display: "flex",
+        flexDirection: "column",
         overflowWrap: "anywhere",
       }}
+      styles={{
+        wrapper: { minHeight: 0 },
+        body: { minHeight: 0 },
+        title: { flexShrink: 0 },
+        message: { display: "flex", minHeight: 0 },
+      }}
     >
-      <Stack align="flex-start" gap="sm">
-        <Text>
+      <Stack align="flex-start" gap="sm" mih={0} style={{ flex: 1 }}>
+        <Text tabIndex={0} mih={0} style={{ overflowY: "auto" }}>
           {t("Accounts.Persistence.Unsaved", {
             defaultValue: enUS.translation["Accounts.Persistence.Unsaved"],
           }) || enUS.translation["Accounts.Persistence.Unsaved"]}
         </Text>
-        <Button className="wrap-button" maw="100%" onClick={() => retrySessionPersistence()}>
+        <Button
+          className="wrap-button"
+          maw="100%"
+          style={{ flexShrink: 0 }}
+          onClick={() => retrySessionPersistence()}
+        >
           {t("Accounts.Persistence.TryAgain", {
             defaultValue: enUS.translation["Accounts.Persistence.TryAgain"],
           }) || enUS.translation["Accounts.Persistence.TryAgain"]}
