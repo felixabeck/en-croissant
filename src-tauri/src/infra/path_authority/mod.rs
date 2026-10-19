@@ -10603,6 +10603,9 @@ pub(crate) mod portable_tests {
         let temp = f.sweep_temp();
         f.authority
             .set_engine_image_sweep_root(Some(AppDataDir::for_test(&f.app_data)));
+        // Windows can refuse an ancestor rename while this unused child handle is open.
+        // Keep the authority's admitted app-data handle for the sweep's root-binding proof.
+        drop(f.image_dir);
         let retained = tempfile::tempdir().unwrap();
         let admitted = retained.path().join("admitted");
         fs::rename(&f.app_data, &admitted).unwrap();
