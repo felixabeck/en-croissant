@@ -8897,3 +8897,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** stop recording the per-root bit and stop calling the setter.
 * **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"4b8253da6153181a2eaa4ef4010ab75f6b71054784130ce19bc46f3d6007341e","input_sha256":"418623eebae4c72c9243d238aa9fea45e74cdf897bfce2e27f98849308f4bce4","kind":"mutation-receipt","operation":"16eae16d4fc4796300b8e72b97dd37de459d31c97a098d93317740f88ca8cfa5","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-09 — what listing limit does the sweep use?
+
+* **Question:** what listing limit does the sweep use?
+* **Governs:** f-20261004-12, f-20261004-13
+* **Chosen:** `MAX_DIRECTORY_LISTING_ENTRIES.saturating_mul(2)` (8192). On `Err`, delete nothing.
+* **Rejected:** 4096 (skips a full registry plus one orphan plus temps) and an unbounded list (a partial or huge listing is not a deletion set).
+* **Reason:** `check_directory_listing_bound` fails the whole call before it returns a `Vec`. 8192 covers 4096 registered ids plus 4096 orphans or temps.
+* **Reversal path:** change the limit expression and the 4097 / 8193 tests together.
+
+* **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"f2161344795f39f4dabcaee59cb67be8f62a8543895f5d73b27cfd7970f43765","input_sha256":"8544eec43be894d9c744f84e256067510468ff868e2b90318f08864b4d77271d","kind":"mutation-receipt","operation":"97946a128e9e544a70b7b2199b57c87bafcae8345bd33cfa67143400d39703e3","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-09"],"target":"decisions-ledger","v":1} -->
