@@ -376,18 +376,38 @@ export async function assertChooserInsideBoard(board: Locator, chooser: Locator)
     ).toBeLessThanOrEqual(4);
 }
 
+function squarePosition(square: string, box: { width: number; height: number }) {
+    const file = square.charCodeAt(0) - "a".charCodeAt(0);
+    const rank = Number(square[1]) - 1;
+    return {
+        x: ((file + 0.5) * box.width) / 8,
+        y: ((7 - rank + 0.5) * box.height) / 8,
+    };
+}
+
+export async function drawMark(page: Page, board: Locator, from: string, to = from) {
+    await expect(board).toBeVisible();
+    const box = (await board.boundingBox())!;
+    const start = squarePosition(from, box);
+    const end = squarePosition(to, box);
+    await page.mouse.move(box.x + start.x, box.y + start.y);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(box.x + end.x, box.y + end.y, { steps: 4 });
+    // Chessground resolves the drawing endpoint on its animation frame.
+    await board.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await page.mouse.up({ button: "right" });
+    await page.mouse.move(0, 0);
+}
+
 export async function playBoardMove(_page: Page, board: Locator, from: string, to: string) {
     for (const square of [from, to]) {
         // Wait for visible, stable geometry before measuring each square.
         await board.click({ trial: true });
         const box = (await board.boundingBox())!;
-        const file = square.charCodeAt(0) - "a".charCodeAt(0);
-        const rank = Number(square[1]) - 1;
         await board.click({
-            position: {
-                x: ((file + 0.5) * box.width) / 8,
-                y: ((7 - rank + 0.5) * box.height) / 8,
-            },
+            position: squarePosition(square, box),
         });
     }
 }

@@ -1,5 +1,6 @@
 import {
     assertChooserInsideBoard,
+    drawMark,
     expect,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
@@ -10,27 +11,6 @@ import {
     test,
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
-import type { Locator, Page } from "@playwright/test";
-
-async function drawMark(page: Page, board: Locator, from: string, to = from) {
-    await expect(board).toBeVisible();
-    const box = (await board.boundingBox())!;
-    const point = (square: string) => ({
-        x: box.x + ((square.charCodeAt(0) - 97 + 0.5) * box.width) / 8,
-        y: box.y + ((8 - Number(square[1]) + 0.5) * box.height) / 8,
-    });
-    const start = point(from);
-    const end = point(to);
-    await page.mouse.move(start.x, start.y);
-    await page.mouse.down({ button: "right" });
-    await page.mouse.move(end.x, end.y, { steps: 4 });
-    // Chessground resolves the drawing endpoint on its animation frame.
-    await board.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-    );
-    await page.mouse.up({ button: "right" });
-    await page.mouse.move(0, 0);
-}
 
 test("board-keyboard: user marks coexist, toggle individually, persist per node and clear on left click", async ({
     page,

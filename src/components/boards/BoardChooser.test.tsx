@@ -234,12 +234,22 @@ test("card is a sibling of the grid, hover selects and click plays without showi
 
 test("puzzle board uses the same frame, card and brushes", () => {
   render(initialTree(), true);
+  const stored = { orig: "a1", dest: "a3", brush: "green" } as const;
+  act(() => boardConfig.drawable!.onChange!([stored]));
+  expect(tree.getState().currentNode().shapes).toEqual([stored]);
   press("ArrowRight");
   const board = host.querySelector('[class*="chessboard"]')!;
   const list = host.querySelector('[role="listbox"]')!;
   expect(list.parentElement!.parentElement).toBe(board.parentElement);
   expect(boardConfig.drawable!.autoShapes).toHaveLength(3);
+  expect(boardConfig.drawable!.shapes).toEqual([stored]);
   expect(boardConfig.drawable!.brushes).toBe(continuationBrushes);
+  press("Escape");
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
+  act(() => boardConfig.drawable!.onChange!([]));
+  expect(tree.getState().currentNode().shapes).toEqual([]);
+  expect(boardConfig.drawable!.shapes).toEqual([]);
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
 });
 
 test("a child without a move has no arrow", () => {

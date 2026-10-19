@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { validateMoveSequence } from "@/state/store/tree";
 import { Chessground } from "@/chessground/Chessground";
+import { useNodeDrawables } from "@/chessground/useNodeDrawables";
 import type { PathRef } from "@/bindings";
 import { jumpToNextPuzzleAtom, moveHighlightAtom, showCoordinatesAtom } from "@/state/atoms";
 import classes from "@/styles/Chessboard.module.css";
@@ -53,7 +54,7 @@ function PuzzleBoard({
   const position = useStore(store, (s) => s.position);
   const moveHighlight = useAtomValue(moveHighlightAtom);
   const { choice } = useVariationChooser();
-  const boardShapes = useStore(store, (s) => s.currentNode().shapes);
+  const nodeDrawables = useNodeDrawables(store);
   const makeMove = useStore(store, (s) => s.makeMove);
   const makeMoves = useStore(store, (s) => s.makeMoves);
   const reset = useForceUpdate();
@@ -207,7 +208,8 @@ function PuzzleBoard({
             drawable={{
               enabled: true,
               visible: true,
-              autoShapes: [...chooserArrows(choice), ...boardShapes],
+              ...nodeDrawables,
+              autoShapes: chooserArrows(choice),
               brushes: continuationBrushes,
             }}
             movable={{

@@ -3,6 +3,7 @@ import { MantineProvider } from "@mantine/core";
 import { Provider, createStore, useAtom } from "jotai";
 import { act, useContext, type ComponentProps } from "react";
 import type { Config } from "@lichess-org/chessground/config";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type {
@@ -26,6 +27,7 @@ import { getPuzzleProgress, type Puzzle } from "@/utils/puzzles";
 import { defaultTree, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import {
   puzzleTimerFamily,
+  eraseDrawablesOnClickAtom,
   jumpToNextPuzzleAtom,
   puzzleRatingRangeAtom,
   puzzleThemeAtom,
@@ -1244,6 +1246,40 @@ test("a terminal alternate mate offers no hint or bogus shape", async () => {
   expect(storedHistoryBytes()).toBe(rows);
   expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
+
+test.each([true, false])(
+  "puzzle drawings stay editable through progressive hints with erase preference %s",
+  async (erase) => {
+    const atoms = await loadPlaybackPuzzle();
+    await act(async () => atoms.set(eraseDrawablesOnClickAtom, erase));
+    const marks: DrawShape[] = [
+      { orig: "c4", brush: "green" },
+      { orig: "d4", brush: "green" },
+      { orig: "a3", dest: "a5", brush: "green" },
+    ];
+    expect(mocks.board?.drawable?.eraseOnMovablePieceClick).toBe(erase);
+    expect(mocks.board?.drawable?.onChange).toEqual(expect.any(Function));
+    await act(async () => mocks.board!.drawable!.onChange!(marks));
+    expect(treeStore.getState().currentNode().shapes).toEqual(marks);
+    for (const hint of [
+      [{ orig: "e7", dest: undefined, brush: "green" }],
+      [{ orig: "e7", dest: "e5", brush: "green" }],
+      [],
+    ]) {
+      await act(async () => hintButton().click());
+      expect(mocks.board?.drawable?.shapes).toEqual([...marks, ...hint]);
+      expect(mocks.board?.drawable?.autoShapes).toEqual([]);
+      expect(treeStore.getState().currentNode().shapes).toEqual([...marks, ...hint]);
+    }
+    // Chessground reports its complete remaining editable layer when toggling or clearing.
+    await act(async () => mocks.board!.drawable!.onChange!(marks.slice(1)));
+    expect(treeStore.getState().currentNode().shapes).toEqual(marks.slice(1));
+    expect(mocks.board?.drawable?.shapes).toEqual(marks.slice(1));
+    await act(async () => mocks.board!.drawable!.onChange!([]));
+    expect(treeStore.getState().currentNode().shapes).toEqual([]);
+    expect(mocks.board?.drawable?.shapes).toEqual([]);
+  },
+);
 
 test("the second Nf3 occurrence hints d7-d5 from the live cursor with progressive shapes", async () => {
   const moves = "e2e4 g8f6 g1f3 f6g8 f3g1 g8f6 g1f3 d7d5";

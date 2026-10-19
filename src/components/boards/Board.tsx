@@ -22,13 +22,13 @@ import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { Chessground, type ChessgroundRef } from "@/chessground/Chessground";
+import { useNodeDrawables } from "@/chessground/useNodeDrawables";
 import {
   autoPromoteAtom,
   createBestMovesAtom,
   evalOpenFamily,
   showCommentsFamily,
   enableBoardScrollAtom,
-  eraseDrawablesOnClickAtom,
   forcedEnPassantAtom,
   materialDisplayAtom,
   moveHighlightAtom,
@@ -142,7 +142,7 @@ function Board({
   const storeMakeMove = useStore(store, (s) => s.makeMove);
   const setHeaders = useStore(store, (s) => s.setHeaders);
   const clearShapes = useStore(store, (s) => s.clearShapes);
-  const setShapes = useStore(store, (s) => s.setShapes);
+  const nodeDrawables = useNodeDrawables(store);
   const setFen = useStore(store, (s) => s.setFen);
 
   const [pos, error] = positionFromFen(currentNode.fen);
@@ -155,7 +155,6 @@ function Board({
   const showArrows = useAtomValue(showArrowsAtom);
   const showVariationArrows = useAtomValue(showVariationArrowsAtom);
   const showConsecutiveArrows = useAtomValue(showConsecutiveArrowsAtom);
-  const eraseDrawablesOnClick = useAtomValue(eraseDrawablesOnClickAtom);
   const autoPromote = useAtomValue(autoPromoteAtom);
   const forcedEP = useAtomValue(forcedEnPassantAtom);
   const showCoordinates = useAtomValue(showCoordinatesAtom);
@@ -517,7 +516,7 @@ function Board({
                 aria-activedescendant={`board-square-${keyboardSquare}`}
                 onKeyDown={keyboardMove}
                 onClick={() => {
-                  if (eraseDrawablesOnClick) clearShapes();
+                  if (nodeDrawables.eraseOnMovablePieceClick) clearShapes();
                 }}
                 onWheel={(e) => {
                   if (enableBoardScroll) {
@@ -649,13 +648,9 @@ function Board({
                     enabled: true,
                     visible: true,
                     defaultSnapToValidMove: snapArrows,
-                    eraseOnMovablePieceClick: eraseDrawablesOnClick,
-                    shapes: currentNode.shapes,
+                    ...nodeDrawables,
                     autoShapes: shapes,
                     brushes: continuationBrushes,
-                    onChange: (shapes) => {
-                      setShapes(shapes);
-                    },
                   }}
                 />
               </Box>

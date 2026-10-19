@@ -1,5 +1,6 @@
 import {
     activeWorkspaceTab,
+    drawMark,
     playBoardMove,
     preserveStorageForReload,
     expect,
@@ -950,6 +951,93 @@ test("accounts-puzzles-engines: navigates empty account, puzzle, and engine stat
     await capture("accounts-puzzles-engines");
     await expect(page).toHaveScreenshot("accounts-puzzles-engines.png", { fullPage: true });
 });
+
+for (const erase of [true, false]) {
+    test(`accounts-puzzles-engines: puzzle marks survive progressive hints, toggle and honor erase ${erase}`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        await page.addInitScript((erase) => {
+            localStorage.setItem("puzzle-db", JSON.stringify({ id: "drawing-puzzles" }));
+            localStorage.setItem("track-puzzle-time", "false");
+            if (!erase) localStorage.setItem("erase-drawables-on-click", "false");
+        }, erase);
+        await mockScenario({
+            commands: {
+                list_puzzle_databases: {
+                    result: [
+                        {
+                            title: "Drawings.db3",
+                            description: "Drawings",
+                            puzzleCount: 1,
+                            storageSize: "1024",
+                            path: { id: "drawing-puzzles" },
+                        },
+                    ],
+                },
+                get_puzzle_themes: { result: [] },
+                get_themes_for_puzzle: { result: [] },
+                get_puzzle: {
+                    result: {
+                        id: 7,
+                        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+                        moves: "e7e5 g1f3 b8c6 b1c3",
+                        rating: 1200,
+                        rating_deviation: 50,
+                        popularity: 1,
+                        nb_plays: 1,
+                    },
+                },
+            },
+        });
+        await page.goto("/");
+        await page.getByRole("button", { name: "Train", exact: true }).click();
+        await page.getByRole("button", { name: "New Puzzle", exact: true }).click();
+        const board = page.locator("cg-board").first();
+        await expect(
+            page.getByRole("button", { name: "Challenge 1: incomplete", exact: true }),
+        ).toBeVisible();
+        const svg = page.locator(".cg-wrap svg.cg-shapes").first();
+        const circles = svg.locator("g[cgHash] circle");
+        const arrows = svg.locator("g[cgHash] line");
+        await drawMark(page, board, "c4");
+        await expect(circles).toHaveCount(1);
+        await drawMark(page, board, "d4");
+        await expect(circles).toHaveCount(2);
+        const retainedCircle = await circles.last().getAttribute("cx");
+        await drawMark(page, board, "a3", "a5");
+        await expect(arrows).toHaveCount(1);
+        const retainedArrow = await arrows.getAttribute("x1");
+        const hint = page.getByRole("button", { name: "Get a Hint", exact: true });
+        await hint.click();
+        await expect(circles).toHaveCount(3);
+        await expect(arrows).toHaveCount(1);
+        await capture(`puzzle-user-marks-with-hint-erase-${erase}`);
+        await hint.click();
+        await expect(circles).toHaveCount(2);
+        await expect(arrows).toHaveCount(2);
+        await hint.click();
+        await expect(circles).toHaveCount(2);
+        await expect(arrows).toHaveCount(1);
+        await expect(arrows).toHaveAttribute("x1", retainedArrow!);
+        await drawMark(page, board, "c4");
+        await expect(circles).toHaveCount(1);
+        await expect(circles).toHaveAttribute("cx", retainedCircle!);
+        await drawMark(page, board, "a3", "a5");
+        await expect(arrows).toHaveCount(0);
+        await drawMark(page, board, "b3", "b5");
+        await expect(arrows).toHaveCount(1);
+        await board.click();
+        await expect(circles).toHaveCount(erase ? 0 : 1);
+        await expect(arrows).toHaveCount(erase ? 0 : 1);
+        if (!erase) {
+            await drawMark(page, board, "d4");
+            await expect(circles).toHaveCount(0);
+            await expect(arrows).toHaveCount(1);
+        }
+    });
+}
 
 test("accounts-puzzles-engines: selected puzzle B survives reload, refused admission retries and close reclaims its keys", async ({
     page,
