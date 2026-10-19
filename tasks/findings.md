@@ -16930,13 +16930,16 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 
 ### Notation context-menu actions close before pointer clicks reach them
 
-* **ID:** f-20261019-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261019-08 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Impact class:** behaviour
 * **Where:** `src/components/common/CompleteMoveCell.tsx`, `src/components/common/CompleteMoveCell.test.tsx`
 * **Failure scenario:** Right-click a move in notation and click Delete Move. The move remains. The target-only useClickOutside listener closes the portalled menu on mousedown before Menu.Item receives click.
 * **Evidence:** Felix reported the failure with a screenshot on 2026-10-19. OpenMoveMenu attaches its outside-click ref to MoveCell while the dropdown is rendered through Portal. Existing tests mock useClickOutside and dispatch click directly.
 * **Related:** f-20260922-08 covers earlier move-path rebasing, a different mechanism.
 * **Fix:** Delegate dismissal to Mantine Menu and prove pointer interaction in the browser, with a fix-revert regression run.
+
+Handled in the isolated delete-move worktree. Mantine Menu now owns dismissal through onClose, with the target-only useClickOutside listener and redundant Portal removed. The real pointer regression fails in all four workspace/preview and inline/table cases when only the source fix is stashed. Restoring the exact source makes the complete engine-gap browser project pass 12/12. Tests verify deleted descendants, sibling retention, parent selection and board, click-away, Escape and promotion. Narrow Vitest passes 7/7. No snapshots changed. Browser proof uses Chromium with mocked IPC and does not claim native GTK verification. Final delivery gates and CI are tracked by the invoking push workflow.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"becc438413ef73e8e31289407f746914ce69c9d51abafa36d0230f8fff284794","header_sha256":"e4915f181fed29f3c6f1a3ebeae4e20a6dce56575994808cc6f9b20286bf7e6e","header_status":"handled","input_sha256":"3fca96e2c25190ef64af59127f5adfe4cb25c2e51e9f8e545d389d1a35c35ecd","kind":"mutation-receipt","operation":"f0dc860cbac175fd67fc0e24add622b3dd275de7f714e8e8746cc4a018218e27","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-08"],"target":"f-20261019-08","v":1} -->
 
 ---
 
