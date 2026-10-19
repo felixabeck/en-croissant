@@ -294,15 +294,9 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
   mocks.defaultDatabases = [manifestDb];
   const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" };
   const destination = { id: { id: "destination" }, kind: "path" };
-  const databases = [{ type: "success", title: "Lichess" }];
   mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
   mocks.databaseDownloadDestination.mockResolvedValue(destination);
   mocks.downloadFile.mockResolvedValue(undefined);
-  mocks.getDatabases.mockResolvedValue({
-    databases: databases,
-    unread: [],
-    root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
-  });
   const { reloadDatabases } = await renderAddDatabase();
 
   await act(async () => mocks.progressButtonProps!.onClick());

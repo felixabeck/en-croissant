@@ -173,7 +173,7 @@ export function useDatabaseLibrary(
       undefined,
       { revalidate: false },
     );
-    void revalidateDatabaseList(databaseOwner!, mutateCache);
+    void revalidateDatabases();
   }
 
   function changeReferenceDatabase(file: DatabaseHandle) {
