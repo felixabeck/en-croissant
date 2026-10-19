@@ -15830,6 +15830,9 @@ At `c8df5289`, `pnpm test:e2e:container --project=font-scaled-breakpoints --proj
 The filing's stacked=false regression fault was already exercised before the superseding adaptive implementation, as recorded in `d-20261010-11` and commit `e95a864d`. This run did not repeat that historical mutation against removed code and makes no new fault-injection or native-engine claim. No new technical decision was needed. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"5e79af4477e0825de78248afdb8fe89408dfc17b0971e0d4920401e116868b79","header_sha256":"d28faac9a47605e915cfb67dabce8e844b099ab3189245d91fd7d6afcfc1aff5","header_status":"handled","input_sha256":"8e672756364965d52da0c04d3874f6864bc7c11e91d0ff30a9553ec9bc982465","kind":"mutation-receipt","operation":"d4ec0c0eeee25a79b919c4d0af3fa3975d4d237f0a3d7728eb5dc249fba89ffb","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-37"],"target":"f-20261010-37","v":1} -->
 
+Related-status correction, 2026-10-19: the earlier Related statement that `f-20261001-09` remains open described the filing-day state and is superseded. `f-20261001-09` is now handled, with its 2026-10-12 closure recording commit `55a8808d` for resizable panes and adaptive preview. The pickup closure above relies on that completed replacement. This correction preserves the original filing as history.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"02295f1f669d01c7d91610b3cec1c70858fcd7874b2ee18282a75397bab3b759","input_sha256":"531a020b92cb09544367f4fbd3612736cda4e4680f7e955f2622653543ed54bb","kind":"mutation-receipt","operation":"6ed1ea72f0bcc2c73c78f66d4d6cd80bae58adab60494f99579b581b4b743401","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-37"],"target":"f-20261010-37","v":1} -->
+
 ---
 
 ## 2026-10-10 — filed through the inbox spool
