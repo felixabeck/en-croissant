@@ -8852,3 +8852,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 
 * **Decided by:** Codex, full auto adoption of the reviewed plan · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":12,"effect_sha256":"172762600f0271af51bda783f44e51b2f6302af66a87779b9b48afd636f219a0","input_sha256":"0d6ee52953287a5593c695f7d0901a4449596b2156a4ec41477873033d6bd264","kind":"mutation-receipt","operation":"355223bcf5bf6fce738f3e555ab114190ff2c8e94ec332df13b5092d02da0c3d","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-05 — Preserve import refresh recovery when SWR also exposes a list error
+
+* **Question:** Which existing Retry action owns recovery when a failed import refresh also leaves a database-list error in SWR?
+* **Governs:** f-20261004-09
+* **Chosen:** Both existing Retry controls invoke the same cancellation-aware owned import-refresh action while databaseConversionRefreshFailedAtom is true. Clear that flag only after that action succeeds. Ordinary load-only Retry remains bare mutate and does not retire a shared read.
+* **Rejected:** Leaving the list-error Retry as bare mutate when an import-refresh failure is active, clearing the flag without successful recovery, or suppressing the required default revalidation. Also rejected weakening the existing whole-flow state assertions to accept the retained failure flag.
+* **Reason:** Pre-review and a direct ConcurrentConversion.test.tsx run reproduced the retained failure flag at line 678. Data-bearing mutation now correctly performs default revalidation and can expose both existing error surfaces. The original d-20261019-04 ordinary-load-only restriction remains valid, while this measured overlapping post-import case needs its existing recovery action. Round 6 plan, tests and error-handling lenses approved the narrow amendment. Two read-count assertions legitimately change from four to five while preserving outcome assertions.
+* **Reversal:** A replacement recovery flow must prove both error surfaces clear after successful refresh, retain the flag on rejection, preserve committed native outcomes, and keep ordinary load-only retries from superseding shared reads.
+* **Disclosure:** Plan authorship and arbitration shared one Codex context. Detection ran on the same model family as the code.
+* **Decided by:** Codex, full auto gate repair · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"932065e2b8d5d13d18e5161a471921a8da4997c56eef020b02f471d349af57f8","input_sha256":"c490b35ddc79a8e916d343154f57f25bc607681d0872900bc8873160dece85df","kind":"mutation-receipt","operation":"39c04cd1d282f0ca2f88d26940a331630713db571d26bb8df48e1fb59370dcaa","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-05"],"target":"decisions-ledger","v":1} -->
