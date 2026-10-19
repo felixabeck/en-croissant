@@ -1,6 +1,8 @@
 import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
+import type { Config } from "@lichess-org/chessground/config";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import { afterEach, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 
@@ -19,7 +21,8 @@ const api = {
   },
   getFen: vi.fn(() => "start"),
 };
-const createChessground = vi.fn(() => api);
+const createChessground = vi.fn((_element: HTMLElement, _config: Config) => api);
+const mountedRoots = new Set<ReturnType<typeof createRoot>>();
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 installMatchMediaStub();
@@ -49,7 +52,9 @@ Object.assign(globalThis, { ResizeObserver: MockResizeObserver });
 
 vi.mock("@lichess-org/chessground", () => ({ Chessground: createChessground }));
 
-afterEach(() => {
+afterEach(async () => {
+  for (const root of mountedRoots) await act(async () => root.unmount());
+  mountedRoots.clear();
   api.destroy.mockClear();
   api.set.mockClear();
   api.setAutoShapes.mockClear();
@@ -60,6 +65,90 @@ afterEach(() => {
   observed.clear();
   vi.restoreAllMocks();
 });
+
+async function renderDrawable(drawable: Config["drawable"]) {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 400, 400),
+  );
+  const root = createRoot(document.createElement("div"));
+  mountedRoots.add(root);
+  const { Chessground } = await import("./Chessground");
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground drawable={drawable} />
+      </MantineProvider>,
+    );
+  });
+  const config = createChessground.mock.calls[0][1];
+  expect(config.drawable?.onChange).toBeTypeOf("function");
+  return config.drawable!.onChange!;
+}
+
+test("explicit false restores normalized saved shapes after an ordinary clear without forwarding it", async () => {
+  const savedShapes: DrawShape[] = [
+    { orig: "h5", dest: "h5", brush: "cyan" },
+    { orig: "e2", dest: "e4", brush: "blue" },
+  ];
+  const onChange = vi.fn();
+  const changeShapes = await renderDrawable({
+    eraseOnMovablePieceClick: false,
+    shapes: savedShapes,
+    onChange,
+  });
+  expect(createChessground.mock.calls[0][1].drawable?.shapes).toEqual([
+    { orig: "h5", dest: undefined, brush: "cyan" },
+    savedShapes[1],
+  ]);
+
+  await act(async () => changeShapes([]));
+
+  expect(api.setShapes).toHaveBeenCalledExactlyOnceWith([
+    { orig: "h5", dest: undefined, brush: "cyan" },
+    savedShapes[1],
+  ]);
+  expect(onChange).not.toHaveBeenCalled();
+  expect(savedShapes[0].dest).toBe("h5");
+});
+
+test.each([false, true])(
+  "explicit false forwards a drawing gesture while it is active, toggling off: %s",
+  async (toggleOff) => {
+    const savedShape: DrawShape = { orig: "c4", brush: "green" };
+    const onChange = vi.fn();
+    const changeShapes = await renderDrawable({
+      eraseOnMovablePieceClick: false,
+      shapes: [savedShape],
+      onChange,
+    });
+    api.state.drawable.current = { orig: "c4" };
+    const shapes: DrawShape[] = toggleOff
+      ? []
+      : [savedShape, { orig: "e2", dest: "e4", brush: "blue" }];
+
+    await act(async () => changeShapes(shapes));
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(shapes);
+    expect(api.setShapes).not.toHaveBeenCalled();
+  },
+);
+
+test.each([true, undefined])(
+  "forwards an ordinary empty-shape change with erase preference %s",
+  async (eraseOnMovablePieceClick) => {
+    const onChange = vi.fn();
+    const changeShapes = await renderDrawable({
+      eraseOnMovablePieceClick,
+      shapes: [{ orig: "c4", brush: "green" }],
+      onChange,
+    });
+
+    await act(async () => changeShapes([]));
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith([]);
+    expect(api.setShapes).not.toHaveBeenCalled();
+  },
+);
 
 test("constructs Chessground once, updates it, and destroys it on unmount", async () => {
   const host = document.createElement("div");

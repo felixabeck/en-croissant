@@ -257,6 +257,7 @@ test("workspace-tabs: FEN import keeps its New Tab on a refused write and replac
     capture,
 }) => {
     const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+    await page.addInitScript(() => localStorage.setItem("erase-drawables-on-click", "false"));
     await page.goto("/");
     // The analysis board renders its own panel tablist after the workspace one.
     const tabs = page.getByRole("tablist").first().getByRole("tab");

@@ -113,6 +113,7 @@ test("engine-gap: warm actor contract preserves ownership and isolates searches"
 
 async function setupAnalysisEngine(page: Page) {
     await page.addInitScript(() => {
+        localStorage.setItem("erase-drawables-on-click", "false");
         localStorage.setItem(
             "engines",
             JSON.stringify([

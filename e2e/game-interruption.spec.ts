@@ -48,6 +48,11 @@ for (const delivery of ["event", "snapshot"] as const) {
         emitTauriEvent,
     }) => {
         await page.clock.setFixedTime(new Date("2026-10-12T12:00:00Z"));
+        if (delivery === "event") {
+            await page.addInitScript(() =>
+                localStorage.setItem("erase-drawables-on-click", "false"),
+            );
+        }
         await page.addInitScript(() =>
             localStorage.setItem(
                 "engines",
