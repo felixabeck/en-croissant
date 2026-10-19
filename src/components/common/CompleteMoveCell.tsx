@@ -1,6 +1,5 @@
 import { useOwnerTab } from "@/state/tabScope";
-import { Box, Menu, Portal, Text } from "@mantine/core";
-import { useClickOutside } from "@mantine/hooks";
+import { Box, Menu, Text } from "@mantine/core";
 import {
   IconArrowsJoin,
   IconChevronsUp,
@@ -214,17 +213,15 @@ function OpenMoveMenu({
   rightAccessory?: React.ReactNode;
   onClose: () => void;
 }) {
-  const ref = useClickOutside(onClose);
   const [currentTab] = useOwnerTab();
   const tabFile = getTabFile(currentTab);
   const { t } = useTranslation();
   const actions = store.getState();
 
   return (
-    <Menu opened width={200}>
+    <Menu opened onClose={onClose} width={200}>
       <Menu.Target>
         <MoveCell
-          ref={ref}
           move={move}
           annotations={annotations}
           isStart={isStart}
@@ -238,58 +235,56 @@ function OpenMoveMenu({
           rightAccessory={rightAccessory}
         />
       </Menu.Target>
-      <Portal>
-        <Menu.Dropdown>
-          {tabFile?.metadata.type === "repertoire" && (
-            <Menu.Item
-              leftSection={<IconFlag size="0.875rem" />}
-              onClick={() => {
-                actions.setStart(path);
-                onClose();
-              }}
-            >
-              {t("Menu.MarkAsStart")}
-            </Menu.Item>
-          )}
+      <Menu.Dropdown>
+        {tabFile?.metadata.type === "repertoire" && (
           <Menu.Item
-            leftSection={<IconChevronsUp size="0.875rem" />}
+            leftSection={<IconFlag size="0.875rem" />}
             onClick={() => {
-              actions.promoteToMainline(path);
+              actions.setStart(path);
               onClose();
             }}
           >
-            {t("Menu.PromoteToMainLine")}
+            {t("Menu.MarkAsStart")}
           </Menu.Item>
-          <Menu.Item
-            leftSection={<IconChevronUp size="0.875rem" />}
-            onClick={() => {
-              actions.promoteVariation(path);
-              onClose();
-            }}
-          >
-            {t("Menu.PromoteVariation")}
-          </Menu.Item>
-          <Menu.Item
-            leftSection={<IconCopy size="0.875rem" />}
-            onClick={() => {
-              actions.copyVariationPgn(path);
-              onClose();
-            }}
-          >
-            {t("Menu.CopyVariationPGN")}
-          </Menu.Item>
-          <Menu.Item
-            color="red"
-            leftSection={<IconX size="0.875rem" />}
-            onClick={() => {
-              actions.deleteMove(path);
-              onClose();
-            }}
-          >
-            {t("Menu.DeleteMove")}
-          </Menu.Item>
-        </Menu.Dropdown>
-      </Portal>
+        )}
+        <Menu.Item
+          leftSection={<IconChevronsUp size="0.875rem" />}
+          onClick={() => {
+            actions.promoteToMainline(path);
+            onClose();
+          }}
+        >
+          {t("Menu.PromoteToMainLine")}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<IconChevronUp size="0.875rem" />}
+          onClick={() => {
+            actions.promoteVariation(path);
+            onClose();
+          }}
+        >
+          {t("Menu.PromoteVariation")}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<IconCopy size="0.875rem" />}
+          onClick={() => {
+            actions.copyVariationPgn(path);
+            onClose();
+          }}
+        >
+          {t("Menu.CopyVariationPGN")}
+        </Menu.Item>
+        <Menu.Item
+          color="red"
+          leftSection={<IconX size="0.875rem" />}
+          onClick={() => {
+            actions.deleteMove(path);
+            onClose();
+          }}
+        >
+          {t("Menu.DeleteMove")}
+        </Menu.Item>
+      </Menu.Dropdown>
     </Menu>
   );
 }

@@ -1,6 +1,155 @@
-import { expect, test } from "./fixtures";
+import {
+    expect,
+    test,
+    filesWorkspaceCommands,
+    filesWorkspaceFixture,
+    pgnFileCommands,
+    selectFilesTreeRow,
+    whitePawnSquares,
+    type MockScenario,
+} from "./fixtures";
 import type { Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
+
+async function setupNotationMenu(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+    scope: "workspace" | "preview",
+    tableLayout: boolean,
+) {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[filesWorkspaceFixture.pgnFile]], {
+            ...pgnFileCommands,
+            write_game: { result: { stamp: "e".repeat(64), revision: "e2e-pgn-revision" } },
+            lex_pgn: {
+                result: [
+                    { type: "San", value: "e4" },
+                    { type: "San", value: "e5" },
+                    { type: "ParenOpen" },
+                    { type: "San", value: "c5" },
+                    { type: "San", value: "Nf3" },
+                    { type: "San", value: "d6" },
+                    { type: "ParenClose" },
+                    { type: "San", value: "Bc4" },
+                    { type: "San", value: "Nc6" },
+                    { type: "Outcome", value: "*" },
+                ],
+            },
+        }),
+    });
+    await page.addInitScript((tableLayout) => {
+        localStorage.setItem("table-view", JSON.stringify(tableLayout));
+        localStorage.setItem("letters", JSON.stringify("letters"));
+    }, tableLayout);
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, filesWorkspaceFixture.pgnFile.name);
+    if (scope === "workspace") {
+        await page.getByRole("button", { name: "Open game", exact: true }).click();
+    }
+    const notation = page.locator(".mantine-ScrollArea-viewport").filter({
+        has: page.getByRole("button", { name: "e4", exact: true }),
+    });
+    await expect(notation).toHaveCount(1);
+    await expect(
+        notation.locator("td").filter({
+            has: page.getByRole("button", { name: "e5", exact: true }),
+        }),
+    ).toHaveCount(tableLayout ? 1 : 0);
+    await expect(notation.getByRole("button", { name: "d6", exact: true })).toBeVisible();
+    return notation;
+}
+
+for (const scope of ["workspace", "preview"] as const) {
+    for (const tableLayout of [false, true]) {
+        const layout = tableLayout ? "table" : "inline";
+        test(`notation-delete: ${scope} ${layout} pointer action removes the targeted subtree`, async ({
+            page,
+            mockScenario,
+            capture,
+        }, testInfo) => {
+            const notation = await setupNotationMenu(page, mockScenario, scope, tableLayout);
+            const move = (name: string) => notation.getByRole("button", { name, exact: true });
+            // Select a descendant, then right-click its ancestor without navigating to it.
+            await move("Nc6").click();
+            await expect(notation.locator('[data-notation-current="true"] button')).toHaveText(
+                "Nc6",
+            );
+            await move("e5").click({ button: "right" });
+            await expect(notation.locator('[data-notation-current="true"] button')).toHaveText(
+                "Nc6",
+            );
+            const menu = page.getByRole("menu");
+            const deleteMove = menu.getByRole("menuitem", { name: "Delete Move", exact: true });
+            await expect(deleteMove).toBeVisible();
+            await capture(`notation-delete-${scope}-${layout}-menu`);
+            const bounds = (await deleteMove.boundingBox())!;
+            await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            await page.mouse.down();
+            const mountedAfterMouseDown = await menu.count();
+            await testInfo.attach("menu-pointer-lifetime", {
+                body: JSON.stringify({ mountedAfterMouseDown }),
+                contentType: "application/json",
+            });
+            await page.mouse.up();
+            await expect(move("e5")).toHaveCount(0);
+            await expect(move("Bc4")).toHaveCount(0);
+            await expect(move("Nc6")).toHaveCount(0);
+            expect(mountedAfterMouseDown).toBe(1);
+            for (const siblingMove of ["c5", "Nf3", "d6"]) {
+                await expect(move(siblingMove)).toBeVisible();
+            }
+            await expect(notation.locator('[data-notation-current="true"] button')).toHaveText(
+                "e4",
+            );
+            await expect
+                .poll(() => whitePawnSquares(page.locator("cg-board")))
+                .toEqual(["a2", "b2", "c2", "d2", "e4", "f2", "g2", "h2"]);
+            await expect(page.getByRole("menu")).toHaveCount(0);
+            await expect(
+                page.getByText("Unexpected Tauri IPC command", { exact: false }),
+            ).toHaveCount(0);
+            await capture(`notation-delete-${scope}-${layout}-result`);
+        });
+
+        test(`notation-menu: ${scope} ${layout} dismisses and promotes with pointer clicks`, async ({
+            page,
+            mockScenario,
+        }) => {
+            const notation = await setupNotationMenu(page, mockScenario, scope, tableLayout);
+            const move = (name: string) => notation.getByRole("button", { name, exact: true });
+            const current = notation.locator('[data-notation-current="true"] button');
+            await move("d6").click();
+            await move("c5").click({ button: "right" });
+            await expect(page.getByRole("menu")).toBeVisible();
+            await move("e4").click();
+            await expect(page.getByRole("menu")).toHaveCount(0);
+            await expect(current).toHaveText("e4");
+            await move("d6").click();
+            await move("c5").click({ button: "right" });
+            await expect(page.getByRole("menu")).toBeVisible();
+            await page.keyboard.press("Escape");
+            await expect(page.getByRole("menu")).toHaveCount(0);
+            await expect(current).toHaveText("d6");
+            const moves = () => notation.getByRole("button").allTextContents();
+            const before = await moves();
+            expect(before.indexOf("e5")).toBeLessThan(before.indexOf("c5"));
+            await move("c5").click({ button: "right" });
+            await page.getByRole("menuitem", { name: "Promote Variation", exact: true }).click();
+            await expect(page.getByRole("menu")).toHaveCount(0);
+            await expect
+                .poll(async () => {
+                    const after = await moves();
+                    return after.indexOf("c5") < after.indexOf("e5");
+                })
+                .toBe(true);
+            await expect(current).toHaveText("d6");
+            for (const retainedMove of ["e4", "e5", "Bc4", "Nc6", "c5", "Nf3", "d6"]) {
+                await expect(move(retainedMove)).toBeVisible();
+            }
+        });
+    }
+}
 
 test("engine-gap: warm actor contract preserves ownership and isolates searches", async ({
     page,

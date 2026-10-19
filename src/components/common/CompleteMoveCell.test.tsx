@@ -18,7 +18,6 @@ vi.mock("jotai", () => ({
 vi.mock("@/utils/tabs", () => ({
   getTabFile: (tab: unknown) => (tab ? { metadata: { type: "repertoire" } } : undefined),
 }));
-vi.mock("@mantine/hooks", () => ({ useClickOutside: () => undefined }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@tabler/icons-react", () => {
   const Icon = () => null;
@@ -135,9 +134,14 @@ test("renders the starting comment before the move and updates it without changi
   expect(host.textContent).toBe("e4");
 });
 
-test.each(["workspace", "preview"])(
-  "%s opens one context menu and sends every action the identity-derived path",
-  async (scope) => {
+test.each([
+  ["workspace", false],
+  ["workspace", true],
+  ["preview", false],
+  ["preview", true],
+] as const)(
+  "%s (table layout: %s) opens one context menu and sends every action the identity-derived path",
+  async (scope, tableLayout) => {
     const Scope = scope === "workspace" ? WorkspaceTabScope : EphemeralTabScope;
     const tree = defaultTree();
     const first = createNode({
@@ -179,6 +183,7 @@ test.each(["workspace", "preview"])(
               comment=""
               annotations={[]}
               showComments={false}
+              tableLayout={tableLayout}
               isStart={false}
               isCurrentVariation={false}
             />
@@ -192,6 +197,7 @@ test.each(["workspace", "preview"])(
               comment=""
               annotations={[]}
               showComments={false}
+              tableLayout={tableLayout}
               isStart={false}
               isCurrentVariation={false}
             />
@@ -218,6 +224,7 @@ test.each(["workspace", "preview"])(
           .click();
       });
       expect(action).toHaveBeenCalledWith(expectedPath);
+      expect(host.querySelectorAll('[data-menu="true"]').length).toBe(0);
       await act(async () => {
         moves()[0].dispatchEvent(
           new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
@@ -239,6 +246,7 @@ test.each(["workspace", "preview"])(
         .click();
     });
     expect(actions.deleteMove).toHaveBeenCalledWith(expectedPath);
+    expect(host.querySelectorAll('[data-menu="true"]').length).toBe(0);
     expect(actions.setStart).not.toHaveBeenCalledWith([1]);
   },
 );
