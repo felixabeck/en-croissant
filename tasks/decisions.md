@@ -8886,3 +8886,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** remove the sweep pass and the setup setter, and restore the source pin's `match admission {` / `app.manage(guard);` / `Unguarded => {}` assertions. Intent cleanup stays.
 * **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"eeb6a481db5aef8e8abe39ebe1b208c17b87351da2d1ac02ab6bc43dc900b69c","input_sha256":"88f10c845750a1e3a5bacecb8c5fad3b17546434f6652199c27bd772139afcaa","kind":"mutation-receipt","operation":"30b4cadee220db32e62f3beba711b71e5314fe1f1a8bd4b5d1e25b81dc68aac3","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-08 — which lock bit enables the sweep?
+
+* **Question:** which lock bit enables the sweep?
+* **Governs:** f-20261004-12, f-20261004-13
+* **Chosen:** `app_data_locked` on the guard, true only when the application-data root's lock returned `Ok`, copied onto the authority with `set_engine_image_sweep_permitted` before `install`.
+* **Rejected:** treating `Owned` as sufficient.
+* **Reason:** `d-20261008-01` admits `Owned` when any root locked. Engine images live under application data.
+* **Reversal path:** stop recording the per-root bit and stop calling the setter.
+* **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"4b8253da6153181a2eaa4ef4010ab75f6b71054784130ce19bc46f3d6007341e","input_sha256":"418623eebae4c72c9243d238aa9fea45e74cdf897bfce2e27f98849308f4bce4","kind":"mutation-receipt","operation":"16eae16d4fc4796300b8e72b97dd37de459d31c97a098d93317740f88ca8cfa5","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-08"],"target":"decisions-ledger","v":1} -->
