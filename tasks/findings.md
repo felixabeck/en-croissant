@@ -16993,7 +16993,7 @@ Handled by replacing the two hardcoded Git discovery diagnostics with a shared r
 
 ### CLI discovery tests pin Git's host-dependent missing-repository diagnostic
 
-* **ID:** f-20261019-07 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261019-07 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** ad0c1ffa-38db-40f1-9946-4c5c71338ab7 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-ad0c1ffa-38db-40f1-9946-4c5c71338ab7-1.jsonl
 * **Impact class:** tooling
 * **Where:** scripts/check-ipc-command-consumers.test.mjs:1195 and scripts/check-untranslated-jsx.test.mjs:169, exercised by Test workflow run 39273004421, Linux job 118129963955 on 6e38261b955b8a726ce7731a08d0d7f9a4e167ce.
@@ -17004,3 +17004,10 @@ Handled by replacing the two hardcoded Git discovery diagnostics with a shared r
 * **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/39273004421
 * **Related:** No existing entry names these two failing assertions. The separately pending macOS runner-capacity incident has a different cause.
 * **Found by:** Codex drain ad0c1ffa-38db-40f1-9946-4c5c71338ab7 through the completed job logs API. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+Source repair: `486e5d6a` replaces both host-specific Git diagnostic constants with one real-Git diagnostic oracle in the existing `scripts/test-git-init.mjs`. Both CLI tests retain their literal checker wrapper and command text, exact stderr equality, original exit status, and no-spawn-error assertion. Production checker behavior is unchanged. Decision `d-20261019-14` records the choice and rejected alternatives.
+
+The hosted failure is reproduced locally with real Git by running the two selected tests with TMPDIR=/dev/shm: before the fix, exit 1 with exactly two diagnostic mismatch failures. The identical command after the fix exits 0 with two passed. The ordinary TMPDIR=/tmp run of the IPC consumer, untranslated JSX and working-tree enumeration suites passes all 136 tests, exit 0. Formatting, lint and pre-review pass. Raw proof is retained in `/tmp/cf-database-reachability-rjk9t8fp/git-diagnostic-repair-report.md` and its named logs. This records the local repair and focused proof. Full frontend coverage, independent review and the gated push remain obligations of the active push workflow, not claims of a completed hosted rerun here.
+
+The distinct hosted runner-acquisition problem remains tracked as `f-20261019-06`. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"3de88b867fbf17fbe60d8e1fa17866918a5d0d4c913633f1878418b1972aa95f","header_sha256":"1d5f0bd22eafc6e71f8e7caa72dd78230aa699fdee9a274bb268965e0d9f628b","header_status":"handled","input_sha256":"ce49b0751c2c4f7a206715ccd4ded09858df9ac7b56418002fa42176190ef81d","kind":"mutation-receipt","operation":"1fd5a62ac21c658de6490d7c1c36ac78f0694cffb49a7a3fc326485261847f41","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-07"],"target":"f-20261019-07","v":1} -->
