@@ -16923,3 +16923,17 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Correction to Related:** f-20261008-01 independently recurred on 2026-10-15. The original one-run description above is inaccurate and is superseded by this correction. Its Repertoire metadata failure remains a distinct mechanism from this listing-envelope TypeError. This closure makes no claim that the metadata finding is resolved.
 * **Review attribution:** plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code, with fresh-session separation only.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"312def56c726954fd88c735f4a984b0985a24f63fb4c84599b00ae5bd1b004ba","header_sha256":"ef1226ffc94fece9e82323d7514626ab38de6d665e328f81c30b475851f5bc58","header_status":"handled","input_sha256":"10520587981cf15efc5de007b7668c1d70ddfe47b9a8f8981ea4b6894bef66b6","kind":"mutation-receipt","operation":"347290178c4034dbde6c61eac770aa04809181a43c3d68c907c1758ba82340ec","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-05"],"target":"f-20261019-05","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Notation context-menu actions close before pointer clicks reach them
+
+* **ID:** f-20261019-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** behaviour
+* **Where:** `src/components/common/CompleteMoveCell.tsx`, `src/components/common/CompleteMoveCell.test.tsx`
+* **Failure scenario:** Right-click a move in notation and click Delete Move. The move remains. The target-only useClickOutside listener closes the portalled menu on mousedown before Menu.Item receives click.
+* **Evidence:** Felix reported the failure with a screenshot on 2026-10-19. OpenMoveMenu attaches its outside-click ref to MoveCell while the dropdown is rendered through Portal. Existing tests mock useClickOutside and dispatch click directly.
+* **Related:** f-20260922-08 covers earlier move-path rebasing, a different mechanism.
+* **Fix:** Delegate dismissal to Mantine Menu and prove pointer interaction in the browser, with a fix-revert regression run.
