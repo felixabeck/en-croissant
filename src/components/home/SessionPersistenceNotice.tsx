@@ -1,4 +1,4 @@
-import { Alert, Button, Stack, Text } from "@mantine/core";
+import { Alert, Button, getDefaultZIndex, Stack, Text } from "@mantine/core";
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import enUS from "@/translation/en-US.json";
@@ -30,7 +30,8 @@ export function SessionPersistenceNotice() {
       right="xs"
       w="36rem"
       style={{
-        zIndex: 200,
+        // Keep dialogs and menus above this nonmodal recovery warning.
+        zIndex: getDefaultZIndex("modal") - 1,
         maxWidth: "calc(100vw - 2rem)",
         maxHeight: "calc(100dvh - 2rem)",
         overflowY: "auto",
