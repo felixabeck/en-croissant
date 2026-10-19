@@ -16803,3 +16803,23 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Delivery scope:** This follow-up changes only the E2E test, two inspected snapshots and this record. Production source is byte-identical to published 92445270, whose 4,570 unit tests, coverage and mutation ratchets, bundle and contract gates passed. Final contract gates and the repair push remain required, and this record claims no delivery.
 * **Review provenance:** Plan authorship and arbitration shared root context. Detection used independent Codex sessions in the implementation's model family. Family separation was absent.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"7ff20a676e697ec5e37231861ef56f7fd9ed52570f373b43b1755380b01e53b1","header_sha256":"04b9321f8f6f373f33b893d84eda7c9ad4f67e1cd00cb88e085999451a1bf60c","header_status":"handled","input_sha256":"af958b914347edbe3b99fdf806616149520280de4ce9f25ee6251f2cc91c97f9","kind":"mutation-receipt","operation":"c686eb5351517c4d61925ea041a612947e0aadfe82be04c5c824b7f317dae53f","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-02"],"target":"f-20261019-02","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Remote CI repair: Test
+* **ID:** f-20261019-03 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Impact class:** tooling
+* **Found by:** drain remote-CI check (Codex)
+* **Where:** workflow `Test`, jobs `test`.
+* **Defect:** failed jobs on `92445270284947bbdc35019b057113f7aa841930`: `test`.
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/39210173592
+* **Proof:** `gh run view 39210173592 --log-failed`
+* **CI run:** 39210173592
+* **Pickup resolution:** This generic remote-CI entry duplicates the concrete scrollbar screenshot defect already handled as f-20261019-02. The original job 117926448312 log from Test run 39210173592 reports exactly one failure, conversion-cancel-320-200.png with 3,474 differing pixels, and 150 passing browser tests. `gh run view --log-failed` returned no text, so the job log was read through the GitHub jobs logs API.
+* **Existing fix:** Published commit f1e9c0ea4916bd0429c91031f5452565cf563f89 moves the pointer away and awaits the existing ScrollArea-hidden helper before both conversion screenshots, with the two settled goldens. Current source retains the cancellation, progress, clipping and screenshot assertions. No additional code change or snapshot refresh is warranted.
+* **Current verification:** Test run 39215498564 at published ff04625c4b4cf404e48bdf19547c8a1de404e61c has passed the browser accessibility and visual contracts step that failed in the original run. All five macOS/Windows jobs have passed. At closure, the Linux test job is still running later steps, so this note does not claim the whole run is green. The push workflow will check the remote and wait for its required jobs.
+* **Review provenance:** Plan authorship and arbitration share the root context. Records detection runs in an independent Codex session in the code's model family. Family separation is absent.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"80b097f03caf339eef5b9d944003f7d1d3f73eba71deecf6fd67085f2656ad3b","header_sha256":"4094d81164d38ce791774e2b10536212826442c075bf32c92c5045888653252d","header_status":"handled","input_sha256":"b75099ecef88f356129570ea80e27cac779c9f45f61696072e2d1f1294212da9","kind":"mutation-receipt","operation":"796bb439424cb69879a8762733dfc132a18c267390f543b5d45017e7f6b53756","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-03"],"target":"f-20261019-03","v":1} -->
