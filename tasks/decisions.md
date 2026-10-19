@@ -8864,3 +8864,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Disclosure:** Plan authorship and arbitration shared one Codex context. Detection ran on the same model family as the code.
 * **Decided by:** Codex, full auto gate repair · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"932065e2b8d5d13d18e5161a471921a8da4997c56eef020b02f471d349af57f8","input_sha256":"c490b35ddc79a8e916d343154f57f25bc607681d0872900bc8873160dece85df","kind":"mutation-receipt","operation":"39c04cd1d282f0ca2f88d26940a331630713db571d26bb8df48e1fb59370dcaa","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-06 — Isolate the remote HTTP toast snapshot from unrelated page pixels
+
+* **Question:** How should the remote HTTP notification capture exclude unrelated page pixels visible through its rounded corner?
+* **Governs:** f-20261019-04
+* **Chosen:** Hide unrelated document content only during the existing notification screenshot, through Playwright's supported stylePath option and one capture stylesheet that keeps the notification and its descendants visible. Preserve the toast pixels and its text, clipping, viewport and invocation assertions.
+* **Rejected:** Pixel tolerances, masking or cropping the notification, arbitrary waits, deleting the snapshot, or changing production notification styling to satisfy a test.
+* **Reason:** Test run 39238339967 differs only in 14 background pixels at x229 through x242 on the first row of the 256 by 532 German 401 notification capture. The notification itself is identical. The existing d-20261017-24 wrapping and viewport-height policy remains unchanged.
+* **Reversal:** Remove the screenshot-only stylesheet and its stylePath reference if a future capture supplies an equivalent deterministic backdrop, then inspect and update only the affected remote HTTP goldens in the pinned container.
+* **Decided by:** Codex, full-auto drain for f-20261019-04. Plan authorship and arbitration share one context. Detection and code use the same model family. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d0a0b55ffa055e70a0eeef6f4a6c8b97413325f822406e869b471f0c65a442b0","input_sha256":"035711b42205ae63b6bce9fa963d7a5854d53d361aff6cd535f424b8cb99f6fd","kind":"mutation-receipt","operation":"9bc0fc6a918a2ff28d963dc0b262fa35e69a8afb0f31da6eeb68c025a3c1b365","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-06"],"target":"decisions-ledger","v":1} -->
