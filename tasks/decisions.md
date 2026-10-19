@@ -8960,3 +8960,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Disclosure:** Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 * **Decided by:** Codex, full auto red-CI repair, drain ad0c1ffa-38db-40f1-9946-4c5c71338ab7 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"21e675dcb57b3708e19a75b4c32010e41f8ec740af672603968984fefb933478","input_sha256":"c405fd40d592f30e455cf0421753414405f854cb82b44f5b5cd1ab319e4b1f0a","kind":"mutation-receipt","operation":"927b79b2519e72c62ca045f90aec54e36511406ae11c4b56c459b55d4f89b81a","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-15 — How does startup retain public accounts when their save fails?
+
+* **Question:** How does f-20261004-14 retain sanitized accounts after legacy erasure succeeds but the final save fails?
+* **Governs:** f-20261004-14
+* **Chosen:** Retain one document-owned public snapshot, expose unsaved status, and retry the latest list without reloading. Preserve the automatic post-removal save attempt.
+* **Rejected:** Dropping the list, showing only a transient toast, or relying only on automatic retry.
+* **Reason:** Startup already holds the recoverable public list. Missing-key atom hydration must not discard it. Existing preference failures allow memory use. Closing or reloading can still lose unsaved data and the warning must explain that. Reversal: replace this recovery mechanism with an evidenced alternative preserving the credential scrub and visible failure.
+* **Decided by:** Codex, full auto, adopted plan for f-20261004-14. Technical repair, not a decision attributed to Felix. · **Superseded-by:** -
+
+### d-20261019-16 — Which boundary owns public session encoding and recovery?
+
+* **Question:** Which boundary owns public session encoding and recovery?
+* **Governs:** f-20261004-14
+* **Chosen:** Consolidate only session ownership and encoding between bootstrap and sessionsAtom, using canonical compressed serialization with legacy JSON reads.
+* **Rejected:** A native backup store, extra storage keys, broad preference adapter changes, or a generic recovery framework.
+* **Reason:** Bootstrap and the atom must share one current list and encoding boundary. This fixes hydration after removal without additional storage machinery. Reversal: replace the backing mechanism behind that same boundary if durable recovery beyond Web Storage becomes an evidenced requirement.
+* **Decided by:** Codex, full auto, adopted plan for f-20261004-14. · **Superseded-by:** -
+
+### d-20261019-17 — How does an unsaved public session list offer recovery?
+
+* **Question:** How does an unsaved public session list offer recovery?
+* **Governs:** f-20261004-14
+* **Chosen:** A persistent translated warning in App, using existing components, offers an explicit in-document save of the latest list and clears only after a successful save.
+* **Rejected:** The terminal startup reload view, a storage reset, or a one-time toast.
+* **Reason:** d-20261004-12 permits reload when the legacy record remains its own retry marker. This path erased that record, making reload lose the RAM copy. d-20261004-22 concerns native background durability rather than an actually failed public write. Reversal: another equally visible in-document recovery surface retaining the same list and retry contract.
+* **Decided by:** Codex, full auto, adopted plan for f-20261004-14. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"2e3c0ebd2d9abf8fb3a3d17b513e535dc4e3a0547ac3d5a6fac4ef69f55f68f5","input_sha256":"22997a43bf1b5f357072a0003dd1fa6be63e18659635a4c44c4276a08639814e","kind":"mutation-receipt","operation":"490919d424f9d568c4a082c18d1281e2194b1009e205e11ed7859a58ff84d893","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-15","d-20261019-16","d-20261019-17"],"target":"decisions-ledger","v":1} -->
