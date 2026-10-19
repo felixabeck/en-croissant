@@ -16876,7 +16876,7 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 
 ### The real-app verifier consumes a workspace listing envelope as an array and aborts fixture setup
 
-* **ID:** f-20261019-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261019-05 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** a3865e54-b6e1-4228-9c59-a63baf27deb9 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-a3865e54-b6e1-4228-9c59-a63baf27deb9-1.jsonl
 * **Impact class:** tooling
 * **Where:** scripts/verify-app.mjs:798, verifyConversionCancellation, and the GO1 native fixture setup in the same script.
@@ -16887,3 +16887,8 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Review:** review-tests is mandatory for this verifier repair. The current full-auto f-20261004-12 session is repairing this observed release-proof failure now, under push red-gate authority, rather than leaving a known broken verifier.
 * **Related:** f-20261008-01 names the same script but concerns a one-run Repertoire metadata failure, not this deterministic reply-shape mismatch. Root resemblance is coincidental.
 * **Found by:** Codex, required real Tauri verification during the f-20261004-12 build, 2026-10-19.
+* **Handled (2026-10-19):** bfdc8014 routes both real-app fixture consumers through one `listFixtureEntries` adapter that returns `WorkspaceListing.entries`. Existing assertions, native arguments and cleanup are preserved.
+* **Proof:** the original real-app run on a6c47f98 exited 1 with the recorded TypeError. After the repair, root ran 13 app-driver unit tests and pre-review successfully. All seven required code lenses approved the repair. A fresh release build and complete real-app run on bf2c2e7e exited 0, including GO1–GO14, CC0–CC5, document reload and native shutdown checks. Completion: gate-verify-app-2.MDvwoQ/completion.record in this drain run's gate directory. Root inspected the final and four scenario captures. The storage-quota error toasts in two captures are produced by the verifier's intentional EP2 refusal fixture.
+* **Correction to Related:** f-20261008-01 independently recurred on 2026-10-15. The original one-run description above is inaccurate and is superseded by this correction. Its Repertoire metadata failure remains a distinct mechanism from this listing-envelope TypeError. This closure makes no claim that the metadata finding is resolved.
+* **Review attribution:** plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code, with fresh-session separation only.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"312def56c726954fd88c735f4a984b0985a24f63fb4c84599b00ae5bd1b004ba","header_sha256":"ef1226ffc94fece9e82323d7514626ab38de6d665e328f81c30b475851f5bc58","header_status":"handled","input_sha256":"10520587981cf15efc5de007b7668c1d70ddfe47b9a8f8981ea4b6894bef66b6","kind":"mutation-receipt","operation":"347290178c4034dbde6c61eac770aa04809181a43c3d68c907c1758ba82340ec","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-05"],"target":"f-20261019-05","v":1} -->
