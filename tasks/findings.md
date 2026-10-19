@@ -16804,6 +16804,9 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Review provenance:** Plan authorship and arbitration shared root context. Detection used independent Codex sessions in the implementation's model family. Family separation was absent.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"7ff20a676e697ec5e37231861ef56f7fd9ed52570f373b43b1755380b01e53b1","header_sha256":"04b9321f8f6f373f33b893d84eda7c9ad4f67e1cd00cb88e085999451a1bf60c","header_status":"handled","input_sha256":"af958b914347edbe3b99fdf806616149520280de4ce9f25ee6251f2cc91c97f9","kind":"mutation-receipt","operation":"c686eb5351517c4d61925ea041a612947e0aadfe82be04c5c824b7f317dae53f","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-02"],"target":"f-20261019-02","v":1} -->
 
+* **Delivery update:** This supersedes the earlier statement that final contract gates and the repair push remain required. The scrollbar repair f1e9c0ea4916bd0429c91031f5452565cf563f89 and closure ff04625c4b4cf404e48bdf19547c8a1de404e61c are now published on origin/master. Test run 39215498564 has passed its browser step and all five macOS/Windows jobs. At this update, the Linux job still runs later steps, so complete remote-CI success is not claimed. The f-20261019-03 pickup verified the original failed job as this same screenshot failure.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"26ac4de8957c801a494b9fa659444760a3839a06cb7e36c9592600be621c76fc","input_sha256":"84958997ffd7d19abaa4480ff35958bb946144465ccae7ff6fb1fcfddc9651f2","kind":"mutation-receipt","operation":"886b63024818109dd0209d93c4ab571f479272aff8e5a72b2dbc224b10cd561a","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-02"],"target":"f-20261019-02","v":1} -->
+
 ---
 
 ## 2026-10-19 — filed through the inbox spool
