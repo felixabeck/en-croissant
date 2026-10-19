@@ -16974,3 +16974,33 @@ Handled by replacing the two hardcoded Git discovery diagnostics with a shared r
 * **Correction:** The original failure scenario's assertion that the Linux test failure cancelled macOS jobs is withdrawn. Those jobs were cancelled before running any steps. The workflow defines independent jobs, and no evidence establishes that the Linux test failure caused those cancellations. This finding owns the reproduced Linux assertions, while the macOS cancellations were resolved by individual retries.
 * **CI attempt evidence:** The GitHub API response for run 39273004421 attempt 2 confirms the successful macOS ARM platform job, saved at `/tmp/chessfable-delete-move/mac-retry-attempt-2.json`. Attempt 3 confirms the successful rust-macos-test job, saved at `/tmp/chessfable-delete-move/mac-retry-attempt-3.json`.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"db5a49d9d08744ba3c14c2ad2b10e128ded5cb8ae696fbc11ad55b6400e1fbfb","input_sha256":"1c78a1cc68bb4135bfab39f52d0444e72ce455f53dc03d3750915da336a5e297","kind":"mutation-receipt","operation":"3319107602ce9d3422d6aa0355e06cdb91ed2d9a0a573e1118fe67b572de71a9","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-09"],"target":"f-20261019-09","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Required macOS jobs cancel before runner acquisition
+
+* **ID:** f-20261019-06 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** github-macos-runners-available
+* **Filed from:** ad0c1ffa-38db-40f1-9946-4c5c71338ab7 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-ad0c1ffa-38db-40f1-9946-4c5c71338ab7-1.jsonl
+* **Impact class:** tooling
+* **Where:** GitHub Test run 39269230372 on 6e38261b955b8a726ce7731a08d0d7f9a4e167ce, jobs 118116833305 (rust-macos-test) and 118116833372 (rust-platform macOS ARM).
+* **Defect:** Required jobs remained queued for 15 minutes and concluded cancelled without acquiring a runner. The check-run annotation says "The job was not acquired by Runner of type hosted even after multiple attempts" and names macOS arm64 capacity constraints. Their runner_name fields are empty. The required current-SHA platform confirmation and installation cannot complete until replacement jobs succeed.
+* **Change:** Recheck hosted runner availability and rerun the two affected jobs through the existing Test workflow. Preserve workflow permissions and platform coverage. This is an external execution prerequisite with no evidenced source-code repair.
+* **Proof:** Both replacement jobs conclude success on the reviewed pushed SHA, and pnpm ci:remote:check returns 0. A preceding cancellation is superseded only by successful replacement results, never by another SHA's green result.
+* **Related:** f-20261008-14 handled an earlier macOS ARM cancellation on a different run. No common underlying cause was evidenced there. f-20261009-04 concerned disabled workflow dispatch rather than runner acquisition.
+* **Found by:** Codex drain ad0c1ffa-38db-40f1-9946-4c5c71338ab7 while completing the pinned database-reachability push. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+### CLI discovery tests pin Git's host-dependent missing-repository diagnostic
+
+* **ID:** f-20261019-07 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** ad0c1ffa-38db-40f1-9946-4c5c71338ab7 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-ad0c1ffa-38db-40f1-9946-4c5c71338ab7-1.jsonl
+* **Impact class:** tooling
+* **Where:** scripts/check-ipc-command-consumers.test.mjs:1195 and scripts/check-untranslated-jsx.test.mjs:169, exercised by Test workflow run 39273004421, Linux job 118129963955 on 6e38261b955b8a726ce7731a08d0d7f9a4e167ce.
+* **Defect:** Both CLI failure tests require the exact diagnostic "not a git repository (or any of the parent directories): .git". Git 2.55.0 on the hosted runner instead stops at a filesystem boundary and reports "not a git repository (or any parent up to mount point /)" plus the boundary explanation. Both checkers correctly return the enumeration failure, but the full frontend coverage suite fails two assertions and blocks release. The same suite passes locally with the other Git diagnostic.
+* **Change:** Make these tests prove the checkers' enumeration-failure wrapper, stderr propagation and nonzero exit contract without depending on a host-specific Git discovery message. Keep the real production CLI and command arguments under test. Reuse one shared test helper if both suites need the same mechanism. Do not change checker production behavior or weaken failure assertions.
+* **Proof:** Reproduce the exact hosted diagnostic locally through Git's real discovery configuration, show the two existing tests fail, repair them, then pass both diagnostic variants and the full frontend coverage gate. Review with review-tests and the normal pushed-range lenses.
+* **CI run:** 39273004421
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/39273004421
+* **Related:** No existing entry names these two failing assertions. The separately pending macOS runner-capacity incident has a different cause.
+* **Found by:** Codex drain ad0c1ffa-38db-40f1-9946-4c5c71338ab7 through the completed job logs API. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
