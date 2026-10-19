@@ -1,5 +1,7 @@
 # Bundle-Budgets
 
+On 2026-10-19, technical decision `d-20261019-18` records the independently reviewed entry-only allowance for public-account recovery (`f-20261004-14`). The candidate measured 550,515 B Entry, 476,072 B largest lazy, and 1,611,529 B total, all gzip. Exact published base `e66e2787f4987cd25fb376690f1b49736d5ced56` measured 549,323 B, 476,797 B, and 1,609,614 B respectively. Both used `pnpm build-vite` and production `buildBundleReport`, with identical `package.json`, `pnpm-lock.yaml`, `vite.config.ts`, and lockfile dependencies. Whole-build deltas are +1,192 B Entry, -725 B largest lazy, and +1,915 B total, without assigning bytes to individual strings or functions. Raising only Entry from 550,000 B to 555,000 B leaves 4,485 B margin and preserves public-account retention, latest-list retry, the persistent warning, and three localized strings in 16 catalogs, without a new library, storage key, or generic framework. Largest lazy remains capped at 550,000 B and total at 1,640,000 B. Reversal: tighten Entry toward a future smaller production build.
+
 `pnpm build-vite` writes Vite's manifest to `dist/.vite/manifest.json`. `node scripts/check-bundle-budget.mjs` walks that graph and measures compressed transfer bytes, not source-file sizes:
 
 - **Entry**: the initial route shell and all of its static JS/CSS imports.

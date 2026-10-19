@@ -4,6 +4,12 @@ import { deserializeStorageValue, serializeStorageValue } from "./store/debounce
 import type { Tab } from "./workspaceTypes";
 
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
+const sessionNative = vi.hoisted(() => ({
+    listLichessAccounts: vi.fn(),
+    migrateLegacyLichessToken: vi.fn(),
+    revokeLegacyLichessToken: vi.fn(),
+}));
+vi.mock("@/platform/tauri", () => ({ tauri: sessionNative }));
 
 beforeEach(() => {
     vi.resetModules();
@@ -189,4 +195,113 @@ test("original path owners are captured before direct atom access repairs legacy
     expect(sessionStorage.getItem("tabs")).toBeNull();
     expect(originalPathOwnersSnapshot.retainedIds).toContainEqual({ id: "original-file-owner" });
     expect(load).toHaveBeenCalledOnce();
+});
+
+test("real bootstrap retains the latest safe sessions through atom mount, remount and save recovery", async () => {
+    const token = "private-bootstrap-token-sentinel";
+    const publicSessions = [
+        {
+            player: "Lichess alias",
+            updatedAt: 123,
+            lichess: {
+                username: "Player",
+                handle: "old-handle",
+                account: {
+                    id: "player",
+                    username: "Player",
+                    perfs: { blitz: { rating: 1800, games: 8, rd: 40, prog: 0, prov: false } },
+                },
+            },
+        },
+        { player: "Chess.com alias", updatedAt: 456, chessCom: { username: "Other", stats: {} } },
+    ] as const;
+    localStorage.setItem(
+        "sessions",
+        JSON.stringify([
+            { ...publicSessions[0], lichess: { ...publicSessions[0].lichess, accessToken: token } },
+            publicSessions[1],
+        ]),
+    );
+    const write = Storage.prototype.setItem;
+    const refusal = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key === "sessions") throw new DOMException(token, "QuotaExceededError");
+            return write.call(this, key, value);
+        });
+    const diagnostics = vi.spyOn(console, "warn");
+    sessionNative.migrateLegacyLichessToken.mockResolvedValue({
+        account: { username: "Player", handle: "migrated-handle" },
+    });
+    sessionNative.listLichessAccounts.mockResolvedValue([
+        { username: "PLAYER", handle: "current-handle" },
+    ]);
+    const { atoms } = await importAtoms();
+    const session = await import("../utils/session");
+    const startup = await session.initializePersistedSessions();
+    const expected = [
+        {
+            ...publicSessions[0],
+            lichess: { ...publicSessions[0].lichess, handle: "current-handle" },
+        },
+        publicSessions[1],
+    ];
+    expect(startup).toEqual({ status: "unsaved", sessions: expected });
+    expect(localStorage.getItem("sessions")).toBeNull();
+    const store = createStore();
+    expect(store.get(atoms.sessionsAtom)).toEqual(expected);
+    const secondStore = createStore();
+    expect(secondStore.get(atoms.sessionsAtom)).toEqual(expected);
+    const listener = vi.fn();
+    let unmount = store.sub(atoms.sessionsAtom, listener);
+    expect(store.get(atoms.sessionsAtom)).toEqual(expected);
+    unmount();
+    // A stale public key must not replace the document's admitted list on remount.
+    write.call(localStorage, "sessions", JSON.stringify([publicSessions[1]]));
+    unmount = store.sub(atoms.sessionsAtom, listener);
+    expect(store.get(atoms.sessionsAtom)).toEqual(expected);
+    store.set(atoms.sessionsAtom, (sessions) =>
+        sessions.map((s, index) => (index === 0 ? { ...s, player: "New alias" } : s)),
+    );
+    store.set(atoms.sessionsAtom, (sessions) => sessions.filter((s) => !s.chessCom));
+    const latest = [{ ...expected[0], player: "New alias" }];
+    expect(session.retrySessionPersistence()).toEqual({ status: "unsaved", sessions: latest });
+    expect(store.get(atoms.sessionsAtom)).toEqual(latest);
+    const nativeCalls = sessionNative.listLichessAccounts.mock.calls.length;
+    unmount();
+    secondStore.set(atoms.sessionsAtom, (sessions) =>
+        sessions.map((s) => ({ ...s, player: "Edited while unmounted" })),
+    );
+    unmount = store.sub(atoms.sessionsAtom, listener);
+    expect(store.get(atoms.sessionsAtom)[0]?.player).toBe("Edited while unmounted");
+    expect(store.get(atoms.sessionsAtom)).toHaveLength(1);
+    refusal.mockRestore();
+    const recovered = session.retrySessionPersistence();
+    expect(recovered.status).toBe("saved");
+    expect(deserializeStorageValue(localStorage.getItem("sessions")!)).toEqual(recovered.sessions);
+    expect(sessionNative.listLichessAccounts).toHaveBeenCalledTimes(nativeCalls);
+    expect(sessionNative.migrateLegacyLichessToken).toHaveBeenCalledExactlyOnceWith(
+        "Player",
+        token,
+    );
+    expect(sessionNative.revokeLegacyLichessToken).not.toHaveBeenCalled();
+    for (const value of [
+        startup,
+        recovered,
+        session.getSessionPersistenceSnapshot(),
+        diagnostics.mock.calls,
+    ]) {
+        expect(JSON.stringify(value)).not.toContain(token);
+    }
+    expect(localStorage.getItem("sessions")).not.toContain(token);
+    unmount();
+    listener.mockClear();
+    session.retrySessionPersistence();
+    expect(listener).not.toHaveBeenCalled();
+    // Re-executing real bootstrap reads the canonical encoding via the production decoder.
+    expect(await session.initializePersistedSessions()).toEqual(recovered);
+    const reloadedStore = createStore();
+    const unmountReload = reloadedStore.sub(atoms.sessionsAtom, () => {});
+    expect(reloadedStore.get(atoms.sessionsAtom)).toEqual(recovered.sessions);
+    unmountReload();
 });

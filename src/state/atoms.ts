@@ -33,7 +33,13 @@ import {
     fileWorkspaceKey,
     pathRefSchema,
 } from "../utils/pathCapabilities";
-import { sessionsSchema, type Session } from "../utils/session";
+import {
+    getSessionPersistenceSnapshot,
+    savePublicSessions,
+    subscribeSessionPersistence,
+    type Session,
+    type SessionPersistenceSnapshot,
+} from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
 import { FONT_SCALE_DEFAULT, fontScaleSchema } from "./fontScale";
 import { createExpandedDirectoriesAtom } from "./expandedDirectories";
@@ -463,10 +469,23 @@ export const primaryColorAtom = atomWithStorage<MantineColor>(
     "blue",
     createPreferenceStorage<MantineColor>("blue"),
 );
-export const sessionsAtom = atomWithStorage<Session[]>(
-    "sessions",
-    [],
-    createZodStorage(sessionsSchema, localStorage),
+// Mount and remount synchronize with the document owner, never with an absent or stale key.
+const sessionStateAtom = atom<SessionPersistenceSnapshot | null>(null);
+sessionStateAtom.onMount = (setSnapshot) => {
+    const synchronize = () => setSnapshot(getSessionPersistenceSnapshot());
+    const unsubscribe = subscribeSessionPersistence(synchronize);
+    synchronize();
+    return unsubscribe;
+};
+export const sessionsAtom = atom(
+    (get) => (get(sessionStateAtom) ?? getSessionPersistenceSnapshot()).sessions,
+    (_get, set, update: SetStateAction<Session[]>) => {
+        const current = getSessionPersistenceSnapshot().sessions;
+        const snapshot = savePublicSessions(
+            typeof update === "function" ? update(current) : update,
+        );
+        set(sessionStateAtom, snapshot);
+    },
 );
 export const nativeBarAtom = atomWithStorage<boolean>(
     "native-bar",

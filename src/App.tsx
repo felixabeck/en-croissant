@@ -54,6 +54,7 @@ import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
 import { initializePathOwners } from "./state/pathOwners";
+import { SessionPersistenceNotice } from "./components/home/SessionPersistenceNotice";
 
 const router = createRouter({
   routeTree,
@@ -229,6 +230,7 @@ export default function App() {
         <ContextMenuProvider>
           <Notifications />
           <RouterProvider router={router} />
+          <SessionPersistenceNotice />
         </ContextMenuProvider>
       </MantineProvider>
     </DndProvider>

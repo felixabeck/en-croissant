@@ -1,5 +1,6 @@
 import {
     activeWorkspaceTab,
+    assertNothingClipped,
     drawMark,
     playBoardMove,
     preserveStorageForReload,
@@ -7,7 +8,10 @@ import {
     test,
     type MockScenario,
 } from "./fixtures";
-import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
+import {
+    decodeCompressedOrJson,
+    deserializeStorageValue,
+} from "../src/state/store/debouncedStorage";
 import type { TreeState } from "../src/utils/treeReducer";
 import type { Page } from "@playwright/test";
 
@@ -427,6 +431,171 @@ async function seedUnerasableLegacySessions(page: Page, tokens: string[]) {
     return storedSessions;
 }
 
+test("accounts-puzzles-engines: retains unsaved public cards and retries only the latest list without reload", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const token = "lip_e2e-public-retention-sentinel";
+    const diagnostics: string[] = [];
+    page.on("console", (message) => diagnostics.push(message.text()));
+    page.on("pageerror", (error) => diagnostics.push(error.message));
+    await page.addInitScript((token) => {
+        // On the recovery reload the real saved record remains. Do not reseed it or the fault.
+        if (localStorage.getItem("sessions") !== null) return;
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "Saved player",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    lichess: {
+                        username: "retained-player",
+                        handle: "old-handle",
+                        accessToken: token,
+                        account: {
+                            id: "retained-player",
+                            username: "retained-player",
+                            perfs: { rapid: { rating: 1500, games: 8, prog: 0 } },
+                        },
+                    },
+                },
+                {
+                    player: "Remove me",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    chessCom: { username: "retained-chesscom", stats: {} },
+                },
+            ]),
+        );
+        const original = Storage.prototype.setItem;
+        Object.assign(window, {
+            __restoreSessionWrites: () => {
+                Storage.prototype.setItem = original;
+            },
+        });
+        // Removal remains available so startup can synchronously erase the legacy bearer.
+        Storage.prototype.setItem = function (key, value) {
+            if (key === "sessions") throw new DOMException("refused", "QuotaExceededError");
+            return original.call(this, key, value);
+        };
+    }, token);
+    await mockScenario({
+        commands: {
+            migrate_legacy_lichess_token: {
+                result: {
+                    account: { username: "retained-player", handle: "migrated-handle" },
+                    durability_uncertain: false,
+                },
+            },
+            list_lichess_accounts: {
+                result: [{ username: "retained-player", handle: "current-handle" }],
+            },
+        },
+    });
+    await page.goto("/accounts");
+    const notice = page.getByRole("alert").filter({ hasText: "Accounts could not be saved" });
+    await expect(notice).toContainText(
+        "Your accounts are available during this session. Unsaved account changes may be lost when you close or reload ChessFable.",
+    );
+    await expect(page.getByText("Saved player", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Remove me", { exact: true }).first()).toBeVisible();
+    await expect(
+        page.locator(".mantine-Card-root").filter({ hasText: "retained-player" }),
+    ).toBeVisible();
+    await expect(
+        page.locator(".mantine-Card-root").filter({ hasText: "retained-chesscom" }),
+    ).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("sessions"))).toBeNull();
+    await page.getByRole("button", { name: "Edit player name", exact: true }).first().click();
+    await page.locator("input:visible").first().fill("Latest alias");
+    await page.getByRole("button", { name: "Save player name", exact: true }).click();
+    await page
+        .getByText("Remove me", { exact: true })
+        .locator("..")
+        .getByRole("button", { name: "Remove account", exact: true })
+        .click();
+    await expect(page.getByText("Latest alias", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Remove me", { exact: true })).toHaveCount(0);
+    const beforeRetry = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter(({ command }) =>
+                [
+                    "list_lichess_accounts",
+                    "migrate_legacy_lichess_token",
+                    "revoke_legacy_lichess_token",
+                ].includes(command),
+            ),
+    );
+    await notice.getByRole("button", { name: "Try saving again", exact: true }).click();
+    await expect(notice).toBeVisible();
+    await expect(page.getByText("Latest alias", { exact: true }).first()).toBeVisible();
+    await expect(
+        page.locator(".mantine-Card-root").filter({ hasText: "retained-chesscom" }),
+    ).toHaveCount(0);
+    await capture("session-persistence-unsaved-desktop");
+    await expect(page).toHaveScreenshot("session-persistence-unsaved-desktop.png", {
+        fullPage: true,
+    });
+
+    // Route changes keep the document owner and warning mounted without another bootstrap.
+    await page.locator('a[href="/engines"]').click();
+    await expect(notice).toBeVisible();
+    await page.setViewportSize({ width: 320, height: 720 });
+    await expect(page.locator("html")).toHaveCSS("font-size", "32px");
+    await assertNothingClipped(notice, { mode: "reachable" });
+    await capture("session-persistence-unsaved-320px-200pct");
+    await expect(page).toHaveScreenshot("session-persistence-unsaved-320px-200pct.png", {
+        fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('a[href="/accounts"]').click();
+    await expect(page.getByText("Latest alias", { exact: true }).first()).toBeVisible();
+    await page.evaluate(() =>
+        (window as typeof window & { __restoreSessionWrites: () => void }).__restoreSessionWrites(),
+    );
+    await notice.getByRole("button", { name: "Try saving again", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    expect(
+        await page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) =>
+                    [
+                        "list_lichess_accounts",
+                        "migrate_legacy_lichess_token",
+                        "revoke_legacy_lichess_token",
+                    ].includes(command),
+                ),
+        ),
+    ).toEqual(beforeRetry);
+    const encoded = await page.evaluate(() => localStorage.getItem("sessions"));
+    const saved = deserializeStorageValue(encoded!);
+    expect(saved).toMatchObject([
+        {
+            player: "Latest alias",
+            lichess: { username: "retained-player", handle: "current-handle" },
+        },
+    ]);
+    expect(saved).toHaveLength(1);
+    expect(JSON.stringify(saved)).not.toMatch(/accessToken|lip_e2e-public-retention-sentinel/);
+    expect(encoded).not.toContain(token);
+    await expect(page.locator("body")).not.toContainText(token);
+    expect(diagnostics.join("\n")).not.toContain(token);
+    await preserveStorageForReload(page);
+    await expect(page.getByText("Latest alias", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Saved player", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Remove me", { exact: true })).toHaveCount(0);
+    await expect(notice).toHaveCount(0);
+    expect(
+        deserializeStorageValue(
+            (await page.evaluate(() => localStorage.getItem("sessions"))) ?? "",
+        ),
+    ).toEqual(saved);
+    await expect(page.locator("body")).not.toContainText(token);
+    expect(diagnostics.join("\n")).not.toContain(token);
+});
+
 test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
     page,
     mockScenario,
@@ -577,7 +746,7 @@ for (const [outcome, reason] of [
             ),
         ).toBeVisible();
         expect(
-            await page.evaluate(() => JSON.parse(localStorage.getItem("sessions") ?? "null")),
+            decodeCompressedOrJson(await page.evaluate(() => localStorage.getItem("sessions"))),
         ).toEqual([]);
         const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
         expect(invocations.filter(({ command }) => command === "remove_lichess_account")).toEqual([

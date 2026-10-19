@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { z } from "zod";
+import { decodeCompressedOrJson, serializeStorageValue } from "@/state/store/debouncedStorage";
 import type { ChessComStats } from "@/utils/chess.com/api";
 import { getLichessAccount, type LichessAccount } from "@/utils/lichess/api";
 import {
@@ -64,6 +65,44 @@ export const sessionsSchema: z.ZodType<Session[]> = z.array(sessionSchema);
 
 const SESSION_STORAGE_KEY = "sessions";
 
+export type SessionPersistenceSnapshot = {
+    sessions: Session[];
+    status: "saved" | "unsaved";
+};
+
+// One public list belongs to this document, independently of mounted account consumers.
+// Bootstrap admits it only after credential erasure succeeds. No legacy record is retained here.
+let sessionSnapshot: SessionPersistenceSnapshot = { sessions: [], status: "saved" };
+const sessionListeners = new Set<() => void>();
+
+export function getSessionPersistenceSnapshot(): SessionPersistenceSnapshot {
+    return sessionSnapshot;
+}
+
+export function subscribeSessionPersistence(listener: () => void): () => void {
+    sessionListeners.add(listener);
+    return () => sessionListeners.delete(listener);
+}
+
+/** Canonical public write boundary for bootstrap, account updates and explicit retry. */
+export function savePublicSessions(sessions: Session[]): SessionPersistenceSnapshot {
+    const safeSessions = sessionsSchema.parse(sessions);
+    let status: SessionPersistenceSnapshot["status"] = "saved";
+    try {
+        persistSessions(safeSessions);
+    } catch {
+        // Do not expose exception text or stored contents from this credential-adjacent path.
+        status = "unsaved";
+    }
+    sessionSnapshot = { sessions: safeSessions, status };
+    for (const listener of sessionListeners) listener();
+    return sessionSnapshot;
+}
+
+export function retrySessionPersistence(): SessionPersistenceSnapshot {
+    return savePublicSessions(sessionSnapshot.sessions);
+}
+
 export class SessionSanitizationError extends Error {
     /** Whether this launch read any legacy Lichess bearer token; contains no account identity. */
     readonly legacySignInFound: boolean;
@@ -87,7 +126,7 @@ export class SessionSanitizationError extends Error {
 function parsePersistedSessions(): unknown[] {
     try {
         const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-        const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+        const parsed = decodeCompressedOrJson(raw);
         return Array.isArray(parsed) ? parsed : [];
     } catch {
         // Never log storage contents: a legacy record can contain a bearer token.
@@ -96,7 +135,10 @@ function parsePersistedSessions(): unknown[] {
 }
 
 function persistSessions(sessions: Session[]): void {
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
+    localStorage.setItem(
+        SESSION_STORAGE_KEY,
+        serializeStorageValue(sessionsSchema.parse(sessions)),
+    );
 }
 
 /** Returns whether the legacy credential record was overwritten with sanitized sessions or removed. */
@@ -174,7 +216,7 @@ function sanitizeLegacySessions(): {
  * `revoke_legacy_lichess_token`, then rejects with SessionSanitizationError carrying only a
  * token-free summary, without migrating, listing native accounts, or writing sessions.
  */
-export async function initializePersistedSessions(): Promise<void> {
+export async function initializePersistedSessions(): Promise<SessionPersistenceSnapshot> {
     const {
         sessions: sanitized,
         migrations,
@@ -261,7 +303,7 @@ export async function initializePersistedSessions(): Promise<void> {
             // successful reconciliation rather than synthesising unverified profile data.
         }
     }
-    persistSessions(reconciled);
+    return savePublicSessions(reconciled);
 }
 
 export function upsertLichessSession(

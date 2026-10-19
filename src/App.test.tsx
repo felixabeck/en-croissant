@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => {
     useConversionProgress: vi.fn(),
     useDatabaseContentValidation: vi.fn(),
     useDocumentLanguage: vi.fn(),
+    sessionPersistenceNotice: vi.fn(() => null),
     closeSplashscreen: vi.fn(),
     getDefaultStore: vi.fn(),
     getMatches: vi.fn(),
@@ -83,7 +84,7 @@ vi.mock("jotai", () => ({
   useAtomValue: mocks.useAtomValue,
 }));
 vi.mock("@mantine/core", () => ({
-  MantineProvider: () => null,
+  MantineProvider: ({ children }: { children: React.ReactNode }) => children,
   localStorageColorSchemeManager: vi.fn(() => ({})),
 }));
 vi.mock("@mantine/notifications", () => ({
@@ -94,8 +95,12 @@ vi.mock("@tanstack/react-router", () => ({
   RouterProvider: () => null,
   createRouter: vi.fn(() => ({})),
 }));
-vi.mock("mantine-contextmenu", () => ({ ContextMenuProvider: () => null }));
-vi.mock("react-dnd", () => ({ DndProvider: () => null }));
+vi.mock("mantine-contextmenu", () => ({
+  ContextMenuProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock("react-dnd", () => ({
+  DndProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 vi.mock("react-dnd-html5-backend", () => ({ HTML5Backend: {} }));
 vi.mock("@/components/ErrorComponent", () => ({ default: () => null }));
 vi.mock("@/hooks/useConversionProgress", () => ({
@@ -107,6 +112,9 @@ vi.mock("@/hooks/useDatabaseContentValidation", () => ({
 }));
 vi.mock("@/hooks/useDocumentLanguage", () => ({
   useDocumentLanguage: mocks.useDocumentLanguage,
+}));
+vi.mock("./components/home/SessionPersistenceNotice", () => ({
+  SessionPersistenceNotice: mocks.sessionPersistenceNotice,
 }));
 vi.mock("./routeTree.gen", () => ({ routeTree: {} }));
 vi.mock("./styles/theme", () => ({
@@ -171,6 +179,7 @@ beforeEach(() => {
   mocks.useConversionProgress.mockReset();
   mocks.useDatabaseContentValidation.mockReset();
   mocks.useDocumentLanguage.mockReset();
+  mocks.sessionPersistenceNotice.mockClear();
   mocks.useAtomValue.mockReset();
 
   storeValues = { telemetryEnabled: false, referenceDb: undefined };
@@ -595,6 +604,7 @@ describe("App", () => {
     await act(async () => root.render(<App />));
 
     expect(mocks.useConversionProgress).toHaveBeenCalled();
+    expect(mocks.sessionPersistenceNotice).toHaveBeenCalled();
     expect(mocks.useDatabaseContentValidation).toHaveBeenCalled();
     expect(mocks.useDocumentLanguage).toHaveBeenCalled();
   });

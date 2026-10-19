@@ -277,3 +277,15 @@ test("mounts after a non-sensitive reconciliation failure", async () => {
   expect(closeSplashscreen).not.toHaveBeenCalled();
   expect(logFailureSafely).not.toHaveBeenCalled();
 });
+
+test("mounts App after a recoverable public save outcome", async () => {
+  const sessions = await import("./utils/session");
+  vi.mocked(sessions.initializePersistedSessions).mockResolvedValueOnce({
+    status: "unsaved",
+    sessions: [{ player: "Public alias", updatedAt: 1 }],
+  });
+  const { applicationStartup } = await import("./index");
+  await applicationStartup;
+  expect(renderedChild().type).toBe(App);
+  expect(logFailureSafely).not.toHaveBeenCalled();
+});

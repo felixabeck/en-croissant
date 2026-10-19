@@ -51,6 +51,8 @@ export const applicationStartup = (async () => {
 
   let sanitizationFailure: SessionSanitizationError | undefined;
   try {
+    // Bootstrap publishes its safe document owner even when the public save is unsaved.
+    // App exposes that recoverable status and retries the latest list without another startup.
     await initializePersistedSessions();
   } catch (error) {
     if (error instanceof SessionSanitizationError) sanitizationFailure = error;

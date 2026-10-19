@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { decodeCompressedOrJson, deserializeStorageValue } from "@/state/store/debouncedStorage";
 
 const mocks = vi.hoisted(() => ({
     migrateLegacyLichessToken: vi.fn(),
@@ -18,12 +19,16 @@ vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: mocks.getLichessAccou
 
 import {
     initializePersistedSessions,
+    getSessionPersistenceSnapshot,
+    savePublicSessions,
+    retrySessionPersistence,
     sessionPlayerName,
     SessionSanitizationError,
 } from "./session";
 
 beforeEach(() => {
     vi.restoreAllMocks();
+    savePublicSessions([]);
     localStorage.clear();
     vi.clearAllMocks();
     mocks.listLichessAccounts.mockResolvedValue([]);
@@ -54,10 +59,10 @@ describe("initializePersistedSessions", () => {
         ]);
         mocks.getLichessAccount.mockResolvedValue(profile);
 
-        await expect(initializePersistedSessions()).resolves.toBeUndefined();
-        await expect(initializePersistedSessions()).resolves.toBeUndefined();
+        await expect(initializePersistedSessions()).resolves.toMatchObject({ status: "saved" });
+        await expect(initializePersistedSessions()).resolves.toMatchObject({ status: "saved" });
 
-        expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([
+        expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([
             {
                 player: "Player",
                 updatedAt: expect.any(Number),
@@ -81,9 +86,9 @@ describe("initializePersistedSessions", () => {
                 mocks.getLichessAccount.mockResolvedValue(null);
             }
 
-            await expect(initializePersistedSessions()).resolves.toBeUndefined();
+            await expect(initializePersistedSessions()).resolves.toMatchObject({ status: "saved" });
 
-            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+            expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
             expect(mocks.getLichessAccount).toHaveBeenCalledExactlyOnceWith({
                 handle: "native-handle",
             });
@@ -167,6 +172,7 @@ describe("initializePersistedSessions", () => {
             erasure.removeItem.mock.invocationCallOrder[0],
         );
         expect(localStorage.getItem("sessions")).toBe(original);
+        expect(getSessionPersistenceSnapshot()).toEqual({ status: "saved", sessions: [] });
     });
 
     test("catches a revoke rejection and still attempts every other token", async () => {
@@ -316,8 +322,10 @@ describe("initializePersistedSessions", () => {
             }
             await initializePersistedSessions();
 
-            const sessions = JSON.parse(localStorage.getItem("sessions")!);
-            expect(sessions[0].lichess.handle).toBe("migrated-handle");
+            const sessions = decodeCompressedOrJson(
+                localStorage.getItem("sessions"),
+            ) as import("./session").Session[];
+            expect(sessions[0].lichess?.handle).toBe("migrated-handle");
             expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
         },
     );
@@ -381,14 +389,14 @@ describe("initializePersistedSessions", () => {
                     },
                 },
             ];
-            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual(expected);
             expect(mocks.getLichessAccount).not.toHaveBeenCalled();
 
             await initializePersistedSessions();
-            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual(expected);
             mocks.listLichessAccounts.mockRejectedValue(new Error("offline on reload"));
             await initializePersistedSessions();
-            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual(expected);
+            expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual(expected);
             expect(mocks.migrateLegacyLichessToken).toHaveBeenCalledTimes(
                 source === "persisted" ? 0 : 1,
             );
@@ -408,9 +416,13 @@ describe("initializePersistedSessions", () => {
 
         await initializePersistedSessions();
 
-        expect(JSON.parse(localStorage.getItem("sessions")!)[0].lichess.handle).toBe(
-            "latest-handle",
-        );
+        expect(
+            (
+                decodeCompressedOrJson(
+                    localStorage.getItem("sessions"),
+                ) as import("./session").Session[]
+            )[0].lichess?.handle,
+        ).toBe("latest-handle");
     });
 
     test("a failed listing preserves the offline public session and opaque handle across reload", async () => {
@@ -430,7 +442,7 @@ describe("initializePersistedSessions", () => {
         await initializePersistedSessions();
         await initializePersistedSessions();
 
-        expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([session]);
+        expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([session]);
     });
 
     test("removes credential storage when the sanitized overwrite fails", async () => {
@@ -454,10 +466,36 @@ describe("initializePersistedSessions", () => {
             status: "error",
             error: "unavailable",
         });
-        await initializePersistedSessions();
+        const outcome = await initializePersistedSessions();
 
+        expect(outcome.status).toBe("saved");
+        expect(deserializeStorageValue(localStorage.getItem("sessions")!)).toEqual(
+            outcome.sessions,
+        );
         expect(localStorage.getItem("sessions")).not.toContain("credential-that-must-be-removed");
         expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
+    });
+
+    test("a failed ordinary write retains only safe public data and a successful ordinary write clears unsaved status", () => {
+        const record = {
+            updatedAt: 1,
+            lichess: {
+                username: "Player",
+                account: { id: "player", username: "Player" },
+                accessToken: "private-write-token",
+            },
+        };
+        const refusal = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw new Error("private-write-token");
+        });
+        const outcome = savePublicSessions([record]);
+        expect(outcome.status).toBe("unsaved");
+        expect(JSON.stringify(outcome)).not.toMatch(/private-write-token|accessToken/);
+        expect(retrySessionPersistence()).toEqual(outcome);
+        refusal.mockRestore();
+        const saved = savePublicSessions([{ ...outcome.sessions[0], player: "Latest alias" }]);
+        expect(saved.status).toBe("saved");
+        expect(deserializeStorageValue(localStorage.getItem("sessions")!)).toEqual(saved.sessions);
     });
 
     test("scrubs a token even when a sibling record is malformed", async () => {
@@ -490,7 +528,7 @@ describe("initializePersistedSessions", () => {
         const persisted = localStorage.getItem("sessions")!;
         expect(persisted).not.toContain("legacy-secret-among-malformed-records");
         expect(persisted).not.toContain("accessToken");
-        expect(JSON.parse(persisted)).toHaveLength(1);
+        expect(decodeCompressedOrJson(persisted)).toHaveLength(1);
     });
 
     test("erases a legacy bearer token before a failed native migration can persist it", async () => {
@@ -539,9 +577,11 @@ describe("initializePersistedSessions", () => {
         await initializePersistedSessions();
         await initializePersistedSessions();
 
-        const sessions = JSON.parse(localStorage.getItem("sessions")!);
+        const sessions = decodeCompressedOrJson(
+            localStorage.getItem("sessions"),
+        ) as import("./session").Session[];
         expect(sessions).toHaveLength(1);
-        expect(sessions[0].lichess.handle).toBe("native-handle");
+        expect(sessions[0].lichess?.handle).toBe("native-handle");
         expect(mocks.getLichessAccount).not.toHaveBeenCalled();
     });
 });

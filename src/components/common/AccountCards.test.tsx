@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionsAtom } from "@/state/atoms";
+import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
 import type { ManagedDatabaseInfo } from "@/utils/db";
 
 const mocks = vi.hoisted(() => ({
@@ -222,7 +223,7 @@ describe("Lichess account removal", () => {
       await renderCards();
       await logout();
       expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
-      expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
       expect(mocks.notificationsShow).toHaveBeenCalledTimes(2);
       expect(mocks.notificationsShow.mock.calls.map(([warning]) => warning.message)).toEqual([
         `Home.Accounts.RevocationPending ${reasonKey}`,
@@ -244,7 +245,7 @@ describe("Lichess account removal", () => {
       await renderCards();
       await logout();
       expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
-      expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
       expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
       expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
         message: "Home.Accounts.RevocationPending Lichess.Revocation.Unconfirmed",
@@ -296,7 +297,7 @@ describe("Lichess account removal", () => {
     await logout();
 
     expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
-    expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
     expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
     expect(mocks.notificationsShow).not.toHaveBeenCalled();
   });
@@ -312,7 +313,7 @@ describe("Lichess account removal", () => {
     });
 
     expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
-    expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([session]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([session]);
     expect(mocks.notificationsShow).not.toHaveBeenCalled();
   });
 });
