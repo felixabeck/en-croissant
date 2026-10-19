@@ -2332,7 +2332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (),
             )
             .map_err(|error| format!("path authority initialization failed: {error}"))?;
-            authority.set_engine_image_sweep_permitted(app_data_locked);
+            authority.set_engine_image_sweep_root(app_data_locked.then_some(app_data));
             app.state::<AppState>()
                 .pgn_path_authority
                 .install(authority)
@@ -4541,10 +4541,11 @@ mod blocking_offload_scans {
         assert!(returned < setup.find(".credentials").unwrap());
         assert!(returned < setup.find("PathAuthority::open_for_app(").unwrap());
         assert_eq!(setup.matches("admit_instance(").count(), 1);
-        let setter = "authority.set_engine_image_sweep_permitted(app_data_locked);";
+        let setter = "authority.set_engine_image_sweep_root(app_data_locked.then_some(app_data));";
         assert_eq!(setup.matches(setter).count(), 1);
         let permitted = setup.find(setter).unwrap();
         assert!(setup.rfind("PathAuthority::open_for_app(").unwrap() < permitted);
+        assert!(!setup[permitted + setter.len()..].contains("app_data"));
         assert!(permitted < setup.find(".install(authority)").unwrap());
     }
 

@@ -4373,10 +4373,7 @@ mod win {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_test_target_security_descriptor(
-        path: &Path,
-        access: u32,
-    ) -> Result<(), Error> {
+    fn open_test_security_target(path: &Path) -> Result<File, Error> {
         let mut options = OpenOptions::new();
         options
             .read(true)
@@ -4389,9 +4386,54 @@ mod win {
             )
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
-        let file = options.open(path).map_err(io)?;
+        options.open(path).map_err(io)
+    }
+
+    #[cfg(test)]
+    fn apply_test_target_security(file: &File, access: u32) -> Result<(), Error> {
         let descriptor = PrivateSecurityDescriptor::new(access)?;
-        set_kernel_object_security(&file, &descriptor.descriptor)
+        set_kernel_object_security(file, &descriptor.descriptor)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_target_security_descriptor(
+        path: &Path,
+        access: u32,
+    ) -> Result<(), Error> {
+        apply_test_target_security(&open_test_security_target(path)?, access)
+    }
+
+    /// Holds WRITE_DAC before restricting access so restoration never needs to reopen the target.
+    #[cfg(test)]
+    pub(crate) struct TestTargetSecurityGuard {
+        file: File,
+        original: Option<AlignedBuffer>,
+    }
+
+    #[cfg(test)]
+    impl TestTargetSecurityGuard {
+        pub(crate) fn restrict(path: &Path, access: u32) -> Result<Self, Error> {
+            let file = open_test_security_target(path)?;
+            let original = Some(capture_security_descriptor(&file)?);
+            let guard = Self { file, original };
+            apply_test_target_security(&guard.file, access)?;
+            Ok(guard)
+        }
+
+        pub(crate) fn restore(&mut self) -> Result<(), Error> {
+            if let Some(original) = &self.original {
+                set_kernel_object_security(&self.file, original)?;
+                self.original = None;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for TestTargetSecurityGuard {
+        fn drop(&mut self) {
+            let _ = self.restore();
+        }
     }
 
     impl AtomicReplaceAdapter for WindowsAdapter {
@@ -4603,7 +4645,7 @@ pub(crate) use unix::{
     raw_libc_stat_identity, raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH,
 };
 #[cfg(all(test, windows))]
-pub(crate) use win::set_test_target_security_descriptor;
+pub(crate) use win::TestTargetSecurityGuard;
 #[cfg(windows)]
 pub(crate) use win::MAX_REMOVE_TREE_DEPTH;
 
