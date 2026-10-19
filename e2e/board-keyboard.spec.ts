@@ -10,6 +10,96 @@ import {
     test,
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
+import type { Locator, Page } from "@playwright/test";
+
+async function drawMark(page: Page, board: Locator, from: string, to = from) {
+    await expect(board).toBeVisible();
+    const box = (await board.boundingBox())!;
+    const point = (square: string) => ({
+        x: box.x + ((square.charCodeAt(0) - 97 + 0.5) * box.width) / 8,
+        y: box.y + ((8 - Number(square[1]) + 0.5) * box.height) / 8,
+    });
+    const start = point(from);
+    const end = point(to);
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(end.x, end.y, { steps: 4 });
+    // Chessground resolves the drawing endpoint on its animation frame.
+    await board.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await page.mouse.up({ button: "right" });
+    await page.mouse.move(0, 0);
+}
+
+test("board-keyboard: user marks coexist, toggle individually, persist per node and clear on left click", async ({
+    page,
+    capture,
+}) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /^open$/i }).click();
+    const board = page.locator("cg-board").first();
+    await playBoardMove(page, board, "e2", "e4");
+    const start = page.getByRole("button", { name: "Go to start", exact: true });
+    await start.click();
+    const svg = page.locator(".cg-wrap svg.cg-shapes").first();
+    const circles = svg.locator("g[cgHash] circle");
+    const arrows = svg.locator("g[cgHash] line");
+    await drawMark(page, board, "c4");
+    await expect(circles).toHaveCount(1);
+    await drawMark(page, board, "d4");
+    await expect(circles).toHaveCount(2);
+    const retainedCircle = await circles.last().getAttribute("cx");
+    await drawMark(page, board, "c4");
+    await expect(circles).toHaveCount(1);
+    await expect(circles).toHaveAttribute("cx", retainedCircle!);
+    await drawMark(page, board, "a3", "a5");
+    await expect(arrows).toHaveCount(1);
+    await drawMark(page, board, "b3", "b5");
+    await expect(arrows).toHaveCount(2);
+    const retainedArrow = await arrows.last().getAttribute("x1");
+    await drawMark(page, board, "a3", "a5");
+    await expect(arrows).toHaveCount(1);
+    await expect(arrows).toHaveAttribute("x1", retainedArrow!);
+    await expect(circles).toHaveCount(1);
+    await capture("board-multiple-user-drawings");
+
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    await expect(circles).toHaveCount(0);
+    await expect(arrows).toHaveCount(0);
+    await drawMark(page, board, "f5");
+    await expect(circles).toHaveCount(1);
+    await start.click();
+    await expect(circles).toHaveCount(1);
+    await expect(arrows).toHaveCount(1);
+    await expect(circles).toHaveAttribute("cx", retainedCircle!);
+    await preserveStorageForReload(page);
+    await expect(circles).toHaveCount(1);
+    await expect(arrows).toHaveCount(1);
+    await drawMark(page, board, "d4");
+    await expect(circles).toHaveCount(0);
+    await expect(arrows).toHaveCount(1);
+    await board.click();
+    await expect(arrows).toHaveCount(0);
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    await expect(circles).toHaveCount(1);
+});
+
+test("board-keyboard: explicit keep-drawings preference survives left clicks and still permits toggling", async ({
+    page,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("erase-drawables-on-click", "false"));
+    await page.goto("/");
+    await page.getByRole("button", { name: /^open$/i }).click();
+    const board = page.locator("cg-board").first();
+    const circles = page.locator(".cg-wrap svg.cg-shapes g[cgHash] circle");
+    await drawMark(page, board, "c4");
+    await expect(circles).toHaveCount(1);
+    await board.click();
+    await expect(circles).toHaveCount(1);
+    await drawMark(page, board, "c4");
+    await expect(circles).toHaveCount(0);
+});
 
 test("board-keyboard: PGN imports render six named arrow and square colors despite bad neighbors", async ({
     page,
@@ -75,6 +165,14 @@ test("board-keyboard: PGN imports render six named arrow and square colors despi
     expect(new Set(strokes).size).toBe(6);
     await page.mouse.move(0, 0);
     await capture("board-six-color-pgn-drawings");
+    await drawMark(page, board.locator("cg-board"), "b5");
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(5);
+    await expect(svg.locator("g[cgHash*=',green'] circle")).toHaveCount(0);
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(6);
+    await drawMark(page, board.locator("cg-board"), "b2", "b4");
+    await expect(svg.locator("g[cgHash] line")).toHaveCount(5);
+    await expect(svg.locator("g[cgHash*=',green'] line")).toHaveCount(0);
+    await expect(svg.locator("g[cgHash] circle")).toHaveCount(5);
 });
 
 test("board-keyboard: refuses an excess-material engine game with its localized position message", async ({
@@ -141,6 +239,8 @@ test("board-keyboard: opens analysis and exposes a keyboard-operable board", asy
     assertNoHorizontalOverflow,
     capture,
 }) => {
+    // Keep this keyboard/layout baseline on its original explicit preference.
+    await page.addInitScript(() => localStorage.setItem("erase-drawables-on-click", "false"));
     await page.goto("/");
 
     await page.getByRole("button", { name: /^open$/i }).click();
@@ -267,6 +367,8 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
     assertNoHorizontalOverflow,
     capture,
 }) => {
+    // The default drawing behavior has its own interaction test and capture above.
+    await page.addInitScript(() => localStorage.setItem("erase-drawables-on-click", "false"));
     await page.goto("/");
     await page.getByRole("button", { name: /^open$/i }).click();
     const board = page.locator("cg-board").first();

@@ -208,7 +208,7 @@ function Board({
   }
 
   const { choice } = useVariationChooser();
-  let shapes: DrawShape[] = chooserArrows(choice);
+  const shapes: DrawShape[] = chooserArrows(choice);
   if (showArrows && evalOpen && arrows.size > 0 && pos) {
     const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
     for (const [i, moves] of entries) {
@@ -270,10 +270,6 @@ function Board({
         shapes.push(arrow);
       }
     }
-  }
-
-  if (currentNode.shapes.length > 0) {
-    shapes = shapes.concat(currentNode.shapes);
   }
 
   const hasClock =
@@ -653,6 +649,8 @@ function Board({
                     enabled: true,
                     visible: true,
                     defaultSnapToValidMove: snapArrows,
+                    eraseOnMovablePieceClick: eraseDrawablesOnClick,
+                    shapes: currentNode.shapes,
                     autoShapes: shapes,
                     brushes: continuationBrushes,
                     onChange: (shapes) => {

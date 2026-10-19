@@ -150,16 +150,16 @@ test("rendered arrows give chooser candidates priority over engines and suppress
     "paleBlue",
     "variation",
     "variation",
-    "green",
   ]);
+  expect(boardConfig.drawable!.shapes).toEqual([stored]);
   press("ArrowRight");
   expect(boardConfig.drawable!.autoShapes).toEqual([
     { orig: "e2", dest: "e4", brush: "continuationSelected" },
     { orig: "d2", dest: "d4", brush: "continuationOther" },
     { orig: "c2", dest: "c4", brush: "continuationOther" },
     closed[1],
-    stored,
   ]);
+  expect(boardConfig.drawable!.shapes).toEqual([stored]);
   expect(boardConfig.drawable!.brushes).toBe(continuationBrushes);
   expect(continuationBrushes.continuationSelected.opacity).toBe(1);
   expect(continuationBrushes.continuationOther.opacity).toBeLessThan(
@@ -175,6 +175,9 @@ test("rendered arrows give chooser candidates priority over engines and suppress
   press("ArrowUp");
   expect(boardConfig.drawable!.autoShapes![0].brush).toBe("continuationSelected");
   press("Escape");
+  expect(boardConfig.drawable!.autoShapes).toEqual(closed);
+  act(() => boardConfig.drawable!.onChange!([]));
+  expect(tree.getState().currentNode().shapes).toEqual([]);
   expect(boardConfig.drawable!.autoShapes).toEqual(closed);
 });
 
@@ -250,7 +253,8 @@ test("imported six-color arrows and squares reach the board with distinct brushe
   const initial = defaultTree();
   initial.root.shapes = parsed.shapes.map(toDrawShape);
   render(initial);
-  expect(boardConfig.drawable!.autoShapes).toEqual(initial.root.shapes);
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
+  expect(boardConfig.drawable!.shapes).toEqual(initial.root.shapes);
   expect(initial.root.shapes.map((shape) => shape.brush)).toEqual([
     "red",
     "green",

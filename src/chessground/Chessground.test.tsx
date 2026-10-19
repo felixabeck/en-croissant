@@ -8,10 +8,12 @@ const api = {
   destroy: vi.fn(),
   set: vi.fn(),
   setAutoShapes: vi.fn(),
+  setShapes: vi.fn(),
   playPremove: vi.fn(() => false),
   cancelPremove: vi.fn(),
   selectSquare: vi.fn(),
   state: {
+    drawable: { current: undefined as object | undefined },
     premovable: { current: undefined as string[] | undefined },
     dom: { bounds: { clear: vi.fn() } },
   },
@@ -51,6 +53,8 @@ afterEach(() => {
   api.destroy.mockClear();
   api.set.mockClear();
   api.setAutoShapes.mockClear();
+  api.setShapes.mockClear();
+  api.state.drawable.current = undefined;
   api.state.dom.bounds.clear.mockClear();
   createChessground.mockClear();
   observed.clear();
@@ -98,20 +102,21 @@ test("defers saved shapes until the observed board has positive bounds", async (
   const root = createRoot(host);
   const { Chessground } = await import("./Chessground");
   const savedShape = { orig: "h5", dest: "h5", brush: "cyan" } as const;
+  const automaticShape = { orig: "e2", dest: "e4", brush: "blue" } as const;
 
   await act(async () => {
     root.render(
       <MantineProvider>
-        <Chessground drawable={{ autoShapes: [savedShape] }} />
+        <Chessground drawable={{ shapes: [savedShape], autoShapes: [automaticShape] }} />
       </MantineProvider>,
     );
   });
   expect(createChessground).toHaveBeenCalledWith(
     expect.any(HTMLElement),
-    expect.objectContaining({ drawable: { autoShapes: [] } }),
+    expect.objectContaining({ drawable: expect.objectContaining({ shapes: [], autoShapes: [] }) }),
   );
   expect(api.set).toHaveBeenLastCalledWith(
-    expect.objectContaining({ drawable: { autoShapes: [] } }),
+    expect.objectContaining({ drawable: expect.objectContaining({ shapes: [], autoShapes: [] }) }),
   );
   expect(observed.size).toBe(1);
   const [element, onResize] = [...observed.entries()][0];
@@ -125,28 +130,32 @@ test("defers saved shapes until the observed board has positive bounds", async (
   api.set.mockClear();
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
-  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([savedShape]);
+  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([automaticShape]);
+  expect(api.setShapes).toHaveBeenCalledExactlyOnceWith([{ ...savedShape, dest: undefined }]);
   expect(api.set).not.toHaveBeenCalled();
 
   const nextShape = { orig: "a2", dest: "a4", brush: "red" } as const;
   await act(async () => {
     root.render(
       <MantineProvider>
-        <Chessground drawable={{ autoShapes: [nextShape] }} />
+        <Chessground drawable={{ shapes: [nextShape], autoShapes: [automaticShape] }} />
       </MantineProvider>,
     );
   });
   getBounds.mockReturnValue(new DOMRect(0, 0, 500, 500));
   api.set.mockClear();
   api.setAutoShapes.mockClear();
+  api.setShapes.mockClear();
   api.state.dom.bounds.clear.mockClear();
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
-  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([nextShape]);
+  expect(api.setAutoShapes).toHaveBeenCalledExactlyOnceWith([automaticShape]);
+  expect(api.setShapes).toHaveBeenCalledExactlyOnceWith([nextShape]);
   expect(api.set).not.toHaveBeenCalled();
   await act(async () => onResize());
   expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
   expect(api.setAutoShapes).toHaveBeenCalledTimes(1);
+  expect(api.setShapes).toHaveBeenCalledTimes(1);
   expect(api.set).not.toHaveBeenCalled();
 
   await act(async () => root.unmount());

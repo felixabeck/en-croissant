@@ -61,9 +61,21 @@ interface ChessgroundProps extends Config {
 }
 
 function configForBounds(config: Config, { width, height }: DOMRect): Config {
-  return width > 0 && height > 0
-    ? config
-    : { ...config, drawable: { ...config.drawable, autoShapes: [] } };
+  const visible = width > 0 && height > 0;
+  return {
+    ...config,
+    drawable: {
+      ...config.drawable,
+      ...(config.drawable?.shapes && {
+        shapes: visible
+          ? config.drawable.shapes.map((shape) =>
+              shape.dest === shape.orig ? { ...shape, dest: undefined } : shape,
+            )
+          : [],
+      }),
+      ...(!visible && { autoShapes: [] }),
+    },
+  };
 }
 
 export function Chessground({ ref, ...props }: ChessgroundProps) {
@@ -74,6 +86,30 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
   const configRef = useRef<Config>(props);
   configRef.current = {
     ...props,
+    drawable: {
+      ...props.drawable,
+      onChange: (shapes) => {
+        const api = apiRef.current;
+        // Chessground clears on empty/opponent-square clicks even when its
+        // eraseOnMovablePieceClick is false. Keep the explicit user preference.
+        // Drawing changes run while drawable.current still identifies the gesture.
+        if (
+          props.drawable?.eraseOnMovablePieceClick === false &&
+          props.drawable.shapes &&
+          api &&
+          !api.state.drawable.current
+        ) {
+          const element = boardRef.current;
+          if (element) {
+            api.setShapes(
+              configForBounds(props, element.getBoundingClientRect()).drawable?.shapes ?? [],
+            );
+          }
+          return;
+        }
+        props.drawable?.onChange?.(shapes);
+      },
+    },
     events: {
       ...props.events,
       change: () => {
@@ -124,7 +160,9 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
       if (width > 0 && height > 0) {
         chessgroundApi.state.dom.bounds.clear();
         // A 0×0 box paints squares as lines with NaN coordinates.
-        // Use setAutoShapes because api.set with a fen replaces drawable.shapes.
+        // Restore both layers without reapplying fen or changing the position.
+        const shapes = configForBounds(configRef.current, bounds).drawable?.shapes;
+        if (shapes) chessgroundApi.setShapes(shapes);
         chessgroundApi.setAutoShapes(configRef.current.drawable?.autoShapes ?? []);
       }
     });

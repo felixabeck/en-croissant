@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
 
+vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
+
 beforeEach(() => {
     vi.resetModules();
     sessionStorage.clear();
@@ -21,6 +23,24 @@ async function importAtoms() {
     const atoms = await import("./atoms");
     return { atoms, load };
 }
+
+test.each([
+    [null, true],
+    ["false", false],
+    ["true", true],
+    ['"invalid"', true],
+    ["{", true],
+] as const)("drawing click preference hydrates %s as %s", async (stored, expected) => {
+    if (stored !== null) localStorage.setItem("erase-drawables-on-click", stored);
+    const { atoms } = await importAtoms();
+    const store = createStore();
+    const unsubscribe = store.sub(atoms.eraseDrawablesOnClickAtom, () => {});
+    try {
+        expect(store.get(atoms.eraseDrawablesOnClickAtom)).toBe(expected);
+    } finally {
+        unsubscribe();
+    }
+});
 
 function seedWorkspace() {
     const tabs: Tab[] = ["First", "Second"].map((name) => ({

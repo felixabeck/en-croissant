@@ -380,8 +380,8 @@ export const showVariationArrowsAtom = atomWithStorage<boolean>(
 );
 export const eraseDrawablesOnClickAtom = atomWithStorage<boolean>(
     "erase-drawables-on-click",
-    false,
-    createPreferenceStorage(false),
+    true,
+    createPreferenceStorage(true),
 );
 export const autoPromoteAtom = atomWithStorage<boolean>(
     "auto-promote",
