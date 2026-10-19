@@ -16947,9 +16947,12 @@ Handled in the isolated delete-move worktree. Mantine Menu now owns dismissal th
 
 ### Git enumeration CLI tests assume a filesystem-dependent Git diagnostic
 
-* **ID:** f-20261019-09 · **Status:** open · **Area:** gate-scripts · **Root:** git-discovery-diagnostic-portability · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261019-09 · **Status:** handled · **Area:** gate-scripts · **Root:** git-discovery-diagnostic-portability · **Entry:** lens · **Blocked:** none
 * **Impact class:** tooling
 * **Where:** `scripts/check-ipc-command-consumers.test.mjs`, `scripts/check-untranslated-jsx.test.mjs`
 * **Failure scenario:** The upstream Linux test runner reaches a filesystem boundary while discovering Git in a disposable non-repository fixture. Git prints the mount-point variant of its diagnostic. Two CLI tests expect the parent-directories variant byte-for-byte, so the test job fails and cancels macOS jobs.
 * **Evidence:** Test run 39273004421 at 6e38261b, job 118129963955, reports these two assertion failures with 4576 other tests passing.
 * **Proof:** Reproduce both Git discovery outcomes locally against the existing tests, then preserve exact checker exit and diagnostic-prefix guarantees while allowing Git's genuine environment-dependent detail.
+
+Handled by replacing the two hardcoded Git discovery diagnostics with a shared real-Git stderr oracle in the existing test helper. The checker prefix, full diagnostic, status and empty output remain asserted. Production checkers are unchanged. With TMPDIR=/run/user/1000 and GIT_DISCOVERY_ACROSS_FILESYSTEM=0, the original tests reproduce the two upstream failures. The repaired suites pass 125/125 under ordinary discovery and under filesystem-boundary discovery with both values 0 and 1. This repairs the Linux test failure in run 39273004421. The unrelated cancelled macOS jobs are being retried individually rather than treated as passing.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"7e3b84edaf6e1c55ce5730032946836998e73eaaa78342ab39ab23361b198e74","header_sha256":"6d502e5d0e398507979df207dde5b70634eace884400ec03ab42cc634ba82f64","header_status":"handled","input_sha256":"533fa04dc7741fc56b6ea0a4e0960e9c7626bd8c2d5e176672c548280369a589","kind":"mutation-receipt","operation":"91e198d0606341e34be879eb3e3edd1209d8ef05dcc0ef8b7bfcf8db4cad7d14","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-09"],"target":"f-20261019-09","v":1} -->
