@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
 import germanCatalogue from "../src/translation/de-DE.json" with { type: "json" };
@@ -135,7 +136,9 @@ for (const scenario of [
         await assertNothingClipped(notification, { mode: "reachable" });
         await expect(guidance).toBeInViewport({ ratio: 1 });
         await expect(notification).toBeInViewport({ ratio: 1 });
-        await expect(notification).toHaveScreenshot(`remote-http-${locale}-${status}.png`);
+        await expect(notification).toHaveScreenshot(`remote-http-${locale}-${status}.png`, {
+            stylePath: fileURLToPath(new URL("./notification-screenshot.css", import.meta.url)),
+        });
     });
 }
 

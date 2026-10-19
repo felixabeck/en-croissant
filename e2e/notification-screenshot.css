@@ -1,0 +1,8 @@
+body * {
+  visibility: hidden !important;
+}
+
+.mantine-Notification-root,
+.mantine-Notification-root * {
+  visibility: visible !important;
+}
