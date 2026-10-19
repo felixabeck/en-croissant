@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
     downloadLichessGames: vi.fn(),
     logError: vi.fn(),
     getPublicLichessJson: vi.fn(),
+    getAuthenticatedLichessAccount: vi.fn(),
     lexPgn: vi.fn(),
     releaseDownload: vi.fn(),
     withDownloadTicket: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/platform/tauri", async () => {
             ...actual.tauri,
             downloadLichessGames: mocks.downloadLichessGames,
             getPublicLichessJson: mocks.getPublicLichessJson,
+            getAuthenticatedLichessAccount: mocks.getAuthenticatedLichessAccount,
             lexPgn: mocks.lexPgn,
         },
         withDownloadTicket: mocks.withDownloadTicket,
@@ -32,12 +34,127 @@ vi.mock("@/platform/tauri", async () => {
     };
 });
 
-import { convertToNormalized, downloadLichess } from "./api";
+import { convertToNormalized, downloadLichess, getLichessAccount } from "./api";
 
 const publication: ArtifactPublication = {
     handle: { id: { id: "artifact" }, kind: "fileWorkspace" },
     durability: "Durable",
 };
+
+describe("getLichessAccount", () => {
+    beforeEach(() => {
+        mocks.logError.mockReset().mockResolvedValue(undefined);
+        mocks.getPublicLichessJson.mockReset();
+        mocks.getAuthenticatedLichessAccount.mockReset();
+    });
+
+    describe.each([
+        {
+            branch: "public",
+            options: { username: "Player" },
+            command: mocks.getPublicLichessJson,
+            args: [{ kind: "account", username: "Player" }],
+        },
+        {
+            branch: "authenticated",
+            options: { handle: "native-handle" },
+            command: mocks.getAuthenticatedLichessAccount,
+            args: ["native-handle"],
+        },
+    ])("$branch account read", ({ options, command, args }) => {
+        const sentinel = "response-body-only-sentinel";
+        const invalidBodies = [
+            { label: "empty object", body: "{}" },
+            { label: "missing id", body: JSON.stringify({ username: "Player", sentinel }) },
+            { label: "empty id", body: JSON.stringify({ id: "", username: "Player", sentinel }) },
+            { label: "missing username", body: JSON.stringify({ id: "player", sentinel }) },
+            {
+                label: "empty username",
+                body: JSON.stringify({ id: "player", username: "", sentinel }),
+            },
+            { label: "invalid JSON", body: JSON.stringify({ sentinel }) + " trailing" },
+        ];
+
+        test.each(invalidBodies)(
+            "rejects $label and logs once without the body",
+            async ({ body, label }) => {
+                command.mockResolvedValue(body);
+                let parseCause: unknown = new Error("Lichess returned an invalid response");
+                if (label === "invalid JSON") {
+                    try {
+                        JSON.parse(body);
+                    } catch (cause) {
+                        parseCause = cause;
+                    }
+                }
+
+                await expect(getLichessAccount(options)).rejects.toEqual(parseCause);
+
+                expect(command).toHaveBeenCalledExactlyOnceWith(...args);
+                expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+                    "Lichess account response was rejected",
+                );
+                expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(sentinel);
+            },
+        );
+
+        test("preserves the parse cause when the logger rejects", async () => {
+            const parseCause = new SyntaxError("invalid account JSON");
+            const loggerFailure = new Error("logger unavailable");
+            command.mockResolvedValue("invalid JSON");
+            mocks.logError.mockRejectedValue(loggerFailure);
+            const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+            const parse = vi.spyOn(JSON, "parse").mockImplementationOnce(() => {
+                throw parseCause;
+            });
+            try {
+                await expect(getLichessAccount(options)).rejects.toBe(parseCause);
+                expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+                    "Lichess account response was rejected",
+                );
+                expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+                    "Lichess account response was rejected",
+                    {
+                        operation: "Lichess account lookup",
+                        primaryFailure: { category: "validation", message: parseCause.message },
+                        loggerFailure: { category: "unexpected", message: loggerFailure.message },
+                    },
+                );
+            } finally {
+                parse.mockRestore();
+                consoleError.mockRestore();
+            }
+        });
+
+        test("propagates a native rejection without logging", async () => {
+            const cause = new Error("native command failed");
+            command.mockRejectedValue(cause);
+
+            await expect(getLichessAccount(options)).rejects.toBe(cause);
+
+            expect(command).toHaveBeenCalledExactlyOnceWith(...args);
+            expect(mocks.logError).not.toHaveBeenCalled();
+        });
+
+        test("returns a valid account without logging", async () => {
+            const account = { id: "player", username: "Player", count: { all: 42 } };
+            command.mockResolvedValue(JSON.stringify(account));
+
+            await expect(getLichessAccount(options)).resolves.toEqual(account);
+
+            expect(command).toHaveBeenCalledExactlyOnceWith(...args);
+            expect(mocks.logError).not.toHaveBeenCalled();
+        });
+    });
+
+    test("returns null without a request or log when no account is named", async () => {
+        await expect(getLichessAccount({})).resolves.toBeNull();
+
+        expect(mocks.getPublicLichessJson).not.toHaveBeenCalled();
+        expect(mocks.getAuthenticatedLichessAccount).not.toHaveBeenCalled();
+        expect(mocks.logError).not.toHaveBeenCalled();
+    });
+});
 
 describe("convertToNormalized", () => {
     beforeEach(() => {

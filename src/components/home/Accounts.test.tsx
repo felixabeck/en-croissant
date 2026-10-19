@@ -219,12 +219,17 @@ describe("account authentication", () => {
   ])(
     "notifies a rejected $provider lookup and keeps the add modal open",
     async ({ provider, lookup, setup, assertion }) => {
+      const { sessionsAtom } = await import("@/state/atoms");
+      const { getDefaultStore } = await import("jotai");
+      const store = getDefaultStore();
+      const sessionsBefore = store.get(sessionsAtom);
       lookup.mockRejectedValue(new Error(`${provider} lookup failed`));
       openModal();
       setup?.();
 
       await submit();
 
+      expect(store.get(sessionsAtom)).toEqual(sessionsBefore);
       expect(lookup).toHaveBeenCalledTimes(1);
       assertion?.();
       expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({

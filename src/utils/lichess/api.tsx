@@ -1,4 +1,5 @@
 import { tauri, withDownloadTicket } from "@/platform/tauri";
+import { logFailureSafely, safeFailureContext } from "@/platform/errors";
 import type { Color } from "@lichess-org/chessground/types";
 import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
@@ -245,21 +246,25 @@ export async function getLichessAccount({
   handle?: string;
   username?: string;
 }): Promise<LichessAccount | null> {
+  let result: string;
   if (handle) {
-    const result = await tauri.getAuthenticatedLichessAccount(handle);
-    try {
-      return parseNativeJson(result, lichessAccountSchema) as LichessAccount;
-    } catch {
-      return null;
-    }
+    result = await tauri.getAuthenticatedLichessAccount(handle);
   } else {
     if (!username) return null;
-    const result = await tauri.getPublicLichessJson({ kind: "account", username });
-    try {
-      return parseNativeJson(result, lichessAccountSchema) as LichessAccount;
-    } catch {
-      return null;
-    }
+    result = await tauri.getPublicLichessJson({ kind: "account", username });
+  }
+  try {
+    return parseNativeJson(result, lichessAccountSchema) as LichessAccount;
+  } catch (cause) {
+    await logFailureSafely(
+      "Lichess account response was rejected",
+      {
+        operation: "Lichess account lookup",
+        primaryFailure: safeFailureContext(cause),
+      },
+      "Lichess account response was rejected",
+    );
+    throw cause;
   }
 }
 

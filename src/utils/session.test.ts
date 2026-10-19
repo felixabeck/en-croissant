@@ -47,6 +47,49 @@ test("session player names prefer the alias, then Lichess, then Chess.com, then 
 });
 
 describe("initializePersistedSessions", () => {
+    test("persists one card for a listed native account after a successful profile read", async () => {
+        const profile = { id: "player", username: "Player", count: { all: 42 } };
+        mocks.listLichessAccounts.mockResolvedValue([
+            { username: "Player", handle: "native-handle" },
+        ]);
+        mocks.getLichessAccount.mockResolvedValue(profile);
+
+        await expect(initializePersistedSessions()).resolves.toBeUndefined();
+        await expect(initializePersistedSessions()).resolves.toBeUndefined();
+
+        expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([
+            {
+                player: "Player",
+                updatedAt: expect.any(Number),
+                lichess: { username: "Player", handle: "native-handle", account: profile },
+            },
+        ]);
+        expect(mocks.getLichessAccount).toHaveBeenCalledExactlyOnceWith({
+            handle: "native-handle",
+        });
+    });
+
+    test.each(["rejects", "resolves null"])(
+        "resolves without persisting a new card when the profile read %s",
+        async (outcome) => {
+            mocks.listLichessAccounts.mockResolvedValue([
+                { username: "Player", handle: "native-handle" },
+            ]);
+            if (outcome === "rejects") {
+                mocks.getLichessAccount.mockRejectedValue(new Error("Lichess account read failed"));
+            } else {
+                mocks.getLichessAccount.mockResolvedValue(null);
+            }
+
+            await expect(initializePersistedSessions()).resolves.toBeUndefined();
+
+            expect(JSON.parse(localStorage.getItem("sessions")!)).toEqual([]);
+            expect(mocks.getLichessAccount).toHaveBeenCalledExactlyOnceWith({
+                handle: "native-handle",
+            });
+        },
+    );
+
     function seedLegacySessions(tokens: string[]) {
         localStorage.setItem(
             "sessions",
@@ -499,5 +542,6 @@ describe("initializePersistedSessions", () => {
         const sessions = JSON.parse(localStorage.getItem("sessions")!);
         expect(sessions).toHaveLength(1);
         expect(sessions[0].lichess.handle).toBe("native-handle");
+        expect(mocks.getLichessAccount).not.toHaveBeenCalled();
     });
 });

@@ -77,4 +77,32 @@ describe("authenticateLichess", () => {
             account: { id: "player", username: "Player" },
         });
     });
+
+    test("links the job username when the account profile rejects", async () => {
+        mocks.getAuthenticationStatus.mockResolvedValue({
+            state: "succeeded",
+            account: { handle: "native-handle", username: "JobPlayer" },
+        });
+        mocks.getLichessAccount.mockRejectedValue(new Error("Lichess account identity changed"));
+
+        await expect(authenticateLichess("alias", "RequestedPlayer")).resolves.toEqual({
+            ok: true,
+            durabilityUncertain: false,
+        });
+
+        expect(mocks.getLichessAccount).toHaveBeenCalledExactlyOnceWith({
+            handle: "native-handle",
+        });
+        expect(getDefaultStore().get(sessionsAtom)).toEqual([
+            {
+                player: "alias",
+                updatedAt: expect.any(Number),
+                lichess: {
+                    handle: "native-handle",
+                    username: "JobPlayer",
+                    account: { id: "jobplayer", username: "JobPlayer" },
+                },
+            },
+        ]);
+    });
 });
