@@ -2286,11 +2286,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|_| {
                 "application data directory instance lock could not be acquired"
             })?;
-            match admission {
+            let app_data_locked = match admission {
                 crate::infra::path_authority::InstanceAdmission::Owned(guard) => {
+                    let app_data_locked = guard.app_data_locked();
                     app.manage(guard);
+                    app_data_locked
                 }
-                crate::infra::path_authority::InstanceAdmission::Unguarded => {}
+                crate::infra::path_authority::InstanceAdmission::Unguarded => false,
                 crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {
                     use tauri_plugin_dialog::DialogExt;
                     app.dialog()
@@ -2300,7 +2302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .show(|_| std::process::exit(0));
                     return Ok(());
                 }
-            }
+            };
             app.state::<AppState>()
                 .credentials
                 .initialize(&app_data)
@@ -2310,7 +2312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })?;
             let authority_registry = app.path().app_config_dir()?.join("path-authority.json");
             #[cfg(target_os = "macos")]
-            let authority = {
+            let mut authority = {
                 let launch_root =
                     crate::infra::path_authority::initialize_engine_launch_root(&app_data)
                         .map_err(|error| {
@@ -2324,12 +2326,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|error| format!("path authority initialization failed: {error}"))?
             };
             #[cfg(not(target_os = "macos"))]
-            let authority = crate::infra::path_authority::PathAuthority::open_for_app(
+            let mut authority = crate::infra::path_authority::PathAuthority::open_for_app(
                 authority_registry,
                 vec![],
                 (),
             )
             .map_err(|error| format!("path authority initialization failed: {error}"))?;
+            authority.set_engine_image_sweep_permitted(app_data_locked);
             app.state::<AppState>()
                 .pgn_path_authority
                 .install(authority)
@@ -4497,8 +4500,8 @@ mod blocking_offload_scans {
         let after_admission = &setup[admission + statement.len()..];
         assert!(after_admission
             .trim_start()
-            .starts_with("match admission {"));
-        let matched = body_at_indent(setup, "            match admission {");
+            .starts_with("let app_data_locked = match admission {"));
+        let matched = body_at_indent(setup, "            let app_data_locked = match admission {");
         assert_eq!(matched.matches("=>").count(), 3);
         let variants = matched
             .lines()
@@ -4509,7 +4512,7 @@ mod blocking_offload_scans {
             variants,
             [
                 "crate::infra::path_authority::InstanceAdmission::Owned(guard) => {",
-                "crate::infra::path_authority::InstanceAdmission::Unguarded => {}",
+                "crate::infra::path_authority::InstanceAdmission::Unguarded => false,",
                 "crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {",
             ]
         );
@@ -4517,7 +4520,7 @@ mod blocking_offload_scans {
             matched,
             "                crate::infra::path_authority::InstanceAdmission::Owned(guard) => {",
         );
-        assert_eq!(owned.trim(), "crate::infra::path_authority::InstanceAdmission::Owned(guard) => {\n                    app.manage(guard);");
+        assert_eq!(owned.trim(), "crate::infra::path_authority::InstanceAdmission::Owned(guard) => {\n                    let app_data_locked = guard.app_data_locked();\n                    app.manage(guard);\n                    app_data_locked");
         let held = body_at_indent(
             matched,
             "                crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {",
@@ -4538,6 +4541,11 @@ mod blocking_offload_scans {
         assert!(returned < setup.find(".credentials").unwrap());
         assert!(returned < setup.find("PathAuthority::open_for_app(").unwrap());
         assert_eq!(setup.matches("admit_instance(").count(), 1);
+        let setter = "authority.set_engine_image_sweep_permitted(app_data_locked);";
+        assert_eq!(setup.matches(setter).count(), 1);
+        let permitted = setup.find(setter).unwrap();
+        assert!(setup.rfind("PathAuthority::open_for_app(").unwrap() < permitted);
+        assert!(permitted < setup.find(".install(authority)").unwrap());
     }
 
     #[test]

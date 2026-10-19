@@ -4373,7 +4373,7 @@ mod win {
     }
 
     #[cfg(test)]
-    pub(super) fn set_test_target_security_descriptor(
+    pub(crate) fn set_test_target_security_descriptor(
         path: &Path,
         access: u32,
     ) -> Result<(), Error> {
@@ -4602,6 +4602,8 @@ pub(crate) use unix::{
 pub(crate) use unix::{
     raw_libc_stat_identity, raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH,
 };
+#[cfg(all(test, windows))]
+pub(crate) use win::set_test_target_security_descriptor;
 #[cfg(windows)]
 pub(crate) use win::MAX_REMOVE_TREE_DEPTH;
 

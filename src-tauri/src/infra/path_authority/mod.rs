@@ -9,7 +9,7 @@
 
 use crate::infra::fs::{
     assert_entry_identity, open_directory_at, open_regular_at, probe_regular_file_at,
-    read_directory_entries_at, ParentAccess, RegularFileAccess,
+    read_directory_entries_at, ParentAccess, RegularFileAccess, MAX_DIRECTORY_LISTING_ENTRIES,
 };
 use crate::infra::inode_ownership::{FileMetadata, OwnedFile};
 use crate::{
@@ -2874,6 +2874,13 @@ pub(crate) struct AppDataDir {
 
 pub(crate) struct InstanceLockGuard {
     _files: Vec<OwnedFile>,
+    app_data_locked: bool,
+}
+
+impl InstanceLockGuard {
+    pub(crate) fn app_data_locked(&self) -> bool {
+        self.app_data_locked
+    }
 }
 
 pub(crate) enum InstanceAdmission {
@@ -2939,6 +2946,7 @@ fn admit_instance_with_lock(
     let mut acquire = || -> Result<InstanceAdmission, Error> {
         let mut identities = Vec::new();
         let mut files = Vec::new();
+        let mut app_data_locked = false;
         for (role, root) in std::iter::once(("application data", None))
             .chain(extra_roots.iter().map(|(role, path)| (*role, Some(*path))))
         {
@@ -2960,7 +2968,12 @@ fn admit_instance_with_lock(
                 OsStr::new("instance.lock"),
             )?;
             match lock(&file) {
-                Ok(()) => files.push(file),
+                Ok(()) => {
+                    if root.is_none() {
+                        app_data_locked = true;
+                    }
+                    files.push(file);
+                }
                 Err(AdvisoryLockError::HeldElsewhere(_)) => {
                     log::warn!("another ChessFable process holds the application data directory; this launch exits");
                     return Ok(InstanceAdmission::HeldElsewhere);
@@ -2980,6 +2993,7 @@ fn admit_instance_with_lock(
         } else {
             Ok(InstanceAdmission::Owned(InstanceLockGuard {
                 _files: files,
+                app_data_locked,
             }))
         }
     };
@@ -4756,6 +4770,7 @@ pub struct PathAuthority {
     attachments_sealed: bool,
     registry_durability_pending: bool,
     active_image_issuances: Arc<ActiveImageIssuances>,
+    engine_image_sweep_permitted: bool,
     #[cfg(test)]
     activation_observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
     #[cfg(target_os = "macos")]
@@ -5550,6 +5565,7 @@ impl PathAuthority {
             attachments_sealed: false,
             registry_durability_pending: false,
             active_image_issuances: Arc::new(ActiveImageIssuances::new()),
+            engine_image_sweep_permitted: false,
             #[cfg(test)]
             activation_observer: None,
             #[cfg(target_os = "macos")]
@@ -8106,8 +8122,12 @@ impl PathAuthority {
         }
     }
 
+    pub(crate) fn set_engine_image_sweep_permitted(&mut self, permitted: bool) {
+        self.engine_image_sweep_permitted = permitted;
+    }
+
     /// Seals attachment mutations before process teardown. Cleanup never follows a stored path:
-    /// only UUID leaves beneath the caller-proven EngineImages directory are eligible.
+    /// only UUID leaves and atomic temps beneath the caller-proven EngineImages directory qualify.
     pub(crate) fn cleanup_engine_images(
         &mut self,
         image_dir: &AuthorizedDir,
@@ -8118,8 +8138,9 @@ impl PathAuthority {
         }
         if self.image_cleanup.is_empty() {
             if self.registry_durability_pending {
-                return self.retry_registry_durability();
+                self.retry_registry_durability()?;
             }
+            self.sweep_engine_image_orphans(image_dir);
             return Ok(());
         }
         let ids = self.image_cleanup.keys().cloned().collect::<Vec<_>>();
@@ -8214,7 +8235,95 @@ impl PathAuthority {
                 None => Err(error),
             };
         }
-        failures.into_iter().next().map_or(Ok(()), Err)
+        if let Some(error) = failures.into_iter().next() {
+            return Err(error);
+        }
+        self.sweep_engine_image_orphans(image_dir);
+        Ok(())
+    }
+
+    fn sweep_engine_image_orphans(&mut self, image_dir: &AuthorizedDir) {
+        if !self.engine_image_sweep_permitted
+            || self.active_image_issuances.active.load(Ordering::Acquire) != 0
+        {
+            return;
+        }
+        let mut protected = BTreeSet::new();
+        for stored in self
+            .persistent
+            .values()
+            .chain(self.retired_attachments.values())
+            .map(|entry| &entry.stored)
+            .chain(self.image_cleanup.values())
+        {
+            let path = match stored.path.to_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    log::warn!(
+                        "engine image orphan sweep skipped for unreadable reference: {}",
+                        error.category()
+                    );
+                    return;
+                }
+            };
+            let Some(leaf) = path.file_name().filter(|_| has_normal_leaf(&path)) else {
+                log::warn!(
+                    "engine image orphan sweep skipped for leafless reference: {}",
+                    ErrorCategory::InvalidInput
+                );
+                return;
+            };
+            protected.insert(leaf.to_os_string());
+        }
+        let entries = match read_directory_entries_at(
+            image_dir.directory.as_file(),
+            &CancellationToken::new(),
+            Some(MAX_DIRECTORY_LISTING_ENTRIES.saturating_mul(2)),
+            &mut |_| true,
+        ) {
+            Ok(entries) => entries,
+            Err(error) => {
+                log::warn!(
+                    "engine image orphan sweep listing failed: {}",
+                    error.category()
+                );
+                return;
+            }
+        };
+        for entry in entries {
+            if entry.kind != DirectoryEntryKind::RegularFile || protected.contains(&entry.name) {
+                continue;
+            }
+            let Some(name) = entry.name.to_str() else {
+                continue;
+            };
+            if Uuid::parse_str(name).is_err()
+                && !name
+                    .strip_prefix(".atomic-")
+                    .is_some_and(|suffix| Uuid::parse_str(suffix).is_ok())
+            {
+                continue;
+            }
+            let identity = match image_dir.open_leaf_identified(&entry.name) {
+                Ok(identity) if identity.pair() == entry.identity => identity,
+                Ok(_) => continue,
+                Err(error) if error.is_missing_entry() => continue,
+                Err(Error::Conflict(_)) => continue,
+                Err(error) => {
+                    log::warn!(
+                        "engine image orphan sweep open failed for {name}: {}",
+                        error.category()
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = image_dir.remove_leaf_identified(&entry.name, identity) {
+                log::warn!(
+                    "engine image orphan sweep removal failed for {name}: {}",
+                    error.category()
+                );
+            }
+        }
     }
 
     pub fn resolve(
@@ -10035,6 +10144,7 @@ pub(crate) mod portable_tests {
         let local = temp.path().join("local");
         for outcomes in [
             [None, Some(unsupported), None],
+            [Some(unsupported), None, None],
             [Some(unsupported); 3],
             [None, Some(0), None],
         ] {
@@ -10067,9 +10177,20 @@ pub(crate) mod portable_tests {
                         panic!("supported roots must remain guarded");
                     };
                     assert_eq!(guard._files.len(), 2);
+                    assert!(guard.app_data_locked());
                     assert_eq!(records.len(), 1);
                     assert_eq!(records[0].level, log::Level::Warn);
                     assert!(records[0].message.starts_with("the configuration directory's filesystem does not support advisory locking."));
+                }
+                [Some(code), None, None] if code == unsupported => {
+                    let InstanceAdmission::Owned(guard) = result.unwrap() else {
+                        panic!("supported roots must remain guarded");
+                    };
+                    assert!(!guard.app_data_locked());
+                    assert_eq!(guard._files.len(), 2);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].level, log::Level::Warn);
+                    assert!(records[0].message.starts_with("the application data directory's filesystem does not support advisory locking."));
                 }
                 [Some(_), Some(_), Some(_)] => {
                     assert!(matches!(result.unwrap(), InstanceAdmission::Unguarded));
@@ -10316,6 +10437,398 @@ pub(crate) mod portable_tests {
             }
             self.authority.save().unwrap();
         }
+
+        fn sweep_leaf(&self, name: impl Into<OsString>) -> OsString {
+            let name = name.into();
+            fs::write(self.image_dir.path().join(&name), b"crash orphan").unwrap();
+            name
+        }
+
+        fn sweep_temp(&self) -> OsString {
+            self.sweep_leaf(format!(".atomic-{}", Uuid::new_v4()))
+        }
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_removes_uuid_and_atomic_orphans() {
+        let mut f = EngineImageCleanupFixture::new();
+        let temp = f.sweep_temp();
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(
+            !f.image_dir.path().join(&f.leaf).exists(),
+            "UUID crash orphan must be swept"
+        );
+        assert!(
+            !f.image_dir.path().join(temp).exists(),
+            "atomic crash temp must be swept"
+        );
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_preserves_persistent_and_retired_leaf_names() {
+        for different_parent in [false, true] {
+            let mut f = EngineImageCleanupFixture::new();
+            let persistent = f
+                .authority
+                .register_engine_image(&f.image_dir, &f.leaf, f.installed, "persistent".into())
+                .unwrap();
+            let retired_leaf = f.sweep_leaf(Uuid::new_v4().to_string());
+            let retired_identity = f.image_dir.open_leaf_identified(&retired_leaf).unwrap();
+            let retired = f
+                .authority
+                .register_engine_image(
+                    &f.image_dir,
+                    &retired_leaf,
+                    retired_identity,
+                    "retired".into(),
+                )
+                .unwrap();
+            let entry = f
+                .authority
+                .persistent
+                .remove(&retired.path_ref().id)
+                .unwrap();
+            f.authority
+                .retired_attachments
+                .insert(retired.path_ref().id.clone(), entry);
+            if different_parent {
+                for (id, leaf) in [
+                    (persistent.path_ref().id.clone(), &f.leaf),
+                    (retired.path_ref().id.clone(), &retired_leaf),
+                ] {
+                    let entry = f
+                        .authority
+                        .persistent
+                        .get_mut(&id)
+                        .or_else(|| f.authority.retired_attachments.get_mut(&id))
+                        .unwrap();
+                    entry.stored.path =
+                        NativePath::from_path(&f.app_data.join("different-parent").join(leaf));
+                }
+            }
+            let orphan = f.sweep_leaf(Uuid::new_v4().to_string());
+            f.authority.set_engine_image_sweep_permitted(true);
+            f.authority
+                .cleanup_engine_images(&f.image_dir, false)
+                .unwrap();
+            assert!(f.image_dir.path().join(&f.leaf).is_file());
+            assert!(f.image_dir.path().join(retired_leaf).is_file());
+            assert!(!f.image_dir.path().join(orphan).exists());
+        }
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_follows_successful_intent_walk() {
+        let mut f = EngineImageCleanupFixture::new();
+        assert_eq!(
+            f.authority
+                .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
+                .diagnostic(),
+            "recorded"
+        );
+        let temp = f.sweep_temp();
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(f.authority.image_cleanup.is_empty());
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+        assert!(!f.image_dir.path().join(temp).exists());
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_waits_for_issuance_lease() {
+        let mut f = EngineImageCleanupFixture::new();
+        let temp = f.sweep_temp();
+        f.authority.set_engine_image_sweep_permitted(true);
+        let lease = f.authority.begin_engine_image_issuance().unwrap();
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        assert!(f.image_dir.path().join(&temp).is_file());
+        drop(lease);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+        assert!(!f.image_dir.path().join(temp).exists());
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_requires_permission() {
+        let mut f = EngineImageCleanupFixture::new();
+        let temp = f.sweep_temp();
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        assert!(f.image_dir.path().join(temp).is_file());
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_preserves_nonregular_and_unrelated_names() {
+        let mut f = EngineImageCleanupFixture::new();
+        let directory = f
+            .image_dir
+            .path()
+            .join(format!(".atomic-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("child"), b"preserve child").unwrap();
+        let target = f.app_data.join("link-target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("child"), b"preserve target").unwrap();
+        let link = f.image_dir.path().join(Uuid::new_v4().to_string());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        crate::infra::fs::windows_test_junction(&link, &target);
+        let unrelated = [
+            f.sweep_leaf("unrelated"),
+            f.sweep_leaf(".atomic-not-a-uuid"),
+            f.sweep_leaf(format!(".other-{}", Uuid::new_v4())),
+        ];
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(directory.is_dir());
+        assert_eq!(
+            fs::read(directory.join("child")).unwrap(),
+            b"preserve child"
+        );
+        assert!(fs::symlink_metadata(&link).is_ok());
+        assert_eq!(fs::read(target.join("child")).unwrap(), b"preserve target");
+        for leaf in unrelated {
+            assert!(f.image_dir.path().join(leaf).is_file());
+        }
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_removes_4097_orphans() {
+        let mut f = EngineImageCleanupFixture::new();
+        for _ in 1..4097 {
+            f.sweep_leaf(Uuid::new_v4().to_string());
+        }
+        assert_eq!(fs::read_dir(f.image_dir.path()).unwrap().count(), 4097);
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert_eq!(fs::read_dir(f.image_dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_listing_overflow_deletes_nothing() {
+        let mut f = EngineImageCleanupFixture::new();
+        for index in 1..8193 {
+            f.sweep_leaf(format!("unrelated-{index}"));
+        }
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert_eq!(fs::read_dir(f.image_dir.path()).unwrap().count(), 8193);
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+    }
+
+    #[cfg(unix)]
+    struct FailFirstImageRemovals(AtomicUsize);
+
+    #[cfg(unix)]
+    impl crate::infra::fs::RemovalInjector for FailFirstImageRemovals {
+        fn inject(
+            &self,
+            point: crate::infra::fs::RemovalFaultPoint,
+        ) -> std::io::Result<Option<u64>> {
+            if point == crate::infra::fs::RemovalFaultPoint::BeforeTopOpen
+                && self
+                    .0
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+            {
+                return Err(std::io::Error::other(
+                    "injected one-shot image removal failure",
+                ));
+            }
+            Ok(None)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_sweep_continues_after_two_removal_errors() {
+        let mut f = EngineImageCleanupFixture::new();
+        let leaves = [
+            f.leaf.clone(),
+            f.sweep_leaf(Uuid::new_v4().to_string()),
+            f.sweep_leaf(Uuid::new_v4().to_string()),
+        ];
+        f.authority.set_engine_image_sweep_permitted(true);
+        let _guard = crate::infra::fs::scoped_test_removal_injector(Arc::new(
+            FailFirstImageRemovals(AtomicUsize::new(2)),
+        ));
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert_eq!(
+            leaves
+                .iter()
+                .filter(|leaf| f.image_dir.path().join(leaf).is_file())
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn engine_image_cleanup_sweep_windows_sharing_failure_is_nonfatal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let mut f = EngineImageCleanupFixture::new();
+        let free = f.sweep_leaf(Uuid::new_v4().to_string());
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(f.image_dir.path().join(&f.leaf))
+            .unwrap();
+        f.authority.set_engine_image_sweep_permitted(true);
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        assert!(!f.image_dir.path().join(free).exists());
+        drop(held);
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_unreadable_reference_deletes_nothing() {
+        #[cfg(unix)]
+        let foreign = NativePath::Windows {
+            utf16: vec![67, 58, 92],
+        };
+        #[cfg(windows)]
+        let foreign = NativePath::Unix {
+            bytes: String::new(),
+        };
+        let root = EngineImageCleanupFixture::new()
+            .app_data
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_path_buf();
+        for path in [foreign, NativePath::from_path(&root)] {
+            let mut f = EngineImageCleanupFixture::new();
+            let handle = f
+                .authority
+                .register_engine_image(&f.image_dir, &f.leaf, f.installed, "reference".into())
+                .unwrap();
+            f.authority
+                .persistent
+                .get_mut(&handle.path_ref().id)
+                .unwrap()
+                .stored
+                .path = path;
+            let orphan = f.sweep_leaf(Uuid::new_v4().to_string());
+            f.authority.set_engine_image_sweep_permitted(true);
+            f.authority
+                .cleanup_engine_images(&f.image_dir, false)
+                .unwrap();
+            assert!(f.image_dir.path().join(&f.leaf).is_file());
+            assert!(f.image_dir.path().join(orphan).is_file());
+        }
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_intent_error_skips_orphans() {
+        let mut f = EngineImageCleanupFixture::new();
+        assert_eq!(
+            f.authority
+                .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
+                .diagnostic(),
+            "recorded"
+        );
+        let orphan = f.sweep_leaf(Uuid::new_v4().to_string());
+        f.authority.set_engine_image_sweep_permitted(true);
+        #[cfg(unix)]
+        let _guard = crate::infra::fs::scoped_test_removal_injector(Arc::new(
+            FailFirstImageRemovals(AtomicUsize::new(1)),
+        ));
+        #[cfg(windows)]
+        let (restore_handle, original_dacl) = {
+            use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+            use windows_sys::Win32::{
+                Security::{GetKernelObjectSecurity, DACL_SECURITY_INFORMATION},
+                Storage::FileSystem::{
+                    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+                },
+            };
+            // Retain restoration rights before the fixture removes write and delete access.
+            let handle = fs::OpenOptions::new()
+                .access_mode(READ_CONTROL | WRITE_DAC)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .open(f.image_dir.path().join(&f.leaf))
+                .unwrap();
+            let mut needed = 0;
+            unsafe {
+                GetKernelObjectSecurity(
+                    handle.as_raw_handle(),
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                );
+            }
+            assert!(needed > 0);
+            let mut descriptor = vec![0u8; needed as usize];
+            assert_ne!(
+                unsafe {
+                    GetKernelObjectSecurity(
+                        handle.as_raw_handle(),
+                        DACL_SECURITY_INFORMATION,
+                        descriptor.as_mut_ptr().cast(),
+                        needed,
+                        &mut needed,
+                    )
+                },
+                0
+            );
+            (handle, descriptor)
+        };
+        #[cfg(windows)]
+        crate::infra::fs::set_test_target_security_descriptor(
+            &f.image_dir.path().join(&f.leaf),
+            windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE
+                | windows_sys::Win32::Foundation::GENERIC_READ
+                | windows_sys::Win32::Storage::FileSystem::READ_CONTROL,
+        )
+        .unwrap();
+        let result = f.authority.cleanup_engine_images(&f.image_dir, false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::Security::SetKernelObjectSecurity(
+                        restore_handle.as_raw_handle(),
+                        windows_sys::Win32::Security::DACL_SECURITY_INFORMATION,
+                        original_dacl.as_ptr().cast_mut().cast(),
+                    )
+                },
+                0
+            );
+            drop(restore_handle);
+        }
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        assert!(f.image_dir.path().join(orphan).is_file());
+        assert_eq!(f.authority.image_cleanup.len(), 1);
     }
 
     #[test]
