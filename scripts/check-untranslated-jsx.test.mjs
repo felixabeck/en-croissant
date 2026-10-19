@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { gitInit, gitTrack } from "./test-git-init.mjs";
+import { gitDiscoveryStderr, gitInit, gitTrack } from "./test-git-init.mjs";
 import { testTempRoots } from "./test-temp-root.mjs";
 
 const temporaryRoot = testTempRoots(afterAll);
@@ -169,7 +169,7 @@ describe("untranslated UI literal file discovery", () => {
     assertCli(
       broken,
       2,
-      "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (fatal: not a git repository (or any of the parent directories): .git)\n",
+      `Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (${gitDiscoveryStderr(outside)})\n`,
     );
   });
 });

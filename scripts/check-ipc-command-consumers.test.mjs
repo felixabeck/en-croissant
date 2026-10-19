@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { gitInit, gitTrack } from "./test-git-init.mjs";
+import { gitDiscoveryStderr, gitInit, gitTrack } from "./test-git-init.mjs";
 
 const seam = vi.hoisted(() => ({ followsAlias: null, resolveChain: null }));
 
@@ -1174,11 +1174,13 @@ describe("CLI failure matrix", () => {
     ],
     [
       "working-tree enumeration non-zero",
-      () => ({
-        root: cliWorkspace({ git: false }),
-        expected:
-          "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (fatal: not a git repository (or any of the parent directories): .git)",
-      }),
+      () => {
+        const root = cliWorkspace({ git: false });
+        return {
+          root,
+          expected: `Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (${gitDiscoveryStderr(root)})`,
+        };
+      },
     ],
     [
       "working-tree enumeration spawn failure",
