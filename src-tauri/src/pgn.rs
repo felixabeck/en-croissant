@@ -3066,7 +3066,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("oversized-first.pgn");
         let pgn = b"[Event \"A\"]\n\n1. e4 *\n";
-        std::fs::write(&path, pgn).expect("write PGN");
+        let mut file_bytes = pgn.to_vec();
+        file_bytes.resize(IO_CHUNK_LEN, b' ');
+        std::fs::write(&path, &file_bytes).expect("write PGN");
         let app = mock_app();
         let state = app.state::<AppState>();
         for bytes in [MAX_PGN_BYTES as u64 + 1, u64::MAX] {
@@ -3237,7 +3239,9 @@ mod tests {
     async fn read_game_core_returns_resource_limit_for_oversized_range() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("oversized-single.pgn");
-        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write PGN");
+        let mut pgn = b"[Event \"A\"]\n\n1. e4 *\n".to_vec();
+        pgn.resize(IO_CHUNK_LEN, b' ');
+        std::fs::write(&path, &pgn).expect("write PGN");
         let app = mock_app();
         let state = app.state::<AppState>();
         for bytes in [MAX_PGN_BYTES as u64 + 1, u64::MAX] {
