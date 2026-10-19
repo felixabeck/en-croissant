@@ -211,10 +211,10 @@ async function renderAddDatabase(
   databases: Array<{ type: "success"; title: string }> = [],
   {
     setOpened = vi.fn(),
-    setDatabases = vi.fn(),
+    reloadDatabases = vi.fn().mockResolvedValue(undefined),
   }: {
     setOpened?: ReturnType<typeof vi.fn<(opened: boolean) => void>>;
-    setDatabases?: ReturnType<typeof vi.fn>;
+    reloadDatabases?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   await act(async () => {
@@ -224,11 +224,11 @@ async function renderAddDatabase(
         opened
         setOpened={setOpened}
         disableLocalConversion={false}
-        setDatabases={setDatabases as never}
+        reloadDatabases={reloadDatabases as never}
       />,
     );
   });
-  return { setOpened, setDatabases };
+  return { setOpened, reloadDatabases };
 }
 
 test.each([
@@ -303,7 +303,7 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
     unread: [],
     root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
   });
-  const { setDatabases } = await renderAddDatabase();
+  const { reloadDatabases } = await renderAddDatabase();
 
   await act(async () => mocks.progressButtonProps!.onClick());
 
@@ -318,8 +318,8 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
   );
   expect(mocks.downloadFile.mock.calls[0]?.[0]).not.toBe("db_0");
   expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
-  expect(mocks.getDatabases).toHaveBeenCalledOnce();
-  expect(setDatabases).toHaveBeenCalledWith(expect.objectContaining({ databases, unread: [] }));
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
@@ -334,6 +334,26 @@ test("a running database with no local job renders Cancel and calls native looku
   );
 });
 
+test("a downloaded database surfaces a rejected reload without listing inside the component", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+  mocks.databaseDownloadDestination.mockResolvedValue({ id: { id: "destination" } });
+  mocks.downloadFile.mockResolvedValue(undefined);
+  const reloadDatabases = vi.fn().mockRejectedValue(new Error("download refresh failed"));
+  await renderAddDatabase([], { reloadDatabases });
+
+  await act(async () => mocks.progressButtonProps!.onClick());
+
+  expect(mocks.downloadFile).toHaveBeenCalledOnce();
+  expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "download refresh failed",
+  });
+});
+
 test("cancelling a pre-claim local attempt preserves the surviving bar and its next Cancel uses lookup", async () => {
   mocks.defaultDatabases = [manifestDb];
   mocks.realProgressButton = true;
@@ -344,7 +364,7 @@ test("cancelling a pre-claim local attempt preserves the surviving bar and its n
     }),
   );
   mocks.clearProgress.mockResolvedValue(7n);
-  const { setDatabases } = await renderAddDatabase();
+  const { reloadDatabases } = await renderAddDatabase();
   await act(async () => mocks.progressButtonProps!.onClick());
   expect(mocks.getDatabaseWorkspace).toHaveBeenCalledOnce();
   expect(mocks.downloadFile).not.toHaveBeenCalled();
@@ -373,7 +393,7 @@ test("cancelling a pre-claim local attempt preserves the surviving bar and its n
   expect(mocks.cancelDownload).toHaveBeenCalledOnce();
   expect(mocks.clearProgress).toHaveBeenCalledOnce();
   expect(mocks.downloadFile).not.toHaveBeenCalled();
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(reloadDatabases).not.toHaveBeenCalled();
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(host.querySelector("[data-progress]")).toBeNull();
 });
@@ -385,12 +405,12 @@ test("keeps a cancelled database download destination silent", async () => {
     kind: "databaseRoot",
   });
   mocks.databaseDownloadDestination.mockRejectedValue(new Error("Cancellation"));
-  const { setDatabases } = await renderAddDatabase();
+  const { reloadDatabases } = await renderAddDatabase();
 
   await act(async () => mocks.progressButtonProps!.onClick());
 
   expect(mocks.notify).not.toHaveBeenCalled();
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(reloadDatabases).not.toHaveBeenCalled();
 });
 
 test.each(["convert", "download"] as const)(
@@ -443,7 +463,7 @@ test("reports a failed database download destination without replacing the list"
     kind: "databaseRoot",
   });
   mocks.databaseDownloadDestination.mockRejectedValue(new Error("permission denied"));
-  const { setDatabases } = await renderAddDatabase();
+  const { reloadDatabases } = await renderAddDatabase();
 
   await act(async () => mocks.progressButtonProps!.onClick());
 
@@ -452,7 +472,7 @@ test("reports a failed database download destination without replacing the list"
     title: "Common.Error",
     message: "permission denied",
   });
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(reloadDatabases).not.toHaveBeenCalled();
 });
 
 test("offers cancellation while setup is pending and keeps cancellation silent", async () => {
@@ -622,57 +642,54 @@ function setupLocalImport() {
   mocks.createWorkspaceDatabase.mockResolvedValue(importHandle);
 }
 
-test.each(["getDatabases", "setDatabases"])(
-  "a committed import closes its mounted modal after %s fails and cannot resubmit the original form",
-  async (refreshFailure) => {
-    setupLocalImport();
-    mocks.convertPgn.mockResolvedValueOnce(undefined);
-    const failure = new Error("reload denied at /private/import.db3");
-    const setDatabases = vi.fn().mockResolvedValue(undefined);
-    if (refreshFailure === "getDatabases") mocks.getDatabases.mockRejectedValueOnce(failure);
-    else setDatabases.mockRejectedValueOnce(failure);
-    const setOpened = vi.fn();
-    function MountedImport() {
-      const [opened, updateOpened] = useState(true);
-      return (
-        <AddDatabase
-          databases={[]}
-          opened={opened}
-          setOpened={(value) => {
-            setOpened(value);
-            updateOpened(value);
-          }}
-          disableLocalConversion={false}
-          setDatabases={setDatabases}
-        />
-      );
-    }
-    await act(async () => root.render(<MountedImport />));
-    const originalForm = host.querySelector("form")!;
-    const originalSubmit = originalForm.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-    await submitLocalImport();
-
-    expect(setOpened).toHaveBeenCalledExactlyOnceWith(false);
-    expect(host.querySelector("form")).toBeNull();
-    expect(originalForm.isConnected).toBe(false);
-    await act(async () => originalSubmit.click());
-    expect(mocks.createWorkspaceDatabase).toHaveBeenCalledOnce();
-    expect(mocks.convertPgn).toHaveBeenCalledOnce();
-    expect(mocks.deleteDatabase).not.toHaveBeenCalled();
-    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
-    expect(getDefaultStore().get(databaseConversionRefreshFailedAtom)).toBe(true);
-    expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
-      "Failed import database refresh failed: reload denied at [path]",
+test("a committed import closes its mounted modal after reloadDatabases fails and cannot resubmit the original form", async () => {
+  setupLocalImport();
+  mocks.convertPgn.mockResolvedValueOnce(undefined);
+  const failure = new Error("reload denied at /private/import.db3");
+  const reloadDatabases = vi.fn().mockRejectedValueOnce(failure);
+  const setOpened = vi.fn();
+  function MountedImport() {
+    const [opened, updateOpened] = useState(true);
+    return (
+      <AddDatabase
+        databases={[]}
+        opened={opened}
+        setOpened={(value) => {
+          setOpened(value);
+          updateOpened(value);
+        }}
+        disableLocalConversion={false}
+        reloadDatabases={reloadDatabases}
+      />
     );
-    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: "reload denied at [path]",
-    });
-  },
-);
+  }
+  await act(async () => root.render(<MountedImport />));
+  const originalForm = host.querySelector("form")!;
+  const originalSubmit = originalForm.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  await submitLocalImport();
 
-test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshLogger"])(
+  expect(setOpened).toHaveBeenCalledExactlyOnceWith(false);
+  expect(host.querySelector("form")).toBeNull();
+  expect(originalForm.isConnected).toBe(false);
+  await act(async () => originalSubmit.click());
+  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledOnce();
+  expect(mocks.convertPgn).toHaveBeenCalledOnce();
+  expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+  expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
+  expect(getDefaultStore().get(databaseConversionRefreshFailedAtom)).toBe(true);
+  expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+    "Failed import database refresh failed: reload denied at [path]",
+  );
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "reload denied at [path]",
+  });
+});
+
+test.each(["none", "delete", "reloadDatabases", "logger", "refreshLogger"])(
   "failed conversion preserves the backend message and clears state with %s failure",
   async (secondaryFailure) => {
     setupLocalImport();
@@ -682,53 +699,24 @@ test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshL
       message: "Invalid input: games.pgn: game 2 could not be read (unterminated comment or tag)",
     });
     mocks.convertPgn.mockRejectedValueOnce(failure);
-    const remaining = [
-      {
-        type: "error",
-        file: importHandle,
-        filename: "orphan.db3",
-        error: "unfinished",
-        indexed: false,
-      },
-    ];
-    mocks.getDatabases.mockResolvedValue({
-      databases: remaining,
-      unread: [],
-      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
-    });
-    const setDatabases = vi.fn().mockResolvedValue(undefined);
+    const reloadDatabases = vi.fn().mockResolvedValue(undefined);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     if (secondaryFailure === "delete" || secondaryFailure === "logger") {
       mocks.deleteDatabase.mockRejectedValueOnce(
         new Error("cleanup denied at /private/orphan.db3"),
       );
     }
-    if (secondaryFailure === "getDatabases" || secondaryFailure === "refreshLogger") {
-      mocks.getDatabases.mockRejectedValueOnce(new Error("refresh denied"));
-    }
-    if (secondaryFailure === "setDatabases") {
-      setDatabases.mockRejectedValueOnce(new Error("refresh denied"));
+    if (secondaryFailure === "reloadDatabases" || secondaryFailure === "refreshLogger") {
+      reloadDatabases.mockRejectedValueOnce(new Error("refresh denied"));
     }
     if (secondaryFailure === "logger" || secondaryFailure === "refreshLogger")
       mocks.logError.mockRejectedValueOnce(new Error("logger denied"));
-    const { setOpened } = await renderAddDatabase([], { setDatabases });
+    const { setOpened } = await renderAddDatabase([], { reloadDatabases });
     await submitLocalImport();
 
     expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
-    expect(mocks.getDatabases).toHaveBeenCalledOnce();
-    expect(setDatabases.mock.calls).toEqual(
-      secondaryFailure === "getDatabases" || secondaryFailure === "refreshLogger"
-        ? []
-        : [
-            [
-              {
-                databases: remaining,
-                unread: [],
-                root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
-              },
-            ],
-          ],
-    );
+    expect(mocks.getDatabases).not.toHaveBeenCalled();
+    expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
       color: "red",
       title: "Common.Error",
@@ -811,7 +799,7 @@ test("cancel during target creation skips native dispatch and retains the row th
   setupLocalImport();
   let created!: (handle: typeof importHandle) => void;
   let deleted!: () => void;
-  let refreshed!: (value: never[]) => void;
+  let refreshed!: () => void;
   mocks.createWorkspaceDatabase.mockReturnValueOnce(
     new Promise((resolve) => {
       created = resolve;
@@ -822,12 +810,12 @@ test("cancel during target creation skips native dispatch and retains the row th
       deleted = resolve;
     }),
   );
-  mocks.getDatabases.mockReturnValueOnce(
-    new Promise<never[]>((resolve) => {
+  const reloadDatabases = vi.fn().mockReturnValueOnce(
+    new Promise<void>((resolve) => {
       refreshed = resolve;
     }),
   );
-  await renderAddDatabase();
+  await renderAddDatabase([], { reloadDatabases });
   await submitLocalImport();
   const store = getDefaultStore();
   expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
@@ -836,16 +824,11 @@ test("cancel during target creation skips native dispatch and retains the row th
   expect(mocks.convertPgn).not.toHaveBeenCalled();
   expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
   expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
-  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(reloadDatabases).not.toHaveBeenCalled();
   await act(async () => deleted());
   expect(store.get(databaseConversionStateAtom)).toHaveLength(1);
-  await act(async () =>
-    refreshed({
-      databases: [],
-      unread: [],
-      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
-    } as never),
-  );
+  expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
+  await act(async () => refreshed());
   expect(store.get(databaseConversionStateAtom)).toEqual([]);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
@@ -904,26 +887,15 @@ test.each([false, true])(
   async (refreshFails) => {
     setupLocalImport();
     mocks.convertPgn.mockResolvedValueOnce(undefined);
-    if (refreshFails) mocks.getDatabases.mockRejectedValueOnce(new Error("success refresh failed"));
-    const { setOpened, setDatabases } = await renderAddDatabase();
+    const reloadDatabases = vi.fn().mockResolvedValue(undefined);
+    if (refreshFails) reloadDatabases.mockRejectedValueOnce(new Error("success refresh failed"));
+    const { setOpened } = await renderAddDatabase([], { reloadDatabases });
     await submitLocalImport();
     expect(mocks.deleteDatabase).not.toHaveBeenCalled();
-    expect(mocks.getDatabases).toHaveBeenCalledOnce();
+    expect(mocks.getDatabases).not.toHaveBeenCalled();
     expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
     expect(setOpened.mock.calls).toEqual([[false]]);
-    expect(setDatabases.mock.calls).toEqual(
-      refreshFails
-        ? []
-        : [
-            [
-              {
-                databases: [],
-                unread: [],
-                root: { id: { id: "listing-test-root" }, kind: "databaseRoot" },
-              },
-            ],
-          ],
-    );
+    expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
     expect(mocks.notify.mock.calls).toEqual(
       refreshFails
         ? [

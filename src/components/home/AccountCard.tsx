@@ -16,7 +16,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { DATABASE_LIST_KEY, fetchDatabaseList } from "@/hooks/useDatabaseList";
+import { DATABASE_LIST_KEY, refreshDatabaseList } from "@/hooks/useDatabaseList";
 import type { ArtifactPublication, DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
@@ -250,8 +250,7 @@ export function AccountCard({
     try {
       // Supersede older listings, publish an owned fresh read, then let SWR revalidate mounted
       // consumers after mutation settles, including a remount that retired the refresh read.
-      await databaseOwner!.supersede();
-      await mutate(DATABASE_LIST_KEY, fetchDatabaseList(databaseOwner!));
+      await refreshDatabaseList(databaseOwner!, mutate);
     } catch (refreshCause) {
       if (!importFailed) throw refreshCause;
       const primaryFailure = safeFailureContext(refreshCause);

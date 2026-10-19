@@ -20,7 +20,6 @@ import { IconAlertCircle } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
 import {
   databaseConversionStateAtom,
@@ -29,8 +28,6 @@ import {
   type DatabaseConversionOperation,
 } from "@/state/atoms";
 import {
-  getDatabases,
-  type DatabaseList,
   manifestDatabaseInstallCard,
   type DownloadableDatabaseInfo,
   useDefaultDatabases,
@@ -109,13 +106,13 @@ function AddDatabase({
   opened,
   setOpened,
   disableLocalConversion,
-  setDatabases,
+  reloadDatabases,
 }: {
   databases: DatabaseInfo[];
   opened: boolean;
   setOpened: (opened: boolean) => void;
   disableLocalConversion: boolean;
-  setDatabases: KeyedMutator<DatabaseList>;
+  reloadDatabases: () => Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const setConversionState = useSetAtom(databaseConversionStateAtom);
@@ -145,7 +142,7 @@ function AddDatabase({
               (cause) => notifyUnlessCancelled(t("Common.Error"), cause, "database"),
             ),
           async () => {
-            await setDatabases(await getDatabases());
+            await reloadDatabases();
           },
           setRefreshFailed,
           t("Common.Error"),
@@ -200,7 +197,7 @@ function AddDatabase({
                     database={db}
                     key={card.progressId}
                     progressId={card.progressId}
-                    setDatabases={setDatabases}
+                    reloadDatabases={reloadDatabases}
                     initInstalled={card.initInstalled}
                   />
                 );
@@ -273,12 +270,12 @@ function AddDatabase({
 }
 
 function DatabaseCard({
-  setDatabases,
+  reloadDatabases,
   database,
   progressId,
   initInstalled,
 }: {
-  setDatabases: KeyedMutator<DatabaseList>;
+  reloadDatabases: () => Promise<unknown>;
   database: DownloadableDatabaseInfo;
   progressId: string;
   initInstalled: boolean;
@@ -305,7 +302,7 @@ function DatabaseCard({
               ticket,
               { sha256: database.sha256, signature: database.signature },
             );
-            await setDatabases(await getDatabases());
+            await reloadDatabases();
           }),
         "database",
       );

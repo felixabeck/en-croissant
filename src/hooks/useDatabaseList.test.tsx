@@ -1,13 +1,22 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { SWRConfig } from "swr";
+import useSWR, { SWRConfig, useSWRConfig, type ScopedMutator } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { listingFailure } from "@/components/files/listingFailure";
-import type { NativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { getDatabases } from "@/utils/db";
-import { DATABASE_LIST_MAX_RETRIES, useDatabaseList } from "./useDatabaseList";
+import { type NativeRequestOwner, useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { getDatabases, type DatabaseList } from "@/utils/db";
+import {
+  DATABASE_LIST_KEY,
+  DATABASE_LIST_MAX_RETRIES,
+  fetchDatabaseList,
+  refreshDatabaseList,
+  revalidateDatabaseList,
+  useDatabaseList,
+} from "./useDatabaseList";
 
 vi.mock("@/utils/db", () => ({ getDatabases: vi.fn() }));
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const ERROR_RETRY_INTERVAL_MS = 5000;
 
@@ -188,4 +197,117 @@ test("a consumer reading only error observes failure", async () => {
   expect(container.textContent).toBe("pending");
   await act(async () => reject(new Error("Database failure")));
   expect(container.textContent).toBe("failed");
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function list(rootId: string): DatabaseList {
+  return {
+    databases: [],
+    unread: [],
+    root: { id: { id: rootId }, kind: "databaseRoot" },
+  };
+}
+
+async function writeRefreshHarness() {
+  const cache = new Map();
+  let owner!: NativeRequestOwner;
+  let mutate!: ScopedMutator;
+  const entryErrors: unknown[] = [];
+  function OwnedList() {
+    const nativeOwner = useNativeRequestOwner(DATABASE_LIST_KEY)!;
+    mutate = useSWRConfig().mutate;
+    owner = {
+      ...nativeOwner,
+      run: (request) => {
+        // Observe synchronous entry, before run schedules the request body in a microtask.
+        entryErrors.push(cache.get(DATABASE_LIST_KEY)?.error);
+        return nativeOwner.run(request);
+      },
+    };
+    const { data, error } = useSWR(DATABASE_LIST_KEY, () => fetchDatabaseList(owner));
+    return <output>{error ? "failed" : data ? "loaded" : "pending"}</output>;
+  }
+  await act(async () => {
+    root.render(
+      <SWRConfig
+        value={{
+          provider: () => cache,
+          dedupingInterval: 0,
+          shouldRetryOnError: false,
+          revalidateOnFocus: false,
+          revalidateOnReconnect: false,
+        }}
+      >
+        <OwnedList />
+      </SWRConfig>,
+    );
+  });
+  return {
+    cache,
+    entryErrors,
+    refresh: (helper: typeof refreshDatabaseList) => helper(owner, mutate),
+  };
+}
+
+test.each([
+  { name: "refreshDatabaseList", helper: refreshDatabaseList },
+  { name: "revalidateDatabaseList", helper: revalidateDatabaseList },
+])("$name retires a pending listing before entering the new owned read", async ({ helper }) => {
+  const old = deferred<DatabaseList>();
+  const freshRead = deferred<DatabaseList>();
+  const revalidation = deferred<DatabaseList>();
+  const fresh = list("fresh");
+  vi.mocked(getDatabases)
+    .mockReturnValueOnce(old.promise)
+    .mockReturnValueOnce(freshRead.promise)
+    .mockReturnValueOnce(revalidation.promise);
+  const { cache, entryErrors, refresh } = await writeRefreshHarness();
+  expect(getDatabases).toHaveBeenCalledOnce();
+
+  let refreshed!: Promise<unknown>;
+  await act(async () => {
+    refreshed = refresh(helper);
+    await Promise.resolve();
+  });
+  // These assertions precede awaiting the helper so a rejoin fails without deadlocking.
+  expect(getDatabases).toHaveBeenCalledTimes(2);
+  expect(entryErrors[1]).toMatchObject({ name: "AbortError", message: "Cancellation" });
+  const cancellation = entryErrors[1];
+
+  await act(async () => freshRead.resolve(fresh));
+  expect(getDatabases).toHaveBeenCalledTimes(helper === refreshDatabaseList ? 3 : 2);
+  if (helper === refreshDatabaseList) {
+    await act(async () => revalidation.resolve(fresh));
+  }
+  await expect(refreshed).resolves.toEqual(fresh);
+  await act(async () => old.resolve(list("stale")));
+  expect(cache.get(DATABASE_LIST_KEY)?.data).toEqual(fresh);
+  expect(cache.get(DATABASE_LIST_KEY)?.error).toBeUndefined();
+  expect(cache.get(DATABASE_LIST_KEY)?.error).not.toBe(cancellation);
+});
+
+test("revalidateDatabaseList fulfills with its fetcher failure recorded in cache", async () => {
+  const failure = new Error("post-write listing failed");
+  vi.mocked(getDatabases).mockResolvedValueOnce(list("initial")).mockRejectedValue(failure);
+  const { cache, refresh } = await writeRefreshHarness();
+  await act(async () => {
+    await expect(refresh(revalidateDatabaseList)).resolves.toEqual(list("initial"));
+  });
+  expect(cache.get(DATABASE_LIST_KEY)?.error).toBe(failure);
+});
+
+test("refreshDatabaseList propagates a rejected owned read", async () => {
+  const failure = new Error("owned listing failed");
+  vi.mocked(getDatabases).mockResolvedValueOnce(list("initial")).mockRejectedValue(failure);
+  const { refresh } = await writeRefreshHarness();
+  await act(async () => {
+    await expect(refresh(refreshDatabaseList)).rejects.toBe(failure);
+  });
 });

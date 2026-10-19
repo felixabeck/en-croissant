@@ -20,10 +20,22 @@ import { useDebouncedValue, useToggle } from "@mantine/hooks";
 import { IconArrowRight, IconDatabase, IconPlus } from "@tabler/icons-react";
 import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router";
 import { useAtom } from "jotai";
-import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
-import { useDatabaseList } from "@/hooks/useDatabaseList";
+import {
+  refreshDatabaseList,
+  revalidateDatabaseList,
+  useDatabaseList,
+} from "@/hooks/useDatabaseList";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import {
@@ -33,12 +45,7 @@ import {
   runDatabaseConversion,
 } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
-import {
-  databaseHandleKey,
-  getDatabases,
-  sameDatabaseHandle,
-  type SuccessDatabaseInfo,
-} from "@/utils/db";
+import { databaseHandleKey, sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
 import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
 import ConfirmModal from "../common/ConfirmModal";
@@ -92,6 +99,11 @@ export function useDatabaseLibrary(
     });
   }
   const { mutate: mutateCache } = useSWRConfig();
+  const { run, supersede } = databaseOwner!;
+  const revalidateDatabases = useCallback(
+    () => revalidateDatabaseList({ run, supersede }, mutateCache),
+    [run, supersede, mutateCache],
+  );
 
   const [open, setOpen] = useState(false);
   const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
@@ -99,6 +111,16 @@ export function useDatabaseLibrary(
   const [importRefreshFailed, setImportRefreshFailed] = useAtom(
     databaseConversionRefreshFailedAtom,
   );
+  function retryImportRefresh() {
+    return runUnlessCancelled(
+      t("Common.Error"),
+      async () => {
+        await refreshDatabaseList(databaseOwner!, mutateCache);
+        setImportRefreshFailed(false);
+      },
+      "database",
+    );
+  }
   const conversionInProgress = conversionState.length > 0;
   const visibleDatabases = useMemo(() => {
     return (databases ?? []).filter(
@@ -151,7 +173,7 @@ export function useDatabaseLibrary(
       undefined,
       { revalidate: false },
     );
-    void mutate();
+    void revalidateDatabaseList(databaseOwner!, mutateCache);
   }
 
   function changeReferenceDatabase(file: DatabaseHandle) {
@@ -281,7 +303,10 @@ export function useDatabaseLibrary(
                 {t("Databases.ChooseFolder", { defaultValue: "Choose database folder" })}
               </Button>
             ) : (
-              <Button {...libraryButtonProps} onClick={() => void mutate()}>
+              <Button
+                {...libraryButtonProps}
+                onClick={() => void (importRefreshFailed ? retryImportRefresh() : mutate())}
+              >
                 {t("Databases.LoadRetry", { defaultValue: "Retry" })}
               </Button>
             )}
@@ -298,19 +323,7 @@ export function useDatabaseLibrary(
     progress: (
       <>
         {importRefreshFailed && (
-          <Button
-            variant="default"
-            onClick={() =>
-              void runUnlessCancelled(
-                t("Common.Error"),
-                async () => {
-                  await mutate(await getDatabases());
-                  setImportRefreshFailed(false);
-                },
-                "database",
-              )
-            }
-          >
+          <Button variant="default" onClick={() => void retryImportRefresh()}>
             {t("Databases.LoadRetry", { defaultValue: "Retry" })}
           </Button>
         )}
@@ -381,7 +394,7 @@ export function useDatabaseLibrary(
             <GeneralSettings
               key={databaseHandleKey(selectedDatabase.file)}
               selectedDatabase={selectedDatabase}
-              mutate={mutate}
+              mutate={revalidateDatabases}
             />
             <Checkbox
               label={t("Databases.Settings.ReferenceDatabase")}
@@ -393,7 +406,7 @@ export function useDatabaseLibrary(
             <IndexInput
               indexed={selectedDatabase.indexed}
               file={selectedDatabase.file}
-              reload={mutate}
+              reload={revalidateDatabases}
             />
 
             <Divider variant="dashed" label={t("Common.Data")} />
@@ -446,7 +459,7 @@ export function useDatabaseLibrary(
         <Divider variant="dashed" label={t("Databases.Settings.AdvancedTools")} />
 
         {selectedDatabase.type === "success" && (
-          <AdvancedSettings selectedDatabase={selectedDatabase} reload={mutate} />
+          <AdvancedSettings selectedDatabase={selectedDatabase} reload={revalidateDatabases} />
         )}
 
         <Divider variant="dashed" label={t("Databases.Settings.Actions")} />
@@ -466,7 +479,7 @@ export function useDatabaseLibrary(
                         () =>
                           tauri.convertPgn(progressId, files, destination, null, "", null, ticket),
                         async () => {
-                          await mutate(await getDatabases());
+                          await refreshDatabaseList(databaseOwner!, mutateCache);
                         },
                         setImportRefreshFailed,
                         t("Common.Error"),
@@ -540,7 +553,7 @@ export function useDatabaseLibrary(
           opened={open}
           setOpened={setOpen}
           disableLocalConversion={conversionInProgress}
-          setDatabases={mutate}
+          reloadDatabases={() => refreshDatabaseList(databaseOwner!, mutateCache)}
         />
       </>
     ),

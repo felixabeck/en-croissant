@@ -661,6 +661,7 @@ test.each(["delete", "refresh", "both"])(
     );
     const retry = buttonByText("Databases.LoadRetry");
     expect(Boolean(retry)).toBe(failure !== "delete");
+    expect(store.get(databaseConversionRefreshFailedAtom)).toBe(failure !== "delete");
     if (retry) {
       mocks.getDatabases.mockResolvedValue({
         databases: failure === "both" ? [unfinished] : [successDatabase(handleB, "Existing")],
@@ -725,12 +726,30 @@ test.each(["new import", "add games"])(
     expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
     expect(buttonByText("Databases.LoadRetry")).toBeUndefined();
     expect(host.querySelector(`[data-testid='select-${databaseHandleKey(target)}']`)).toBeTruthy();
-    expect(mocks.getDatabases).toHaveBeenCalledTimes(4);
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(5);
     expect(mocks.convertPgn).toHaveBeenCalledOnce();
     expect(mocks.deleteDatabase).not.toHaveBeenCalled();
     expect(mocks.notify).toHaveBeenCalledOnce();
   },
 );
+
+test("an ordinary load Retry revalidates once without import recovery", async () => {
+  mocks.getDatabases.mockRejectedValueOnce(new Error("initial listing failed"));
+  await renderRoute();
+  expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
+  expect(mocks.getDatabases).toHaveBeenCalledOnce();
+  const retry = buttonByText("Databases.LoadRetry")!;
+  expect(retry).toBeTruthy();
+
+  await act(async () => retry.click());
+
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
+  expect(store.get(databaseConversionRefreshFailedAtom)).toBe(false);
+  expect(buttonByText("Databases.LoadRetry")).toBeUndefined();
+  expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeTruthy();
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
 
 async function startAccountDownload() {
   const before = mocks.convertPgn.mock.calls.length;
