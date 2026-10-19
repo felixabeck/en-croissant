@@ -16869,3 +16869,21 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Decision:** d-20261019-06 records capture-only background isolation and its reversal path. Rejected widening pixel tolerance, masking or cropping the toast, arbitrary waits, deleting pixel proof, and changing product styling for a test.
 * **Review provenance:** Plan authorship and arbitration share the root context. Detection and implementation use the same model family, through separate Codex sessions. Family separation is absent.
 <!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"f253aa993798a07b2811e2af4b40b9e65ea5739b76c07f56aa4e690a32bed98a","header_sha256":"1f2f95757dbce656e3ac5dfb469344429e9ba56bce425497454acd34126c31dd","header_status":"handled","input_sha256":"50a95f9a09689ffcddd84ec9d20d18c007c3d2e840d8b7740c0cbce6b885c593","kind":"mutation-receipt","operation":"3391de01b309437620af6cb1a99bbe254bafbd17f2370e31afa0719427792c42","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-04"],"target":"f-20261019-04","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### The real-app verifier consumes a workspace listing envelope as an array and aborts fixture setup
+
+* **ID:** f-20261019-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** a3865e54-b6e1-4228-9c59-a63baf27deb9 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-a3865e54-b6e1-4228-9c59-a63baf27deb9-1.jsonl
+* **Impact class:** tooling
+* **Where:** scripts/verify-app.mjs:798, verifyConversionCancellation, and the GO1 native fixture setup in the same script.
+* **Defect:** the native list_file_workspace command now returns a listing envelope, while the real-app verifier calls entries.find on the whole reply. Observed pnpm verify:app on a6c47f98 fails GO1 with entries.find is not a function, skips dependent game-opening cases, and aborts again in verifyConversionCancellation with the same TypeError. Startup, IPC and earlier practice checks passed. The full command exited 1 after cleanup.
+* **Spotted outside diff:** source review range fd8aa54b..a6c47f98 does not change scripts/verify-app.mjs.
+* **Failure scenario:** running the required real-app proof for a lifecycle change reaches fixture setup, receives the current native listing envelope, then throws at its array-only consumer. Real product verification cannot complete.
+* **Proof:** pnpm build followed by pnpm verify:app --screenshot <scratch-path> must complete on the current tree after adapting every verifier consumer to the current generated contract. Failed run gate-verify-app.FKJQGM is retained under the f-20261004-12 run gate directory.
+* **Review:** review-tests is mandatory for this verifier repair. The current full-auto f-20261004-12 session is repairing this observed release-proof failure now, under push red-gate authority, rather than leaving a known broken verifier.
+* **Related:** f-20261008-01 names the same script but concerns a one-run Repertoire metadata failure, not this deterministic reply-shape mismatch. Root resemblance is coincidental.
+* **Found by:** Codex, required real Tauri verification during the f-20261004-12 build, 2026-10-19.
