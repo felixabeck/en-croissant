@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 6a0a9b6b860b77d86f47aa6bbc2502b25fd505ff06d1fdbd8653553a470be7b1
+# agent-kit-sha256: e318fe98c5e478439d5f7508ff5441c16331539d475d8ebae4ee5973e33b79b1
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -2081,7 +2081,9 @@ def _pure_insertions(base: list[str], side: list[str]) -> dict[int, list[str]] |
     return blocks
 
 
-def merge_ledger_blocks(base: str, ours: str, theirs: str) -> str | None:
+def merge_ledger_blocks(
+    base: str, ours: str, theirs: str, *, preserve_line_endings: bool = False
+) -> str | None:
     """Merge independent base-relative edits, keeping insertion blocks whole.
 
     Git's own ``merge=union`` refines a conflict against the two sides' common
@@ -2093,11 +2095,12 @@ def merge_ledger_blocks(base: str, ours: str, theirs: str) -> str | None:
     Other edits use line ranges in the base. Identical replacements appear once,
     incompatible overlapping replacements and insertions inside a replaced range
     return ``None`` for git's ordinary text merge. Boundary insertions survive.
+    Carry retains exact line endings so published receipt bytes stay unchanged.
     """
-    base_lines = base.splitlines()
+    base_lines = base.splitlines(keepends=preserve_line_endings)
 
     def edits(side: str) -> list[tuple[int, int, list[str]]]:
-        lines = side.splitlines()
+        lines = side.splitlines(keepends=preserve_line_endings)
         blocks = _pure_insertions(base_lines, lines)
         if blocks is not None:
             return [(index, index, block) for index, block in blocks.items()]
@@ -2130,6 +2133,8 @@ def merge_ledger_blocks(base: str, ours: str, theirs: str) -> str | None:
         merged.extend(block)
         cursor = end
     merged.extend(base_lines[cursor:])
+    if preserve_line_endings:
+        return "".join(merged)
     return "\n".join(merged) + "\n" if merged else ""
 
 
@@ -2231,13 +2236,135 @@ def _merge_driver_config_lock(root: Path) -> Iterator[None]:
         release_ledger_lock(lock)
 
 
+def _carry_published_insertions(
+    base: str, ours: str, theirs: str, path: Path, upstream: str
+) -> str:
+    """Remove only inserted receipt windows witnessed in frozen upstream history."""
+    root = cast(Path, REPO_ROOT)
+    if re.fullmatch(r"[0-9a-f]{40,64}", upstream) is None:
+        raise LedgerError("carry upstream must be a frozen commit SHA")
+
+    def validated(text: str) -> list[LedgerMeta]:
+        issues, metadata = _validate_text_with_metadata(text, path)
+        if issues or is_controller_export(text):
+            raise LedgerError("carry ledger does not validate: " + "\n".join(issues))
+        return metadata
+
+    base_metadata = validated(base)
+    validated(ours)
+    source_metadata = validated(theirs)
+    base_keys = {
+        (meta.data.get("command"), meta.data.get("operation"))
+        for meta in base_metadata
+    }
+    lines = theirs.splitlines(keepends=True)
+    inserted: set[int] = set()
+    for tag, _start, _end, start, end in difflib.SequenceMatcher(
+        None, base.splitlines(keepends=True), lines, autojunk=False
+    ).get_opcodes():
+        if tag == "insert":
+            inserted.update(range(start, end))
+    candidates = [
+        meta
+        for meta in source_metadata
+        if meta.data.get("kind") == MUTATION_RECEIPT_KIND
+        and (meta.data["command"], meta.data["operation"]) not in base_keys
+        and all(
+            index in inserted
+            for index in range(
+                meta.line - 1 - cast(int, meta.data["effect_lines"]), meta.line
+            )
+        )
+    ]
+    if not candidates:
+        return theirs
+
+    # Read only the relevant ledger, and only for commits narrowed by an exact
+    # receipt-line pickaxe. Multiple batch/effect candidates share this cache.
+    snapshots: dict[str, tuple[list[str], list[LedgerMeta]]] = {}
+    relative = path.relative_to(root).as_posix()
+
+    def snapshot(commit: str) -> tuple[list[str], list[LedgerMeta]]:
+        if commit not in snapshots:
+            result = _git_for_ledger_bytes(root, "show", f"{commit}:{relative}")
+            if result.returncode:
+                detail = os.fsdecode(result.stderr).strip()
+                raise LedgerError("could not read carry publication witness: " + detail)
+            text = result.stdout.decode("utf-8")
+            snapshots[commit] = (text.splitlines(keepends=True), validated(text))
+        return snapshots[commit]
+
+    def witnessed(
+        source: LedgerMeta, witness_lines: list[str], metadata: list[LedgerMeta]
+    ) -> bool:
+        start = source.line - 1 - cast(int, source.data["effect_lines"])
+        window = lines[start:source.line]
+        return any(
+            item.data == source.data
+            and witness_lines[
+                item.line - 1 - cast(int, item.data["effect_lines"]):item.line
+            ] == window
+            for item in metadata
+            if item.data.get("kind") == MUTATION_RECEIPT_KIND
+        )
+
+    upstream_lines, upstream_metadata = snapshot(upstream)
+    suppressed: set[int] = set()
+    for meta in candidates:
+        data = meta.data
+        current = [
+            item for item in upstream_metadata
+            if item.data.get("kind") == MUTATION_RECEIPT_KIND
+            and item.data["command"] == data["command"]
+            and item.data["operation"] == data["operation"]
+        ]
+        if not current:
+            continue
+        request = MutationRequest(
+            str(data["command"]), str(data["target"]), str(data["input_sha256"]),
+            cast(dict[str, object], data["options"]),
+            cast(str | None, data["request_id_sha256"]), str(data["operation"]),
+        )
+        if (len(current) != 1
+                or not _receipt_matches_request(current[0].data, request)
+                or current[0].data["results"] != data["results"]):
+            raise LedgerError("carry publication receipt has different request or results")
+        start = meta.line - 1 - cast(int, data["effect_lines"])
+
+        proven = witnessed(meta, upstream_lines, upstream_metadata)
+        if not proven:
+            history = _git_for_ledger(
+                root, "log", "--format=%H", "--full-history", "-m",
+                "-S" + lines[meta.line - 1].rstrip("\r\n"), upstream,
+                "--", relative,
+            )
+            if history.returncode:
+                raise LedgerError(
+                    "could not inspect carry publication history: "
+                    + _git_failure_detail(history)
+                )
+            for commit in dict.fromkeys(history.stdout.splitlines()):
+                try:
+                    witness_lines, metadata = snapshot(commit)
+                except LedgerError:
+                    continue
+                if witnessed(meta, witness_lines, metadata):
+                    proven = True
+                    break
+        if not proven:
+            raise LedgerError("carry insertion has no exact publication witness")
+        suppressed.update(range(start, meta.line))
+    return "".join(line for index, line in enumerate(lines) if index not in suppressed)
+
+
 def cmd_merge_driver(args: argparse.Namespace) -> int:
     """Git merge driver entry: ``%O %A %B %P``, result written into ``%A``.
 
     A non-zero exit tells git the file conflicts and leaves ``%A`` as written,
-    so every refusal first hands the three inputs to ``git merge-file`` -- the
-    merge git would have done without a driver -- and validates a clean ledger
-    result too, so an invalid union never reports success.
+    so ordinary refusals hand the three inputs to ``git merge-file`` -- the
+    merge git would have done without a driver -- and validate a clean ledger
+    result too, so an invalid union never reports success. Opted-in carry proof
+    failures refuse directly, before a textual fallback can hide invalid inputs.
     """
     ledger_kind = MERGE_DRIVER_LEDGERS.get(Path(args.path).as_posix())
     reason: str
@@ -2246,10 +2373,15 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
         reason = f"{args.path} is not a ledger this driver merges"
     else:
         try:
-            sides = [
-                side.read_text(encoding="utf-8")
-                for side in (args.base, args.ours, args.theirs)
-            ]
+            sides = []
+            for side in (args.base, args.ours, args.theirs):
+                # Publication witnesses compare exact effect and receipt bytes.
+                # Ordinary callers retain universal-newline reads.
+                with side.open(
+                    encoding="utf-8",
+                    newline="" if getattr(args, "carry_upstream", None) else None,
+                ) as stream:
+                    sides.append(stream.read())
         except (OSError, UnicodeDecodeError) as exc:
             merged = None
             reason = f"could not read the merge inputs: {exc}"
@@ -2262,7 +2394,22 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
                 merged = None
                 reason = "a side is a Controller-generated export"
             else:
-                merged = merge_ledger_blocks(*sides)
+                if getattr(args, "carry_upstream", None):
+                    try:
+                        sides[2] = _carry_published_insertions(
+                            *sides, cast(Path, REPO_ROOT) / args.path, args.carry_upstream
+                        )
+                    except (LedgerError, OSError, UnicodeError) as exc:
+                        # A fallback could hide corrupt source proof behind a
+                        # clean textual merge, so carry proof failures refuse.
+                        print(
+                            f"merge-driver: carry publication proof refused: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    merged = merge_ledger_blocks(*sides, preserve_line_endings=True)
+                else:
+                    merged = merge_ledger_blocks(*sides)
                 reason = "the sides contain incompatible overlapping edits"
         if merged is not None:
             try:
@@ -14634,6 +14781,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_driver.add_argument("ours", type=Path)
     p_driver.add_argument("theirs", type=Path)
     p_driver.add_argument("path")
+    p_driver.add_argument(
+        "--carry-upstream",
+        help="frozen upstream SHA for receipt-backed worktree carry",
+    )
     p_driver.set_defaults(func=cmd_merge_driver)
 
     return parser
