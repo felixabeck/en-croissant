@@ -8850,8 +8850,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Authority:** `revalidateDatabaseList` was not in round 1. The MANDATE's open question asks how a revalidation requested after a write refuses to rejoin a generation started before it, without losing StrictMode and remount rejoin. The frozen threat model is that revalidation receiving the earlier read. Awaited `supersede` followed by a bare `mutate(DATABASE_LIST_KEY)` is that refusal. The data-bearing helper stays for callers that already publish an owned read. The Reviews row for round 2 records the same authority.
 
 
-* **Decided by:** Codex, full auto adoption of the reviewed plan · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":12,"effect_sha256":"172762600f0271af51bda783f44e51b2f6302af66a87779b9b48afd636f219a0","input_sha256":"0d6ee52953287a5593c695f7d0901a4449596b2156a4ec41477873033d6bd264","kind":"mutation-receipt","operation":"355223bcf5bf6fce738f3e555ab114190ff2c8e94ec332df13b5092d02da0c3d","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-04"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex, full auto adoption of the reviewed plan · **Superseded-by:** d-20261019-05
+<!-- ledger-meta {"command":"record-decision","effect_lines":12,"effect_sha256":"4b18c4605a196cd244f8c224f05900048f1135e55103579fa7bcd1f12dbdb9de","input_sha256":"0d6ee52953287a5593c695f7d0901a4449596b2156a4ec41477873033d6bd264","kind":"mutation-receipt","operation":"355223bcf5bf6fce738f3e555ab114190ff2c8e94ec332df13b5092d02da0c3d","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-04"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261019-05 — Preserve import refresh recovery when SWR also exposes a list error
 
