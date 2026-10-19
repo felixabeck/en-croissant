@@ -8287,7 +8287,7 @@ impl PathAuthority {
                 );
                 return;
             };
-            protected.insert(leaf.to_os_string());
+            protected.insert(leaf.to_ascii_lowercase());
         }
         let entries = match read_directory_entries_at(
             image_dir.directory.as_file(),
@@ -8314,7 +8314,9 @@ impl PathAuthority {
         protected: &BTreeSet<OsString>,
         entry: &DirectoryEntry,
     ) {
-        if entry.kind != DirectoryEntryKind::RegularFile || protected.contains(&entry.name) {
+        if entry.kind != DirectoryEntryKind::RegularFile
+            || protected.contains(&entry.name.to_ascii_lowercase())
+        {
             return;
         }
         let Some(name) = entry.name.to_str() else {
@@ -10487,6 +10489,111 @@ pub(crate) mod portable_tests {
         assert!(
             !f.image_dir.path().join(temp).exists(),
             "atomic crash temp must be swept"
+        );
+    }
+
+    #[test]
+    fn engine_image_cleanup_sweep_preserves_case_renamed_registered_uuid() {
+        let mut f = EngineImageCleanupFixture::new();
+        let leaf = f.sweep_leaf("abcdefab-cdef-4abc-8def-abcdefabcdef");
+        let installed = f.image_dir.open_leaf_identified(&leaf).unwrap();
+        let registered = f
+            .authority
+            .register_engine_image(&f.image_dir, &leaf, installed, "registered".into())
+            .unwrap();
+        let uppercase = leaf.to_ascii_uppercase();
+        assert_ne!(leaf, uppercase);
+        fs::rename(
+            f.image_dir.path().join(&leaf),
+            f.image_dir.path().join(&uppercase),
+        )
+        .unwrap();
+        assert_eq!(
+            f.authority.persistent[&registered.path_ref().id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            f.image_dir.path().join(&leaf)
+        );
+        f.authority
+            .set_engine_image_sweep_root(Some(AppDataDir::for_test(&f.app_data)));
+
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+
+        assert!(
+            f.image_dir.path().join(&uppercase).is_file(),
+            "case-renamed registered UUID image must survive"
+        );
+        assert_eq!(
+            f.image_dir.open_leaf_identified(&uppercase).unwrap().pair(),
+            installed.pair()
+        );
+        assert!(
+            !f.image_dir.path().join(&f.leaf).exists(),
+            "unreferenced UUID must still be swept"
+        );
+    }
+
+    #[test]
+    fn engine_image_cleanup_empty_intents_retry_durability_then_sweep() {
+        let mut f = EngineImageCleanupFixture::new();
+        let temp = f.sweep_temp();
+        assert!(f.authority.image_cleanup.is_empty());
+        f.authority.registry_durability_pending = true;
+        f.authority
+            .set_engine_image_sweep_root(Some(AppDataDir::for_test(&f.app_data)));
+
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+
+        assert!(!f.authority.registry_durability_pending);
+        assert!(f.registry.is_file(), "retry must persist the registry");
+        assert!(
+            !f.image_dir.path().join(&f.leaf).exists(),
+            "successful retry must sweep the UUID orphan despite empty intents"
+        );
+        assert!(
+            !f.image_dir.path().join(temp).exists(),
+            "successful retry must sweep the atomic temp despite empty intents"
+        );
+    }
+
+    #[test]
+    fn engine_image_cleanup_empty_intents_retry_failure_preserves_orphans() {
+        use crate::infra::fs::{install_test_atomic_file_injector, ParentSyncFault};
+        let mut f = EngineImageCleanupFixture::new();
+        let temp = f.sweep_temp();
+        assert!(f.authority.image_cleanup.is_empty());
+        f.authority.registry_durability_pending = true;
+        f.authority
+            .set_engine_image_sweep_root(Some(AppDataDir::for_test(&f.app_data)));
+        let _guard = install_test_atomic_file_injector(Arc::new(ParentSyncFault(
+            "empty-intent retry parent sync failed",
+        )));
+
+        let result = f.authority.cleanup_engine_images(&f.image_dir, false);
+
+        assert!(
+            matches!(
+                result,
+                Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::RegistryReplacement
+                ))
+            ),
+            "failed retry must return its registry durability error: {result:?}"
+        );
+        assert!(f.authority.registry_durability_pending);
+        assert!(
+            f.image_dir.path().join(&f.leaf).is_file(),
+            "failed retry must preserve the UUID orphan"
+        );
+        assert!(
+            f.image_dir.path().join(temp).is_file(),
+            "failed retry must preserve the atomic temp"
         );
     }
 
