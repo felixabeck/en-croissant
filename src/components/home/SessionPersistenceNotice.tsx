@@ -16,16 +16,17 @@ export function SessionPersistenceNotice() {
   );
   if (status === "saved") return null;
 
+  const title =
+    t("Accounts.Persistence.Title", {
+      defaultValue: enUS.translation["Accounts.Persistence.Title"],
+    }) || enUS.translation["Accounts.Persistence.Title"];
+
   return (
     <Alert
       color="orange"
       variant="outline"
       bg="var(--mantine-color-body)"
-      title={
-        t("Accounts.Persistence.Title", {
-          defaultValue: enUS.translation["Accounts.Persistence.Title"],
-        }) || enUS.translation["Accounts.Persistence.Title"]
-      }
+      title={title}
       role="alert"
       pos="fixed"
       bottom="var(--mantine-spacing-xs)"
