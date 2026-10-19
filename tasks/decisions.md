@@ -8998,3 +8998,87 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** A clean production build of exact published base e66e2787f4987cd25fb376690f1b49736d5ced56 measures 549,323 B entry, 476,797 B largest lazy and 1,609,614 B total. Candidate measures 550,515 B entry, 476,072 B largest lazy and 1,611,529 B total. Both use pnpm build-vite and buildBundleReport from scripts/check-bundle-budget.mjs, identical package.json, pnpm-lock.yaml and vite.config.ts, and the same lockfile dependencies. Whole-build growth is +1,192 B entry, -725 B largest lazy and +1,915 B total, without assigning bytes to individual functions or strings. The new document owner, atom synchronization, canonical encoding and persistent three-string warning in 16 catalogs preserve required account recovery without new dependencies, keys or generic machinery. The proposed ceiling leaves 4,485 B entry margin. Independent selected-executor minimalism review approved the measured entry-only allowance before any ceiling update, with no retained findings. Reversal: tighten entry toward a future smaller production measurement. Do not weaken the recovery behavior or other bundle ceilings.
 * **Decided by:** Codex, full auto, f-20261004-14 pre-review gate repair. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1ca4da5d5fc92fb31a23f3329ea8f1972420b403916b97de3c7989ba8826899a","input_sha256":"a9a551016bd203c9070f77d7b44063c6aeb5b4e837f487d648d3d86b57501c3f","kind":"mutation-receipt","operation":"d9d68e0146f42fec46761f24b7a917227b4d3ebebaf4282093d166d06a1f22c5","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-18"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-20 — recorded through the decisions lock
+
+### d-20261020-01 — Where is linked collection authority stored?
+
+* **Question:** Where is linked PGN collection authority stored for f-20261004-15?
+* **Governs:** f-20261004-15
+* **Chosen:** A bounded native UUID registry with disposable app-owned SQLite caches, as O1 of the adopted plan.
+* **Rejected:** A source pathname stored in an independently editable database.
+* **Reason:** UUID identity survives capability renewal and isolates the authoritative PGN from derived state. Reversal: migrate registry records, preserve PGNs and rebuild caches.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-02 — How are linked indexes refreshed consistently?
+
+* **Question:** How are arbitrary external PGN rewrites reflected in linked indexes?
+* **Governs:** f-20261004-15
+* **Chosen:** Full transactional streaming rebuilds and source-generation-qualified queries through normalization, as O2.
+* **Rejected:** Incremental edit synchronization or swapping a live WAL database as a plain file.
+* **Reason:** Arbitrary external rewrites require complete source validation. Reversal: replace rebuild internals only after the same generation and isolation proofs pass.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-03 — How are collection changes detected?
+
+* **Question:** Does collection currency require another watcher or timer?
+* **Governs:** f-20261004-15
+* **Chosen:** Reuse the existing two-second metadata freshness schedule plus focus, startup, Library entry and actual-use checks.
+* **Rejected:** A new watcher dependency or independent per-component timers.
+* **Reason:** Existing scheduling covers active use without another lifecycle. Reversal: change notification behind the same source revalidation and refresh bound.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-04 — Does linked storage include a Windows PGN write port?
+
+* **Question:** Does this linked-collection rollout port PGN atomic replacement to Windows?
+* **Governs:** f-20261004-15
+* **Chosen:** Preserve Windows unlinked editing and account flows under d-20260918-13, with linking enabled on Linux and macOS.
+* **Rejected:** Taking away working database editing or expanding this task into the Windows write port.
+* **Reason:** Felix explicitly gated linking on supported PGN write-back. Reversal: separately prove and ship the Windows PGN port before enabling linking there.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-05 — How does migration preserve divergent originals?
+
+* **Question:** How does linking existing independent copies preserve edits on both sides?
+* **Governs:** f-20261004-15
+* **Chosen:** Explicitly choose the future authoritative version, archive originals before durable activation and support database-only account migration, as O5.
+* **Rejected:** Silent game-level merging or requiring a surviving disposable account batch.
+* **Reason:** Both versions may hold distinct user edits and accumulated history belongs to the account database. Reversal: restore archived originals and remove the registry link through the native service.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-06 — How are overlapping account batches deduplicated?
+
+* **Question:** How are provider IDs reconciled with legacy exported games that lost identity tags?
+* **Governs:** f-20261004-15
+* **Chosen:** Match known IDs and compatible legacy semantic fingerprints, preserve source bytes and multiplicity, retain distinct known IDs and refuse ambiguous reconciliation before append, as O6.
+* **Rejected:** Timestamp-only admission, fingerprint-only collapse of known IDs or guessing ambiguous legacy matches.
+* **Reason:** Monthly overlap and legacy import/export require identity across both representations without losing games. Reversal: rebuild the derived membership projection while preserving stored PGN bytes.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-07 — What size contract applies to Lichess exports?
+
+* **Question:** Is the renderer's games-times-900 estimate an exact integrity constraint?
+* **Governs:** f-20261004-15, f-20261004-19
+* **Chosen:** Remove that estimate from IPC and derive progress from real response length or leave it indeterminate, preserving actual byte limits and signed catalog checks.
+* **Rejected:** Enforcing an estimate as an exact size or adding another size-policy abstraction for one removed caller.
+* **Reason:** Ordinary initial sync otherwise fails whenever actual bytes differ. Reversal: add a separate nonbinding hint only for an evidenced consumer, preserving exact-size rejection tests.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-08 — Does linking replace the existing Library composition?
+
+* **Question:** Does linked storage require a universal file/database backend or new selection persistence?
+* **Governs:** f-20261004-15
+* **Chosen:** Preserve d-20261013-01/02/03/04 composition, routes and transient selection, adding only the linked storage explicitly reserved there.
+* **Rejected:** A universal resource backend or persistent Library filters and selection.
+* **Reason:** The existing source controllers remain useful owners. Reversal: change the presentation adapter while preserving authoritative PGNs and native contracts.
+* **Decided by:** Codex, full auto, adopted plan. · **Superseded-by:** -
+
+### d-20261020-09 — How does account collection migration preserve public-session recovery?
+
+* **Question:** How does changed account collection resolution integrate with public-session persistence?
+* **Governs:** f-20261004-15
+* **Chosen:** Retain d-20261019-15/16/17's document-owned snapshot, canonical sessionsAtom/savePublicSessions boundary and latest-list retry, and resolve collection associations natively.
+* **Rejected:** Direct Web Storage access, a second public list or reload-to-retry.
+* **Reason:** A failed public-list save must preserve the latest cards and cannot undo a committed PGN. Reversal: follow the existing recovery boundary's replacement route, retaining credential erasure and latest-list recovery. No existing decision is reversed.
+* **Decided by:** Codex, full auto, adopted plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":80,"effect_sha256":"90bbee11b570da4c26f9466bbf3b64cf2460ea9820fbed678c85312183f13a58","input_sha256":"26844a0184a4368bfea2e24ea0ea220ce01e258e3390fdeaa1b8bd6381d412dc","kind":"mutation-receipt","operation":"aaab51ee695b0a215e17be2ac02ca69c72d555a9e71190256465f5613d27f005","options":{"section":null},"request_id_sha256":null,"results":["d-20261020-01","d-20261020-02","d-20261020-03","d-20261020-04","d-20261020-05","d-20261020-06","d-20261020-07","d-20261020-08","d-20261020-09"],"target":"decisions-ledger","v":1} -->
