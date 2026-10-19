@@ -16783,3 +16783,17 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Verification after repair:** All 4,570 frontend unit tests and unchanged coverage ratchet passed. The wrapper's new preservation test failed with only the production handler hunk reversed, then passed after byte-exact restoration with no patch offsets. All seven wrapper unit tests and 13 affected browser journeys passed. Required pre-review checks passed, including 100% mutation scores. All six round-three code lenses approved without findings. The 13 affected browser journeys passed again after review. Earlier default-true board and puzzle gesture coverage remains intact. Full final push gates remain required and no delivery is claimed by this record.
 * **Review provenance:** Plan authorship and arbitration shared the root context. Detection used independent Codex sessions in the implementation's model family. Family separation was absent.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"dd47e9523701d679d03f0c51b6550fdcdf67a54206c82780197c64763699eae1","header_sha256":"535921de00a78cb4e878547d40ead0f645eb63c0de6e7631390722236eb6a3c8","header_status":"handled","input_sha256":"ecfc482c202c107b6911bc86229d7819e2ee0fcf417573190a7a38b996600327","kind":"mutation-receipt","operation":"377465c5715f3793176e788a65030e65daa2fa1030ba6b82d041e97905d57b0c","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-01"],"target":"f-20261019-01","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Conversion screenshot races an auto-hiding scrollbar in CI
+
+* **ID:** f-20261019-02 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Spotted outside diff:** Native/CI verification of board drawings at pushed 92445270, Test run 39210173592. The conversion screenshot test was unchanged by that push.
+* **Where:** `e2e/font-scaled-breakpoints.spec.ts`, conversion Cancel at 320px and 200%.
+* **Failure scenario:** The test scrolls the Cancel button into view and immediately captures a transient ScrollArea scrollbar. Its committed baseline includes the bar, while CI captures it after it hides. The CI diff contains only the vertical scrollbar region, 3,474 pixels. The broader CI job fails despite the conversion content and layout matching, blocking delivery.
+* **Proof:** Job 117921566487 failed only conversion-cancel-320-200.png, with the other 150 browser tests passing. Root downloaded the frontend-browser-audit artifact and inspected the actual/diff images under /tmp/chessfable-board-marks/ci-browser-audit. The same file already uses mouse-away plus waitForScrollAreaScrollbarsHidden for other captures. Local full suite had passed 151 tests before CI exposed the timing race.
+* **Required outcome:** Use the existing scrollbar settling convention for both conversion captures. Re-record only their expected scrollbar-state changes in the pinned container after diff inspection. Preserve cancellation, clipping, layout assertions, and production behavior.
