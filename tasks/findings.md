@@ -16834,3 +16834,26 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Current verification:** Test run 39215498564 at published ff04625c4b4cf404e48bdf19547c8a1de404e61c has passed the browser accessibility and visual contracts step that failed in the original run. All five macOS/Windows jobs have passed. At closure, the Linux test job is still running later steps, so this note does not claim the whole run is green. The push workflow will check the remote and wait for its required jobs.
 * **Review provenance:** Plan authorship and arbitration share the root context. Records detection runs in an independent Codex session in the code's model family. Family separation is absent.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"80b097f03caf339eef5b9d944003f7d1d3f73eba71deecf6fd67085f2656ad3b","header_sha256":"4094d81164d38ce791774e2b10536212826442c075bf32c92c5045888653252d","header_status":"handled","input_sha256":"b75099ecef88f356129570ea80e27cac779c9f45f61696072e2d1f1294212da9","kind":"mutation-receipt","operation":"796bb439424cb69879a8762733dfc132a18c267390f543b5d45017e7f6b53756","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-03"],"target":"f-20261019-03","v":1} -->
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Remote CI repair: Test
+* **ID:** f-20261019-04 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 461563b8-07bb-49e3-afb1-359950dea200
+
+* **Impact class:** tooling
+* **Found by:** drain remote-CI check (Codex)
+* **Where:** workflow `Test`, jobs `test`.
+* **Defect:** failed jobs on `2529893202439eef21e5bd087f589205268ecb39`: `test`.
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/39238339967
+* **Proof:** `gh run view 39238339967 --log-failed`
+* **CI run:** 39238339967
+* **Resolution:** Fixed by 4ee98397. The shared remote HTTP screenshot uses an absolute stylePath to e2e/notification-screenshot.css. It hides unrelated document content during capture and explicitly preserves the notification and its descendants. Production styling, full notification geometry, text, clipping, viewport and invocation assertions are unchanged.
+* **Root cause and pickup:** Test run 39238339967 failed only the German 401 screenshot, with 14 raw differing background pixels at x229 through x242 on its first row. All 150 other browser tests passed. The toast itself matched. Screenshot crops included the page behind rounded corners, so an unrelated background state could change the golden comparison.
+* **Snapshot evidence:** Inspected and refreshed exactly remote-http-de-DE-401-async-errors.png, remote-http-de-DE-429-async-errors.png and remote-http-en-US-500-async-errors.png in the pinned container. Differences are 149, 135 and 6 raw pixels respectively, confined to the top row and lower-left rounded edge. Dimensions and every other pixel are identical. The expanded prediction was recorded before refresh in /tmp/cf-f-20261019-04/pre-refresh-evidence.md.
+* **Proof:** The existing remote HTTP journey with a real magenta main-element background and replacement content fails all three screenshot assertions without isolation, exit 1. A unique-context capture-option hunk was reverse-applied and restored with git apply --verbose, both exit 0 with clean traces and no offsets. The identical input and unchanged goldens pass all three with isolation restored, exit 0. All temporary edits were removed byte-identically. The final focused container run with --repeat-each=5 passed 15/15. pnpm checks:pre-review passed. Full commands, raw images, source hashes and transcripts remain in /tmp/cf-f-20261019-04/completion-report.md.
+* **Decision:** d-20261019-06 records capture-only background isolation and its reversal path. Rejected widening pixel tolerance, masking or cropping the toast, arbitrary waits, deleting pixel proof, and changing product styling for a test.
+* **Review provenance:** Plan authorship and arbitration share the root context. Detection and implementation use the same model family, through separate Codex sessions. Family separation is absent.
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"f253aa993798a07b2811e2af4b40b9e65ea5739b76c07f56aa4e690a32bed98a","header_sha256":"1f2f95757dbce656e3ac5dfb469344429e9ba56bce425497454acd34126c31dd","header_status":"handled","input_sha256":"50a95f9a09689ffcddd84ec9d20d18c007c3d2e840d8b7740c0cbce6b885c593","kind":"mutation-receipt","operation":"3391de01b309437620af6cb1a99bbe254bafbd17f2370e31afa0719427792c42","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-04"],"target":"f-20261019-04","v":1} -->
