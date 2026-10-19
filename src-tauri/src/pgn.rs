@@ -67,6 +67,15 @@ pub struct StampedGame {
     pub stamp: String,
     pub revision: String,
     pub present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub omission: Option<GameOmission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GameOmission {
+    TooLarge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize, Type)]
@@ -1161,7 +1170,7 @@ pub async fn read_games(
 
 /// Returns a non-empty prefix of the requested range within `MAX_PAGE_BYTES`.
 /// Callers continue at start + returned length; only the empty-file opening range returns empty.
-/// An oversized first game is selected and rejected by the per-game read limit.
+/// An oversized first game returns one omission without reading its body.
 pub async fn read_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     start: i32,
@@ -1170,7 +1179,7 @@ pub async fn read_games_core(
     repository: &PgnRepository,
 ) -> Result<Vec<StampedGame>, Error> {
     let (start, count) = checked_range(start, end)?;
-    let (key, (), values) =
+    let (key, omission, values) =
         scan_and_read_ranges(resolved, repository, cancellation, move |_, games| {
             let end = start
                 .checked_add(count)
@@ -1185,6 +1194,9 @@ pub async fn read_games_core(
                 let mut selected_len = 0;
                 for (index, range) in requested.iter().enumerate() {
                     let bytes = range.byte_len()?;
+                    if index == 0 && bytes > MAX_PGN_BYTES as u64 {
+                        return Ok((Some(GameOmission::TooLarge), Vec::new()));
+                    }
                     let Some(next_bytes) = total_bytes.checked_add(bytes) else {
                         break;
                     };
@@ -1196,10 +1208,19 @@ pub async fn read_games_core(
                 }
                 requested[..selected_len].to_vec()
             };
-            Ok(((), requested))
+            Ok((None, requested))
         })
         .await?;
     let revision = revision_string_for_key(&key);
+    if let Some(omission) = omission {
+        return Ok(vec![StampedGame {
+            pgn: String::new(),
+            stamp: String::new(),
+            revision,
+            present: true,
+            omission: Some(omission),
+        }]);
+    }
     Ok(values
         .into_iter()
         .map(|pgn| StampedGame {
@@ -1207,6 +1228,7 @@ pub async fn read_games_core(
             pgn,
             revision: revision.clone(),
             present: true,
+            omission: None,
         })
         .collect())
 }
@@ -1298,6 +1320,7 @@ async fn read_game_core(
         pgn,
         revision: revision_string_for_key(&key),
         present,
+        omission: None,
     })
 }
 
@@ -3039,10 +3062,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn page_byte_budget_keeps_oversized_first_game_resource_limit() {
+    async fn page_byte_budget_returns_omission_for_oversized_first_game() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("oversized-first.pgn");
-        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write PGN");
+        let pgn = b"[Event \"A\"]\n\n1. e4 *\n";
+        std::fs::write(&path, pgn).expect("write PGN");
         let app = mock_app();
         let state = app.state::<AppState>();
         for bytes in [MAX_PGN_BYTES as u64 + 1, u64::MAX] {
@@ -3053,15 +3077,121 @@ mod tests {
                 vec![
                     GameRange {
                         start: 0,
+                        end: pgn.len() as u64,
+                    },
+                    GameRange {
+                        start: 0,
                         end: bytes,
                     },
                     GameRange { start: 0, end: 1 },
                 ],
             );
-            let result = read_games_core(
+            let prefix = read_games_core(
                 resolved_for(&directory, &path),
                 0,
+                2,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("later oversized game stops the readable prefix");
+            assert_eq!(prefix.len(), 1);
+            assert_eq!(prefix[0].pgn.as_bytes(), pgn);
+
+            let page = read_games_core(
+                resolved_for(&directory, &path),
                 1,
+                2,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("oversized first game is omitted without reading past EOF");
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].omission, Some(GameOmission::TooLarge));
+            assert!(page[0].present);
+            assert!(page[0].pgn.is_empty());
+            assert!(page[0].stamp.is_empty());
+            assert_eq!(page[0].revision, prefix[0].revision);
+            assert_eq!(
+                serde_json::to_value(&page[0]).expect("serialize omission")["omission"],
+                "tooLarge"
+            );
+
+            let following = read_games_core(
+                resolved_for(&directory, &path),
+                2,
+                2,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("continue after omitted game");
+            assert_eq!(following.len(), 1);
+            assert_eq!(following[0].pgn, "[");
+            assert_eq!(following[0].omission, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_returns_exact_cap_game() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("exact-cap.pgn");
+        let mut pgn = String::from("[Event \"Exact cap\"]\n\n1. e4 *\n");
+        pgn.extend(std::iter::repeat_n(' ', MAX_PGN_BYTES - pgn.len()));
+        assert_eq!(pgn.len(), MAX_PGN_BYTES);
+        std::fs::write(&path, &pgn).expect("write exact-cap UTF-8 file");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        seed_page_ranges(
+            &directory,
+            &path,
+            &state.pgn_repository,
+            vec![GameRange {
+                start: 0,
+                end: MAX_PGN_BYTES as u64,
+            }],
+        );
+        let page = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("exact-cap game stays readable");
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].pgn, pgn);
+        assert_eq!(page[0].stamp, game_stamp(pgn.as_bytes()));
+        assert!(page[0].present);
+        assert_eq!(page[0].omission, None);
+        assert!(serde_json::to_value(&page[0])
+            .expect("serialize readable game")
+            .get("omission")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn read_game_core_returns_resource_limit_for_oversized_range() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("oversized-single.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        for bytes in [MAX_PGN_BYTES as u64 + 1, u64::MAX] {
+            seed_page_ranges(
+                &directory,
+                &path,
+                &state.pgn_repository,
+                vec![GameRange {
+                    start: 0,
+                    end: bytes,
+                }],
+            );
+            let result = read_game_core(
+                resolved_for(&directory, &path),
+                0,
                 &CancellationToken::new(),
                 &state.pgn_repository,
             )

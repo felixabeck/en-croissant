@@ -344,11 +344,43 @@ describe("FileCard", () => {
     });
   });
 
-  test("active readGames error triggers notification", async () => {
+  test("an omitted preview shows its label, disables Open and does not notify", async () => {
+    mocks.readGames.mockResolvedValue([
+      { pgn: "", stamp: "", revision: "revision", present: true, omission: "tooLarge" },
+    ]);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
+
+    expect(container.textContent).toContain("Files.GameTooLarge");
+    expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+    expect(openButton().disabled).toBe(true);
+    await act(async () => openButton().click());
+    expect(mocks.readGame).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+
+    mocks.readGames.mockResolvedValue([stampedGame("Readable next")]);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='game-selector']")!.click(),
+    );
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
+      "Readable next",
+    );
+    expect(container.textContent).not.toContain("Files.GameTooLarge");
+    expect(openButton().disabled).toBe(false);
+  });
+
+  test("active readGames error triggers notification and clears a readable preview", async () => {
+    mocks.readGames.mockResolvedValue([stampedGame("Readable preview")]);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
+      "Readable preview",
+    );
     const error = new Error("Failed to read game");
     mocks.readGames.mockRejectedValue(error);
 
-    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='game-selector']")!.click(),
+    );
 
     expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();

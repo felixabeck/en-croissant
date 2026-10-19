@@ -43,6 +43,7 @@ function FileCard({
   const navigate = useNavigate();
 
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
+  const [previewOmitted, setPreviewOmitted] = useState(false);
   const [page, setPage] = useState(0);
   const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
   // Two handles with the same key are the same file, so a new handle object must not retrigger the read.
@@ -61,11 +62,14 @@ function FileCard({
           signal: controller.signal,
         });
         if (!controller.signal.aborted) {
-          setSelectedGame(data[0]?.pgn ?? null);
+          const omitted = data[0]?.omission === "tooLarge";
+          setPreviewOmitted(omitted);
+          setSelectedGame(omitted ? null : (data[0]?.pgn ?? null));
         }
       } catch (error) {
         if (controller.signal.aborted) return;
         setSelectedGame(null);
+        setPreviewOmitted(false);
         notifyUnlessCancelled(t("Common.Error"), error);
       }
     }
@@ -107,7 +111,7 @@ function FileCard({
           <OpenGameButton
             onOpen={() => activateGame(page)}
             pending={gameOpen.pending}
-            disabled={selected.numGames <= 0 || page >= selected.numGames}
+            disabled={previewOmitted || selected.numGames <= 0 || page >= selected.numGames}
           />
           <IconAction label={t("Files.EditMetadata")} size="sm" onClick={onEditMetadata}>
             <IconEdit />
@@ -141,6 +145,7 @@ function FileCard({
       {/* Reserve the preview's share while reading so the list never moves between clicks. */}
       {selected.numGames > 0 && (
         <Box flex="3 1 0" mih={0} px="xs" pb="xs">
+          {previewOmitted && <Text>{t("Files.GameTooLarge")}</Text>}
           {selectedGame !== null && (
             <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
           )}

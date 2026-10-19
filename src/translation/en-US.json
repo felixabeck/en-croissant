@@ -581,6 +581,7 @@
     "Files.GameCountSuffix": "{{number}} games",
     "Files.GameCountSuffix_one": "{{number}} game",
     "Files.GameCountSuffix_other": "{{number}} games",
+    "Files.GameTooLarge": "Too large to open.",
     "Files.LoadFailed": "Files could not be loaded. Please try again.",
     "Files.LoadFailed.Changed": "This collection changed. Choose another.",
     "Files.LoadFailed.Missing": "This collection is no longer available. Choose another.",

@@ -597,6 +597,7 @@
     "Files.GameCountSuffix_few": "{{number}} partie",
     "Files.GameCountSuffix_many": "{{number}} partii",
     "Files.GameCountSuffix_other": "{{number}} partii",
+    "Files.GameTooLarge": "Zbyt duża, aby ją otworzyć.",
     "Files.LoadFailed": "Nie można było wczytać plików. Spróbuj ponownie.",
     "Files.LoadFailed.Changed": "Ta kolekcja uległa zmianie. Wybierz inną.",
     "Files.LoadFailed.Missing": "Ta kolekcja nie jest już dostępna. Wybierz inną.",

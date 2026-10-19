@@ -26,6 +26,7 @@ const ROW_HEIGHT_PX = 30;
 
 export type GameSelectorRow = {
   name: string;
+  omission?: StampedGame["omission"];
   identity?: Pick<StampedGame, "stamp" | "revision">;
 };
 
@@ -63,6 +64,12 @@ export default function GameSelector({
           if (data.length === 0) break;
           const page = await Promise.all(
             data.map(async (game, index) => {
+              if (game.omission === "tooLarge") {
+                return [
+                  next + index,
+                  { name: t("Files.GameTooLarge"), omission: game.omission },
+                ] as const;
+              }
               const { headers } = await parsePGN(game.pgn, undefined, options);
               return [
                 next + index,
@@ -181,6 +188,7 @@ function GameRow({
   const [deleteModal, toggleDelete] = useToggle();
   const [deleteSnapshot, setDeleteSnapshot] = useState<DeleteGameSnapshot | null>(null);
   const canDelete = !!game?.identity?.stamp && !!game.identity.revision;
+  const omitted = game?.omission === "tooLarge";
 
   return (
     <>
@@ -202,7 +210,7 @@ function GameRow({
       <Group
         role="option"
         aria-selected={index === activePage}
-        {...gameRowActivation(index, onActivate ?? setPage)}
+        {...(omitted ? {} : gameRowActivation(index, onActivate ?? setPage))}
         style={style}
         justify="space-between"
         wrap="nowrap"
@@ -211,6 +219,7 @@ function GameRow({
           [classes.active]: index === activePage,
         })}
         onClick={() => {
+          if (omitted) return;
           setPage(index);
         }}
       >

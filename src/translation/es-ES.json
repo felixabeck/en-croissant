@@ -589,6 +589,7 @@
     "Files.GameCountSuffix_one": "{{number}} partida",
     "Files.GameCountSuffix_many": "{{number}} partidas",
     "Files.GameCountSuffix_other": "{{number}} partidas",
+    "Files.GameTooLarge": "Demasiado grande para abrir.",
     "Files.LoadFailed": "No se pudieron cargar los archivos. Inténtalo de nuevo.",
     "Files.LoadFailed.Changed": "Esta colección ha cambiado. Elige otra.",
     "Files.LoadFailed.Missing": "Esta colección ya no está disponible. Elige otra.",

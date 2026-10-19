@@ -581,6 +581,7 @@
     "Files.GameCountSuffix": "{{number}} partier",
     "Files.GameCountSuffix_one": "{{number}} parti",
     "Files.GameCountSuffix_other": "{{number}} partier",
+    "Files.GameTooLarge": "For stort til å åpnes.",
     "Files.LoadFailed": "Filene kunne ikke lastes inn. Prøv igjen.",
     "Files.LoadFailed.Changed": "Denne samlingen er endret. Velg en annen.",
     "Files.LoadFailed.Missing": "Denne samlingen er ikke lenger tilgjengelig. Velg en annen.",

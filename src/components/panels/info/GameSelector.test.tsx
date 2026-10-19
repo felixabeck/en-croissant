@@ -145,6 +145,8 @@ function renderPageLoader(
   }) => void | Promise<void>,
   total = 1,
   initialGames = new Map<number, GameSelectorRow>(),
+  setPage = vi.fn(),
+  onActivate = vi.fn(),
 ) {
   const observed = { games: initialGames };
   function Harness() {
@@ -154,7 +156,8 @@ function renderPageLoader(
       <GameSelector
         games={games}
         setGames={setGames}
-        setPage={vi.fn()}
+        setPage={setPage}
+        onActivate={onActivate}
         total={total}
         path={path}
         activePage={0}
@@ -276,6 +279,77 @@ test("continues a short page at the next index and merges the whole inclusive ra
     revision: "revision-second",
   });
   expect(observed.games.get(7)?.identity).toEqual(observed.games.get(5)?.identity);
+});
+
+test("stores a middle omission without parsing, notifying, retrying or activating it", async () => {
+  mocks.visibleIndices = [0, 1, 2];
+  const omitted: StampedGame = {
+    pgn: "",
+    stamp: "",
+    revision: "revision-first",
+    present: true,
+    omission: "tooLarge",
+  };
+  mocks.readGames
+    .mockResolvedValueOnce([firstGame])
+    .mockResolvedValueOnce([omitted])
+    .mockResolvedValueOnce([secondGame]);
+  mocks.parsePGN
+    .mockResolvedValueOnce({ headers: { event: "Readable before" } })
+    .mockResolvedValueOnce({ headers: { event: "Readable after" } });
+  const setPage = vi.fn();
+  const onActivate = vi.fn();
+  const deleteGame = vi.fn();
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(deleteGame, 3, new Map(), setPage, onActivate);
+  });
+  await act(async () => {});
+
+  expect(mocks.readGames.mock.calls.map((call) => call.slice(1, 3))).toEqual([
+    [0, 2],
+    [1, 2],
+    [2, 2],
+  ]);
+  expect(mocks.parsePGN.mock.calls.map((call) => call[0])).toEqual([firstGame.pgn, secondGame.pgn]);
+  expect([...observed.games.keys()]).toEqual([0, 1, 2]);
+  expect(observed.games.get(1)).toEqual({
+    name: translation.t("Files.GameTooLarge"),
+    omission: "tooLarge",
+  });
+  expect(host.textContent).toContain("Readable before");
+  expect(host.textContent).toContain("Readable after");
+  const row = host.querySelectorAll<HTMLElement>('[role="option"]')[1];
+  expect(row.textContent).toBe(`2${translation.t("Files.GameTooLarge")}`);
+  expect(row.querySelector("button")?.disabled).toBe(true);
+  await act(async () => {
+    row.click();
+    row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(setPage).not.toHaveBeenCalled();
+  expect(onActivate).not.toHaveBeenCalled();
+  expect(deleteGame).not.toHaveBeenCalled();
+  expect(notifications.show).not.toHaveBeenCalled();
+  expect(mocks.readGames).toHaveBeenCalledTimes(3);
+});
+
+test("maps readable and omitted games individually within one returned array", async () => {
+  mocks.visibleIndices = [0, 1, 2];
+  mocks.readGames.mockResolvedValueOnce([
+    firstGame,
+    { ...firstGame, pgn: "", stamp: "", omission: "tooLarge" },
+    secondGame,
+  ]);
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 3);
+  });
+  expect([...observed.games.keys()]).toEqual([0, 1, 2]);
+  expect(observed.games.get(1)?.identity).toBeUndefined();
+  expect(mocks.parsePGN.mock.calls.map((call) => call[0])).toEqual([firstGame.pgn, secondGame.pgn]);
+  expect(mocks.readGames).toHaveBeenCalledOnce();
+  expect(notifications.show).not.toHaveBeenCalled();
 });
 
 test("awaits every header parse in a page before reading the continuation", async () => {
