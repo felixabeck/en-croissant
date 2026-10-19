@@ -3098,6 +3098,11 @@ mod tests {
             assert_eq!(prefix.len(), 1);
             assert_eq!(prefix[0].pgn.as_bytes(), pgn);
 
+            let (hook, mut entered, _release) = BoundedHook::new();
+            state
+                .pgn_repository
+                .set_read_chunk_hook(Some(hook))
+                .expect("read chunk hook");
             let page = read_games_core(
                 resolved_for(&directory, &path),
                 1,
@@ -3105,8 +3110,17 @@ mod tests {
                 &CancellationToken::new(),
                 &state.pgn_repository,
             )
-            .await
-            .expect("oversized first game is omitted without reading past EOF");
+            .await;
+            assert_eq!(
+                entered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+                "oversized omission must not read any body chunks"
+            );
+            state
+                .pgn_repository
+                .set_read_chunk_hook(None)
+                .expect("clear read chunk hook");
+            let page = page.expect("oversized first game is omitted without reading past EOF");
             assert_eq!(page.len(), 1);
             assert_eq!(page[0].omission, Some(GameOmission::TooLarge));
             assert!(page[0].present);
@@ -3131,6 +3145,53 @@ mod tests {
             assert_eq!(following[0].pgn, "[");
             assert_eq!(following[0].omission, None);
         }
+    }
+
+    #[tokio::test]
+    async fn read_games_core_discards_omission_when_revision_changes() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("omission-revision.pgn");
+        let original = "[Event \"A\"]\n\n1. e4 *\n";
+        let rewritten = "[Event \"Rewritten longer game\"]\n\n1. d4 d5 2. c4 *\n";
+        assert!(rewritten.len() > original.len());
+        std::fs::write(&path, original).expect("write original PGN");
+        let repository = PgnRepository::default();
+        seed_page_ranges(
+            &directory,
+            &path,
+            &repository,
+            vec![GameRange {
+                start: 0,
+                end: MAX_PGN_BYTES as u64 + 1,
+            }],
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let action_attempts = attempts.clone();
+        let action_path = path.clone();
+        repository
+            .set_read_attempt_action(Some(Arc::new(move || {
+                if action_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    std::fs::write(&action_path, rewritten).expect("rewrite PGN in place");
+                }
+            })))
+            .expect("attempt action");
+
+        let token = CancellationToken::new();
+        let page = read_games_core(resolved_for(&directory, &path), 0, 0, &token, &repository)
+            .await
+            .expect("omission retried after revision changes");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(page.len(), 1);
+        assert!(page[0].present);
+        assert_eq!(page[0].pgn, rewritten);
+        assert_eq!(page[0].omission, None);
+        assert_eq!(page[0].stamp, game_stamp(rewritten.as_bytes()));
+        assert_eq!(
+            page[0].revision,
+            file_revision_core(resolved_for(&directory, &path), &token)
+                .await
+                .expect("current revision")
+        );
     }
 
     #[tokio::test]
@@ -3189,6 +3250,11 @@ mod tests {
                     end: bytes,
                 }],
             );
+            let (hook, mut entered, _release) = BoundedHook::new();
+            state
+                .pgn_repository
+                .set_read_chunk_hook(Some(hook))
+                .expect("read chunk hook");
             let result = read_game_core(
                 resolved_for(&directory, &path),
                 0,
@@ -3196,6 +3262,15 @@ mod tests {
                 &state.pgn_repository,
             )
             .await;
+            assert_eq!(
+                entered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+                "oversized range must not read any body chunks"
+            );
+            state
+                .pgn_repository
+                .set_read_chunk_hook(None)
+                .expect("clear read chunk hook");
             assert!(matches!(result, Err(Error::ResourceLimit(_))));
         }
     }
