@@ -8895,8 +8895,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** treating `Owned` as sufficient.
 * **Reason:** `d-20261008-01` admits `Owned` when any root locked. Engine images live under application data.
 * **Reversal path:** stop recording the per-root bit and stop calling the setter.
-* **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"4b8253da6153181a2eaa4ef4010ab75f6b71054784130ce19bc46f3d6007341e","input_sha256":"418623eebae4c72c9243d238aa9fea45e74cdf897bfce2e27f98849308f4bce4","kind":"mutation-receipt","operation":"16eae16d4fc4796300b8e72b97dd37de459d31c97a098d93317740f88ca8cfa5","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-08"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex, full auto, adopted reviewed plan, drain session a3865e54-b6e1-4228-9c59-a63baf27deb9 · **Superseded-by:** d-20261019-11
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1c4cce5a9509feb5e7de65a4e336aa770b217e741d1afbab160f1e22366068dd","input_sha256":"418623eebae4c72c9243d238aa9fea45e74cdf897bfce2e27f98849308f4bce4","kind":"mutation-receipt","operation":"16eae16d4fc4796300b8e72b97dd37de459d31c97a098d93317740f88ca8cfa5","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-08"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261019-09 — what listing limit does the sweep use?
 
