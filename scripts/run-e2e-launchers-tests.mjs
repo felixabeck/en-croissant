@@ -319,16 +319,17 @@ test("invalid Docker info timeout values are refused before Docker is started", 
 
 test("docker info preflight has a bounded timeout that refuses with its cause", async (t) => {
   assert.equal(DOCKER_INFO_TIMEOUT_MS, 10_000);
+  // In the contract lane, 50 ms expires before the Node fake docker records info when this file runs concurrently; the production timeout stays 10 seconds.
   const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });
   const moduleUrl = pathToFileURL(launcherPath).href;
   const source = [
     `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
-    "const result = await runE2eContainer([], { preflightTimeoutMs: 50 });",
+    "const result = await runE2eContainer([], { preflightTimeoutMs: 2000 });",
     "process.exitCode = result.exitCode;",
   ].join("\n");
   const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
   assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stderr, /Docker probe error: docker info preflight timed out after 50 ms/u);
+  assert.match(result.stderr, /Docker probe error: docker info preflight timed out after 2000 ms/u);
   assert.deepEqual(
     (await readEvents(harness)).map(({ action }) => action),
     ["info"],
