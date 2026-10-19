@@ -530,6 +530,14 @@ async function invokeJsonAndWait(session, label, globalName, invokeExpression) {
   }
 }
 
+async function listFixtureEntries(invoke) {
+  const listing = await invoke("list_file_workspace", {
+    workspace: { id: { id: filesWorkspaceId }, kind: "fileWorkspace" },
+    ticket: null,
+  });
+  return listing.entries;
+}
+
 // Conversion assertion staging receipts. Root observed these native application runs.
 // Negative evidence base: /tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635/
 // native-fault.log, native-seed.log, native-setup.log and corresponding native-fault.actual-exit, native-seed.actual-exit, native-setup.actual-exit.
@@ -776,10 +784,7 @@ async function verifyConversionCancellation(session, ownedRoot) {
   let entries;
   let database;
   try {
-    entries = await invoke("list_file_workspace", {
-      workspace: { id: { id: filesWorkspaceId }, kind: "fileWorkspace" },
-      ticket: null,
-    });
+    entries = await listFixtureEntries(invoke);
     const root = await invoke("get_database_workspace", {});
     database = await invoke("create_workspace_database", {
       root,
@@ -1457,10 +1462,7 @@ async function verifyGameOpening(session, ownedRoot) {
   const seeded = await assertion(
     "GO1 game-opening fixtures contain two distinct native database and PGN games",
     async () => {
-      const entries = await invoke("list_file_workspace", {
-        workspace: { id: { id: filesWorkspaceId }, kind: "fileWorkspace" },
-        ticket: null,
-      });
+      const entries = await listFixtureEntries(invoke);
       file = entries.find((entry) => entry.name === openingRowName)?.handle;
       if (!file) throw new Error("dedicated PGN fixture was not listed");
       const count = await invoke("count_pgn_games", { file, ticket: null });
