@@ -9708,11 +9708,14 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 
 ### A destroyed webview does not stop a silent report analysis search
 
-* **ID:** f-20260915-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260915-02 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs`, `analyze_position_with_owner` (`proc.next_line_cancellable(&supervised.cancelled)`); `src-tauri/src/main.rs`, `cancel_destroyed_window_operations` (the `WindowEvent::Destroyed` handler).
 * **Defect:** report analysis reads search lines cancellably only against `SupervisedEngine::cancelled`. Destroying the webview cancels the report's operation ticket through `OperationRegistry::cancel_owner`, which cancels the operation token but never sets that flag. While the engine emits no line, the read keeps waiting, so the child keeps searching until the search deadline (ten minutes) with no `stop` and no reap. `cancel_analysis` is unaffected because it sets the flag through `cancel_exact`.
 * **Why it matters:** `async-resource-invariants.md` requires cleanup on every exit path, tab and window close included; an engine child that outlives its owner by up to ten minutes is the class of issue #723 (`e5422566`).
 * **Found by:** Codex `review-engine-protocol` diff lens (confidence 97) during the macOS engine-launch build run, 2026-09-15. The function blames entirely to `d835ac77` and reads the same at `origin/master`; source read by the orchestrator, not reproduced by a test.
+* **Pickup re-check (2026-10-19):** already fixed by 9cabdb3cd7b492026a4b943dfd4038cac716dc47, governed by d-20261005-09. cancel_destroyed_window_operations_in_registry calls signal_cancelled_analyses, which routes each cancelled Analysis id through chess::cancel_analysis_engine and EngineSupervisor::cancel_exact. That marks the exact generation's supervised cancellation flag, which next_search_line_cancellable observes every 25 ms even when no engine line arrives. Other owners remain active.
+* **Proof:** the root reran cargo test --manifest-path src-tauri/Cargo.toml --locked --bin chessfable -- native_window_operation_wiring_tests through agent-gate. Exit 0, six tests passed, including lifecycle_cancellation_signals_the_exact_supervised_analysis, destroyed_window_core_cancels_held_worker_but_not_other_owners and the shared signal source pin. No code change was needed for this stale finding. Proof log: gate-phase-proof.UB9EmK under the run gate directory.
+<!-- ledger-meta {"command":"close","effect_lines":2,"effect_sha256":"eab76d0c300c7bcb8fcce0631fcc082bb2791741558c6d93be7997255520f328","header_sha256":"bdea04dfd21465dcbb32d5809508b49606c4be4a4d7c898fdc6f691573666021","header_status":"handled","input_sha256":"cc726992559989616a8101cb9b9614e3768b3a8e0539fc48b789fd1c86751415","kind":"mutation-receipt","operation":"9719eed11fddfe0ffe974b72a2604c6f3e7e6b0b81c5fec5b9f31e14daaf434e","options":{"section":null},"request_id_sha256":null,"results":["f-20260915-02"],"target":"f-20260915-02","v":1} -->
 
 ---
 
