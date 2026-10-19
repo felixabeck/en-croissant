@@ -80,6 +80,8 @@ test("font-scaled-breakpoints: conversion Cancel remains reachable at 320px and 
     await cancel.scrollIntoViewIfNeeded();
     await assertNothingClipped(cancel, { mode: "reachable" });
     await assertNoHorizontalOverflow();
+    await page.mouse.move(319, 899);
+    await waitForScrollAreaScrollbarsHidden(page);
     await capture("conversion-cancel-320-200");
     await expect(page).toHaveScreenshot("conversion-cancel-320-200.png", { fullPage: true });
     await cancel.click();
@@ -88,6 +90,8 @@ test("font-scaled-breakpoints: conversion Cancel remains reachable at 320px and 
     await expect(cancel.locator(".mantine-Button-inner")).toHaveCSS("opacity", "0");
     await expect(cancel.locator(".mantine-Button-loader")).toHaveCSS("opacity", "1");
     await assertNothingClipped(cancel, { mode: "reachable" });
+    await page.mouse.move(319, 899);
+    await waitForScrollAreaScrollbarsHidden(page);
     await capture("conversion-cancel-pending-320-200");
     await expect(page).toHaveScreenshot("conversion-cancel-pending-320-200.png", {
         fullPage: true,
