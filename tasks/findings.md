@@ -16755,3 +16755,14 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Proof:** after one week of normal drain activity with the fix in place, `du -sh` of every ChessFable `target/` and `mutants.out` stays under the chosen bound, and warm gate timings stay within the measured baseline.
 * **Found by:** Felix noticed the tower's disk growing again; disk investigation from a `~` session on 2026-10-17.
 * **Impact class:** tooling
+
+---
+
+## 2026-10-19 — filed through the inbox spool
+
+### Editable board drawings lose accumulation and toggling after rerender
+
+* **ID:** f-20261019-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/boards/Board.tsx`, `src/chessground/Chessground.tsx`.
+* **Defect:** Felix reported that right-clicking e4 then c4 replaces the first circle, repeating e4 fails to remove its circle, and left clicking fails to clear marks. Board renders currentNode.shapes in drawable.autoShapes instead of drawable.shapes. Chessground configure resets editable shapes whenever the React wrapper reapplies fen, so onChange only reports the latest mark. eraseDrawablesOnClickAtom defaults false.
+* **Required outcome:** Keep user marks in the editable drawing collection, retain automatic analysis overlays separately, allow multiple circles and arrows, toggle matching marks, and clear marks on ordinary left click by default. Preserve saved PGN annotations and node navigation.
