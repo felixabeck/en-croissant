@@ -8819,3 +8819,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20261004-01 rejected an over-budget page error because large-game files become unbrowsable, and required the body not to be materialised. It did not weigh d-20261004-05's whole-load discard, which blanks the readable neighbours when the oversized game is the first game of a page. The indexed length already identifies the game before any read. A display string is not that contract. Reversal: restore the `ResourceLimit` error for an oversized first game on `read_games` and restore `page_byte_budget_keeps_oversized_first_game_resource_limit`.
 * **Decided by:** Grok, drain session 03af4bb4-e481-4031-8fa5-0010b4eb75dc, full auto, adopted reviewed plan of f-20261004-06 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"c38c6ac1f495a2643a61ac46ceeac3bad67ef6ee596165e6b98729c1e1fd09d9","input_sha256":"8fa4e26ad7e247bd862dd4036efcc6fbfaf081b884a78c2e3bd9edf817f62a77","kind":"mutation-receipt","operation":"376c7d04dae837c768e2640a51aee91f9e42b7d602447b20c63afb78bb42e8b2","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261019-02 — Should a failed Lichess account read reject, or return null and notify inside the helper?
+
+* **Question:** Should `getLichessAccount` throw when a returned body is not an account, or return `null` and notify inside the helper the way the Chess.com helper does?
+* **Governs:** f-20261004-08
+* **Chosen:** Reject with the original parse cause, log one fixed line in the helper, and do not notify there. `null` stays the result only when the caller names neither a handle nor a username.
+* **Rejected:** Notify inside the helper and return `null` — startup reconciliation and authentication would toast for a read the user did not request, against `d-20261004-22` and `d-20260831-18`. A new typed result — the four callers already branch on rejection versus an account. A new error subclass — `parseNativeJson` and the native command already throw, and the user-facing path redacts `unknown`.
+* **Reason:** `d-20261008-04` leaves presentation to each caller. `d-20261004-19` surfaces a user-initiated outcome at the caller that owns the action. Reload and public add already do that for a native rejection. The missing piece is the parse `catch`, which still returns `null`. Reversal: notify inside `getLichessAccount` only if startup and authentication stop calling it.
+* **Decided by:** Grok, drain session cde8d190-afbd-497a-a861-6e70caf8fddd, full auto, adopted plan for f-20261004-08 · **Superseded-by:** -
+
+### d-20261019-03 — Which callers distinguish an unnamed Lichess account from a failed read?
+
+* **Question:** Which callers of `getLichessAccount` must distinguish "no account was named" from "the named account was not read"?
+* **Governs:** f-20261004-08
+* **Chosen:** Only the helper's `null` versus rejection split. Reload and public add treat a rejection as a visible failed action and treat `null` as "do not write". Startup treats both as "do not add a card" and does not notify. Authentication treats a rejection and `null` as "link the metadata account".
+* **Rejected:** Making authentication fail on an identity mismatch — the credential is already stored by the succeeded job, and `d-20260831-18` rejected turning that success into authentication failed. Making startup synthesize a profile — `session.ts` already refuses that.
+* **Reason:** The callers already implement those choices. The defect is that a parse failure arrives as `null`, so reload and public add take the success-shaped branch. Native failures already arrive as rejections. Reversal: branch authentication on the native identity-mismatch string only with a new finding that the stored token and the displayed username can belong to different people after a succeeded job.
+* **Decided by:** Grok, drain session cde8d190-afbd-497a-a861-6e70caf8fddd, full auto, adopted plan for f-20261004-08 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"b098920ce1aee1f8a0e1a52b541c416c4cfd27fc092b73e1499810929be4b46d","input_sha256":"e8ff01d59379e03c94e2ac200025d8c5dd647726aa2e97c0d9d61bb03f4efd7f","kind":"mutation-receipt","operation":"b68568325a12c2321b9396e38fa07e80dae8c59537599d2e657edda55dc6650d","options":{"section":null},"request_id_sha256":null,"results":["d-20261019-02","d-20261019-03"],"target":"decisions-ledger","v":1} -->
