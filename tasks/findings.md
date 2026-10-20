@@ -17395,3 +17395,17 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 
 * **Owner-policy correction before implementation, 2026-10-21:** The earlier phrase requiring a still-mounted view is withdrawn. BoardAnalysis.tsx:230 uses keepMounted=false, so an ordinary Info-to-Analysis switch unmounts PgnInput while the document remains owned. TreeStateContext cleanup also intentionally leaves cached document stores live. An accepted PGN Update must retain valid completion for that same document across a panel switch, as the existing document-owned completion policy does for reports. The correction is source-derived, no source edit or runtime proof has occurred. Latest accepted edit, live tab tree-generation identity and unchanged captured source/content still govern admission, with cooperative abort on supersession, actual owner retirement or newer draft editing. A current valid result or error is not rejected merely because the panel unmounted. The focused mechanism note judges the narrow document-owned operation needed to satisfy both that positive case and stale-owner refusal.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0685510c96d054c927be6edc36519ed13b7d1ed0758761330af1161ecf4f2688","input_sha256":"34acaebd05c080c7b3daa1c8f2ddaaefb60464eba3b95139ed03ec5b6ff64149","kind":"mutation-receipt","operation":"773e317eced79e1d8165bbfd5b4065dd8308123e54dd63c008d46edda1aa3c2c","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-03"],"target":"f-20261021-03","v":1} -->
+
+---
+
+## 2026-10-21 — filed through the inbox spool
+
+### The focused repertoire Build pane clips Retry outside the reachable viewport at 320px and 200% font size
+
+* **ID:** f-20261021-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** ux
+* **Where:** `src/components/boards/BoardAnalysis.tsx` top-right Tabs and `src/components/panels/practice/PracticePanel.tsx` nested vertical Train/Build Tabs, `RepertoireInfo.tsx` error feedback.
+* **Failure scenario:** Open a repertoire from Library, select Build with the supported focused topRight pane at 320px and 200% font scale. After an ordinary annotation edit causes a current coverage search failure, Retry exists but scrolling cannot put it in the viewport. Actual canonical browser attempt root-r3-ui-pixels.8QoKeC exited 1, 175 passed and the compact journey failed at workspace-tabs.spec.ts350 with viewport ratio 0. Root inspected the real failed PNG. Desktop counterpart passed.
+* **Evidence:** Complete attempt, test-results, report and screenshot preserved under `/tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/r3-browser-stable-edit-red`. No snapshot baseline was rewritten. Related handled f-20260829-02 records the earlier responsive-layout mandate, this is a newly exercised nested repertoire pane.
+* **Fix:** Preserve tab navigation and healthy coverage semantics while giving the focused pane a bounded reachable content region at compact font-scaled width. Use existing responsive/flex/scroll conventions, preserve desktop composition. Prove actual Retry and recovery controls fully reachable through the unchanged canonical browser assertions, no timeout, viewport, font-scale or clipping-oracle weakening.
