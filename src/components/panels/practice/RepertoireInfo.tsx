@@ -58,7 +58,6 @@ function RepertoireInfo() {
   const commonErrorRef = useRef(t("Common.Error"));
   commonErrorRef.current = t("Common.Error");
   const store = useContext(TreeStateContext)!;
-  const dirty = useStore(store, (s) => s.dirty);
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const position = useStore(store, (s) => s.position);
@@ -99,23 +98,12 @@ function RepertoireInfo() {
   const [currentPosLoading, setCurrentPosLoading] = useState(false);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const coverageVersionRef = useRef(0);
-  const firstCoverageRun = useRef(true);
-  const lastCoverageInputRef = useRef<{
-    root: TreeNode;
-    orientation: "white" | "black";
-    referenceDb: NonNullable<typeof referenceDb>;
-    minGames: number;
-    startPath: number[];
-    startStateMoves: Map<string, Map<string, string>>;
-  } | null>(null);
   const positionRequest = useRef<AbortController | null>(null);
   const coverageRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     positionRequest.current?.abort();
     coverageRequest.current?.abort();
     coverageVersionRef.current += 1;
-    firstCoverageRun.current = true;
-    lastCoverageInputRef.current = null;
     setDbMovesMap(new Map());
     setCoverageMap(new Map());
     setGamesMap(new Map());
@@ -199,23 +187,6 @@ function RepertoireInfo() {
       setDbMovesMap(new Map());
       setCoverageLoading(false);
       setCurrentPosLoading(false);
-      firstCoverageRun.current = true;
-      return;
-    }
-
-    if (!dirty && !firstCoverageRun.current) {
-      return;
-    }
-
-    const lastInput = lastCoverageInputRef.current;
-    if (
-      lastInput?.root === root &&
-      lastInput.orientation === orientation &&
-      lastInput.referenceDb === referenceDb &&
-      lastInput.minGames === minGames &&
-      lastInput.startPath === startPath &&
-      lastInput.startStateMoves === startStateMoves
-    ) {
       return;
     }
 
@@ -223,7 +194,10 @@ function RepertoireInfo() {
     coverageRequest.current?.abort();
     const controller = new AbortController();
     coverageRequest.current = controller;
-    firstCoverageRun.current = false;
+    // Paths belong to this tree order. Save only changes persistence state and must not cancel it.
+    setCoverageMap(new Map());
+    setGamesMap(new Map());
+    setMissingGamesMap(new Map());
     setCoverageLoading(true);
 
     computeTreeCoverage(
@@ -242,14 +216,6 @@ function RepertoireInfo() {
           setMissingGamesMap(result.missingGamesMap);
           setDbMovesMap(result.dbMovesMap);
           setCoverageLoading(false);
-          lastCoverageInputRef.current = {
-            root,
-            orientation,
-            referenceDb,
-            minGames,
-            startPath,
-            startStateMoves,
-          };
         }
       })
       .catch((error) => {
@@ -261,14 +227,16 @@ function RepertoireInfo() {
     return () => controller.abort();
   }, [
     referenceDb,
+    selectedReference,
     currency.collection?.generation,
+    currency.collection?.status,
+    currency.error,
+    currency.pending,
     minGames,
     orientation,
-    dirty,
     root,
     startPath,
     startStateMoves,
-    store,
   ]);
 
   const nodeToPath = useMemo(() => {

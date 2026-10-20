@@ -1,6 +1,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { createStore, Provider } from "jotai";
+import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 
 import ReportModal from "./ReportModal";
 import {
@@ -11,15 +13,13 @@ import {
 } from "@/state/store/tree";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { startFileRevisionPoll } from "@/state/fileFreshness";
+import type { MoveAnalysis } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   analyzeGame: vi.fn(),
   cancelAnalysis: vi.fn(),
   prepareAnalysis: vi.fn(),
   startProgress: vi.fn(),
-  enginesAtom: Symbol("enginesAtom"),
-  referenceDbAtom: Symbol("referenceDbAtom"),
-  reference: null as import("@/bindings").DatabaseHandle | null,
   collection: vi.fn(async () => null as import("@/bindings").CollectionDescriptor | null),
   engines: [
     {
@@ -56,31 +56,10 @@ vi.mock("@/i18n", () => ({
   },
 }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
-vi.mock("@/state/atoms", () => ({
-  enginesAtom: mocks.enginesAtom,
-  referenceDbAtom: mocks.referenceDbAtom,
-}));
-vi.mock("jotai", () => ({
-  useAtom: (atom: {
-    key: string;
-    initialValue: unknown;
-    storage: {
-      getItem: (key: string, initialValue: unknown) => unknown;
-      setItem: (key: string, value: unknown) => void;
-    };
-  }) => [
-    atom.storage.getItem(atom.key, atom.initialValue),
-    (nextValue: unknown) => atom.storage.setItem(atom.key, nextValue),
-  ],
-  useAtomValue: (atom: symbol) => (atom === mocks.enginesAtom ? mocks.engines : mocks.reference),
-}));
-vi.mock("jotai/utils", () => ({
-  atomWithStorage: (key: string, initialValue: unknown, storage: unknown) => ({
-    key,
-    initialValue,
-    storage,
-  }),
-}));
+vi.mock("@/state/atoms", async () => {
+  const { atom } = await import("jotai");
+  return { enginesAtom: atom(mocks.engines), referenceDbAtom: atom(null) };
+});
 vi.mock("@mantine/form", () => ({
   useForm: ({ initialValues }: { initialValues: Record<string, unknown> }) => ({
     values: initialValues,
@@ -116,14 +95,21 @@ let root: Root;
 let tree: TreeStore;
 let analysisPublished: ReturnType<typeof vi.spyOn>;
 let setInProgress: ReturnType<typeof vi.fn<(value: boolean) => void>>;
+let atomStore: ReturnType<typeof createStore>;
+
+function selectReference(value: import("@/bindings").DatabaseHandle | null) {
+  act(() => atomStore.set(referenceDbAtom, value));
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.reference = null;
+  atomStore = createStore();
+  atomStore.set(enginesAtom, mocks.engines);
   mocks.collection.mockResolvedValue(null);
   mocks.prepareAnalysis.mockResolvedValue("report_tab-id_operation-uuid");
   mocks.cancelAnalysis.mockResolvedValue(undefined);
   mocks.analyzeGame.mockResolvedValue([]);
+  sessionStorage.removeItem("tab-id");
   tree = createTreeStore("tab-id");
   analysisPublished = vi.spyOn(tree.getState(), "addAnalysis");
   setInProgress = vi.fn(tree.getState().setReportInProgress);
@@ -155,20 +141,22 @@ afterEach(async () => {
 async function renderReportModal(isCurrentOperation = (_id: string, _fingerprint: string) => true) {
   await act(async () => {
     root.render(
-      <TreeStateContext.Provider value={tree}>
-        <ReportModal
-          tab="tab-id"
-          initialFen="start-fen"
-          moves={["e2e4"]}
-          reportingMode
-          closeReportingMode={vi.fn()}
-          setInProgress={setInProgress}
-          registerOperation={tree.getState().setReportOperationId}
-          isCurrentOperation={(id, fingerprint) =>
-            tree.getState().report.operationId === id && isCurrentOperation(id, fingerprint)
-          }
-        />
-      </TreeStateContext.Provider>,
+      <Provider store={atomStore}>
+        <TreeStateContext.Provider value={tree}>
+          <ReportModal
+            tab="tab-id"
+            initialFen="start-fen"
+            moves={["e2e4"]}
+            reportingMode
+            closeReportingMode={vi.fn()}
+            setInProgress={setInProgress}
+            registerOperation={tree.getState().setReportOperationId}
+            isCurrentOperation={(id, fingerprint) =>
+              tree.getState().report.operationId === id && isCurrentOperation(id, fingerprint)
+            }
+          />
+        </TreeStateContext.Provider>
+      </Provider>,
     );
     await Promise.resolve();
     await Promise.resolve();
@@ -190,7 +178,7 @@ function linkedReference(generation = "first"): import("@/bindings").CollectionD
     id: "22222222-2222-4222-8222-222222222222",
     name: "Reference",
     file: { id: { id: "source" }, kind: "fileWorkspace" },
-    database: mocks.reference,
+    database: atomStore.get(referenceDbAtom),
     status: "ready",
     generation,
     omitted: 0,
@@ -213,10 +201,206 @@ function collectionFocus() {
   return { focus: () => focus(), stop };
 }
 
+const completedAnalysis: MoveAnalysis[] = [
+  {
+    best: [
+      {
+        nodes: 1n,
+        depth: 1,
+        score: { value: { type: "cp", value: 123 }, wdl: null },
+        uciMoves: ["e2e4"],
+        sanMoves: ["e4"],
+        multipv: 1,
+        nps: 1n,
+      },
+    ],
+    novelty: true,
+    is_sacrifice: false,
+  },
+];
+
+async function startUnmountedLinkedReport() {
+  selectReference({ id: { id: "reference-A" }, kind: "database" });
+  const collection = linkedReference();
+  mocks.collection.mockResolvedValue(collection);
+  const completion = deferred<MoveAnalysis[]>();
+  mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+  await renderReportModal();
+  await act(async () => host.querySelector("button")!.click());
+  expect(mocks.analyzeGame).toHaveBeenCalledOnce();
+  expect(tree.getState().report.inProgress).toBe(true);
+  await act(async () => root.render(<div>Database panel</div>));
+  return { completion, collection };
+}
+
+test.each(["success", "failure"])(
+  "unmounted report %s reads the live Jotai selection and settles only its matching progress",
+  async (outcome) => {
+    const { completion } = await startUnmountedLinkedReport();
+    selectReference({ id: { id: "reference-B" }, kind: "database" });
+    await act(async () => {
+      if (outcome === "success") completion.resolve(completedAnalysis);
+      else completion.reject(new Error("obsolete A failure"));
+    });
+    expect(analysisPublished).not.toHaveBeenCalled();
+    expect(tree.getState().root.score).toBeNull();
+    expect(tree.getState().root.nags).toEqual([]);
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(tree.getState().report.inProgress).toBe(false);
+    expect(mocks.cancelAnalysis).not.toHaveBeenCalled();
+  },
+);
+
+test("unchanged linked reference publishes analysis and novelty after panel unmount", async () => {
+  const { completion } = await startUnmountedLinkedReport();
+  const reads = mocks.collection.mock.calls.length;
+  await act(async () => completion.resolve(completedAnalysis));
+  expect(mocks.collection).toHaveBeenCalledTimes(reads + 1);
+  expect(analysisPublished).toHaveBeenCalledExactlyOnceWith(completedAnalysis, {
+    showVariations: true,
+  });
+  expect(tree.getState().root.score).toEqual(completedAnalysis[0].best[0].score);
+  expect(tree.getState().root.nags).toHaveLength(1);
+  expect(tree.getState().report.inProgress).toBe(false);
+  expect(mocks.cancelAnalysis).not.toHaveBeenCalled();
+});
+
+test("current report failure after unmount still reports its first error", async () => {
+  const { completion } = await startUnmountedLinkedReport();
+  const failure = new Error("current A failure");
+  await act(async () => completion.reject(failure));
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
+  expect(tree.getState().report.inProgress).toBe(false);
+});
+
+test.each(
+  [
+    "generation",
+    "unavailable",
+    "missing",
+    "database",
+    "identity",
+    "standalone",
+    "rejected",
+  ].flatMap((change) => ["success", "failure"].map((outcome) => ({ change, outcome }))),
+)(
+  "unmounted report $outcome validates native reference $change before publishing or notifying",
+  async ({ change, outcome }) => {
+    const { completion, collection } = await startUnmountedLinkedReport();
+    if (change === "rejected")
+      mocks.collection.mockRejectedValue(new Error("metadata unavailable"));
+    else
+      mocks.collection.mockResolvedValue(
+        change === "standalone"
+          ? null
+          : {
+              ...collection,
+              ...(change === "generation" ? { generation: "second" } : {}),
+              ...(change === "unavailable" ? { status: "unavailable" as const } : {}),
+              ...(change === "missing" ? { status: "missing" as const, database: null } : {}),
+              ...(change === "identity" ? { id: "replacement-collection" } : {}),
+              ...(change === "database"
+                ? { database: { id: { id: "replacement-database" }, kind: "database" as const } }
+                : {}),
+            },
+      );
+    await act(async () => {
+      if (outcome === "success") completion.resolve(completedAnalysis);
+      else completion.reject(new Error("obsolete native analysis failure"));
+    });
+    expect(analysisPublished).not.toHaveBeenCalled();
+    expect(tree.getState().root.score).toBeNull();
+    expect(tree.getState().root.nags).toEqual([]);
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(tree.getState().report.inProgress).toBe(false);
+  },
+);
+
+test.each(
+  ["selection", "operation", "tab", "root"].flatMap((change) =>
+    ["during", "after"].flatMap((timing) =>
+      ["success", "failure"].map((outcome) => ({ change, timing, outcome })),
+    ),
+  ),
+)(
+  "report $outcome with a live $change change $timing awaited reference validation refuses publication and preserves successors",
+  async ({ change, timing, outcome }) => {
+    const originalRoot = tree.getState().root;
+    selectReference({ id: { id: "reference-A" }, kind: "database" });
+    const collection = linkedReference();
+    mocks.collection.mockResolvedValue(collection);
+    const completion = deferred<MoveAnalysis[]>();
+    mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+    await renderReportModal(() => tree.getState().root === originalRoot);
+    await act(async () => host.querySelector("button")!.click());
+    await act(async () => root.render(<div>Database panel</div>));
+    const validation = deferred<import("@/bindings").CollectionDescriptor | null>();
+    mocks.collection.mockReturnValueOnce(validation.promise);
+    const reads = mocks.collection.mock.calls.length;
+    await act(async () => {
+      if (outcome === "success") completion.resolve(completedAnalysis);
+      else completion.reject(new Error("obsolete report failure"));
+    });
+    expect(mocks.collection).toHaveBeenCalledTimes(reads + 1);
+    expect(tree.getState().report.inProgress).toBe(true);
+    const changeOwner = () =>
+      act(() => {
+        if (change === "selection")
+          selectReference({ id: { id: "reference-B" }, kind: "database" });
+        if (change === "operation") tree.getState().setReportOperationId("successor-report");
+        if (change === "tab") closeTreeStore("tab-id");
+        if (change === "root") tree.getState().setFen("8/8/8/8/8/8/8/K6k w - - 0 1");
+      });
+    if (timing === "during") changeOwner();
+    else void validation.promise.then(changeOwner);
+    await act(async () => validation.resolve(collection));
+    expect(analysisPublished).not.toHaveBeenCalled();
+    expect(tree.getState().root.score).toBeNull();
+    expect(tree.getState().root.nags).toEqual([]);
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(tree.getState().report).toMatchObject({
+      operationId: change === "operation" ? "successor-report" : "report_tab-id_operation-uuid",
+      inProgress: change === "operation" || change === "tab",
+    });
+  },
+);
+
+test("report currency consumer notifies once per outage with fresh native errors and resets on recovery or selection", async () => {
+  selectReference({ id: { id: "reference-A" }, kind: "database" });
+  let sequence = 0;
+  mocks.collection.mockImplementation(async () => {
+    throw new Error(`native outage ${++sequence}`);
+  });
+  const poll = collectionFocus();
+  try {
+    await renderReportModal();
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
+    await act(async () => poll.focus());
+    await act(async () => poll.focus());
+    expect(sequence).toBe(3);
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("button")!.disabled).toBe(true);
+    mocks.collection.mockResolvedValue(linkedReference());
+    await act(async () => poll.focus());
+    expect(host.querySelector("button")!.disabled).toBe(false);
+    mocks.collection.mockImplementation(async () => {
+      throw new Error(`second outage ${++sequence}`);
+    });
+    await act(async () => poll.focus());
+    await act(async () => poll.focus());
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+    selectReference({ id: { id: "reference-B" }, kind: "database" });
+    await renderReportModal();
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(3);
+  } finally {
+    poll.stop();
+  }
+});
+
 test.each(["selection", "generation", "status"])(
   "a reference %s change aborts held preparation and cancels its reservation before native dispatch",
   async (change) => {
-    mocks.reference = { id: { id: "reference-first" }, kind: "database" };
+    selectReference({ id: { id: "reference-first" }, kind: "database" });
     const collection = linkedReference();
     if (change !== "selection") mocks.collection.mockResolvedValue(collection);
     const prepared = deferred<string>();
@@ -229,7 +413,7 @@ test.each(["selection", "generation", "status"])(
       const signal = mocks.prepareAnalysis.mock.calls[0][1].signal as AbortSignal;
       expect(signal.aborted).toBe(false);
       if (change === "selection") {
-        mocks.reference = { id: { id: "reference-second" }, kind: "database" };
+        selectReference({ id: { id: "reference-second" }, kind: "database" });
         await renderReportModal();
       } else {
         mocks.collection.mockResolvedValue({
@@ -255,7 +439,7 @@ test.each(["selection", "generation", "status"])(
 test.each(["selection", "generation"])(
   "an old reference %s cancellation cannot clear a newer report and stale completion still settles progress",
   async (change) => {
-    mocks.reference = { id: { id: "reference-first" }, kind: "database" };
+    selectReference({ id: { id: "reference-first" }, kind: "database" });
     const collection = linkedReference();
     if (change === "generation") mocks.collection.mockResolvedValue(collection);
     const poll = collectionFocus();
@@ -272,7 +456,7 @@ test.each(["selection", "generation"])(
       await act(async () => host.querySelector("button")!.click());
       expect(tree.getState().report.inProgress).toBe(true);
       if (change === "selection") {
-        mocks.reference = { id: { id: "reference-second" }, kind: "database" };
+        selectReference({ id: { id: "reference-second" }, kind: "database" });
         await renderReportModal();
       } else {
         mocks.collection.mockResolvedValue({ ...collection, generation: "second" });
@@ -303,7 +487,7 @@ test.each(["selection", "generation"])(
 test.each(["selection", "generation"])(
   "a reference %s change preserves the successor while obsolete preparation is still held",
   async (change) => {
-    mocks.reference = { id: { id: "reference-first" }, kind: "database" };
+    selectReference({ id: { id: "reference-first" }, kind: "database" });
     const collection = linkedReference();
     if (change === "generation") mocks.collection.mockResolvedValue(collection);
     const prepared = deferred<string>();
@@ -317,7 +501,7 @@ test.each(["selection", "generation"])(
       await renderReportModal();
       await act(async () => host.querySelector("button")!.click());
       if (change === "selection") {
-        mocks.reference = { id: { id: "reference-second" }, kind: "database" };
+        selectReference({ id: { id: "reference-second" }, kind: "database" });
         await renderReportModal();
       } else {
         mocks.collection.mockResolvedValue({ ...collection, generation: "second" });
@@ -336,7 +520,7 @@ test.each(["selection", "generation"])(
         "engine-id",
         { t: "Time", c: 500 },
         expect.objectContaining({
-          referenceDb: mocks.reference,
+          referenceDb: atomStore.get(referenceDbAtom),
           fen: "start-fen",
           moves: ["e2e4"],
         }),
@@ -356,7 +540,7 @@ test.each(["selection", "generation"])(
 );
 
 test("Analyze withholds preparation until reference currency is known and shows an unavailable check failure", async () => {
-  mocks.reference = { id: { id: "reference" }, kind: "database" };
+  selectReference({ id: { id: "reference" }, kind: "database" });
   const check = deferred<import("@/bindings").CollectionDescriptor | null>();
   mocks.collection.mockReturnValueOnce(check.promise);
   await renderReportModal();
@@ -375,12 +559,12 @@ test("Analyze withholds preparation until reference currency is known and shows 
 test.each(["generation", "preservedOriginal"] as const)(
   "a linked reference %s change cancels the active report and rejects its late analysis",
   async (change) => {
-    mocks.reference = { id: { id: "linked-reference" }, kind: "database" };
+    selectReference({ id: { id: "linked-reference" }, kind: "database" });
     const collection: import("@/bindings").CollectionDescriptor = {
       id: "22222222-2222-4222-8222-222222222222",
       name: "Reference",
       file: { id: { id: "source" }, kind: "fileWorkspace" },
-      database: mocks.reference,
+      database: atomStore.get(referenceDbAtom),
       status: "ready",
       generation: "first",
       omitted: 0,

@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import useSWR, { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -70,6 +70,98 @@ function CollectionList({ values }: { values: CollectionDescriptor[] }) {
   useCollectionCurrencies(values);
   return null;
 }
+
+function CurrencyObserver({
+  file,
+  changed,
+}: {
+  file: DatabaseHandle;
+  changed: (error: unknown) => void;
+}) {
+  const state = useCollectionCurrency(file);
+  // Matches the existing repertoire effect's error dependency.
+  useEffect(() => changed(state.error), [state.error, changed]);
+  return <output>{state.error ? "error" : state.collection?.generation}</output>;
+}
+
+test("currency error identities belong to each subscription and reset after recovery or reference replacement", async () => {
+  const other: DatabaseHandle = { id: { id: "other-reference" }, kind: "database" };
+  const first = vi.fn();
+  const second = vi.fn();
+  const independent = vi.fn();
+  const errors: Error[] = [];
+  let failing = true;
+  mocks.read.mockImplementation(async (file: DatabaseHandle) => {
+    if (failing) {
+      const error = new Error("metadata unavailable");
+      errors.push(error);
+      throw error;
+    }
+    return { ...collection, database: file };
+  });
+  const renderObservers = async (file = handle, showFirst = true) => {
+    await act(async () =>
+      root.render(
+        <>
+          <CollectionList values={[collection]} />
+          {showFirst && <CurrencyObserver file={file} changed={first} />}
+          <CurrencyObserver file={handle} changed={second} />
+          <CurrencyObserver file={other} changed={independent} />
+        </>,
+      ),
+    );
+    await flush();
+  };
+  await renderObservers();
+  expect(mocks.read).toHaveBeenCalledTimes(2);
+  const firstError = first.mock.lastCall![0];
+  const otherError = independent.mock.lastCall![0];
+  expect(firstError).toBeInstanceOf(Error);
+  expect(second.mock.lastCall![0]).toBe(firstError);
+  expect(otherError).not.toBe(firstError);
+  const counts = [first.mock.calls.length, second.mock.calls.length, independent.mock.calls.length];
+  await act(async () => vi.advanceTimersByTimeAsync(4_000));
+  await flush();
+  expect(errors).toHaveLength(6);
+  expect(new Set(errors).size).toBe(6);
+  expect([
+    first.mock.calls.length,
+    second.mock.calls.length,
+    independent.mock.calls.length,
+  ]).toEqual(counts);
+  expect(first.mock.lastCall![0]).toBe(firstError);
+  expect(second.mock.lastCall![0]).toBe(firstError);
+  expect(independent.mock.lastCall![0]).toBe(otherError);
+
+  // Replacing one subscriber's identity cannot reset another's ongoing outage.
+  await renderObservers(other);
+  expect(first.mock.lastCall![0]).not.toBe(firstError);
+  expect(first.mock.lastCall![0]).not.toBe(otherError);
+  expect(second.mock.lastCall![0]).toBe(firstError);
+  expect(independent.mock.lastCall![0]).toBe(otherError);
+  await renderObservers(other, false);
+  failing = false;
+  await act(async () => focus());
+  await flush();
+  expect(second.mock.lastCall![0]).toBeUndefined();
+  expect(independent.mock.lastCall![0]).toBeUndefined();
+  failing = true;
+  await act(async () => focus());
+  await flush();
+  const secondOutage = second.mock.lastCall![0];
+  expect(secondOutage).toBeInstanceOf(Error);
+  expect(secondOutage).not.toBe(firstError);
+  expect(independent.mock.lastCall![0]).not.toBe(otherError);
+  const settled = [second.mock.calls.length, independent.mock.calls.length];
+  await act(async () => focus());
+  await flush();
+  expect([second.mock.calls.length, independent.mock.calls.length]).toEqual(settled);
+  await act(async () => root.render(null));
+  const reads = mocks.read.mock.calls.length;
+  await act(async () => focus());
+  await flush();
+  expect(mocks.read).toHaveBeenCalledTimes(reads);
+});
 
 test("list summaries and individual references share currency checks and all composed data keys", async () => {
   await act(async () =>
@@ -181,6 +273,123 @@ test.each(["list", "reference"])(
     await flush();
     expect(mocks.read).toHaveBeenCalledTimes(3);
     expect(displayed()).toEqual(dataKeys.map(() => "unavailable data"));
+    nativeData = "failed check data";
+    mocks.read.mockImplementation(async () => {
+      throw new Error("fresh error each poll");
+    });
+    await act(async () => focus());
+    await flush();
+    expect(displayed()).toEqual(dataKeys.map(() => "failed check data"));
+    const failedFetches = fetcher.mock.calls.length;
+    nativeData = "must wait for a transition";
+    await act(async () => focus());
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(failedFetches);
+    expect(displayed()).toEqual(dataKeys.map(() => "failed check data"));
+    nativeData = "missing collection data";
+    mocks.read.mockResolvedValue(null);
+    await act(async () => focus());
+    await flush();
+    expect(displayed()).toEqual(dataKeys.map(() => "missing collection data"));
+    nativeData = "recovered data";
+    mocks.read.mockResolvedValue(collection);
+    await act(async () => focus());
+    await flush();
+    expect(displayed()).toEqual(dataKeys.map(() => "recovered data"));
+    nativeData = "second outage data";
+    mocks.read.mockRejectedValue(new Error("new outage"));
+    await act(async () => focus());
+    await flush();
+    expect(displayed()).toEqual(dataKeys.map(() => "second outage data"));
+  },
+);
+
+test("ordinary unlinked databases keep composed consumers current until linked metadata appears", async () => {
+  mocks.read.mockResolvedValue(null);
+  let nativeData = "initial data";
+  const fetchers = dataKeys.map(() => vi.fn(async () => nativeData));
+  await act(async () =>
+    root.render(
+      <SWRConfig
+        value={{
+          provider: () => new Map(),
+          dedupingInterval: 0,
+          revalidateOnFocus: false,
+          revalidateOnReconnect: false,
+        }}
+      >
+        <Consumer />
+        {dataKeys.map((dataKey, index) => (
+          <DataConsumer key={index} dataKey={dataKey} fetcher={fetchers[index]} />
+        ))}
+      </SWRConfig>,
+    ),
+  );
+  await flush();
+  const currency = () => host.querySelector("output:not([data-collection-data])")?.textContent;
+  const displayed = () =>
+    Array.from(host.querySelectorAll("[data-collection-data]"), (node) => node.textContent);
+  const fetchCounts = () => fetchers.map((fetcher) => fetcher.mock.calls.length);
+  expect(mocks.read).toHaveBeenCalledOnce();
+  expect(currency()).toBe("standalone");
+  expect(displayed()).toEqual(dataKeys.map(() => "initial data"));
+  expect(fetchCounts()).toEqual(dataKeys.map(() => 1));
+
+  for (const readCount of [2, 3]) {
+    await act(async () => focus());
+    await flush();
+    expect(mocks.read).toHaveBeenCalledTimes(readCount);
+    expect(currency()).toBe("standalone");
+    expect(fetchCounts()).toEqual(dataKeys.map(() => 1));
+    expect(displayed()).toEqual(dataKeys.map(() => "initial data"));
+  }
+
+  nativeData = "linked data";
+  mocks.read.mockResolvedValue({ ...collection, generation: "second" });
+  await act(async () => focus());
+  await flush();
+  expect(mocks.read).toHaveBeenCalledTimes(4);
+  expect(currency()).toBe("second");
+  expect(displayed()).toEqual(dataKeys.map(() => "linked data"));
+  expect(fetchCounts()).toEqual(dataKeys.map(() => 2));
+
+  const reads = mocks.read.mock.calls.length;
+  await act(async () => root.render(null));
+  await act(async () => focus());
+  await flush();
+  expect(mocks.read).toHaveBeenCalledTimes(reads);
+  expect(fetchCounts()).toEqual(dataKeys.map(() => 2));
+});
+
+test.each(["list", "reference"])(
+  "%s currency shares native rebuild and invalidates every consumer after its ready transition",
+  async (owner) => {
+    const build = Promise.withResolvers<CollectionDescriptor>();
+    mocks.read.mockResolvedValue({ ...collection, status: "stale" });
+    mocks.rebuild.mockReturnValue(build.promise);
+    let nativeData = "stale data";
+    const fetcher = vi.fn(async () => nativeData);
+    await act(async () =>
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          {owner === "list" ? <CollectionList values={[collection]} /> : <Consumer />}
+          {dataKeys.map((dataKey, index) => (
+            <DataConsumer key={index} dataKey={dataKey} fetcher={fetcher} />
+          ))}
+        </SWRConfig>,
+      ),
+    );
+    await flush();
+    expect(mocks.rebuild).toHaveBeenCalledExactlyOnceWith(collection.id, false);
+    expect(
+      Array.from(host.querySelectorAll("[data-collection-data]"), (node) => node.textContent),
+    ).toEqual(dataKeys.map(() => "stale data"));
+    nativeData = "rebuilt data";
+    await act(async () => build.resolve({ ...collection, generation: "rebuilt" }));
+    await flush();
+    expect(
+      Array.from(host.querySelectorAll("[data-collection-data]"), (node) => node.textContent),
+    ).toEqual(dataKeys.map(() => "rebuilt data"));
   },
 );
 

@@ -145,23 +145,31 @@ export function getCachedTreeStore(tab: string): TreeStore | undefined {
     return treeStores.get(tab);
 }
 
+function treeReplacementState(tree: TreeState & Pick<TreeStoreState, "linkedSource">) {
+    return {
+        puzzleSession: undefined,
+        ...tree,
+        linkedSource: tree.linkedSource ?? null,
+        practicePath: null,
+    };
+}
+
 /** Prepare the adapter and state before admission, then install without queuing a seeded tree. */
-export function prepareTreeStoreRetarget(
-    tab: string,
-    treeKey: string,
-    tree: TreeState,
-): () => void {
+export function prepareTreeStoreRetarget(tab: string, treeKey: string, tree: TreeState) {
     const store = treeStores.get(tab)!;
     const options = {
         name: treeKey,
         storage: tabStorage.storageFor<TreeStoreState>(treeKey !== tab),
     };
-    const state = { puzzleSession: undefined, ...tree, practicePath: null };
+    const state = treeReplacementState(tree);
     const install = store[installAdmittedTree];
-    return () => {
-        store.persist.setOptions(options);
-        install(state);
-    };
+    return Object.assign(
+        () => {
+            store.persist.setOptions(options);
+            install(state);
+        },
+        { state },
+    );
 }
 
 /** Switch the cached logical owner's persistence generation after durable admission. */
@@ -333,12 +341,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
         setPracticePath: (path) => set({ practicePath: path }),
 
         setState: (state) => {
-            set(() => ({
-                puzzleSession: undefined,
-                linkedSource: null,
-                ...state,
-                practicePath: null,
-            }));
+            set(() => treeReplacementState(state));
         },
 
         reset: () =>

@@ -20,6 +20,41 @@ export function isCollectionConsumer(key: unknown) {
     );
 }
 
+function collectionCurrencySignature(
+    collection: CollectionDescriptor | null | undefined,
+    error?: unknown,
+): string {
+    return error
+        ? "unavailable"
+        : collection
+          ? `${collection.status}:${collection.generation}`
+          : "missing";
+}
+
+function subscribeCollectionCurrency(
+    database: DatabaseHandle,
+    initial: CollectionDescriptor | undefined,
+    invalidate: () => void,
+    receive?: (collection: CollectionDescriptor | null, error?: unknown) => void,
+) {
+    let signature = collectionCurrencySignature(initial);
+    let outage: unknown;
+    return registerCollectionCheck(capabilityKey(database), {
+        read: (signal) => tauri.collectionForDatabase(database, { signal }),
+        rebuild: (id) => tauri.rebuildLinkedCollection(id, false),
+        receive: (collection, error) => {
+            // Each subscriber retains only its current outage, until a successful read.
+            outage = error ? (outage ?? error) : undefined;
+            receive?.(collection, outage);
+            const next = collectionCurrencySignature(collection, error);
+            if (next !== signature) {
+                signature = next;
+                invalidate();
+            }
+        },
+    });
+}
+
 export function useCollectionCurrencies(collections: readonly CollectionDescriptor[]) {
     const { mutate } = useSWRConfig();
     const inputs = useRef(collections);
@@ -35,22 +70,9 @@ export function useCollectionCurrencies(collections: readonly CollectionDescript
         const cleanups = inputs.current.flatMap((collection) => {
             const database = collection.database;
             if (!database || collection.status === "retired") return [];
-            let signature = `${collection.status}:${collection.generation}`;
             return [
-                registerCollectionCheck(capabilityKey(database), {
-                    read: (signal) => tauri.collectionForDatabase(database, { signal }),
-                    rebuild: (id) => tauri.rebuildLinkedCollection(id, false),
-                    receive: (current, error) => {
-                        const next = error
-                            ? "unavailable"
-                            : current
-                              ? `${current.status}:${current.generation}`
-                              : "missing";
-                        if (next !== signature) {
-                            signature = next;
-                            void mutate(isCollectionConsumer);
-                        }
-                    },
+                subscribeCollectionCurrency(database, collection, () => {
+                    void mutate(isCollectionConsumer);
                 }),
             ];
         });
@@ -78,22 +100,17 @@ export function useCollectionCurrency(
             setSnapshot({ key, collection: null, pending: false });
             return;
         }
-        let signature = initial ? `${initial.status}:${initial.generation}` : undefined;
         setSnapshot({ key, collection: initial ?? null, pending: true });
-        return registerCollectionCheck(key, {
-            read: (signal) => tauri.collectionForDatabase(file, { signal }),
-            rebuild: (collection) => tauri.rebuildLinkedCollection(collection, false),
-            receive: (collection, error) => {
-                setSnapshot({ key, collection, error, pending: false });
-                const next = collection
-                    ? `${collection.status}:${collection.generation}`
-                    : undefined;
-                if (signature !== next) {
-                    signature = next;
-                    void mutate(isCollectionConsumer);
-                }
+        return subscribeCollectionCurrency(
+            file,
+            initial,
+            () => {
+                void mutate(isCollectionConsumer);
             },
-        });
+            (collection, error) => {
+                setSnapshot({ key, collection, error, pending: false });
+            },
+        );
     }, [key, initial?.id, mutate]);
     return snapshot.key === key ? snapshot : { key, collection: null, pending: !!file };
 }

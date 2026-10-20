@@ -28,6 +28,9 @@ use batch::digest_file;
 const REGISTRY: &str = "registry.json";
 const MAX_RECORDS: usize = 4096;
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ACCOUNT_NAME_BYTES: usize = 64;
+const MAX_SELECTED_GAMES: usize = 1000;
+const MAX_PLAYER_NAME_BYTES: usize = 1024;
 const BACKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const BACKUP_PAGE_STEP: i32 = 128;
 const BACKUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
@@ -54,7 +57,7 @@ impl AccountIdentity {
     fn validate(mut self) -> Result<Self, Error> {
         if !matches!(self.provider.as_str(), "lichess" | "chesscom")
             || self.account.is_empty()
-            || self.account.len() > 64
+            || self.account.len() > MAX_ACCOUNT_NAME_BYTES
             || !self
                 .account
                 .bytes()
@@ -429,6 +432,7 @@ type RebuildHook = Box<dyn Fn() -> Result<(), Error> + Send>;
 /// The registry lock serializes publication. Database write owners deduplicate rebuilds.
 pub(crate) struct CollectionService {
     root: AuthorizedDir,
+    workspace_mutation: Arc<Mutex<()>>,
     registry: Mutex<Result<Registry, String>>,
     repository: Arc<DatabaseRepository>,
     search_cache: Arc<SearchCache>,
@@ -831,17 +835,26 @@ impl CollectionService {
         let Some(file) = file else {
             return Ok(None);
         };
-        crate::file_workspace::write_workspace_file_metadata_blocking(
-            workspace.clone(),
-            file.clone(),
+        let _guard = crate::infra::cancellable_lock::lock_std_cancellable(
+            workspace_mutation,
+            cancellation,
+            "workspace mutation lock was poisoned",
+        )?;
+        let metadata = crate::file_workspace::create_missing_workspace_file_metadata(
+            authority,
+            workspace,
+            &file,
             crate::file_workspace::WorkspaceMetadata {
                 file_type: WorkspaceFileType::Game,
                 tags: vec![],
             },
-            authority,
-            workspace_mutation,
             cancellation,
         )?;
+        if metadata.file_type != WorkspaceFileType::Game {
+            return Err(Error::Conflict(
+                "migration destination purpose changed".into(),
+            ));
+        }
         Ok(Some(file))
     }
 
@@ -1430,6 +1443,7 @@ impl CollectionService {
     }
     pub(crate) fn open(
         root: AuthorizedDir,
+        workspace_mutation: Arc<Mutex<()>>,
         repository: Arc<DatabaseRepository>,
         search_cache: Arc<SearchCache>,
         pgn_repository: PgnRepository,
@@ -1440,6 +1454,7 @@ impl CollectionService {
         });
         Self {
             root,
+            workspace_mutation,
             registry: Mutex::new(registry),
             repository,
             search_cache,
@@ -1670,44 +1685,111 @@ impl CollectionService {
         Ok(())
     }
 
-    /// Reconciliation only accepts entries issued by the verified workspace walk. Locator equality
-    /// permits replacement at that location. App-renamed handles retain their collection UUID.
+    /// Refresh caller snapshots through the verified walk under the publication owner.
+    /// Locator equality permits replacement. App-renamed handles retain their collection UUID.
     pub(crate) fn reconcile(
         &self,
         authority: &SharedPathAuthority,
         workspace: &FileWorkspaceHandle,
-        listing: &WorkspaceListing,
+        _listing: &WorkspaceListing,
         cancellation: &CancellationToken,
     ) -> Result<Vec<CollectionDescriptor>, Error> {
+        // A caller snapshot may precede a publisher that held the workspace owner.
+        self.discover(authority, workspace, cancellation)
+            .map(|(_, _, collections)| collections)
+    }
+
+    pub(crate) fn discover(
+        &self,
+        authority: &SharedPathAuthority,
+        workspace: &FileWorkspaceHandle,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            WorkspaceListing,
+            Vec<FileWorkspaceHandle>,
+            Vec<CollectionDescriptor>,
+        ),
+        Error,
+    > {
+        self.maintain(cancellation)?;
+        let workspace_guard = crate::infra::cancellable_lock::lock_std_cancellable(
+            &self.workspace_mutation,
+            cancellation,
+            "workspace mutation lock was poisoned",
+        )?;
+        let (mut listing, missing) =
+            crate::file_workspace::collect_tree_entries(authority, workspace, cancellation)?;
+        let records = self.reconcile_owned(authority, workspace, &mut listing, cancellation)?;
+        // Migration takes its database owner before workspace publication. Index refresh must
+        // therefore run after releasing workspace ownership, as well as the registry owner.
+        drop(workspace_guard);
+        let collections = records
+            .iter()
+            .map(|record| self.describe(authority, record, cancellation))
+            .collect::<Result<_, _>>()?;
+        Ok((listing, missing, collections))
+    }
+
+    fn reconcile_owned(
+        &self,
+        authority: &SharedPathAuthority,
+        workspace: &FileWorkspaceHandle,
+        listing: &mut WorkspaceListing,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<Record>, Error> {
         if !supported() {
             return Ok(vec![]);
         }
-        self.maintain(cancellation)?;
-        fn visit(
-            entries: &[WorkspaceEntry],
-            prefix: &[OsString],
-            result: &mut Vec<(Vec<OsString>, WorkspaceEntry)>,
-        ) {
+        fn visit(entries: &[WorkspaceEntry], result: &mut Vec<WorkspaceEntry>) {
             for entry in entries {
-                let mut locator = prefix.to_vec();
-                locator.push(entry.name.clone().into());
                 if entry.kind == crate::file_workspace::WorkspaceEntryKind::Directory {
-                    visit(&entry.children, &locator, result);
+                    visit(&entry.children, result);
                 } else {
-                    result.push((locator, entry.clone()));
+                    result.push(entry.clone());
                 }
             }
         }
         let mut entries = vec![];
-        visit(&listing.entries, &[], &mut entries);
+        visit(&listing.entries, &mut entries);
         let mut guard = self.lock(cancellation)?;
         let mut registry = Self::state(&mut guard)?.clone();
-        for (_, entry) in entries {
+        for entry in entries {
             cancellation_check(cancellation)?;
-            let Some(metadata) = entry.metadata else {
+            let Some(mut metadata) = entry.metadata else {
                 continue;
             };
             let locator = relative_locator(authority, workspace, &entry.handle)?;
+            // Only the exact pending owner can complete a missing sidecar. Qualify against
+            // its intended Game purpose before inspecting the actual sidecar independently.
+            if registry.creations.iter().any(|creation| {
+                creation.workspace == *workspace
+                    && crate::file_workspace::pgn_name(&creation.name)
+                        .is_ok_and(|name| locator == [OsString::from(name)])
+            }) {
+                registry.creation_for_source(
+                    authority,
+                    workspace,
+                    &entry.handle,
+                    &locator,
+                    &WorkspaceFileType::Game,
+                )?;
+                metadata = crate::file_workspace::create_missing_workspace_file_metadata(
+                    authority,
+                    workspace,
+                    &entry.handle,
+                    crate::file_workspace::WorkspaceMetadata {
+                        file_type: WorkspaceFileType::Game,
+                        tags: vec![],
+                    },
+                    cancellation,
+                )?;
+            }
+            if let Some(current) =
+                crate::file_workspace::workspace_entry_mut(&mut listing.entries, &entry.handle)
+            {
+                current.metadata = Some(metadata.clone());
+            }
             let creation = registry.creation_for_source(
                 authority,
                 workspace,
@@ -1792,11 +1874,7 @@ impl CollectionService {
             .filter(|record| record.workspace == *workspace)
             .cloned()
             .collect::<Vec<_>>();
-        drop(guard);
-        records
-            .iter()
-            .map(|record| self.describe(authority, record, cancellation))
-            .collect()
+        Ok(records)
     }
 
     fn descriptor(record: &Record) -> CollectionDescriptor {
@@ -2021,7 +2099,8 @@ impl CollectionService {
         Ok(record)
     }
 
-    /// A single transaction publishes rows, byte locators, membership, digest and DataRevision.
+    /// A single transaction publishes rows, byte locators, digest and DataRevision.
+    /// Provider membership is reconciled separately by batch and legacy identity processing.
     /// Failed builds leave the previous generation unavailable through the authority facade.
     fn refresh(
         &self,
@@ -2623,7 +2702,7 @@ pub(crate) async fn edit_linked_collection(
                             Error::Conflict("collection cleanup could not be prepared".into())
                         })?;
                     if let CollectionEdit::Delete { games } = &edit {
-                        if games.len() > 1000 {
+                        if games.len() > MAX_SELECTED_GAMES {
                             return Err(Error::ResourceLimit("too many selected games".into()));
                         }
                         for game in games {
@@ -2709,7 +2788,7 @@ pub(crate) async fn edit_linked_collection(
 }
 
 fn rename_player_tags(bytes: &[u8], from: &str, to: &str) -> Result<Vec<u8>, Error> {
-    if to.is_empty() || to.len() > 1024 || to.contains(['\n', '\r', '\0']) {
+    if to.is_empty() || to.len() > MAX_PLAYER_NAME_BYTES || to.contains(['\n', '\r', '\0']) {
         return Err(Error::InvalidInput("invalid player name".into()));
     }
     // Only header spans in the initial header section can change. Movetext, custom headers,
@@ -2737,7 +2816,7 @@ fn rename_player_tags(bytes: &[u8], from: &str, to: &str) -> Result<Vec<u8>, Err
                 result.extend_from_slice(&line[offset..]);
                 continue;
             }
-            if !line.iter().all(u8::is_ascii_whitespace) {
+            if !line.starts_with(b"%") && !line.iter().all(u8::is_ascii_whitespace) {
                 in_headers = false;
             }
         }
@@ -3059,6 +3138,7 @@ pub(crate) fn initialize<R: tauri::Runtime>(
         .pgn_path_authority
         .install_collections(CollectionService::open(
             root,
+            Arc::clone(&state.workspace_mutation),
             Arc::clone(&state.database_repository),
             Arc::clone(&state.search_cache),
             state.pgn_repository.clone(),
@@ -3082,68 +3162,71 @@ pub(crate) async fn list_linked_collections(
         operation,
         "list_linked_collections",
         async move {
-            let Some(service) = authority.collections()? else {
-                return Ok(vec![]);
-            };
-            let service_for_records = Arc::clone(&service);
-            let workspaces = BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation.clone(), move |token| {
-                    let mut workspaces = vec![];
-                    if let Some(workspace) = workspace {
-                        workspaces.push(workspace);
-                    }
-                    for record in
-                        &CollectionService::state(&mut *service_for_records.lock(token)?)?.records
-                    {
-                        if !workspaces.contains(&record.workspace) {
-                            workspaces.push(record.workspace.clone());
-                        }
-                    }
-                    Ok(workspaces)
-                })
-                .await?;
-            let mut result = vec![];
-            for workspace in workspaces {
-                let listing = crate::file_workspace::list_file_workspace_core(
-                    &workspace,
-                    &authority,
-                    &repository,
-                    &cancellation,
-                )
-                .await;
-                let service = Arc::clone(&service);
-                let authority = authority.clone();
-                result.extend(
-                    BLOCKING_GATEWAY
-                        .spawn_cancellable(cancellation.clone(), move |token| match listing {
-                            Ok(listing) => {
-                                service.reconcile(&authority, &workspace, &listing, token)
-                            }
-                            Err(Error::Cancellation) => Err(Error::Cancellation),
-                            Err(error) => {
-                                log::warn!(
-                                    "collection workspace unavailable: {}",
-                                    error.diagnostic()
-                                );
-                                let records = CollectionService::state(&mut *service.lock(token)?)?
-                                    .records
-                                    .iter()
-                                    .filter(|record| record.workspace == workspace)
-                                    .cloned()
-                                    .collect::<Vec<_>>();
-                                records
-                                    .iter()
-                                    .map(|record| service.describe(&authority, record, token))
-                                    .collect()
-                            }
-                        })
-                        .await?,
-                );
-            }
-            Ok(result)
+            list_linked_collections_core(workspace, &authority, &repository, &cancellation).await
         },
     )
     .await
+}
+
+pub(crate) async fn list_linked_collections_core(
+    workspace: Option<FileWorkspaceHandle>,
+    authority: &SharedPathAuthority,
+    repository: &PgnRepository,
+    cancellation: &CancellationToken,
+) -> Result<Vec<CollectionDescriptor>, Error> {
+    let Some(service) = authority.collections()? else {
+        return Ok(vec![]);
+    };
+    let service_for_records = Arc::clone(&service);
+    let workspaces = BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            let mut workspaces = vec![];
+            if let Some(workspace) = workspace {
+                workspaces.push(workspace);
+            }
+            for record in &CollectionService::state(&mut *service_for_records.lock(token)?)?.records
+            {
+                if !workspaces.contains(&record.workspace) {
+                    workspaces.push(record.workspace.clone());
+                }
+            }
+            Ok(workspaces)
+        })
+        .await?;
+    let mut result = vec![];
+    for workspace in workspaces {
+        let listing = crate::file_workspace::list_file_workspace_core(
+            &workspace,
+            authority,
+            repository,
+            cancellation,
+        )
+        .await;
+        let service = Arc::clone(&service);
+        let authority = authority.clone();
+        result.extend(
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation.clone(), move |token| match listing {
+                    Ok(listing) => service.reconcile(&authority, &workspace, &listing, token),
+                    Err(Error::Cancellation) => Err(Error::Cancellation),
+                    Err(error) => {
+                        log::warn!("collection workspace unavailable: {}", error.diagnostic());
+                        let records = CollectionService::state(&mut *service.lock(token)?)?
+                            .records
+                            .iter()
+                            .filter(|record| record.workspace == workspace)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        records
+                            .iter()
+                            .map(|record| service.describe(&authority, record, token))
+                            .collect()
+                    }
+                })
+                .await?,
+        );
+    }
+    Ok(result)
 }
 
 #[derive(Serialize, Type)]

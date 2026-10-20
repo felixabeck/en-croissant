@@ -82,11 +82,11 @@ vi.mock("@/platform/tauri", () => ({
     prepareAnalysis: mocks.prepareAnalysis,
   },
 }));
-vi.mock("@/state/atoms", () => ({
+vi.mock("@/state/atoms", async () => ({
   activeTabAtom: mocks.activeTabAtom,
   reportModalOpenFamily: () => mocks.reportModalOpenAtom,
   enginesAtom: mocks.enginesAtom,
-  referenceDbAtom: mocks.referenceDbAtom,
+  referenceDbAtom: (await import("jotai")).atom(null),
 }));
 vi.mock("jotai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("jotai")>()),

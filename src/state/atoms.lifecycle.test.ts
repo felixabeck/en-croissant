@@ -39,6 +39,7 @@ import {
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
+import { getFileFreshness, setFileFreshness } from "./fileFreshness";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
@@ -442,6 +443,77 @@ test.each(["tree", "workspace"] as const)(
         if (result.kind !== "committed") throw new Error("Expected durable retry.");
         replacementTabIds.add(result.treeKey);
         expect(tabStorage.read(result.treeKey)?.state).toMatchObject({ headers: tree.headers });
+    },
+);
+
+test.each(["tree", "workspace", "superseded-after-seed"] as const)(
+    "plain replacement preserves the exact old linked generation after %s",
+    (outcome) => {
+        const { fixture, owner, tree } = fileReplacementFixture();
+        const locator = {
+            collection: "22222222-2222-4222-8222-222222222222",
+            generation: "old-linked-generation",
+            ordinal: owner.gameOrigin.gameNumber,
+            stamp: "a".repeat(64),
+        };
+        fixture.ownerTreeStore.getState().setLinkedSource(locator);
+        fixture.ownerTreeStore.getState().setSourceStamp(locator.stamp);
+        expect(tabStorage.flush()).toEqual([]);
+        setFileFreshness(owner.value, "verified", { verifiedRevision: locator.generation });
+        const oldState = fixture.ownerTreeStore.getState();
+        const oldTabs = fixture.store.get(tabsAtom);
+        const freshness = getFileFreshness(owner.value);
+        const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        const treeBytes = sessionStorage.getItem(owner.value);
+        const setItem = Storage.prototype.setItem;
+        let staged = "";
+        const writes = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key !== WORKSPACE_STORAGE_KEY) staged = key;
+                if (
+                    (outcome === "workspace" && key === WORKSPACE_STORAGE_KEY) ||
+                    (outcome === "tree" && key !== WORKSPACE_STORAGE_KEY)
+                )
+                    throw new DOMException("refused", "QuotaExceededError");
+                return setItem.call(this, key, value);
+            });
+        let checks = 0;
+        expect(
+            replaceFileGame({
+                store: fixture.store,
+                owner,
+                treeStore: fixture.ownerTreeStore,
+                snapshot: oldState,
+                tree,
+                page: 0,
+                appendCount: 3,
+                isCurrent: () => outcome !== "superseded-after-seed" || ++checks === 1,
+            }),
+        ).toEqual(
+            outcome === "superseded-after-seed"
+                ? { kind: "superseded" }
+                : { kind: "refused", stage: outcome },
+        );
+        writes.mockRestore();
+        expect(staged).not.toBe("");
+        expect(sessionStorage.getItem(staged)).toBeNull();
+        expect(fixture.store.get(tabsAtom)).toBe(oldTabs);
+        expect(fixture.ownerTreeStore.getState()).toBe(oldState);
+        expect(fixture.ownerTreeStore.getState().linkedSource).toBe(locator);
+        expect(getFileFreshness(owner.value)).toBe(freshness);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
+        expect(sessionStorage.getItem(owner.value)).toBe(treeBytes);
+        expect(tabStorage.flush()).toEqual([]);
+        closeTreeStore(owner.value);
+        const cold = createTreeStore(owner.value);
+        expect(cold.getState()).toMatchObject({
+            linkedSource: locator,
+            sourceStamp: locator.stamp,
+            root: oldState.root,
+            headers: oldState.headers,
+        });
+        expect(fixture.store.get(tabsAtom)).toBe(oldTabs);
     },
 );
 

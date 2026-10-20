@@ -21,6 +21,48 @@ import {
 
 const ids: string[] = [];
 
+test.each(["omitted", "undefined", "provided"] as const)(
+    "complete tree replacement normalizes %s provenance while ordinary partial updates retain it",
+    (provenance) => {
+        const logical = crypto.randomUUID();
+        const physical = crypto.randomUUID();
+        ids.push(logical, physical);
+        const locator = {
+            collection: "22222222-2222-4222-8222-222222222222",
+            generation: "old-linked-generation",
+            ordinal: 0,
+            stamp: "a".repeat(64),
+        };
+        tabStorage.seed(logical, { ...defaultTree(), linkedSource: locator });
+        const store = createTreeStore(logical);
+        store.setState({ dirty: true });
+        expect(store.getState().linkedSource).toEqual(locator);
+        const nextLocator = { ...locator, generation: "new-generation", stamp: "b".repeat(64) };
+        const tree = {
+            ...defaultTree(),
+            ...(provenance === "provided"
+                ? { linkedSource: nextLocator }
+                : provenance === "undefined"
+                  ? { linkedSource: undefined }
+                  : {}),
+        };
+        const before = store.getState();
+        const install = prepareTreeStoreRetarget(logical, physical, tree);
+        expect(store.getState()).toBe(before);
+        install();
+        expect(store.getState().linkedSource).toEqual(
+            provenance === "provided" ? nextLocator : null,
+        );
+        store.getState().setComment("Persist the admitted replacement");
+        expect(tabStorage.flush()).toEqual([]);
+        closeTreeStore(logical);
+        const cold = createTreeStore(logical, undefined, physical);
+        expect(cold.getState().linkedSource).toEqual(
+            provenance === "provided" ? nextLocator : null,
+        );
+    },
+);
+
 test("session selection B and played annotations restore together in a fresh store", () => {
     const id = crypto.randomUUID();
     ids.push(id);

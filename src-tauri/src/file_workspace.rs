@@ -174,6 +174,12 @@ pub(crate) fn metadata_from(
     let Some(sidecar) = sidecar.as_mut() else {
         return Ok(WorkspaceMetadata::default());
     };
+    read_metadata(sidecar)
+}
+
+fn read_metadata(
+    sidecar: &mut crate::infra::inode_ownership::OwnedFile,
+) -> Result<WorkspaceMetadata, Error> {
     let declared = sidecar.metadata()?.len();
     let bytes = crate::infra::fs::read_bounded_bytes(
         sidecar,
@@ -186,6 +192,64 @@ pub(crate) fn metadata_from(
         log::warn!("invalid PGN metadata: {error}");
         Error::InvalidInput("invalid PGN metadata".into())
     })
+}
+
+/// Complete an interrupted publication without replacing any existing sidecar.
+/// The caller must establish its durable creation owner before invoking this primitive.
+pub(crate) fn create_missing_workspace_file_metadata(
+    authority: &SharedPathAuthority,
+    workspace: &FileWorkspaceHandle,
+    entry: &FileWorkspaceHandle,
+    metadata: WorkspaceMetadata,
+    cancellation: &CancellationToken,
+) -> Result<WorkspaceMetadata, Error> {
+    let root = mutation_target(authority, workspace)?;
+    let source = mutation_target(authority, entry)?;
+    ensure_registered_descendant(&root, &source)?;
+    if source.is_dir {
+        return Err(Error::InvalidInput("workspace entry must be a file".into()));
+    }
+    let confirm = || {
+        crate::infra::fs::assert_entry_identity(
+            &source.parent,
+            &source.leaf,
+            source.identity,
+            false,
+        )?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        Ok(())
+    };
+    confirm()?;
+    let info_leaf = sidecar_leaf(&source.leaf)?;
+    match crate::infra::fs::open_regular_at(&source.parent, &info_leaf, RegularFileAccess::ReadOnly)
+    {
+        Ok(mut sidecar) => {
+            let metadata = read_metadata(&mut sidecar)?;
+            confirm()?;
+            return Ok(metadata);
+        }
+        Err(error) if error.is_missing_entry() => {}
+        Err(error) => return Err(error),
+    }
+    let bytes = serialize_metadata(&metadata)?;
+    let installed = crate::infra::fs::atomic_create_at_identified_with_precommit(
+        &source.parent,
+        &info_leaf,
+        confirm,
+        |file| {
+            use std::io::Write;
+            file.write_all(&bytes).map_err(Error::from)
+        },
+    )?;
+    if let Some(stage) = durability_uncertainty(
+        installed.outcome,
+        crate::error::DurabilityStage::WorkspaceSidecarCreation,
+    ) {
+        return Err(Error::CommittedDurabilityUncertain(stage));
+    }
+    Ok(metadata)
 }
 
 /// The listed modification time, in Unix seconds, exactly as the enumerator reported it.
@@ -295,11 +359,9 @@ fn reconcile_workspace_collections(
         return Ok(());
     };
     let token = CancellationToken::new();
-    let result = collect_tree_entries(authority, workspace, &token).and_then(|(listing, _)| {
-        collections
-            .reconcile(authority, workspace, &listing, &token)
-            .map(|_| ())
-    });
+    let result = collections
+        .discover(authority, workspace, &token)
+        .map(|_| ());
     result.map_err(|error| {
         log::warn!(
             "collection reconciliation failed after workspace publication: {}",
@@ -868,7 +930,7 @@ pub(crate) fn collect_tree_entries(
     })?
 }
 
-fn workspace_entry_mut<'a>(
+pub(crate) fn workspace_entry_mut<'a>(
     entries: &'a mut [WorkspaceEntry],
     handle: &FileWorkspaceHandle,
 ) -> Option<&'a mut WorkspaceEntry> {
@@ -990,17 +1052,13 @@ pub(crate) async fn list_file_workspace_core(
         let workspace_for_tree = workspace.clone();
         let (mut listing, missing) = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
-                let (listing, missing) =
-                    collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)?;
                 if let Some(collections) = pgn_path_authority.collections()? {
-                    collections.reconcile(
-                        &pgn_path_authority,
-                        &workspace_for_tree,
-                        &listing,
-                        token,
-                    )?;
+                    let (listing, missing, _) =
+                        collections.discover(&pgn_path_authority, &workspace_for_tree, token)?;
+                    Ok((listing, missing))
+                } else {
+                    collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
                 }
-                Ok((listing, missing))
             })
             .await?;
         #[cfg(test)]

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     pickPgnFile: vi.fn(),
     reportPersistError: vi.fn(),
     readFileGame: vi.fn(),
+    readGame: vi.fn(),
     writeGame: vi.fn(),
     writeDbGame: vi.fn(),
 }));
@@ -47,6 +48,7 @@ function deferred<T>() {
 vi.mock("@/platform/tauri", () => ({
     tauri: {
         writeGame: mocks.writeGame,
+        readGame: mocks.readGame,
         writeDbGame: mocks.writeDbGame,
         resolveLinkedGame: vi.fn(async () => null),
         collectionForDatabase: vi.fn(async () => null),
@@ -61,6 +63,17 @@ vi.mock("./files", async (importOriginal) => ({
 vi.mock("./chess", async (importOriginal) => ({
     ...(await importOriginal<typeof import("./chess")>()),
     parsePGN: mocks.parsePGN,
+}));
+vi.mock("@mantine/core", () => ({
+    Button: ({ children, onClick, disabled }: React.ComponentProps<"button">) =>
+        createElement("button", { onClick, disabled }, children),
+    Group: ({ children }: { children: React.ReactNode }) => createElement("div", null, children),
+    Stack: ({ children }: { children: React.ReactNode }) => createElement("div", null, children),
+    Text: ({ children }: { children: React.ReactNode }) => createElement("p", null, children),
+}));
+vi.mock("@/components/common/AppModal", () => ({
+    default: ({ opened, children }: { opened: boolean; children: React.ReactNode }) =>
+        opened ? createElement("div", { role: "dialog" }, children) : null,
 }));
 import {
     getTabFile,
@@ -120,7 +133,11 @@ test("canonical successor acknowledgement cannot interrupt admitted tree finaliz
         });
         expect(treeStore.getState()).toMatchObject(candidate);
         const physical = acknowledged!.treeKey!;
-        expect(new TabStorageRepository().read(physical, true)?.state).toEqual(candidate);
+        expect(new TabStorageRepository().read(physical, true)?.state).toEqual({
+            ...candidate,
+            linkedSource: null,
+            practicePath: null,
+        });
         const bytes = sessionStorage.getItem(physical);
         expect(tabStorage.flush()).toEqual([]);
         expect(sessionStorage.getItem(physical)).toBe(bytes);
@@ -256,6 +273,7 @@ afterEach(() => {
     mocks.writeGame.mockReset();
     mocks.pickPgnFile.mockReset();
     mocks.readFileGame.mockReset();
+    mocks.readGame.mockReset();
     vi.useRealTimers();
 });
 
@@ -796,6 +814,222 @@ test.each([true, false])(
             sourceStamp: stampB,
             linkedSource: { ...locator, stamp: stampB, generation: "saved-generation" },
         });
+    },
+);
+
+test.each(
+    (["Add Game", "page replacement"] as const).flatMap((producer) =>
+        [false, true].map((providedLocator) => ({ producer, providedLocator })),
+    ),
+)(
+    "$producer replaces old linked provenance with provided-locator=$providedLocator through reload, Save and close-save",
+    async ({ producer, providedLocator }) => {
+        Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+        const { atoms, repository, tabs } = await importFreshAdmission();
+        const trees = await import("@/state/store/tree");
+        const { loadFileGame } = await import("./files");
+        const { default: ConfirmChangesModal } =
+            await import("@/components/tabs/ConfirmChangesModal");
+        const workspace = createStore();
+        const id = crypto.randomUUID();
+        const previousLocator = {
+            collection: "22222222-2222-4222-8222-222222222222",
+            generation: "previous-linked-generation",
+            ordinal: 2,
+            stamp: stampA,
+        };
+        const oldTree = {
+            ...defaultTree(),
+            linkedSource: previousLocator,
+            sourceStamp: stampA,
+        };
+        oldTree.root.comment = "Previous linked game";
+        const owner: Tab = {
+            value: id,
+            name: "Collection purpose changed",
+            type: "analysis",
+            gameOrigin: {
+                kind: "file",
+                gameNumber: 2,
+                file: {
+                    type: "file",
+                    handle: fileHandle,
+                    name: "source.pgn",
+                    numGames: 4,
+                    metadata: { type: "game", tags: [] },
+                    lastModified: 1,
+                },
+            },
+        };
+        repository.seed(id, oldTree);
+        expect(workspace.set(atoms.tabsAtom, [owner], id)).toBe(true);
+        const store = trees.createTreeStore(id);
+        const getTab = (tabId: string) =>
+            workspace.get(atoms.tabsAtom).find((tab) => tab.value === tabId);
+        const updateTab: import("./tabs").UpdateTab = (tabId, update, onAdmitted) =>
+            atoms.updateTabById(
+                (next, active, saved) => workspace.set(atoms.tabsAtom, next, active, saved),
+                tabId,
+                update,
+                onAdmitted,
+            );
+        expect(
+            updateTab(id, (tab) => ({
+                ...tab,
+                gameOrigin: {
+                    ...(tab as import("./tabs").FileBackedTab).gameOrigin,
+                    file: {
+                        ...(tab as import("./tabs").FileBackedTab).gameOrigin.file,
+                        metadata: { type: providedLocator ? "game" : "repertoire", tags: [] },
+                    },
+                },
+            })),
+        ).toBe(true);
+        const captured = getTab(id)!;
+        if (!tabs.isFileBackedTab(captured)) throw new Error("Expected file owner");
+        const page = producer === "Add Game" ? 4 : 1;
+        const locator = {
+            ...previousLocator,
+            generation: "replacement-linked-generation",
+            ordinal: page,
+            stamp: stampB,
+        };
+        const linkedSource = providedLocator ? locator : null;
+        const parsed = defaultTree();
+        parsed.headers.event = "Native replacement";
+        mocks.parsePGN.mockResolvedValueOnce(parsed);
+        const onError = vi.fn();
+        const host = document.createElement("div");
+        const root = createRoot(host);
+        let physical = "";
+        let pageReplacement: import("./tabs").ReplaceFileGameResult | undefined;
+        try {
+            if (producer === "Add Game") {
+                mocks.writeGame.mockResolvedValueOnce({
+                    stamp: stampB,
+                    revision: "replacement-revision",
+                    ...(providedLocator ? { linked: locator } : {}),
+                });
+                await tabs.appendBlankGame({
+                    captured,
+                    store,
+                    workspace,
+                    getTab,
+                    updateTab,
+                    onError,
+                    uncertainMessage: "Append uncertain",
+                    changedMessage: "Append changed",
+                });
+            } else {
+                mocks.readGame.mockResolvedValueOnce({
+                    pgn: '[Event "Native replacement"]\n\n*',
+                    stamp: stampB,
+                    revision: "replacement-revision",
+                    present: true,
+                    ...(providedLocator ? { linked: locator } : {}),
+                });
+                const loaded = await loadFileGame(fileHandle, page);
+                pageReplacement = tabs.replaceFileGame({
+                    store: workspace,
+                    owner: captured,
+                    treeStore: store,
+                    snapshot: store.getState(),
+                    tree: loaded.tree,
+                    page,
+                    isCurrent: () => true,
+                });
+            }
+            expect(onError).not.toHaveBeenCalled();
+            const anyPgn = expect.any(String);
+            expect(mocks.writeGame.mock.calls).toEqual(
+                producer === "Add Game" ? [[fileHandle, page, anyPgn, { kind: "append" }]] : [],
+            );
+            expect(mocks.readGame.mock.calls).toEqual(
+                producer === "page replacement" ? [[fileHandle, page, undefined]] : [],
+            );
+            expect(pageReplacement?.kind).toBe(
+                producer === "page replacement" ? "committed" : undefined,
+            );
+            const successor = getTab(id)!;
+            physical = tabs.getTabTreeKey(successor);
+            expect(physical).not.toBe(id);
+            expect(successor.gameOrigin).toMatchObject({
+                gameNumber: page,
+                file: { handle: fileHandle, numGames: producer === "Add Game" ? 5 : 4 },
+            });
+            expect(store.getState().linkedSource).toEqual(linkedSource);
+            const coldRepository = new TabStorageRepository();
+            expect(coldRepository.read(physical, true)?.state).toMatchObject({
+                linkedSource,
+                sourceStamp: stampB,
+            });
+            trees.closeTreeStore(id);
+            const cold = trees.createTreeStore(id, undefined, physical);
+            expect(cold.getState().linkedSource).toEqual(linkedSource);
+            cold.getState().setComment("Edit after replacement restart");
+            expect(repository.flush()).toEqual([]);
+            mocks.writeGame.mockResolvedValueOnce({ stamp: stampC, revision: "saved-revision" });
+            await expect(
+                tabs.saveToFile({
+                    tab: getTab(id),
+                    store: cold,
+                    getTab,
+                    updateTab,
+                    isUserSave: true,
+                }),
+            ).resolves.toBe("saved");
+            expect(mocks.writeGame).toHaveBeenLastCalledWith(
+                fileHandle,
+                page,
+                expect.stringContaining("Edit after replacement restart"),
+                providedLocator
+                    ? { kind: "linkedGame", stamp: stampB, revision: locator.generation }
+                    : { kind: "game", stamp: stampB },
+            );
+            cold.getState().setComment("Edit for actual close-save");
+            const finalStamp = "d".repeat(64);
+            mocks.writeGame.mockResolvedValueOnce({
+                stamp: finalStamp,
+                revision: "closed-revision",
+            });
+            const onSaved = vi.fn(() => {
+                expect(cold.getState().dirty).toBe(false);
+                expect(workspace.set(atoms.closeWorkspaceTabAtom, id)).toBe(true);
+            });
+            await act(async () =>
+                root.render(
+                    createElement(
+                        Provider,
+                        { store: workspace },
+                        createElement(ConfirmChangesModal, {
+                            pendingClose: { tabId: id, store: cold },
+                            tab: getTab(id),
+                            updateTab,
+                            onSaved,
+                        }),
+                    ),
+                ),
+            );
+            const saveButton = host.querySelector<HTMLButtonElement>("button:last-of-type");
+            expect(saveButton).not.toBeNull();
+            await act(async () => saveButton!.click());
+            expect(onSaved).toHaveBeenCalledOnce();
+            expect(mocks.writeGame).toHaveBeenLastCalledWith(
+                fileHandle,
+                page,
+                expect.stringContaining("Edit for actual close-save"),
+                providedLocator
+                    ? { kind: "linkedGame", stamp: stampC, revision: "saved-revision" }
+                    : { kind: "game", stamp: stampC },
+            );
+            expect(cold.getState().sourceStamp).toBe(finalStamp);
+            expect(getTab(id)).toBeUndefined();
+        } finally {
+            await act(async () => root.unmount());
+            trees.closeTreeStore(id);
+            repository.remove(id);
+            if (physical) repository.remove(physical);
+        }
     },
 );
 

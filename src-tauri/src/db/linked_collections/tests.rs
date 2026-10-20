@@ -56,6 +56,7 @@ mod native_tests {
             .unwrap();
             let service = CollectionService::open(
                 root,
+                Arc::clone(&state.workspace_mutation),
                 Arc::clone(&state.database_repository),
                 Arc::clone(&state.search_cache),
                 state.pgn_repository.clone(),
@@ -151,6 +152,7 @@ mod native_tests {
                 .pgn_path_authority
                 .install_collections(CollectionService::open(
                     root,
+                    Arc::clone(&self.state.workspace_mutation),
                     Arc::new(DatabaseRepository::default()),
                     Arc::clone(&self.state.search_cache),
                     PgnRepository::default(),
@@ -2464,6 +2466,27 @@ mod native_tests {
         );
     }
 
+    #[test]
+    fn native_r2_rename_preserves_percent_escape_header_context() {
+        let input = b"\xef\xbb\xbf[Event \"A\"]\r\n% exporter { [White \"Pl\\\"ayer\"]\r\n[White \"Pl\\\"ayer\"] [Custom \"keep\"]\r\n% } ignored\r\n[Black \"Pl\\\"ayer\"]\r\n\r\n1. e4 {\r\n[White \"Pl\\\"ayer\"]\r\n}\r\n% escape after moves\r\n[Black \"Pl\\\"ayer\"]\r\n*\r\n";
+        let expected = b"\xef\xbb\xbf[Event \"A\"]\r\n% exporter { [White \"Pl\\\"ayer\"]\r\n[White \"New\\\\name\"] [Custom \"keep\"]\r\n% } ignored\r\n[Black \"New\\\\name\"]\r\n\r\n1. e4 {\r\n[White \"Pl\\\"ayer\"]\r\n}\r\n% escape after moves\r\n[Black \"Pl\\\"ayer\"]\r\n*\r\n";
+        assert_eq!(
+            rename_player_tags(input, "Pl\"ayer", "New\\name").unwrap(),
+            expected,
+            "percent escape line ended the initial header section"
+        );
+        for input in [
+            b"[Event \"A\"]\n{ comment\n% escape\n[White \"Player\"]\n}\n*\n".as_slice(),
+            b"[Event \"A\"]\n1. e4\n% escape\n[White \"Player\"]\n*\n",
+            b"[Event \"A\"]\n % not column zero\n[White \"Player\"]\n*\n",
+        ] {
+            assert_eq!(
+                rename_player_tags(input, "Player", "Changed").unwrap(),
+                input
+            );
+        }
+    }
+
     #[tokio::test]
     async fn linked_bulk_edits_preserve_custom_data_and_stale_duplicate_occurrences() {
         use tauri::Manager;
@@ -3692,6 +3715,850 @@ mod native_tests {
             std::fs::read(source).unwrap(),
             std::fs::read(metadata).unwrap(),
         )
+    }
+
+    async fn interrupt_account_before_sidecar(
+        fixture: &Fixture,
+        account: &AccountIdentity,
+    ) -> CreationIntent {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tauri::Manager;
+        struct InterruptPublishedPgn {
+            registry: PathBuf,
+            library: PathBuf,
+            account: AccountIdentity,
+            fired: Arc<AtomicBool>,
+        }
+        impl fs::AtomicWriterInjector for InterruptPublishedPgn {
+            fn inject(&self, point: fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point != fs::AtomicFileFaultPoint::ParentSync || !self.registry.exists() {
+                    return Ok(());
+                }
+                let registry: Registry = serde_json::from_slice(&std::fs::read(&self.registry)?)
+                    .map_err(std::io::Error::other)?;
+                for creation in &registry.creations {
+                    if creation.account != self.account || creation.identity.is_none() {
+                        continue;
+                    }
+                    let filename = crate::file_workspace::pgn_name(&creation.name).unwrap();
+                    let sidecar = authority::workspace_sidecar_leaf(OsStr::new(&filename)).unwrap();
+                    let source = self.library.join(&filename);
+                    if source.exists() && !self.library.join(sidecar).exists() {
+                        assert_eq!(
+                            authority::opened_file_identity(&File::open(source).unwrap()).unwrap(),
+                            creation.identity.unwrap()
+                        );
+                        self.fired.store(true, Ordering::SeqCst);
+                        // Unwind instead of an I/O error so normal creation rollback cannot run.
+                        panic!(
+                            "induced interruption after PGN publication before sidecar creation"
+                        );
+                    }
+                }
+                Ok(())
+            }
+        }
+        let fired = Arc::new(AtomicBool::new(false));
+        let fault = fs::install_test_atomic_file_injector(Arc::new(InterruptPublishedPgn {
+            registry: fixture.service.root.path().join(REGISTRY),
+            library: fixture.directory.path().join("library"),
+            account: account.clone(),
+            fired: Arc::clone(&fired),
+        }));
+        let app = fixture.app();
+        assert!(matches!(
+            prepare_account_collection(
+                fixture.workspace.clone(), account.clone(), None, app.state::<AppState>()
+            ).await,
+            Err(Error::Conflict(message)) if message == "Blocking task panicked"
+        ));
+        drop(fault);
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "publication interruption did not fire"
+        );
+        // A fresh process has a new workspace mutex. The fixture retains AppState on restart.
+        fixture.state.workspace_mutation.clear_poison();
+        let registry =
+            CollectionService::state(&mut fixture.service.lock(&CancellationToken::new()).unwrap())
+                .unwrap()
+                .clone();
+        assert!(registry.records.is_empty());
+        assert_eq!(registry.creations.len(), 1);
+        let creation = registry.creations[0].clone();
+        assert_eq!(creation.account, *account);
+        assert!(creation.identity.is_some());
+        creation
+    }
+
+    #[tokio::test]
+    async fn native_r2_coordination_live_publishers_preserve_source_and_complete_discovery() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tauri::Manager;
+        struct PausePublishedPgn {
+            registry: PathBuf,
+            library: PathBuf,
+            account: AccountIdentity,
+            hook: pgn::BoundedHook,
+            paused: AtomicBool,
+        }
+        impl fs::AtomicWriterInjector for PausePublishedPgn {
+            fn inject(&self, point: fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point != fs::AtomicFileFaultPoint::ParentSync || !self.registry.exists() {
+                    return Ok(());
+                }
+                let registry: Registry = serde_json::from_slice(&std::fs::read(&self.registry)?)
+                    .map_err(std::io::Error::other)?;
+                for creation in &registry.creations {
+                    if creation.account != self.account || creation.identity.is_none() {
+                        continue;
+                    }
+                    let filename = crate::file_workspace::pgn_name(&creation.name).unwrap();
+                    let sidecar = authority::workspace_sidecar_leaf(OsStr::new(&filename)).unwrap();
+                    if self.library.join(filename).exists()
+                        && !self.library.join(sidecar).exists()
+                        && !self.paused.swap(true, Ordering::SeqCst)
+                    {
+                        self.hook.notify_and_wait();
+                    }
+                }
+                Ok(())
+            }
+        }
+        for provider in ["chesscom", "lichess"] {
+            for linked_first in [false, true] {
+                let fixture = Fixture::new();
+                let account = AccountIdentity {
+                    provider: provider.into(),
+                    account: "player".into(),
+                };
+                let (hook, entered, release) = pgn::BoundedHook::new();
+                let injector = Arc::new(PausePublishedPgn {
+                    registry: fixture.service.root.path().join(REGISTRY),
+                    library: fixture.directory.path().join("library"),
+                    account: account.clone(),
+                    hook,
+                    paused: AtomicBool::new(false),
+                });
+                let app = fixture.app();
+                let workspace = fixture.workspace.clone();
+                let creator_account = account.clone();
+                let creator = tokio::spawn(async move {
+                    let _fault = fs::install_test_atomic_file_injector(injector);
+                    prepare_account_collection(
+                        workspace,
+                        creator_account,
+                        None,
+                        app.state::<AppState>(),
+                    )
+                    .await
+                });
+                tokio::time::timeout(Duration::from_secs(10), entered)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let registry: Registry = serde_json::from_slice(
+                    &std::fs::read(fixture.service.root.path().join(REGISTRY)).unwrap(),
+                )
+                .unwrap();
+                assert!(registry.records.is_empty());
+                let creation = registry.creations.first().unwrap().clone();
+                assert_eq!(creation.account, account);
+                let source = fixture.path(&creation.name);
+                let sidecar = source.with_file_name(
+                    authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+                );
+                let original = std::fs::read(&source).unwrap();
+                assert_eq!(
+                    creation.identity,
+                    Some(authority::opened_file_identity(&File::open(&source).unwrap()).unwrap())
+                );
+                let (stale, _) = crate::file_workspace::collect_tree_entries(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.workspace,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+                assert_eq!(
+                    stale.entries[0].metadata.as_ref().unwrap().file_type,
+                    WorkspaceFileType::Other
+                );
+                assert!(!sidecar.exists());
+                let waiting = crate::infra::cancellable_lock::observe_std_lock_wait(
+                    fixture.state.workspace_mutation.as_ref(),
+                );
+                let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+                let wait_events = events.clone();
+                let observer = tokio::task::spawn_blocking(move || {
+                    if waiting.recv_timeout(Duration::from_secs(10)).is_ok() {
+                        let _ = wait_events.send("workspace owner contended");
+                    }
+                });
+                let authority = fixture.state.pgn_path_authority.clone();
+                let repository = fixture.state.pgn_repository.clone();
+                let workspace = fixture.workspace.clone();
+                let discovery = tokio::spawn(async move {
+                    let token = CancellationToken::new();
+                    let result = if linked_first {
+                        list_linked_collections_core(
+                            Some(workspace),
+                            &authority,
+                            &repository,
+                            &token,
+                        )
+                        .await
+                        .map(|_| ())
+                    } else {
+                        crate::file_workspace::list_file_workspace_core(
+                            &workspace,
+                            &authority,
+                            &repository,
+                            &token,
+                        )
+                        .await
+                        .map(|listing| {
+                            assert_eq!(
+                                listing.entries[0].metadata.as_ref().unwrap().file_type,
+                                WorkspaceFileType::Game,
+                                "complete workspace discovery returned stale metadata"
+                            );
+                        })
+                    };
+                    let _ = events.send("complete discovery finished");
+                    result
+                });
+                // Either real contention or completed uncoordinated recovery releases the
+                // original publisher. No elapsed delay chooses the semantic outcome.
+                let event = tokio::time::timeout(Duration::from_secs(10), received.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                release.send(()).unwrap();
+                let created = tokio::time::timeout(Duration::from_secs(10), creator)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let discovered = tokio::time::timeout(Duration::from_secs(10), discovery)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                observer.await.unwrap();
+                assert!(
+                    created.is_ok(),
+                    "live creator rolled back its published source after discovery: {:?}",
+                    created.as_ref().err().map(Error::diagnostic)
+                );
+                assert!(
+                    discovered.is_ok(),
+                    "concurrent discovery refused the live publisher"
+                );
+                assert_eq!(event, "workspace owner contended");
+                let owner = created.unwrap().unwrap().collection.unwrap();
+                assert_eq!(owner.id, creation.id.to_string());
+                assert_eq!(owner.account, Some(account.clone()));
+                assert_eq!(owner.status, CollectionStatus::Ready);
+                assert!(
+                    fixture.rows(&owner).is_empty(),
+                    "empty source index is usable"
+                );
+                assert_eq!(std::fs::read(&source).unwrap(), original);
+                let expected = serde_json::to_vec(&WorkspaceMetadata {
+                    file_type: WorkspaceFileType::Game,
+                    tags: vec![],
+                })
+                .unwrap();
+                assert_eq!(std::fs::read(&sidecar).unwrap(), expected);
+                let custom =
+                    b"{\n \"tags\": [\"retained live annotation\"], \"type\": \"game\"\n}\n";
+                std::fs::write(&sidecar, custom).unwrap();
+                for _ in 0..3 {
+                    let listing = crate::file_workspace::list_file_workspace_core(
+                        &fixture.workspace,
+                        &fixture.state.pgn_path_authority,
+                        &fixture.state.pgn_repository,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        listing.entries[0].metadata.as_ref().unwrap().file_type,
+                        WorkspaceFileType::Game
+                    );
+                    let collections = list_linked_collections_core(
+                        Some(fixture.workspace.clone()),
+                        &fixture.state.pgn_path_authority,
+                        &fixture.state.pgn_repository,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(collections.len(), 1);
+                    assert_eq!(collections[0].id, owner.id);
+                    assert_eq!(collections[0].account, Some(account.clone()));
+                    assert_eq!(collections[0].status, CollectionStatus::Ready);
+                    assert!(fixture.rows(&collections[0]).is_empty());
+                    assert_eq!(std::fs::read(&source).unwrap(), original);
+                    assert_eq!(std::fs::read(&sidecar).unwrap(), custom);
+                }
+                let incoming = fixture.create(
+                    "incoming",
+                    &game(None, "e4 e5", "query the recovered index"),
+                    WorkspaceFileType::Other,
+                );
+                let appended = Arc::clone(&fixture.service)
+                    .append_batch(
+                        fixture.state.pgn_path_authority.clone(),
+                        creation.id,
+                        incoming,
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(appended.appended, 1);
+                let collections = list_linked_collections_core(
+                    Some(fixture.workspace.clone()),
+                    &fixture.state.pgn_path_authority,
+                    &fixture.state.pgn_repository,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(collections.len(), 1);
+                assert_eq!(collections[0].status, CollectionStatus::Ready);
+                assert_eq!(
+                    fixture.rows(&collections[0]).len(),
+                    1,
+                    "complete discovery did not expose a usable current index"
+                );
+                assert_eq!(std::fs::read(&sidecar).unwrap(), custom);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_r2_coordination_cancellation_preserves_pending_publication() {
+        let fixture = Fixture::new();
+        let creation = interrupt_account_before_sidecar(
+            &fixture,
+            &AccountIdentity {
+                provider: "lichess".into(),
+                account: "player".into(),
+            },
+        )
+        .await;
+        let source = fixture.path(&creation.name);
+        let sidecar = source.with_file_name(
+            authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+        );
+        let registry = fixture.service.root.path().join(REGISTRY);
+        let before = (
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&registry).unwrap(),
+        );
+        let token = CancellationToken::new();
+        let _cancel_on_drop = token.clone().drop_guard();
+        let holder_token = token.clone();
+        let workspace_mutation = Arc::clone(&fixture.state.workspace_mutation);
+        let (acquired, acquired_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = tokio::task::spawn_blocking(move || {
+            let held = crate::infra::cancellable_lock::lock_std_cancellable(
+                &workspace_mutation,
+                &holder_token,
+                "workspace mutation lock was poisoned",
+            )?;
+            if acquired.send(()).is_err() {
+                return Ok(());
+            }
+            let released = release_rx.recv_timeout(Duration::from_secs(10));
+            drop(held);
+            released.map_err(|error| {
+                Error::Conflict(format!("test workspace holder release failed: {error}"))
+            })
+        });
+        tokio::time::timeout(Duration::from_secs(10), acquired_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let waiting = crate::infra::cancellable_lock::observe_std_lock_wait(
+            fixture.state.workspace_mutation.as_ref(),
+        );
+        let worker_token = token.clone();
+        let authority = fixture.state.pgn_path_authority.clone();
+        let repository = fixture.state.pgn_repository.clone();
+        let workspace = fixture.workspace.clone();
+        let discovery = tokio::spawn(async move {
+            crate::file_workspace::list_file_workspace_core(
+                &workspace,
+                &authority,
+                &repository,
+                &worker_token,
+            )
+            .await
+        });
+        tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(10)))
+            .await
+            .unwrap()
+            .unwrap();
+        token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), discovery)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(!sidecar.exists());
+        assert_eq!(
+            (
+                std::fs::read(&source).unwrap(),
+                std::fs::read(&registry).unwrap()
+            ),
+            before
+        );
+        release.send(()).unwrap();
+        holder.await.unwrap().unwrap();
+        let listing = crate::file_workspace::list_file_workspace_core(
+            &fixture.workspace,
+            &fixture.state.pgn_path_authority,
+            &fixture.state.pgn_repository,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            listing.entries[0].metadata.as_ref().unwrap().file_type,
+            WorkspaceFileType::Game
+        );
+        assert_eq!(fixture.list()[0].id, creation.id.to_string());
+    }
+
+    #[tokio::test]
+    async fn native_r2_coordination_stale_replay_uses_current_metadata_and_real_purpose_changes() {
+        use tauri::Manager;
+        for provider in ["chesscom", "lichess"] {
+            let fixture = Fixture::new();
+            let account = AccountIdentity {
+                provider: provider.into(),
+                account: "player".into(),
+            };
+            let creation = interrupt_account_before_sidecar(&fixture, &account).await;
+            let (stale, _) = crate::file_workspace::collect_tree_entries(
+                &fixture.state.pgn_path_authority,
+                &fixture.workspace,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                stale.entries[0].metadata.as_ref().unwrap().file_type,
+                WorkspaceFileType::Other
+            );
+            let listing = crate::file_workspace::list_file_workspace_core(
+                &fixture.workspace,
+                &fixture.state.pgn_path_authority,
+                &fixture.state.pgn_repository,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                listing.entries[0].metadata.as_ref().unwrap().file_type,
+                WorkspaceFileType::Game,
+                "recovered workspace view retained stale Other metadata"
+            );
+            assert!(CollectionService::state(
+                &mut fixture.service.lock(&CancellationToken::new()).unwrap()
+            )
+            .unwrap()
+            .creations
+            .is_empty());
+            let replayed = fixture
+                .service
+                .reconcile(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.workspace,
+                    &stale,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(replayed.len(), 1);
+            assert_eq!(replayed[0].id, creation.id.to_string());
+            assert_eq!(replayed[0].account, Some(account));
+            assert_eq!(
+                replayed[0].status,
+                CollectionStatus::Ready,
+                "stale listing retired a current Game collection after intent retirement"
+            );
+            assert!(replayed[0].database.is_some());
+            assert!(fixture.rows(&replayed[0]).is_empty());
+            let source_before = std::fs::read(fixture.path(&creation.name)).unwrap();
+            let app = fixture.app();
+            crate::file_workspace::write_workspace_file_metadata(
+                fixture.workspace.clone(),
+                replayed[0].file.clone(),
+                WorkspaceMetadata {
+                    file_type: WorkspaceFileType::Repertoire,
+                    tags: vec!["intentional current purpose".into()],
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .unwrap();
+            let current = fixture
+                .service
+                .reconcile(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.workspace,
+                    &listing,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                current[0].status,
+                CollectionStatus::Retired,
+                "stale Game listing ignored a real current purpose change"
+            );
+            assert!(current[0].database.is_none());
+            let listing = crate::file_workspace::list_file_workspace_core(
+                &fixture.workspace,
+                &fixture.state.pgn_path_authority,
+                &fixture.state.pgn_repository,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                listing.entries[0].metadata.as_ref().unwrap().file_type,
+                WorkspaceFileType::Repertoire
+            );
+            assert_eq!(
+                std::fs::read(fixture.path(&creation.name)).unwrap(),
+                source_before
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_r2_missing_sidecar_recovers_both_restart_orders_and_providers() {
+        use std::os::unix::fs::PermissionsExt;
+        use tauri::Manager;
+        for provider in ["chesscom", "lichess"] {
+            for discovery_first in [false, true] {
+                for custom_metadata in [false, true] {
+                    let mut fixture = Fixture::new();
+                    let plain_body = game(None, "d4 d5", "unrelated plain PGN");
+                    fixture.create("plain", &plain_body, WorkspaceFileType::Other);
+                    let plain = fixture.path("plain");
+                    let plain_sidecar = plain.with_file_name(
+                        authority::workspace_sidecar_leaf(plain.file_name().unwrap()).unwrap(),
+                    );
+                    std::fs::remove_file(&plain_sidecar).unwrap();
+                    let account = AccountIdentity {
+                        provider: provider.into(),
+                        account: "player".into(),
+                    };
+                    let creation = interrupt_account_before_sidecar(&fixture, &account).await;
+                    let permissions = std::fs::metadata(&plain).unwrap().permissions();
+                    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                    assert_eq!(
+                        File::open(&plain).unwrap_err().kind(),
+                        std::io::ErrorKind::PermissionDenied
+                    );
+                    let source = fixture.path(&creation.name);
+                    let sidecar = source.with_file_name(
+                        authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+                    );
+                    let original = std::fs::read(&source).unwrap();
+                    assert!(!sidecar.exists());
+                    let custom = b"{\n \"tags\": [\"custom annotation\"], \"type\": \"game\"\n}\n";
+                    if custom_metadata {
+                        std::fs::write(&sidecar, custom).unwrap();
+                    }
+                    fixture.restart();
+                    if discovery_first {
+                        let discovered = fixture.list();
+                        assert_eq!(discovered.len(), 1);
+                        assert_eq!(discovered[0].id, creation.id.to_string());
+                        assert_eq!(discovered[0].account, Some(account.clone()));
+                    }
+                    for _ in 0..3 {
+                        let app = fixture.app();
+                        let result = prepare_account_collection(
+                            fixture.workspace.clone(),
+                            account.clone(),
+                            None,
+                            app.state::<AppState>(),
+                        )
+                        .await;
+                        assert!(
+                            result.is_ok(),
+                            "missing-sidecar recovery refused: {:?}",
+                            result.as_ref().err().map(Error::diagnostic)
+                        );
+                        let owner = result.unwrap().unwrap().collection.unwrap();
+                        assert_eq!(owner.id, creation.id.to_string());
+                        assert_eq!(owner.account, Some(account.clone()));
+                        let listed = fixture.list();
+                        assert_eq!(listed.len(), 1, "recovery activated more than one owner");
+                        assert_eq!(listed[0].id, owner.id);
+                        assert_eq!(std::fs::read(&source).unwrap(), original);
+                        if custom_metadata {
+                            assert_eq!(std::fs::read(&sidecar).unwrap(), custom);
+                        } else {
+                            let metadata: WorkspaceMetadata =
+                                serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+                            assert_eq!(metadata.file_type, WorkspaceFileType::Game);
+                        }
+                        assert!(CollectionService::state(
+                            &mut fixture.service.lock(&CancellationToken::new()).unwrap()
+                        )
+                        .unwrap()
+                        .creations
+                        .is_empty());
+                        drop(app);
+                        fixture.restart();
+                    }
+                    std::fs::set_permissions(&plain, permissions).unwrap();
+                    assert_eq!(std::fs::read(plain).unwrap(), plain_body.as_bytes());
+                    assert!(
+                        !plain_sidecar.exists(),
+                        "recovery reclassified an unrelated plain PGN"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_r2_missing_sidecar_refuses_changed_identity_and_existing_invalid_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        use tauri::Manager;
+        for scenario in [
+            "other",
+            "repertoire",
+            "malformed",
+            "unreadable",
+            "permission",
+            "identity",
+        ] {
+            for discovery_first in [false, true] {
+                let mut fixture = Fixture::new();
+                let account = AccountIdentity {
+                    provider: "lichess".into(),
+                    account: "player".into(),
+                };
+                let creation = interrupt_account_before_sidecar(&fixture, &account).await;
+                let source = fixture.path(&creation.name);
+                let sidecar = source.with_file_name(
+                    authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+                );
+                let held_source = File::open(&source).unwrap();
+                match scenario {
+                    "identity" => {
+                        std::fs::remove_file(&source).unwrap();
+                        std::fs::write(&source, game(None, "d4 d5", "replacement must survive"))
+                            .unwrap();
+                        assert_ne!(
+                            authority::opened_file_identity(&held_source).unwrap(),
+                            authority::opened_file_identity(&File::open(&source).unwrap()).unwrap()
+                        );
+                    }
+                    "unreadable" => {
+                        std::fs::create_dir(&sidecar).unwrap();
+                    }
+                    "malformed" => {
+                        std::fs::write(&sidecar, b"invalid metadata\n").unwrap();
+                    }
+                    "permission" => {
+                        std::fs::write(&sidecar, b"{\"type\":\"game\",\"tags\":[\"private\"]}\n")
+                            .unwrap();
+                    }
+                    purpose => {
+                        std::fs::write(
+                            &sidecar,
+                            format!("{{\"type\":\"{purpose}\",\"tags\":[\"preserve\"]}}\n"),
+                        )
+                        .unwrap();
+                    }
+                }
+                let source_before = std::fs::read(&source).unwrap();
+                let metadata_before = std::fs::read(&sidecar).ok();
+                if scenario == "permission" {
+                    std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                    assert_eq!(
+                        File::open(&sidecar).unwrap_err().kind(),
+                        std::io::ErrorKind::PermissionDenied
+                    );
+                }
+                let registry_path = fixture.service.root.path().join(REGISTRY);
+                let registry_before = std::fs::read(&registry_path).unwrap();
+                fixture.restart();
+                if discovery_first {
+                    let token = CancellationToken::new();
+                    let discovery = crate::file_workspace::collect_tree_entries(
+                        &fixture.state.pgn_path_authority,
+                        &fixture.workspace,
+                        &token,
+                    )
+                    .and_then(|(listing, _)| {
+                        fixture.service.reconcile(
+                            &fixture.state.pgn_path_authority,
+                            &fixture.workspace,
+                            &listing,
+                            &token,
+                        )
+                    });
+                    assert!(
+                        discovery.is_err(),
+                        "discovery accepted incompatible {scenario}"
+                    );
+                }
+                let app = fixture.app();
+                assert!(
+                    prepare_account_collection(
+                        fixture.workspace.clone(),
+                        account,
+                        None,
+                        app.state::<AppState>()
+                    )
+                    .await
+                    .is_err(),
+                    "preparation accepted incompatible {scenario}"
+                );
+                assert_eq!(std::fs::read(&source).unwrap(), source_before);
+                if scenario == "permission" {
+                    std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+                assert_eq!(std::fs::read(&sidecar).ok(), metadata_before);
+                assert_eq!(sidecar.is_dir(), scenario == "unreadable");
+                assert_eq!(sidecar.exists(), scenario != "identity");
+                assert_eq!(std::fs::read(registry_path).unwrap(), registry_before);
+            }
+        }
+    }
+
+    #[test]
+    fn native_r2_destination_recovery_preserves_existing_sidecar_bytes() {
+        for purpose in [
+            WorkspaceFileType::Game,
+            WorkspaceFileType::Other,
+            WorkspaceFileType::Repertoire,
+        ] {
+            let fixture = Fixture::new();
+            let file = fixture.create(
+                "destination",
+                &game(None, "e4 e5", "preserve source"),
+                purpose.clone(),
+            );
+            let target = fixture
+                .state
+                .pgn_path_authority
+                .with_mut(|authority| authority.workspace_mutation_target(&file))
+                .unwrap()
+                .unwrap();
+            let source = fixture.path("destination");
+            let sidecar = source.with_file_name(
+                authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+            );
+            let before = (
+                std::fs::read(&source).unwrap(),
+                std::fs::read(&sidecar).unwrap(),
+            );
+            let result = fixture.service.recover_created_file(
+                &fixture.state.pgn_path_authority,
+                &fixture.state.workspace_mutation,
+                &fixture.workspace,
+                "destination",
+                Some(target.identity),
+                &CancellationToken::new(),
+            );
+            assert_eq!(result.is_ok(), purpose == WorkspaceFileType::Game);
+            assert_eq!(
+                (
+                    std::fs::read(source).unwrap(),
+                    std::fs::read(sidecar).unwrap()
+                ),
+                before,
+                "destination recovery rewrote an existing sidecar"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_r2_missing_sidecar_conflicting_migration_owner_refuses_before_publication() {
+        use tauri::Manager;
+        for discovery_first in [false, true] {
+            let mut fixture = Fixture::new();
+            let account = AccountIdentity {
+                provider: "chesscom".into(),
+                account: "player".into(),
+            };
+            let creation = interrupt_account_before_sidecar(&fixture, &account).await;
+            let body = game(None, "e4 e5", "independent migration owner");
+            let source = fixture.create("independent", &body, WorkspaceFileType::Game);
+            let database = fixture.reference("independent", &body);
+            let intent = fixture.migration(database, Some(source), MigrationChoice::Pgn);
+            let owner = fixture
+                .service
+                .migrate(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.state.workspace_mutation,
+                    intent,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_ne!(owner.id, creation.id.to_string());
+            assert_eq!(owner.account, Some(account.clone()));
+            let source = fixture.path(&creation.name);
+            let sidecar = source.with_file_name(
+                authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+            );
+            let source_before = std::fs::read(&source).unwrap();
+            let registry = fixture.service.root.path().join(REGISTRY);
+            let registry_before = std::fs::read(&registry).unwrap();
+            assert!(!sidecar.exists());
+            fixture.restart();
+            if discovery_first {
+                let token = CancellationToken::new();
+                let (listing, _) = crate::file_workspace::collect_tree_entries(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.workspace,
+                    &token,
+                )
+                .unwrap();
+                assert!(matches!(
+                    fixture.service.reconcile(
+                        &fixture.state.pgn_path_authority,
+                        &fixture.workspace,
+                        &listing,
+                        &token
+                    ),
+                    Err(Error::Conflict(_))
+                ));
+            }
+            let app = fixture.app();
+            assert!(matches!(
+                prepare_account_collection(
+                    fixture.workspace.clone(),
+                    account,
+                    None,
+                    app.state::<AppState>()
+                )
+                .await,
+                Err(Error::Conflict(_))
+            ));
+            assert!(
+                !sidecar.exists(),
+                "conflicting owner recovery wrote a sidecar"
+            );
+            assert_eq!(std::fs::read(source).unwrap(), source_before);
+            assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+            assert_eq!(
+                std::fs::read(fixture.path("independent")).unwrap(),
+                body.as_bytes()
+            );
+        }
     }
 
     #[tokio::test]

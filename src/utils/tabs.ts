@@ -474,8 +474,9 @@ export function replaceFileGame({
     let install!: () => void;
     const result = stageAndCommitTab({
         seed: (id) => {
-            install = prepareTreeStoreRetarget(owner.value, id, tree);
-            tabStorage.seed(id, tree);
+            const replacement = prepareTreeStoreRetarget(owner.value, id, tree);
+            install = replacement;
+            tabStorage.seed(id, replacement.state);
         },
         keepLogicalTab: true,
         existingTabIds: store.get(tabsAtom).flatMap((tab) => [tab.value, getTabTreeKey(tab)]),

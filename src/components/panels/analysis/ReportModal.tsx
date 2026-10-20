@@ -1,6 +1,6 @@
 import { Alert, Button, Checkbox, Group, NumberInput, Select, Stack } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useStore as useJotaiStore } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { memo, useContext, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -90,6 +90,7 @@ function ReportModal({
   const { t } = useTranslation();
 
   const referenceDb = useAtomValue(referenceDbAtom);
+  const atomStore = useJotaiStore();
   const currency = useCollectionCurrency(referenceDb);
   const referenceUnavailable =
     !!referenceDb &&
@@ -244,6 +245,41 @@ function ReportModal({
     closeReportingMode();
     const engineSettings = normalizeEngineOptions(engine?.settings ?? []);
 
+    // The panel may unmount while native analysis continues. Its Jotai store
+    // still owns selection, and native metadata owns linked index currency.
+    const referenceKey = referenceDb ? capabilityKey(referenceDb) : null;
+    const capturedCollection = currency.collection;
+    const synchronousOwnersCurrent = () => {
+      const selected = atomStore.get(referenceDbAtom);
+      return (
+        isReportOwnerCurrent(tab, ownerEpoch) &&
+        isCurrentOperation(operationId, rootFingerprint) &&
+        (selected ? capabilityKey(selected) : null) === referenceKey
+      );
+    };
+    const completionOwnersCurrent = async () => {
+      if (!(await waitForReportOwner(tab, ownerEpoch)) || !synchronousOwnersCurrent()) return false;
+      if (!referenceDb) return true;
+      try {
+        const current = await tauri.collectionForDatabase(referenceDb);
+        return (
+          synchronousOwnersCurrent() &&
+          (capturedCollection
+            ? !!current &&
+              current.id === capturedCollection.id &&
+              current.status === "ready" &&
+              current.generation === capturedCollection.generation &&
+              !!current.database &&
+              !!capturedCollection.database &&
+              capabilityKey(current.database) === capabilityKey(capturedCollection.database)
+            : current === null)
+        );
+      } catch {
+        // Unverified reference metadata cannot authorize analysis or error feedback.
+        return false;
+      }
+    };
+
     tauri
       .analyzeGame(
         operationId,
@@ -263,24 +299,14 @@ function ReportModal({
       .then(async (analysis) => {
         // The immutable root fingerprint prevents a late completion from
         // applying to an edited/switched game even when a tab id is reused.
-        if (
-          (await waitForReportOwner(tab, ownerEpoch)) &&
-          isReportOwnerCurrent(tab, ownerEpoch) &&
-          isCurrentOperation(operationId, rootFingerprint) &&
-          referenceIdentity.current === capturedReferenceIdentity
-        ) {
+        if ((await completionOwnersCurrent()) && synchronousOwnersCurrent()) {
           addAnalysis(analysis, {
             showVariations: variations,
           });
         }
       })
       .catch(async (error) => {
-        if (
-          (await waitForReportOwner(tab, ownerEpoch)) &&
-          isReportOwnerCurrent(tab, ownerEpoch) &&
-          isCurrentOperation(operationId, rootFingerprint) &&
-          referenceIdentity.current === capturedReferenceIdentity
-        ) {
+        if ((await completionOwnersCurrent()) && synchronousOwnersCurrent()) {
           notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
         }
       })
