@@ -17109,3 +17109,22 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 * **Review lens:** review-engine-protocol.
 * **Related:** f-20260904-09 concerns durable report-result ownership across panel unmount, and f-20260901-08/f-20260904-02 concern progress-event correlation. Those mechanisms must remain intact. The pending Home-alias and player-tag filings have distinct causes.
 * **Found by:** Root source inspection during integrated proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+---
+
+## 2026-10-20 — filed through the inbox spool
+
+### Reselecting a source can leave legacy identity evidence blocking games whose IDs are explicit in the new PGN
+
+* **ID:** f-20261020-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** behaviour
+* **Follow-up of:** f-20261004-15
+* **Where:** `src-tauri/src/db/linked_collections/legacy.rs`, `src-tauri/src/db/linked_collections/batch.rs`, `src-tauri/src/db/linked_collections.rs`, `src-tauri/src/db/linked_collections/tests.rs`.
+* **Defect:** In the unpublished native R1 repair snapshot, first match provider ID123 to an ID-less legacy occurrence. Explicitly reselect the collection to a different authorized PGN containing ID123 and the same semantic game. Reselection advances source_epoch. legacy::revalidate only admits Evidence rows whose Binding equals the new epoch, so it admits none of the old rows. Its affected query then conflicts on the incoming ID123 before ordinary membership matching, even though the current source explicitly carries that same ID and agrees with the incoming game. An explicit recovery source can therefore leave account sync blocked by obsolete derived evidence. This is a source-confirmed ordinary path, with genuine native runtime proof still pending. It is not a verdict on any later worker revision.
+* **Change:** Reconcile binding-qualified legacy evidence against the actual current source after explicit reselection. Current source games with explicit matching provider IDs and compatible semantics must not be blocked solely by old legacy-assignment epochs. Preserve real conflicting identities and ambiguous ID-less matches as conflicts. Do not blindly reuse old assignments, silently discard evidence or modify preserved PGN bytes.
+* **Proof:** Use actual native append and reselect cores: establish a legacy match, select an ID-bearing source, restart, overlap the same provider ID and assert zero append with no false conflict and byte-identical source. Keep changed/conflicting identity and ambiguous legacy controls. Reverse the relevant production repair with tests retained, observe its assertion failure, restore and rerun green.
+* **Review lens:** review-pgn-index.
+* **Related:** f-20261020-02 concerns physical player-tag replacement, a different cause. d-20261020-10 requires current-source revalidation of durable identity evidence. This finding does not reverse that decision.
+* **Evidence:** Root preserved the native worker's actual pre-fault baseline in `/tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/native-inspection-snapshot-r1/`, verifying all seven hashes against the producer's fault-baseline-hashes.json before and after capture. legacy.rs SHA256ef155e526d1a774c04ed27f50d728d82db35d5f6629a68492148932cfa74780d, batch.rs SHA256033486cb7632e2067ed1ab032c27ebccb6ec81fc68cad4eab9c94cc5a675a9e2. The native writer remains active and may correct this before its final handoff.
+* **Found by:** Root inspection of the preserved production candidate. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
