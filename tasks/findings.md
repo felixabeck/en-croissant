@@ -17343,3 +17343,50 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 * **Review lens:** review-chess-semantics.
 * **Related:** f-20261004-22 shares the file but concerns en-passant position identity, a different cause. This repair is undertaken in the ongoing f-20261004-15 cumulative review because the loaded changed practice surface is affected.
 * **Found by:** Canonical R2 review-chess-semantics, independently source-traced by Root. Follow-up plan authorship and arbitration share Root context. Detection and code use the same OpenAI model family.
+
+---
+
+## 2026-10-21 — filed through the inbox spool
+
+### A repertoire preset can publish a start path that does not exist from a custom root
+
+* **ID:** f-20261021-01 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
+* **Impact class:** behaviour
+* **Where:** `src/components/panels/practice/RepertoireInfo.tsx:451`, preset admission after makeMoves.
+* **Defect:** With an empty tree rooted at `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1`, clicking Italian Game asks makeMoves to start with illegal e4. The store refuses the sequence without creating children, but the handler still stores start path `[0,0,0,0,0]`. Go to start later installs that nonexistent cursor and coverage associates the root with the invalid path. R3 chess-semantics traced this at frozen c08fd022, inherited from e125544e5. Runtime reproduction is still required.
+* **Spotted outside diff:** The R3 closure changes c08fd022 coverage input ownership, while the preset handler is inherited surrounding code.
+* **Failure scenario:** Open the stated black-to-move custom-root repertoire, select a reference, click Italian Game, then Go to start. A refused move sequence still publishes a nonexistent start and cursor.
+* **Related:** Handled f-20260922-13 established atomic typed makeMoves refusal. This is a distinct caller that ignores the existing result, with no shared Root asserted.
+* **Fix shape:** Publish a preset start only after successful atomic move admission and use the actual resulting path. Preserve the original tree, headers and cursor on refusal and existing valid preset behavior.
+* **Proof:** Exercise the actual preset control and real tree store for the custom-root refusal and a legal standard-root control. Retain tests, remove only the repair, observe the intended state assertion fail, restore exactly and rerun the affected suite.
+* **Review lens:** review-chess-semantics.
+* **Found by:** Canonical review-chess-semantics R3, confidence99, 2026-10-21. Same-area repair remains in the active f-20261004-15 run.
+
+### A failed repertoire coverage computation displays the green completeness claim
+
+* **ID:** f-20261021-02 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
+* **Impact class:** behaviour
+* **Where:** `src/components/panels/practice/RepertoireInfo.tsx:223,828`, coverage rejection and completeness rendering.
+* **Defect:** R2 clears coverage maps before recomputation. If a current database search rejects, the catch stops loading and emits a toast while the maps remain empty. Both gap finders then return null, and the renderer displays No gaps found and claims the repertoire is complete. An ordinary edit followed by search failure reaches this while linked reference metadata is still ready. R3 error-handling traced the current c08fd022 source. The existing rejection test checks only the toast, so the false completeness claim still needs a composed runtime witness.
+* **Follow-up of:** f-20261020-07.
+* **Related:** Handled f-20260906-04 made the utility propagate search failure. That result remains correct, this component now maps its rejection to a success-looking empty display. No shared Root is asserted.
+* **Fix shape:** Distinguish a current successful coverage result from loading, absence and failure. Withhold completeness and stale gap navigation until the current computation succeeds. Preserve current input ownership, Save/autosave completion, cancellation and existing notification policy.
+* **Proof:** Drive the actual component and real coverage algorithm through ordinary current search rejection after an edit, assert no completeness claim or stale navigation, then successful retry/recovery. Retain the test and demonstrate a source-only failure and exact restored green.
+* **Review lens:** review-error-handling.
+* **Found by:** Canonical review-error-handling R3, confidence98, 2026-10-21. The correction-producing revision is c08fd022 and the repair remains in the active f-20261004-15 run.
+
+### Applying a PGN text edit drops the current linked game's persisted source locator
+
+* **ID:** f-20261021-03 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
+* **Impact class:** behaviour
+* **Where:** `src/components/panels/info/PgnInput.tsx:107`, complete same-game state installation, `src/state/store/tree.ts:152,344`, and `src-tauri/src/pgn.rs:1894`.
+* **Defect:** updatePgn carries sourceStamp and appendAttempted into the parsed tree but omits linkedSource. Complete state replacement normalizes the omission to null and persists it. Open a linked game, edit its PGN text and apply. Save and close-save submit a plain game expectation that native linked-source write protection rejects. Reload retains the dirty tree without its locator and freshness validation reports a conflict although the file is unchanged. R3 persisted-state traced the current candidate. This omission was introduced by linked provenance in b470c0c8 and retained through c08fd022 normalization. Actual consumer and persistence proof is required.
+* **Follow-up of:** f-20261004-15.
+* **Related:** The active R1/R2 replacement-provenance repairs intentionally clear absent provenance for a different game or destination. PGN text editing is a same-game transformation and must retain its existing source ownership. Root remains absent because the current parent has no Root.
+* **Fix shape:** Preserve the current game's complete source provenance through accepted PGN text edits, while complete unrelated replacement still clears omitted provenance. Audit actual complete-state callers and settle the same-game versus replacement boundary before another patch.
+* **Proof:** Drive actual PGN editing with a linked source through apply, durable seed/cold reload, Save and close-save. Assert linked native expectations, retained locator, source stamp and append ownership, with plain-game and genuine replacement controls. Remove only the repair with the test retained, require the intended failure, restore exactly and run the affected suites.
+* **Review lens:** review-persisted-state.
+* **Found by:** Canonical review-persisted-state R3, confidence99, 2026-10-21. Same-area repair remains in the active parent run and receives focused fresh-context mechanism review before implementation.
