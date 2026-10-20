@@ -14261,6 +14261,9 @@ Technical decisions d-20261019-15/16/17 record document ownership, the session-s
 * **Provenance:** Follow-up plan authorship and arbitration share Root context. Detection and code use the same OpenAI model family. Original adopted planner lineage and original phase proof-fix count remain unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"f794bbcc7d9464161d9dae99170c114f8c924727831ae02af7cdab3b6ef67075","input_sha256":"5195614b517f1c73feee32d836d1e1722465e42d7210b7f1c592542ebdb7714c","kind":"mutation-receipt","operation":"56aa83bf221dc2707576936523661f7649f31105eb0a3f668cf139fe70a83014","options":{"section":null},"request_id_sha256":null,"results":["f-20261004-15"],"target":"f-20261004-15","v":1} -->
 
+* **Source-reference correction:** The failed browser assertion is the unchanged expect.poll(listingAttempts).toBe(2) at e2e/database-files.spec.ts:976, not line980 in Root's preceding note. The recorded actual values remain expected2 versus observed3 after Retry. Both pre-Retry count assertions passed. The exact log and trace are preserved, and the causal trace and repair scope are unchanged. Follow-up authorship and arbitration share Root context, detection and code use the same OpenAI family.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"60acf8e5cecdd0b3693a2eaceb2f6c6cdded179f50f37fecec9595e6368d7e77","input_sha256":"c462ab063e9bc75ca211806af4fb644b120c9cb2f5590a377421bf6e8603e896","kind":"mutation-receipt","operation":"ef119963ab4a440db8a476d79e81ee8283d430f3bee171df93f1f3894e13d5aa","options":{"section":null},"request_id_sha256":null,"results":["f-20261004-15"],"target":"f-20261004-15","v":1} -->
+
 ### ChessFable has no product-decision record, so Felix's /decide answers are never written back as precedent
 
 * **ID:** f-20261004-16 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
