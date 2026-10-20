@@ -17054,3 +17054,49 @@ Rebase resolution, 2026-10-19: upstream `58aff90d` independently implements the 
 
 The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, exit 0, and the normal three-suite test run passes 136 tests, exit 0. The old Linux job failure is fixed by published `58aff90d`. Both cancelled macOS jobs have successful replacements on the old published SHA, independently verified as jobs `118185960519` and `118192538462` in Test run `39273004421` attempts 2 and 3. `f-20261019-06` is closed for that recovered prerequisite. The remaining release work is the records review, normal final gates, non-force push and current-SHA CI/install, not publication of a second diagnostic oracle. Decision `d-20261019-14` records the historical local implementation choice. The domain choice of a shared real-Git diagnostic remains satisfied by upstream. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"cbdab09fe6afecfdbcc75018ff7df95483eb4e0ace2387024104b31259490e4f","input_sha256":"1da80c824af0bef63acbd49e9063161bd378861f9ea1d1b046e916f8066f2978","kind":"mutation-receipt","operation":"5a37784728f0236b2f81263f1360c850a350b04a10bdb33ccfa4ae3de96040fe","options":{"section":null},"request_id_sha256":null,"results":["f-20261019-07"],"target":"f-20261019-07","v":1} -->
+
+---
+
+## 2026-10-20 — filed through the inbox spool
+
+### Linked account history disappears from Home when the session uses a player alias
+
+* **ID:** f-20261020-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** behaviour
+* **Follow-up of:** f-20261004-15
+* **Where:** `src/components/home/Databases.tsx`, `src/utils/session.ts`, `src/components/home/Databases.test.tsx`.
+* **Defect:** The linked-collection Home filter compares the account username with the selected player display name. `sessionPlayerName` intentionally returns `session.player` before account usernames. A session with alias Coach and account username felix first resolves its linked collection successfully, then drops it because felix differs from Coach. The Home statistics omit that account's games. This is a certain normal-path regression in the uncommitted f-20261004-15 candidate, confirmed by source trace, with runtime proof pending.
+* **Change:** Preserve the existing session-to-player grouping when selecting linked account collections. Resolve account identity independently from the player's display alias and share that matching logic wherever it represents the same domain concept.
+* **Proof:** A composed Home regression with alias Coach and linked provider account felix must include the account's games, retain grouping of multiple sessions under one alias, and keep other players' accounts out. Reverse the production matching fix, demonstrate the relevant assertion failure, restore it, and rerun the affected suite.
+* **Review lens:** review-correctness.
+* **Related:** f-20261008-04 concerns substring matching of the player inside database statistics, a distinct cause. f-20260926-02 handled per-database statistics failure visibility, which must remain intact.
+* **Found by:** Root source inspection during the integrated phase proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+### Linked player rename rewrites an entire physical line and can drop unrelated PGN tags
+
+* **ID:** f-20261020-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** data-loss
+* **Follow-up of:** f-20261004-15
+* **Where:** `src-tauri/src/db/linked_collections.rs`, `src-tauri/src/db/linked_collections/tests.rs`.
+* **Defect:** The unpublished linked player-rename implementation reads physical lines. For a legal line containing `[White "Alice"] [Black "Bob"]`, IdentityPlayerHeaders keeps the final name Bob, while the replacement key is selected from the line's White prefix. Renaming Bob can therefore replace the whole line with a White tag and drop Black. Renaming Alice on that line does nothing. Leading whitespace also bypasses the matching prefixes. This is confirmed by the production callback and replacement source trace, with a genuine parser/runtime regression still required.
+* **Change:** Locate and replace only the matching White or Black tag value through the existing PGN parsing/scanning boundary. Preserve every unrelated byte, tag, comment and movetext section. Do not reconstruct a whole game from database columns or infer player roles from physical-line starts.
+* **Proof:** Production linked rename fixtures with both player tags on one line, whitespace, escapes, BOM and CRLF must update only the selected player and preserve unrelated bytes. Reverse the production fix with tests retained, observe the matching preservation assertion fail, restore byte-identically and rerun linked native tests.
+* **Review lens:** review-pgn-index.
+* **Related:** f-20261004-05 is a distinct existing scanner boundary defect for multiple tag pairs on one line. The rename defect is in the new transformation, and both paths need examination without conflating their causes. The pending Home-alias filing concerns renderer grouping, a separate cause.
+* **Found by:** Root source inspection during integrated proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+### A linked reference change during report preparation can start obsolete analysis and strand progress
+
+* **ID:** f-20261020-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** behaviour
+* **Follow-up of:** f-20261004-15
+* **Where:** `src/components/panels/analysis/ReportModal.tsx`, `src/components/panels/analysis/ReportModal.test.tsx`.
+* **Defect:** The unpublished reference-generation effect returns immediately when activeReferenceOperation is null. If prepareAnalysis is pending while a linked reference changes generation, the effect neither aborts preparation nor advances its generation. The subsequent admission checks omit the reference identity, so the stale closure starts analysis. Its completion then fails the new reference-generation check, including the only setInProgress(false) path, leaving progress active. This is a source-confirmed reachable interleaving, with composed runtime proof still pending.
+* **Change:** Invalidate preparation as well as active analysis when its captured reference identity or generation changes. Recheck the full reference owner before admitting prepared native work, cancel obsolete prepared operations, and keep terminal progress ownership separate from permission to publish analysis results. Preserve newer reports and current-owner errors.
+* **Proof:** Hold actual ReportModal prepareAnalysis, change linked reference generation, release preparation, and assert no stale analyzeGame call, explicit cancellation and terminal surviving-owner progress. Cover reference selection changes and a later current report. Reverse the production guard fix with tests retained, observe the relevant assertion failure, restore byte-identically and run the affected suite.
+* **Review lens:** review-engine-protocol.
+* **Related:** f-20260904-09 concerns durable report-result ownership across panel unmount, and f-20260901-08/f-20260904-02 concern progress-event correlation. Those mechanisms must remain intact. The pending Home-alias and player-tag filings have distinct causes.
+* **Found by:** Root source inspection during integrated proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
