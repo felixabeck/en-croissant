@@ -144,6 +144,9 @@ impl FromStr for Outcome {
 
 #[derive(Serialize, Deserialize, Clone, Type)]
 pub struct NormalizedGame {
+    #[specta(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked: Option<super::linked_collections::LinkedGameLocator>,
     pub id: i32,
     pub fen: String,
     pub event: String,

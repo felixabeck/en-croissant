@@ -6,9 +6,9 @@ import { useAtom, useAtomValue } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sessionsAtom } from "@/state/atoms";
+import { useCollectionCurrencies } from "@/state/linkedCollections";
 import { getChessComAccount, getStats } from "@/utils/chess.com/api";
-import type { ManagedDatabaseInfo } from "@/utils/db";
-import { accountDatabaseFilename } from "../home/accountDatabase";
+import { findAccountDatabase, type AccountDatabaseListing } from "../home/accountDatabase";
 import { getLichessAccount } from "@/utils/lichess/api";
 import { revocationReason, revocationReasonText } from "@/utils/lichess/revocation";
 import { type Session, sessionPlayerName } from "@/utils/session";
@@ -16,23 +16,23 @@ import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
 import IconAction from "./IconAction";
 
-function findAccountDatabase(databases: ManagedDatabaseInfo[], filename: string) {
-  return (
-    databases.find(
-      (db): db is Extract<ManagedDatabaseInfo, { type: "success" }> =>
-        db.type === "success" && db.filename === filename,
-    ) ?? null
-  );
-}
-
 function AccountCards({
-  databases,
+  listing,
+  listingAvailable = true,
+  listingPending = false,
   onAddAccount,
 }: {
-  databases: ManagedDatabaseInfo[];
+  listing?: AccountDatabaseListing;
+  listingAvailable?: boolean;
+  listingPending?: boolean;
   onAddAccount: () => void;
 }) {
   const sessions = useAtomValue(sessionsAtom);
+  useCollectionCurrencies(
+    (listing?.databases ?? []).flatMap((database) =>
+      database.collection ? [database.collection] : [],
+    ),
+  );
   const playerNames = Array.from(new Set(sessions.map(sessionPlayerName)));
 
   const playerSessions = playerNames.map((name) => ({
@@ -48,7 +48,14 @@ function AccountCards({
     <ScrollArea offsetScrollbars>
       <Stack>
         {playerSessions.map(({ name, sessions }) => (
-          <PlayerSession key={name} name={name} sessions={sessions} databases={databases} />
+          <PlayerSession
+            key={name}
+            name={name}
+            sessions={sessions}
+            listing={listing}
+            listingAvailable={listingAvailable}
+            listingPending={listingPending}
+          />
         ))}
       </Stack>
     </ScrollArea>
@@ -58,11 +65,15 @@ function AccountCards({
 function PlayerSession({
   name,
   sessions,
-  databases,
+  listing,
+  listingAvailable,
+  listingPending,
 }: {
   name: string;
   sessions: Session[];
-  databases: ManagedDatabaseInfo[];
+  listing?: AccountDatabaseListing;
+  listingAvailable: boolean;
+  listingPending: boolean;
 }) {
   const { t } = useTranslation();
   const [, setSessions] = useAtom(sessionsAtom);
@@ -152,7 +163,9 @@ function PlayerSession({
           <LichessOrChessCom
             key={i}
             session={session}
-            databases={databases}
+            listing={listing}
+            listingAvailable={listingAvailable}
+            listingPending={listingPending}
             setSessions={setSessions}
           />
         ))}
@@ -163,17 +176,31 @@ function PlayerSession({
 
 function LichessOrChessCom({
   session,
-  databases,
+  listing,
+  listingAvailable,
+  listingPending,
   setSessions,
 }: {
   session: Session;
-  databases: ManagedDatabaseInfo[];
+  listing?: AccountDatabaseListing;
+  listingAvailable: boolean;
+  listingPending: boolean;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
 }) {
   const { t } = useTranslation();
   if (session.lichess?.account) {
     const account = session.lichess.account;
     const lichessSession = session.lichess;
+    const association = findAccountDatabase(
+      listing,
+      "lichess",
+      lichessSession.username,
+      listingAvailable,
+    );
+    const title =
+      typeof account.username === "string" && account.username.length > 0
+        ? account.username
+        : lichessSession.username;
     const totalGames =
       (account.perfs?.ultraBullet?.games ?? 0) +
       (account.perfs?.bullet?.games ?? 0) +
@@ -200,22 +227,24 @@ function LichessOrChessCom({
 
     return (
       <AccountCard
-        key={account.id}
+        key={lichessSession.username}
         authenticated={Boolean(lichessSession.handle)}
         accountHandle={lichessSession.handle}
         type="lichess"
-        database={findAccountDatabase(
-          databases,
-          accountDatabaseFilename(account.username, "lichess"),
-        )}
-        title={account.username}
+        database={association?.type === "unavailable" ? null : association}
+        associationIssue={association?.type === "unavailable" ? association : undefined}
+        associationPending={listingPending}
+        title={title}
+        accountUsername={lichessSession.username}
         updatedAt={session.updatedAt}
         total={totalGames}
         logout={async () => {
           const removal = lichessSession.handle
             ? await tauri.removeLichessAccount(lichessSession.handle)
             : null;
-          setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
+          setSessions((sessions) =>
+            sessions.filter((s) => s.lichess?.username !== lichessSession.username),
+          );
           if (removal) {
             if (removal.state === "removed" && removal.revocation_pending) {
               const reason = revocationReason(removal.revocation_outcome);
@@ -249,7 +278,7 @@ function LichessOrChessCom({
           if (!account) return;
           setSessions((sessions) =>
             sessions.map((s) =>
-              s.lichess?.account.id === account.id
+              s.lichess?.username === lichessSession.username
                 ? {
                     ...s,
                     lichess: {
@@ -268,6 +297,12 @@ function LichessOrChessCom({
     );
   }
   if (session.chessCom?.stats) {
+    const association = findAccountDatabase(
+      listing,
+      "chesscom",
+      session.chessCom.username,
+      listingAvailable,
+    );
     let totalGames = 0;
     for (const stat of Object.values(session.chessCom.stats)) {
       if (stat.record) {
@@ -279,10 +314,9 @@ function LichessOrChessCom({
         key={session.chessCom.username}
         type="chesscom"
         title={session.chessCom.username}
-        database={findAccountDatabase(
-          databases,
-          accountDatabaseFilename(session.chessCom.username, "chesscom"),
-        )}
+        database={association?.type === "unavailable" ? null : association}
+        associationIssue={association?.type === "unavailable" ? association : undefined}
+        associationPending={listingPending}
         updatedAt={session.updatedAt}
         total={totalGames}
         stats={getStats(session.chessCom.stats)}

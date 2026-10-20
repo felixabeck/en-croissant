@@ -237,7 +237,9 @@ export default function DirectoryTree({
             onRequestMove?.(node);
           }
         }}
-        onClick={() => {
+        onClick={(event) => {
+          // The first click of each pair owns selection, even if the second hits another row.
+          if (node.type === "file" && event.detail > 0 && event.detail % 2 === 0) return;
           if (node.type === "database") node.onSelect?.();
           else if (node.type !== "unreadable") setSelectedFile(node);
           if (isDirectory)
@@ -246,7 +248,12 @@ export default function DirectoryTree({
             );
         }}
         onDoubleClick={() => {
-          if (node.type === "file") openEntry(node);
+          if (
+            node.type === "file" &&
+            selectedFile?.type === "file" &&
+            entryKey(selectedFile) === handleKey
+          )
+            openEntry(node);
         }}
         draggable={node.type === "file" || node.type === "directory"}
         onDragStart={(event) => {

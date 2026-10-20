@@ -125,6 +125,7 @@ export function useDatabaseLibrary(
   const visibleDatabases = useMemo(() => {
     return (databases ?? []).filter(
       (item) =>
+        !item.collection &&
         !conversionState.some(
           (entry) =>
             entry.targetDatabase !== null && sameDatabaseHandle(item.file, entry.targetDatabase),
@@ -194,6 +195,7 @@ export function useDatabaseLibrary(
   return {
     databases,
     visibleDatabases,
+    collections: data?.collections ?? [],
     unread,
     renderUnreadRow: (item: (typeof unread)[number]) => (
       <Stack key={item.key} gap="xs" miw={0}>

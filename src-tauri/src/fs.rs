@@ -1297,7 +1297,6 @@ pub async fn download_lichess_games(
     filename: String,
     player: String,
     since_ms: Option<i64>,
-    estimated_size: Option<u32>,
     job_id: String,
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -1309,7 +1308,6 @@ pub async fn download_lichess_games(
         filename,
         player,
         since_ms,
-        estimated_size,
         job_id,
         window.label(),
         &app,
@@ -1326,13 +1324,15 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     filename: String,
     player: String,
     since_ms: Option<i64>,
-    estimated_size: Option<u32>,
     job_id: String,
     owner: &str,
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
-    let admission_key = format!("lichess_{}", crate::lichess::lichess_user_segment(&player)?);
+    let admission_key = format!(
+        "lichess_{}",
+        crate::lichess::lichess_user_segment(&player)?.to_ascii_lowercase()
+    );
     let lease = state.operations.claim_download(
         &job_id,
         owner,
@@ -1356,7 +1356,8 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
         .token_async(handle)
         .await?
         .ok_or_else(|| Error::OAuthFailure("authenticated Lichess account unavailable".into()))?;
-    download_to_destination(
+    let cancellation = lease.token();
+    let publication = download_to_destination(
         &job_id,
         url.as_str(),
         destination,
@@ -1364,14 +1365,24 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
         app,
         state,
         Some(&token),
-        estimated_size,
+        None,
         job_id.clone(),
         lease,
         true,
         None,
     )
     .await?
-    .ok_or_else(|| Error::Conflict("Lichess download did not register an artifact".into()))
+    .ok_or_else(|| Error::Conflict("Lichess download did not register an artifact".into()))?;
+    if let Some(service) = state.pgn_path_authority.collections()? {
+        let authority = state.pgn_path_authority.clone();
+        let file = publication.handle.clone();
+        crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                service.record_download(&authority, file, "lichess", &player, since_ms, token)
+            })
+            .await?;
+    }
+    Ok(publication)
 }
 
 fn resolve_engine_archive_destination(
@@ -3073,7 +3084,6 @@ mod tests {
             "games.pgn".into(),
             "player".into(),
             None,
-            None,
             job_id,
             "test",
             app.handle(),
@@ -3787,6 +3797,128 @@ mod tests {
     pub struct MockTransport {
         pub responses: std::sync::Mutex<Vec<Result<DownloadResponse, Error>>>,
         pub requests_seen: std::sync::Mutex<Vec<(String, HeaderMap)>>,
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_collections_lichess_runtime_downloads_differing_sizes_and_appends_genuine_artifact(
+    ) {
+        use crate::db::linked_collections::tests::{game, Fixture};
+        use crate::file_workspace::WorkspaceFileType;
+        for has_length in [false, true] {
+            let fixture = Fixture::new();
+            fixture.create("history", "", WorkspaceFileType::Game);
+            let collection = fixture.list().pop().unwrap();
+            fixture.account(&collection.id, "lichess");
+            let body = game(None, "e4 e5", "a real export body, not a 900-byte estimate")
+                .replace("https://www.chess.com", "https://lichess.org/AbCd1234");
+            assert_ne!(body.len(), 900);
+            let length = body.len() as u64;
+            let transport = Arc::new(MockTransport {
+                responses: Mutex::new(vec![Ok(DownloadResponse {
+                    status: 200,
+                    headers: if has_length {
+                        let mut headers = HeaderMap::new();
+                        headers.insert(
+                            reqwest::header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&length.to_string()).unwrap(),
+                        );
+                        headers
+                    } else {
+                        HeaderMap::new()
+                    },
+                    content_length: has_length.then_some(length),
+                    stream: Box::pin(futures_util::stream::iter(vec![Ok(bytes::Bytes::from(
+                        body.clone(),
+                    ))])),
+                })]),
+                requests_seen: Mutex::new(vec![]),
+            });
+            let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+                crate::credentials::MemoryCredentialStore::default(),
+            )));
+            credentials
+                .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                    &fixture.directory.path().join("credentials-app"),
+                ))
+                .unwrap();
+            let account = credentials
+                .store_lichess_token("player".into(), "disposable-fixture-token".into())
+                .unwrap()
+                .account;
+            let state = AppState {
+                credentials,
+                http_transport: transport.clone(),
+                ..fixture.state.clone()
+            };
+            let app = test_progress_app();
+            let job = state.operations.prepare_download("fixture-window").unwrap();
+            let publication = download_lichess_games_runtime(
+                account.handle,
+                fixture.download_destination(),
+                "downloaded.pgn".into(),
+                "player".into(),
+                None,
+                job,
+                "fixture-window",
+                app.handle(),
+                &state,
+            )
+            .await
+            .unwrap();
+            let snapshot = state
+                .pgn_path_authority
+                .with_mut(|authority| {
+                    authority
+                        .resolve(
+                            publication.handle.path_ref(),
+                            crate::infra::path_authority::PathOperation::ReadPgn,
+                            &[],
+                        )
+                        .unwrap()
+                        .pgn_snapshot()
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.revision.size, length);
+            assert!(
+                state
+                    .pgn_path_authority
+                    .with_mut(|authority| authority.resolve(
+                        publication.handle.path_ref(),
+                        crate::infra::path_authority::PathOperation::WritePgn,
+                        &[]
+                    ))
+                    .unwrap()
+                    .is_err(),
+                "downloaded PGN received write authority"
+            );
+            let outcome = Arc::clone(&fixture.service)
+                .append_batch(
+                    state.pgn_path_authority.clone(),
+                    uuid::Uuid::parse_str(&collection.id).unwrap(),
+                    publication.handle.clone(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.appended, 1);
+            assert!(outcome.index_ready && outcome.committed);
+            assert!(std::fs::read(fixture.path("history"))
+                .unwrap()
+                .ends_with(body.as_bytes()));
+            let retry = Arc::clone(&fixture.service)
+                .append_batch(
+                    state.pgn_path_authority.clone(),
+                    uuid::Uuid::parse_str(&collection.id).unwrap(),
+                    publication.handle,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(retry.appended, 0);
+            assert_eq!(transport.requests_seen.lock().unwrap().len(), 1);
+        }
     }
 
     #[async_trait::async_trait]

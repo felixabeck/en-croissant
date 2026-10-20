@@ -2565,7 +2565,7 @@ pub(crate) fn test_target(path: &Path) -> crate::infra::path_authority::Database
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
-    use diesel::connection::SimpleConnection;
+    use diesel::{connection::SimpleConnection, RunQueryDsl};
     use std::sync::mpsc;
 
     const SIGNAL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2576,6 +2576,136 @@ mod retirement_tests {
     const FIRST_PREDECESSOR_RELEASE_DELAY: Duration = Duration::from_millis(500);
     // Above the single retirement budget, below release delay + a refreshed retirement budget.
     const MULTI_PREDECESSOR_COMPLETION_BOUND: Duration = Duration::from_millis(1050);
+
+    #[test]
+    fn pool_wake_preserves_a_notification_published_before_wait() {
+        let wake = PoolWake::default();
+        let observed = *wake.generation.lock();
+        wake.notify();
+        assert_ne!(*wake.generation.lock(), observed);
+        let (ready, readiness) = signal();
+        let (done, completion) = signal();
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                ready.send(()).unwrap();
+                wake.wait_since(observed, SIGNAL_TIMEOUT);
+                done.send(()).unwrap();
+            });
+            reached(&readiness);
+            let deadline = Instant::now() + SIGNAL_TIMEOUT;
+            let outcome = loop {
+                if Instant::now() >= deadline {
+                    break Err("notification completion was not observed");
+                }
+                if completion.try_recv().is_ok() {
+                    break Ok(());
+                }
+                // A true result observes and releases a genuinely parked consumer. The first
+                // production notification was already published, so it must not need this one.
+                if wake.changed.notify_one() {
+                    break Err("consumer parked for a second notification");
+                }
+                std::thread::yield_now();
+            };
+            // Release and join before asserting, including when the guard fault parks the waiter.
+            wake.notify();
+            waiter.join().unwrap();
+            assert!(
+                outcome.is_ok(),
+                "POOL_WAKE_LOST_PUBLISHED_NOTIFICATION: {outcome:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn stale_retirement_cleanup_preserves_the_current_database_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("same-database.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (key, old, _) = repository.entry(&target, None).unwrap();
+        old.get_connection()
+            .unwrap()
+            .batch_execute(
+                "CREATE TABLE Retained (value INTEGER); INSERT INTO Retained VALUES (42);",
+            )
+            .unwrap();
+        repository.retire_replaced(&key, &old, None).unwrap();
+        assert!(old.pool.read().is_none());
+        let (current_key, current, _) = repository.entry(&target, None).unwrap();
+        assert_eq!(current_key, key);
+        assert!(!Arc::ptr_eq(&current, &old));
+
+        repository.close_retired_entry(&key, &old, None).unwrap();
+        assert!(
+            repository
+                .state
+                .lock()
+                .unwrap()
+                .entries
+                .get(&key)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &current)),
+            "STALE_RETIREMENT_REMOVED_CURRENT_GENERATION"
+        );
+        let (reused_key, reused, _) = repository.entry(&target, None).unwrap();
+        assert_eq!(reused_key, key);
+        assert!(Arc::ptr_eq(&reused, &current));
+        current
+            .get_connection()
+            .unwrap()
+            .batch_execute("UPDATE Retained SET value = value + 1 WHERE value = 42;")
+            .unwrap();
+        assert_eq!(
+            diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "(SELECT value FROM Retained)"
+            ))
+            .get_result::<i64>(&mut **reused.get_connection().unwrap())
+            .unwrap(),
+            43
+        );
+    }
+
+    #[test]
+    fn retirement_capacity_rechecks_cancellation_before_reserving() {
+        let root = tempfile::tempdir().unwrap();
+        let target = test_target(&root.path().join("capacity-cancellation.db3"));
+        let repository = DatabaseRepository::default();
+        let (key, entry, _) = repository.entry(&target, None).unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = repository
+            .reserve_retirement_capacity(Instant::now() + SIGNAL_TIMEOUT, Some(&cancellation));
+        assert!(
+            matches!(result, Err(Error::Cancellation)),
+            "CANCELLED_RETIREMENT_CAPACITY_WAS_RESERVED"
+        );
+        {
+            let state = repository.state.lock().unwrap();
+            assert_eq!(state.retirement_reservations, 0);
+            assert!(state.retired.is_empty());
+            assert!(state.admissions.is_empty());
+            assert!(state.building.is_empty());
+            assert!(state.tombstones.is_empty());
+            assert_eq!(state.entries.len(), 1);
+            assert!(Arc::ptr_eq(state.entries.get(&key).unwrap(), &entry));
+        }
+        assert!(!entry.connections.snapshot().closed);
+        assert!(!entry.owners.snapshot().closed);
+        assert!(entry.pool.read().is_some());
+
+        let uncancelled = CancellationToken::new();
+        let reservation = repository
+            .reserve_retirement_capacity(Instant::now() + SIGNAL_TIMEOUT, Some(&uncancelled))
+            .unwrap();
+        assert_eq!(repository.state.lock().unwrap().retirement_reservations, 1);
+        drop(reservation);
+        let state = repository.state.lock().unwrap();
+        assert_eq!(state.retirement_reservations, 0);
+        assert!(state.retired.is_empty());
+        assert_eq!(state.entries.len(), 1);
+        assert!(Arc::ptr_eq(state.entries.get(&key).unwrap(), &entry));
+    }
 
     #[test]
     fn retired_pool_workers_discard_pending_scheduled_jobs() {

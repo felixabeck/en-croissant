@@ -407,6 +407,8 @@ test("filters the visible navigation model and opens a filtered file with Enter"
   await act(async () => {
     item("Child").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
+  expect(mocks.openFile).toHaveBeenCalledTimes(1);
+  expect(mocks.openFile).toHaveBeenLastCalledWith(directory.children[0], expect.anything());
   expect(mocks.navigate).not.toHaveBeenCalled();
   await act(async () => resolveOpen(null));
   expect(mocks.navigate).not.toHaveBeenCalled();
@@ -416,8 +418,72 @@ test("filters the visible navigation model and opens a filtered file with Enter"
     item("Child").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     await Promise.resolve();
   });
+  expect(mocks.openFile).toHaveBeenCalledTimes(2);
   expect(mocks.navigate).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+});
+
+test("file click pairs retain their first identity, support successive pairs and explicit activation", async () => {
+  const store = createStore();
+  store.set(expandedDirectoriesAtom, []);
+  const other: FileMetadata = { ...rootFile, handle: handle("other-file") };
+  mocks.openFile.mockResolvedValue("tab-id");
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  function Harness() {
+    const [selected, setSelected] = useState<Entry | null>(null);
+    return (
+      <Provider store={store}>
+        <DirectoryTree
+          files={[rootFile, other]}
+          selectedFile={selected}
+          setSelectedFile={setSelected}
+          onRequestDelete={vi.fn()}
+          search=""
+          filter=""
+        />
+      </Provider>
+    );
+  }
+  await act(async () => root.render(<Harness />));
+  const mouse = async (index: number, type: string, detail: number) => {
+    await act(async () =>
+      treeitems()[index].dispatchEvent(new MouseEvent(type, { bubbles: true, detail })),
+    );
+  };
+  const selected = () => treeitems().map((row) => row.getAttribute("aria-selected"));
+
+  // Equal display names must not stand in for file identity across a mismatched pair.
+  await mouse(0, "click", 1);
+  await mouse(1, "click", 2);
+  await mouse(1, "dblclick", 2);
+  expect(mocks.openFile).not.toHaveBeenCalled();
+  expect(selected()).toEqual(["true", "false"]);
+
+  // A fresh pair can select and open the other file after the refused gesture.
+  await mouse(1, "click", 1);
+  await mouse(1, "click", 2);
+  await mouse(1, "dblclick", 2);
+  expect(mocks.openFile).toHaveBeenCalledTimes(1);
+  expect(mocks.openFile).toHaveBeenLastCalledWith(other, expect.anything());
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
+
+  // Native click counts can continue through successive pairs without resetting to one.
+  await mouse(0, "click", 3);
+  await mouse(0, "click", 4);
+  await mouse(0, "dblclick", 4);
+  expect(mocks.openFile).toHaveBeenCalledTimes(2);
+  expect(mocks.openFile).toHaveBeenLastCalledWith(rootFile, expect.anything());
+  expect(selected()).toEqual(["true", "false"]);
+
+  await mouse(1, "click", 0);
+  expect(selected()).toEqual(["false", "true"]);
+  expect(mocks.openFile).toHaveBeenCalledTimes(2);
+  await key(treeitems()[0], "Enter");
+  expect(mocks.openFile).toHaveBeenCalledTimes(3);
+  expect(mocks.openFile).toHaveBeenLastCalledWith(rootFile, expect.anything());
+  expect(selected()).toEqual(["true", "false"]);
 });
 
 test("a matching folder name under a type filter requires a matching descendant", async () => {

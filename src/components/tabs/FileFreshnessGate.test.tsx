@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore as createJotaiStore, useAtomValue } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -12,7 +12,7 @@ import {
   type TreeStore,
 } from "@/state/store/tree";
 import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
-import { WORKSPACE_STORAGE_KEY } from "@/state/workspace";
+import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import {
   getFileFreshness,
   removeFileFreshness,
@@ -35,6 +35,24 @@ const mocks = vi.hoisted(() => ({
   writeGame: vi.fn(),
   showNotification: vi.fn(),
   translate: vi.fn((key: string) => key),
+  collections: [] as import("@/bindings").CollectionDescriptor[],
+  collectionListeners: new Set<() => void>(),
+}));
+
+vi.mock("@/hooks/useDatabaseList", () => ({
+  useDatabaseList: () => ({
+    data: {
+      collections: useSyncExternalStore(
+        (listener) => {
+          mocks.collectionListeners.add(listener);
+          return () => {
+            mocks.collectionListeners.delete(listener);
+          };
+        },
+        () => mocks.collections,
+      ),
+    },
+  }),
 }));
 
 vi.mock("@/utils/files", async (importOriginal) => ({
@@ -45,7 +63,15 @@ vi.mock("@/utils/files", async (importOriginal) => ({
 }));
 vi.mock("@/platform/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/platform/tauri")>();
-  return { ...actual, tauri: { ...actual.tauri, writeGame: mocks.writeGame } };
+  return {
+    ...actual,
+    tauri: {
+      ...actual.tauri,
+      writeGame: mocks.writeGame,
+      qualifyFileGame: vi.fn(async () => null),
+      collectionForDatabase: vi.fn(async () => null),
+    },
+  };
 });
 vi.mock("@/utils/chess", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/chess")>()),
@@ -108,6 +134,80 @@ function deferred<T>() {
 function stampedGame(stamp = originalStamp, pgn = '[Event "Game"]\n\n1. e4 *', present = true) {
   return { pgn, stamp, revision: "device:inode:revision", present };
 }
+
+test.each(["old generation", "unqualified legacy tree"])(
+  "dirty equal-text linked reads preserve the %s for recovery",
+  async (kind) => {
+    const locator = {
+      collection: "22222222-2222-4222-8222-222222222222",
+      generation: "new-generation",
+      ordinal: 0,
+      stamp: originalStamp,
+    };
+    await setup({
+      dirty: true,
+      readResult: (store) => {
+        if (kind === "old generation")
+          store.getState().setLinkedSource({ ...locator, generation: "old-generation" });
+        return { ...stampedGame(), revision: locator.generation, linked: locator };
+      },
+    });
+    expect(getFileFreshness(tabId).state).toBe("conflict");
+    expect(treeStore.getState()).toMatchObject({
+      dirty: true,
+      headers: { event: "Unsaved edit" },
+      sourceStamp: originalStamp,
+    });
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+  },
+);
+
+test("migration original retirement preserves the dirty linked tree for explicit recovery", async () => {
+  const locator = {
+    collection: "22222222-2222-4222-8222-222222222222",
+    generation: "original-generation",
+    ordinal: 0,
+    stamp: originalStamp,
+  };
+  const closeTab = await setup({ dirty: true, freshness: "verified" });
+  await act(async () => treeStore.getState().setLinkedSource(locator));
+  expect(jotaiStore.get(tabsAtom)[0].gameOrigin.kind).toBe("file");
+  expect(treeStore.getState().linkedSource).toEqual(locator);
+  const before = serializeStoreTree(treeStore);
+  mocks.collections = [
+    {
+      id: locator.collection,
+      name: file.name,
+      file: file.handle,
+      database: null,
+      account: null,
+      status: "preservedOriginal",
+      generation: "",
+      omitted: 0,
+      retiredDatabase: null,
+      fetchSinceMs: null,
+    },
+  ];
+  await act(async () => {
+    mocks.collectionListeners.forEach((listener) => listener());
+    root.render(
+      <Provider store={jotaiStore}>
+        <Harness closeTab={closeTab} />
+      </Provider>,
+    );
+  });
+  expect(treeStore.getState().linkedSource).toEqual(locator);
+  expect(host.textContent).toContain("Collections.PreservedOriginal");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+  expect(treeStore.getState().dirty).toBe(true);
+  expect(serializeStoreTree(treeStore)).toBe(before);
+  expect(mocks.writeGame).not.toHaveBeenCalled();
+  await act(async () => button("Collections.KeepEdits").click());
+  expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toEqual({ kind: "none" });
+  expect(treeStore.getState().linkedSource).toBeNull();
+  expect(treeStore.getState().dirty).toBe(true);
+  expect(serializeStoreTree(treeStore)).toBe(before);
+});
 
 function button(label: string): HTMLButtonElement {
   const result = Array.from(host.querySelectorAll("button")).find(
@@ -208,6 +308,7 @@ async function setup({
 }
 
 beforeEach(() => {
+  mocks.collections = [];
   sessionStorage.clear();
   vi.clearAllMocks();
   mocks.parsePGN.mockImplementation(async (pgn: string) => {
@@ -534,6 +635,100 @@ test("recovery adoption preserves edits made during append and clears the admitt
     root: { comment: "Later recovery edit" },
   });
 });
+
+test.each([
+  { newer: false, isUserSave: true },
+  { newer: true, isUserSave: false },
+])(
+  "linked recovery into a plain PGN persists destination provenance and permits the next save with newer=$newer user-save=$isUserSave",
+  async ({ newer, isUserSave }) => {
+    const locator = {
+      collection: "22222222-2222-4222-8222-222222222222",
+      generation: "old-linked-generation",
+      ordinal: 0,
+      stamp: originalStamp,
+    };
+    await setup({
+      dirty: true,
+      readResult: (store) => {
+        store.getState().setLinkedSource(locator);
+        return { ...stampedGame(changedStamp), linked: { ...locator, generation: "external" } };
+      },
+    });
+    expect(getFileFreshness(tabId).state).toBe("conflict");
+    const destination = {
+      ...file,
+      handle: { id: { id: "plain-recovery-destination" }, kind: "fileWorkspace" as const },
+      name: "recovered.pgn",
+      numGames: 3,
+    };
+    mocks.pickPgnFile.mockResolvedValueOnce(destination);
+    const snapshot = serializeStoreTree(treeStore);
+    const pending = deferred<AppendResult>();
+    mocks.writeGame.mockReturnValueOnce(pending.promise);
+    await act(async () => button("FileFreshness.SaveAsNewGame").click());
+    expect(mocks.writeGame).toHaveBeenLastCalledWith(destination.handle, 3, snapshot, {
+      kind: "append",
+    });
+    if (newer) await act(async () => treeStore.getState().setComment("Edit while recovering"));
+    await act(async () => pending.resolve({ stamp: changedStamp, revision: "plain-appended" }));
+
+    expect(treeStore.getState()).toMatchObject({
+      linkedSource: null,
+      sourceStamp: changedStamp,
+      appendAttempted: false,
+      dirty: newer,
+      headers: { event: "Unsaved edit" },
+      root: { comment: newer ? "Edit while recovering" : "" },
+    });
+    expect(tabStorage.flush()).toEqual([]);
+    const admitted = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]!;
+    expect(admitted.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 3,
+      file: { ...destination, numGames: 4 },
+    });
+    expect(new TabStorageRepository().read(getTabTreeKey(admitted))?.state).toMatchObject({
+      linkedSource: null,
+      sourceStamp: changedStamp,
+      dirty: newer,
+      headers: { event: "Unsaved edit" },
+      root: { comment: newer ? "Edit while recovering" : "" },
+    });
+    await act(async () => root.unmount());
+    closeTreeStore(tabId);
+    treeStore = createTreeStore(tabId, undefined, getTabTreeKey(admitted));
+    expect(treeStore.getState().linkedSource).toBeNull();
+    treeStore.getState().setComment("Edit after cold reload");
+    const nextSnapshot = serializeStoreTree(treeStore);
+    mocks.writeGame.mockImplementationOnce(async (_handle, _page, _pgn, expectation) => {
+      if (expectation.kind !== "game")
+        throw { tag: "backend-error", category: "stale-game", message: "Plain file is not linked" };
+      return { stamp: emptyStamp, revision: "plain-saved" };
+    });
+    await expect(
+      saveToFile({
+        tab: admitted,
+        store: treeStore,
+        isUserSave,
+        getTab: (id) => jotaiStore.get(tabsAtom).find((tab) => tab.value === id),
+        updateTab: (id, update, onAdmitted) =>
+          updateTabById(
+            (next, active, saved) => jotaiStore.set(tabsAtom, next, active, saved),
+            id,
+            update,
+            onAdmitted,
+          ),
+      }),
+    ).resolves.toBe("saved");
+    expect(mocks.writeGame).toHaveBeenLastCalledWith(destination.handle, 3, nextSnapshot, {
+      kind: "game",
+      stamp: changedStamp,
+    });
+    expect(treeStore.getState()).toMatchObject({ dirty: false, linkedSource: null });
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+  },
+);
 
 test("refused recovery origin admission keeps append uncertainty durable and refuses retry", async () => {
   const { pending, completion } = await startPendingAppend(true);

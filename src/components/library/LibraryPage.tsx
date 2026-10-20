@@ -1,5 +1,6 @@
 import { libraryButtonProps } from "./presentation";
 import {
+  Box,
   Button,
   Center,
   Group,
@@ -11,9 +12,18 @@ import {
   Stack,
   Text,
   Title,
+  useMatches,
 } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
+import { tauri } from "@/platform/tauri";
+import {
+  CollectionMigration,
+  LinkedCollection,
+  collectionFiles,
+  isCollectionConsumer,
+} from "./LinkedCollection";
 import { useTranslation } from "react-i18next";
 import DirectoryTree, { type CollectionPeer } from "@/components/files/DirectoryTree";
 import { FILE_TYPES, type Entry } from "@/components/files/file";
@@ -21,17 +31,25 @@ import { useFileWorkspace } from "@/components/files/useFileWorkspace";
 import { useDatabaseLibrary } from "@/components/databases/useDatabaseLibrary";
 import { databaseHandleKey } from "@/utils/db";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
+import { useCollectionCurrencies } from "@/state/linkedCollections";
 
 type Selection =
   | { kind: "workspace"; workspaceKey: string; entry: Entry }
-  | { kind: "database"; key: string };
+  | { kind: "database"; key: string }
+  | { kind: "missingCollection"; id: string };
 
 export default function LibraryPage() {
   const { t } = useTranslation();
+  const split = useMatches({ base: false, sm: true }, { getInitialValueInEffect: false });
   const [selection, setSelection] = useState<Selection | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
   const [visibleCount, setVisibleCount] = useState(0);
+  const [migrationDatabase, setMigrationDatabase] = useState<string | null>(null);
+  const { mutate } = useSWRConfig();
+  const { data: linkSupported } = useSWR("linkedCollectionsSupported", () =>
+    tauri.linkedCollectionsSupported(),
+  );
   const files = useFileWorkspace(
     selection?.kind === "workspace" ? selection.entry : null,
     (entry) => {
@@ -46,6 +64,9 @@ export default function LibraryPage() {
     selection?.kind === "workspace" ? selection.workspaceKey : undefined,
   );
   const workspaceKey = files.workspace ? fileWorkspaceKey(files.workspace) : null;
+  useEffect(() => {
+    if (linkSupported && files.data) void mutate("databases");
+  }, [linkSupported, files.data, mutate]);
   const fileSelection =
     selection?.kind === "workspace" && selection.workspaceKey === workspaceKey
       ? files.selected
@@ -84,7 +105,54 @@ export default function LibraryPage() {
     databases.convertingSelected,
   ]);
   const normalizedSearch = search.trim().toLowerCase();
+  useCollectionCurrencies(databases.collections);
+  const sourceFiles = collectionFiles(files.data ?? []);
+  const linked =
+    fileSelection?.type === "file"
+      ? databases.collections.find(
+          (collection) =>
+            collection.status !== "retired" &&
+            fileWorkspaceKey(collection.file) === fileWorkspaceKey(fileSelection.handle),
+        )
+      : undefined;
+  const missing = databases.collections.filter(
+    (collection) =>
+      collection.status !== "retired" &&
+      collection.status !== "preservedOriginal" &&
+      collection.status !== "ready" &&
+      !sourceFiles.some(
+        (file) => fileWorkspaceKey(file.handle) === fileWorkspaceKey(collection.file),
+      ),
+  );
+  const selectedMissing =
+    selection?.kind === "missingCollection"
+      ? missing.find((collection) => collection.id === selection.id)
+      : undefined;
   const peers: CollectionPeer[] = [
+    ...missing
+      .filter(
+        (collection) =>
+          (!filter || filter === "game" || filter === "tournament") &&
+          (!normalizedSearch || collection.name.toLowerCase().includes(normalizedSearch)),
+      )
+      .map((collection) => ({
+        type: "database" as const,
+        key: `linked:${collection.id}`,
+        name: collection.name,
+        selected: selection?.kind === "missingCollection" && selection.id === collection.id,
+        onSelect: () => setSelection({ kind: "missingCollection", id: collection.id }),
+        content: (
+          <Stack gap={0}>
+            <Text>{collection.name}</Text>
+            <Text c="dimmed" className="wrap-anywhere">
+              {t("Collections.Unavailable", {
+                defaultValue:
+                  "The search index is unavailable. Retry, or select the collection's source file again.",
+              })}
+            </Text>
+          </Stack>
+        ),
+      })),
     ...databases.visibleDatabases
       .filter(
         (item) =>
@@ -131,14 +199,25 @@ export default function LibraryPage() {
     databases.failure === "silent";
   const filteredEmpty = (normalizedSearch || filter) && visibleCount === 0;
   return (
-    <Stack h="100%" p={{ base: "xs", sm: "md" }} style={{ overflow: "auto" }}>
-      <Group justify="space-between" wrap="wrap">
+    <Stack
+      h="100%"
+      mih={0}
+      p={{ base: "xs", sm: "md" }}
+      style={{ overflow: split ? "hidden" : "auto" }}
+    >
+      <Group justify="space-between" wrap="wrap" style={{ flexShrink: split ? 0 : undefined }}>
         <Title miw={0} fz={{ base: "h3", sm: "h1" }} className="wrap-anywhere">
           {t("Library.Title", { defaultValue: "Library" })}
         </Title>
         {files.chooser}
       </Group>
-      <Group role="group" aria-label={t("Common.AddNew")} gap="xs" wrap="wrap">
+      <Group
+        role="group"
+        aria-label={t("Common.AddNew")}
+        gap="xs"
+        wrap="wrap"
+        style={{ flexShrink: split ? 0 : undefined }}
+      >
         {files.creation}
         <Button
           miw={0}
@@ -149,8 +228,20 @@ export default function LibraryPage() {
           {t("Library.AddDatabase", { defaultValue: "Import or download database" })}
         </Button>
       </Group>
-      <SimpleGrid cols={{ base: 1, sm: 2 }} flex="1 0 auto" miw={0}>
-        <Paper withBorder p={{ base: 6, sm: "sm" }} miw={0}>
+      <SimpleGrid
+        cols={split ? 2 : 1}
+        flex={split ? "1 1 0" : "1 0 auto"}
+        miw={0}
+        mih={split ? 0 : undefined}
+        style={{ gridTemplateRows: split ? "minmax(0, 1fr)" : undefined }}
+      >
+        <Paper
+          withBorder
+          p={{ base: 6, sm: "sm" }}
+          miw={0}
+          mih={split ? 0 : undefined}
+          style={{ overflow: split ? "auto" : undefined }}
+        >
           <Stack gap="xs" miw={0}>
             <Input
               size="sm"
@@ -213,12 +304,55 @@ export default function LibraryPage() {
             </ScrollArea.Autosize>
           </Stack>
         </Paper>
-        <Paper withBorder p={{ base: 6, sm: "sm" }} miw={0}>
+        <Paper
+          withBorder
+          p={{ base: 6, sm: "sm" }}
+          miw={0}
+          mih={split ? 0 : undefined}
+          style={{ overflow: split ? "auto" : undefined }}
+        >
           {fileSelection ? (
-            files.detail
+            linked && files.workspace ? (
+              <Stack h="100%" miw={0}>
+                <LinkedCollection
+                  key={linked.id}
+                  collection={linked}
+                  workspace={files.workspace}
+                  files={sourceFiles}
+                />
+                <Box
+                  flex={linked.status === "preservedOriginal" ? "0 0 100%" : "1 0 auto"}
+                  h={linked.status === "preservedOriginal" ? "100%" : undefined}
+                  miw={0}
+                >
+                  {files.detail}
+                </Box>
+              </Stack>
+            ) : (
+              files.detail
+            )
+          ) : selectedMissing && files.workspace ? (
+            <LinkedCollection
+              key={selectedMissing.id}
+              collection={selectedMissing}
+              workspace={files.workspace}
+              files={sourceFiles}
+            />
           ) : databases.selectedDatabase ? (
             <Stack key={`database:${databaseHandleKey(databases.selectedDatabase.file)}`} miw={0}>
               {databases.detail}
+              {linkSupported &&
+                databases.selectedDatabase.type === "success" &&
+                files.workspace && (
+                  <Button
+                    {...libraryButtonProps}
+                    onClick={() =>
+                      setMigrationDatabase(databaseHandleKey(databases.selectedDatabase!.file))
+                    }
+                  >
+                    {t("Collections.Migrate", { defaultValue: "Link existing collection" })}
+                  </Button>
+                )}
             </Stack>
           ) : (
             <Center mih="12rem">
@@ -236,6 +370,23 @@ export default function LibraryPage() {
       </SimpleGrid>
       {files.dialogs}
       {databases.dialogs}
+      {databases.selectedDatabase?.type === "success" && files.workspace && (
+        <CollectionMigration
+          opened={migrationDatabase === databaseHandleKey(databases.selectedDatabase.file)}
+          onClose={() =>
+            setMigrationDatabase((current) =>
+              current === databaseHandleKey(databases.selectedDatabase!.file) ? null : current,
+            )
+          }
+          database={databases.selectedDatabase}
+          workspace={files.workspace}
+          files={sourceFiles}
+          onComplete={async () => {
+            await mutate(isCollectionConsumer);
+            setSelection((current) => (current === selection ? null : current));
+          }}
+        />
+      )}
     </Stack>
   );
 }

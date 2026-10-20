@@ -22,6 +22,8 @@ vi.mock("@/platform/tauri", () => ({
         getDbInfo: mocks.getDbInfo,
         verifySignedBytes: mocks.verifySignedBytes,
         searchPosition: mocks.searchPosition,
+        linkedCollectionsSupported: vi.fn(async () => false),
+        listLinkedCollections: vi.fn(async () => []),
     },
 }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError, warn: mocks.logWarn }));
@@ -71,6 +73,65 @@ const database = (id: string, filename = `${id}.db3`): ManagedDatabaseInfo => ({
 });
 
 describe("database capability UI mapping", () => {
+    it("startup resolves the selected Library root and suppresses retired independent copies without duplicating linked caches", async () => {
+        const { tauri: native } = await import("@/platform/tauri");
+        const { getDefaultStore } = await import("jotai");
+        const { fileWorkspaceAtom } = await import("@/state/atoms");
+        const store = getDefaultStore();
+        const previous = store.get(fileWorkspaceAtom);
+        const workspace = { id: { id: "selected-library" }, kind: "fileWorkspace" as const };
+        const collection = {
+            id: "22222222-2222-4222-8222-222222222222",
+            name: "Owned games",
+            file: workspace,
+            database: handle("derived"),
+            account: null,
+            status: "ready" as const,
+            generation: "current",
+            omitted: 0,
+            retiredDatabase: handle("retired"),
+            fetchSinceMs: null,
+        };
+        try {
+            store.set(fileWorkspaceAtom, workspace);
+            vi.mocked(native.linkedCollectionsSupported).mockResolvedValue(true);
+            vi.mocked(native.listLinkedCollections).mockResolvedValue([collection]);
+            mocks.listWorkspaceDatabases.mockResolvedValue({
+                entries: [
+                    { handle: handle("retired"), filename: "old.db3", availability: "available" },
+                    {
+                        handle: handle("reference"),
+                        filename: "reference.db3",
+                        availability: "available",
+                    },
+                ],
+                unread: [],
+            });
+            mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) =>
+                database(file.id.id),
+            );
+            const current = await getDatabases();
+            expect(native.listLinkedCollections).toHaveBeenCalledWith(workspace, {});
+            expect(current.databases.map((item) => item.file.id.id)).toEqual([
+                "reference",
+                "derived",
+            ]);
+            expect(current.databases[1].collection).toEqual(collection);
+            expect(mocks.getDbInfo).not.toHaveBeenCalledWith(handle("retired"), expect.anything());
+            vi.mocked(native.listLinkedCollections).mockResolvedValue([
+                { ...collection, status: "missing" },
+            ]);
+            expect((await getDatabases()).databases[1]).toMatchObject({
+                type: "error",
+                collection: { status: "missing" },
+                indexed: false,
+            });
+        } finally {
+            store.set(fileWorkspaceAtom, previous);
+            vi.mocked(native.linkedCollectionsSupported).mockResolvedValue(false);
+            vi.mocked(native.listLinkedCollections).mockResolvedValue([]);
+        }
+    });
     it("projects a handle to a stable widget key without treating it as a path", () => {
         expect(databaseHandleKey(handle("database-opaque-id"))).toBe("database-opaque-id");
     });

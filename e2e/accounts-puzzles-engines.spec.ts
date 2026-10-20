@@ -320,6 +320,125 @@ for (const state of ["partial", "failed"] as const) {
     });
 }
 
+test("accounts-puzzles-engines: a linked account downloads privately and appends once with refreshed accumulated counts", async ({
+    page,
+    mockScenario,
+}) => {
+    const file = { id: { id: "account-source" }, kind: "fileWorkspace" };
+    const database = { id: { id: "account-index" }, kind: "database" };
+    const publication = { id: { id: "provider-batch" }, kind: "fileWorkspace" };
+    const collection = {
+        id: "22222222-2222-4222-8222-222222222222",
+        name: "Accumulated history",
+        file,
+        database,
+        status: "ready",
+        generation: "before",
+        omitted: 0,
+        account: { provider: "chesscom", account: "download-player" },
+        retiredDatabase: null,
+        fetchSinceMs: "1791072000000",
+    };
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "file-workspace",
+            JSON.stringify({ id: { id: "account-library" }, kind: "fileWorkspace" }),
+        );
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "download-player",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    chessCom: {
+                        username: "download-player",
+                        stats: {
+                            chess_rapid: {
+                                last: { rating: 1500, date: 1791072000, rd: 50 },
+                                record: { win: 1, loss: 0, draw: 0 },
+                            },
+                        },
+                    },
+                },
+            ]),
+        );
+    });
+    const scenario = {
+        commands: {
+            linked_collections_supported: { result: true },
+            list_linked_collections: { result: [collection] },
+            collection_for_database: { result: collection },
+            list_workspace_databases: { result: { entries: [], unread: [] } },
+            get_db_info: {
+                result: { ...summaryDatabaseInfo, file: database, game_count: 3 },
+            },
+            prepare_account_collection: {
+                result: {
+                    collection,
+                    migrationRequired: false,
+                    destination: { id: "private-account-staging" },
+                    pendingBatch: null,
+                },
+            },
+            prepare_download: { result: "linked-account-download" },
+            download_chess_com_games: { result: { handle: publication, durability: "Durable" } },
+            append_collection_games: {
+                result: {
+                    appended: 5,
+                    committed: true,
+                    indexReady: true,
+                    durabilityConfirmed: true,
+                },
+            },
+        },
+    } satisfies MockScenario;
+    await mockScenario(scenario);
+    await page.goto("/accounts");
+    await expect(page.getByText("3 / 3", { exact: true })).toBeVisible();
+    await page.evaluate(
+        ({ commands, updatedInfo }) => {
+            const invoke = window.__TAURI_INTERNALS__.invoke;
+            window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+                const result = await invoke(command, args);
+                if (command === "append_collection_games") {
+                    // Publish the committed count before the caller starts its freshness rereads.
+                    window.__E2E_TAURI__.configure({
+                        commands: { ...commands, get_db_info: { result: updatedInfo } },
+                    });
+                    window.__TAURI_INTERNALS__.invoke = invoke;
+                }
+                return result;
+            };
+        },
+        {
+            commands: scenario.commands,
+            updatedInfo: { ...summaryDatabaseInfo, file: database, game_count: 8 },
+        },
+    );
+    const download = page.getByRole("button", { name: "Download games", exact: true });
+    await download.click();
+    await expect(page.getByText("8 / 8", { exact: true })).toBeVisible();
+    await expect(download).toBeEnabled();
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(calls.filter(({ command }) => command === "append_collection_games")).toMatchObject([
+        { args: { collection: collection.id, source: publication } },
+    ]);
+    expect(calls.filter(({ command }) => command === "download_chess_com_games")).toMatchObject([
+        {
+            args: {
+                destination: { id: "private-account-staging" },
+                sinceMs: Number(collection.fetchSinceMs),
+                jobId: "linked-account-download",
+            },
+        },
+    ]);
+    expect(
+        calls.filter(({ command }) =>
+            ["convert_pgn", "create_workspace_database", "delete_empty_games"].includes(command),
+        ),
+    ).toEqual([]);
+});
+
 test("accounts-puzzles-engines: warns when a downloaded game file's save is not confirmed", async ({
     page,
     mockScenario,

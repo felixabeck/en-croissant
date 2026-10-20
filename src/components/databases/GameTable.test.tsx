@@ -15,7 +15,16 @@ import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameTable from "./GameTable";
 import { resolveDatabaseRoute } from "./databaseRoute";
 
-const mocks = vi.hoisted(() => ({ navigate: vi.fn(), parsePGN: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  navigate: vi.fn(),
+  parsePGN: vi.fn(),
+  notify: vi.fn(),
+  queryError: undefined as Error | undefined,
+}));
+vi.mock("@/platform/tauri", async (original) => {
+  const actual = await original<typeof import("@/platform/tauri")>();
+  return { ...actual, tauri: { ...actual.tauri, resolveLinkedGame: vi.fn(async () => null) } };
+});
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string, options?: any) => options?.defaultValue ?? key }),
@@ -27,7 +36,11 @@ vi.mock("@/utils/chess", async (original) => ({
 }));
 vi.mock("swr", async (original) => ({
   ...(await original<typeof import("swr")>()),
-  default: () => ({ data: { data: games, count: games.length }, mutate: vi.fn() }),
+  default: () => ({
+    data: { data: games, count: games.length },
+    error: mocks.queryError,
+    mutate: vi.fn(),
+  }),
 }));
 vi.mock("./PlayerSearchInput", () => ({ PlayerSearchInput: () => null }));
 vi.mock("./SideInput", () => ({ SideInput: () => null }));
@@ -98,6 +111,7 @@ let root: Root;
 let jotai: ReturnType<typeof createStore>;
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.queryError = undefined;
   sessionStorage.clear();
   localStorage.clear();
   mocks.parsePGN
@@ -224,6 +238,55 @@ test("single click previews, labelled button admits the selected content and dat
   expect(stored?.state.root.fen).toBe(games[1].fen);
   expect(stored?.state.root.halfMoves).toBe(13);
   expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({ to: "/" });
+});
+
+test("linked explorer opening admits the original file tree and persists its native locator", async () => {
+  const { tauri } = await import("@/platform/tauri");
+  const locator = {
+    collection: "22222222-2222-4222-8222-222222222222",
+    generation: "live-source",
+    ordinal: 3,
+    stamp: "a".repeat(64),
+  };
+  const original = '[Event "Original PGN"]\n[Custom "preserved"]\n\n1. e4 $1 (1. d4 d5) e5 *';
+  games[0].linked = locator;
+  const source = { id: { id: "source-pgn" }, kind: "fileWorkspace" as const };
+  vi.mocked(tauri.resolveLinkedGame).mockResolvedValueOnce({
+    locator,
+    file: source,
+    name: "Source PGN",
+    ordinal: 3,
+    numGames: 8,
+    purpose: "game",
+    game: { pgn: original, stamp: locator.stamp, revision: locator.generation, present: true },
+  });
+  const parsed = defaultTree();
+  parsed.headers.event = "Original PGN";
+  parsed.headers.other = { Custom: "preserved" };
+  mocks.parsePGN.mockResolvedValueOnce(parsed);
+  await render();
+  await doubleClick(0);
+  expect(mocks.parsePGN).toHaveBeenCalledExactlyOnceWith(original);
+  expect(tauri.resolveLinkedGame).toHaveBeenCalledExactlyOnceWith(file, games[0].id, locator);
+  const admitted = jotai.get(tabsAtom)[0];
+  expect(admitted.gameOrigin).toMatchObject({
+    kind: "file",
+    gameNumber: 3,
+    file: { handle: source, numGames: 8 },
+  });
+  expect(tabStorage.read(admitted.treeKey ?? admitted.value)?.state).toMatchObject({
+    sourceStamp: locator.stamp,
+    linkedSource: locator,
+    headers: { event: "Original PGN", other: { Custom: "preserved" } },
+  });
+  delete games[0].linked;
+});
+
+test("a failed generation admission withholds previously cached explorer rows", async () => {
+  mocks.queryError = new Error("The collection changed on disk");
+  await render();
+  expect(host.querySelectorAll("tbody tr")).toHaveLength(0);
+  expect(mocks.parsePGN).not.toHaveBeenCalled();
 });
 
 test("direct non-first double-click captures its target and all gestures share admission", async () => {

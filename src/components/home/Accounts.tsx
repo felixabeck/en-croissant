@@ -32,10 +32,9 @@ import LichessLogo from "./LichessLogo";
 function Accounts() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useAtom(sessionsAtom);
-  const { data } = useDatabaseList();
-  // Account management remains usable without an import destination. The Library page's
-  // database source region owns the visible retry/error state for the shared database workspace.
-  const databases = data?.databases ?? [];
+  const { data, error, isValidating } = useDatabaseList();
+  // Import association needs the complete shared listing. Account management remains usable
+  // while that evidence is loading, unavailable or conflicting.
   const [open, setOpen] = useState(false);
 
   const addChessComSession = useCallback(
@@ -135,7 +134,12 @@ function Accounts() {
 
   return (
     <>
-      <AccountCards databases={databases} onAddAccount={() => setOpen(true)} />
+      <AccountCards
+        listing={data}
+        listingAvailable={!error}
+        listingPending={isValidating}
+        onAddAccount={() => setOpen(true)}
+      />
       {sessions.length > 0 && (
         <Group>
           <Button

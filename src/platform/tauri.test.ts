@@ -334,7 +334,6 @@ describe("tauri command facade", () => {
                         "games.pgn",
                         "player",
                         sinceMs,
-                        42,
                         "job",
                     ),
                 wireArgs: (sinceMs: number | null) => [
@@ -343,7 +342,6 @@ describe("tauri command facade", () => {
                     "games.pgn",
                     "player",
                     sinceMs,
-                    42,
                     "job",
                 ],
             },

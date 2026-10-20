@@ -29,6 +29,7 @@ function DatabasesPage() {
 }
 
 const mocks = vi.hoisted(() => ({
+  linkedCollectionsSupported: vi.fn(async () => false),
   getDatabaseWorkspace: vi.fn(),
   listWorkspaceDatabases: vi.fn(),
   getDbInfo: vi.fn(),

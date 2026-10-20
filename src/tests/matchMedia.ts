@@ -25,3 +25,7 @@ export function installMatchMediaStub(options: MatchMediaStubOptions = {}) {
             : createMediaQueryList,
     });
 }
+
+export function baseResponsiveValue<T>({ base }: { base: T }): T {
+    return base;
+}

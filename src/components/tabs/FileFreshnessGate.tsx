@@ -6,8 +6,8 @@ import { normalizeError } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import type { TreeStore } from "@/state/store/tree";
-import { parsePGN } from "@/utils/chess";
 import { loadFileGame, pickPgnFile, readFileGame } from "@/utils/files";
+import { parsePGN } from "@/utils/chess";
 import {
   AddGameContext,
   appendBlankGame,
@@ -31,6 +31,9 @@ import {
   useFileFreshness,
 } from "@/state/fileFreshness";
 import classes from "./FileFreshnessGate.module.css";
+import { useCollectionCurrency } from "@/state/linkedCollections";
+import { useDatabaseList } from "@/hooks/useDatabaseList";
+import { wrappingButton } from "@/components/common/wrappingButton";
 
 function useAddGameLease(store: TreeStore) {
   return useSyncExternalStore(
@@ -54,11 +57,77 @@ function isUnavailableFileError(error: ReturnType<typeof normalizeError>) {
 }
 
 export default function FileFreshnessGate({ tab, closeTab, children }: Props) {
+  if (tab.gameOrigin.kind === "database")
+    return <DatabaseOriginGate tab={tab}>{children}</DatabaseOriginGate>;
   if (!isFileBackedTab(tab)) return <>{children}</>;
+  return (
+    <LinkedFileOriginGate tab={tab} closeTab={closeTab}>
+      {children}
+    </LinkedFileOriginGate>
+  );
+}
+
+function DatabaseOriginGate({ tab, children }: { tab: Tab; children: React.ReactNode }) {
+  const currency = useCollectionCurrency(
+    tab.gameOrigin.kind === "database" ? tab.gameOrigin.database : null,
+  );
+  if (!currency.collection) return <>{children}</>;
+  return (
+    <RetiredOriginRecovery
+      tab={tab}
+      preservedOriginal={currency.collection.status === "preservedOriginal"}
+    />
+  );
+}
+
+function LinkedFileOriginGate({ tab, closeTab, children }: Props & { tab: FileBackedTab }) {
+  const tree = useContext(TreeStateContext)!;
+  const linked = useStore(tree, (state) => state.linkedSource);
+  const { data } = useDatabaseList(!!linked);
+  const descriptor = data?.collections?.find((collection) => collection.id === linked?.collection);
+  const currency = useCollectionCurrency(descriptor?.database, descriptor);
+  if (
+    descriptor?.status === "preservedOriginal" ||
+    currency.collection?.status === "preservedOriginal"
+  )
+    return <RetiredOriginRecovery tab={tab} preservedOriginal />;
   return (
     <FileBackedGate tab={tab} closeTab={closeTab}>
       {children}
     </FileBackedGate>
+  );
+}
+
+function RetiredOriginRecovery({
+  tab,
+  preservedOriginal = false,
+}: {
+  tab: Tab;
+  preservedOriginal?: boolean;
+}) {
+  const { t } = useTranslation();
+  const tree = useContext(TreeStateContext)!;
+  const { updateTab } = useTabActions();
+  return (
+    <Stack role="alert" p="md">
+      <Text className="wrap-anywhere">
+        {preservedOriginal
+          ? t("Collections.PreservedOriginal")
+          : t("Collections.RetiredTab", {
+              defaultValue:
+                "This database now indexes a PGN collection. Save this game as a new file to preserve your edits.",
+            })}
+      </Text>
+      <Button
+        styles={wrappingButton}
+        onClick={() => {
+          if (updateTab(tab.value, (current) => ({ ...current, gameOrigin: { kind: "none" } })))
+            tree.getState().setLinkedSource(null);
+        }}
+      >
+        {t("Collections.KeepEdits", { defaultValue: "Keep these edits as a new game" })}
+      </Button>
+    </Stack>
   );
 }
 
@@ -143,8 +212,17 @@ function FileBackedGate({
         !actionIsCurrent(signal) || getFileFreshness(tabId).epoch !== capturedEpoch;
       try {
         const current = await readFileGame(handle, gameNumber, signal);
+        const linkedSource = current.linked ?? null;
         if (isObsolete()) return;
         const latestTree = store.getState();
+        if (
+          linkedSource &&
+          latestTree.dirty &&
+          (!latestTree.linkedSource || latestTree.linkedSource.generation !== current.revision)
+        ) {
+          setFileFreshness(tabId, "conflict", { conflictReason: "changed" });
+          return;
+        }
         if (latestTree.appendAttempted) {
           setFileFreshness(tabId, "conflict", { conflictReason: "changed" });
           return;
@@ -154,7 +232,7 @@ function FileBackedGate({
             setFileFreshness(tabId, "conflict", { conflictReason: "changed" });
             return;
           }
-          store.getState().setSourceStamp(current.stamp);
+          store.getState().setSourceStamp(current.stamp, current.revision);
           setFileFreshness(tabId, "verified", { verifiedRevision: current.revision });
           return;
         }
@@ -164,6 +242,7 @@ function FileBackedGate({
           return;
         }
         if (current.stamp === latestTree.sourceStamp) {
+          store.getState().setLinkedSource(linkedSource);
           setFileFreshness(tabId, "verified", { verifiedRevision: current.revision });
           return;
         }
@@ -171,7 +250,7 @@ function FileBackedGate({
           setFileFreshness(tabId, "conflict", { conflictReason: "changed" });
           return;
         }
-        const tree = await parsePGN(current.pgn, undefined, { signal });
+        const tree = { ...(await parsePGN(current.pgn, undefined, { signal })), linkedSource };
         if (isObsolete()) return;
         const beforeReplace = store.getState();
         if (beforeReplace.dirty || beforeReplace.root !== capturedRoot) {

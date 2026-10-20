@@ -18,10 +18,29 @@ const openedGame = {
     present: true,
 };
 
-async function openFileTab(page: Page, mockScenario: (scenario: MockScenario) => Promise<void>) {
+async function openFileTab(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+    linked = false,
+) {
     await mockScenario({
         commands: filesWorkspaceCommands([[pgnFile]], {
             ...pgnFileCommands,
+            ...(linked
+                ? {
+                      read_game: {
+                          result: {
+                              ...openedGame,
+                              linked: {
+                                  collection: "22222222-2222-4222-8222-222222222222",
+                                  generation: openedGame.revision,
+                                  ordinal: 0,
+                                  stamp: openedGame.stamp,
+                              },
+                          },
+                      },
+                  }
+                : {}),
             // The external writer wins before autosave commits this edited game. Let the board
             // render the move before the native refusal installs the conflict panel.
             write_game: {
@@ -60,6 +79,28 @@ async function makeEditedMove(page: Page) {
         1,
     );
 }
+
+test("file-freshness: a linked save refuses an obsolete generation and keeps the dirty tree recoverable", async ({
+    page,
+    mockScenario,
+}) => {
+    await openFileTab(page, mockScenario, true);
+    await makeEditedMove(page);
+    const gate = page.locator("[data-file-freshness]");
+    await expect(gate).toHaveAttribute("data-file-freshness", /^conflict:/, { timeout: 8_000 });
+    const calls = await page.evaluate(() =>
+        window.__E2E_TAURI__.invocations().filter(({ command }) => command === "write_game"),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toMatchObject({
+        expected: { kind: "linkedGame", stamp: openedGame.stamp, revision: openedGame.revision },
+        pgn: expect.stringContaining("Nf3"),
+    });
+    await expect(
+        gate.getByRole("button", { name: "Save my version as a new game…" }),
+    ).toBeVisible();
+    await expect(page.getByRole("grid")).toHaveCount(0);
+});
 
 test("file-freshness: shows the conflict panel for an edited game changed on disk", async ({
     page,

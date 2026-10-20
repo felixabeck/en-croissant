@@ -1,5 +1,19 @@
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
-import { Badge, Card, Group, Progress, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
+import {
+  Alert,
+  Button,
+  Badge,
+  Card,
+  Group,
+  Progress,
+  SimpleGrid,
+  Stack,
+  Text,
+  Tooltip,
+  useMatches,
+} from "@mantine/core";
+import { CollectionMigration } from "@/components/library/LinkedCollection";
+import { ensureFileWorkspace } from "@/utils/files";
 import { notifications } from "@mantine/notifications";
 import {
   IconArrowDownRight,
@@ -32,7 +46,7 @@ import {
 } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
 import { type ManagedDatabaseInfo } from "@/utils/db";
-import { accountDatabaseFilename } from "./accountDatabase";
+import { accountDatabaseFilename, type AccountDatabaseIssue } from "./accountDatabase";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -43,6 +57,10 @@ interface AccountCardProps {
   type: "lichess" | "chesscom";
   database: ManagedDatabaseInfo | null;
   title: string;
+  /** Canonical provider identity, independent of cached profile display spelling. */
+  accountUsername?: string;
+  associationIssue?: AccountDatabaseIssue;
+  associationPending?: boolean;
   updatedAt: number;
   total: number;
   stats: {
@@ -111,6 +129,9 @@ export function AccountCard({
   type,
   database,
   title,
+  accountUsername = title,
+  associationIssue,
+  associationPending = false,
   updatedAt,
   total,
   stats,
@@ -119,10 +140,14 @@ export function AccountCard({
   authenticated,
   accountHandle,
 }: AccountCardProps) {
+  const horizontalInset = useMatches({
+    base: "var(--mantine-spacing-xs)",
+    xs: "var(--mantine-spacing-lg)",
+  });
   const { t } = useTranslation();
   const { mutate } = useSWRConfig();
   const databaseOwner = useNativeRequestOwner(DATABASE_LIST_KEY);
-  const accountKey = `${type}_${title}`;
+  const accountKey = `${type}_${accountUsername.toLowerCase()}`;
   const store = useStore();
   const items = stats.map((stat) => {
     let color = "gray.5";
@@ -158,11 +183,13 @@ export function AccountCard({
   const [downloadsInFlight, setDownloadsInFlight] = useAtom(accountDownloadsInFlightAtom);
   const pending = downloadsInFlight.has(accountKey);
   const [progress, setProgress] = useState<number | null>(null);
+  const [migrationWorkspace, setMigrationWorkspace] = useState<FileWorkspaceHandle | null>(null);
+  const [collectionNotice, setCollectionNotice] = useState(false);
   const [downloadDestination, setDownloadDestination] = useAtom(downloadDestinationAtom);
   const [, setConversionState] = useAtom(databaseConversionStateAtom);
 
   async function ensureDatabaseHandle(): Promise<DatabaseHandle> {
-    return ensureAccountDatabaseHandle(database?.file, title, type);
+    return ensureAccountDatabaseHandle(database?.file, accountUsername, type);
   }
 
   async function convert(
@@ -263,7 +290,18 @@ export function AccountCard({
   }
 
   return (
-    <Card withBorder radius="md" padding="lg">
+    <Card
+      withBorder
+      radius="md"
+      padding="lg"
+      styles={{
+        root: { paddingInline: horizontalInset },
+        section: {
+          paddingInline: horizontalInset,
+          marginInline: `calc(${horizontalInset} * -1)`,
+        },
+      }}
+    >
       <Card.Section withBorder inheritPadding py="xs">
         <Group justify="space-between">
           <Group wrap="wrap" miw={0}>
@@ -301,8 +339,14 @@ export function AccountCard({
               variant="subtle"
               color="gray"
               pending={pending}
-              disabled={pending || (type === "lichess" && !accountHandle)}
+              disabled={
+                pending ||
+                !!associationIssue ||
+                associationPending ||
+                (type === "lichess" && !accountHandle)
+              }
               onClick={async () => {
+                if (associationIssue || associationPending) return;
                 if (store.get(accountDownloadsInFlightAtom).has(accountKey)) return;
                 setDownloadsInFlight((previous) => new Map(previous).set(accountKey, null));
                 try {
@@ -313,24 +357,60 @@ export function AccountCard({
                       new Map(previous).set(accountKey, downloadTicket),
                     );
                   };
-                  const lastGameDate = database ? await getLastGameDate({ database }) : null;
+                  let preparation: Awaited<ReturnType<typeof tauri.prepareAccountCollection>> =
+                    null;
+                  if (await tauri.linkedCollectionsSupported()) {
+                    const workspace = await ensureFileWorkspace();
+                    if (!workspace) return;
+                    preparation = await tauri.prepareAccountCollection(
+                      workspace,
+                      { provider: type, account: accountUsername },
+                      database?.file ?? null,
+                    );
+                    if (preparation?.migrationRequired) {
+                      setMigrationWorkspace(workspace);
+                      return;
+                    }
+                    if (!preparation?.collection || preparation.collection.status !== "ready")
+                      throw new Error(
+                        t("Collections.Unavailable", {
+                          defaultValue:
+                            "The search index is unavailable. Retry, or select the collection's source file again.",
+                        }),
+                      );
+                  }
+                  const lastGameDate = preparation
+                    ? preparation.collection?.fetchSinceMs
+                      ? Number(preparation.collection.fetchSinceMs)
+                      : null
+                    : database
+                      ? await getLastGameDate({ database })
+                      : null;
                   let publication: ArtifactPublication;
-                  if (type === "lichess") {
-                    if (!accountHandle) throw new Error("Authenticated Lichess account required");
-                    const destination = await ensureDownloadDestination();
+                  if (preparation?.pendingBatch) {
+                    publication = { handle: preparation.pendingBatch, durability: "Durable" };
+                  } else if (type === "lichess") {
+                    if (!accountHandle)
+                      throw new Error(
+                        t("Home.Accounts.AuthenticationRequired", {
+                          defaultValue: "An authenticated Lichess account is required.",
+                        }),
+                      );
+                    const destination =
+                      preparation?.destination ?? (await ensureDownloadDestination());
                     publication = await downloadLichess(
                       accountHandle,
                       destination,
-                      title,
+                      accountUsername,
                       lastGameDate,
-                      total - downloadedGames,
                       onTicket,
                     );
                   } else {
-                    const destination = await ensureDownloadDestination();
+                    const destination =
+                      preparation?.destination ?? (await ensureDownloadDestination());
                     publication = await downloadChessCom(
                       destination,
-                      title,
+                      accountUsername,
                       lastGameDate,
                       onTicket,
                     );
@@ -346,8 +426,20 @@ export function AccountCard({
                   }
                   let importFailed = true;
                   try {
-                    const databaseHandle = await convert(publication.handle, lastGameDate, ticket);
-                    await tauri.deleteEmptyGames(databaseHandle);
+                    if (preparation?.collection) {
+                      const outcome = await tauri.appendCollectionGames(
+                        preparation.collection.id,
+                        publication.handle,
+                      );
+                      setCollectionNotice(!outcome.indexReady || !outcome.durabilityConfirmed);
+                    } else {
+                      const databaseHandle = await convert(
+                        publication.handle,
+                        lastGameDate,
+                        ticket,
+                      );
+                      await tauri.deleteEmptyGames(databaseHandle);
+                    }
                     importFailed = false;
                   } finally {
                     await refreshDatabases(importFailed);
@@ -383,6 +475,56 @@ export function AccountCard({
       </Card.Section>
 
       <Card.Section inheritPadding py="md">
+        {associationIssue && (
+          <Alert
+            color="yellow"
+            px={0}
+            miw={0}
+            className="wrap-anywhere"
+            styles={{ body: { minWidth: 0 }, message: { minWidth: 0 } }}
+          >
+            <Text>{t("Home.Accounts.HistoryUnavailable")}</Text>
+            {associationIssue.filenames.length > 0 && (
+              <Text className="wrap-anywhere">{associationIssue.filenames.join(", ")}</Text>
+            )}
+            {associationIssue.error && <Text>{associationIssue.error}</Text>}
+            <Button
+              variant="subtle"
+              className="wrap-button"
+              px={0}
+              miw={0}
+              maw="100%"
+              disabled={associationPending}
+              onClick={() =>
+                void runUnlessCancelled(t("Common.Error"), () => refreshDatabases(false))
+              }
+            >
+              {t("Common.Retry")}
+            </Button>
+          </Alert>
+        )}
+        {database?.type === "error" && <Alert color="yellow">{database.error}</Alert>}
+        {collectionNotice && (
+          <Alert color="yellow">
+            {t("Collections.CommittedPending", {
+              defaultValue:
+                "The PGN was committed, but completion could not be fully confirmed. Refresh the index before continuing. Do not repeat the append.",
+            })}
+          </Alert>
+        )}
+        {migrationWorkspace && database?.type === "success" && (
+          <CollectionMigration
+            opened
+            onClose={() => setMigrationWorkspace(null)}
+            database={database}
+            workspace={migrationWorkspace}
+            files={[]}
+            account={{ provider: type, account: accountUsername }}
+            onComplete={async () => {
+              await refreshDatabases(false);
+            }}
+          />
+        )}
         <SimpleGrid cols={1} spacing="xs">
           {items}
         </SimpleGrid>
@@ -394,8 +536,10 @@ export function AccountCard({
             <Text size="xs" c="dimmed">
               {t("Common.Games")}
             </Text>
-            <Text size="xs" fw={500}>
-              {downloadedGames} / {effectiveTotal}
+            <Text size="xs" fw={500} miw={0} className="wrap-anywhere">
+              {associationIssue || database?.type === "error"
+                ? t("Common.Unknown", { defaultValue: "Unknown" })
+                : `${downloadedGames} / ${effectiveTotal}`}
             </Text>
           </Group>
           <Progress

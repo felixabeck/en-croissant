@@ -8,6 +8,7 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import { accountDownloadsInFlightAtom } from "@/state/atoms";
 
 const mocks = vi.hoisted(() => ({
+  linkedCollectionsSupported: vi.fn(async () => false),
   getDatabaseWorkspace: vi.fn(),
   createWorkspaceDatabase: vi.fn(),
   listWorkspaceDatabases: vi.fn(),
@@ -150,7 +151,7 @@ test("an adapter decoding error notifies only while mounted and leaves progress 
     reportError = onError;
     return unlisten;
   });
-  getDefaultStore().set(accountDownloadsInFlightAtom, new Map([["lichess_Felix", "download-job"]]));
+  getDefaultStore().set(accountDownloadsInFlightAtom, new Map([["lichess_felix", "download-job"]]));
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);

@@ -140,7 +140,7 @@ fn validate_name(name: &str) -> Result<&str, Error> {
     Ok(name)
 }
 
-fn pgn_name(name: &str) -> Result<String, Error> {
+pub(crate) fn pgn_name(name: &str) -> Result<String, Error> {
     let name = validate_name(name)?;
     Ok(if name.to_ascii_lowercase().ends_with(".pgn") {
         name.to_string()
@@ -272,13 +272,14 @@ pub async fn write_workspace_file_metadata(
             BLOCKING_GATEWAY
                 .spawn_cancellable(cancellation, move |token| {
                     write_workspace_file_metadata_blocking(
-                        workspace,
+                        workspace.clone(),
                         entry,
                         metadata,
                         &pgn_path_authority,
                         &workspace_mutation,
                         token,
-                    )
+                    )?;
+                    reconcile_workspace_collections(&pgn_path_authority, &workspace)
                 })
                 .await
         },
@@ -286,7 +287,31 @@ pub async fn write_workspace_file_metadata(
     .await
 }
 
-fn write_workspace_file_metadata_blocking(
+fn reconcile_workspace_collections(
+    authority: &SharedPathAuthority,
+    workspace: &FileWorkspaceHandle,
+) -> Result<(), Error> {
+    let Some(collections) = authority.collections()? else {
+        return Ok(());
+    };
+    let token = CancellationToken::new();
+    let result = collect_tree_entries(authority, workspace, &token).and_then(|(listing, _)| {
+        collections
+            .reconcile(authority, workspace, &listing, &token)
+            .map(|_| ())
+    });
+    result.map_err(|error| {
+        log::warn!(
+            "collection reconciliation failed after workspace publication: {}",
+            error.diagnostic()
+        );
+        Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::WorkspaceSidecarReplacement,
+        )
+    })
+}
+
+pub(crate) fn write_workspace_file_metadata_blocking(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     metadata: WorkspaceMetadata,
@@ -487,7 +512,7 @@ const MAX_WORKSPACE_LISTING_DEPTH: usize = 64;
 // wrapper, so the command holds the spawn. Same keep-name rule as puzzle.rs:
 // `collect_tree_entries`, `create_workspace_directory_inner`, `trash_entry`,
 // `restore_entry`.
-fn collect_tree_entries(
+pub(crate) fn collect_tree_entries(
     pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
     token: &CancellationToken,
@@ -965,7 +990,17 @@ pub(crate) async fn list_file_workspace_core(
         let workspace_for_tree = workspace.clone();
         let (mut listing, missing) = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
-                collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
+                let (listing, missing) =
+                    collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)?;
+                if let Some(collections) = pgn_path_authority.collections()? {
+                    collections.reconcile(
+                        &pgn_path_authority,
+                        &workspace_for_tree,
+                        &listing,
+                        token,
+                    )?;
+                }
+                Ok((listing, missing))
             })
             .await?;
         #[cfg(test)]
@@ -1144,8 +1179,8 @@ pub async fn create_workspace_file(
         let pgn_repository = state.pgn_repository.clone();
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
-                create_workspace_file_blocking(
-                    workspace,
+                let result = create_workspace_file_blocking(
+                    workspace.clone(),
                     parent,
                     name,
                     metadata,
@@ -1154,7 +1189,9 @@ pub async fn create_workspace_file(
                     &workspace_mutation,
                     &pgn_repository,
                     token,
-                )
+                )?;
+                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
+                Ok(result)
             })
             .await
     })
@@ -1165,7 +1202,7 @@ pub async fn create_workspace_file(
 // authority, mutation lock, PGN repository). Grouping those values would introduce a one-off
 // request type with no second consumer.
 #[allow(clippy::too_many_arguments)]
-fn create_workspace_file_blocking(
+pub(crate) fn create_workspace_file_blocking(
     workspace: FileWorkspaceHandle,
     parent: FileWorkspaceHandle,
     name: String,
@@ -1175,6 +1212,35 @@ fn create_workspace_file_blocking(
     workspace_mutation: &Mutex<()>,
     pgn_repository: &pgn::PgnRepository,
     cancellation: &CancellationToken,
+) -> Result<WorkspaceEntry, Error> {
+    create_owned_workspace_file_blocking(
+        workspace,
+        parent,
+        name,
+        metadata,
+        content,
+        pgn_path_authority,
+        workspace_mutation,
+        pgn_repository,
+        cancellation,
+        None,
+    )
+}
+
+type WorkspaceFileOwner<'a> = dyn FnMut((u64, u64)) -> Result<(), Error> + 'a;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_owned_workspace_file_blocking(
+    workspace: FileWorkspaceHandle,
+    parent: FileWorkspaceHandle,
+    name: String,
+    metadata: WorkspaceMetadata,
+    content: WorkspaceFileContent,
+    pgn_path_authority: &SharedPathAuthority,
+    workspace_mutation: &Mutex<()>,
+    pgn_repository: &pgn::PgnRepository,
+    cancellation: &CancellationToken,
+    mut owner: Option<&mut WorkspaceFileOwner<'_>>,
 ) -> Result<WorkspaceEntry, Error> {
     let metadata_bytes = serialize_metadata(&metadata)?;
     let _guard = lock_std_cancellable(
@@ -1258,6 +1324,9 @@ fn create_workspace_file_blocking(
                     pgn::copy_range(source, file, 0, end, cancellation)
                 }
             }?;
+            if let Some(owner) = owner.as_mut() {
+                owner(crate::infra::path_authority::opened_file_identity(file)?)?;
+            }
             #[cfg(test)]
             WORKSPACE_CREATED_FILE_POST_WRITE_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
@@ -1487,13 +1556,15 @@ pub async fn move_workspace_entry(
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
                 move_workspace_entry_blocking(
-                    workspace,
+                    workspace.clone(),
                     entry,
                     target_directory,
                     &pgn_path_authority,
                     &workspace_mutation,
                     token,
-                )
+                )?;
+                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
+                Ok(())
             })
             .await
     })
@@ -1553,21 +1624,23 @@ pub async fn rename_workspace_file(
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
                 rename_workspace_file_blocking(
-                    workspace,
+                    workspace.clone(),
                     entry,
                     name,
                     metadata,
                     &pgn_path_authority,
                     &workspace_mutation,
                     token,
-                )
+                )?;
+                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
+                Ok(())
             })
             .await
     })
     .await
 }
 
-fn rename_workspace_file_blocking(
+pub(crate) fn rename_workspace_file_blocking(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     name: String,
@@ -1659,7 +1732,9 @@ pub async fn trash_workspace_entry(
                     &workspace,
                     &entry,
                     token,
-                )
+                )?;
+                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
+                Ok(())
             })
             .await
     })
@@ -1739,7 +1814,9 @@ pub async fn restore_workspace_entry(
                         &workspace,
                         &entry,
                         token,
-                    )
+                    )?;
+                    reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
+                    Ok(())
                 })
                 .await
         },

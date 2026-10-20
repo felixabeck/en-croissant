@@ -1181,8 +1181,67 @@ test("async-errors: degrades to a usable account page when the database workspac
     await assertNoHorizontalOverflow();
     await assertPageNotClipped(page);
     await assertAccessible();
+    const historyWarning = page
+        .getByRole("alert")
+        .getByText(germanListingCopy["Home.Accounts.HistoryUnavailable"], { exact: true });
+    await expect(historyWarning).toHaveCount(1);
+    const historyWord = await historyWarning.evaluate((paragraph) => {
+        if (paragraph.tagName !== "P") throw new Error("history warning must be a real paragraph");
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        const matches: { node: Text; start: number }[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            for (const match of (node as Text).data.matchAll(/\bnicht\b/g)) {
+                matches.push({ node: node as Text, start: match.index });
+            }
+        }
+        if (matches.length !== 1) {
+            throw new Error(
+                `history warning must contain one text-node match for nicht, found ${matches.length}`,
+            );
+        }
+        const range = document.createRange();
+        range.setStart(matches[0].node, matches[0].start);
+        range.setEnd(matches[0].node, matches[0].start + "nicht".length);
+        const main = paragraph.closest("main");
+        if (!main) throw new Error("history warning must belong to the real main area");
+        const mainStyle = getComputedStyle(main);
+        const bounds = range.getBoundingClientRect();
+        return {
+            text: range.toString(),
+            width: bounds.width,
+            height: bounds.height,
+            mainWidth:
+                main.clientWidth -
+                Number.parseFloat(mainStyle.paddingLeft) -
+                Number.parseFloat(mainStyle.paddingRight),
+            rects: Array.from(range.getClientRects(), (rect) => ({
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+            })),
+        };
+    });
+    expect(historyWord.text).toBe("nicht");
+    expect(historyWord.width).toBeGreaterThan(0);
+    expect(historyWord.height).toBeGreaterThan(0);
+    expect(historyWord.rects.length).toBeGreaterThan(0);
+    for (const rect of historyWord.rects) {
+        expect(rect.width).toBeGreaterThan(0);
+        expect(rect.height).toBeGreaterThan(0);
+    }
+    expect(historyWord.mainWidth).toBeGreaterThan(0);
+    expect(
+        historyWord.mainWidth,
+        "the available main area must fit the complete warning word nicht",
+    ).toBeGreaterThanOrEqual(historyWord.rects.reduce((width, rect) => width + rect.width, 0));
+    expect(
+        new Set(historyWord.rects.map((rect) => rect.top)).size,
+        "history warning word nicht must occupy one rendered line instead of glyph rows",
+    ).toBe(1);
     await capture("async-errors-personal-database");
     await expect(page).toHaveScreenshot("async-errors-personal-database.png", { fullPage: true });
+    await page.getByRole("alert").scrollIntoViewIfNeeded();
+    await capture("async-errors-personal-history-warning");
 });
 
 test("async-errors: wraps a long database title in the list at 320px", async ({

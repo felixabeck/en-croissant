@@ -2147,7 +2147,7 @@ fn legacy_index_mapping_is_dropped_before_removal() {
 /// The live guard-row count at the current phase boundary. Every
 /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
 /// count in exactly one place instead of five copies.
-const LIVE_GUARD_ROW_COUNT: usize = 6;
+const LIVE_GUARD_ROW_COUNT: usize = 10;
 
 fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
     let mut failures = Vec::new();
@@ -2382,6 +2382,8 @@ fn source_for(file: &str) -> &'static str {
         "db/search.rs" => include_str!("../../db/search.rs"),
         "db/search_index.rs" => include_str!("../../db/search_index.rs"),
         "db/mod.rs" => include_str!("../../db/mod.rs"),
+        "db/linked_collections.rs" => include_str!("../../db/linked_collections.rs"),
+        "db/linked_collections/batch.rs" => include_str!("../../db/linked_collections/batch.rs"),
         "file_workspace.rs" => include_str!("../../file_workspace.rs"),
         "pgn.rs" => include_str!("../../pgn.rs"),
         other => panic!("unknown source-test file {other}"),
@@ -2394,6 +2396,7 @@ fn module_source(file: &str) -> &'static str {
         "infra/mod.rs" => include_str!("../mod.rs"),
         "infra/path_authority/mod.rs" => include_str!("../path_authority/mod.rs"),
         "db/mod.rs" => include_str!("../../db/mod.rs"),
+        "db/linked_collections.rs" => include_str!("../../db/linked_collections.rs"),
         other => panic!("unknown module source {other}"),
     }
 }
@@ -2419,6 +2422,15 @@ fn module_declarations(file: &str) -> &'static [(&'static str, &'static str)] {
         "db/mod.rs" => &[("main.rs", "mod db;")],
         "db/repository.rs" => &[("main.rs", "mod db;"), ("db/mod.rs", "mod repository;")],
         "db/search.rs" => &[("main.rs", "mod db;"), ("db/mod.rs", "mod search;")],
+        "db/linked_collections.rs" => &[
+            ("main.rs", "mod db;"),
+            ("db/mod.rs", "pub(crate) mod linked_collections;"),
+        ],
+        "db/linked_collections/batch.rs" => &[
+            ("main.rs", "mod db;"),
+            ("db/mod.rs", "pub(crate) mod linked_collections;"),
+            ("db/linked_collections.rs", "pub(crate) mod batch;"),
+        ],
         other => panic!("unknown module declaration chain for {other}"),
     }
 }
@@ -2697,6 +2709,30 @@ fn guard_rows() -> &'static [GuardRow] {
             operation: "PGN atomic replacement",
             effects: &["operations.accept("],
         },
+        GuardRow {
+            file: "db/linked_collections.rs",
+            signature: "pub(crate) async fn migrate_linked_collection(",
+            operation: "PGN atomic replacement",
+            effects: &["operations.accept("],
+        },
+        GuardRow {
+            file: "db/linked_collections.rs",
+            signature: "pub(crate) async fn edit_linked_collection(",
+            operation: "PGN atomic replacement",
+            effects: &["operations.accept("],
+        },
+        GuardRow {
+            file: "db/linked_collections.rs",
+            signature: "pub(crate) async fn reselect_linked_collection(",
+            operation: "PGN atomic replacement",
+            effects: &["operations.accept("],
+        },
+        GuardRow {
+            file: "db/linked_collections/batch.rs",
+            signature: "pub(crate) async fn append_collection_games(",
+            operation: "PGN atomic replacement",
+            effects: &["operations.accept("],
+        },
     ]
 }
 
@@ -2847,7 +2883,7 @@ fn production_replace_pgn_atomic_calls_are_only_edit_existing_and_export_to_pgn_
 
 /// Pin (2) of the `f-20260914-15` completeness unit (d-20260918-13). Every node on the
 /// `replace_pgn_atomic` path may be called from production code only by the functions that
-/// lead to the three guarded commands; a callee's own definition sits outside any body and is
+/// lead to the guarded commands, including linked collection writes. A callee's own definition sits outside any body and is
 /// allowed. This is what catches a new `#[tauri::command]` in any file that calls a `pub`
 /// core, or a new private wrapper around `commit_pgn_mutation`. Enclosing identity is the
 /// nearest preceding `fn <name>` whose brace region still contains the call offset.
@@ -2861,8 +2897,13 @@ fn production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers(
         ("edit_existing", &["commit_pgn_mutation"]),
         (
             "commit_pgn_mutation",
-            &["delete_game_core", "write_game_core"],
+            &["delete_game_core", "write_game_core", "transform_file_core"],
         ),
+        (
+            "transform_file_core",
+            &["append_batch", "edit_linked_collection"],
+        ),
+        ("append_batch", &["append_collection_games"]),
         ("delete_game_core", &["delete_game"]),
         ("write_game_core", &["write_game"]),
         ("export_to_pgn_blocking", &["export_to_pgn"]),

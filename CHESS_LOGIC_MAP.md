@@ -18,7 +18,7 @@ It holds no bare collections; each concern is behind a type that owns its own cl
 | `database_repository` | `Arc<db::DatabaseRepository>` | Diesel/r2d2 SQLite pools |
 | `search_cache` | `SearchCache` | position-search results |
 | `pgn_repository` | `pgn::PgnRepository` | the cached byte-offset index over PGN files |
-| `pgn_path_authority` | `Mutex<Option<infra::path_authority::PathAuthority>>` | which PGN paths the renderer may reach |
+| `pgn_path_authority` | `infra::path_authority::SharedPathAuthority` | PGN path grants and the linked collection service |
 | `engine_supervisor` | `EngineSupervisor` | UCI child processes and their lifetimes |
 | `auth` | `Arc<AuthLifecycle>` | OAuth flow state |
 | `credentials` | `Arc<CredentialManager>` | tokens, in the OS keyring — never in the renderer |
@@ -109,6 +109,25 @@ success or completed retirement. Shutdown visits each captured session once. Act
 failures use one safe public conversion, with panic diagnostics confined to native logs.
 
 ## 4. Game storage
+
+On Linux and macOS, `db/linked_collections.rs` owns a bounded native collection registry through
+`SharedPathAuthority`. Library PGNs categorized as game or tournament are authoritative.
+Their UUID caches live in private app data outside the standalone database directory.
+Repertoires, puzzles and other PGNs remain plain files. Windows retains standalone databases.
+
+Rebuilds stream source games through the existing importer in one SQLite transaction with source
+ordinals, exact byte stamps, generation, digest and DataRevision. Query normalization verifies the
+admitted source generation before returning. Linked openings read original PGN bytes and persist
+their locators with the tree. All linked writes use the PGN edit owner and atomic replacement.
+`db/linked_collections/batch.rs` stages append inputs and reconciles provider IDs with compatible
+legacy fingerprints on disk. Migration snapshots include WAL state and expose explicit restore.
+Pending inputs retain private read grants for explicit Library/account recovery. Completion
+removes the owned staging copy and releases its grant after the durable terminal marker.
+
+`state/linkedCollections.ts` connects Library, home summaries, explorer and reference consumers to
+the root freshness clock in `state/fileFreshness.ts`. Shared metadata checks have two-second
+deadlines. Native rebuilds retain their operation owner through completion and are bounded
+separately, so a large collection can finish rebuilding without extending metadata reads.
 
 SQLite via Diesel, `src-tauri/src/db/{models,schema}.rs`.
 

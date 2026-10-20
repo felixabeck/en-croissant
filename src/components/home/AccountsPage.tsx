@@ -12,7 +12,7 @@ function AccountsPage() {
   const sessions = useAtomValue(sessionsAtom);
 
   return (
-    <Group wrap="wrap" px="lg" pb="lg" h="100%" style={{ overflowY: "auto" }}>
+    <Group wrap="wrap" px={{ base: "xs", xs: "lg" }} pb="lg" h="100%" style={{ overflowY: "auto" }}>
       <Stack h="100%" style={column}>
         <Accounts />
       </Stack>

@@ -37,4 +37,10 @@ export const databaseHandleSchema: z.ZodType<DatabaseHandle> = z.object({
     id: pathRefSchema,
     kind: z.literal("database"),
 });
+export const linkedGameLocatorSchema = z.object({
+    collection: z.string().uuid(),
+    generation: z.string().min(1).max(256),
+    ordinal: z.number().int().nonnegative(),
+    stamp: z.string().regex(/^[a-f0-9]{64}$/),
+});
 // Stryker restore all

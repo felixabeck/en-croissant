@@ -48,19 +48,22 @@ function GameTable() {
 
   const selectedGame = useStore(store, (s) => s.games.selectedGame);
   const setSelectedGame = useStore(store, (s) => s.setGamesSelectedGame);
+  const generation = useStore(store, (s) => s.database?.collection?.generation);
 
   const navigate = useNavigate();
 
   const [, setTabs] = useAtom(tabsAtom);
 
-  const requestKey = ["games", file, query] as const;
+  const requestKey = generation
+    ? (["games", file, query, generation] as const)
+    : (["games", file, query] as const);
   const requestOwner = useNativeRequestOwner(requestKey);
   const { data, error, isLoading } = useSWR(requestKey, () =>
     requestOwner!.run((signal) => query_games(file, query, { signal })),
   );
 
-  const games = data?.data ?? [];
-  const count = data?.count;
+  const games = error ? [] : (data?.data ?? []);
+  const count = error ? undefined : data?.count;
   const reportOpenError = (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error);
   const gameOpen = useGameOpen(
     (record: NormalizedGame) =>
@@ -71,7 +74,12 @@ function GameTable() {
             setTabs,
             pgn: record.moves,
             headers: record,
-            gameOrigin: { kind: "database", database: file, gameId: record.id },
+            gameOrigin: {
+              kind: "database",
+              database: file,
+              gameId: record.id,
+              linked: record.linked ?? undefined,
+            },
           }),
         onSuccess: () => navigate({ to: "/" }),
         onError: reportOpenError,

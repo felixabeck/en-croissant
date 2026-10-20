@@ -1,4 +1,4 @@
-import { Button, Checkbox, Group, NumberInput, Select, Stack } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, NumberInput, Select, Stack } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useAtom, useAtomValue } from "jotai";
 import { atomWithStorage } from "jotai/utils";
@@ -10,9 +10,11 @@ import { tauri } from "@/platform/tauri";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import AppModal from "../../common/AppModal";
 import { enginesAtom, referenceDbAtom } from "@/state/atoms";
+import { useCollectionCurrency } from "@/state/linkedCollections";
 import { createZodStorage } from "@/state/utils";
 import { captureReportOwner, isReportOwnerCurrent, waitForReportOwner } from "@/state/store/tree";
 import { goModeSchema, type LocalEngine } from "@/utils/engines";
+import { capabilityKey } from "@/utils/pathCapabilities";
 import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -88,6 +90,29 @@ function ReportModal({
   const { t } = useTranslation();
 
   const referenceDb = useAtomValue(referenceDbAtom);
+  const currency = useCollectionCurrency(referenceDb);
+  const referenceUnavailable =
+    !!referenceDb &&
+    (currency.pending ||
+      !!currency.error ||
+      (!!currency.collection &&
+        (currency.collection.status !== "ready" || !currency.collection.database)));
+  const activeReferenceOperation = useRef<{
+    id: string;
+    owner: object;
+    cancelling: boolean;
+  } | null>(null);
+  const currentReferenceIdentity = JSON.stringify([
+    referenceDb ? capabilityKey(referenceDb) : null,
+    currency.pending,
+    !!currency.error,
+    currency.collection?.id,
+    currency.collection?.status,
+    currency.collection?.generation,
+    currency.collection?.database ? capabilityKey(currency.collection.database) : null,
+  ]);
+  const referenceIdentity = useRef(currentReferenceIdentity);
+  referenceIdentity.current = currentReferenceIdentity;
   const engines = useAtomValue(enginesAtom);
   const localEngines = useMemo(
     () => (engines ?? []).filter((e): e is LocalEngine => e.type === "local"),
@@ -97,6 +122,40 @@ function ReportModal({
   const addAnalysis = useStore(store, (s) => s.addAnalysis);
   const prepareGeneration = useRef(0);
   const pendingPreparation = useRef<AbortController | null>(null);
+  const referenceCallbacks = useRef({ t, setInProgress });
+  referenceCallbacks.current = { t, setInProgress };
+  useEffect(() => {
+    if (currency.error)
+      notifyUnlessCancelled(referenceCallbacks.current.t("Common.Error"), currency.error);
+  }, [currency.error]);
+  useEffect(() => {
+    pendingPreparation.current?.abort();
+    prepareGeneration.current += 1;
+    const operation = activeReferenceOperation.current;
+    if (!operation || operation.cancelling) return;
+    operation.cancelling = true;
+    const { t, setInProgress } = referenceCallbacks.current;
+    void tauri
+      .cancelAnalysis(operation.id)
+      .catch((error) => {
+        if (
+          isReportOwnerCurrent(tab, operation.owner) &&
+          store.getState().report.operationId === operation.id
+        )
+          notifyUnlessCancelled(t("Common.Error"), error);
+      })
+      .finally(async () => {
+        if (
+          activeReferenceOperation.current === operation &&
+          (await waitForReportOwner(tab, operation.owner)) &&
+          isReportOwnerCurrent(tab, operation.owner) &&
+          store.getState().report.operationId === operation.id
+        ) {
+          activeReferenceOperation.current = null;
+          setInProgress(false);
+        }
+      });
+  }, [currentReferenceIdentity, store, tab]);
   const currentRootFingerprint = useRef("");
   currentRootFingerprint.current = reportRootFingerprint(initialFen, moves);
 
@@ -133,6 +192,8 @@ function ReportModal({
   }, [form, localEngines, reportSettings]);
 
   async function analyze() {
+    if (referenceUnavailable) return;
+    const capturedReferenceIdentity = referenceIdentity.current;
     pendingPreparation.current?.abort();
     const preparation = new AbortController();
     pendingPreparation.current = preparation;
@@ -149,6 +210,7 @@ function ReportModal({
     } catch (error) {
       if (
         generation === prepareGeneration.current &&
+        referenceIdentity.current === capturedReferenceIdentity &&
         isReportOwnerCurrent(tab, ownerEpoch) &&
         currentRootFingerprint.current === rootFingerprint
       )
@@ -159,6 +221,7 @@ function ReportModal({
     }
     if (
       generation !== prepareGeneration.current ||
+      referenceIdentity.current !== capturedReferenceIdentity ||
       !isReportOwnerCurrent(tab, ownerEpoch) ||
       currentRootFingerprint.current !== rootFingerprint
     ) {
@@ -167,6 +230,7 @@ function ReportModal({
       } catch (error) {
         if (
           generation === prepareGeneration.current &&
+          referenceIdentity.current === capturedReferenceIdentity &&
           isReportOwnerCurrent(tab, ownerEpoch) &&
           currentRootFingerprint.current === rootFingerprint
         )
@@ -175,6 +239,7 @@ function ReportModal({
       return;
     }
     registerOperation(operationId);
+    activeReferenceOperation.current = { id: operationId, owner: ownerEpoch, cancelling: false };
     setInProgress(true);
     closeReportingMode();
     const engineSettings = normalizeEngineOptions(engine?.settings ?? []);
@@ -189,7 +254,7 @@ function ReportModal({
         {
           annotateNovelties: form.values.novelty,
           fen: initialFen,
-          referenceDb,
+          referenceDb: currency.collection?.database ?? referenceDb,
           reversed: form.values.reversed,
           moves,
         },
@@ -201,7 +266,8 @@ function ReportModal({
         if (
           (await waitForReportOwner(tab, ownerEpoch)) &&
           isReportOwnerCurrent(tab, ownerEpoch) &&
-          isCurrentOperation(operationId, rootFingerprint)
+          isCurrentOperation(operationId, rootFingerprint) &&
+          referenceIdentity.current === capturedReferenceIdentity
         ) {
           addAnalysis(analysis, {
             showVariations: variations,
@@ -212,7 +278,8 @@ function ReportModal({
         if (
           (await waitForReportOwner(tab, ownerEpoch)) &&
           isReportOwnerCurrent(tab, ownerEpoch) &&
-          isCurrentOperation(operationId, rootFingerprint)
+          isCurrentOperation(operationId, rootFingerprint) &&
+          referenceIdentity.current === capturedReferenceIdentity
         ) {
           notifyUnlessCancelled(t("Common.Error"), reportEngineFailure(t, error));
         }
@@ -221,9 +288,11 @@ function ReportModal({
         if (
           (await waitForReportOwner(tab, ownerEpoch)) &&
           isReportOwnerCurrent(tab, ownerEpoch) &&
-          isCurrentOperation(operationId, rootFingerprint)
+          store.getState().report.operationId === operationId
         )
           setInProgress(false);
+        if (activeReferenceOperation.current?.id === operationId)
+          activeReferenceOperation.current = null;
       });
   }
 
@@ -235,6 +304,14 @@ function ReportModal({
     >
       <form onSubmit={form.onSubmit(() => analyze())}>
         <Stack>
+          {referenceUnavailable && (
+            <Alert color="yellow">
+              {t("Collections.Unavailable", {
+                defaultValue:
+                  "The search index is unavailable. Retry, or select the collection's source file again.",
+              })}
+            </Alert>
+          )}
           <Select
             allowDeselect={false}
             withAsterisk
@@ -300,7 +377,9 @@ function ReportModal({
           />
 
           <Group justify="right">
-            <Button type="submit">{t("Board.Analysis.Analyze")}</Button>
+            <Button type="submit" disabled={referenceUnavailable}>
+              {t("Board.Analysis.Analyze")}
+            </Button>
           </Group>
         </Stack>
       </form>

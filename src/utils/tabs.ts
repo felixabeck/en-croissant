@@ -207,6 +207,7 @@ export async function appendBlankGame({
                     },
                 };
             });
+            // Refusal carries no error because the workspace boundary reports the storage diagnostic.
             return { ok: committed };
         } catch (error) {
             return { ok: false as const, error };
@@ -243,7 +244,11 @@ export async function appendBlankGame({
             owner: captured,
             treeStore: store,
             snapshot: store.getState(),
-            tree: { ...newGame, sourceStamp: written.stamp },
+            tree: {
+                ...newGame,
+                sourceStamp: written.stamp,
+                ...(written.linked ? { linkedSource: written.linked } : {}),
+            },
             page: gameNumber,
             appendCount: gameNumber + 1,
             isCurrent: owns,
@@ -562,6 +567,33 @@ export async function createTab({
     existingTabIds?: Iterable<string>;
 }): Promise<string | null> {
     let treeToSeed: TreeState | undefined = initialTree;
+    if (gameOrigin?.kind === "database") {
+        const linked = await tauri.resolveLinkedGame(
+            gameOrigin.database,
+            gameOrigin.gameId,
+            gameOrigin.linked ?? null,
+        );
+        if (linked) {
+            const tree = await parsePGN(linked.game.pgn);
+            treeToSeed = {
+                ...tree,
+                sourceStamp: linked.game.stamp,
+                linkedSource: linked.locator,
+            } as TreeState;
+            gameOrigin = {
+                kind: "file",
+                gameNumber: linked.ordinal,
+                file: {
+                    type: "file",
+                    handle: linked.file,
+                    name: linked.name,
+                    numGames: linked.numGames,
+                    metadata: { type: linked.purpose, tags: [] },
+                    lastModified: Date.now(),
+                },
+            };
+        }
+    }
 
     if (!treeToSeed && pgn !== undefined) {
         const tree = await parsePGN(pgn, headers?.fen);
@@ -713,6 +745,8 @@ export async function appendStoreGame({
                 onAdmitted?.(saved);
                 if (!ownsSuccessor()) return;
                 const unchanged = serializeStoreTree(store) === pgn;
+                store.getState().setLinkedSource(written.linked ?? null);
+                if (!ownsSuccessor()) return;
                 if (unchanged) store.getState().save(stamp);
                 else {
                     store.getState().setSourceStamp(stamp);
@@ -803,8 +837,17 @@ export async function saveToFile({
             }
         }
         const gameNumber = fileOrigin?.gameNumber ?? 0;
-        const write = (file: FileMetadata, stamp: string) =>
-            writeFileGame(file.handle, gameNumber, pgn, { kind: "game", stamp });
+        const write = (file: FileMetadata, stamp: string) => {
+            const linked = store.getState().linkedSource;
+            return writeFileGame(
+                file.handle,
+                gameNumber,
+                pgn,
+                linked
+                    ? { kind: "linkedGame", stamp, revision: linked.generation }
+                    : { kind: "game", stamp },
+            );
+        };
         const validateSource = async (origin: NonNullable<typeof fileOrigin>) => {
             currentFileOperation = true;
             const source = await readFileGame(origin.file.handle, origin.gameNumber);
@@ -824,8 +867,10 @@ export async function saveToFile({
             }
             if (commitOrigin && !commitOrigin()) return "superseded";
             const unchanged = serializeStoreTree(store) === pgn;
-            if (unchanged) store.getState().save(written?.stamp ?? undefined);
-            else if (written) store.getState().setSourceStamp(written.stamp);
+            if (unchanged)
+                store.getState().save(written?.stamp ?? undefined, written?.revision ?? undefined);
+            else if (written)
+                store.getState().setSourceStamp(written.stamp, written.revision ?? undefined);
             if (written)
                 setFileFreshness(tabId, "verified", {
                     verifiedRevision: written.revision ?? undefined,
@@ -834,6 +879,19 @@ export async function saveToFile({
         };
 
         if (databaseOrigin) {
+            const collection = await tauri.collectionForDatabase(databaseOrigin.database);
+            if (!owns()) return "superseded";
+            if (collection) {
+                // A pre-link tree cannot acquire an editable source merely from an old row ID.
+                // Keep its complete dirty tree available for Save As and recovery.
+                return failed({
+                    category: "validation",
+                    message: i18n.t("Collections.RetiredTab", {
+                        defaultValue:
+                            "This database now indexes a PGN collection. Save this game as a new file to preserve your edits.",
+                    }),
+                });
+            }
             await tauri.writeDbGame(databaseOrigin.database, databaseOrigin.gameId, pgn);
             return finishWrite();
         }

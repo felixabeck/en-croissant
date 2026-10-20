@@ -46,7 +46,12 @@ function GameCard({
     setDeleting(true);
     try {
       try {
-        await tauri.deleteDbGame(targetFile, targetGameId);
+        if (game.linked) {
+          await tauri.editLinkedCollection(game.linked.collection, game.linked.generation, {
+            kind: "delete",
+            games: [game.linked],
+          });
+        } else await tauri.deleteDbGame(targetFile, targetGameId);
       } catch (error) {
         if (mounted.current) notifyUnlessCancelled(t("Common.Error"), error);
         return;

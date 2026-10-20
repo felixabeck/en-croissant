@@ -262,6 +262,7 @@ export const fileWorkspaceAtom = atomWithStorage<FileWorkspaceHandle | null>(
     "file-workspace",
     null,
     createZodStorage(fileWorkspaceHandleSchema.nullable(), localStorage),
+    { getOnInit: true },
 );
 export const expandedDirectoriesAtom = createExpandedDirectoriesAtom(
     fileWorkspaceAtom,

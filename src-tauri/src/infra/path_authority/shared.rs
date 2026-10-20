@@ -10,6 +10,7 @@ use crate::error::Error;
 #[derive(Clone)]
 pub struct SharedPathAuthority {
     inner: Arc<Mutex<Option<PathAuthority>>>,
+    collections: Arc<Mutex<Option<Arc<crate::db::linked_collections::CollectionService>>>>,
 }
 
 /// Typed authority access failures, mapped here to the two renderer-visible texts.
@@ -36,9 +37,32 @@ impl AuthorityUnavailable {
 }
 
 impl SharedPathAuthority {
+    pub(crate) fn collections(
+        &self,
+    ) -> Result<Option<Arc<crate::db::linked_collections::CollectionService>>, Error> {
+        Ok(self
+            .collections
+            .lock()
+            .map_err(|_| Error::Conflict("collection service lock was poisoned".into()))?
+            .clone())
+    }
+
+    pub(crate) fn install_collections(
+        &self,
+        service: crate::db::linked_collections::CollectionService,
+    ) -> Result<(), Error> {
+        *self
+            .collections
+            .lock()
+            .map_err(|_| Error::Conflict("collection service lock was poisoned".into()))? =
+            Some(Arc::new(service));
+        Ok(())
+    }
+
     pub fn uninitialized() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            collections: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -92,6 +116,7 @@ impl SharedPathAuthority {
     pub(crate) fn installed(authority: PathAuthority) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Some(authority))),
+            collections: Arc::new(Mutex::new(None)),
         }
     }
 

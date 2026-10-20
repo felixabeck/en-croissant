@@ -2,8 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import { createStore, Provider } from "jotai";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { fileWorkspaceAtom, databaseConversionStateAtom } from "@/state/atoms";
+import { afterEach, assert, beforeEach, expect, test, vi } from "vitest";
+import { fileWorkspaceAtom, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import { workspaceListingToEntries, type Entry } from "@/components/files/file";
 import type { ManagedDatabaseInfo } from "@/utils/db";
@@ -14,6 +14,7 @@ import LibraryPage from "./LibraryPage";
 const mocks = vi.hoisted(() => ({
   files: [] as Entry[] | undefined,
   databases: [] as ManagedDatabaseInfo[] | undefined,
+  collections: [] as import("@/bindings").CollectionDescriptor[],
   unread: [] as { filename: string; error: string }[],
   fileError: undefined as unknown,
   databaseError: undefined as unknown,
@@ -25,24 +26,41 @@ const mocks = vi.hoisted(() => ({
   editDbInfo: vi.fn(),
   navigate: vi.fn(),
   openFile: vi.fn(),
+  linkSupported: false,
+  appendCollectionGames: vi.fn(),
+  migrateLinkedCollection: vi.fn(),
+  pickPgnFile: vi.fn(),
+  notify: vi.fn(),
+  mutate: vi.fn(),
 }));
-vi.mock("swr", async () => ({
-  ...(await vi.importActual<typeof import("swr")>("swr")),
-  default: (key: unknown) =>
-    key === "databases"
-      ? {
-          data: mocks.databases
-            ? {
-                databases: mocks.databases,
-                unread: mocks.unread,
-                root: { id: { id: "library-db-root" }, kind: "databaseRoot" },
-              }
-            : undefined,
-          error: mocks.databaseError,
-          mutate: mocks.databaseMutate,
-        }
-      : { data: key ? mocks.files : undefined, error: mocks.fileError, mutate: mocks.fileMutate },
-}));
+vi.mock("swr", async () => {
+  const actual = await vi.importActual<typeof import("swr")>("swr");
+  return {
+    ...actual,
+    useSWRConfig: () => ({ ...actual.useSWRConfig(), mutate: mocks.mutate }),
+    default: (key: unknown) =>
+      key === "linkedCollectionsSupported"
+        ? { data: mocks.linkSupported }
+        : key === "databases"
+          ? {
+              data: mocks.databases
+                ? {
+                    databases: mocks.databases,
+                    collections: mocks.collections,
+                    unread: mocks.unread,
+                    root: { id: { id: "library-db-root" }, kind: "databaseRoot" },
+                  }
+                : undefined,
+              error: mocks.databaseError,
+              mutate: mocks.databaseMutate,
+            }
+          : {
+              data: key ? mocks.files : undefined,
+              error: mocks.fileError,
+              mutate: mocks.fileMutate,
+            },
+  };
+});
 vi.mock("react-i18next", async () => {
   const catalogue = (await import("@/translation/en-US.json")).default.translation as Record<
     string,
@@ -62,6 +80,13 @@ vi.mock("@/platform/tauri", async () => ({
     createWorkspaceDirectory: mocks.createWorkspaceDirectory,
     moveWorkspaceEntry: mocks.moveWorkspaceEntry,
     editDbInfo: mocks.editDbInfo,
+    linkedCollectionsSupported: vi.fn(async () => false),
+    collectionForDatabase: vi.fn(
+      async (file: import("@/bindings").DatabaseHandle) =>
+        mocks.collections.find((collection) => collection.database?.id.id === file.id.id) ?? null,
+    ),
+    appendCollectionGames: mocks.appendCollectionGames,
+    migrateLinkedCollection: mocks.migrateLinkedCollection,
   },
 }));
 vi.mock("@tanstack/react-router", () => ({
@@ -73,7 +98,9 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@/utils/files", async () => ({
   ...(await vi.importActual<typeof import("@/utils/files")>("@/utils/files")),
   openFile: mocks.openFile,
+  pickPgnFile: mocks.pickPgnFile,
 }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/components/files/FileCard", () => ({
   default: ({ selected }: { selected: Entry }) => <output data-file-detail>{selected.name}</output>,
 }));
@@ -134,6 +161,9 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.files = [file];
   mocks.databases = [database];
+  mocks.collections = [];
+  mocks.linkSupported = false;
+  mocks.mutate.mockReset().mockResolvedValue(undefined);
   mocks.unread = [];
   mocks.fileError = undefined;
   mocks.databaseError = undefined;
@@ -242,6 +272,93 @@ test("one tree distinguishes equal-name and equal-key file/database identities a
   expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
 });
 
+test("composed file selection refuses a mismatched second target and opens a subsequent matching pair", async () => {
+  const other: Entry = { ...file, handle: { ...file.handle, id: { id: "other-file" } } };
+  mocks.files = [file, other];
+  mocks.databases = [];
+  mocks.openFile.mockResolvedValue("file-tab");
+  await render();
+  const mouse = async (index: number, type: string, detail: number) => {
+    await act(async () =>
+      rows()[index].dispatchEvent(new MouseEvent(type, { bubbles: true, detail })),
+    );
+  };
+  await mouse(0, "click", 1);
+  await mouse(1, "click", 2);
+  await mouse(1, "dblclick", 2);
+  expect(mocks.openFile).not.toHaveBeenCalled();
+  expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+  expect(host.querySelector("[data-file-detail]")).not.toBeNull();
+  await mouse(1, "click", 1);
+  await mouse(1, "click", 2);
+  await mouse(1, "dblclick", 2);
+  expect(mocks.openFile).toHaveBeenCalledExactlyOnceWith(other, expect.anything());
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
+  expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+});
+
+test("a linked collection composes one Library row and opens the existing explorer and reference routes", async () => {
+  const linked: import("@/bindings").CollectionDescriptor = {
+    id: "22222222-2222-4222-8222-222222222222",
+    name: file.name,
+    file: file.handle,
+    database: database.file,
+    account: null,
+    status: "ready",
+    generation: "source-one",
+    omitted: 0,
+    retiredDatabase: null,
+    fetchSinceMs: null,
+  };
+  mocks.collections = [linked];
+  mocks.databases = [{ ...database, collection: linked }];
+  await render();
+  expect(rows()).toHaveLength(1);
+  await click(rows()[0]);
+  expect(host.querySelector("[data-file-detail]")).not.toBeNull();
+  expect(host.querySelector("[data-linked-collection]")).not.toBeNull();
+  await vi.waitFor(() => expect(button("Explore").disabled).toBe(false));
+  await click(button("Explore"));
+  expect(mocks.navigate).toHaveBeenCalledWith({
+    to: "/databases/$databaseId",
+    params: { databaseId: "same-id" },
+  });
+  await click(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!);
+  expect(store.get(referenceDbAtom)).toEqual(database.file);
+});
+
+test("Database-choice original keeps its selected preview and role without old index actions", async () => {
+  const original: import("@/bindings").CollectionDescriptor = {
+    id: "22222222-2222-4222-8222-222222222222",
+    name: file.name,
+    file: file.handle,
+    database: null,
+    account: null,
+    status: "preservedOriginal",
+    generation: "",
+    omitted: 0,
+    retiredDatabase: null,
+    fetchSinceMs: null,
+  };
+  mocks.collections = [original];
+  mocks.databases = [];
+  await render();
+  await click(rows()[0]);
+  expect(host.querySelector("[data-file-detail]")?.textContent).toBe(file.name);
+  assert.isNotNull(
+    host.querySelector("[data-preserved-original]"),
+    "preserved original role is missing from the selected Library file",
+  );
+  expect(host.querySelector("[data-preserved-original]")?.textContent).toContain(
+    "Preserved original",
+  );
+  expect(host.textContent).toContain("The database version is now the active collection");
+  for (const action of ["Explore", "Rebuild search index", "Add Games", "Export to PGN"])
+    expect(button(action)).toBeUndefined();
+  expect(host.querySelector('[aria-label="Replacement player name"]')).toBeNull();
+  expect(button("Trash")).toBeDefined();
+});
+
 test("keyboard focus traverses both kinds and Enter opens the database by capability", async () => {
   await act(async () => {
     rows()[0].focus();
@@ -257,6 +374,116 @@ test("keyboard focus traverses both kinds and Enter opens the database by capabi
   });
   expect(activeDatabaseViewStore.getState().database?.file).toEqual(database.file);
 });
+
+test.each(["warning", "error"])(
+  "selecting linked B isolates held A append %s and pending form state",
+  async (outcome) => {
+    const second = {
+      ...file,
+      handle: { ...file.handle, id: { id: "source-b" } },
+      name: "Collection B",
+    };
+    const collection = {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: file.name,
+      file: file.handle,
+      database: database.file,
+      account: null,
+      status: "ready" as const,
+      generation: "one",
+      omitted: 0,
+      retiredDatabase: null,
+      fetchSinceMs: null,
+    };
+    mocks.files = [file, second];
+    mocks.collections = [
+      collection,
+      {
+        ...collection,
+        id: "33333333-3333-4333-8333-333333333333",
+        name: second.name,
+        file: second.handle,
+        database: { ...database.file, id: { id: "cache-b" } },
+      },
+    ];
+    mocks.databases = [];
+    mocks.pickPgnFile.mockResolvedValue({ handle: file.handle });
+    let finish!: () => void;
+    mocks.appendCollectionGames.mockReturnValueOnce(
+      new Promise((resolve, reject) => {
+        finish = () =>
+          outcome === "warning"
+            ? resolve({ indexReady: false, durabilityConfirmed: true })
+            : reject(new Error("A append failed"));
+      }),
+    );
+    await render();
+    await click(rows()[0]);
+    await vi.waitFor(() => expect(button("Add Games").disabled).toBe(false));
+    const from = host.querySelector<HTMLInputElement>("input.mantine-TextInput-input")!;
+    await input(from, "A player");
+    await click(button("Add Games"));
+    expect(mocks.appendCollectionGames).toHaveBeenCalledOnce();
+    await click(rows()[1]);
+    const inheritedPending = button("Rebuild search index").getAttribute("data-loading");
+    const inheritedForm = host.querySelector<HTMLInputElement>(
+      "input.mantine-TextInput-input",
+    )!.value;
+    await act(async () => finish());
+    expect(
+      host.querySelector("[data-linked-collection]")?.getAttribute("data-linked-collection"),
+    ).toBe(mocks.collections[1].id);
+    expect.soft(inheritedPending, "B must not inherit A loading state").toBeNull();
+    expect.soft(inheritedForm, "B must start with its own form").toBe("");
+    expect
+      .soft(host.textContent, "B must not display A append warning")
+      .not.toContain("The PGN was committed, but completion could not be fully confirmed");
+    expect.soft(mocks.notify, "A obsolete failure must not notify B").not.toHaveBeenCalled();
+  },
+);
+
+test.each([false, true])(
+  "delayed migration preserves current reference ownership (changed=%s) and newer selection through the composed Library",
+  async (changed) => {
+    mocks.linkSupported = true;
+    store.set(referenceDbAtom, database.file);
+    let complete!: (value: unknown) => void;
+    mocks.migrateLinkedCollection.mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    await render();
+    await click(rows()[1]);
+    await click(button("Link existing collection"));
+    await click(
+      [...host.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+        (node) => node.textContent === "Link existing collection",
+      )!,
+    );
+    expect(mocks.migrateLinkedCollection).toHaveBeenCalledOnce();
+    const newer = { ...database.file, id: { id: "new-reference" } };
+    if (changed) await act(async () => store.set(referenceDbAtom, newer));
+    await click(rows()[0]);
+    await act(async () =>
+      complete({
+        id: "migrated",
+        database: { ...database.file, id: { id: "new-cache" } },
+        retiredDatabase: database.file,
+      }),
+    );
+    expect
+      .soft(store.get(referenceDbAtom), "migration must preserve the current reference owner")
+      .toEqual(changed ? newer : { ...database.file, id: { id: "new-cache" } });
+    expect
+      .soft(
+        host.querySelector("[data-file-detail]")?.textContent,
+        "migration must preserve the newer file selection",
+      )
+      .toBe(file.name);
+    expect.soft(rows()[0].getAttribute("aria-selected")).toBe("true");
+  },
+);
 
 test("search retains a hidden selection and relisting removes only the vanished item", async () => {
   await click(rows()[0]);

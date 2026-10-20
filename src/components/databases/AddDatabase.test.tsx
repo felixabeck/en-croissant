@@ -34,6 +34,9 @@ const mocks = await vi.hoisted(async () => {
     ),
     getDatabases: vi.fn(),
     notify: vi.fn(),
+    linkedCollectionsSupported: vi.fn(),
+    listLinkedCollections: vi.fn(),
+    rebuildLinkedCollection: vi.fn(),
     defaultDatabases: [] as Array<{
       title: string;
       description: string;
@@ -182,6 +185,9 @@ let host: HTMLDivElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.linkedCollectionsSupported.mockReset().mockResolvedValue(false);
+  mocks.listLinkedCollections.mockReset().mockResolvedValue([]);
+  mocks.rebuildLinkedCollection.mockReset();
   mocks.catalogError = undefined;
   mocks.defaultDatabases = [];
   resetProgressButtonTestHarness(mocks);
@@ -635,6 +641,144 @@ function setupLocalImport() {
   mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
   mocks.createWorkspaceDatabase.mockResolvedValue(importHandle);
 }
+
+const linkedImport = {
+  id: "22222222-2222-4222-8222-222222222222",
+  name: "Games",
+  file: importSource,
+  database: importHandle,
+  account: null,
+  status: "ready" as const,
+  generation: "one",
+  omitted: 0,
+  retiredDatabase: null,
+  fetchSinceMs: null,
+};
+
+test.each(["ready", "unavailable", "missing-cache"])(
+  "local import resolves linked identity before conversion for %s",
+  async (state) => {
+    setupLocalImport();
+    mocks.linkedCollectionsSupported.mockResolvedValue(true);
+    mocks.listLinkedCollections.mockResolvedValue([
+      {
+        ...linkedImport,
+        status: state === "ready" ? "ready" : "unavailable",
+        database: state === "missing-cache" ? null : importHandle,
+      },
+    ]);
+    mocks.rebuildLinkedCollection.mockResolvedValue(linkedImport);
+    const created = vi.fn();
+    await expect(
+      convertLocalDatabase("import", [importSource], "Games", undefined, created),
+    ).resolves.toEqual(importHandle);
+    expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(created).toHaveBeenCalledExactlyOnceWith(importHandle);
+    expect(mocks.rebuildLinkedCollection).toHaveBeenCalledExactlyOnceWith(linkedImport.id, false);
+  },
+);
+
+test("an unavailable linked import preserves the typed refresh failure and never creates a standalone copy", async () => {
+  setupLocalImport();
+  mocks.linkedCollectionsSupported.mockResolvedValue(true);
+  mocks.listLinkedCollections.mockResolvedValue([
+    { ...linkedImport, status: "unavailable", database: null },
+  ]);
+  const failure = new TauriCommandError({
+    tag: "backend-error",
+    category: "missing-resource",
+    message: "Source unavailable",
+  });
+  mocks.rebuildLinkedCollection.mockRejectedValue(failure);
+  const created = vi.fn();
+  await expect(
+    convertLocalDatabase("import", [importSource], "Games", undefined, created),
+  ).rejects.toBe(failure);
+  expect(created).not.toHaveBeenCalled();
+  expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+});
+
+test.each(["plain", "external", "windows"])(
+  "%s PGN import keeps independent conversion and its cancellation ticket",
+  async (kind) => {
+    setupLocalImport();
+    mocks.linkedCollectionsSupported.mockResolvedValue(kind !== "windows");
+    mocks.listLinkedCollections.mockResolvedValue(
+      kind === "external"
+        ? [{ ...linkedImport, file: { ...importSource, id: { id: "library-source" } } }]
+        : [],
+    );
+    mocks.convertPgn.mockResolvedValueOnce(undefined);
+    const created = vi.fn();
+    await expect(
+      convertLocalDatabase("import", [importSource], "Games", undefined, created, {
+        ticket: "owned-ticket",
+        throwIfCancelled: vi.fn(),
+      }),
+    ).resolves.toEqual(importHandle);
+    expect(mocks.convertPgn).toHaveBeenCalledExactlyOnceWith(
+      "import",
+      [importSource],
+      importHandle,
+      null,
+      "Games",
+      null,
+      "owned-ticket",
+    );
+    expect(created).toHaveBeenCalledExactlyOnceWith(importHandle);
+    expect(mocks.rebuildLinkedCollection).not.toHaveBeenCalled();
+    expect(mocks.listLinkedCollections).toHaveBeenCalledTimes(kind === "windows" ? 0 : 1);
+  },
+);
+
+test("cancellation during linked refresh publishes no created target", async () => {
+  setupLocalImport();
+  mocks.linkedCollectionsSupported.mockResolvedValue(true);
+  mocks.listLinkedCollections.mockResolvedValue([linkedImport]);
+  let finish!: (value: typeof linkedImport) => void;
+  mocks.rebuildLinkedCollection.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const cancelled = new Error("Cancellation");
+  const created = vi.fn();
+  let cancellation = false;
+  const result = convertLocalDatabase("import", [importSource], "Games", undefined, created, {
+    ticket: "ticket",
+    throwIfCancelled: () => {
+      if (cancellation) throw cancelled;
+    },
+  });
+  await vi.waitFor(() => expect(mocks.rebuildLinkedCollection).toHaveBeenCalledOnce());
+  cancellation = true;
+  finish(linkedImport);
+  await expect(result).rejects.toBe(cancelled);
+  expect(created).not.toHaveBeenCalled();
+  expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
+});
+
+test("a refresh that remains unavailable returns typed recovery without publishing a target", async () => {
+  setupLocalImport();
+  mocks.linkedCollectionsSupported.mockResolvedValue(true);
+  mocks.listLinkedCollections.mockResolvedValue([
+    { ...linkedImport, database: null, status: "unavailable" },
+  ]);
+  mocks.rebuildLinkedCollection.mockResolvedValue({
+    ...linkedImport,
+    database: null,
+    status: "unavailable",
+  });
+  const created = vi.fn();
+  await expect(
+    convertLocalDatabase("import", [importSource], "Games", undefined, created),
+  ).rejects.toMatchObject({ details: expect.objectContaining({ category: "not-found" }) });
+  expect(created).not.toHaveBeenCalled();
+  expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+});
 
 test("a committed import closes its mounted modal after reloadDatabases fails and cannot resubmit the original form", async () => {
   setupLocalImport();

@@ -707,6 +707,89 @@ async readGame(file: FileWorkspaceHandle, n: number, ticket: string | null) : Pr
     else return { status: "error", error: e  as any };
 }
 },
+async listLinkedCollections(workspace: FileWorkspaceHandle | null, ticket: string | null) : Promise<Result<CollectionDescriptor[], ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_linked_collections", { workspace, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveLinkedGame(file: DatabaseHandle, gameId: number, locator: LinkedGameLocator | null, ticket: string | null) : Promise<Result<OpenedLinkedGame | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_linked_game", { file, gameId, locator, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async collectionForDatabase(file: DatabaseHandle, ticket: string | null) : Promise<Result<CollectionDescriptor | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("collection_for_database", { file, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async migrateLinkedCollection(requestId: string, workspace: FileWorkspaceHandle, database: DatabaseHandle, source: FileWorkspaceHandle | null, choice: MigrationChoice, account: AccountIdentity | null, destinationName: string) : Promise<Result<CollectionDescriptor | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("migrate_linked_collection", { requestId, workspace, database, source, choice, account, destinationName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async prepareAccountCollection(workspace: FileWorkspaceHandle, account: AccountIdentity, legacyDatabase: DatabaseHandle | null) : Promise<Result<AccountCollectionPreparation | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_account_collection", { workspace, account, legacyDatabase }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async appendCollectionGames(collection: string, source: FileWorkspaceHandle) : Promise<Result<AppendOutcome, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("append_collection_games", { collection, source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async editLinkedCollection(collection: string, generation: string, edit: CollectionEdit) : Promise<Result<boolean, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("edit_linked_collection", { collection, generation, edit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async linkedCollectionsSupported() : Promise<boolean> {
+    return await TAURI_INVOKE("linked_collections_supported");
+},
+async rebuildLinkedCollection(collection: string, force: boolean) : Promise<Result<CollectionDescriptor, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rebuild_linked_collection", { collection, force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async reselectLinkedCollection(collection: string, workspace: FileWorkspaceHandle, source: FileWorkspaceHandle) : Promise<Result<CollectionDescriptor, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reselect_linked_collection", { collection, workspace, source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async restoreCollectionArchive(collection: string, destination: DatabaseHandle) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_collection_archive", { collection, destination }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async readGames(file: FileWorkspaceHandle, start: number, end: number, ticket: string | null) : Promise<Result<StampedGame[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end, ticket }) };
@@ -922,9 +1005,9 @@ async downloadEngineArchive(id: string, url: string, destination: PathRef, direc
  * Authenticated Lichess export. The opaque handle is resolved in the native credential store;
  * neither its bearer token nor a native destination path crosses IPC.
  */
-async downloadLichessGames(handle: LichessAccountHandle, destination: PathRef, filename: string, player: string, sinceMs: bigint | null, estimatedSize: number | null, jobId: string) : Promise<Result<ArtifactPublication, ErrorPayload>> {
+async downloadLichessGames(handle: LichessAccountHandle, destination: PathRef, filename: string, player: string, sinceMs: bigint | null, jobId: string) : Promise<Result<ArtifactPublication, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_lichess_games", { handle, destination, filename, player, sinceMs, estimatedSize, jobId }) };
+    return { status: "ok", data: await TAURI_INVOKE("download_lichess_games", { handle, destination, filename, player, sinceMs, jobId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1183,7 +1266,10 @@ progressEvent: "progress-event"
 
 /** user-defined types **/
 
+export type AccountCollectionPreparation = { collection: CollectionDescriptor | null; migrationRequired: boolean; destination: PathRef; pendingBatch: FileWorkspaceHandle | null }
+export type AccountIdentity = { provider: string; account: string }
 export type AnalysisOptions = { fen: string; moves: string[]; annotateNovelties: boolean; referenceDb: DatabaseHandle | null; reversed: boolean }
+export type AppendOutcome = { appended: number; committed: boolean; indexReady: boolean; durabilityConfirmed: boolean }
 /**
  * A release-key signed artifact digest. The signature binds URL and hash.
  */
@@ -1198,6 +1284,9 @@ export type AuthenticationStatus = { state: "pending" } | { state: "succeeded"; 
 export type BestMoves = { nodes: bigint; depth: number; score: Score; uciMoves: string[]; sanMoves: string[]; multipv: number; nps: bigint }
 export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: string; fen: string; moves: string[]; progress: number; generation: string }
 export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigint; whiteTime: bigint | null; blackTime: bigint | null }
+export type CollectionDescriptor = { id: string; name: string; file: FileWorkspaceHandle; database: DatabaseHandle | null; account: AccountIdentity | null; status: CollectionStatus; generation: string; omitted: number; retiredDatabase: DatabaseHandle | null; fetchSinceMs: string | null; pendingBatch?: FileWorkspaceHandle | null }
+export type CollectionEdit = { kind: "delete"; games: LinkedGameLocator[] } | { kind: "cleanup"; empty: boolean; duplicates: boolean } | { kind: "renamePlayer"; from: string; to: string }
+export type CollectionStatus = "ready" | "stale" | "missing" | "retired" | "preservedOriginal" | "unavailable"
 /**
  * Persistence result paired with a committed path identifier. `DurabilityUncertain` means the
  * replacement happened but syncing its parent directory failed; callers must not retry.
@@ -1230,7 +1319,7 @@ export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DatabaseUnread = { filename: string; category: ErrorCategory }
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
-export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "PgnCacheInvalidation" | "PgnCapabilityRebind" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspaceDirectoryCreation" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
+export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "PgnCacheInvalidation" | "CollectionIndexRefresh" | "PgnCapabilityRebind" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspaceDirectoryCreation" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
 /**
  * Prepare marks the supplied current-session attachments as prepared without retiring omitted
  * IDs; an empty list is an explicit prepare with no retained attachments.
@@ -1316,8 +1405,11 @@ export type LichessAccountRemoval = { state: "not_found" } | { state: "removed";
 export type LichessAccountStoreResult = { account: LichessAccountMetadata; durability_uncertain: boolean }
 export type LichessExplorerEndpoint = "lichess" | "masters" | "player"
 export type LichessRevocationOutcome = "revoked" | "already_invalid" | "unreachable" | "rate_limited" | "rejected"
+export type LinkedGameLocator = { collection: string; generation: string; ordinal: number; stamp: string }
+export type MigrationChoice = "pgn" | "database" | "decline"
 export type MoveAnalysis = { best: BestMoves[]; novelty: boolean; is_sacrifice: boolean }
-export type NormalizedGame = { id: number; fen: string; event: string; event_id: number; site: string; site_id: number; date?: string | null; time?: string | null; round?: string | null; white: string; white_id: number; white_elo?: number | null; black: string; black_id: number; black_elo?: number | null; result: Outcome; time_control?: string | null; eco?: string | null; ply_count?: number | null; moves: string }
+export type NormalizedGame = { linked?: LinkedGameLocator | null; id: number; fen: string; event: string; event_id: number; site: string; site_id: number; date?: string | null; time?: string | null; round?: string | null; white: string; white_id: number; white_elo?: number | null; black: string; black_id: number; black_elo?: number | null; result: Outcome; time_control?: string | null; eco?: string | null; ply_count?: number | null; moves: string }
+export type OpenedLinkedGame = { locator: LinkedGameLocator; file: FileWorkspaceHandle; name: string; ordinal: number; game: StampedGame; purpose: WorkspaceFileType; numGames: number }
 export type OpeningBookConfig = { book: OpeningBookHandle; maxPly?: bigint }
 /**
  * Opaque exact opening-book file. It cannot be used where an executable or generic file
@@ -1388,7 +1480,7 @@ export type ScoreValue =
 export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
 export type SiteStatsData = { site: string; player: string; daily: DailyStatsData[]; openings: OpeningStatsData[] }
 export type SortDirection = "asc" | "desc"
-export type StampedGame = { pgn: string; stamp: string; revision: string; present: boolean; omission?: GameOmission | null }
+export type StampedGame = { pgn: string; stamp: string; revision: string; present: boolean; omission?: GameOmission | null; linked?: LinkedGameLocator | null }
 export type StartupPathOwners = { retainedIds: PathRef[]; trustedFamilies: PathOwnerFamily[] }
 export type TimeControl = { initialTime: bigint; increment: bigint }
 export type Token = { type: "ParenOpen" } | { type: "ParenClose" } | { type: "Comment"; value: string } | { type: "San"; value: string } | { type: "Header"; value: { tag: string; value: string } } | { type: "Nag"; value: string } | { type: "Outcome"; value: string }
@@ -1473,8 +1565,8 @@ export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" 
 export type WorkspaceListing = { entries: WorkspaceEntry[]; unread: WorkspaceUnread[] }
 export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
 export type WorkspaceUnread = { name: string; kind: WorkspaceEntryKind | null; category: ErrorCategory; parent: FileWorkspaceHandle | null }
-export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "append" }
-export type WriteStamp = { stamp: string | null; revision: string | null }
+export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "linkedGame"; stamp: string; revision: string } | { kind: "append" }
+export type WriteStamp = { stamp: string | null; revision: string | null; linked?: LinkedGameLocator | null }
 
 /** tauri-specta globals **/
 

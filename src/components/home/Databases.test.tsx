@@ -5,6 +5,7 @@ import { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sessionsAtom } from "@/state/atoms";
 import type { ProgressEvent } from "@/bindings";
+import { sessionsSchema } from "@/utils/session";
 
 const mocks = vi.hoisted(() => ({
   getDatabases: vi.fn(),
@@ -46,10 +47,15 @@ vi.mock("@/components/files/notifyError", () => ({
   notifyListenerError: mocks.notifyListenerError,
 }));
 vi.mock("./PersonalCard", () => ({
-  default: ({ info, notice }: { info: unknown; notice?: React.ReactNode }) => {
+  default: ({ name, info, notice }: { name: string; info: unknown; notice?: React.ReactNode }) => {
     mocks.personalCardInfo(info);
     mocks.personalCardNotice(notice);
-    return <div>player-card{notice}</div>;
+    return (
+      <div>
+        player-card {name}
+        {notice}
+      </div>
+    );
   },
 }));
 vi.mock("@tabler/icons-react", () => ({ IconDatabaseOff: () => null }));
@@ -489,7 +495,7 @@ test("ordinary failed personal item retains successful sibling and reports a dia
 });
 
 test.each([1, 2])(
-  "an unread account name is personal only when unique (%i rows)",
+  "unread account candidates remain visibly unavailable (%i rows)",
   async (count) => {
     mocks.getDatabases.mockResolvedValue({
       databases: [],
@@ -500,12 +506,8 @@ test.each([1, 2])(
       root: { id: { id: "account-root" }, kind: "databaseRoot" },
     });
     await renderDatabases();
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain(
-        count === 1 ? "Home.Databases.Failed.Title" : "Home.Databases.Empty.Title",
-      ),
-    );
-    expect(container.textContent?.includes("Magnus_lichess.db3")).toBe(count === 1);
+    await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Failed.Title"));
+    expect(container.textContent).toContain("Magnus_lichess.db3");
     expect(
       container.textContent?.includes("ChessFable is not allowed to read this database file"),
     ).toBe(count === 1);
@@ -615,7 +617,13 @@ test("a renamed account database remains included by filename with the owning us
     { ...session, player: "Player alias", lichess: { ...session.lichess, username: "magnus" } },
   ]);
   mocks.getDatabases.mockResolvedValue({
-    databases: [Object.freeze({ ...database("db-1"), title: "My downloaded games" })],
+    databases: [
+      Object.freeze({
+        ...database("db-1"),
+        filename: "Magnus_lichess.db3",
+        title: "My downloaded games",
+      }),
+    ],
     unread: [],
     root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
   });
@@ -624,9 +632,10 @@ test("a renamed account database remains included by filename with the owning us
   await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
   expect(mocks.query_players).toHaveBeenCalledWith(
     database("db-1").file,
-    expect.objectContaining({ name: "Magnus" }),
+    expect.objectContaining({ name: "magnus" }),
     expect.anything(),
   );
+  expect(container.textContent).toContain("Player alias");
   expect(container.querySelector("[role='alert']")).toBeNull();
 });
 
@@ -637,7 +646,7 @@ test("the default player uses the session username when account username casing 
       lichess: { username: "magnus", account: { id: "magnus", username: "Magnus" } },
     },
   ]);
-  const accountDatabase = database("db-1");
+  const accountDatabase = { ...database("db-1"), filename: "Magnus_lichess.db3" };
   const record = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
   mocks.getDatabases.mockResolvedValue({
     databases: [accountDatabase],
@@ -653,7 +662,7 @@ test("the default player uses the session username when account username casing 
   expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [record] });
   expect(mocks.query_players).toHaveBeenCalledWith(
     accountDatabase.file,
-    expect.objectContaining({ name: "Magnus" }),
+    expect.objectContaining({ name: "magnus" }),
     expect.anything(),
   );
   expect(mocks.getPlayersGameInfo).toHaveBeenCalledWith(
@@ -848,3 +857,240 @@ test("a username-less session does not prevent a healthy account summary from lo
   );
   expect(mocks.logError).not.toHaveBeenCalled();
 });
+
+test.each([false, true])(
+  "linked summaries group Coach's provider accounts independently of usernames (failed sibling: %s)",
+  async (failedSibling) => {
+    getDefaultStore().set(sessionsAtom, [
+      {
+        player: "Coach",
+        updatedAt: 1,
+        lichess: { username: "felix", account: { id: "felix", username: "Felix" } },
+      },
+      { player: "Coach", updatedAt: 1, chessCom: { username: "FELIX", stats: {} } },
+      { player: "Other", updatedAt: 1, chessCom: { username: "Coach", stats: {} } },
+    ]);
+    const linked = (id: string, provider: "lichess" | "chesscom", account: string) => ({
+      ...database(id),
+      filename: `${id} history`,
+      collection: {
+        id,
+        name: `${id} history`,
+        file: { id: { id: `${id}-source` }, kind: "fileWorkspace" as const },
+        database: database(id).file,
+        account: { provider, account },
+        status: "ready" as const,
+        generation: "current",
+        omitted: 0,
+        retiredDatabase: null,
+        fetchSinceMs: null,
+      },
+    });
+    const lichess = linked("coach-lichess", "lichess", "fELix");
+    const chesscom = linked("coach-chesscom", "chesscom", "felix");
+    const other = linked("other-chesscom", "chesscom", "coach");
+    const failed = {
+      ...chesscom,
+      type: "error" as const,
+      error: "Index unavailable",
+    };
+    mocks.getDatabases.mockResolvedValue({
+      databases: [other, lichess, failedSibling ? failed : chesscom],
+      unread: [],
+      root: { id: { id: "linked-root" }, kind: "databaseRoot" },
+    });
+    const lichessRecord = { site: "Lichess", player: "Felix", daily: [], openings: [] };
+    const chesscomRecord = { site: "Chess.com", player: "FELIX", daily: [], openings: [] };
+    mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => ({
+      site_stats_data: [file.id.id === "coach-lichess" ? lichessRecord : chesscomRecord],
+    }));
+
+    await renderDatabases();
+    await vi.waitFor(() =>
+      expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+        site_stats_data: failedSibling ? [lichessRecord] : [lichessRecord, chesscomRecord],
+      }),
+    );
+    expect(mocks.query_players).toHaveBeenCalledTimes(failedSibling ? 1 : 2);
+    expect(
+      mocks.query_players.mock.calls.map(([file, query]) => ({ file, name: query.name })),
+    ).toEqual(
+      failedSibling
+        ? [{ file: lichess.file, name: "felix" }]
+        : [
+            { file: lichess.file, name: "felix" },
+            { file: chesscom.file, name: "FELIX" },
+          ],
+    );
+    expect(mocks.query_players).not.toHaveBeenCalledWith(
+      other.file,
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(container.textContent?.includes("Home.Databases.Incomplete.Title")).toBe(failedSibling);
+    expect(container.textContent?.includes("coach-chesscom history")).toBe(failedSibling);
+    expect(container.textContent).not.toContain("other-chesscom history");
+    expect(mocks.logError).not.toHaveBeenCalled();
+  },
+);
+
+test.each(
+  [{}, { perfs: { blitz: { games: 2 } } }, { username: "other-player" }].flatMap((profile) =>
+    [false, true].map((failed) => ({ profile, failed })),
+  ),
+)(
+  "Home resolves canonical Lichess history with cache $profile and linked error $failed",
+  async ({ profile, failed }) => {
+    getDefaultStore().set(
+      sessionsAtom,
+      sessionsSchema.parse([
+        { player: "Coach", updatedAt: 1, lichess: { username: "e2e-player", account: profile } },
+        { player: "Coach", updatedAt: 1, chessCom: { username: "e2e-player", stats: {} } },
+        { player: "Other", updatedAt: 1, lichess: { username: "other-player", account: {} } },
+      ]),
+    );
+    const canonical = {
+      ...database("canonical"),
+      filename: "Canonical linked history",
+      collection: {
+        id: "canonical",
+        name: "Canonical linked history",
+        file: { id: { id: "canonical-source" }, kind: "fileWorkspace" as const },
+        database: database("canonical").file,
+        account: { provider: "lichess", account: "e2e-player" },
+        status: "ready" as const,
+        generation: "current",
+        omitted: 0,
+        retiredDatabase: null,
+        fetchSinceMs: null,
+      },
+    };
+    const peer = {
+      ...database("peer"),
+      filename: "Chess.com peer history",
+      collection: {
+        ...canonical.collection,
+        id: "peer",
+        database: database("peer").file,
+        account: { provider: "chesscom", account: "e2e-player" },
+      },
+    };
+    const other = {
+      ...database("other"),
+      filename: "Other player history",
+      collection: {
+        ...canonical.collection,
+        id: "other",
+        database: database("other").file,
+        account: { provider: "lichess", account: "other-player" },
+      },
+    };
+    const legacy = { ...database("legacy"), filename: "e2e-player_lichess.db3" };
+    mocks.getDatabases.mockResolvedValue({
+      databases: [
+        legacy,
+        other,
+        failed ? { ...canonical, type: "error", error: "Index unavailable" } : canonical,
+        peer,
+      ],
+      unread: [],
+      root: { id: { id: "canonical-root" }, kind: "databaseRoot" },
+    });
+    const canonicalRecord = { site: "Lichess", player: "e2e-player", daily: [], openings: [] };
+    const peerRecord = { site: "Chess.com", player: "e2e-player", daily: [], openings: [] };
+    const foreignRecord = { site: "Lichess", player: "other-player", daily: [], openings: [] };
+    mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => ({
+      site_stats_data: [
+        file.id.id === "canonical"
+          ? canonicalRecord
+          : file.id.id === "peer"
+            ? peerRecord
+            : foreignRecord,
+      ],
+    }));
+
+    await renderDatabases();
+
+    await vi.waitFor(() =>
+      expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+        site_stats_data: failed ? [peerRecord] : [canonicalRecord, peerRecord],
+      }),
+    );
+    expect(container.textContent).toContain("Coach");
+    expect(mocks.query_players).toHaveBeenCalledTimes(failed ? 1 : 2);
+    for (const [file, query] of mocks.query_players.mock.calls) {
+      expect(["canonical", "peer"]).toContain(file.id.id);
+      expect(query.name).toBe("e2e-player");
+    }
+    expect(container.querySelector('[role="alert"]')?.textContent ?? "").toBe(
+      failed
+        ? "Home.Databases.Incomplete.TitleHome.Databases.Incomplete.Description: Canonical linked history"
+        : "",
+    );
+    expect(container.textContent).not.toContain("Other player history");
+    expect(container.textContent).not.toContain("e2e-player_lichess.db3");
+    expect(mocks.logError).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["readable", "unread"])(
+  "Home refuses conflicting legacy case variants including a %s candidate",
+  async (kind) => {
+    getDefaultStore().set(
+      sessionsAtom,
+      sessionsSchema.parse([
+        { player: "Coach", updatedAt: 1, lichess: { username: "magnus", account: {} } },
+      ]),
+    );
+    mocks.getDatabases.mockResolvedValue({
+      databases: [
+        { ...database("db-1"), filename: "magnus_lichess.db3" },
+        ...(kind === "readable" ? [{ ...database("db-2"), filename: "Magnus_lichess.db3" }] : []),
+      ],
+      unread: kind === "unread" ? [{ filename: "Magnus_lichess.db3", error: "Unreadable" }] : [],
+      root: { id: { id: "legacy-root" }, kind: "databaseRoot" },
+    });
+    mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [] });
+    await renderDatabases();
+    await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Failed.Title"));
+    expect(container.textContent).toContain("magnus_lichess.db3");
+    expect(container.textContent).toContain("Magnus_lichess.db3");
+    expect(mocks.query_players).not.toHaveBeenCalled();
+    expect(mocks.getPlayersGameInfo).not.toHaveBeenCalled();
+  },
+);
+
+test.each([{}, { perfs: { blitz: { games: 2 } } }, { username: "foreign" }])(
+  "Home retains differently cased legacy history independently of profile cache %j",
+  async (profile) => {
+    getDefaultStore().set(
+      sessionsAtom,
+      sessionsSchema.parse([
+        { player: "Coach", updatedAt: 1, lichess: { username: "magnus", account: profile } },
+      ]),
+    );
+    const legacy = { ...database("db-1"), filename: "Magnus_lichess.db3" };
+    mocks.getDatabases.mockResolvedValue({
+      databases: [
+        legacy,
+        { ...database("db-2"), filename: "foreign_lichess.db3" },
+        { ...database("other-provider"), filename: "magnus_chesscom.db3" },
+      ],
+      unread: [],
+      root: { id: { id: "legacy-root" }, kind: "databaseRoot" },
+    });
+    const record = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
+    mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [record] });
+    await renderDatabases();
+    await vi.waitFor(() =>
+      expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [record] }),
+    );
+    expect(container.textContent).toContain("Coach");
+    expect(mocks.query_players).toHaveBeenCalledExactlyOnceWith(
+      legacy.file,
+      expect.objectContaining({ name: "magnus" }),
+      expect.anything(),
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  },
+);

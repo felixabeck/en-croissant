@@ -7,6 +7,7 @@ import { extractPgnDrawings, toDrawShape, type PgnDrawing } from "@/utils/drawin
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { getResolvedPathLength, type TreeState } from "@/utils/treeReducer";
 import { z } from "zod";
+import { linkedGameLocatorSchema } from "@/utils/pathCapabilities";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
 
@@ -186,6 +187,7 @@ function createPersistedTreeSchema() {
         position: pathSchema,
         dirty: z.boolean(),
         sourceStamp: z.string().regex(STAMP_PATTERN).nullable(),
+        linkedSource: linkedGameLocatorSchema.nullable().optional(),
         appendAttempted: z.boolean(),
         report: z.object({
             inProgress: z.boolean(),
@@ -305,6 +307,8 @@ export function migrateTreeForStorage(value: unknown): unknown {
     const hasAppendAttempted = Object.prototype.hasOwnProperty.call(value, "appendAttempted");
     return {
         ...value,
+        // An absent source remains a valid pre-collection tree. Present locators are validated
+        // with the current schema before the tree is admitted.
         root: migrateLegacyNode(value.root, legacyAnnotationsSchema),
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,

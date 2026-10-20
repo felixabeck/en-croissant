@@ -21,6 +21,7 @@ import { notifyListenerError } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { errorUnlessCancelled, logFailureSafely, safeFailureContext } from "@/platform/errors";
 import { sessionsAtom } from "@/state/atoms";
+import { useCollectionCurrencies } from "@/state/linkedCollections";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import {
@@ -31,7 +32,7 @@ import {
   type DatabaseList,
 } from "@/utils/db";
 import { capabilityKey } from "@/utils/pathCapabilities";
-import { accountDatabaseFilename } from "./accountDatabase";
+import { findAccountDatabase } from "./accountDatabase";
 import { collectSequential } from "@/utils/collectSequential";
 import { sessionPlayerName, type Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
@@ -41,6 +42,7 @@ type PersonalUnread = { type: "unread"; filename: string; error: string; key: st
 type PersonalDatabase = {
   db: ManagedDatabaseInfo | PersonalUnread;
   username: string;
+  players: string[];
 };
 
 function databaseLabel(db: PersonalDatabase["db"]): string {
@@ -49,19 +51,19 @@ function databaseLabel(db: PersonalDatabase["db"]): string {
 
 function sessionAccountDatabase(
   session: Session,
-): { filename: string; username: string } | undefined {
-  const lichessUsername = session.lichess?.account?.username;
+): { username: string; provider: "lichess" | "chesscom" } | undefined {
+  const lichessUsername = session.lichess?.username;
   if (typeof lichessUsername === "string" && lichessUsername.length > 0) {
     return {
       username: lichessUsername,
-      filename: accountDatabaseFilename(lichessUsername, "lichess"),
+      provider: "lichess",
     };
   }
   const chessComUsername = session.chessCom?.username;
   if (typeof chessComUsername === "string" && chessComUsername.length > 0) {
     return {
       username: chessComUsername,
-      filename: accountDatabaseFilename(chessComUsername, "chesscom"),
+      provider: "chesscom",
     };
   }
   return undefined;
@@ -132,15 +134,6 @@ function Databases() {
   const sessions = useAtomValue(sessionsAtom);
 
   const players = Array.from(new Set(sessions.map(sessionPlayerName)));
-  const playerDbNames = players.map((name) => ({
-    name,
-    databases: sessions
-      .filter((s) => sessionPlayerName(s) === name)
-      .flatMap((s) => {
-        const account = sessionAccountDatabase(s);
-        return account ? [account.filename] : [];
-      }),
-  }));
 
   const [name, setName] = useState("");
   useEffect(() => {
@@ -169,21 +162,36 @@ function Databases() {
           }
           throw cause;
         }
-        const readable: PersonalDatabase[] = dbs.databases.flatMap((db) => {
-          const account = sessions
-            .map(sessionAccountDatabase)
-            .find((account) => db.filename === account?.filename);
-          return account ? [{ db, username: account.username }] : [];
+        const accounts = sessions.flatMap((session) => {
+          const account = sessionAccountDatabase(session);
+          return account ? [{ ...account, player: sessionPlayerName(session) }] : [];
         });
-        const unread: PersonalDatabase[] = dbs.unread.flatMap((db, index) => {
-          const account = sessions
-            .map(sessionAccountDatabase)
-            .find((account) => db.filename === account?.filename);
-          return account && dbs.unread.filter((item) => item.filename === db.filename).length === 1
+        const associations = accounts.map((account) => ({
+          ...account,
+          association: findAccountDatabase(dbs, account.provider, account.username),
+        }));
+        const readable: PersonalDatabase[] = dbs.databases.flatMap((db) => {
+          const owners = associations.filter((account) => account.association === db);
+          const account = owners[0];
+          return account
+            ? [{ db, username: account.username, players: owners.map((owner) => owner.player) }]
+            : [];
+        });
+        const unread: PersonalDatabase[] = associations.flatMap((account, index) => {
+          const issue = account.association;
+          return issue?.type === "unavailable"
             ? [
                 {
-                  db: { ...db, type: "unread", key: `${capabilityKey(dbs.root)}:unread:${index}` },
+                  db: {
+                    type: "unread" as const,
+                    filename: issue.filenames.join(", ") || account.username,
+                    error: [t("Home.Accounts.HistoryUnavailable"), issue.error]
+                      .filter(Boolean)
+                      .join(" "),
+                    key: `${capabilityKey(dbs.root)}:account:${index}`,
+                  },
                   username: account.username,
+                  players: [account.player],
                 },
               ]
             : [];
@@ -192,8 +200,12 @@ function Databases() {
       }),
   );
 
-  const selectedFilenames = playerDbNames.find((p) => p.name === name)?.databases ?? [];
-  const playerDatabases = databases?.filter(({ db }) => selectedFilenames.includes(db.filename));
+  useCollectionCurrencies(
+    databases?.flatMap(({ db }) =>
+      db.type !== "unread" && db.collection ? [db.collection] : [],
+    ) ?? [],
+  );
+  const playerDatabases = databases?.filter(({ players }) => players.includes(name));
   const personalKey = playerDatabases && name ? ["personalInfo", name, playerDatabases] : null;
   const personalOwner = useNativeRequestOwner(personalKey);
   const {

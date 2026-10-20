@@ -1,12 +1,18 @@
 import { z } from "zod";
 import { type FileMetadata, fileMetadataSchema } from "@/components/files/file";
-import { databaseHandleSchema } from "@/utils/pathCapabilities";
+import { databaseHandleSchema, linkedGameLocatorSchema } from "@/utils/pathCapabilities";
 
 const gameOriginSchema = z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("none") }),
     z.object({ kind: z.literal("file"), file: fileMetadataSchema, gameNumber: z.number() }),
     z.object({ kind: z.literal("temp_file"), file: fileMetadataSchema, gameNumber: z.number() }),
-    z.object({ kind: z.literal("database"), database: databaseHandleSchema, gameId: z.number() }),
+    // Existing database origins remain readable. Native resolution runs before tab admission/save.
+    z.object({
+        kind: z.literal("database"),
+        database: databaseHandleSchema,
+        gameId: z.number(),
+        linked: linkedGameLocatorSchema.optional(),
+    }),
 ]);
 
 export const tabSchema = z.object({

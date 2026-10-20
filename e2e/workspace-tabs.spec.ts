@@ -12,22 +12,44 @@ import {
     activeWorkspaceTab,
     playBoardMove,
 } from "./fixtures";
+import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
 
-for (const count of [0, 3]) {
-    test(`workspace-tabs: fresh first save appends at destination count ${count}`, async ({
+for (const { count, linked } of [
+    { count: 0, linked: false },
+    { count: 3, linked: false },
+    { count: 3, linked: true },
+]) {
+    test(`workspace-tabs: fresh first save appends at destination count ${count}${linked ? " in a linked collection" : ""}`, async ({
         page,
         mockScenario,
         capture,
     }) => {
+        if (linked) {
+            await page.addInitScript(() =>
+                localStorage.setItem("auto-save", JSON.stringify(false)),
+            );
+        }
         const handle = { id: { id: "first-save-destination" }, kind: "fileWorkspace" } as const;
         const revision = "first-save-revision";
+        const locator = {
+            collection: "22222222-2222-4222-8222-222222222222",
+            generation: revision,
+            ordinal: count,
+            stamp: "a".repeat(64),
+        };
         await mockScenario({
             commands: {
                 issue_pgn_export_destination: {
                     result: { handle, displayName: "First save.pgn", availability: "available" },
                 },
                 count_pgn_games: { result: count },
-                write_game: { result: { stamp: "a".repeat(64), revision } },
+                write_game: {
+                    result: {
+                        stamp: "a".repeat(64),
+                        revision,
+                        ...(linked ? { linked: locator } : {}),
+                    },
+                },
                 file_revision: { result: revision },
             },
         });
@@ -84,7 +106,42 @@ for (const count of [0, 3]) {
             page.getByRole("gridcell", { name: "e5, Black Pawn", exact: true }),
         ).toHaveCount(1);
         await expect(page.locator('[contenteditable="true"]')).toHaveText(comment);
-        await capture(`workspace-tabs-first-save-${count}`);
+        if (linked) {
+            await expect
+                .poll(async () => {
+                    const raw = await page.evaluate(
+                        (key) => sessionStorage.getItem(key),
+                        after.treeKey ?? after.value,
+                    );
+                    return raw
+                        ? deserializeStorageValue<{ state: { linkedSource: unknown } }>(raw)?.state
+                              .linkedSource
+                        : undefined;
+                })
+                .toEqual(locator);
+            await page.locator('[contenteditable="true"]').fill("A later linked edit");
+            await page.getByRole("button", { name: /^save pgn/i }).click();
+            await expect
+                .poll(() =>
+                    page.evaluate(
+                        () =>
+                            window.__E2E_TAURI__
+                                .invocations()
+                                .filter(({ command }) => command === "write_game").length,
+                    ),
+                )
+                .toBe(2);
+            const later = await page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .filter(({ command }) => command === "write_game")
+                    .at(-1),
+            );
+            expect(later?.args).toMatchObject({
+                expected: { kind: "linkedGame", stamp: locator.stamp, revision },
+            });
+        }
+        await capture(`workspace-tabs-first-save-${count}${linked ? "-linked" : ""}`);
     });
 }
 

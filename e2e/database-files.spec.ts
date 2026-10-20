@@ -18,6 +18,7 @@ import {
     waitForScrollAreaScrollbarsHidden,
     dragMosaicDivider,
 } from "./fixtures";
+import type { Locator } from "@playwright/test";
 
 for (const oldRoute of ["/files", "/databases"] as const) {
     test(`database-files: ${oldRoute} redirects to Library`, async ({ page }) => {
@@ -27,6 +28,802 @@ for (const oldRoute of ["/files", "/databases"] as const) {
         const nav = page.locator("nav");
         await expect(nav.getByRole("link", { name: "Library", exact: true })).toHaveCount(1);
         await expect(nav.getByRole("link", { name: /^(Files|Databases)$/ })).toHaveCount(0);
+    });
+}
+
+function linkedLibraryFixture() {
+    const file = { ...gameOpeningFixture.file, metadata: { type: "game", tags: [] } };
+    const database = { id: { id: gameOpeningFixture.databaseId }, kind: "database" };
+    const id = "22222222-2222-4222-8222-222222222222";
+    const locator = {
+        collection: id,
+        generation: "linked-generation",
+        ordinal: 0,
+        stamp: "1".repeat(64),
+    };
+    const collection = {
+        id,
+        name: file.name,
+        file: file.handle,
+        database,
+        account: null,
+        status: "ready",
+        generation: locator.generation,
+        omitted: 0,
+        retiredDatabase: null,
+        fetchSinceMs: null,
+    };
+    return { file, database, locator, collection };
+}
+
+test("database-files: fixed-coordinate file double-click stays on the requested row after a preserved original", async ({
+    page,
+    mockScenario,
+}, testInfo) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "100"));
+    await page.setViewportSize({ width: 800, height: 647 });
+    const { file, collection } = linkedLibraryFixture();
+    const prefix = "verify-linked-a6bb7f1a-13d0-4675-a03e-29bc06a38631-";
+    const names = [
+        "verify-sample",
+        "verify-game-opening",
+        "verify-conversion-seed",
+        "verify-conversion-cancellation",
+        "verify-empty-opening",
+        "verify-metadata",
+        "verify-nags",
+        "verify-practice-large",
+        ...[
+            "source",
+            "database-original",
+            "incoming",
+            "exported",
+            "restored-export",
+            "prior-original",
+            "prior-before",
+            "database-choice-input",
+            "database-choice-expected",
+            "database-chosen",
+            "database-choice-archive",
+        ].map((suffix) => `${prefix}${suffix}`),
+    ];
+    const entries = names.sort().map((name, index) => ({
+        ...file,
+        name,
+        handle: { ...file.handle, id: { id: `fixed-point-file-${index}` } },
+        metadata: {
+            type:
+                name === "verify-practice-large"
+                    ? "repertoire"
+                    : ["source", "database-chosen", "prior-original"].some(
+                            (suffix) => name === `${prefix}${suffix}`,
+                        )
+                      ? "game"
+                      : "other",
+            tags: [],
+        },
+        gameCount:
+            name === "verify-empty-opening"
+                ? 0
+                : name === "verify-game-opening" ||
+                    [
+                        "source",
+                        "incoming",
+                        "exported",
+                        "database-choice-input",
+                        "database-choice-expected",
+                        "database-chosen",
+                        "database-choice-archive",
+                    ].some((suffix) => name === `${prefix}${suffix}`)
+                  ? 2
+                  : 1,
+    }));
+    const originalFile = entries.find((entry) => entry.name === `${prefix}prior-original`)!;
+    const requestedFile = entries.find((entry) => entry.name === "verify-nags")!;
+    const collections = ["source", "database-chosen"].map((suffix, index) => {
+        const source = entries.find((entry) => entry.name === `${prefix}${suffix}`)!;
+        return {
+            ...collection,
+            id: index === 0 ? collection.id : "33333333-3333-4333-8333-333333333333",
+            name: source.name,
+            file: source.handle,
+            database: { id: { id: `fixed-point-index-${index}` }, kind: "database" },
+        };
+    });
+    const original = {
+        ...collection,
+        id: "44444444-4444-4444-8444-444444444444",
+        name: originalFile.name,
+        file: originalFile.handle,
+        database: null,
+        status: "preservedOriginal",
+    };
+    await mockScenario({
+        commands: {
+            ...filesWorkspaceCommands([entries], gameOpeningCommands),
+            list_workspace_databases: { result: { entries: [], unread: [] } },
+            linked_collections_supported: { result: true },
+            list_linked_collections: { result: [...collections, original] },
+            collection_for_database: { result: collections[0] },
+        },
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await expect(page.getByRole("treeitem")).toHaveCount(entries.length);
+    await selectFilesTreeRow(page, originalFile.name);
+    const role = page.locator("[data-preserved-original]");
+    await expect(role).toHaveAttribute("data-preserved-original", original.id);
+    await expect(role).toContainText("The database version is now the active collection");
+    const preview = page.locator(".mantine-Paper-root").filter({ has: role }).last();
+    await expect(preview.locator(".cg-wrap")).toBeVisible();
+    await expect(preview).toContainText("First White");
+    await page.evaluate(
+        () =>
+            new Promise<void>((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+    );
+
+    const requested = page.getByRole("treeitem", { name: requestedFile.name, exact: true });
+    await expect(requested).toHaveAttribute("aria-selected", "false");
+    // Match filesRowCoordinates in the actual-app verifier, including its real hit-target check.
+    const point = await requested.evaluate((row) => {
+        row.scrollIntoView({ block: "center" });
+        const box = row.getBoundingClientRect();
+        const x = Math.round(box.left + Math.min(60, box.width / 2));
+        const y = Math.round(box.top + box.height / 2);
+        return {
+            x,
+            y,
+            hit: document
+                .elementFromPoint(x, y)
+                ?.closest('[role="treeitem"]')
+                ?.getAttribute("aria-label"),
+        };
+    });
+    expect(point.hit).toBe(requestedFile.name);
+    const previousTab = await activeWorkspaceTab(page);
+    const invocationStart = await page.evaluate(() => window.__E2E_TAURI__.invocations().length);
+    // Observe only. Retain disconnected-row geometry and every actual target through navigation.
+    const observer = await page.evaluateHandle(
+        ({ name, point }) => {
+            const row = [...document.querySelectorAll('[role="treeitem"]')].find(
+                (node) => node.getAttribute("aria-label") === name,
+            )!;
+            const scrollParents: Element[] = [];
+            for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+                if (parent.scrollHeight > parent.clientHeight) scrollParents.push(parent);
+            }
+            const measure = () => ({
+                time: performance.now(),
+                connected: row.isConnected,
+                row: row.getBoundingClientRect().toJSON(),
+                selected:
+                    document
+                        .querySelector('[role="treeitem"][aria-selected="true"]')
+                        ?.getAttribute("aria-label") ?? null,
+                hit:
+                    document
+                        .elementFromPoint(point.x, point.y)
+                        ?.closest('[role="treeitem"]')
+                        ?.getAttribute("aria-label") ?? null,
+                scroll: scrollParents.map((parent) => ({
+                    top: parent.scrollTop,
+                    height: parent.scrollHeight,
+                    client: parent.clientHeight,
+                })),
+            });
+            const pre = measure();
+            const events: {
+                type: string;
+                target: string | null;
+                detail: number;
+                trusted: boolean;
+                x: number;
+                y: number;
+                geometry: ReturnType<typeof measure>;
+            }[] = [];
+            const frames: ReturnType<typeof measure>[] = [];
+            let frame = 0;
+            let started = false;
+            const sample = () => {
+                frames.push(measure());
+                if (frames.length < 20) frame = requestAnimationFrame(sample);
+            };
+            const record = (event: Event) => {
+                if (events.length >= 32) return;
+                const mouse = event as MouseEvent;
+                events.push({
+                    type: event.type,
+                    target:
+                        (event.target as Element)
+                            .closest('[role="treeitem"]')
+                            ?.getAttribute("aria-label") ?? null,
+                    detail: mouse.detail,
+                    trusted: event.isTrusted,
+                    x: mouse.clientX,
+                    y: mouse.clientY,
+                    geometry: measure(),
+                });
+                if (!started) {
+                    started = true;
+                    frame = requestAnimationFrame(sample);
+                }
+            };
+            const types = ["mousedown", "mouseup", "click", "dblclick"];
+            types.forEach((type) => document.addEventListener(type, record, true));
+            return {
+                finish: () => {
+                    cancelAnimationFrame(frame);
+                    types.forEach((type) => document.removeEventListener(type, record, true));
+                    return { point, pre, events, frames, post: measure() };
+                },
+            };
+        },
+        { name: requestedFile.name, point },
+    );
+    try {
+        // One viewport point, native mouse events, the verifier's established 60ms gap.
+        // No locator action, scroll or geometry read may adjust the pointer between clicks.
+        await page.mouse.move(point.x, point.y);
+        await page.mouse.down();
+        await page.mouse.up();
+        await page.waitForTimeout(60);
+        await page.mouse.down({ clickCount: 2 });
+        await page.mouse.up({ clickCount: 2 });
+        await expect
+            .poll(
+                async () => {
+                    const tab = await activeWorkspaceTab(page);
+                    return { newTab: tab?.value !== previousTab?.value, origin: tab?.gameOrigin };
+                },
+                {
+                    message:
+                        "Fixed-coordinate double-click must admit verify-nags, see fixed-coordinate-geometry.json",
+                },
+            )
+            .toMatchObject({
+                newTab: true,
+                origin: { kind: "file", file: { handle: requestedFile.handle }, gameNumber: 0 },
+            });
+        await expect(page).toHaveURL(/\/$/);
+        const reads = await page.evaluate(
+            (start) =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .slice(start)
+                    .filter((call) => call.command === "read_game"),
+            invocationStart,
+        );
+        expect(
+            reads.map((call) => call.args),
+            "Only the requested file may be opened by this gesture",
+        ).toEqual([expect.objectContaining({ file: requestedFile.handle, n: 0 })]);
+    } finally {
+        const geometry = await observer.evaluate((probe) => probe.finish());
+        await observer.dispose();
+        const invocations = await page.evaluate(
+            (start) => window.__E2E_TAURI__.invocations().slice(start),
+            invocationStart,
+        );
+        await testInfo.attach("fixed-coordinate-geometry.json", {
+            body: JSON.stringify(
+                { geometry, invocations, activeTab: await activeWorkspaceTab(page) },
+                null,
+                2,
+            ),
+            contentType: "application/json",
+        });
+        expect
+            .soft(
+                geometry.events
+                    .filter((event) => event.type === "click")
+                    .map((event) => ({
+                        target: event.target,
+                        detail: event.detail,
+                        trusted: event.trusted,
+                        x: event.x,
+                        y: event.y,
+                    })),
+                "Both real clicks must reach verify-nags at the original viewport point",
+            )
+            .toEqual(
+                [1, 2].map((detail) => ({
+                    target: requestedFile.name,
+                    detail,
+                    trusted: true,
+                    x: point.x,
+                    y: point.y,
+                })),
+            );
+    }
+});
+
+async function assertLinkedPlayerFields(detail: Locator) {
+    const names = ["Existing player name", "Replacement player name"];
+    for (const name of names) {
+        const input = detail.getByRole("textbox", { name, exact: true });
+        await expect(input).toHaveCount(1);
+        await expect(input).toBeVisible();
+        await input.evaluate((node) => {
+            const field = (node as HTMLInputElement).labels?.[0]?.parentElement;
+            if (!field) throw new Error("Linked player input has no associated label field");
+            field.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+        });
+        await expect(detail.getByText(name, { exact: true })).toBeVisible();
+        const geometry = await input.evaluate((element, names) => {
+            const node = element as HTMLInputElement;
+            const label = node.labels![0];
+            const field = label.parentElement!;
+            const collection = node.closest("[data-linked-collection]")!;
+            const otherInput = [...collection.querySelectorAll<HTMLInputElement>("input")].find(
+                (peer) => peer !== node && names.includes(peer.labels?.[0]?.textContent ?? ""),
+            );
+            const save = [...collection.querySelectorAll("button")].find(
+                (button) => button.textContent === "Save",
+            );
+            if (!otherInput || !save)
+                throw new Error("Linked player fields or Save action are missing");
+            const rect = (element: Element) => {
+                const bounds = element.getBoundingClientRect();
+                return {
+                    left: bounds.left,
+                    right: bounds.right,
+                    top: bounds.top,
+                    bottom: bounds.bottom,
+                    width: bounds.width,
+                    height: bounds.height,
+                };
+            };
+            const range = document.createRange();
+            range.selectNodeContents(label);
+            return {
+                labelText: label.textContent,
+                field: rect(field),
+                input: rect(node),
+                label: rect(label),
+                text: [...range.getClientRects()].map((bounds) => ({
+                    left: bounds.left,
+                    right: bounds.right,
+                    top: bounds.top,
+                    bottom: bounds.bottom,
+                    width: bounds.width,
+                    height: bounds.height,
+                })),
+                peers: [
+                    {
+                        name: otherInput.labels![0].textContent,
+                        bounds: rect(otherInput.labels![0].parentElement!),
+                    },
+                    { name: "Save", bounds: rect(save) },
+                ],
+            };
+        }, names);
+        expect(geometry.labelText).toBe(name);
+        expect(geometry.field.width, `${name} field must have width`).toBeGreaterThan(0);
+        expect(geometry.field.height, `${name} field must have height`).toBeGreaterThan(0);
+        expect(geometry.text.length, `${name} must render label text`).toBeGreaterThan(0);
+        const boxes = [
+            ...geometry.text.map((bounds, index) => ({
+                kind: `label text line ${index + 1}`,
+                bounds,
+            })),
+            { kind: "input", bounds: geometry.input },
+            { kind: "label box", bounds: geometry.label },
+        ];
+        for (const { kind, bounds } of boxes) {
+            const message = `${name} ${kind} must stay inside its own field`;
+            expect(bounds.width, message).toBeGreaterThan(0);
+            expect(bounds.height, message).toBeGreaterThan(0);
+            expect(bounds.left, message).toBeGreaterThanOrEqual(geometry.field.left - 1);
+            expect(bounds.right, message).toBeLessThanOrEqual(geometry.field.right + 1);
+            expect(bounds.top, message).toBeGreaterThanOrEqual(geometry.field.top - 1);
+            expect(bounds.bottom, message).toBeLessThanOrEqual(geometry.field.bottom + 1);
+        }
+        for (const peer of geometry.peers) {
+            expect(peer.bounds.width, `${peer.name} must have width`).toBeGreaterThan(0);
+            expect(peer.bounds.height, `${peer.name} must have height`).toBeGreaterThan(0);
+            for (const { kind, bounds } of [{ kind: "field", bounds: geometry.field }, ...boxes]) {
+                const width =
+                    Math.min(bounds.right, peer.bounds.right) -
+                    Math.max(bounds.left, peer.bounds.left);
+                const height =
+                    Math.min(bounds.bottom, peer.bounds.bottom) -
+                    Math.max(bounds.top, peer.bounds.top);
+                expect(width > 1 && height > 1, `${name} ${kind} must not cover ${peer.name}`).toBe(
+                    false,
+                );
+            }
+        }
+    }
+}
+
+for (const surface of [
+    { name: "desktop", width: 1440, scale: "100" },
+    { name: "320-200", width: 320, scale: "200" },
+]) {
+    test(`database-files: linked PGN has one Library row and explorer results open the authoritative file at ${surface.name}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertAccessible,
+        assertNoHorizontalOverflow,
+    }) => {
+        await page.addInitScript(
+            (scale) => localStorage.setItem("font-size", scale),
+            surface.scale,
+        );
+        await page.setViewportSize({ width: surface.width, height: 1000 });
+        const { file, locator, collection } = linkedLibraryFixture();
+        const first = gameOpeningFixture.games[0];
+        const game = {
+            pgn: `[Event "${first.event}"]\n[White "${first.white}"]\n[Black "${first.black}"]\n[Result "*"]\n\n${first.moves}`,
+            stamp: locator.stamp,
+            revision: locator.generation,
+            present: true,
+            linked: locator,
+        };
+        await mockScenario({
+            commands: {
+                ...filesWorkspaceCommands([[file]], gameOpeningCommands),
+                list_workspace_databases: { result: { entries: [], unread: [] } },
+                linked_collections_supported: { result: true },
+                list_linked_collections: { result: [collection] },
+                collection_for_database: { result: collection },
+                get_games: {
+                    result: {
+                        data: gameOpeningFixture.games.map((record, ordinal) => ({
+                            ...record,
+                            linked: { ...locator, ordinal, stamp: String(ordinal + 1).repeat(64) },
+                        })),
+                        count: 2,
+                    },
+                },
+                resolve_linked_game: {
+                    result: {
+                        locator,
+                        file: file.handle,
+                        name: file.name,
+                        ordinal: 0,
+                        purpose: "game",
+                        numGames: 2,
+                        game,
+                    },
+                },
+                read_game: { result: game },
+                file_revision: { result: locator.generation },
+            },
+        });
+        await page.goto("/library");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        const row = page.getByRole("treeitem", { name: file.name, exact: true });
+        await expect(row).toHaveCount(1);
+        await row.getByText(file.name, { exact: true }).click();
+        const detail = page.locator("[data-linked-collection]");
+        await expect(detail).toHaveAttribute("data-linked-collection", collection.id);
+        for (const name of ["Explore", "Rebuild search index", "Add Games", "Export to PGN"]) {
+            const action = detail.getByRole("button", { name, exact: true });
+            await action.scrollIntoViewIfNeeded();
+            await expect(action).toBeInViewport({ ratio: 1 });
+            await assertNothingClipped(action, { mode: "reachable" });
+        }
+        await assertLinkedPlayerFields(detail);
+        await assertNothingClipped(detail, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        await assertAccessible();
+        await detail.scrollIntoViewIfNeeded();
+        await capture(`library-linked-ready-${surface.name}`);
+        await expect(page).toHaveScreenshot(`library-linked-ready-${surface.name}.png`, {
+            fullPage: true,
+        });
+        await detail.getByRole("button", { name: "Explore", exact: true }).click();
+        await expect(page).toHaveURL(`/databases/${gameOpeningFixture.databaseId}`);
+        await page.getByRole("row").filter({ hasText: first.white }).dblclick();
+        await expect(page).toHaveURL("/");
+        await expect(page.locator("[data-file-freshness]")).toHaveAttribute(
+            "data-file-freshness",
+            /^verified:/,
+        );
+        expect((await activeWorkspaceTab(page))?.gameOrigin).toMatchObject({
+            kind: "file",
+            gameNumber: 0,
+            file: { handle: file.handle },
+        });
+    });
+
+    for (const status of ["missing", "unavailable"] as const) {
+        test(`database-files: linked ${status} recovery is reachable at ${surface.name}`, async ({
+            page,
+            mockScenario,
+            capture,
+            assertNoHorizontalOverflow,
+            assertAccessible,
+        }) => {
+            await page.addInitScript(
+                (scale) => localStorage.setItem("font-size", scale),
+                surface.scale,
+            );
+            await page.setViewportSize({ width: surface.width, height: 1000 });
+            const { file, collection } = linkedLibraryFixture();
+            const replacement = {
+                ...file,
+                handle: { ...file.handle, id: { id: "replacement-source" } },
+                name: "Reselected source",
+            };
+            const unavailable = { ...collection, status, database: null };
+            const base = {
+                ...filesWorkspaceCommands([[replacement]], gameOpeningCommands),
+                list_workspace_databases: { result: { entries: [], unread: [] } },
+                linked_collections_supported: { result: true },
+                list_linked_collections: { result: [unavailable] },
+                collection_for_database: { result: unavailable },
+                rebuild_linked_collection: { result: unavailable },
+                reselect_linked_collection: { result: { ...collection, file: replacement.handle } },
+            };
+            await mockScenario({ commands: base });
+            await page.goto("/library");
+            await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+            await selectFilesTreeRow(page, collection.name);
+            const detail = page.locator("[data-linked-collection]");
+            await expect(detail.getByRole("alert")).toContainText(
+                "The search index is unavailable",
+            );
+            await expect(
+                detail.getByRole("button", { name: "Explore", exact: true }),
+            ).toBeDisabled();
+            for (const label of ["Rebuild search index", "Use selected source"]) {
+                const action = detail.getByRole("button", { name: label, exact: true });
+                await action.scrollIntoViewIfNeeded();
+                await expect(action).toBeInViewport({ ratio: 1 });
+                await assertNothingClipped(action, { mode: "reachable" });
+            }
+            await assertLinkedPlayerFields(detail);
+            await assertNothingClipped(detail, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            await assertAccessible();
+            await capture(`library-linked-${status}-${surface.name}`);
+            await expect(page).toHaveScreenshot(`library-linked-${status}-${surface.name}.png`, {
+                fullPage: true,
+            });
+            await detail.getByRole("button", { name: "Rebuild search index", exact: true }).click();
+            await expect
+                .poll(() =>
+                    page.evaluate(
+                        () =>
+                            window.__E2E_TAURI__
+                                .invocations()
+                                .filter((call) => call.command === "rebuild_linked_collection")
+                                .length,
+                    ),
+                )
+                .toBe(1);
+            await detail.getByRole("textbox", { name: "Source PGN", exact: true }).click();
+            await page.getByRole("option", { name: replacement.name, exact: true }).click();
+            await page.evaluate((commands) => window.__E2E_TAURI__.configure({ commands }), {
+                ...base,
+                list_linked_collections: { result: [{ ...collection, file: replacement.handle }] },
+                collection_for_database: { result: { ...collection, file: replacement.handle } },
+            });
+            await detail.getByRole("button", { name: "Use selected source", exact: true }).click();
+            await selectFilesTreeRow(page, replacement.name);
+            await expect(
+                page
+                    .locator("[data-linked-collection]")
+                    .getByRole("button", { name: "Explore", exact: true }),
+            ).toBeEnabled();
+            const call = await page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .find((entry) => entry.command === "reselect_linked_collection"),
+            );
+            expect(call?.args).toMatchObject({
+                collection: collection.id,
+                workspace: filesWorkspaceFixture.workspace,
+                source: replacement.handle,
+            });
+            await assertLinkedPlayerFields(detail);
+            await assertNoHorizontalOverflow();
+            await capture(`library-linked-${status}-recovered-${surface.name}`);
+            await expect(page).toHaveScreenshot(
+                `library-linked-${status}-recovered-${surface.name}.png`,
+                { fullPage: true },
+            );
+        });
+    }
+
+    test(`database-files: Database choice preserves the prior preview and leaves one active version at ${surface.name}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertNoHorizontalOverflow,
+        assertAccessible,
+    }) => {
+        await page.addInitScript(
+            (scale) => localStorage.setItem("font-size", scale),
+            surface.scale,
+        );
+        await page.setViewportSize({ width: surface.width, height: 1000 });
+        const { file, collection } = linkedLibraryFixture();
+        const original = {
+            ...collection,
+            database: { id: { id: "original-index" }, kind: "database" },
+        };
+        const chosenFile = {
+            ...file,
+            handle: { ...file.handle, id: { id: "database-chosen-source" } },
+            name: "Chosen database version",
+        };
+        const chosen = {
+            ...collection,
+            id: "33333333-3333-4333-8333-333333333333",
+            name: chosenFile.name,
+            file: chosenFile.handle,
+            database: { id: { id: "chosen-index" }, kind: "database" },
+            retiredDatabase: collection.database,
+        };
+        const base = {
+            ...filesWorkspaceCommands([[file]], gameOpeningCommands),
+            linked_collections_supported: { result: true },
+            list_linked_collections: { result: [original] },
+            collection_for_database: { result: original },
+            migrate_linked_collection: { result: chosen },
+        };
+        await mockScenario({ commands: base });
+        await page.goto("/library");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        await selectFilesTreeRow(page, gameOpeningFixture.databaseTitle);
+        await page.getByRole("button", { name: "Link existing collection", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Link existing collection", exact: true });
+        await dialog.getByRole("textbox", { name: "Source PGN", exact: true }).click();
+        await page
+            .getByRole("option", { name: `${file.name} (${file.gameCount})`, exact: true })
+            .click();
+        await dialog.getByRole("textbox", { name: "Name", exact: true }).fill(chosenFile.name);
+        await page.evaluate((commands) => window.__E2E_TAURI__.configure({ commands }), {
+            ...base,
+            list_file_workspace: { result: { entries: [file, chosenFile], unread: [] } },
+            list_linked_collections: {
+                result: [{ ...original, status: "preservedOriginal", database: null }, chosen],
+            },
+            collection_for_database: { result: chosen },
+        });
+        await dialog.getByRole("button", { name: "Link existing collection", exact: true }).click();
+        await expect(dialog).toHaveCount(0);
+        const migration = await page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .find((call) => call.command === "migrate_linked_collection"),
+        );
+        expect(migration?.args).toMatchObject({
+            source: file.handle,
+            choice: "database",
+            destinationName: chosenFile.name,
+        });
+        await expect(page.getByRole("treeitem", { name: file.name, exact: true })).toHaveCount(1);
+        await expect(
+            page.getByRole("treeitem", { name: chosenFile.name, exact: true }),
+        ).toHaveCount(1);
+        await selectFilesTreeRow(page, file.name);
+        const role = page.locator("[data-preserved-original]");
+        await expect(role).toHaveAttribute("data-preserved-original", original.id);
+        await expect(role).toContainText("Preserved original");
+        await expect(role).toContainText("The database version is now the active collection");
+        await expect(page.locator("[data-linked-collection]")).toHaveCount(0);
+        for (const name of ["Explore", "Rebuild search index", "Add Games", "Export to PGN"])
+            await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+        const board = page.locator(".cg-wrap").first();
+        await board.scrollIntoViewIfNeeded();
+        await expect(board).toBeVisible();
+        const bounds = await board.boundingBox();
+        expect(bounds?.width).toBeGreaterThan(0);
+        expect(bounds?.height).toBeGreaterThan(0);
+        await assertNothingClipped(board, { mode: "reachable" });
+        if (surface.name === "desktop") {
+            await expect(page.getByRole("button", { name: "e4", exact: true })).toBeVisible();
+            await expect(page.getByRole("button", { name: "e5", exact: true })).toBeVisible();
+        }
+        await role.scrollIntoViewIfNeeded();
+        await assertNothingClipped(role, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        await assertAccessible();
+        await capture(`library-migration-preserved-original-${surface.name}`);
+        await expect(page).toHaveScreenshot(
+            `library-migration-preserved-original-${surface.name}.png`,
+            { fullPage: true },
+        );
+        await selectFilesTreeRow(page, chosenFile.name);
+        const detail = page.locator("[data-linked-collection]");
+        await expect(detail).toHaveAttribute("data-linked-collection", chosen.id);
+        await expect(role).toHaveCount(0);
+        const explore = detail.getByRole("button", { name: "Explore", exact: true });
+        await expect(explore).toBeEnabled();
+        await assertLinkedPlayerFields(detail);
+        await assertNothingClipped(detail, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        await assertAccessible();
+        await capture(`library-migration-chosen-${surface.name}`);
+        await expect(page).toHaveScreenshot(`library-migration-chosen-${surface.name}.png`, {
+            fullPage: true,
+        });
+    });
+
+    test(`database-files: explicit migration surfaces preserve source choices at ${surface.name}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertNoHorizontalOverflow,
+        assertAccessible,
+    }) => {
+        await page.addInitScript(
+            (scale) => localStorage.setItem("font-size", scale),
+            surface.scale,
+        );
+        await page.setViewportSize({ width: surface.width, height: 1000 });
+        const { file } = linkedLibraryFixture();
+        await mockScenario({
+            commands: {
+                ...filesWorkspaceCommands([[file]], gameOpeningCommands),
+                linked_collections_supported: { result: true },
+                list_linked_collections: { result: [] },
+                collection_for_database: { result: null },
+                migrate_linked_collection: { result: null },
+            },
+        });
+        await page.goto("/library");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        await selectFilesTreeRow(page, gameOpeningFixture.databaseTitle);
+        await page.getByRole("button", { name: "Link existing collection", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Link existing collection", exact: true });
+        await expect(dialog).toContainText("Original versions are preserved before linking");
+        for (const name of ["Source PGN", "Future authoritative version", "Name"]) {
+            const field = dialog.getByRole("textbox", { name, exact: true });
+            await field.scrollIntoViewIfNeeded();
+            await expect(field).toBeInViewport({ ratio: 1 });
+            await assertNothingClipped(field, { mode: "reachable" });
+        }
+        await assertNothingClipped(dialog, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        await assertAccessible();
+        await capture(`library-migration-database-${surface.name}`);
+        await expect(page).toHaveScreenshot(`library-migration-database-${surface.name}.png`, {
+            fullPage: true,
+        });
+        await dialog.getByRole("textbox", { name: "Source PGN", exact: true }).click();
+        await page
+            .getByRole("option", { name: `${file.name} (${file.gameCount})`, exact: true })
+            .click();
+        await dialog
+            .getByRole("textbox", { name: "Future authoritative version", exact: true })
+            .click();
+        await page.getByRole("option", { name: "Use the selected PGN", exact: true }).click();
+        await expect(dialog.getByRole("textbox", { name: "Name", exact: true })).toHaveCount(0);
+        for (const name of ["Link existing collection", "Keep independent versions"]) {
+            const action = dialog.getByRole("button", { name, exact: true });
+            await action.evaluate((node) =>
+                node.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }),
+            );
+            await expect(action).toBeInViewport({ ratio: 1 });
+            await assertNothingClipped(action, { mode: "reachable" });
+        }
+        await assertNoHorizontalOverflow();
+        await capture(`library-migration-pgn-${surface.name}`);
+        await expect(page).toHaveScreenshot(`library-migration-pgn-${surface.name}.png`, {
+            fullPage: true,
+        });
+        await dialog
+            .getByRole("button", { name: "Keep independent versions", exact: true })
+            .click();
+        await expect(dialog).toHaveCount(0);
+        const migration = await page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .find((call) => call.command === "migrate_linked_collection"),
+        );
+        expect(migration?.args).toMatchObject({
+            database: { id: { id: gameOpeningFixture.databaseId }, kind: "database" },
+            source: file.handle,
+            choice: "decline",
+        });
     });
 }
 

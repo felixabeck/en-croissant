@@ -13,14 +13,20 @@ import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
 import { parseUci } from "chessops";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import RepertoireInfo from "./RepertoireInfo";
+import { startFileRevisionPoll } from "@/state/fileFreshness";
 
 const mocks = vi.hoisted(() => ({
   computeTreeCoverage: vi.fn(),
   fetchPositionMoves: vi.fn(),
   notificationShow: vi.fn(),
+  collection: vi.fn(async () => null as import("@/bindings").CollectionDescriptor | null),
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/platform/tauri", async (original) => {
+  const actual = await original<typeof import("@/platform/tauri")>();
+  return { ...actual, tauri: { ...actual.tauri, collectionForDatabase: mocks.collection } };
+});
 vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationShow },
 }));
@@ -57,7 +63,8 @@ let root: Root;
 let host: HTMLDivElement;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  mocks.collection.mockResolvedValue(null);
   localStorage.clear();
   sessionStorage.clear();
   mocks.fetchPositionMoves.mockResolvedValue({ moves: [], total: 0 });
@@ -242,6 +249,135 @@ test("coverage completion leaves dirty edits dirty", async () => {
 
   expect(store?.getState()).toMatchObject({ dirty: true, headers: { event: "Unsaved user edit" } });
 });
+
+test("linked reference changes cancel earlier coverage while preserving the live dirty repertoire", async () => {
+  const collection: import("@/bindings").CollectionDescriptor = {
+    id: "22222222-2222-4222-8222-222222222222",
+    name: "Reference",
+    file: { id: { id: "source" }, kind: "fileWorkspace" },
+    database,
+    status: "ready",
+    generation: "first",
+    omitted: 0,
+    account: null,
+    retiredDatabase: null,
+    fetchSinceMs: null,
+  };
+  mocks.collection.mockResolvedValue(collection);
+  const requests: { signal: AbortSignal; resolve: (value: typeof emptyCoverage) => void }[] = [];
+  mocks.computeTreeCoverage.mockImplementation(
+    (...args: unknown[]) =>
+      new Promise((resolve) => requests.push({ signal: args[6] as AbortSignal, resolve })),
+  );
+  let focus!: () => void;
+  const stop = startFileRevisionPoll({
+    getTabs: () => [],
+    fileRevision: vi.fn(),
+    subscribeFocus: (callback) => {
+      focus = callback;
+      return () => undefined;
+    },
+  });
+  try {
+    const initial = defaultTree();
+    initial.dirty = true;
+    initial.headers.event = "Live repertoire edits";
+    let tree!: TreeStore;
+    await renderRepertoireInfo(initial, "linked-coverage-generation", (value) => {
+      tree = value;
+    });
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    const old = requests.at(-1)!;
+    expect(old.signal.aborted).toBe(false);
+    mocks.collection.mockResolvedValue({ ...collection, generation: "second" });
+    await act(async () => {
+      focus();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    });
+    expect(old.signal.aborted).toBe(true);
+    await act(async () => {
+      for (const request of requests) request.resolve(emptyCoverage);
+    });
+    expect(tree.getState()).toMatchObject({
+      dirty: true,
+      headers: { event: "Live repertoire edits" },
+    });
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  } finally {
+    stop();
+  }
+});
+
+test("an unchecked or failed selected reference is unavailable and recovers through the shared focus check without losing dirty edits", async () => {
+  let rejectCheck!: (error: unknown) => void;
+  mocks.collection.mockReturnValueOnce(
+    new Promise((_resolve, reject) => {
+      rejectCheck = reject;
+    }),
+  );
+  const initial = defaultTree();
+  initial.dirty = true;
+  initial.headers.event = "Live unavailable repertoire";
+  let tree!: TreeStore;
+  let focus!: () => void;
+  const stop = startFileRevisionPoll({
+    getTabs: () => [],
+    fileRevision: vi.fn(),
+    subscribeFocus: (callback) => {
+      focus = callback;
+      return () => undefined;
+    },
+  });
+  try {
+    await renderRepertoireInfo(initial, "unavailable-reference", (value) => {
+      tree = value;
+    });
+    // Unverified references must not dispatch coverage.
+    expect(mocks.computeTreeCoverage).not.toHaveBeenCalled();
+    expect(mocks.fetchPositionMoves).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Collections.Unavailable");
+    expect(host.textContent).not.toContain("Board.Practice.Build.NoRefDb");
+    await act(async () => rejectCheck(new Error("reference currency failed")));
+    expect(host.textContent).toContain("Collections.Unavailable");
+    expect(mocks.notificationShow).toHaveBeenCalledWith({
+      title: "Common.Error",
+      message: "reference currency failed",
+      color: "red",
+    });
+    mocks.collection.mockResolvedValue(null);
+    await act(async () => focus());
+    expect(host.textContent).not.toContain("Collections.Unavailable");
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledOnce();
+    expect(tree.getState()).toMatchObject({
+      dirty: true,
+      headers: { event: "Live unavailable repertoire" },
+    });
+  } finally {
+    stop();
+  }
+});
+
+test.each(["missing", "preservedOriginal"] as const)(
+  "a selected %s reference reports unavailable rather than asking for a new selection",
+  async (status) => {
+    mocks.collection.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Reference",
+      file: { id: { id: "source" }, kind: "fileWorkspace" },
+      database,
+      status,
+      generation: "first",
+      omitted: 0,
+      account: null,
+      retiredDatabase: null,
+      fetchSinceMs: null,
+    });
+    await renderRepertoireInfo();
+    expect(host.textContent).toContain("Collections.Unavailable");
+    expect(host.textContent).not.toContain("Board.Practice.Build.NoRefDb");
+    expect(mocks.computeTreeCoverage).not.toHaveBeenCalled();
+  },
+);
 
 test("shared teardown clears the debounce scheduled by repertoire edits", async () => {
   let store: TreeStore | undefined;

@@ -1,6 +1,7 @@
 import { Box, Button, Center, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
 import { IconArrowBackUp, IconChess, IconTrophy, IconUser } from "@tabler/icons-react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useCollectionCurrency } from "@/state/linkedCollections";
 import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import GameTable from "@/components/databases/GameTable";
@@ -37,6 +38,20 @@ function DatabaseView() {
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
   const { databaseId } = useParams({ from: "/databases/$databaseId" });
   const { data: databases, error, mutate } = useDatabaseList();
+  const navigate = useNavigate();
+  const currency = useCollectionCurrency(database?.file, database?.collection);
+  useEffect(() => {
+    const linked = databases?.collections?.find(
+      (collection) =>
+        collection.retiredDatabase && databaseHandleKey(collection.retiredDatabase) === databaseId,
+    );
+    if (linked?.status === "ready" && linked.database)
+      void navigate({
+        to: "/databases/$databaseId",
+        params: { databaseId: databaseHandleKey(linked.database) },
+        replace: true,
+      });
+  }, [databaseId, databases, navigate]);
 
   const resolution = useMemo(
     () => resolveDatabaseRoute(databases?.databases, databaseId, database),
@@ -55,6 +70,11 @@ function DatabaseView() {
 
   useEffect(() => {
     if (resolution.status === "synchronizing") {
+      activeDatabaseViewStore.getState().setDatabase(resolution.database);
+    } else if (
+      resolution.status === "ready" &&
+      resolution.database.collection?.generation !== database?.collection?.generation
+    ) {
       activeDatabaseViewStore.getState().setDatabase(resolution.database);
     } else if (resolution.status === "not_found" && database && !preserveUnread) {
       activeDatabaseViewStore.getState().clearDatabase();
@@ -103,6 +123,21 @@ function DatabaseView() {
   }
 
   const databaseForRoute = resolution.database;
+  if (databaseForRoute.collection && (currency.error || currency.collection?.status !== "ready"))
+    return (
+      <Stack role="alert" p="md">
+        <Text>
+          {t("Collections.Unavailable", {
+            defaultValue:
+              "The search index is unavailable. Retry, or select the collection's source file again.",
+          })}
+        </Text>
+        <Button onClick={() => void mutate()}>
+          {t("Common.Retry", { defaultValue: "Retry" })}
+        </Button>
+        <Link to="/library">{t("Library.Title")}</Link>
+      </Stack>
+    );
 
   return (
     <Box

@@ -46,6 +46,7 @@ import NoDatabaseWarning from "./NoDatabaseWarning";
 import OpeningsTable from "./OpeningsTable";
 import LichessOptionsPanel from "./options/LichessOptionsPanel";
 import LocalOptionsPanel from "./options/LocalOptionsPanel";
+import { useCollectionCurrency } from "@/state/linkedCollections";
 import MasterOptionsPanel from "./options/MastersOptionsPanel";
 
 export type DBType =
@@ -129,6 +130,16 @@ function DatabasePanel() {
   const store = useContext(TreeStateContext)!;
   const fen = useStore(store, (s) => s.currentNode().fen);
   const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
+  const currency = useCollectionCurrency(referenceDatabase);
+  useEffect(() => {
+    const current = currency.collection?.database;
+    if (
+      current &&
+      referenceDatabase &&
+      databaseHandleKey(current) !== databaseHandleKey(referenceDatabase)
+    )
+      setReferenceDatabase(current);
+  }, [currency.collection?.database, referenceDatabase, setReferenceDatabase]);
   const sessions = useAtomValue(sessionsAtom);
   const [debouncedFen] = useDebouncedValue(fen, 50);
   const [lichessOptions, setLichessOptions] = useAtom(lichessOptionsAtom);
@@ -178,16 +189,32 @@ function DatabasePanel() {
 
   const [tab] = useOwnerTab();
   const [tabType, setTabType] = useAtom(useTabAtom(dbTabFamily));
-  const openingKey = tabType !== "options" && !missingExplorerAuthentication ? dbType : null;
+  const collectionUnavailable =
+    db === "local" &&
+    (!!currency.error || (!!currency.collection && currency.collection.status !== "ready"));
+  const openingKey =
+    tabType !== "options" && !missingExplorerAuthentication && !collectionUnavailable
+      ? currency.collection
+        ? ([dbType, currency.collection.generation] as const)
+        : dbType
+      : null;
   const openingOwner = useNativeRequestOwner(openingKey);
 
   const {
     data: openingData,
     isLoading,
-    error,
-  } = useSWR(openingKey, (dbType: DBType) =>
+    error: openingError,
+  } = useSWR(openingKey, () =>
     openingOwner!.run((signal) => fetchOpening(dbType, tab?.value || "", signal)),
   );
+  const error = collectionUnavailable
+    ? new Error(
+        t("Collections.Unavailable", {
+          defaultValue:
+            "The search index is unavailable. Retry, or select the collection's source file again.",
+        }),
+      )
+    : openingError;
 
   const grandTotal = openingData?.openings?.reduce(
     (acc, curr) => acc + curr.black + curr.white + curr.draw,

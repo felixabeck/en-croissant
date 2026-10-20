@@ -3,6 +3,150 @@ import type { FileWorkspaceHandle } from "@/bindings";
 import { normalizeError } from "@/platform/errors";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import type { Tab } from "@/utils/tabs";
+import type { CollectionDescriptor } from "@/bindings";
+
+type CollectionCheck = {
+    read: (signal: AbortSignal) => Promise<CollectionDescriptor | null>;
+    rebuild?: (collection: string) => Promise<CollectionDescriptor>;
+    receive: (value: CollectionDescriptor | null, error?: unknown) => void;
+};
+type CollectionCheckEntry = {
+    subscribers: Set<CollectionCheck>;
+    due: boolean;
+    generation: string | null;
+    rebuildPending: CollectionDescriptor | null;
+};
+const collectionChecks = new Map<string, CollectionCheckEntry>();
+const collectionFlights = new Map<string, AbortController>();
+const collectionRebuilds = new Map<string, Promise<CollectionDescriptor>>();
+const COLLECTION_METADATA_CONCURRENCY = 8;
+const COLLECTION_REBUILD_CONCURRENCY = 4;
+const COLLECTION_CHECK_CAPACITY = 4096;
+let collectionReads = 0;
+
+function publishCollection(
+    key: string,
+    entry: CollectionCheckEntry,
+    value: CollectionDescriptor | null,
+    error?: unknown,
+) {
+    if (collectionChecks.get(key) !== entry) return;
+    for (const subscriber of entry.subscribers) {
+        try {
+            subscriber.receive(value, error);
+        } catch (cause) {
+            console.error("Collection freshness observer failed", normalizeError(cause));
+        }
+    }
+}
+
+function startCollectionRebuilds() {
+    for (const [key, entry] of collectionChecks) {
+        if (collectionRebuilds.size >= COLLECTION_REBUILD_CONCURRENCY) break;
+        const collection = entry.rebuildPending;
+        if (!collection || collectionRebuilds.has(key)) continue;
+        const owner = [...entry.subscribers].find((subscriber) => subscriber.rebuild);
+        if (!owner?.rebuild) continue;
+        entry.rebuildPending = null;
+        const admitted = entry.generation;
+        const job = Promise.resolve().then(() => owner.rebuild!(collection.id));
+        collectionRebuilds.set(key, job);
+        void job
+            .then(
+                (current) => {
+                    if (entry.generation === admitted || entry.generation === current.generation) {
+                        entry.generation = current.generation;
+                        entry.rebuildPending = current.status === "stale" ? current : null;
+                        publishCollection(key, entry, current);
+                    }
+                },
+                (error) => {
+                    if (entry.generation === admitted) publishCollection(key, entry, null, error);
+                },
+            )
+            .finally(() => {
+                if (collectionRebuilds.get(key) === job) collectionRebuilds.delete(key);
+                startCollectionRebuilds();
+            });
+    }
+}
+
+function checkActiveCollections(markDue = false) {
+    if (markDue) for (const entry of collectionChecks.values()) entry.due = true;
+    for (const [key, entry] of collectionChecks) {
+        if (collectionReads >= COLLECTION_METADATA_CONCURRENCY) break;
+        if (collectionFlights.has(key) || !entry.due) continue;
+        const owner = entry.subscribers.values().next().value as CollectionCheck | undefined;
+        if (!owner) continue;
+        const flight = new AbortController();
+        collectionFlights.set(key, flight);
+        // Move admitted checks behind those still waiting, including when clocks mark them due.
+        collectionChecks.delete(key);
+        collectionChecks.set(key, entry);
+        entry.due = false;
+        collectionReads += 1;
+        const deadline = setTimeout(() => {
+            flight.abort();
+            publishCollection(
+                key,
+                entry,
+                null,
+                new Error("Collection freshness check exceeded its deadline"),
+            );
+        }, FILE_REVISION_DEADLINE_MS);
+        void Promise.resolve()
+            .then(() => owner.read(flight.signal))
+            .then(
+                (value) => {
+                    if (flight.signal.aborted) return;
+                    entry.generation = value?.generation ?? null;
+                    entry.rebuildPending = value?.status === "stale" ? value : null;
+                    publishCollection(key, entry, value);
+                    startCollectionRebuilds();
+                },
+                (error) => {
+                    if (!flight.signal.aborted) publishCollection(key, entry, null, error);
+                },
+            )
+            .finally(() => {
+                clearTimeout(deadline);
+                if (collectionFlights.get(key) === flight) collectionFlights.delete(key);
+                collectionReads -= 1;
+                checkActiveCollections();
+            });
+    }
+}
+
+/** Uses the root freshness clock, bounded metadata reads and native-owned rebuild operations. */
+export function registerCollectionCheck(key: string, check: CollectionCheck): () => void {
+    let entry = collectionChecks.get(key);
+    if (!entry) {
+        if (collectionChecks.size >= COLLECTION_CHECK_CAPACITY) {
+            check.receive(null, new Error("Too many active collection checks"));
+            return () => undefined;
+        }
+        entry = {
+            subscribers: new Set(),
+            due: true,
+            generation: null,
+            rebuildPending: null,
+        };
+        collectionChecks.set(key, entry);
+    }
+    entry.subscribers.add(check);
+    entry.due = true;
+    queueMicrotask(checkActiveCollections);
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        entry.subscribers.delete(check);
+        if (!entry.subscribers.size && collectionChecks.get(key) === entry) {
+            collectionFlights.get(key)?.abort();
+            collectionChecks.delete(key);
+        }
+    };
+}
 
 export type FileFreshnessState =
     | "unverified"
@@ -363,6 +507,7 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
 
     const tick = () => {
         if (!running) return;
+        checkActiveCollections(true);
         const handles = new Map<string, FileWorkspaceHandle>();
         for (const tab of fileTabs()) handles.set(tab.key, tab.handle);
         for (const [key, handle] of handles) runForHandle(key, handle);
@@ -370,6 +515,7 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
 
     const interval = setInterval(tick, FILE_REVISION_INTERVAL_MS);
     const unsubscribeWrites = subscribeFileWriteChanges((key) => {
+        checkActiveCollections(true);
         const handle = fileTabs().find((tab) => tab.key === key)?.handle;
         if (handle) runForHandle(key, handle);
     });
@@ -398,6 +544,7 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
             flight.deadline = null;
             flight.controller.abort();
         }
+        for (const flight of collectionFlights.values()) flight.abort();
         pendingPollOutcomes.clear();
     };
 }

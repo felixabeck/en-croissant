@@ -109,11 +109,19 @@ export async function loadFileGame(
     handle: FileWorkspaceHandle,
     gameNumber: number,
     signal?: AbortSignal,
-) {
+): Promise<
+    Awaited<ReturnType<typeof readFileGame>> & {
+        tree: Awaited<ReturnType<typeof parsePGN>> & {
+            linkedSource?: import("@/bindings").LinkedGameLocator | null;
+        };
+    }
+> {
     const game = await readFileGame(handle, gameNumber, signal);
     const tree = await parsePGN(game.pgn, undefined, { signal });
     tree.sourceStamp = game.stamp;
-    return { ...game, tree };
+    const linkedSource = game.linked ?? null;
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    return { ...game, tree: linkedSource ? { ...tree, linkedSource } : tree };
 }
 
 export async function openFile(

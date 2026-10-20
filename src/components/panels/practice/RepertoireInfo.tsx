@@ -30,6 +30,7 @@ import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, referenceDbAtom } from "@/state/atoms";
+import { useCollectionCurrency } from "@/state/linkedCollections";
 import { formatMoveNumber, roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
 import {
@@ -67,7 +68,18 @@ function RepertoireInfo() {
   const makeMoves = useStore(store, (s) => s.makeMoves);
   const setStart = useStore(store, (s) => s.setStart);
 
-  const referenceDb = useAtomValue(referenceDbAtom);
+  const selectedReference = useAtomValue(referenceDbAtom);
+  const currency = useCollectionCurrency(selectedReference);
+  const referenceDb =
+    currency.pending ||
+    currency.error ||
+    (currency.collection &&
+      (currency.collection.status !== "ready" || !currency.collection.database))
+      ? null
+      : (currency.collection?.database ?? selectedReference);
+  useEffect(() => {
+    if (currency.error) notifyUnlessCancelled(commonErrorRef.current, currency.error);
+  }, [currency.error]);
   const [currentTab] = useOwnerTab();
   const minGames = useAtomValue(coverageMinGamesAtom);
 
@@ -98,6 +110,23 @@ function RepertoireInfo() {
   } | null>(null);
   const positionRequest = useRef<AbortController | null>(null);
   const coverageRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    positionRequest.current?.abort();
+    coverageRequest.current?.abort();
+    coverageVersionRef.current += 1;
+    firstCoverageRun.current = true;
+    lastCoverageInputRef.current = null;
+    setDbMovesMap(new Map());
+    setCoverageMap(new Map());
+    setGamesMap(new Map());
+    setMissingGamesMap(new Map());
+  }, [
+    selectedReference,
+    currency.collection?.generation,
+    currency.collection?.status,
+    currency.error,
+    currency.pending,
+  ]);
 
   useEffect(
     () => () => {
@@ -169,6 +198,7 @@ function RepertoireInfo() {
       setMissingGamesMap(new Map());
       setDbMovesMap(new Map());
       setCoverageLoading(false);
+      setCurrentPosLoading(false);
       firstCoverageRun.current = true;
       return;
     }
@@ -229,7 +259,17 @@ function RepertoireInfo() {
         }
       });
     return () => controller.abort();
-  }, [referenceDb, minGames, orientation, dirty, root, startPath, startStateMoves, store]);
+  }, [
+    referenceDb,
+    currency.collection?.generation,
+    minGames,
+    orientation,
+    dirty,
+    root,
+    startPath,
+    startStateMoves,
+    store,
+  ]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();
@@ -352,7 +392,14 @@ function RepertoireInfo() {
     return (
       <Stack p="sm">
         <TreeStatsBar stats={stats} t={t} />
-        <Alert icon={<IconInfoCircle />}>{t("Board.Practice.Build.NoRefDb")}</Alert>
+        <Alert icon={<IconInfoCircle />} color={selectedReference ? "yellow" : undefined}>
+          {selectedReference
+            ? t("Collections.Unavailable", {
+                defaultValue:
+                  "The search index is unavailable. Retry, or select the collection's source file again.",
+              })
+            : t("Board.Practice.Build.NoRefDb")}
+        </Alert>
       </Stack>
     );
   }

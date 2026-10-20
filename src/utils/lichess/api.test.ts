@@ -277,7 +277,7 @@ describe("downloadLichess", () => {
             progressMock: mocks.progress,
             nativeMock: mocks.downloadLichessGames,
             download: (onTicket) =>
-                downloadLichess("account", { id: "destination" }, "player", null, 0, onTicket),
+                downloadLichess("account", { id: "destination" }, "player", null, onTicket),
             publication,
         });
     });
@@ -302,7 +302,7 @@ describe("downloadLichess", () => {
         const destination = { id: "destination" };
 
         await expect(
-            downloadLichess(handle.id, destination, "player", 123, 2, vi.fn()),
+            downloadLichess(handle.id, destination, "player", 123, vi.fn()),
         ).resolves.toEqual(publication);
         expect(mocks.downloadLichessGames).toHaveBeenCalledWith(
             handle.id,
@@ -310,7 +310,6 @@ describe("downloadLichess", () => {
             "player_lichess.pgn",
             "player",
             123n,
-            1800,
             "prepared-ticket",
         );
     });
@@ -323,7 +322,7 @@ describe("downloadLichess", () => {
         mocks.downloadLichessGames.mockResolvedValue(uncertain);
 
         await expect(
-            downloadLichess("account", { id: "destination" }, "player", null, 0, vi.fn()),
+            downloadLichess("account", { id: "destination" }, "player", null, vi.fn()),
         ).resolves.toEqual(uncertain);
         expect(mocks.downloadLichessGames).toHaveBeenCalledTimes(1);
         expect(mocks.releaseDownload).not.toHaveBeenCalled();
@@ -334,7 +333,7 @@ describe("downloadLichess", () => {
         mocks.downloadLichessGames.mockRejectedValue(failure);
 
         await expect(
-            downloadLichess("account", { id: "destination" }, "player", null, 0, vi.fn()),
+            downloadLichess("account", { id: "destination" }, "player", null, vi.fn()),
         ).rejects.toBe(failure);
         expect(mocks.releaseDownload).toHaveBeenCalledWith("prepared-ticket");
     });

@@ -243,7 +243,7 @@ pub async fn download_chess_com_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
-    let admission_key = format!("chesscom_{player}");
+    let admission_key = format!("chesscom_{}", player.to_ascii_lowercase());
     let lease = state.operations.claim_download(
         &job_id,
         window.label(),
@@ -413,7 +413,7 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
         // Publication and its durability/activation tail are deliberately outside the staging
         // timeout. Once installation starts, cancellation checkpoints decide whether publication
         // is still safe; after rename, the real durability and activation outcome always wins.
-        crate::fs::install_staged_pgn_artifact(
+        let publication = crate::fs::install_staged_pgn_artifact(
             destination,
             filename,
             staged,
@@ -421,7 +421,28 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
             &cancellation,
             Some(&commit_gate),
         )
-        .await
+        .await?;
+        if let Some(service) = state.pgn_path_authority.collections()? {
+            let authority = state.pgn_path_authority.clone();
+            let file = publication.handle.clone();
+            let since_ms = first_month
+                .and_then(|(year, month)| chrono::NaiveDate::from_ymd_opt(year, month, 1))
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|date| date.and_utc().timestamp_millis());
+            crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation.clone(), move |token| {
+                    service.record_download(
+                        &authority,
+                        file,
+                        "chesscom",
+                        &lower_player,
+                        since_ms,
+                        token,
+                    )
+                })
+                .await?;
+        }
+        Ok(publication)
     }
     .await;
 
@@ -482,6 +503,108 @@ mod tests {
 
     struct ExportTransport {
         responses: Mutex<VecDeque<DownloadResponse>>,
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_collections_overlapping_months_append_genuine_transport_artifacts_once() {
+        use crate::db::linked_collections::tests::{game, Fixture};
+        use crate::file_workspace::WorkspaceFileType;
+        fn json_response(value: serde_json::Value) -> DownloadResponse {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(bytes.len() as u64),
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(Bytes::from(bytes))])),
+            }
+        }
+        let fixture = Fixture::new();
+        let original = game(
+            None,
+            "e4 e5",
+            "user annotation survives the provider overlap",
+        );
+        fixture.create("history", &original, WorkspaceFileType::Game);
+        let collection = fixture.list().pop().unwrap();
+        fixture.account(&collection.id, "chesscom");
+        let first = game(Some("123"), "e4 e5", "provider annotation");
+        let second = game(Some("456"), "d4 d5", "equal timestamp");
+        let third = game(Some("789"), "c4 c5", "same timestamp, later arrival");
+        let transport = Arc::new(ExportTransport {
+            responses: Mutex::new(VecDeque::from([
+                json_response(
+                    serde_json::json!({"archives":["https://api.chess.com/pub/player/player/games/2026/09","https://api.chess.com/pub/player/player/games/2026/10"]}),
+                ),
+                json_response(serde_json::json!({"games":[{"pgn":first}]})),
+                json_response(serde_json::json!({"games":[{"pgn":first},{"pgn":second}]})),
+                json_response(
+                    serde_json::json!({"archives":["https://api.chess.com/pub/player/player/games/2026/09","https://api.chess.com/pub/player/player/games/2026/10"]}),
+                ),
+                json_response(serde_json::json!({"games":[{"pgn":second},{"pgn":third}]})),
+            ])),
+        });
+        let state = AppState {
+            http_transport: transport.clone(),
+            ..fixture.state.clone()
+        };
+        let app = fixture.app();
+        for (first_month, expected) in [(None, 1), (Some((2026, 10)), 1)] {
+            let job = state.operations.prepare_download("test").unwrap();
+            let lease = state
+                .operations
+                .claim_download(
+                    &job,
+                    "test",
+                    "download_chess_com_games",
+                    &job,
+                    "chesscom_player",
+                    true,
+                    crate::fs::MAX_ACTIVE_DOWNLOADS,
+                )
+                .unwrap();
+            let token = lease.token();
+            let gate = lease.commit_gate();
+            let publication = crate::infra::operations::run_native_operation(
+                lease,
+                "download_chess_com_games",
+                download_chess_com_games_core(
+                    fixture.download_destination(),
+                    "player.pgn".into(),
+                    job,
+                    "player".into(),
+                    first_month,
+                    app.handle().clone(),
+                    state.clone(),
+                    token,
+                    gate,
+                    Duration::from_secs(30),
+                ),
+            )
+            .await
+            .unwrap();
+            let result = Arc::clone(&fixture.service)
+                .append_batch(
+                    state.pgn_path_authority.clone(),
+                    uuid::Uuid::parse_str(&collection.id).unwrap(),
+                    publication.handle,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.appended, expected);
+            assert!(result.index_ready);
+        }
+        let bytes = std::fs::read_to_string(fixture.path("history")).unwrap();
+        assert!(bytes.starts_with(&original));
+        assert_eq!(bytes.matches("[Event ").count(), 3);
+        assert_eq!(bytes.matches("/456\"").count(), 1);
+        assert_eq!(bytes.matches("/789\"").count(), 1);
+        assert!(fixture.list()[0].fetch_since_ms.is_some(), "a completed full-history provider export did not establish an inclusive coverage cursor");
+        assert!(
+            transport.responses.lock().unwrap().is_empty(),
+            "the inclusive latest month was not fetched through the real transport"
+        );
     }
 
     #[async_trait]

@@ -173,7 +173,7 @@ pub(crate) fn load_search_index(
 
 #[cfg(test)]
 std::thread_local! {
-    static AFTER_FAST_IDENTITY_PROBE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    pub(super) static AFTER_FAST_IDENTITY_PROBE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static AFTER_SIDECAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -204,6 +204,9 @@ pub(crate) fn load_search_index_cancellable(
     handle: &DatabaseHandle,
     cancellation: &CancellationToken,
 ) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
+    if let Some(service) = authority.collections()? {
+        service.resolve_database(authority, handle, PathOperation::DatabaseRead, cancellation)?;
+    }
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -252,7 +255,20 @@ pub(crate) fn load_search_index_cancellable(
         );
     }
 
-    let mutate_target = super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
+    let linked = authority
+        .collections()?
+        .map(|service| service.is_linked(handle))
+        .transpose()?
+        .unwrap_or(false);
+    let mutate_target = super::resolve_database(
+        authority,
+        handle,
+        if linked {
+            PathOperation::DatabaseRead
+        } else {
+            PathOperation::DatabaseMutate
+        },
+    )?;
     let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
     let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
     search_cache.invalidate_database(&mutate_target);
@@ -671,217 +687,242 @@ pub(super) fn search_position_blocking<R: tauri::Runtime>(
         cancellation,
     )?;
     let cache_key = SearchResultKey::new(query.clone(), identity);
-    if let Some(result) = search_cache.get_result(&cache_key) {
-        return Ok(result);
-    }
-
-    let game_count = mmap_index.len();
-
-    info!(
-        "Ready to search {} games: {:?}",
-        game_count,
-        start.elapsed()
-    );
-
-    let openings: DashMap<String, PositionStats> = DashMap::new();
-    const MAX_SAMPLES: usize = 500;
-    // Min-heap of (elo_key, game_id) to track top-rated sample games.
-    // Using Reverse so peek() returns the entry with the lowest ELO,
-    // which we can evict when a higher-rated game is found.
-    let top_games: Mutex<BinaryHeap<Reverse<(i16, i32)>>> =
-        Mutex::new(BinaryHeap::with_capacity(MAX_SAMPLES + 1));
-
-    let processed = AtomicUsize::new(0);
-    let progress_error_diagnosed = AtomicBool::new(false);
-
-    let parsed_position_query: Option<PositionQuery> = if let Some(pq) = &query.position {
-        Some(convert_position_query(pq.clone())?)
-    } else {
-        None
-    };
-
-    let wanted_result = parse_wanted_result(query.wanted_result.as_deref())?;
-
-    let excluded_fast_game_ids: Option<HashSet<i32>> = if query.exclude_fast_events == Some(true) {
-        let ids = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-            load_excluded_fast_game_ids(db)
-        })?;
-        #[cfg(test)]
-        if instrument {
-            EXCLUDE_FAST_SQL_COMPLETED.store(true, Ordering::SeqCst);
+    db.transaction::<_, Error, _>(|db| {
+        if super::repository::read_data_revision(db)? != mmap_index.source().revision {
+            return Err(Error::StaleGame);
         }
-        Some(ids)
-    } else {
-        None
-    };
+        let admitted_generation =
+            super::linked_collections::linked_metadata(db)?.map(|(generation, _)| generation);
+        if let Some(result) = search_cache.get_result(&cache_key) {
+            if let Some(service) = authority.collections()? {
+                service.validate_result(authority, &database_handle, &admitted_generation)?;
+            }
+            return Ok(result);
+        }
 
-    info!("start search on {}", lease.id);
+        let game_count = mmap_index.len();
 
-    let process_entry = |entry: SearchGameEntryRef<'_>| -> Result<(), Error> {
-        #[cfg(test)]
-        if instrument {
-            PROCESS_ENTRY_CALLS.fetch_add(1, Ordering::SeqCst);
+        info!(
+            "Ready to search {} games: {:?}",
+            game_count,
+            start.elapsed()
+        );
+
+        let openings: DashMap<String, PositionStats> = DashMap::new();
+        const MAX_SAMPLES: usize = 500;
+        // Min-heap of (elo_key, game_id) to track top-rated sample games.
+        // Using Reverse so peek() returns the entry with the lowest ELO,
+        // which we can evict when a higher-rated game is found.
+        let top_games: Mutex<BinaryHeap<Reverse<(i16, i32)>>> =
+            Mutex::new(BinaryHeap::with_capacity(MAX_SAMPLES + 1));
+
+        let processed = AtomicUsize::new(0);
+        let progress_error_diagnosed = AtomicBool::new(false);
+
+        let parsed_position_query: Option<PositionQuery> = if let Some(pq) = &query.position {
+            Some(convert_position_query(pq.clone())?)
+        } else {
+            None
+        };
+
+        let wanted_result = parse_wanted_result(query.wanted_result.as_deref())?;
+
+        let excluded_fast_game_ids: Option<HashSet<i32>> = if query.exclude_fast_events
+            == Some(true)
+        {
+            let ids = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+                load_excluded_fast_game_ids(db)
+            })?;
+            #[cfg(test)]
+            if instrument {
+                EXCLUDE_FAST_SQL_COMPLETED.store(true, Ordering::SeqCst);
+            }
+            Some(ids)
+        } else {
+            None
+        };
+
+        info!("start search on {}", lease.id);
+
+        let process_entry = |entry: SearchGameEntryRef<'_>| -> Result<(), Error> {
+            #[cfg(test)]
+            if instrument {
+                PROCESS_ENTRY_CALLS.fetch_add(1, Ordering::SeqCst);
+            }
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let index = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if index.is_multiple_of(POSITION_SEARCH_PROGRESS_INTERVAL) {
+                let percent = search_progress_percent(index, game_count);
+                let report_progress = || {
+                    update_progress_with_state(
+                        &app.state::<AppState>().progress_state,
+                        &app,
+                        &lease,
+                        percent,
+                        ProgressState::Running,
+                    )
+                };
+                #[cfg(test)]
+                let progress_result = progress_update
+                    .and_then(|update| update(&lease, percent))
+                    .unwrap_or_else(report_progress);
+                #[cfg(not(test))]
+                let progress_result = report_progress();
+                handle_running_progress_result(
+                    progress_result,
+                    "position search",
+                    &lease,
+                    &progress_error_diagnosed,
+                    Some(cancellation),
+                )?;
+            }
+
+            try_iter_mainline_move_bytes_cancellable(entry.moves, cancellation)
+                .map_err(|error| invalid_move_stream(entry.id, error))?;
+
+            if let Some(white) = query.player1 {
+                if white != entry.white_id {
+                    return Ok(());
+                }
+            }
+
+            if let Some(black) = query.player2 {
+                if black != entry.black_id {
+                    return Ok(());
+                }
+            }
+
+            if let Some(wanted) = wanted_result {
+                if entry.result != wanted {
+                    return Ok(());
+                }
+            } else if matches!(entry.result, GameResult::None | GameResult::Other) {
+                // Unknown and non-standard results are neither draws nor wins.
+                // PositionStats has no unknown bucket, so omit them explicitly.
+                return Ok(());
+            }
+
+            if !matches_date(
+                entry.date,
+                query.start_date.as_deref(),
+                query.end_date.as_deref(),
+            ) {
+                return Ok(());
+            }
+
+            // range1 bounds White and range2 bounds Black in position search.
+            if !elo_in_range(entry.white_elo, query.range1)
+                || !elo_in_range(entry.black_elo, query.range2)
+            {
+                return Ok(());
+            }
+
+            if excluded_fast_game_ids
+                .as_ref()
+                .is_some_and(|ids| ids.contains(&entry.id))
+            {
+                return Ok(());
+            }
+
+            if let Some(position_query) = &parsed_position_query {
+                if position_query.can_reach(entry.pawn_home) {
+                    if let Some(m) = get_move_after_match(
+                        entry.id,
+                        entry.moves,
+                        &entry.fen,
+                        position_query,
+                        cancellation,
+                    )? {
+                        let elo_key = entry.white_elo.max(entry.black_elo);
+                        let mut heap = top_games.lock().unwrap();
+                        if heap.len() < MAX_SAMPLES {
+                            heap.push(Reverse((elo_key, entry.id)));
+                        } else if let Some(&Reverse((min_elo, _))) = heap.peek() {
+                            if elo_key > min_elo {
+                                heap.pop();
+                                heap.push(Reverse((elo_key, entry.id)));
+                            }
+                        }
+                        drop(heap);
+
+                        openings
+                            .entry(m)
+                            .and_modify(|opening| match entry.result {
+                                GameResult::WhiteWin => opening.white += 1,
+                                GameResult::BlackWin => opening.black += 1,
+                                GameResult::Draw => opening.draw += 1,
+                                GameResult::Other | GameResult::None => {}
+                            })
+                            .or_insert_with(|| PositionStats {
+                                black: i32::from(entry.result == GameResult::BlackWin),
+                                white: i32::from(entry.result == GameResult::WhiteWin),
+                                draw: i32::from(entry.result == GameResult::Draw),
+                                move_: String::new(),
+                            });
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        mmap_index.par_iter().try_for_each(process_entry)?;
+
+        let openings: Vec<PositionStats> = openings
+            .into_iter()
+            .map(|(k, mut v)| {
+                v.move_ = k;
+                v
+            })
+            .collect();
+        let ids: Vec<i32> = top_games
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|Reverse((_, id))| id)
+            .collect();
+
+        info!("finished search in {:?}", start.elapsed());
+
+        let (white_players, black_players) = diesel::alias!(players as white, players as black);
+        let games: Vec<(Game, Player, Player, Event, Site)> =
+            super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+                games::table
+                    .inner_join(
+                        white_players.on(games::white_id.eq(white_players.field(players::id))),
+                    )
+                    .inner_join(
+                        black_players.on(games::black_id.eq(black_players.field(players::id))),
+                    )
+                    .inner_join(events::table.on(games::event_id.eq(events::id)))
+                    .inner_join(sites::table.on(games::site_id.eq(sites::id)))
+                    .filter(games::id.eq_any(ids))
+                    .order((games::white_elo.desc(), games::black_elo.desc()))
+                    .load(db)
+            })?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let mut normalized_games = normalize_games(games, cancellation)?;
+        super::linked_collections::qualify_games(
+            db,
+            &database_handle,
+            authority,
+            &mut normalized_games,
+        )?;
+        if let Some(service) = authority.collections()? {
+            service.validate_result(authority, &database_handle, &admitted_generation)?;
         }
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let index = processed.fetch_add(1, Ordering::Relaxed) + 1;
-        if index.is_multiple_of(POSITION_SEARCH_PROGRESS_INTERVAL) {
-            let percent = search_progress_percent(index, game_count);
-            let report_progress = || {
-                update_progress_with_state(
-                    &app.state::<AppState>().progress_state,
-                    &app,
-                    &lease,
-                    percent,
-                    ProgressState::Running,
-                )
-            };
-            #[cfg(test)]
-            let progress_result = progress_update
-                .and_then(|update| update(&lease, percent))
-                .unwrap_or_else(report_progress);
-            #[cfg(not(test))]
-            let progress_result = report_progress();
-            handle_running_progress_result(
-                progress_result,
-                "position search",
-                &lease,
-                &progress_error_diagnosed,
-                Some(cancellation),
-            )?;
-        }
+        search_cache.insert_result(cache_key, (openings.clone(), normalized_games.clone()));
 
-        try_iter_mainline_move_bytes_cancellable(entry.moves, cancellation)
-            .map_err(|error| invalid_move_stream(entry.id, error))?;
+        drop(permit);
 
-        if let Some(white) = query.player1 {
-            if white != entry.white_id {
-                return Ok(());
-            }
-        }
-
-        if let Some(black) = query.player2 {
-            if black != entry.black_id {
-                return Ok(());
-            }
-        }
-
-        if let Some(wanted) = wanted_result {
-            if entry.result != wanted {
-                return Ok(());
-            }
-        } else if matches!(entry.result, GameResult::None | GameResult::Other) {
-            // Unknown and non-standard results are neither draws nor wins.
-            // PositionStats has no unknown bucket, so omit them explicitly.
-            return Ok(());
-        }
-
-        if !matches_date(
-            entry.date,
-            query.start_date.as_deref(),
-            query.end_date.as_deref(),
-        ) {
-            return Ok(());
-        }
-
-        // range1 bounds White and range2 bounds Black in position search.
-        if !elo_in_range(entry.white_elo, query.range1)
-            || !elo_in_range(entry.black_elo, query.range2)
-        {
-            return Ok(());
-        }
-
-        if excluded_fast_game_ids
-            .as_ref()
-            .is_some_and(|ids| ids.contains(&entry.id))
-        {
-            return Ok(());
-        }
-
-        if let Some(position_query) = &parsed_position_query {
-            if position_query.can_reach(entry.pawn_home) {
-                if let Some(m) = get_move_after_match(
-                    entry.id,
-                    entry.moves,
-                    &entry.fen,
-                    position_query,
-                    cancellation,
-                )? {
-                    let elo_key = entry.white_elo.max(entry.black_elo);
-                    let mut heap = top_games.lock().unwrap();
-                    if heap.len() < MAX_SAMPLES {
-                        heap.push(Reverse((elo_key, entry.id)));
-                    } else if let Some(&Reverse((min_elo, _))) = heap.peek() {
-                        if elo_key > min_elo {
-                            heap.pop();
-                            heap.push(Reverse((elo_key, entry.id)));
-                        }
-                    }
-                    drop(heap);
-
-                    openings
-                        .entry(m)
-                        .and_modify(|opening| match entry.result {
-                            GameResult::WhiteWin => opening.white += 1,
-                            GameResult::BlackWin => opening.black += 1,
-                            GameResult::Draw => opening.draw += 1,
-                            GameResult::Other | GameResult::None => {}
-                        })
-                        .or_insert_with(|| PositionStats {
-                            black: i32::from(entry.result == GameResult::BlackWin),
-                            white: i32::from(entry.result == GameResult::WhiteWin),
-                            draw: i32::from(entry.result == GameResult::Draw),
-                            move_: String::new(),
-                        });
-                }
-            }
-        }
-        Ok(())
-    };
-
-    mmap_index.par_iter().try_for_each(process_entry)?;
-
-    let openings: Vec<PositionStats> = openings
-        .into_iter()
-        .map(|(k, mut v)| {
-            v.move_ = k;
-            v
-        })
-        .collect();
-    let ids: Vec<i32> = top_games
-        .into_inner()
-        .unwrap()
-        .into_iter()
-        .map(|Reverse((_, id))| id)
-        .collect();
-
-    info!("finished search in {:?}", start.elapsed());
-
-    let (white_players, black_players) = diesel::alias!(players as white, players as black);
-    let games: Vec<(Game, Player, Player, Event, Site)> =
-        super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-            games::table
-                .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
-                .inner_join(black_players.on(games::black_id.eq(black_players.field(players::id))))
-                .inner_join(events::table.on(games::event_id.eq(events::id)))
-                .inner_join(sites::table.on(games::site_id.eq(sites::id)))
-                .filter(games::id.eq_any(ids))
-                .order((games::white_elo.desc(), games::black_elo.desc()))
-                .load(db)
-        })?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let normalized_games = normalize_games(games, cancellation)?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    search_cache.insert_result(cache_key, (openings.clone(), normalized_games.clone()));
-
-    drop(permit);
-
-    Ok((openings, normalized_games))
+        Ok((openings, normalized_games))
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -935,6 +976,18 @@ pub(crate) fn is_position_in_db_cancellable(
         cancellation,
     )?;
     // Presence checks occurrences. Nonempty explorer statistics prove an occurrence,
+    let service = authority.collections()?;
+    let admitted = service
+        .as_ref()
+        .map(|service| service.query_generation(authority, file))
+        .transpose()?
+        .flatten();
+    if admitted
+        .as_ref()
+        .is_some_and(|(_, revision)| *revision != mmap_index.source().revision)
+    {
+        return Err(Error::StaleGame);
+    }
     // but empty statistics can reflect outcome or other filters and cannot prove absence.
     // Presence therefore uses its own occurrence scan.
 
@@ -970,6 +1023,9 @@ pub(crate) fn is_position_in_db_cancellable(
 
     info!("finished search in {:?}", start.elapsed());
 
+    if let Some(service) = service {
+        service.validate_result(authority, file, &admitted.map(|(generation, _)| generation))?;
+    }
     Ok(exists)
 }
 
@@ -1458,7 +1514,7 @@ mod progress_error_tests {
 }
 
 #[cfg(test)]
-fn run_position_search(
+pub(super) fn run_position_search(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
     handle: &DatabaseHandle,
     query: GameQuery,

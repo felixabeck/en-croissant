@@ -1,4 +1,5 @@
-import { tauri } from "@/platform/tauri";
+import { tauri, TauriCommandError } from "@/platform/tauri";
+import i18n from "@/i18n";
 import {
   Alert,
   Box,
@@ -46,6 +47,7 @@ import { refreshAfterDatabaseConversion } from "./databaseMutation";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 
 interface AddDatabaseFormValues {
   title: string;
@@ -63,6 +65,31 @@ export async function convertLocalDatabase(
   operation?: Pick<DatabaseConversionOperation, "ticket" | "throwIfCancelled">,
   onSecondaryFailure?: (cause: unknown) => void,
 ): Promise<DatabaseHandle> {
+  if (paths.length === 1 && (await tauri.linkedCollectionsSupported())) {
+    const collection = (await tauri.listLinkedCollections(null)).find(
+      (collection) =>
+        collection.status !== "retired" &&
+        fileWorkspaceKey(collection.file) === fileWorkspaceKey(paths[0]),
+    );
+    if (collection) {
+      operation?.throwIfCancelled();
+      const current = await tauri.rebuildLinkedCollection(collection.id, false);
+      operation?.throwIfCancelled();
+      if (current.status !== "ready" || !current.database) {
+        const t = i18n.t.bind(i18n);
+        throw new TauriCommandError({
+          tag: "backend-error",
+          category: "missing-resource",
+          message: t("Collections.Unavailable", {
+            defaultValue:
+              "The search index is unavailable. Retry, or select the collection's source file again.",
+          }),
+        });
+      }
+      onCreated(current.database);
+      return current.database;
+    }
+  }
   const root = await tauri.getDatabaseWorkspace();
   const filename = `${crypto.randomUUID()}.db3`;
   const dbPath = await runWithAppliedRecovery(

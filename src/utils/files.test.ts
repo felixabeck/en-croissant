@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     issuePgnExportDestination: vi.fn(),
     countPgnGames: vi.fn(),
     readGame: vi.fn(),
+    qualifyFileGame: vi.fn(async () => null),
     writeGame: vi.fn(),
     issueFileWorkspace: vi.fn(),
     parsePGN: vi.fn(),

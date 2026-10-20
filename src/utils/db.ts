@@ -22,13 +22,21 @@ import { collectSequential } from "@/utils/collectSequential";
 import { loadSignedCatalog } from "@/utils/signedCatalog";
 import { logFailureSafely, safeFailureContext } from "@/platform/errors";
 import i18n from "i18next";
+import { getDefaultStore } from "jotai";
+import { fileWorkspaceAtom } from "@/state/atoms";
 
-export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
-export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
+export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }> & {
+    collection?: import("@/bindings").CollectionDescriptor;
+};
+export type ManagedDatabaseInfo = DatabaseInfo & {
+    file: DatabaseHandle;
+    collection?: import("@/bindings").CollectionDescriptor;
+};
 export type DatabaseList = {
     databases: ManagedDatabaseInfo[];
     unread: { filename: string; error: string }[];
     root: DatabaseRootHandle;
+    collections?: import("@/bindings").CollectionDescriptor[];
 };
 
 /** Collect original cache keys through SWR's public matcher without changing or revalidating them. */
@@ -252,13 +260,46 @@ function databaseReadErrorMessage(permission: boolean, missing: boolean): string
 export async function getDatabases(options: { signal?: AbortSignal } = {}): Promise<DatabaseList> {
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
+    const collections = (await tauri.linkedCollectionsSupported())
+        ? await tauri.listLinkedCollections(getDefaultStore().get(fileWorkspaceAtom), options)
+        : [];
+    const retired = new Set(
+        collections.flatMap((collection) =>
+            collection.retiredDatabase ? [databaseHandleKey(collection.retiredDatabase)] : [],
+        ),
+    );
     const { values } = await collectSequential(
-        databases.entries,
+        databases.entries.filter((database) => !retired.has(databaseHandleKey(database.handle))),
         (database, index) => getDatabase(database.handle, database.filename, index, options.signal),
         { signal: options.signal, operation: "getDatabases metadata" },
     );
+    for (const collection of collections) {
+        if (collection.status === "retired" || !collection.database) continue;
+        if (collection.status !== "ready") {
+            values.push({
+                type: "error",
+                file: collection.database,
+                filename: collection.name,
+                indexed: false,
+                error: i18n.t("Collections.Unavailable", {
+                    defaultValue:
+                        "The search index is unavailable. Retry, or select the collection's source file again.",
+                }),
+                collection,
+            });
+            continue;
+        }
+        const database = await getDatabase(
+            collection.database,
+            collection.name,
+            values.length,
+            options.signal,
+        );
+        values.push({ ...database, collection });
+    }
     return {
         databases: values,
+        collections,
         root,
         unread: databases.unread.map(({ filename, category }) => ({
             filename,

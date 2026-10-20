@@ -2151,6 +2151,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             count_pgn_games,
             file_revision,
             read_game,
+            db::linked_collections::list_linked_collections,
+            db::linked_collections::resolve_linked_game,
+            db::linked_collections::collection_for_database,
+            db::linked_collections::migrate_linked_collection,
+            db::linked_collections::prepare_account_collection,
+            db::linked_collections::batch::append_collection_games,
+            db::linked_collections::edit_linked_collection,
+            db::linked_collections::linked_collections_supported,
+            db::linked_collections::rebuild_linked_collection,
+            db::linked_collections::reselect_linked_collection,
+            db::linked_collections::restore_collection_archive,
             read_games,
             lex_pgn,
             is_bmi2_compatible,
@@ -2337,6 +2348,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .pgn_path_authority
                 .install(authority)
                 .map_err(|_| "path authority lock poisoned")?;
+            db::linked_collections::initialize(app.handle(), &app.state::<AppState>())
+                .map_err(|error| format!("collection service initialization failed: {error}"))?;
 
             // #[cfg(any(windows, target_os = "macos"))]
             // set_shadow(&app.get_webview_window("main").unwrap(), true).unwrap();
@@ -3136,7 +3149,7 @@ mod tests {
 
         let body = body_at_indent(
             include_str!("file_workspace.rs"),
-            "fn create_workspace_file_blocking(",
+            "fn create_owned_workspace_file_blocking(",
         );
         assert!(body.contains("atomic_create_at_identified_with_precommit("));
         assert!(body.contains("atomic_create_at_identified("));
@@ -4138,7 +4151,12 @@ mod blocking_offload_scans {
         );
         let lichess = body_at_indent(fs, "async fn download_lichess_games_runtime<");
         assert_eq!(
-            lichess.matches("format!(\"lichess_").count(),
+            lichess
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+                .matches("format!(\"lichess_")
+                .count(),
             1,
             "{lichess}"
         );
@@ -4149,7 +4167,7 @@ mod blocking_offload_scans {
         let compact: String = lichess.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
             compact.contains(
-                "letadmission_key=format!(\"lichess_{}\",crate::lichess::lichess_user_segment(&player)?);"
+                "letadmission_key=format!(\"lichess_{}\",crate::lichess::lichess_user_segment(&player)?.to_ascii_lowercase());"
             ),
             "{lichess}"
         );
@@ -4176,7 +4194,8 @@ mod blocking_offload_scans {
         );
         let compact: String = command.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
-            compact.contains("letadmission_key=format!(\"chesscom_{player}\");"),
+            compact
+                .contains("letadmission_key=format!(\"chesscom_{}\",player.to_ascii_lowercase());"),
             "{command}"
         );
         assert!(

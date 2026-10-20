@@ -22,6 +22,7 @@ vi.mock("@/utils/db", async () => {
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
   useParams: () => ({ databaseId: "db-1" }),
+  useNavigate: () => vi.fn(),
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -141,6 +142,32 @@ const selectedDatabase: SuccessDatabaseInfo = {
   storage_size: "0",
   indexed: false,
 };
+
+test("a preserved original index route retires its old active explorer without rendering stale tables", async () => {
+  mocks.database = selectedDatabase;
+  mocks.getDatabases.mockResolvedValue({
+    databases: [],
+    unread: [],
+    collections: [
+      {
+        id: "original",
+        name: "prior.pgn",
+        file: { id: { id: "prior" }, kind: "fileWorkspace" },
+        database: null,
+        status: "preservedOriginal",
+        generation: "",
+        omitted: 0,
+        account: null,
+        retiredDatabase: null,
+        fetchSinceMs: null,
+      },
+    ],
+  });
+  await render(true, false);
+  expect(mocks.clearDatabase).toHaveBeenCalled();
+  expect(container.textContent).not.toContain("games table");
+  expect(container.querySelector('a[href="/library"]')).not.toBeNull();
+});
 
 test.each([
   {

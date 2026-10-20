@@ -251,12 +251,17 @@ test.each(["replacement", "root"])(
       host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
       await Promise.resolve();
     });
+    expect(mocks.analyzeGame.mock.calls.map(([id]) => id)).toEqual(["old-report"]);
+    expect(store.getState().report).toMatchObject({ operationId: "old-report", inProgress: true });
     await act(async () => {
       if (change === "replacement")
         host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
       else store.getState().setFen("8/8/8/8/8/8/8/K6k w - - 0 1");
       await Promise.resolve();
     });
+    expect(mocks.analyzeGame.mock.calls.map(([id]) => id)).toEqual(
+      change === "replacement" ? ["old-report", "current-report"] : ["old-report"],
+    );
     const failure = {
       tag: "engine-failure",
       category: "engine-failure",
@@ -270,12 +275,15 @@ test.each(["replacement", "root"])(
     };
     await act(async () => old.reject(failure));
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
-    expect(store.getState().report.inProgress).toBe(true);
+    expect(store.getState().report.operationId).toBe(
+      change === "replacement" ? "current-report" : "old-report",
+    );
+    expect(store.getState().report.inProgress).toBe(change === "replacement");
     if (change === "replacement") await act(async () => current.reject(failure));
     expect(mocks.notifyUnlessCancelled.mock.calls.map(([_title, cause]) => cause.message)).toEqual(
       change === "replacement" ? ["Safe report reason"] : [],
     );
-    expect(store.getState().report.inProgress).toBe(change === "root");
+    expect(store.getState().report.inProgress).toBe(false);
   },
 );
 

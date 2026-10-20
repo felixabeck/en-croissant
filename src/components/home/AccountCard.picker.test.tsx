@@ -46,6 +46,7 @@ vi.mock("@/platform/tauri", () => ({
     convertPgn: mocks.convertPgn,
     setProgressState: mocks.setProgressState,
     deleteEmptyGames: mocks.deleteEmptyGames,
+    linkedCollectionsSupported: vi.fn(async () => false),
   },
   tauriSubscriptions: { progress: mocks.progress },
 }));
@@ -59,7 +60,7 @@ vi.mock("@/utils/chess.com/api", () => ({
 }));
 vi.mock("@/utils/lichess/api", () => ({
   downloadLichess: (...args: Parameters<typeof import("@/utils/lichess/api").downloadLichess>) => {
-    args[5](mocks.mintDownloadTicket());
+    args[4](mocks.mintDownloadTicket());
     return mocks.downloadLichess(...args);
   },
 }));
@@ -108,7 +109,8 @@ vi.mock("@/components/common/IconAction", () => ({
     </button>
   ),
 }));
-vi.mock("@mantine/core", () => ({
+vi.mock("@mantine/core", async () => ({
+  useMatches: (await import("@/tests/matchMedia")).baseResponsiveValue,
   Badge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Card: Object.assign(({ children }: { children: React.ReactNode }) => <div>{children}</div>, {
     Section: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -456,7 +458,7 @@ test.each(["chesscom", "lichess"] as const)(
     download.mockImplementation(() => {
       mocks.progress.mock.calls[0][0]({
         payload: {
-          id: store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`),
+          id: store.get(accountDownloadsInFlightAtom).get(`${type}_felix`),
           generation: 1n,
           progress: 37,
           finished: false,
@@ -471,10 +473,10 @@ test.each(["chesscom", "lichess"] as const)(
     await renderCard({ type, accountHandle: "account" });
 
     await act(async () => downloadButton().click());
-    expect(store.get(accountDownloadsInFlightAtom).has(`${type}_Felix`)).toBe(true);
-    expect(store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)).toBeNull();
+    expect(store.get(accountDownloadsInFlightAtom).has(`${type}_felix`)).toBe(true);
+    expect(store.get(accountDownloadsInFlightAtom).get(`${type}_felix`)).toBeNull();
     await act(async () => destination.resolve({ id: "dest" }));
-    const ticket = store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)!;
+    const ticket = store.get(accountDownloadsInFlightAtom).get(`${type}_felix`)!;
     expect(ticket).not.toContain("Felix");
     expect(ticket).not.toContain(type);
     expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
@@ -496,7 +498,7 @@ test.each(["chesscom", "lichess"] as const)(
     expect(host.textContent).toContain("37%");
     await act(async () => {
       emit("different-ticket", 88);
-      emit(`${type}_Felix`, 91);
+      emit(`${type}_felix`, 91);
     });
     expect(host.textContent).toContain("37%");
     expect(host.textContent).not.toContain("88%");
@@ -510,7 +512,7 @@ test.each(["chesscom", "lichess"] as const)(
       }),
     );
     expect(mocks.startProgress).toHaveBeenCalledExactlyOnceWith(ticket);
-    expect(mocks.startProgress).not.toHaveBeenCalledWith(`${type}_Felix`);
+    expect(mocks.startProgress).not.toHaveBeenCalledWith(`${type}_felix`);
     expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 
     const firstTicket = ticket;
@@ -518,7 +520,7 @@ test.each(["chesscom", "lichess"] as const)(
     download.mockReturnValue(secondDownload.promise);
     mocks.downloadDestinationIsKnown.mockResolvedValue(true);
     await act(async () => downloadButton().click());
-    const secondTicket = store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)!;
+    const secondTicket = store.get(accountDownloadsInFlightAtom).get(`${type}_felix`)!;
     expect(secondTicket).not.toBe(firstTicket);
     expect(secondTicket).not.toContain("Felix");
     expect(secondTicket).not.toContain(type);
@@ -572,7 +574,7 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
-  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
+  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_felix");
 
   await act(async () => {
     mocks.progress.mock.calls[0][0]({
@@ -589,7 +591,7 @@ test("a finished progress frame leaves Download pending until cleanup and refres
 
   expect(downloadButton().disabled).toBe(true);
   expect(downloadButton().getAttribute("data-pending")).toBe("true");
-  expect(store.get(accountDownloadsInFlightAtom).has("chesscom_Felix")).toBe(true);
+  expect(store.get(accountDownloadsInFlightAtom).has("chesscom_felix")).toBe(true);
   expect(mocks.getDatabases).not.toHaveBeenCalled();
   await act(async () => deletion.resolve());
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
@@ -644,8 +646,8 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonB.disabled).toBe(true);
   expect(buttonB.getAttribute("data-pending")).toBe("true");
   const downloadsInFlight = store.get(accountDownloadsInFlightAtom);
-  const ticketA = downloadsInFlight.get("chesscom_Felix");
-  const ticketB = downloadsInFlight.get("chesscom_Alex");
+  const ticketA = downloadsInFlight.get("chesscom_felix");
+  const ticketB = downloadsInFlight.get("chesscom_alex");
   expect(ticketA).not.toBe(ticketB);
   for (const ticket of [ticketA, ticketB]) {
     expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
@@ -654,8 +656,8 @@ test("concurrent account downloads retain each other's pending state", async () 
   }
   expect(store.get(accountDownloadsInFlightAtom)).toEqual(
     new Map([
-      ["chesscom_Felix", ticketA],
-      ["chesscom_Alex", ticketB],
+      ["chesscom_felix", ticketA],
+      ["chesscom_alex", ticketB],
     ]),
   );
 
@@ -664,7 +666,7 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonB.getAttribute("data-pending")).toBeNull();
   expect(buttonA.disabled).toBe(true);
   expect(buttonA.getAttribute("data-pending")).toBe("true");
-  expect(store.get(accountDownloadsInFlightAtom)).toEqual(new Map([["chesscom_Felix", ticketA]]));
+  expect(store.get(accountDownloadsInFlightAtom)).toEqual(new Map([["chesscom_felix", ticketA]]));
 
   await act(async () => conversionA.resolve());
   expect(buttonA.disabled).toBe(false);
@@ -682,7 +684,7 @@ test("a remounted account stays pending and cannot start a second download", asy
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
-  const storedTicket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
+  const storedTicket = store.get(accountDownloadsInFlightAtom).get("chesscom_felix");
   await act(async () => root.unmount());
   root = createRoot(host);
   await renderCard();
@@ -693,7 +695,7 @@ test("a remounted account stays pending and cannot start a second download", asy
   expect(mocks.downloadChessCom).toHaveBeenCalledTimes(1);
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
 
-  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
+  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_felix");
   expect(ticket).toBe(storedTicket);
   expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
   await act(async () => {
@@ -813,12 +815,12 @@ test.each([
     expect(cachedDatabases()).toBeUndefined();
     expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(cleanupCalls);
     expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
-      "Account import database refresh failed for chesscom_Felix: refresh failed",
+      "Account import database refresh failed for chesscom_felix: refresh failed",
       {
         operation: "account import database refresh",
         primaryFailure: { category: "unexpected", message: "refresh failed" },
       },
-      "Account import refresh logging failed for chesscom_Felix",
+      "Account import refresh logging failed for chesscom_felix",
     );
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
       color: "red",
@@ -837,7 +839,7 @@ test("a finished progress frame for the card does not refresh databases", async 
   await act(async () => {
     progressListener({
       payload: {
-        id: "chesscom_Felix",
+        id: "chesscom_felix",
         generation: 1n,
         progress: 100,
         finished: true,
@@ -1079,7 +1081,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   });
   let ticket!: string;
   mocks.startProgress.mockImplementation(async () => {
-    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;
+    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_felix")!;
     return lease;
   });
   mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
@@ -1132,7 +1134,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   });
   let ticket!: string;
   mocks.startProgress.mockImplementation(async () => {
-    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;
+    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_felix")!;
     return lease;
   });
   mocks.convertPgn.mockResolvedValue(undefined);

@@ -48,7 +48,12 @@ function GamesTable({
               pgn: game.moves,
               headers: game,
               gameOrigin: databasePath
-                ? { kind: "database", database: databasePath, gameId: game.id }
+                ? {
+                    kind: "database",
+                    database: databasePath,
+                    gameId: game.id,
+                    linked: game.linked ?? undefined,
+                  }
                 : undefined,
             }),
           onSuccess: () => navigate({ to: "/" }),

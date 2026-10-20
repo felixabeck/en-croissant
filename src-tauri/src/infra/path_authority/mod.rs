@@ -1488,6 +1488,30 @@ pub(crate) struct AuthorizedDir {
 }
 
 impl AuthorizedDir {
+    pub(crate) fn ensure_child(&self, leaf: &OsStr) -> Result<Self, Error> {
+        crate::infra::fs::single_leaf(leaf)?;
+        let directory = crate::infra::fs::ensure_directory_at(self.directory.as_file(), leaf)?;
+        let identity = opened_file_identity(&directory)?;
+        Ok(Self {
+            directory: VerifiedDir::new(directory, identity)?,
+            identity,
+            path: self.path.join(leaf),
+        })
+    }
+    pub(crate) fn descriptor(&self) -> &fs::File {
+        self.directory.as_file()
+    }
+
+    pub(crate) fn database_target(&self, leaf: &OsStr) -> Result<DatabaseFileTarget, Error> {
+        crate::infra::fs::single_leaf(leaf)?;
+        let metadata = crate::infra::fs::probe_regular_file_at(self.directory.as_file(), leaf)?;
+        Ok(DatabaseFileTarget::assemble(
+            self.directory.as_file().try_clone()?,
+            leaf.to_os_string(),
+            metadata.identity,
+            self.path.join(leaf),
+        ))
+    }
     /// Whether startup's pathname still names this retained directory.
     pub(crate) fn resides_at(&self, location: &DefaultRootLocation) -> Result<bool, Error> {
         match identity(&location.path) {
@@ -2805,6 +2829,7 @@ impl AppOwnedRoot {
 /// [`AppDataDir`] fixes the parent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppOwnedDefaultRoot {
+    Collections,
     Databases,
     Engines,
     EngineImages,
@@ -2818,6 +2843,7 @@ pub(crate) enum AppOwnedDefaultRoot {
 impl AppOwnedDefaultRoot {
     #[cfg(all(test, unix))]
     pub(crate) const ALL: &[Self] = &[
+        Self::Collections,
         Self::Databases,
         Self::Engines,
         Self::EngineImages,
@@ -2830,6 +2856,7 @@ impl AppOwnedDefaultRoot {
 
     fn leaf(self) -> &'static str {
         match self {
+            Self::Collections => "collections",
             Self::Databases => "db",
             Self::Engines => "engines",
             Self::EngineImages => "engine-images",
@@ -2844,6 +2871,7 @@ impl AppOwnedDefaultRoot {
     #[cfg(unix)]
     fn private_mode(self) -> Option<rustix::fs::RawMode> {
         match self {
+            Self::Collections => Some(0o700),
             Self::Credentials => Some(0o700),
             #[cfg(target_os = "macos")]
             Self::EngineLaunch => Some(0o700),
@@ -3777,12 +3805,12 @@ impl Clock for SystemClock {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", rename_all = "camelCase")]
-enum NativePath {
+pub(crate) enum NativePath {
     Unix { bytes: String },
     Windows { utf16: Vec<u16> },
 }
 impl NativePath {
-    fn from_path(path: &Path) -> Self {
+    pub(crate) fn from_path(path: &Path) -> Self {
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -3800,7 +3828,7 @@ impl NativePath {
         #[cfg(not(any(unix, windows)))]
         compile_error!("path authority needs a native path codec");
     }
-    fn to_path(&self) -> Result<PathBuf, Error> {
+    pub(crate) fn to_path(&self) -> Result<PathBuf, Error> {
         match self {
             #[cfg(unix)]
             Self::Unix { bytes } => {
@@ -7794,6 +7822,19 @@ impl PathAuthority {
         Ok(root.path_ref().clone())
     }
 
+    pub(crate) fn collection_batch_destination(
+        &mut self,
+        directory: &AuthorizedDir,
+    ) -> Result<PathRef, Error> {
+        self.get_or_create_root(
+            directory.path(),
+            "Account download staging",
+            canonical_operations(EntryPurpose::DownloadDestination),
+            "download",
+            Some(VerifiedIdentity::from_pair(directory.identity)),
+        )
+    }
+
     /// Copies the authority markers needed to classify a download before a single-use dialog
     /// grant is consumed by [`Self::resolve`].
     pub(crate) fn download_operations(
@@ -8468,6 +8509,30 @@ impl PathAuthority {
         resolved
     }
 
+    /// Confirm a previously installed source through its current authority binding. A private
+    /// registry or cache sync cannot establish durability of the source directory entry.
+    pub(crate) fn confirm_collection_source_durability(
+        &mut self,
+        file: &FileWorkspaceHandle,
+    ) -> Result<(), Error> {
+        let resolved = self.resolve(file.path_ref(), PathOperation::ReadPgn, &[])?;
+        let snapshot = resolved.pgn_snapshot()?;
+        #[cfg(test)]
+        crate::infra::fs::inject_atomic_file(crate::infra::fs::AtomicFileFaultPoint::FileSync)?;
+        snapshot.file.sync_all()?;
+        let parent = resolved.parent().ok_or(Error::StaleGame)?;
+        #[cfg(test)]
+        crate::infra::fs::inject_atomic_file(crate::infra::fs::AtomicFileFaultPoint::ParentSync)?;
+        parent.sync_all()?;
+        let current = self
+            .resolve(file.path_ref(), PathOperation::ReadPgn, &[])?
+            .pgn_snapshot()?;
+        if current.identity != snapshot.identity || current.revision != snapshot.revision {
+            return Err(Error::StaleGame);
+        }
+        Ok(())
+    }
+
     pub(crate) fn rebind_pgn_file_after_replace(
         &mut self,
         id: &PathRef,
@@ -8511,6 +8576,125 @@ impl PathAuthority {
         };
         entry.availability = PathAvailability::Available;
         require_durable(self.commit_candidate(candidate, None)?)
+    }
+
+    /// Active and pending collection owners recover only their UUID-derived disposable cache.
+    /// A remembered capability must qualify against the retained private root before renewal.
+    pub(crate) fn acquire_collection_cache(
+        &mut self,
+        root: &AuthorizedDir,
+        collection: Uuid,
+        handle: Option<&DatabaseHandle>,
+        display_name: String,
+    ) -> Result<DatabaseHandle, Error> {
+        let leaf = format!("{collection}.db3");
+        let target = root.database_target(OsStr::new(&leaf))?;
+        let parent = opened_file_identity(root.descriptor())?;
+        let remembered = if let Some(handle) = handle {
+            Some(handle.clone())
+        } else {
+            let mut matching = self.persistent.values().filter(|entry| {
+                entry
+                    .stored
+                    .path
+                    .to_path()
+                    .is_ok_and(|path| path == target.path())
+            });
+            let remembered = matching
+                .next()
+                .map(|entry| DatabaseHandle::new(entry.stored.id.clone()));
+            if matching.next().is_some() {
+                return Err(Error::Conflict(
+                    "collection cache authority is ambiguous".into(),
+                ));
+            }
+            remembered
+        };
+        let Some(handle) = remembered else {
+            let commit = self.get_or_create_persistent_file_verified(
+                target.path(),
+                display_name,
+                vec![PathOperation::DatabaseRead, PathOperation::DatabaseExport],
+                VerifiedIdentity::from_pair(target.identity()),
+                VerifiedIdentity::from_pair(parent),
+                RegistrationDoor::ExplicitReauthorization,
+            )?;
+            require_durable(commit.durability)?;
+            return Ok(DatabaseHandle::new(commit.id));
+        };
+        let entry = self
+            .persistent
+            .get(&handle.path_ref().id)
+            .ok_or_else(|| Error::Conflict("collection cache authority is unavailable".into()))?;
+        if entry.stored.class != PathClass::PersistentFile
+            || entry.stored.target_is_dir
+            || entry.stored.purpose.is_some()
+            || !same_operation_set(
+                &entry.stored.operations,
+                &[PathOperation::DatabaseRead, PathOperation::DatabaseExport],
+            )
+            || entry.stored.path.to_path()? != target.path()
+            || entry
+                .stored
+                .parent_identity
+                .as_ref()
+                .map(|identity| (identity.a, identity.b))
+                != Some(parent)
+        {
+            return Err(Error::Conflict(
+                "collection cache authority does not match its owned root".into(),
+            ));
+        }
+        let identity = Identity {
+            a: target.identity().0,
+            b: target.identity().1,
+        };
+        if entry.stored.identity == identity {
+            return Ok(handle);
+        }
+        let mut candidate = self.persistent.clone();
+        let entry = candidate
+            .get_mut(&handle.path_ref().id)
+            .ok_or_else(|| Error::Conflict("collection cache authority is unavailable".into()))?;
+        entry.stored.identity = identity;
+        entry.availability = PathAvailability::Available;
+        require_durable(self.commit_candidate(candidate, None)?)?;
+        Ok(handle)
+    }
+
+    /// Releases a completed collection batch's read-only grant after its owned file is removed.
+    pub(crate) fn forget_collection_batch(
+        &mut self,
+        handle: &FileWorkspaceHandle,
+        root: &AuthorizedDir,
+        leaf: &OsStr,
+        expected: (u64, u64),
+    ) -> Result<(), Error> {
+        crate::infra::fs::single_leaf(leaf)?;
+        let Some(entry) = self.persistent.get(&handle.path_ref().id) else {
+            return Ok(());
+        };
+        if entry.stored.class != PathClass::PersistentFile
+            || entry.stored.target_is_dir
+            || !same_operation_set(&entry.stored.operations, &[PathOperation::ReadPgn])
+            || entry.stored.path.to_path()? != root.path().join(leaf)
+            || (entry.stored.identity.a, entry.stored.identity.b) != expected
+            || entry
+                .stored
+                .parent_identity
+                .as_ref()
+                .map(|identity| (identity.a, identity.b))
+                != Some(opened_file_identity(root.descriptor())?)
+        {
+            return Err(Error::Conflict(
+                "collection batch authority does not match its owned root".into(),
+            ));
+        }
+        let mut dropped = Vec::new();
+        require_durable(
+            self.remove_workspace_entry(handle, WorkspaceRemovalStatus::Complete, &mut dropped)?
+                .0,
+        )
     }
 
     /// Renderer-safe display metadata for a capability.  This is deliberately
@@ -9975,6 +10159,7 @@ fn descriptor(stored: &StoredEntry, availability: PathAvailability) -> PathDescr
 /// table.
 #[cfg(test)]
 const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
+    (AppOwnedDefaultRoot::Collections, "collections"),
     (AppOwnedDefaultRoot::Databases, "db"),
     (AppOwnedDefaultRoot::Engines, "engines"),
     (AppOwnedDefaultRoot::EngineImages, "engine-images"),
@@ -11369,7 +11554,8 @@ pub(crate) mod portable_tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
                 .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::EngineImages
+            AppOwnedDefaultRoot::Collections
+            | AppOwnedDefaultRoot::EngineImages
             | AppOwnedDefaultRoot::Credentials
             | AppOwnedDefaultRoot::Practice => {
                 panic!(
@@ -11398,7 +11584,8 @@ pub(crate) mod portable_tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
                 .unwrap(),
-            AppOwnedDefaultRoot::EngineImages
+            AppOwnedDefaultRoot::Collections
+            | AppOwnedDefaultRoot::EngineImages
             | AppOwnedDefaultRoot::Credentials
             | AppOwnedDefaultRoot::Practice => {
                 panic!(
@@ -11426,7 +11613,8 @@ pub(crate) mod portable_tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .active_puzzle_root()
                 .map(|root| root.map(|root| root.root.path_ref().clone())),
-            AppOwnedDefaultRoot::EngineImages
+            AppOwnedDefaultRoot::Collections
+            | AppOwnedDefaultRoot::EngineImages
             | AppOwnedDefaultRoot::Credentials
             | AppOwnedDefaultRoot::Practice => {
                 panic!(
@@ -14169,6 +14357,184 @@ mod tests {
 
         assert!(matches!(error, Error::Conflict(_)), "{error:?}");
         assert_eq!(authority.persistent.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collection_cache_acquisition_preserves_generic_immutable_file_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Collections,
+        )
+        .unwrap();
+        let id = Uuid::new_v4();
+        let path = root.path().join(format!("{id}.db3"));
+        fs::write(&path, b"old cache").unwrap();
+        let held = fs::File::open(&path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let first = authority
+            .acquire_collection_cache(&root, id, None, "cache".into())
+            .unwrap();
+        let registry = dir.path().join("registry.json");
+        let before = fs::read(&registry).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"new cache").unwrap();
+        let current = opened_file_identity(&fs::File::open(&path).unwrap()).unwrap();
+        assert_ne!(current, opened_file_identity(&held).unwrap());
+        let generic = authority.get_or_create_persistent_file_verified(
+            &path,
+            "cache",
+            vec![PathOperation::DatabaseRead, PathOperation::DatabaseExport],
+            VerifiedIdentity::from_pair(current),
+            root.identity(),
+            RegistrationDoor::ExplicitReauthorization,
+        );
+        assert!(
+            matches!(generic, Err(Error::Conflict(message)) if message == "persistent file changed; acquire a new capability")
+        );
+        assert_eq!(fs::read(&registry).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), b"new cache");
+        let recovered = authority
+            .acquire_collection_cache(&root, id, None, "cache".into())
+            .unwrap();
+        assert_eq!(recovered, first);
+        assert_eq!(authority.persistent.len(), 1);
+        assert!(authority
+            .database_file_target(&recovered, PathOperation::DatabaseRead)
+            .is_ok());
+        assert!(authority
+            .database_file_target(&recovered, PathOperation::DatabaseMutate)
+            .is_err());
+        assert!(authority
+            .database_file_target(&recovered, PathOperation::DatabaseCreate)
+            .is_err());
+        drop(authority);
+        let mut reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            reopened
+                .acquire_collection_cache(&root, id, Some(&first), "cache".into())
+                .unwrap(),
+            first
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"new cache");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collection_cache_acquisition_refuses_foreign_handles_and_incompatible_grants() {
+        for operations in [
+            vec![PathOperation::DatabaseRead, PathOperation::DatabaseExport],
+            canonical_operations(EntryPurpose::DatabaseFile),
+            vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            vec![PathOperation::DatabaseRead],
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = ensure_app_owned_default_dir(
+                &AppDataDir::for_test(dir.path()),
+                AppOwnedDefaultRoot::Collections,
+            )
+            .unwrap();
+            let id = Uuid::new_v4();
+            let path = root.path().join(format!("{id}.db3"));
+            fs::write(&path, b"private cache").unwrap();
+            let foreign = dir.path().join("user.db3");
+            fs::write(&foreign, b"user database").unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+            let user = DatabaseHandle::new(
+                authority
+                    .get_or_create_persistent_file(&foreign, "user database", operations.clone())
+                    .unwrap()
+                    .id,
+            );
+            let registry = dir.path().join("registry.json");
+            let before = fs::read(&registry).unwrap();
+            assert!(
+                matches!(
+                    authority.acquire_collection_cache(&root, id, Some(&user), "cache".into()),
+                    Err(Error::Conflict(_))
+                ),
+                "FOREIGN_COLLECTION_CACHE_HANDLE_ACCEPTED {operations:?}"
+            );
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert_eq!(fs::read(&foreign).unwrap(), b"user database");
+            assert_eq!(fs::read(&path).unwrap(), b"private cache");
+            if operations != vec![PathOperation::DatabaseRead, PathOperation::DatabaseExport] {
+                authority
+                    .get_or_create_persistent_file(
+                        &path,
+                        "incompatible private grant",
+                        operations.clone(),
+                    )
+                    .unwrap();
+                let before = fs::read(&registry).unwrap();
+                assert!(
+                    matches!(
+                        authority.acquire_collection_cache(&root, id, None, "cache".into()),
+                        Err(Error::Conflict(_))
+                    ),
+                    "INCOMPATIBLE_COLLECTION_CACHE_GRANT_ACCEPTED {operations:?}"
+                );
+                assert_eq!(fs::read(&registry).unwrap(), before);
+                assert_eq!(fs::read(&path).unwrap(), b"private cache");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collection_cache_acquisition_refuses_changed_private_parent_and_ambiguous_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Collections,
+        )
+        .unwrap();
+        let id = Uuid::new_v4();
+        let path = root.path().join(format!("{id}.db3"));
+        fs::write(&path, b"private cache").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let handle = authority
+            .acquire_collection_cache(&root, id, None, "cache".into())
+            .unwrap();
+        let registry = dir.path().join("registry.json");
+        let before = fs::read(&registry).unwrap();
+        let moved = database_test_support::replace_parent_with_same_inode_hard_link(&path);
+        let new_root = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Collections,
+        )
+        .unwrap();
+        for supplied in [None, Some(&handle)] {
+            assert!(
+                matches!(
+                    authority.acquire_collection_cache(&new_root, id, supplied, "cache".into()),
+                    Err(Error::Conflict(_))
+                ),
+                "CHANGED_COLLECTION_CACHE_PARENT_ACCEPTED"
+            );
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert_eq!(fs::read(&path).unwrap(), b"private cache");
+            assert_eq!(
+                fs::read(moved.join(path.file_name().unwrap())).unwrap(),
+                b"private cache"
+            );
+        }
+        // A second genuine grant at the same private path must not let pending discovery guess
+        // which capability to renew, even though one of the grants is a valid cache shape.
+        authority
+            .get_or_create_persistent_file(
+                &path,
+                "another grant",
+                vec![PathOperation::DatabaseRead],
+            )
+            .unwrap();
+        let before = fs::read(&registry).unwrap();
+        assert!(
+            matches!(authority.acquire_collection_cache(&new_root, id, None, "cache".into()), Err(Error::Conflict(message)) if message == "collection cache authority is ambiguous")
+        );
+        assert_eq!(fs::read(&registry).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), b"private cache");
     }
 
     #[test]
@@ -19661,7 +20027,7 @@ mod tests {
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
             let mode = fs::metadata(directory.path()).unwrap().permissions().mode() & 0o7777;
             let expected_mode = match root {
-                AppOwnedDefaultRoot::Credentials => 0o700,
+                AppOwnedDefaultRoot::Credentials | AppOwnedDefaultRoot::Collections => 0o700,
                 #[cfg(target_os = "macos")]
                 AppOwnedDefaultRoot::EngineLaunch => 0o700,
                 _ => 0o755,

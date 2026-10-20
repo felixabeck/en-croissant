@@ -1223,8 +1223,13 @@ async function filesRowCoordinates(session, name, timeoutMs = FILES_PROBE_TIMEOU
         .execute(
           `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
            if (!row) return false;
+           row.scrollIntoView({ block: 'center' });
            const box = row.getBoundingClientRect();
-           return { x: Math.round(box.left + Math.min(60, box.width / 2)), y: Math.round(box.top + box.height / 2) };`,
+           if (box.width <= 0 || box.height <= 0) return false;
+           const x = Math.round(box.left + Math.min(60, box.width / 2));
+           const y = Math.round(box.top + box.height / 2);
+           if (document.elementFromPoint(x, y)?.closest('[role="treeitem"]') !== row) return false;
+           return { x, y };`,
           [name],
         )
         .catch(() => false);
@@ -1328,6 +1333,513 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
 // One numeric producer reversal stages both assertions because each emits a distinct FAIL.
 // Keep the verifier, facade and store unchanged. Restore the native hunks exactly, rebuild
 // and rerun the existing verifier for corrected positive evidence.
+// Linked-collection assertion staging, 2026-10-20. Documented failure status: 1.
+// Genuine inputs: native15.log, exit 0, under
+// /tmp/chessfable-linked-collections-20261020-leaf/. The production Rust cores created the
+// migrated PGN, appended history, player edit, exported PGN, restored archive and real search reply.
+// artifact-staging-4.log and artifact-staging-4.exit record the complete staging run, exit 0.
+// Each stage4-artifact-N-red.log printed its corresponding distinct FAIL message below and its
+// stage4-artifact-N-red.exit recorded 1. Only disposable copies of those real outputs were changed.
+// LC1: the original game's Custom tag was removed, while the appended game's tag remained.
+// LC2: bytes were appended to the exported PGN.
+// LC3: the restored archive's c4/c5 moves were changed to d4/d5.
+// LC4: one real Games row was deleted from a consistent disposable SQLite snapshot.
+// stage4-artifact-unknown-red.log printed FAIL unknown input assertion and exited 1 for an invalid
+// assertion-name input. Every stage4-artifact-N-restored.log passed at exit 0 after byte-identical
+// restoration. stage4-artifact-staging-inputs.json identifies the retained scratch inputs.
+// Earlier staging attempts and their failures remain in artifact-staging.log and
+// artifact-staging-2.log. They are diagnostics, not the completed matrix.
+// Round-2 supplemental LC4 staging uses distinct throw messages for its two assertions.
+// Evidence: /tmp/chessfable-linked-collections-20261020-leaf-round2/lc4-staging.log, exit 0.
+// lc4-cache-red.log printed the following message and lc4-cache-red.exit recorded 1:
+// FAIL LC4 the current search cache indexes exactly the authoritative source generation: LC4-cache metadata and ordinals match the authoritative source generation
+// lc4-search-red.log printed the following message and lc4-search-red.exit recorded 1:
+// FAIL LC4 the current search cache indexes exactly the authoritative source generation: LC4-search position results match the authoritative source generation
+// The cache fault deleted a Games row in a disposable consistent SQLite snapshot. The search
+// fault changed only the genuine search.json copy's returned player, retaining correct source
+// and cache bytes. Both restored runs returned 0 after byte-identical restoration. lc4-inputs.json
+// records the scratch inputs and SHA256 values. All prior raw staging evidence remains unchanged.
+// Database-choice original-disposition staging, 2026-10-20. Failure status: 1.
+// Proof: /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/repair-native-r1-migration-original-proof/.
+// native-baseline.log exited 0 with 58 linked-collection tests. Its real migration, restart,
+// archive restore and position-search cores produced the migration-original-artifacts record.
+// genuine-producer-inputs.json identifies those actual files and their SHA256 values.
+// The existing check-artifact.mjs caller invoked these exported assertions against independent
+// disposable copies. artifact-staging-run.log exited 0. artifact-staging-matrix.json records
+// all 15 individual input faults, relevant red exits 1, exact hashes and restored exits 0.
+// LC5-original-bytes appended a comment to the actual original PGN copy.
+// LC6-duplicate-active changed the original's actual descriptor to ready. LC6-original-role,
+// LC6-original-index and LC6-chosen-index independently changed only their named role/binding.
+// LC7-metadata-meaning and LC7-missing-metadata changed only the actual metadata reply copy.
+// LC8-source and LC8-archive independently changed the chosen export or restored archive copy.
+// LC9-generation, LC9-collection, LC9-moves and LC9-rows independently changed the actual
+// position-search reply copy. LC10-missing-refusal and LC10-wrong-refusal changed only its
+// real old-reference rejection, testing absent success/refusal evidence and a setup error.
+// Each <case>-red.log printed the corresponding distinct FAIL message at exit 1:
+// FAIL LC5 Database-choice migration preserves the prior PGN bytes
+// FAIL LC6 Database-choice migration exposes one active chosen version and an inactive preserved original
+// FAIL LC7 Database-choice migration preserves the original metadata meaning
+// FAIL LC8 Database-choice migration preserves the complete database version in source and archive: LC8-source the chosen PGN equals the complete exported database version
+// FAIL LC8 Database-choice migration preserves the complete database version in source and archive: LC8-archive restoring the archive equals the complete exported database version
+// FAIL LC9 Database-choice position search resolves the chosen source generation
+// FAIL LC10 the preserved original index refuses the previous reference search
+// Each <case>-restored.log passed at exit 0 after exact restoration of every input hash.
+// Database-choice IPC/setup and real-preview waits remain argued, not staged by this leaf.
+// Root owns release-binary execution, actual-app acceptance and canonical browser geometry.
+// This is artifact-assertion proof. Actual application and native GTK acceptance remain separate.
+// The linked IPC rejection and Library control/setup waits below are argued, not staged. This leaf is prohibited from
+// running the actual application. It delegates invocation to the existing invokeJsonAndWait path
+// and aborts fixture setup before the independently staged artifact assertions. Root owns
+// that uncovered actual-application setup and acceptance proof.
+export const linkedCollectionArtifactAssertions = [
+  "LC1 accumulated source preserves custom headers, variations, NAGs and provider occurrences",
+  "LC2 linked export is byte-identical to its authoritative PGN",
+  "LC3 restoring the migration archive recovers the independent database version",
+  "LC4 the current search cache indexes exactly the authoritative source generation",
+  "LC5 Database-choice migration preserves the prior PGN bytes",
+  "LC6 Database-choice migration exposes one active chosen version and an inactive preserved original",
+  "LC7 Database-choice migration preserves the original metadata meaning",
+  "LC8 Database-choice migration preserves the complete database version in source and archive",
+  "LC9 Database-choice position search resolves the chosen source generation",
+  "LC10 the preserved original index refuses the previous reference search",
+];
+
+// These inspect only small, harness-owned collection fixtures. The native large-file test owns
+// bounded streaming proof. Each assertion is independently callable for real-input staging.
+export async function assertLinkedCollectionArtifact(assertion, artifacts) {
+  if (assertion === linkedCollectionArtifactAssertions[0]) {
+    const source = await readFile(artifacts.source, "utf8");
+    const original = source.split(/\n(?=\[Event ")/)[0];
+    if (
+      !original.includes('[Custom "keep this tag"]') ||
+      !original.includes("(1. d4 d5)") ||
+      !original.includes("$1") ||
+      (source.match(/\[Event /g) ?? []).length !== 2 ||
+      (source.match(/https:\/\/www.chess.com\/game\/live\/123"/g) ?? []).length !== 1 ||
+      (source.match(/https:\/\/www.chess.com\/game\/live\/456"/g) ?? []).length !== 1
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[1]) {
+    if (!(await readFile(artifacts.source)).equals(await readFile(artifacts.exported)))
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[2]) {
+    const archive = await readFile(artifacts.archived, "utf8");
+    if (
+      (archive.match(/\[Event /g) ?? []).length !== 1 ||
+      !archive.includes("1. c4 c5") ||
+      archive.includes("1. d4")
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[3]) {
+    const source = await readFile(artifacts.source);
+    const database = new DatabaseSync(artifacts.cache, { readOnly: true });
+    try {
+      const rows = database
+        .prepare(
+          "SELECT LinkedSource.Ordinal FROM Games JOIN LinkedSource ON Games.ID=LinkedSource.GameID ORDER BY LinkedSource.Ordinal",
+        )
+        .all();
+      const metadata = Object.fromEntries(
+        database
+          .prepare(
+            "SELECT Name,Value FROM Info WHERE Name IN ('LinkedDigest','LinkedGeneration','DataRevision')",
+          )
+          .all()
+          .map((row) => [row.Name, row.Value]),
+      );
+      if (
+        rows.length !== 2 ||
+        rows[0].Ordinal !== 0 ||
+        rows[1].Ordinal !== 1 ||
+        !metadata.LinkedGeneration ||
+        Number(metadata.DataRevision) < 1 ||
+        metadata.LinkedDigest !== createHash("sha256").update(source).digest("hex")
+      )
+        throw new Error(
+          "LC4-cache metadata and ordinals match the authoritative source generation",
+        );
+      const search = JSON.parse(await readFile(artifacts.search, "utf8"));
+      if (
+        search[0].length !== 1 ||
+        search[0][0].move !== "d5" ||
+        search[1].length !== 1 ||
+        search[1][0].white !== "Edited Player" ||
+        search[1][0].linked?.ordinal !== 1 ||
+        search[1][0].linked?.generation !== metadata.LinkedGeneration
+      )
+        throw new Error("LC4-search position results match the authoritative source generation");
+    } finally {
+      database.close();
+    }
+  } else if (assertion === linkedCollectionArtifactAssertions[4]) {
+    if (
+      !(await readFile(artifacts.migrationOriginal)).equals(
+        await readFile(artifacts.migrationOriginalBefore),
+      )
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[5]) {
+    const disposition = JSON.parse(await readFile(artifacts.migrationDisposition, "utf8"));
+    const original = disposition.collections.find(
+      (collection) => collection.id === disposition.originalId,
+    );
+    const chosen = disposition.collections.find(
+      (collection) => collection.id === disposition.chosenId,
+    );
+    if (
+      disposition.collections.filter((collection) => collection.status === "ready").length !== 1 ||
+      chosen?.status !== "ready" ||
+      !chosen.database ||
+      original?.status !== "preservedOriginal" ||
+      original.database !== null
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[6]) {
+    const disposition = JSON.parse(await readFile(artifacts.migrationDisposition, "utf8"));
+    if (
+      !disposition.metadataBefore ||
+      JSON.stringify(disposition.metadataBefore) !== JSON.stringify(disposition.metadataAfter)
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[7]) {
+    const expected = await readFile(artifacts.migrationExpectedDatabase);
+    if (!expected.equals(await readFile(artifacts.migrationChosen)))
+      throw new Error("LC8-source the chosen PGN equals the complete exported database version");
+    if (!expected.equals(await readFile(artifacts.migrationArchiveExport)))
+      throw new Error(
+        "LC8-archive restoring the archive equals the complete exported database version",
+      );
+  } else if (assertion === linkedCollectionArtifactAssertions[8]) {
+    const disposition = JSON.parse(await readFile(artifacts.migrationDisposition, "utf8"));
+    const chosen = disposition.collections.find(
+      (collection) => collection.id === disposition.chosenId,
+    );
+    const searched = JSON.parse(await readFile(artifacts.migrationSearch, "utf8"));
+    if (
+      !chosen ||
+      searched[0].length !== 1 ||
+      searched[0][0].move !== "c5" ||
+      searched[1].length !== 1 ||
+      searched[1][0].linked?.collection !== chosen.id ||
+      searched[1][0].linked?.generation !== chosen.generation
+    )
+      throw new Error(assertion);
+  } else if (assertion === linkedCollectionArtifactAssertions[9]) {
+    const disposition = JSON.parse(await readFile(artifacts.migrationDisposition, "utf8"));
+    if (!["conflict", "stale-game"].includes(disposition.oldReferenceError?.category))
+      throw new Error(assertion);
+  } else throw new Error(`Unknown collection assertion: ${assertion}`);
+}
+
+async function verifyLinkedCollections(session, filesWorkspace, profileDirectory) {
+  const invoke = async (command, args) => {
+    const result = await invokeJsonAndWait(
+      session,
+      command,
+      "__verifyLinkedIPC",
+      `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`,
+    );
+    if (result.value === undefined)
+      throw new Error(
+        result.result.rejected ??
+          result.result.error ??
+          result.error ??
+          `${command} returned no value`,
+      );
+    return result.value;
+  };
+  const workspace = { id: { id: filesWorkspaceId }, kind: "fileWorkspace" };
+  const prefix = `verify-linked-${randomUUID()}`;
+  const game = (id, moves, note) =>
+    `[Event "Collection fixture"]\n[Site "https://www.chess.com"]\n[Date "2026.10.01"]\n[UTCTime "12:00:00"]\n[White "Player"]\n[Black "Opponent"]\n[Result "1-0"]\n[Link "https://www.chess.com/game/live/${id}"]\n[Custom "keep this tag"]\n\n1. ${moves} {${note}} 1-0\n\n`;
+  const create = (name, pgn, type = "other") =>
+    invoke("create_workspace_file", {
+      workspace,
+      parent: workspace,
+      name,
+      metadata: { type, tags: [] },
+      content: { kind: "text", pgn },
+    });
+  const source = await create(
+    `${prefix}-source`,
+    game("123", "e4 (1. d4 d5) $1 e5", "original note"),
+  );
+  const original = await create(
+    `${prefix}-database-original`,
+    game("789", "c4 c5", "database version"),
+  );
+  const root = await invoke("get_database_workspace", {});
+  const database = await invoke("create_workspace_database", { root, filename: `${prefix}.db3` });
+  await invoke("convert_pgn", {
+    progressId: prefix,
+    files: [original.handle],
+    database,
+    timestamp: null,
+    title: prefix,
+    description: "Linked migration fixture",
+  });
+  const collection = await invoke("migrate_linked_collection", {
+    requestId: randomUUID(),
+    workspace,
+    database,
+    source: source.handle,
+    choice: "pgn",
+    account: { provider: "chesscom", account: prefix },
+    destinationName: prefix,
+  });
+  const batch = await create(
+    `${prefix}-incoming`,
+    game("123", "e4 e5", "provider overlap") + game("456", "d4 d5", "new game"),
+  );
+  await invoke("append_collection_games", { collection: collection.id, source: batch.handle });
+  await invoke("append_collection_games", { collection: collection.id, source: batch.handle });
+  const row = await filesRowCoordinates(session, source.name);
+  await clickAt(session, row.x, row.y);
+  await waitFor(
+    "linked Library player-edit controls",
+    () =>
+      session.execute(
+        `
+    const owner = document.querySelector('[data-linked-collection=' + JSON.stringify(arguments[0]) + ']');
+    if (!owner) return false;
+    const values = [['Existing player name', 'Player'], ['Replacement player name', 'Edited Player']];
+    for (const [label, value] of values) {
+      const caption = [...owner.querySelectorAll('label')].find(node => node.textContent === label);
+      const input = caption && document.getElementById(caption.htmlFor);
+      if (!input) return false;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  `,
+        [collection.id],
+      ),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  const save = await waitFor(
+    "linked Library player-edit Save",
+    () =>
+      session.execute(
+        `
+    const owner = document.querySelector('[data-linked-collection=' + JSON.stringify(arguments[0]) + ']');
+    const button = owner && [...owner.querySelectorAll('button')].find(node => node.textContent.trim() === 'Save');
+    if (!button || button.disabled) return false;
+    button.scrollIntoView({ block: 'center' });
+    const box = button.getBoundingClientRect();
+    return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+  `,
+        [collection.id],
+      ),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  await clickAt(session, save.x, save.y);
+  await waitFor(
+    "linked Library player edit reaches its authoritative PGN",
+    async () =>
+      (await readFile(join(filesWorkspace, `${prefix}-source.pgn`), "utf8")).includes(
+        '[White "Edited Player"]',
+      ),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  const exported = await create(`${prefix}-exported`, "");
+  await invoke("export_to_pgn", { file: collection.database, destination: exported.handle });
+  const restored = await invoke("create_workspace_database", {
+    root,
+    filename: `${prefix}-restored.db3`,
+  });
+  await invoke("restore_collection_archive", { collection: collection.id, destination: restored });
+  const archiveExport = await create(`${prefix}-restored-export`, "");
+  await invoke("export_to_pgn", { file: restored, destination: archiveExport.handle });
+  const artifacts = {
+    source: join(filesWorkspace, `${prefix}-source.pgn`),
+    exported: join(filesWorkspace, `${prefix}-exported.pgn`),
+    archived: join(filesWorkspace, `${prefix}-restored-export.pgn`),
+    cache: join(
+      profileDirectory,
+      ".local/share/com.chessriddle.encroissant/collections",
+      `${collection.id}.db3`,
+    ),
+    search: join(filesWorkspace, `${prefix}-search.json`),
+  };
+  const search = await invoke("search_position", {
+    file: collection.database,
+    query: {
+      position: {
+        fen: "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1",
+        type_: "exact",
+      },
+    },
+    tabId: `${prefix}-search`,
+    ticket: null,
+  });
+  await writeFile(artifacts.search, JSON.stringify(search));
+  // Exercise Database choice with an already automatically indexed prior source. All files,
+  // IPC replies and evidence below belong to this disposable actual-app fixture.
+  const priorOriginal = await create(
+    `${prefix}-prior-original`,
+    game("321", "e4 e5", "independent PGN version"),
+    "game",
+  );
+  const originals = await invoke("list_linked_collections", { workspace, ticket: null });
+  const priorCollection = originals.find(
+    (entry) => entry.file.id.id === priorOriginal.handle.id.id,
+  );
+  if (!priorCollection?.database || priorCollection.status !== "ready")
+    throw new Error("Database-choice fixture requires an automatically indexed prior PGN");
+  const metadataFor = (listing, file) => {
+    const visit = (entries) => entries.flatMap((entry) => [entry, ...visit(entry.children ?? [])]);
+    return visit(listing.entries).find((entry) => entry.handle.id.id === file.id.id)?.metadata;
+  };
+  const metadataBefore = metadataFor(
+    await invoke("list_file_workspace", { workspace, ticket: null }),
+    priorOriginal.handle,
+  );
+  artifacts.migrationOriginal = join(filesWorkspace, `${prefix}-prior-original.pgn`);
+  artifacts.migrationOriginalBefore = join(filesWorkspace, `${prefix}-prior-before.pgn`);
+  await writeFile(artifacts.migrationOriginalBefore, await readFile(artifacts.migrationOriginal));
+  const databaseInput = await create(
+    `${prefix}-database-choice-input`,
+    game("789", "c4 c5", "database version") + game("790", "Nf3 Nf6", "second database game"),
+  );
+  const chosenDatabase = await invoke("create_workspace_database", {
+    root,
+    filename: `${prefix}-database-choice.db3`,
+  });
+  await invoke("convert_pgn", {
+    progressId: `${prefix}-database-choice`,
+    files: [databaseInput.handle],
+    database: chosenDatabase,
+    timestamp: null,
+    title: `${prefix}-database-choice`,
+    description: "Database-choice original retirement fixture",
+  });
+  const expectedDatabase = await create(`${prefix}-database-choice-expected`, "");
+  await invoke("export_to_pgn", { file: chosenDatabase, destination: expectedDatabase.handle });
+  const databaseChoice = await invoke("migrate_linked_collection", {
+    requestId: randomUUID(),
+    workspace,
+    database: chosenDatabase,
+    source: priorOriginal.handle,
+    choice: "database",
+    account: null,
+    destinationName: `${prefix}-database-chosen`,
+  });
+  const allCollections = await invoke("list_linked_collections", { workspace, ticket: null });
+  const relatedCollections = allCollections.filter(
+    (entry) => entry.id === databaseChoice.id || entry.file.id.id === priorOriginal.handle.id.id,
+  );
+  const metadataAfter = metadataFor(
+    await invoke("list_file_workspace", { workspace, ticket: null }),
+    priorOriginal.handle,
+  );
+  const restoredDatabaseChoice = await invoke("create_workspace_database", {
+    root,
+    filename: `${prefix}-database-choice-restored.db3`,
+  });
+  await invoke("restore_collection_archive", {
+    collection: databaseChoice.id,
+    destination: restoredDatabaseChoice,
+  });
+  const databaseArchiveExport = await create(`${prefix}-database-choice-archive`, "");
+  await invoke("export_to_pgn", {
+    file: restoredDatabaseChoice,
+    destination: databaseArchiveExport.handle,
+  });
+  artifacts.migrationChosen = join(filesWorkspace, `${prefix}-database-chosen.pgn`);
+  artifacts.migrationExpectedDatabase = join(
+    filesWorkspace,
+    `${prefix}-database-choice-expected.pgn`,
+  );
+  artifacts.migrationArchiveExport = join(filesWorkspace, `${prefix}-database-choice-archive.pgn`);
+  artifacts.migrationDisposition = join(
+    filesWorkspace,
+    `${prefix}-database-choice-disposition.json`,
+  );
+  const migrationQuery = {
+    position: {
+      fen: "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3 0 1",
+      type_: "exact",
+    },
+  };
+  const migrationSearch = await invoke("search_position", {
+    file: databaseChoice.database,
+    query: migrationQuery,
+    tabId: `${prefix}-chosen-search`,
+    ticket: null,
+  });
+  const oldSearchArgs = {
+    file: priorCollection.database,
+    query: migrationQuery,
+    tabId: `${prefix}-old-reference`,
+    ticket: null,
+  };
+  const oldSearch = await invokeJsonAndWait(
+    session,
+    "preserved original reference refusal",
+    "__verifyOriginalRefusal",
+    `window.__TAURI_INTERNALS__.invoke("search_position", ${JSON.stringify(oldSearchArgs)})`,
+  );
+  const oldReferenceError = oldSearch.result.rejected
+    ? JSON.parse(oldSearch.result.rejected)
+    : null;
+  artifacts.migrationSearch = join(filesWorkspace, `${prefix}-database-choice-search.json`);
+  await writeFile(artifacts.migrationSearch, JSON.stringify(migrationSearch));
+  await writeFile(
+    artifacts.migrationDisposition,
+    JSON.stringify({
+      collections: relatedCollections,
+      originalId: priorCollection.id,
+      chosenId: databaseChoice.id,
+      metadataBefore,
+      metadataAfter,
+      oldReferenceError,
+    }),
+  );
+  await waitFor(
+    "Database-choice preserved original appears in Library",
+    () =>
+      session.execute(
+        `window.dispatchEvent(new Event('focus'));
+         const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
+         if (!row) return false;
+         return true;`,
+        [priorOriginal.name],
+      ),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  const originalRow = await filesRowCoordinates(session, priorOriginal.name);
+  await clickAt(session, originalRow.x, originalRow.y);
+  await waitFor(
+    "Database-choice original role retains its real preview without old index controls",
+    () =>
+      session.execute(
+        `
+    const role = document.querySelector('[data-preserved-original=' + JSON.stringify(arguments[0]) + ']');
+    const detail = role?.closest('.mantine-Paper-root');
+    const board = detail?.querySelector('.cg-wrap');
+    if (!role || !board || detail.querySelector('[data-linked-collection]')) return false;
+    const bounds = board.getBoundingClientRect();
+    return role.textContent.includes('Preserved original') && bounds.width > 0 && bounds.height > 0;
+  `,
+        [priorCollection.id],
+      ),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  for (const assertion of linkedCollectionArtifactAssertions) {
+    try {
+      await assertLinkedCollectionArtifact(assertion, artifacts);
+      check(true, assertion);
+    } catch (error) {
+      check(false, assertion, error.message);
+    }
+  }
+  console.log(`  .. linked collection disposable artifacts: ${JSON.stringify(artifacts)}`);
+  // Leave the existing Library, explorer, opening and file-freshness acceptance paths active.
+  // The fixture uses the same native migration/append boundary as the account action.
+  await showLibraryOverview(session);
+}
+
 async function verifyGameOpening(session, ownedRoot) {
   const assertion = async (message, action) => {
     try {
@@ -3562,6 +4074,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   }
 
   await verifyGameOpening(session, ownedRoot);
+  await verifyLinkedCollections(session, filesWorkspace, profileDirectory);
   await verifyConversionCancellation(session, ownedRoot);
 
   // Lossless NAGs: setup failures are carried to every dependent assertion.

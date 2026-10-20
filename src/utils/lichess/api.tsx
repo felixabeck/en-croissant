@@ -26,10 +26,6 @@ import { countMainPly } from "@/utils/treeReducer";
 
 export const MIN_DATE = new Date(1952, 0, 1);
 
-// Per-game byte estimate sent as the native download's `estimatedSize`. The native download also
-// enforces it as the exact expected byte count today, not only as a progress hint (filed defect).
-const ESTIMATED_PGN_BYTES_PER_GAME = 900;
-
 export type TablebaseCategory =
   | "win"
   | "unknown"
@@ -392,7 +388,6 @@ export async function downloadLichess(
   destination: PathRef,
   player: string,
   timestamp: number | null,
-  games: number,
   onTicket: (ticket: string) => void,
 ): Promise<ArtifactPublication> {
   // The destination command is supplied by the native download authority.  The opaque handle
@@ -405,7 +400,6 @@ export async function downloadLichess(
       `${player}_lichess.pgn`,
       player,
       timestamp === null ? null : BigInt(timestamp),
-      games > 0 ? games * ESTIMATED_PGN_BYTES_PER_GAME : null,
       ticket,
     );
   });

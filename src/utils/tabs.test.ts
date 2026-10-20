@@ -45,7 +45,12 @@ function deferred<T>() {
 }
 
 vi.mock("@/platform/tauri", () => ({
-    tauri: { writeGame: mocks.writeGame, writeDbGame: mocks.writeDbGame },
+    tauri: {
+        writeGame: mocks.writeGame,
+        writeDbGame: mocks.writeDbGame,
+        resolveLinkedGame: vi.fn(async () => null),
+        collectionForDatabase: vi.fn(async () => null),
+    },
 }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
 vi.mock("./files", async (importOriginal) => ({
@@ -761,6 +766,146 @@ function saveFixture({
     };
 }
 
+test.each([true, false])(
+    "linked save uses the admitted source generation for user-save=%s and close-save",
+    async (isUserSave) => {
+        const fixture = saveFixture();
+        const locator = {
+            collection: "22222222-2222-4222-8222-222222222222",
+            generation: "admitted-generation",
+            ordinal: 2,
+            stamp: stampA,
+        };
+        fixture.store.getState().setLinkedSource(locator);
+        mocks.writeGame.mockResolvedValueOnce({ stamp: stampB, revision: "saved-generation" });
+        const result = await saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+            isUserSave,
+        });
+        expect(result).toBe("saved");
+        expect(mocks.writeGame).toHaveBeenLastCalledWith(fileHandle, 2, expect.any(String), {
+            kind: "linkedGame",
+            stamp: stampA,
+            revision: locator.generation,
+        });
+        expect(fixture.store.getState()).toMatchObject({
+            dirty: false,
+            sourceStamp: stampB,
+            linkedSource: { ...locator, stamp: stampB, generation: "saved-generation" },
+        });
+    },
+);
+
+function databaseSaveFixture() {
+    const fixture = saveFixture();
+    const database = { id: { id: "retired-copy" }, kind: "database" as const };
+    fixture.updateTab(fixture.tabs[0].value, (tab) => ({
+        ...tab,
+        gameOrigin: { kind: "database", database, gameId: 42 },
+    }));
+    return { fixture, database };
+}
+
+test.each(
+    (["physical-replacement", "closed", "rebound"] as const).flatMap((ownership) =>
+        ([false, true] as const).map((linked) => ({ ownership, linked })),
+    ),
+)(
+    "database save after $ownership during the collection lookup stays silent for linked=$linked",
+    async ({ ownership, linked }) => {
+        const { tauri } = await import("@/platform/tauri");
+        const { fixture, database } = databaseSaveFixture();
+        const lookup = deferred<import("@/bindings").CollectionDescriptor | null>();
+        vi.mocked(tauri.collectionForDatabase).mockReturnValueOnce(lookup.promise);
+        const owner = fixture.tabs[0];
+        let closed = false;
+        const pending = saveToFile({
+            tab: owner,
+            updateTab: fixture.updateTab,
+            getTab: (id) => (closed ? undefined : fixture.getTab(id)),
+            store: fixture.store,
+        });
+        expect(tauri.collectionForDatabase).toHaveBeenCalledExactlyOnceWith(database);
+        expect(mocks.writeDbGame).not.toHaveBeenCalled();
+        if (ownership === "closed") closed = true;
+        else
+            fixture.updateTab(owner.value, (tab) => ({
+                ...tab,
+                ...(ownership === "physical-replacement"
+                    ? { treeKey: crypto.randomUUID() }
+                    : { gameOrigin: { kind: "none" as const } }),
+            }));
+        fixture.store.getState().setComment("Replacement owner's unsaved annotation");
+        const replacement = fixture.store.getState();
+        setFileFreshness(owner.value, "conflict");
+        const freshness = getFileFreshness(owner.value);
+        lookup.resolve(
+            linked
+                ? ({
+                      id: "22222222-2222-4222-8222-222222222222",
+                  } as import("@/bindings").CollectionDescriptor)
+                : null,
+        );
+        await expect(pending).resolves.toBe("superseded");
+        expect(mocks.writeDbGame).not.toHaveBeenCalled();
+        expect(fixture.store.getState()).toBe(replacement);
+        expect(fixture.store.getState().dirty).toBe(true);
+        expect(getFileFreshness(owner.value)).toBe(freshness);
+    },
+);
+
+test("a current standalone owner saves after the deferred collection lookup", async () => {
+    const { tauri } = await import("@/platform/tauri");
+    const { fixture, database } = databaseSaveFixture();
+    const lookup = deferred<import("@/bindings").CollectionDescriptor | null>();
+    vi.mocked(tauri.collectionForDatabase).mockReturnValueOnce(lookup.promise);
+    mocks.writeDbGame.mockResolvedValueOnce(undefined);
+    const pgn = serializeStoreTree(fixture.store);
+    const pending = saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+    expect(tauri.collectionForDatabase).toHaveBeenCalledExactlyOnceWith(database);
+    expect(mocks.writeDbGame).not.toHaveBeenCalled();
+    lookup.resolve(null);
+    await expect(pending).resolves.toBe("saved");
+    expect(mocks.writeDbGame).toHaveBeenCalledExactlyOnceWith(database, 42, pgn);
+    expect(fixture.store.getState().dirty).toBe(false);
+});
+
+test("a dirty pre-link database tree is preserved and cannot write a retired copy", async () => {
+    await initializeI18n();
+    const { tauri } = await import("@/platform/tauri");
+    const { fixture } = databaseSaveFixture();
+    const lookup = deferred<import("@/bindings").CollectionDescriptor | null>();
+    vi.mocked(tauri.collectionForDatabase).mockReturnValueOnce(lookup.promise);
+    const before = serializeStoreTree(fixture.store);
+    const state = fixture.store.getState();
+    const pending = saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+    expect(mocks.writeDbGame).not.toHaveBeenCalled();
+    lookup.resolve({
+        id: "22222222-2222-4222-8222-222222222222",
+    } as import("@/bindings").CollectionDescriptor);
+    await expect(pending).resolves.toMatchObject({
+        status: "failed",
+        error: { category: "validation", message: i18n.t("Collections.RetiredTab") },
+    });
+    expect(mocks.writeDbGame).not.toHaveBeenCalled();
+    expect(serializeStoreTree(fixture.store)).toBe(before);
+    expect(fixture.store.getState()).toBe(state);
+    expect(fixture.store.getState().dirty).toBe(true);
+});
+
 function targetFile() {
     return {
         type: "file" as const,
@@ -1366,6 +1511,46 @@ test("fresh append refuses a guard that cannot be persisted to the physical tree
     tabStorage.remove(physical);
 });
 
+test("a newly appended linked game keeps its generation across tree restart and the next Save", async () => {
+    const fixture = saveFixture({ kind: "none", stamp: null });
+    const locator = {
+        collection: "22222222-2222-4222-8222-222222222222",
+        generation: "appended-generation",
+        ordinal: 8,
+        stamp: stampB,
+    };
+    mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+    mocks.writeGame.mockResolvedValueOnce({
+        stamp: stampB,
+        revision: locator.generation,
+        linked: locator,
+    });
+    await expect(saveFresh(fixture)).resolves.toBe("saved");
+    expect(fixture.store.getState().linkedSource).toEqual(locator);
+    tabStorage.flush();
+    expect(new TabStorageRepository().read("save-test")?.state).toMatchObject({
+        linkedSource: locator,
+    });
+    closeTreeStore("save-test");
+    const cold = createTreeStore("save-test");
+    cold.getState().setComment("Edit after restart");
+    mocks.writeGame.mockResolvedValueOnce({
+        stamp: stampC,
+        revision: "saved-generation",
+        linked: { ...locator, stamp: stampC, generation: "saved-generation" },
+    });
+    await expect(saveFresh(fixture, cold)).resolves.toBe("saved");
+    expect(mocks.writeGame).toHaveBeenLastCalledWith(targetFile().handle, 8, expect.any(String), {
+        kind: "linkedGame",
+        stamp: stampB,
+        revision: locator.generation,
+    });
+    expect(cold.getState().linkedSource).toMatchObject({
+        generation: "saved-generation",
+        stamp: stampC,
+    });
+});
+
 test.each(["null-stamp", "null-revision", "applied-error", "admission-refused"])(
     "fresh %s preserves dirty edits and refuses retry through a cold reload",
     async (outcome) => {
@@ -1967,6 +2152,7 @@ test.each(["unchanged", "comment", "header", "owner"] as const)(
             getTab: fixture.getTab,
             store: fixture.store,
         });
+        await Promise.resolve();
         expect(mocks.writeDbGame).toHaveBeenCalledWith(database, 42, captured);
         if (change === "comment") fixture.store.getState().setComment("Newer unsaved comment");
         if (change === "header")

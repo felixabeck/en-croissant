@@ -111,7 +111,7 @@ function playerGroup(name: string) {
 
 async function renderCards(databases: ManagedDatabaseInfo[] = []) {
   await act(async () => {
-    root.render(<AccountCards databases={databases} onAddAccount={vi.fn()} />);
+    root.render(<AccountCards listing={{ databases, unread: [] }} onAddAccount={vi.fn()} />);
   });
 }
 
@@ -319,7 +319,7 @@ describe("Lichess account removal", () => {
 });
 
 test.each(["lichess", "chesscom"] as const)(
-  "%s filename matches ignore unreadable databases and retain usable matches",
+  "%s filename matches retain errors and refuse distinct conflicting candidates",
   async (type) => {
     if (type === "chesscom")
       getDefaultStore().set(sessionsAtom, [
@@ -334,7 +334,7 @@ test.each(["lichess", "chesscom"] as const)(
     };
     await renderCards([broken]);
     expect(mocks.accountCard).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type, database: null }),
+      expect.objectContaining({ type, database: broken }),
     );
     const usable: ManagedDatabaseInfo = {
       type: "success",
@@ -350,7 +350,11 @@ test.each(["lichess", "chesscom"] as const)(
     };
     await renderCards([broken, usable]);
     expect(mocks.accountCard).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type, database: usable }),
+      expect.objectContaining({
+        type,
+        database: null,
+        associationIssue: expect.objectContaining({ type: "unavailable" }),
+      }),
     );
     await renderCards([{ ...usable, filename: "Other.db3" }]);
     expect(mocks.accountCard).toHaveBeenLastCalledWith(

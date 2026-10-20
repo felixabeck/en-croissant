@@ -32,9 +32,83 @@ fn resolve_pgn(
 pub(crate) struct PgnCapabilityRebind {
     authority: crate::infra::path_authority::SharedPathAuthority,
     path_ref: crate::infra::path_authority::PathRef,
+    binding: Option<Option<crate::db::linked_collections::SourceBinding>>,
 }
 
 impl PgnCapabilityRebind {
+    pub(crate) fn new(
+        authority: crate::infra::path_authority::SharedPathAuthority,
+        file: &crate::infra::path_authority::FileWorkspaceHandle,
+    ) -> Self {
+        Self {
+            authority,
+            path_ref: file.path_ref().clone(),
+            binding: None,
+        }
+    }
+
+    pub(crate) fn qualified(
+        mut self,
+        binding: crate::db::linked_collections::SourceBinding,
+    ) -> Self {
+        self.binding = Some(Some(binding));
+        self
+    }
+
+    pub(crate) fn capture_binding(&mut self) -> Result<(), Error> {
+        if self.binding.is_none() {
+            self.binding = Some(if let Some(service) = self.authority.collections()? {
+                service.capture_binding(
+                    &self.authority,
+                    &crate::infra::path_authority::FileWorkspaceHandle::new(self.path_ref.clone()),
+                )?
+            } else {
+                None
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn captured_binding(
+        &self,
+    ) -> Result<&Option<crate::db::linked_collections::SourceBinding>, Error> {
+        self.binding.as_ref().ok_or(Error::StaleGame)
+    }
+
+    fn validate_linked_source(&self) -> Result<(), Error> {
+        if self
+            .captured_binding()?
+            .as_ref()
+            .is_some_and(|binding| binding.is_preserved_original())
+        {
+            return Err(Error::StaleGame);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_binding(&self) -> Result<(), Error> {
+        if let Some(service) = self.authority.collections()? {
+            service.validate_binding(
+                &self.authority,
+                &crate::infra::path_authority::FileWorkspaceHandle::new(self.path_ref.clone()),
+                self.binding.as_ref().ok_or(Error::StaleGame)?,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn edit_lock(
+        &self,
+        repository: &PgnRepository,
+        identity: crate::infra::path_authority::PgnSnapshotIdentity,
+    ) -> Result<Arc<Mutex<()>>, Error> {
+        if let Some(Some(binding)) = &self.binding {
+            repository.collection_edit_lock(binding.collection())
+        } else {
+            repository.edit_lock(identity)
+        }
+    }
+
     fn after_replace(
         &self,
         expected_identity: (u64, u64),
@@ -70,6 +144,9 @@ pub struct StampedGame {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub omission: Option<GameOmission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub linked: Option<crate::db::linked_collections::LinkedGameLocator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -82,6 +159,7 @@ pub enum GameOmission {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WriteExpectation {
     Game { stamp: String },
+    LinkedGame { stamp: String, revision: String },
     Append,
 }
 
@@ -90,6 +168,9 @@ pub enum WriteExpectation {
 pub struct WriteStamp {
     pub stamp: Option<String>,
     pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub linked: Option<crate::db::linked_collections::LinkedGameLocator>,
 }
 
 const MAX_LINE_LEN: usize = 1024 * 1024;
@@ -111,15 +192,15 @@ pub struct FileRevision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
+pub(crate) struct CacheKey {
     identity: crate::infra::path_authority::PgnSnapshotIdentity,
     revision: FileRevision,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct GameRange {
-    start: u64,
-    end: u64,
+pub(crate) struct GameRange {
+    pub(crate) start: u64,
+    pub(crate) end: u64,
 }
 
 impl GameRange {
@@ -249,10 +330,16 @@ fn current_scan_line_hook() -> Option<BoundedHook> {
 #[cfg(test)]
 pub(crate) type CreatePostRegisterHook = Box<dyn FnOnce() + Send>;
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum EditOwner {
+    File(crate::infra::path_authority::PgnSnapshotIdentity),
+    Collection(uuid::Uuid),
+}
+
 #[derive(Default)]
 struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
-    locks: HashMap<crate::infra::path_authority::PgnSnapshotIdentity, Arc<Mutex<()>>>,
+    locks: HashMap<EditOwner, Arc<Mutex<()>>>,
     clock: u64,
     retained_bytes: usize,
     #[cfg(test)]
@@ -267,6 +354,8 @@ struct PgnRepositoryInner {
     edit_worker_hook: Option<BoundedHook>,
     #[cfg(test)]
     edit_lock_wait_signal: Option<OneShotSignal>,
+    #[cfg(test)]
+    edit_lock_acquired_signal: Option<OneShotSignal>,
     #[cfg(test)]
     count_hook: Option<BoundedHook>,
     #[cfg(test)]
@@ -381,15 +470,34 @@ impl PgnRepository {
     }
 
     #[cfg(test)]
-    fn observe_edit_lock_wait(&self) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
+    pub(crate) fn observe_edit_lock_wait(
+        &self,
+    ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (signal, receiver) = OneShotSignal::new();
         self.inner()?.edit_lock_wait_signal = Some(signal);
         Ok(receiver)
     }
 
     #[cfg(test)]
-    fn notify_edit_lock_wait(&self) -> Result<(), Error> {
+    pub(crate) fn notify_edit_lock_wait(&self) -> Result<(), Error> {
         if let Some(signal) = self.inner()?.edit_lock_wait_signal.take() {
+            signal.notify();
+        }
+        Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn observe_edit_lock_acquired(
+        &self,
+    ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
+        let (signal, receiver) = OneShotSignal::new();
+        self.inner()?.edit_lock_acquired_signal = Some(signal);
+        Ok(receiver)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notify_edit_lock_acquired(&self) -> Result<(), Error> {
+        if let Some(signal) = self.inner()?.edit_lock_acquired_signal.take() {
             signal.notify();
         }
         Ok(())
@@ -443,10 +551,21 @@ impl PgnRepository {
         inner.clock
     }
 
-    fn edit_lock(
+    pub(crate) fn edit_lock(
         &self,
         identity: crate::infra::path_authority::PgnSnapshotIdentity,
     ) -> Result<Arc<Mutex<()>>, Error> {
+        self.edit_owner(EditOwner::File(identity))
+    }
+
+    pub(crate) fn collection_edit_lock(
+        &self,
+        collection: uuid::Uuid,
+    ) -> Result<Arc<Mutex<()>>, Error> {
+        self.edit_owner(EditOwner::Collection(collection))
+    }
+
+    fn edit_owner(&self, identity: EditOwner) -> Result<Arc<Mutex<()>>, Error> {
         let mut inner = self.inner()?;
         let lock = inner
             .locks
@@ -537,39 +656,78 @@ fn snapshot_key(snapshot: &crate::infra::path_authority::PgnSnapshot) -> CacheKe
 }
 
 fn is_tag_header(line: &str, in_brace_comment: bool) -> bool {
-    if in_brace_comment || !line.starts_with('[') {
-        return false;
-    }
-    let bytes = line.as_bytes();
-    let Some(space) = bytes
-        .iter()
-        .position(|byte| *byte == b' ' || *byte == b'\t')
-    else {
-        return false;
+    !in_brace_comment && tag_value_spans(line.as_bytes()).is_some()
+}
+
+pub(crate) struct TagValueSpan {
+    pub(crate) name: std::ops::Range<usize>,
+    pub(crate) value: std::ops::Range<usize>,
+}
+
+/// A physical header line contains complete tag pairs and whitespace only. Both range
+/// detection and lossless header editing use these exact byte spans, including escapes.
+pub(crate) fn tag_value_spans(bytes: &[u8]) -> Option<Vec<TagValueSpan>> {
+    let mut at = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        3
+    } else {
+        0
     };
-    if space <= 1
-        || !bytes[1..space]
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-    {
-        return false;
-    }
-    let rest = line[space..].trim_start_matches([' ', '\t']);
-    let Some(value) = rest.strip_prefix('"') else {
-        return false;
-    };
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            return value[index + character.len_utf8()..].trim_matches([' ', '\t', '\r', '\n'])
-                == "]";
+    let mut spans = Vec::new();
+    loop {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
         }
+        if at == bytes.len() {
+            return (!spans.is_empty()).then_some(spans);
+        }
+        if bytes.get(at) != Some(&b'[') {
+            return None;
+        }
+        at += 1;
+        let name_start = at;
+        while bytes
+            .get(at)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            at += 1;
+        }
+        let name = name_start..at;
+        if name.is_empty() || !matches!(bytes.get(at), Some(b' ' | b'\t')) {
+            return None;
+        }
+        while matches!(bytes.get(at), Some(b' ' | b'\t')) {
+            at += 1;
+        }
+        if bytes.get(at) != Some(&b'"') {
+            return None;
+        }
+        at += 1;
+        let start = at;
+        loop {
+            match bytes.get(at)? {
+                b'"' => break,
+                b'\r' | b'\n' => return None,
+                b'\\' => {
+                    at += 1;
+                    if matches!(bytes.get(at), None | Some(b'\r' | b'\n')) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        let value = start..at;
+        at += 1;
+        while matches!(bytes.get(at), Some(b' ' | b'\t')) {
+            at += 1;
+        }
+        if bytes.get(at) != Some(&b']') {
+            return None;
+        }
+        at += 1;
+        spans.push(TagValueSpan { name, value });
     }
-    false
 }
 
 fn update_brace_comment(line: &str, in_brace_comment: &mut bool) {
@@ -774,7 +932,7 @@ fn cached_scan(
     Ok((key, None))
 }
 
-fn scan_current_blocking(
+pub(crate) fn scan_current_blocking(
     mut snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
     cancellation: &CancellationToken,
@@ -852,7 +1010,7 @@ fn checked_range(start: i32, end: i32) -> Result<(usize, usize), Error> {
     Ok((start, count))
 }
 
-fn read_range_bytes(
+pub(crate) fn read_range_bytes(
     file: &mut (impl Read + Seek),
     range: GameRange,
     cancellation: &CancellationToken,
@@ -967,7 +1125,7 @@ fn scan_and_read_ranges_blocking<T>(
     }
 }
 
-fn game_stamp(bytes: &[u8]) -> String {
+pub(crate) fn game_stamp(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -1027,7 +1185,7 @@ fn edit_existing(
     expected: CacheKey,
     snapshot: crate::infra::path_authority::PgnSnapshot,
     target: GameRange,
-    replacement: Option<Vec<u8>>,
+    mut replacement: Option<PgnReplacement>,
     cancellation: &CancellationToken,
 ) -> Result<crate::infra::fs::AtomicInstalledFile, Error> {
     if cancellation.is_cancelled() {
@@ -1038,8 +1196,8 @@ fn edit_existing(
             return Err(Error::Cancellation);
         }
         copy_range(source, temporary, 0, target.start, cancellation)?;
-        if let Some(ref replacement) = replacement {
-            if target.start > 0 && !replacement.starts_with(b"\n") {
+        if let Some(ref mut replacement) = replacement {
+            if target.start > 0 && !replacement.starts_with_newline()? {
                 source.seek(SeekFrom::Start(target.start - 1))?;
                 let mut prior = [0];
                 source.read_exact(&mut prior)?;
@@ -1047,8 +1205,8 @@ fn edit_existing(
                     temporary.write_all(b"\n")?;
                 }
             }
-            temporary.write_all(replacement)?;
-            if !replacement.ends_with(b"\n")
+            replacement.write_to(temporary, cancellation)?;
+            if !replacement.ends_with_newline()?
                 && (target.end < expected.revision.size || target.end == target.start)
             {
                 temporary.write_all(b"\n")?;
@@ -1219,6 +1377,7 @@ pub async fn read_games_core(
             revision,
             present: true,
             omission: Some(omission),
+            linked: None,
         }]);
     }
     Ok(values
@@ -1229,6 +1388,7 @@ pub async fn read_games_core(
             revision: revision.clone(),
             present: true,
             omission: None,
+            linked: None,
         })
         .collect())
 }
@@ -1283,8 +1443,24 @@ pub async fn read_game(
         &file,
         crate::infra::path_authority::PathOperation::ReadPgn,
     )?;
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_native_operation(operation, "read_game", async move {
-        read_game_core(resolved, n, &cancellation, &repository).await
+        let mut game = read_game_core(resolved, n, &cancellation, &repository).await?;
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                if game.present {
+                    game.linked = crate::db::linked_collections::qualify_source(
+                        &authority,
+                        &file,
+                        n,
+                        &game.stamp,
+                        &game.revision,
+                        token,
+                    )?;
+                }
+                Ok(game)
+            })
+            .await
     })
     .await
 }
@@ -1321,16 +1497,153 @@ async fn read_game_core(
         revision: revision_string_for_key(&key),
         present,
         omission: None,
+        linked: None,
     })
 }
 
 struct PgnMutation {
     target: GameRange,
-    replacement: Option<Vec<u8>>,
+    replacement: Option<PgnReplacement>,
     expectation: Option<WriteExpectation>,
     stale_on_snapshot_change: bool,
     operation_name: &'static str,
     rebind: Option<PgnCapabilityRebind>,
+}
+
+enum PgnReplacement {
+    Bytes(Vec<u8>),
+    Stream(tempfile::NamedTempFile),
+}
+
+impl PgnReplacement {
+    fn boundary_byte(&mut self, last: bool) -> Result<Option<u8>, Error> {
+        match self {
+            Self::Bytes(bytes) => Ok(if last { bytes.last() } else { bytes.first() }.copied()),
+            Self::Stream(file) => {
+                let size = file.as_file().metadata()?.len();
+                if size == 0 {
+                    return Ok(None);
+                }
+                file.as_file_mut()
+                    .seek(SeekFrom::Start(if last { size - 1 } else { 0 }))?;
+                let mut byte = [0];
+                file.as_file_mut().read_exact(&mut byte)?;
+                Ok(Some(byte[0]))
+            }
+        }
+    }
+    fn starts_with_newline(&mut self) -> Result<bool, Error> {
+        Ok(self.boundary_byte(false)? == Some(b'\n'))
+    }
+    fn ends_with_newline(&mut self) -> Result<bool, Error> {
+        Ok(self.boundary_byte(true)? == Some(b'\n'))
+    }
+    fn write_to(
+        &mut self,
+        target: &mut impl Write,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Bytes(bytes) => {
+                target.write_all(bytes)?;
+            }
+            Self::Stream(file) => {
+                let size = file.as_file().metadata()?.len();
+                copy_range(file.as_file_mut(), target, 0, size, cancellation)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One streamed bulk edit uses the same lock, snapshot check, replacement and committed-error
+/// boundary as a single-game edit. Preparation never materializes the collection's PGN text.
+pub(crate) async fn transform_file_core<T: Send + 'static>(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    expected_revision: String,
+    repository: PgnRepository,
+    mut rebind: PgnCapabilityRebind,
+    cancellation: CancellationToken,
+    transform: impl FnOnce(
+            &mut crate::infra::inode_ownership::OwnedFile,
+            &[GameRange],
+            &mut std::fs::File,
+            &CancellationToken,
+        ) -> Result<T, Error>
+        + Send
+        + 'static,
+) -> Result<T, Error> {
+    rebind.capture_binding()?;
+    let snapshot = resolved.pgn_snapshot()?;
+    let lock = rebind.edit_lock(&repository, snapshot.identity.clone())?;
+    #[cfg(test)]
+    repository.notify_edit_lock_wait()?;
+    let _guard = tokio::select! {
+        guard = lock.lock() => guard,
+        _ = cancellation.cancelled() => return Err(Error::Cancellation),
+    };
+    rebind.validate_binding()?;
+    let scan_repository = repository.clone();
+    let (key, replacement, value, unchanged) = BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            if revision_string(&snapshot) != expected_revision {
+                return Err(Error::StaleGame);
+            }
+            let mut source = snapshot.file.try_clone()?;
+            let (key, ranges) = scan_current_blocking(snapshot, &scan_repository, token)?;
+            let mut replacement = tempfile::NamedTempFile::new()?;
+            let value = transform(&mut source, &ranges, replacement.as_file_mut(), token)?;
+            let mut unchanged = replacement.as_file().metadata()?.len() == key.revision.size;
+            if unchanged {
+                source.seek(SeekFrom::Start(0))?;
+                replacement.as_file_mut().seek(SeekFrom::Start(0))?;
+                let mut left = [0u8; 64 * 1024];
+                let mut right = [0u8; 64 * 1024];
+                let mut remaining = key.revision.size;
+                while remaining > 0 {
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    let count = remaining.min(left.len() as u64) as usize;
+                    source.read_exact(&mut left[..count])?;
+                    replacement.as_file_mut().read_exact(&mut right[..count])?;
+                    if left[..count] != right[..count] {
+                        unchanged = false;
+                        break;
+                    }
+                    remaining -= count as u64;
+                }
+            }
+            Ok((key, replacement, value, unchanged))
+        })
+        .await?;
+    if unchanged {
+        rebind.validate_binding()?;
+        if snapshot_key(&resolved.pgn_snapshot()?) != key {
+            return Err(Error::StaleGame);
+        }
+        return Ok(value);
+    }
+    let size = key.revision.size;
+    commit_pgn_mutation(
+        resolved,
+        key,
+        PgnMutation {
+            target: GameRange {
+                start: 0,
+                end: size,
+            },
+            replacement: Some(PgnReplacement::Stream(replacement)),
+            expectation: None,
+            stale_on_snapshot_change: true,
+            operation_name: "transform_file",
+            rebind: Some(rebind),
+        },
+        &repository,
+        &cancellation,
+    )
+    .await?;
+    Ok(value)
 }
 
 async fn commit_pgn_mutation(
@@ -1360,11 +1673,19 @@ async fn commit_pgn_mutation(
         });
     }
     if let Some(expectation) = expectation {
+        if let WriteExpectation::LinkedGame { revision, .. } = &expectation {
+            if let Some(rebind) = &rebind {
+                rebind.validate_linked_source()?;
+            }
+            if *revision != revision_string_for_key(&key) {
+                return Err(Error::StaleGame);
+            }
+        }
         let matched = match expectation {
             WriteExpectation::Append => {
                 target.start == key.revision.size && target.end == key.revision.size
             }
-            WriteExpectation::Game { stamp } => {
+            WriteExpectation::Game { stamp } | WriteExpectation::LinkedGame { stamp, .. } => {
                 let mut file = commit_snapshot.file.try_clone()?;
                 let range = target;
                 let actual = BLOCKING_GATEWAY
@@ -1381,6 +1702,7 @@ async fn commit_pgn_mutation(
         }
     }
     let identity = key.identity.clone();
+    let collection_rebind = rebind.clone();
     #[cfg(test)]
     let edit_hook = repository.edit_worker_hook()?;
     #[cfg(test)]
@@ -1395,6 +1717,9 @@ async fn commit_pgn_mutation(
             #[cfg(test)]
             let _injector_guard =
                 atomic_injector.map(crate::infra::fs::install_test_atomic_file_injector);
+            if let Some(rebind) = &rebind {
+                rebind.validate_binding()?;
+            }
             let installed = edit_existing(
                 &resolved,
                 key.clone(),
@@ -1441,6 +1766,30 @@ async fn commit_pgn_mutation(
         }
     }
 
+    if let Some(rebind) = collection_rebind {
+        let refresh = BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), move |token| {
+                if let Some(service) = rebind.authority.collections()? {
+                    service.refresh_source(
+                        &rebind.authority,
+                        &crate::infra::path_authority::FileWorkspaceHandle::new(rebind.path_ref),
+                        token,
+                    )?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = refresh {
+            log::warn!(
+                "collection index refresh failed after PGN publication: {}",
+                error.diagnostic()
+            );
+            edit_outcome?;
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::CollectionIndexRefresh,
+            ));
+        }
+    }
     edit_outcome
 }
 
@@ -1461,10 +1810,7 @@ pub async fn delete_game(
         crate::infra::path_authority::PathOperation::WritePgn,
     )?;
     let repository = state.pgn_repository.clone();
-    let rebind = PgnCapabilityRebind {
-        authority: state.pgn_path_authority.clone(),
-        path_ref: file.path_ref().clone(),
-    };
+    let rebind = PgnCapabilityRebind::new(state.pgn_path_authority.clone(), &file);
     delete_game_core(
         lease,
         resolved,
@@ -1484,14 +1830,21 @@ pub async fn delete_game_core(
     expected_stamp: String,
     expected_revision: String,
     repository: PgnRepository,
-    rebind: Option<PgnCapabilityRebind>,
+    mut rebind: Option<PgnCapabilityRebind>,
 ) -> Result<(), Error> {
     let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "delete_game", async move {
+        if let Some(rebind) = &mut rebind {
+            rebind.capture_binding()?;
+        }
         let n = checked_index(n)?;
         let scan_snapshot = resolved.pgn_snapshot()?;
         let identity = scan_snapshot.identity.clone();
-        let lock = repository.edit_lock(identity.clone())?;
+        let lock = if let Some(rebind) = &rebind {
+            rebind.edit_lock(&repository, identity.clone())?
+        } else {
+            repository.edit_lock(identity.clone())?
+        };
         #[cfg(test)]
         repository.notify_edit_lock_wait()?;
         let _guard = tokio::select! {
@@ -1538,16 +1891,23 @@ pub async fn write_game(
 ) -> Result<WriteStamp, Error> {
     crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let lease = state.operations.accept("write_game")?;
+    if matches!(&expected, WriteExpectation::Game { .. })
+        && state
+            .pgn_path_authority
+            .collections()?
+            .map(|service| service.contains_source(&file))
+            .transpose()?
+            .unwrap_or(false)
+    {
+        return Err(Error::StaleGame);
+    }
     let resolved = resolve_pgn(
         &state,
         &file,
         crate::infra::path_authority::PathOperation::WritePgn,
     )?;
     let repository = state.pgn_repository.clone();
-    let rebind = PgnCapabilityRebind {
-        authority: state.pgn_path_authority.clone(),
-        path_ref: file.path_ref().clone(),
-    };
+    let rebind = PgnCapabilityRebind::new(state.pgn_path_authority.clone(), &file);
     write_game_core(lease, resolved, n, pgn, expected, repository, Some(rebind)).await
 }
 
@@ -1558,10 +1918,13 @@ pub async fn write_game_core(
     pgn: String,
     expected: WriteExpectation,
     repository: PgnRepository,
-    rebind: Option<PgnCapabilityRebind>,
+    mut rebind: Option<PgnCapabilityRebind>,
 ) -> Result<WriteStamp, Error> {
     let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "write_game", async move {
+        if let Some(rebind) = &mut rebind {
+            rebind.capture_binding()?;
+        }
         let game_number = n;
         let n = checked_index(n)?;
         if pgn.len() > MAX_PGN_BYTES {
@@ -1573,7 +1936,11 @@ pub async fn write_game_core(
         let replacement = pgn.as_bytes().to_vec();
         let scan_snapshot = resolved.pgn_snapshot()?;
         let identity = scan_snapshot.identity.clone();
-        let lock = repository.edit_lock(identity.clone())?;
+        let lock = if let Some(rebind) = &rebind {
+            rebind.edit_lock(&repository, identity.clone())?
+        } else {
+            repository.edit_lock(identity.clone())?
+        };
         #[cfg(test)]
         repository.notify_edit_lock_wait()?;
         let _guard = tokio::select! {
@@ -1600,7 +1967,7 @@ pub async fn write_game_core(
             key,
             PgnMutation {
                 target,
-                replacement: Some(replacement),
+                replacement: Some(PgnReplacement::Bytes(replacement)),
                 expectation: Some(expected),
                 stale_on_snapshot_change: false,
                 operation_name: "write_game",
@@ -1616,21 +1983,45 @@ pub async fn write_game_core(
             hook.notify_and_wait();
         }
 
-        let (stamp, revision) = if let Some(rebind) = readback_capability {
+        let (stamp, revision, linked) = if let Some(rebind) = readback_capability {
             if let Ok(readback_path) = rebind.resolve_read() {
                 match read_game_core(readback_path, game_number, &cancellation, &repository).await {
                     Ok(readback) if readback.pgn.trim() == pgn.trim() => {
-                        (Some(readback.stamp), Some(readback.revision))
+                        let authority = rebind.authority.clone();
+                        let file = crate::infra::path_authority::FileWorkspaceHandle::new(
+                            rebind.path_ref.clone(),
+                        );
+                        let stamped = readback.clone();
+                        match BLOCKING_GATEWAY
+                            .spawn_cancellable(cancellation.clone(), move |token| {
+                                crate::db::linked_collections::qualify_source(
+                                    &authority,
+                                    &file,
+                                    game_number,
+                                    &stamped.stamp,
+                                    &stamped.revision,
+                                    token,
+                                )
+                            })
+                            .await
+                        {
+                            Ok(linked) => (Some(readback.stamp), Some(readback.revision), linked),
+                            Err(_) => (None, None, None),
+                        }
                     }
-                    _ => (None, None),
+                    _ => (None, None, None),
                 }
             } else {
-                (None, None)
+                (None, None, None)
             }
         } else {
-            (None, None)
+            (None, None, None)
         };
-        Ok(WriteStamp { stamp, revision })
+        Ok(WriteStamp {
+            stamp,
+            revision,
+            linked,
+        })
     })
     .await
 }
@@ -2257,6 +2648,7 @@ mod tests {
             let rebind = PgnCapabilityRebind {
                 authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
+                binding: None,
             };
             (lease, resolved, readback_path, repository, rebind)
         };
@@ -2295,6 +2687,7 @@ mod tests {
             let rebind = PgnCapabilityRebind {
                 authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
+                binding: None,
             };
             (lease, resolved, repository, rebind)
         };
@@ -2330,6 +2723,7 @@ mod tests {
             let rebind = PgnCapabilityRebind {
                 authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
+                binding: None,
             };
             (lease, resolved, repository, rebind)
         };
@@ -2374,7 +2768,9 @@ mod tests {
             key,
             snapshot,
             range,
-            Some(b"[Event \"after\"]\n\n1. d4 *\n".to_vec()),
+            Some(PgnReplacement::Bytes(
+                b"[Event \"after\"]\n\n1. d4 *\n".to_vec(),
+            )),
             &cancellation,
         );
         drop(injector);
@@ -2404,7 +2800,9 @@ mod tests {
             key,
             snapshot,
             range,
-            Some(b"[Event \"after\"]\n\n1. d4 *\n".to_vec()),
+            Some(PgnReplacement::Bytes(
+                b"[Event \"after\"]\n\n1. d4 *\n".to_vec(),
+            )),
             &CancellationToken::new(),
         );
         crate::infra::fs::set_test_atomic_file_injector(None);
@@ -3788,6 +4186,7 @@ mod tests {
             Some(PgnCapabilityRebind {
                 authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
+                binding: None,
             }),
         )
         .await
@@ -3989,6 +4388,34 @@ mod tests {
         assert!(!is_tag_header("[ \"value\"]\n", false));
         assert!(!is_tag_header("[Tag-Name \"value\"]\n", false));
         assert!(!is_tag_header("[Tag_Name \"value\"]\n", true));
+    }
+
+    #[test]
+    fn inline_tag_header_spans_and_scanner_share_escaped_grammar() {
+        let data = b"\xef\xbb\xbf \t[Event \"A\"] [Site \"X\\\"Y\"]\r\n[White \"W\"]\r\n\r\n1. e4 *\r\n[Event \"B\"] [Site \"Z\"]\r\n\r\n1. d4 *\r\n";
+        let ranges = scan_games(Cursor::new(data)).unwrap();
+        assert_eq!(
+            ranges.len(),
+            2,
+            "inline tags split a single game into fragments"
+        );
+        assert!(data[ranges[0].start as usize..ranges[0].end as usize].ends_with(b"1. e4 *\r\n"));
+        assert!(is_tag_header(
+            " [Event \"A\"]\t[Site \"X\\\"Y\"]\r\n",
+            false
+        ));
+        assert!(!is_tag_header("[Event \"A\"] [Broken]", false));
+        assert!(!is_tag_header("[Event \"A\"] 1. e4", false));
+        // The sibling preface report is not assumed to be a scanner failure.
+        for prefix in ["% preface\n", "; preface\n"] {
+            let input = format!("{prefix}[Event \"A\"]\n\n1. e4 *\n");
+            let ranges = scan_games(Cursor::new(input.as_bytes())).unwrap();
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(
+                &input[ranges[0].start as usize..],
+                "[Event \"A\"]\n\n1. e4 *\n"
+            );
+        }
     }
 
     #[test]

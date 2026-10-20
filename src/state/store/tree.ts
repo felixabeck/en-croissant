@@ -39,6 +39,8 @@ import {
 } from "@/utils/treeReducer";
 
 export interface TreeStoreState extends TreeState {
+    linkedSource?: import("@/bindings").LinkedGameLocator | null;
+    setLinkedSource: (source: import("@/bindings").LinkedGameLocator | null) => void;
     /** Refresh after an operation's own transition, combine with its live-position/token guard. */
     capturePuzzleSessionOwner: () => () => boolean;
     /** Builds from the latest live frame and publishes only after durable admission. */
@@ -115,8 +117,8 @@ export interface TreeStoreState extends TreeState {
 
     setState: (state: TreeState) => void;
     reset: () => void;
-    save: (stamp?: string) => void;
-    setSourceStamp: (stamp: string | null) => void;
+    save: (stamp?: string, revision?: string) => void;
+    setSourceStamp: (stamp: string | null, revision?: string) => void;
     setAppendAttempted: (value: boolean) => void;
 }
 
@@ -331,25 +333,47 @@ export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id)
         setPracticePath: (path) => set({ practicePath: path }),
 
         setState: (state) => {
-            set(() => ({ puzzleSession: undefined, ...state, practicePath: null }));
+            set(() => ({
+                puzzleSession: undefined,
+                linkedSource: null,
+                ...state,
+                practicePath: null,
+            }));
         },
 
         reset: () =>
             set(() => {
-                return { ...defaultTree(), puzzleSession: undefined, practicePath: null };
+                return {
+                    ...defaultTree(),
+                    linkedSource: null,
+                    puzzleSession: undefined,
+                    practicePath: null,
+                };
             }),
 
-        save: (stamp) => {
+        save: (stamp, revision) => {
             set((state) => ({
                 ...state,
                 dirty: false,
                 sourceStamp: stamp ?? state.sourceStamp,
+                linkedSource:
+                    state.linkedSource && stamp && revision
+                        ? { ...state.linkedSource, stamp, generation: revision }
+                        : state.linkedSource,
                 appendAttempted: false,
             }));
         },
 
         setAppendAttempted: (value) => set({ appendAttempted: value }),
-        setSourceStamp: (stamp) => set({ sourceStamp: stamp }),
+        setSourceStamp: (stamp, revision) =>
+            set((state) => ({
+                sourceStamp: stamp,
+                linkedSource:
+                    state.linkedSource && stamp && revision
+                        ? { ...state.linkedSource, stamp, generation: revision }
+                        : state.linkedSource,
+            })),
+        setLinkedSource: (linkedSource) => set({ linkedSource }),
 
         setFen: (fen) =>
             set(

@@ -7,6 +7,7 @@ pub(crate) mod allocation_probe;
 pub(crate) mod bound_sqlite;
 mod content_validation;
 mod encoding;
+pub(crate) mod linked_collections;
 mod migrations;
 mod models;
 mod ops;
@@ -200,6 +201,14 @@ pub(crate) fn get_db_or_create(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
 ) -> Result<repository::DatabaseConnection, Error> {
+    if let Some(collections) = authority.collections()? {
+        collections.resolve_database(
+            authority,
+            file,
+            PathOperation::DatabaseRead,
+            cancellation.unwrap_or(&CancellationToken::new()),
+        )?;
+    }
     let connection = repository.connection(target, cancellation)?;
     match repository.take_passed_stamp_due(target) {
         Ok(Some(identity)) => {
@@ -225,7 +234,16 @@ pub(crate) fn resolve_database(
 ) -> Result<DatabaseFileTarget, Error> {
     #[cfg(test)]
     RESOLVE_DATABASE_OPERATIONS.with(|operations| operations.borrow_mut().push(operation));
-    authority.with_mut(|authority| authority.database_file_target(handle, operation))?
+    if let Some(collections) = authority.collections()? {
+        collections.guard_database(handle, operation)?;
+        collections.ensure_database(authority, handle)?;
+    }
+    let target =
+        authority.with_mut(|authority| authority.database_file_target(handle, operation))??;
+    if let Some(collections) = authority.collections()? {
+        collections.guard_database_target(handle, operation, target.identity())?;
+    }
+    Ok(target)
 }
 
 fn update_info_count(
@@ -299,7 +317,12 @@ fn with_validated_mutation(
     operation: impl FnOnce(&mut SqliteConnection) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let mut content_validated = false;
+    #[cfg(test)]
+    database_command_checkpoint("mutation_owner", file);
     let result = repository.with_write_lock_cancellable(target, cancellation, || {
+        guard_database_mutation(authority, file, PathOperation::DatabaseMutate)?;
+        #[cfg(test)]
+        database_command_checkpoint("mutation_owned", file);
         let mut connection = repository.initialization_connection(target, Some(cancellation))?;
         connection.transaction::<_, Error, _>(|db| {
             bump_revision_in_transaction(db, target.path(), cancellation, |db| {
@@ -313,6 +336,20 @@ fn with_validated_mutation(
         Ok(())
     });
     finish_search_cache_after_transaction(result, search_cache, target)
+}
+
+fn guard_database_mutation(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    file: &DatabaseHandle,
+    operation: PathOperation,
+) -> Result<(), Error> {
+    if let Some(collections) = authority.collections()? {
+        collections.guard_database(file, operation)?;
+        let target =
+            authority.with_mut(|authority| authority.database_file_target(file, operation))??;
+        collections.guard_database_target(file, operation, target.identity())?;
+    }
+    Ok(())
 }
 
 /// The material tracker starts at standard material (39) and only decreases,
@@ -1070,6 +1107,12 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
     let mut imported_games = 0usize;
     let mut content_validated = false;
     let result = repository.with_write_lock_cancellable(&target, cancellation, || {
+        guard_database_mutation(authority, &database, PathOperation::DatabaseCreate)?;
+        if let Some(collections) = authority.collections()? {
+            for source in &files {
+                collections.guard_conversion_source(authority, source, cancellation)?;
+            }
+        }
         let mut database_connection =
             repository.initialization_connection(&target, Some(cancellation))?;
         let db = &mut *database_connection;
@@ -1164,9 +1207,34 @@ pub fn generate_search_index(
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let target = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
+    let linked = authority
+        .collections()?
+        .map(|service| service.is_linked(handle))
+        .transpose()?
+        .unwrap_or(false);
+    if let Some(service) = authority.collections()? {
+        service.resolve_database(authority, handle, PathOperation::DatabaseRead, cancellation)?;
+    }
+    let target = resolve_database(
+        authority,
+        handle,
+        if linked {
+            PathOperation::DatabaseRead
+        } else {
+            PathOperation::DatabaseMutate
+        },
+    )?;
     info!("Preparing search index for {:?}", target.path());
     repository.with_write_lock_cancellable(&target, cancellation, || {
+        guard_database_mutation(
+            authority,
+            handle,
+            if linked {
+                PathOperation::DatabaseRead
+            } else {
+                PathOperation::DatabaseMutate
+            },
+        )?;
         repository.with_index_lock_cancellable(&target, cancellation, || {
             generate_search_index_locked(
                 &target,
@@ -1205,8 +1273,16 @@ fn generate_search_index_locked(
     file: &DatabaseHandle,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let mut database_connection =
-        get_db_or_create(repository, target, Some(cancellation), authority, file)?;
+    let linked = authority
+        .collections()?
+        .map(|service| service.is_linked(file))
+        .transpose()?
+        .unwrap_or(false);
+    let mut database_connection = if linked {
+        repository.connection(target, Some(cancellation))?
+    } else {
+        get_db_or_create(repository, target, Some(cancellation), authority, file)?
+    };
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
@@ -1442,51 +1518,52 @@ fn get_db_info_blocking(
 
     let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        let info_records: Vec<Info> = info::table.load(db)?;
 
-    let info_records: Vec<Info> = info::table.load(db)?;
+        let get_info_value = |key: &str| -> Option<String> {
+            info_records
+                .iter()
+                .find(|i| i.name == key)
+                .and_then(|i| i.value.clone())
+        };
 
-    let get_info_value = |key: &str| -> Option<String> {
-        info_records
-            .iter()
-            .find(|i| i.name == key)
-            .and_then(|i| i.value.clone())
-    };
+        let title = get_info_value("Title").unwrap_or_else(|| "Untitled".to_string());
+        let description = get_info_value("Description").unwrap_or_default();
+        let player_count = get_info_value("PlayerCount")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
+        let game_count = get_info_value("GameCount")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
+        let event_count = get_info_value("EventCount")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
 
-    let title = get_info_value("Title").unwrap_or_else(|| "Untitled".to_string());
-    let description = get_info_value("Description").unwrap_or_default();
-    let player_count = get_info_value("PlayerCount")
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-    let game_count = get_info_value("GameCount")
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-    let event_count = get_info_value("EventCount")
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
+        let identity = repository.database_identity(&target)?;
+        let storage_size = identity.length.to_string();
+        let scan = content_validation::inspect(repository, &target, &identity, authority, &file)?
+            .then(|| (target.path().to_path_buf(), identity));
+        let filename = target
+            .path()
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("Database path has no filename".into()))?
+            .to_string_lossy();
 
-    let identity = repository.database_identity(&target)?;
-    let storage_size = identity.length.to_string();
-    let scan = content_validation::inspect(repository, &target, &identity, authority, &file)?
-        .then(|| (target.path().to_path_buf(), identity));
-    let filename = target
-        .path()
-        .file_name()
-        .ok_or_else(|| Error::InvalidInput("Database path has no filename".into()))?
-        .to_string_lossy();
-
-    let is_indexed = check_index_exists(db)?;
-    Ok(DatabaseMetadata {
-        scan,
-        info: DatabaseInfo {
-            title,
-            description,
-            player_count,
-            game_count,
-            event_count,
-            storage_size,
-            filename: filename.to_string(),
-            indexed: is_indexed,
-        },
+        let is_indexed = check_index_exists(db)?;
+        Ok(DatabaseMetadata {
+            scan,
+            info: DatabaseInfo {
+                title,
+                description,
+                player_count,
+                game_count,
+                event_count,
+                storage_size,
+                filename: filename.to_string(),
+                indexed: is_indexed,
+            },
+        })
     })
 }
 
@@ -1524,11 +1601,14 @@ fn run_required_index_ddl(
     let _ = label;
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_index_lock_cancellable(&target, cancellation, || {
-        let mut database_connection =
-            get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
-        let db = &mut *database_connection;
-        sqlite_cancellation::with_sqlite_cancellation_transaction(db, cancellation, body)
+    repository.with_write_lock_cancellable(&target, cancellation, || {
+        guard_database_mutation(authority, &file, PathOperation::DatabaseMutate)?;
+        repository.with_index_lock_cancellable(&target, cancellation, || {
+            let mut database_connection =
+                get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
+            let db = &mut *database_connection;
+            sqlite_cancellation::with_sqlite_cancellation_transaction(db, cancellation, body)
+        })
     })
 }
 
@@ -1812,199 +1892,201 @@ fn get_games_blocking(
     let mut database_connection =
         get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
+    db.transaction::<_, Error, _>(|db| {
+        let mut count: Option<i64> = None;
+        let query_options = query.options.unwrap_or_default();
 
-    let mut count: Option<i64> = None;
-    let query_options = query.options.unwrap_or_default();
+        let (white_players, black_players) = diesel::alias!(players as white, players as black);
+        let mut sql_query = games::table
+            .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
+            .inner_join(black_players.on(games::black_id.eq(black_players.field(players::id))))
+            .inner_join(events::table.on(games::event_id.eq(events::id)))
+            .inner_join(sites::table.on(games::site_id.eq(sites::id)))
+            .into_boxed();
+        let mut count_query = games::table.into_boxed();
 
-    let (white_players, black_players) = diesel::alias!(players as white, players as black);
-    let mut sql_query = games::table
-        .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
-        .inner_join(black_players.on(games::black_id.eq(black_players.field(players::id))))
-        .inner_join(events::table.on(games::event_id.eq(events::id)))
-        .inner_join(sites::table.on(games::site_id.eq(sites::id)))
-        .into_boxed();
-    let mut count_query = games::table.into_boxed();
+        // if let Some(speed) = query.speed {
+        //     sql_query = sql_query.filter(games::speed.eq(speed as i32));
+        //     count_query = count_query.filter(games::speed.eq(speed as i32));
+        // }
 
-    // if let Some(speed) = query.speed {
-    //     sql_query = sql_query.filter(games::speed.eq(speed as i32));
-    //     count_query = count_query.filter(games::speed.eq(speed as i32));
-    // }
-
-    if let Some(outcome) = query.outcome {
-        sql_query = sql_query.filter(games::result.eq(outcome.clone()));
-        count_query = count_query.filter(games::result.eq(outcome));
-    }
-
-    if let Some(start_date) = query.start_date {
-        sql_query = sql_query.filter(games::date.ge(start_date.clone()));
-        count_query = count_query.filter(games::date.ge(start_date));
-    }
-
-    if let Some(end_date) = query.end_date {
-        sql_query = sql_query.filter(games::date.le(end_date.clone()));
-        count_query = count_query.filter(games::date.le(end_date));
-    }
-
-    if let Some(tournament_id) = query.tournament_id {
-        sql_query = sql_query.filter(games::event_id.eq(tournament_id));
-        count_query = count_query.filter(games::event_id.eq(tournament_id));
-    }
-
-    let (limit, offset) = pagination_limit_offset(query_options.page, query_options.page_size)?;
-    if let Some(limit) = limit {
-        sql_query = sql_query.limit(limit);
-    }
-
-    if let Some(offset) = offset {
-        sql_query = sql_query.offset(offset);
-    }
-
-    match query.sides {
-        Some(Sides::BlackWhite) => {
-            if let Some(player1) = query.player1 {
-                sql_query = sql_query.filter(games::black_id.eq(player1));
-                count_query = count_query.filter(games::black_id.eq(player1));
-            }
-            if let Some(player2) = query.player2 {
-                sql_query = sql_query.filter(games::white_id.eq(player2));
-                count_query = count_query.filter(games::white_id.eq(player2));
-            }
-
-            if let Some(range1) = query.range1 {
-                sql_query = sql_query.filter(games::black_elo.between(range1.0, range1.1));
-                count_query = count_query.filter(games::black_elo.between(range1.0, range1.1));
-            }
-
-            if let Some(range2) = query.range2 {
-                sql_query = sql_query.filter(games::white_elo.between(range2.0, range2.1));
-                count_query = count_query.filter(games::white_elo.between(range2.0, range2.1));
-            }
+        if let Some(outcome) = query.outcome {
+            sql_query = sql_query.filter(games::result.eq(outcome.clone()));
+            count_query = count_query.filter(games::result.eq(outcome));
         }
-        Some(Sides::WhiteBlack) => {
-            if let Some(player1) = query.player1 {
-                sql_query = sql_query.filter(games::white_id.eq(player1));
-                count_query = count_query.filter(games::white_id.eq(player1));
-            }
-            if let Some(player2) = query.player2 {
-                sql_query = sql_query.filter(games::black_id.eq(player2));
-                count_query = count_query.filter(games::black_id.eq(player2));
-            }
 
-            if let Some(range1) = query.range1 {
-                sql_query = sql_query.filter(games::white_elo.between(range1.0, range1.1));
-                count_query = count_query.filter(games::white_elo.between(range1.0, range1.1));
-            }
-
-            if let Some(range2) = query.range2 {
-                sql_query = sql_query.filter(games::black_elo.between(range2.0, range2.1));
-                count_query = count_query.filter(games::black_elo.between(range2.0, range2.1));
-            }
+        if let Some(start_date) = query.start_date {
+            sql_query = sql_query.filter(games::date.ge(start_date.clone()));
+            count_query = count_query.filter(games::date.ge(start_date));
         }
-        Some(Sides::Any) => {
-            if let Some(player1) = query.player1 {
-                sql_query =
-                    sql_query.filter(games::white_id.eq(player1).or(games::black_id.eq(player1)));
-                count_query =
-                    count_query.filter(games::white_id.eq(player1).or(games::black_id.eq(player1)));
-            }
-            if let Some(player2) = query.player2 {
-                sql_query =
-                    sql_query.filter(games::white_id.eq(player2).or(games::black_id.eq(player2)));
-                count_query =
-                    count_query.filter(games::white_id.eq(player2).or(games::black_id.eq(player2)));
-            }
 
-            if let (Some(range1), Some(range2)) = (query.range1, query.range2) {
-                sql_query = sql_query.filter(
-                    games::white_elo
-                        .between(range1.0, range1.1)
-                        .or(games::black_elo.between(range1.0, range1.1))
-                        .or(games::white_elo
-                            .between(range2.0, range2.1)
-                            .or(games::black_elo.between(range2.0, range2.1))),
-                );
-                count_query = count_query.filter(
-                    games::white_elo
-                        .between(range1.0, range1.1)
-                        .or(games::black_elo.between(range1.0, range1.1))
-                        .or(games::white_elo
-                            .between(range2.0, range2.1)
-                            .or(games::black_elo.between(range2.0, range2.1))),
-                );
-            } else {
+        if let Some(end_date) = query.end_date {
+            sql_query = sql_query.filter(games::date.le(end_date.clone()));
+            count_query = count_query.filter(games::date.le(end_date));
+        }
+
+        if let Some(tournament_id) = query.tournament_id {
+            sql_query = sql_query.filter(games::event_id.eq(tournament_id));
+            count_query = count_query.filter(games::event_id.eq(tournament_id));
+        }
+
+        let (limit, offset) = pagination_limit_offset(query_options.page, query_options.page_size)?;
+        if let Some(limit) = limit {
+            sql_query = sql_query.limit(limit);
+        }
+
+        if let Some(offset) = offset {
+            sql_query = sql_query.offset(offset);
+        }
+
+        match query.sides {
+            Some(Sides::BlackWhite) => {
+                if let Some(player1) = query.player1 {
+                    sql_query = sql_query.filter(games::black_id.eq(player1));
+                    count_query = count_query.filter(games::black_id.eq(player1));
+                }
+                if let Some(player2) = query.player2 {
+                    sql_query = sql_query.filter(games::white_id.eq(player2));
+                    count_query = count_query.filter(games::white_id.eq(player2));
+                }
+
                 if let Some(range1) = query.range1 {
-                    sql_query = sql_query.filter(
-                        games::white_elo
-                            .between(range1.0, range1.1)
-                            .or(games::black_elo.between(range1.0, range1.1)),
-                    );
-                    count_query = count_query.filter(
-                        games::white_elo
-                            .between(range1.0, range1.1)
-                            .or(games::black_elo.between(range1.0, range1.1)),
-                    );
+                    sql_query = sql_query.filter(games::black_elo.between(range1.0, range1.1));
+                    count_query = count_query.filter(games::black_elo.between(range1.0, range1.1));
                 }
 
                 if let Some(range2) = query.range2 {
+                    sql_query = sql_query.filter(games::white_elo.between(range2.0, range2.1));
+                    count_query = count_query.filter(games::white_elo.between(range2.0, range2.1));
+                }
+            }
+            Some(Sides::WhiteBlack) => {
+                if let Some(player1) = query.player1 {
+                    sql_query = sql_query.filter(games::white_id.eq(player1));
+                    count_query = count_query.filter(games::white_id.eq(player1));
+                }
+                if let Some(player2) = query.player2 {
+                    sql_query = sql_query.filter(games::black_id.eq(player2));
+                    count_query = count_query.filter(games::black_id.eq(player2));
+                }
+
+                if let Some(range1) = query.range1 {
+                    sql_query = sql_query.filter(games::white_elo.between(range1.0, range1.1));
+                    count_query = count_query.filter(games::white_elo.between(range1.0, range1.1));
+                }
+
+                if let Some(range2) = query.range2 {
+                    sql_query = sql_query.filter(games::black_elo.between(range2.0, range2.1));
+                    count_query = count_query.filter(games::black_elo.between(range2.0, range2.1));
+                }
+            }
+            Some(Sides::Any) => {
+                if let Some(player1) = query.player1 {
+                    sql_query = sql_query
+                        .filter(games::white_id.eq(player1).or(games::black_id.eq(player1)));
+                    count_query = count_query
+                        .filter(games::white_id.eq(player1).or(games::black_id.eq(player1)));
+                }
+                if let Some(player2) = query.player2 {
+                    sql_query = sql_query
+                        .filter(games::white_id.eq(player2).or(games::black_id.eq(player2)));
+                    count_query = count_query
+                        .filter(games::white_id.eq(player2).or(games::black_id.eq(player2)));
+                }
+
+                if let (Some(range1), Some(range2)) = (query.range1, query.range2) {
                     sql_query = sql_query.filter(
                         games::white_elo
-                            .between(range2.0, range2.1)
-                            .or(games::black_elo.between(range2.0, range2.1)),
+                            .between(range1.0, range1.1)
+                            .or(games::black_elo.between(range1.0, range1.1))
+                            .or(games::white_elo
+                                .between(range2.0, range2.1)
+                                .or(games::black_elo.between(range2.0, range2.1))),
                     );
                     count_query = count_query.filter(
                         games::white_elo
-                            .between(range2.0, range2.1)
-                            .or(games::black_elo.between(range2.0, range2.1)),
+                            .between(range1.0, range1.1)
+                            .or(games::black_elo.between(range1.0, range1.1))
+                            .or(games::white_elo
+                                .between(range2.0, range2.1)
+                                .or(games::black_elo.between(range2.0, range2.1))),
                     );
+                } else {
+                    if let Some(range1) = query.range1 {
+                        sql_query = sql_query.filter(
+                            games::white_elo
+                                .between(range1.0, range1.1)
+                                .or(games::black_elo.between(range1.0, range1.1)),
+                        );
+                        count_query = count_query.filter(
+                            games::white_elo
+                                .between(range1.0, range1.1)
+                                .or(games::black_elo.between(range1.0, range1.1)),
+                        );
+                    }
+
+                    if let Some(range2) = query.range2 {
+                        sql_query = sql_query.filter(
+                            games::white_elo
+                                .between(range2.0, range2.1)
+                                .or(games::black_elo.between(range2.0, range2.1)),
+                        );
+                        count_query = count_query.filter(
+                            games::white_elo
+                                .between(range2.0, range2.1)
+                                .or(games::black_elo.between(range2.0, range2.1)),
+                        );
+                    }
                 }
             }
+            None => {}
         }
-        None => {}
-    }
 
-    sql_query = match query_options.sort {
-        GameSort::Id => match query_options.direction {
-            SortDirection::Asc => sql_query.order(games::id.asc()),
-            SortDirection::Desc => sql_query.order(games::id.desc()),
-        },
-        GameSort::Date => match query_options.direction {
-            SortDirection::Asc => sql_query.order((games::date.asc(), games::time.asc())),
-            SortDirection::Desc => sql_query.order((games::date.desc(), games::time.desc())),
-        },
-        GameSort::WhiteElo => match query_options.direction {
-            SortDirection::Asc => sql_query.order(games::white_elo.asc()),
-            SortDirection::Desc => sql_query.order(games::white_elo.desc()),
-        },
-        GameSort::BlackElo => match query_options.direction {
-            SortDirection::Asc => sql_query.order(games::black_elo.asc()),
-            SortDirection::Desc => sql_query.order(games::black_elo.desc()),
-        },
-        GameSort::PlyCount => match query_options.direction {
-            SortDirection::Asc => sql_query.order(games::ply_count.asc()),
-            SortDirection::Desc => sql_query.order(games::ply_count.desc()),
-        },
-    };
+        sql_query = match query_options.sort {
+            GameSort::Id => match query_options.direction {
+                SortDirection::Asc => sql_query.order(games::id.asc()),
+                SortDirection::Desc => sql_query.order(games::id.desc()),
+            },
+            GameSort::Date => match query_options.direction {
+                SortDirection::Asc => sql_query.order((games::date.asc(), games::time.asc())),
+                SortDirection::Desc => sql_query.order((games::date.desc(), games::time.desc())),
+            },
+            GameSort::WhiteElo => match query_options.direction {
+                SortDirection::Asc => sql_query.order(games::white_elo.asc()),
+                SortDirection::Desc => sql_query.order(games::white_elo.desc()),
+            },
+            GameSort::BlackElo => match query_options.direction {
+                SortDirection::Asc => sql_query.order(games::black_elo.asc()),
+                SortDirection::Desc => sql_query.order(games::black_elo.desc()),
+            },
+            GameSort::PlyCount => match query_options.direction {
+                SortDirection::Asc => sql_query.order(games::ply_count.asc()),
+                SortDirection::Desc => sql_query.order(games::ply_count.desc()),
+            },
+        };
 
-    if !query_options.skip_count {
-        count = Some(sqlite_cancellation::with_sqlite_cancellation(
-            cancellation,
-            || count_query.select(diesel::dsl::count(games::id)).first(db),
-        )?);
-    }
+        if !query_options.skip_count {
+            count = Some(sqlite_cancellation::with_sqlite_cancellation(
+                cancellation,
+                || count_query.select(diesel::dsl::count(games::id)).first(db),
+            )?);
+        }
 
-    // println!(
-    //     "{:?}\n",
-    //     diesel::debug_query::<diesel::sqlite::Sqlite, _>(&sql_query)
-    // );
+        // println!(
+        //     "{:?}\n",
+        //     diesel::debug_query::<diesel::sqlite::Sqlite, _>(&sql_query)
+        // );
 
-    let games: Vec<(Game, Player, Player, Event, Site)> =
-        sqlite_cancellation::with_sqlite_cancellation(cancellation, || sql_query.load(db))?;
-    cancellation_check(cancellation)?;
-    let normalized_games = normalize_games(games, cancellation)?;
+        let games: Vec<(Game, Player, Player, Event, Site)> =
+            sqlite_cancellation::with_sqlite_cancellation(cancellation, || sql_query.load(db))?;
+        cancellation_check(cancellation)?;
+        let mut normalized_games = normalize_games(games, cancellation)?;
+        linked_collections::qualify_games(db, &file, authority, &mut normalized_games)?;
 
-    Ok(QueryResponse {
-        data: normalized_games,
-        count: count.map(|c| c as i32),
+        Ok(QueryResponse {
+            data: normalized_games,
+            count: count.map(|c| c as i32),
+        })
     })
 }
 
@@ -2050,7 +2132,9 @@ fn get_latest_game_timestamp_blocking(
 
     let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
-    Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
+    })
 }
 
 fn normalize_games(
@@ -2078,6 +2162,7 @@ fn normalize_games(
             };
 
             Ok(NormalizedGame {
+                linked: None,
                 id: game.id,
                 event: event.name.unwrap_or_default(),
                 event_id: event.id,
@@ -2156,11 +2241,13 @@ fn get_player_blocking(
 
     let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
-    let player = players::table
-        .filter(players::id.eq(id))
-        .first::<Player>(db)
-        .optional()?;
-    Ok(player)
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        let player = players::table
+            .filter(players::id.eq(id))
+            .first::<Player>(db)
+            .optional()?;
+        Ok(player)
+    })
 }
 
 #[tauri::command]
@@ -2199,62 +2286,64 @@ fn get_players_blocking(
     let mut database_connection =
         get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
-    let mut count: Option<i64> = None;
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        let mut count: Option<i64> = None;
 
-    let mut sql_query = players::table.into_boxed();
-    let mut count_query = players::table.into_boxed();
-    sql_query = sql_query.filter(players::name.is_not("Unknown"));
-    count_query = count_query.filter(players::name.is_not("Unknown"));
+        let mut sql_query = players::table.into_boxed();
+        let mut count_query = players::table.into_boxed();
+        sql_query = sql_query.filter(players::name.is_not("Unknown"));
+        count_query = count_query.filter(players::name.is_not("Unknown"));
 
-    if let Some(name) = query.name {
-        sql_query = sql_query.filter(players::name.like(format!("%{}%", name)));
-        count_query = count_query.filter(players::name.like(format!("%{}%", name)));
-    }
+        if let Some(name) = query.name {
+            sql_query = sql_query.filter(players::name.like(format!("%{}%", name)));
+            count_query = count_query.filter(players::name.like(format!("%{}%", name)));
+        }
 
-    if let Some(range) = query.range {
-        sql_query = sql_query.filter(players::elo.between(range.0, range.1));
-        count_query = count_query.filter(players::elo.between(range.0, range.1));
-    }
+        if let Some(range) = query.range {
+            sql_query = sql_query.filter(players::elo.between(range.0, range.1));
+            count_query = count_query.filter(players::elo.between(range.0, range.1));
+        }
 
-    if !query.options.skip_count {
-        count = Some(sqlite_cancellation::with_sqlite_cancellation(
-            cancellation,
-            || count_query.count().get_result(db),
-        )?);
-    }
+        if !query.options.skip_count {
+            count = Some(sqlite_cancellation::with_sqlite_cancellation(
+                cancellation,
+                || count_query.count().get_result(db),
+            )?);
+        }
 
-    let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
-    if let Some(limit) = limit {
-        sql_query = sql_query.limit(limit);
-    }
+        let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
+        if let Some(limit) = limit {
+            sql_query = sql_query.limit(limit);
+        }
 
-    if let Some(offset) = offset {
-        sql_query = sql_query.offset(offset);
-    }
+        if let Some(offset) = offset {
+            sql_query = sql_query.offset(offset);
+        }
 
-    sql_query = match query.options.sort {
-        PlayerSort::Id => match query.options.direction {
-            SortDirection::Asc => sql_query.order(players::id.asc()),
-            SortDirection::Desc => sql_query.order(players::id.desc()),
-        },
-        PlayerSort::Name => match query.options.direction {
-            SortDirection::Asc => sql_query.order(players::name.asc()),
-            SortDirection::Desc => sql_query.order(players::name.desc()),
-        },
-        PlayerSort::Elo => match query.options.direction {
-            SortDirection::Asc => sql_query.order(players::elo.asc()),
-            SortDirection::Desc => sql_query.order(players::elo.desc()),
-        },
-    };
+        sql_query = match query.options.sort {
+            PlayerSort::Id => match query.options.direction {
+                SortDirection::Asc => sql_query.order(players::id.asc()),
+                SortDirection::Desc => sql_query.order(players::id.desc()),
+            },
+            PlayerSort::Name => match query.options.direction {
+                SortDirection::Asc => sql_query.order(players::name.asc()),
+                SortDirection::Desc => sql_query.order(players::name.desc()),
+            },
+            PlayerSort::Elo => match query.options.direction {
+                SortDirection::Asc => sql_query.order(players::elo.asc()),
+                SortDirection::Desc => sql_query.order(players::elo.desc()),
+            },
+        };
 
-    let players = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-        sql_query.load::<Player>(db)
-    })?;
-    cancellation_check(cancellation)?;
+        let players = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+            sql_query.load::<Player>(db)
+        })?;
+        cancellation_check(cancellation)?;
 
-    Ok(QueryResponse {
-        data: players,
-        count: count.map(|c| c as i32),
+        Ok(QueryResponse {
+            data: players,
+            count: count.map(|c| c as i32),
+        })
     })
 }
 
@@ -2308,53 +2397,56 @@ fn get_tournaments_blocking(
     let mut database_connection =
         get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
-    let mut count: Option<i64> = None;
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        let mut count: Option<i64> = None;
 
-    let mut sql_query = events::table.into_boxed();
-    let mut count_query = events::table.into_boxed();
-    sql_query = sql_query.filter(events::name.is_not("Unknown").and(events::name.is_not("")));
-    count_query = count_query.filter(events::name.is_not("Unknown").and(events::name.is_not("")));
+        let mut sql_query = events::table.into_boxed();
+        let mut count_query = events::table.into_boxed();
+        sql_query = sql_query.filter(events::name.is_not("Unknown").and(events::name.is_not("")));
+        count_query =
+            count_query.filter(events::name.is_not("Unknown").and(events::name.is_not("")));
 
-    if let Some(name) = query.name {
-        sql_query = sql_query.filter(events::name.like(format!("%{}%", name)));
-        count_query = count_query.filter(events::name.like(format!("%{}%", name)));
-    }
+        if let Some(name) = query.name {
+            sql_query = sql_query.filter(events::name.like(format!("%{}%", name)));
+            count_query = count_query.filter(events::name.like(format!("%{}%", name)));
+        }
 
-    if !query.options.skip_count {
-        count = Some(sqlite_cancellation::with_sqlite_cancellation(
-            cancellation,
-            || count_query.count().get_result(db),
-        )?);
-    }
+        if !query.options.skip_count {
+            count = Some(sqlite_cancellation::with_sqlite_cancellation(
+                cancellation,
+                || count_query.count().get_result(db),
+            )?);
+        }
 
-    let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
-    if let Some(limit) = limit {
-        sql_query = sql_query.limit(limit);
-    }
+        let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
+        if let Some(limit) = limit {
+            sql_query = sql_query.limit(limit);
+        }
 
-    if let Some(offset) = offset {
-        sql_query = sql_query.offset(offset);
-    }
+        if let Some(offset) = offset {
+            sql_query = sql_query.offset(offset);
+        }
 
-    sql_query = match query.options.sort {
-        TournamentSort::Id => match query.options.direction {
-            SortDirection::Asc => sql_query.order(events::id.asc()),
-            SortDirection::Desc => sql_query.order(events::id.desc()),
-        },
-        TournamentSort::Name => match query.options.direction {
-            SortDirection::Asc => sql_query.order(events::name.asc()),
-            SortDirection::Desc => sql_query.order(events::name.desc()),
-        },
-    };
+        sql_query = match query.options.sort {
+            TournamentSort::Id => match query.options.direction {
+                SortDirection::Asc => sql_query.order(events::id.asc()),
+                SortDirection::Desc => sql_query.order(events::id.desc()),
+            },
+            TournamentSort::Name => match query.options.direction {
+                SortDirection::Asc => sql_query.order(events::name.asc()),
+                SortDirection::Desc => sql_query.order(events::name.desc()),
+            },
+        };
 
-    let events = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-        sql_query.load::<Event>(db)
-    })?;
-    cancellation_check(cancellation)?;
+        let events = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+            sql_query.load::<Event>(db)
+        })?;
+        cancellation_check(cancellation)?;
 
-    Ok(QueryResponse {
-        data: events,
-        count: count.map(|c| c as i32),
+        Ok(QueryResponse {
+            data: events,
+            count: count.map(|c| c as i32),
+        })
     })
 }
 
@@ -2493,103 +2585,105 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     let mut database_connection =
         get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
-    let timer = Instant::now();
+    linked_collections::read_snapshot(db, authority, &file, |db| {
+        let timer = Instant::now();
 
-    let base_query = games::table
-        .inner_join(sites::table.on(games::site_id.eq(sites::id)))
-        .inner_join(players::table.on(players::id.eq(id)))
-        .filter(games::white_id.eq(id).or(games::black_id.eq(id)))
-        .filter(games::fen.is_null());
+        let base_query = games::table
+            .inner_join(sites::table.on(games::site_id.eq(sites::id)))
+            .inner_join(players::table.on(players::id.eq(id)))
+            .filter(games::white_id.eq(id).or(games::black_id.eq(id)))
+            .filter(games::fen.is_null());
 
-    let progress_error_diagnosed = std::sync::atomic::AtomicBool::new(false);
-    let emit_progress = |kept_rows, total_rows| {
-        if let Some(lease) = &lease {
-            let percent =
-                (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32;
-            let report_progress = || {
-                update_progress_with_state(
-                    &app.state::<AppState>().progress_state,
-                    &app,
+        let progress_error_diagnosed = std::sync::atomic::AtomicBool::new(false);
+        let emit_progress = |kept_rows, total_rows| {
+            if let Some(lease) = &lease {
+                let percent =
+                    (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32;
+                let report_progress = || {
+                    update_progress_with_state(
+                        &app.state::<AppState>().progress_state,
+                        &app,
+                        lease,
+                        percent,
+                        ProgressState::Running,
+                    )
+                };
+                #[cfg(test)]
+                let progress_result = progress_update
+                    .and_then(|update| update(lease, percent))
+                    .unwrap_or_else(report_progress);
+                #[cfg(not(test))]
+                let progress_result = report_progress();
+                handle_running_progress_result(
+                    progress_result,
+                    "get_players_game_info",
                     lease,
-                    percent,
-                    ProgressState::Running,
-                )
-            };
-            #[cfg(test)]
-            let progress_result = progress_update
-                .and_then(|update| update(lease, percent))
-                .unwrap_or_else(report_progress);
-            #[cfg(not(test))]
-            let progress_result = report_progress();
-            handle_running_progress_result(
-                progress_result,
-                "get_players_game_info",
-                lease,
-                &progress_error_diagnosed,
-                None,
-            )?;
-        }
-        Ok::<(), Error>(())
-    };
+                    &progress_error_diagnosed,
+                    None,
+                )?;
+            }
+            Ok::<(), Error>(())
+        };
 
-    let mut accumulator = PlayerStatisticsAccumulator::default();
-    let mut kept_rows = 0usize;
-    let total_rows = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-        let total_rows = base_query.count().get_result::<i64>(db)?;
-        let sql_query = base_query.select((
-            games::white_id,
-            games::black_id,
-            games::result,
-            games::date,
-            games::moves,
-            games::white_elo,
-            games::black_elo,
-            games::time_control,
-            sites::name,
-            players::name,
-        ));
-        let rows = sql_query.load_iter::<PlayerStatisticsRow, DefaultLoadingMode>(db)?;
-        process_player_statistics_batches(
-            rows,
-            PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET,
-            PLAYER_STATISTICS_BATCH_ROW_LIMIT,
-            cancellation,
-            |batch| {
-                let evaluated = batch
-                    .par_iter()
-                    .map(|row| evaluate_player_statistics_row(row, id, cancellation))
-                    .collect::<Result<Vec<_>, Error>>()?;
+        let mut accumulator = PlayerStatisticsAccumulator::default();
+        let mut kept_rows = 0usize;
+        let total_rows = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+            let total_rows = base_query.count().get_result::<i64>(db)?;
+            let sql_query = base_query.select((
+                games::white_id,
+                games::black_id,
+                games::result,
+                games::date,
+                games::moves,
+                games::white_elo,
+                games::black_elo,
+                games::time_control,
+                sites::name,
+                players::name,
+            ));
+            let rows = sql_query.load_iter::<PlayerStatisticsRow, DefaultLoadingMode>(db)?;
+            process_player_statistics_batches(
+                rows,
+                PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET,
+                PLAYER_STATISTICS_BATCH_ROW_LIMIT,
+                cancellation,
+                |batch| {
+                    let evaluated = batch
+                        .par_iter()
+                        .map(|row| evaluate_player_statistics_row(row, id, cancellation))
+                        .collect::<Result<Vec<_>, Error>>()?;
 
-                for row in evaluated.into_iter().flatten() {
-                    cancellation_check(cancellation)?;
-                    accumulator.add(row);
-                    kept_rows = kept_rows.saturating_add(1);
-                    if (kept_rows - 1).is_multiple_of(PLAYER_STATISTICS_PROGRESS_INTERVAL) {
-                        emit_progress(kept_rows, total_rows)?;
+                    for row in evaluated.into_iter().flatten() {
+                        cancellation_check(cancellation)?;
+                        accumulator.add(row);
+                        kept_rows = kept_rows.saturating_add(1);
+                        if (kept_rows - 1).is_multiple_of(PLAYER_STATISTICS_PROGRESS_INTERVAL) {
+                            emit_progress(kept_rows, total_rows)?;
+                        }
                     }
-                }
 
-                Ok(())
-            },
-        )?;
-        Ok::<i64, Error>(total_rows)
-    })?;
+                    Ok(())
+                },
+            )?;
+            Ok::<i64, Error>(total_rows)
+        })?;
 
-    cancellation_check(cancellation)?;
-    if kept_rows > 0 {
-        emit_progress(kept_rows, total_rows)?;
-    }
+        cancellation_check(cancellation)?;
+        if kept_rows > 0 {
+            emit_progress(kept_rows, total_rows)?;
+        }
 
-    let game_info = accumulator.into_player_game_info();
-    cancellation_check(cancellation)?;
+        let game_info = accumulator.into_player_game_info();
+        cancellation_check(cancellation)?;
 
-    println!(
-        "get_players_game_info {:?}: {:?}",
-        target.path(),
-        timer.elapsed()
-    );
+        println!(
+            "get_players_game_info {:?}: {:?}",
+            target.path(),
+            timer.elapsed()
+        );
 
-    Ok(game_info)
+        Ok(game_info)
+    })
 }
 
 #[derive(Queryable)]
@@ -2967,6 +3061,7 @@ fn delete_database_blocking(
     let expected_source = IndexSource::from_database_identity(&identity)?;
     let mut committed_removal: Option<CommittedRemoval> = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
+        guard_database_mutation(authority, &file, PathOperation::DatabaseMutate)?;
         search_cache.invalidate_database(&target);
         let result = unlink_database_files(&target, &expected_source);
         search_cache.invalidate_database(&target);
@@ -3658,11 +3753,45 @@ fn export_to_pgn_blocking(
         Ok::<_, Error>((resolved, snapshot))
     })??;
 
-    let mut database_connection =
-        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
-    let db = &mut *database_connection;
+    let collection_source = authority
+        .collections()?
+        .map(|service| service.export_snapshot(authority, &file, cancellation))
+        .transpose()?
+        .flatten();
+    if authority
+        .collections()?
+        .map(|service| service.contains_source(&destination))
+        .transpose()?
+        .unwrap_or(false)
+    {
+        return Err(Error::Conflict(
+            "choose an export destination outside active collections".into(),
+        ));
+    }
+    let mut database_connection = if collection_source.is_none() {
+        Some(get_db_or_create(
+            repository,
+            &target,
+            Some(cancellation),
+            authority,
+            &file,
+        )?)
+    } else {
+        None
+    };
 
     let installed = resolved.replace_pgn_atomic(&snapshot, cancellation, |_, temporary| {
+        if let Some(source) = &collection_source {
+            let mut bytes = source.file.try_clone()?;
+            crate::pgn::copy_range(&mut bytes, temporary, 0, source.revision.size, cancellation)?;
+            if source.current_revision()? != source.revision {
+                return Err(Error::StaleGame);
+            }
+            return Ok(());
+        }
+        let db = &mut **database_connection
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("database export source is unavailable".into()))?;
         let (white_players, black_players) = diesel::alias!(players as white, players as black);
         let rows = games::table
             .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
@@ -4140,6 +4269,20 @@ fn preload_reference_db_blocking(
         cancellation,
     )?;
     info!("Preloaded reference database with {} games", index.len());
+    if let Some(service) = authority.collections()? {
+        let admitted = service.query_generation(authority, &file)?;
+        if admitted
+            .as_ref()
+            .is_some_and(|(_, revision)| *revision != index.source().revision)
+        {
+            return Err(Error::StaleGame);
+        }
+        service.validate_result(
+            authority,
+            &file,
+            &admitted.map(|(generation, _)| generation),
+        )?;
+    }
     Ok(())
 }
 
@@ -4654,7 +4797,8 @@ mod tests {
             .split("#[cfg(all(test, unix))]\nmod tests")
             .next()
             .unwrap();
-        assert_eq!(production.matches("resolve_database(").count(), 19);
+        // Includes the two collection-service admission checks as well as the authority door.
+        assert_eq!(production.matches("resolve_database(").count(), 21);
         let resolver = production
             .split("pub(crate) fn resolve_database(")
             .nth(1)
@@ -4672,9 +4816,9 @@ mod tests {
             .split("#[cfg(test)]\nmod descriptor_identity_tests")
             .next()
             .unwrap();
-        // Four sites: shared loader read attempt, loader mutation resolution,
-        // search_position, and is_position_in_db.
-        assert_eq!(production.matches("resolve_database(").count(), 4);
+        // Five sites include the linked generation admission before the existing loader,
+        // loader mutation resolution, position search and membership query.
+        assert_eq!(production.matches("resolve_database(").count(), 5);
         assert_eq!(production.matches("database_file_target(").count(), 0);
         assert!(!production.contains("canonicalize("));
         assert!(!production.contains("DatabaseFileTarget {"));

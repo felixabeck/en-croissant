@@ -139,7 +139,10 @@ type NativeReadCommandName =
     | "readGame"
     | "readGames"
     | "lexPgn"
-    | "listFileWorkspace";
+    | "listFileWorkspace"
+    | "listLinkedCollections"
+    | "resolveLinkedGame"
+    | "collectionForDatabase";
 type NativeReadFacade<T> = T extends (
     ...args: [...infer Args, string | null]
 ) => Promise<infer Result>
@@ -192,6 +195,9 @@ const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
     readGames: 3,
     lexPgn: 1,
     listFileWorkspace: 1,
+    listLinkedCollections: 1,
+    resolveLinkedGame: 3,
+    collectionForDatabase: 1,
 };
 
 const EXPECTED_SESSION_COMMANDS = new Set<PropertyKey>([

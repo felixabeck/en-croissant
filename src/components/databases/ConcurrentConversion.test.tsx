@@ -50,6 +50,7 @@ vi.mock("@/platform/tauri", async () => {
     withConversionTicket: mocks.withConversionTicket,
     tauri: {
       ...actual.tauri,
+      linkedCollectionsSupported: vi.fn(async () => false),
       convertPgn: mocks.convertPgn,
       cancelConversion: mocks.cancelConversion,
       getDatabaseWorkspace: mocks.getDatabaseWorkspace,
@@ -157,7 +158,8 @@ vi.mock("./PlayerSearchInput", () => ({
   ),
 }));
 vi.mock("@/components/home/LichessLogo", () => ({ default: () => null }));
-vi.mock("@mantine/core", () => ({
+vi.mock("@mantine/core", async () => ({
+  useMatches: (await import("@/tests/matchMedia")).baseResponsiveValue,
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Badge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
