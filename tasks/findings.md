@@ -33,7 +33,8 @@ En Croissant's own.
   Adding an area is a deliberate edit to this list. Area is a filter and report dimension,
   never a work unit.
 * **Root** — optional slug shared by findings with one evidenced underlying cause, `-` when
-  none. Only Root groups work; rootless findings are singletons, ranked after roots by age.
+  none. Only Root groups work. Rootless findings are singletons. Queue ranking uses impact first,
+  then root membership, then anchor ID.
   A new slug needs a sentence naming the code or observation that establishes the shared cause,
   as required by the universal contract; sharing an Area or file is not enough.
 * **Entry** — initial execution tier chosen by the run that *files* it: `inline` (fix it, no
