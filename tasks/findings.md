@@ -17177,3 +17177,22 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 * **Related:** f-20261020-02 concerns physical player-tag replacement, a different cause. d-20261020-10 requires current-source revalidation of durable identity evidence. This finding does not reverse that decision.
 * **Evidence:** Root preserved the native worker's actual pre-fault baseline in `/tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/native-inspection-snapshot-r1/`, verifying all seven hashes against the producer's fault-baseline-hashes.json before and after capture. legacy.rs SHA256ef155e526d1a774c04ed27f50d728d82db35d5f6629a68492148932cfa74780d, batch.rs SHA256033486cb7632e2067ed1ab032c27ebccb6ec81fc68cad4eab9c94cc5a675a9e2. The native writer remains active and may correct this before its final handoff.
 * **Found by:** Root inspection of the preserved production candidate. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+---
+
+## 2026-10-20 — filed through the inbox spool
+
+### Interrupted account creation can activate two collection identities for one published PGN after restart
+
+* **ID:** f-20261020-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
+* **Impact class:** behaviour
+* **Follow-up of:** f-20261004-15
+* **Where:** `src-tauri/src/db/linked_collections.rs`, `src-tauri/src/db/linked_collections/tests.rs`.
+* **Defect:** Refuse the activation registry write after the account creation intent has durably published its owned PGN and Game metadata. Restart and run the actual workspace reconciliation, then retry the public prepare_account_collection command. Reconciliation registers the Game file with a fresh UUID and no account. Preparation finds no account record, recovers the original creation intent and appends its second record for the same source. The native runtime test observes two identities where one is required. This is an unpublished candidate defect, not a claim about a later repair.
+* **Change:** Reconcile the existing durable account creation intent and its source ownership with startup discovery and retry. Preserve the original UUID, account association, source bytes and exactly one active collection. Reject incompatible ownership. Reuse the current intent store and verified source authority.
+* **Proof:** Keep the real atomic-publication interruption and restart/public-command regression. Require its genuine two-versus-one failure before repair, then exact production-only reversal failure and restored green. Preserve ordinary fresh, repeated and pending-batch preparation, declined legacy migration, original metadata and source-byte guarantees.
+* **Review lens:** review-persisted-state.
+* **Related:** f-20261020-04 concerns source-reselection evidence, a different cause. Existing O1 and O6 already require stable collection identity and restart recovery.
+* **Evidence:** `/tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/repair-native-r1-coverage-proof/recovery-refined-test.log` records the actual public-command test failing at tests.rs:3681, expected1 and observed2, numeric exit101. The initial fixture-path failure is separately retained and is not counted as behavioral proof. Root traced preparation's account-only lookup and creation-intent recovery through linked_collections.rs:2179–2313 and reconciliation's fresh identity insertion at1660–1672.
+* **Found by:** Same-thread sensitive native test continuation, independently inspected by root. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
