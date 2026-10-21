@@ -1,5 +1,103 @@
 # Drain task recovery and CI repair, 2026-10-21
 
+
+## RG1 independent closure
+
+All eight canonical read-only leaves completed. Seven close the corrected obligation within their respective classes, and PGN indexing is not applicable to this test-only delta. All approve with no findings. Root adopts closure with no Skip or Defer. The platform witness could not establish local Windows compile proof from its packet, but the canonical pre-review log independently records windows-clippy exit 0 in 6.8 seconds. No non-Linux source probe is claimed. Actual macOS runtime proof remains pending. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
+
+### lens-code-quality-rg1
+
+```text
+RG1 CLOSED for readability — `src-tauri/src/db/mod.rs:11532` clearly expresses immediate exhausted checkout through `Duration::ZERO`, matching existing sibling usage in `repository.rs`. Healthy pool construction retains its default timeout.
+
+No readability or local-consistency defects found in the delta or impacted context. Read-only review, no files changed or tests run. Reviewer and code author share the OpenAI family in separate sessions.
+
+VERDICT: APPROVED
+```
+
+### lens-correctness-rg1
+
+```text
+RG1 CLOSED — r2d2 0.8.10 gives healthy startup its bounded 30-second default. With `max_size(1)` and `_held` alive, `get_timeout(Duration::ZERO)` produces a genuine exhaustion error. All classification/cache assertions remain intact. Recorded delayed-startup and ordinary/coverage runs support closure.
+
+No correctness defects found. No files changed or tests run. Review used the same OpenAI family in a separate session.
+
+VERDICT: APPROVED
+```
+
+### lens-error-handling-rg1
+
+```text
+RG1 CLOSED — `src-tauri/src/db/mod.rs:11525–11544` separates bounded healthy startup from immediate exhausted checkout. The genuine `Error::R2d2` remains an error, with cache preservation asserted. Recorded delayed-admission proof confirms the old fixture fails and the repair passes.
+
+No error-handling defects found. No files changed or tests run.
+
+Review used a separate session in the same OpenAI family as the code author.
+
+VERDICT: APPROVED
+```
+
+### lens-minimalism-rg1
+
+```text
+RG1 CLOSED for minimalism. The delta is the smallest sufficient repair: delete the pool-wide timeout and apply zero timeout only to exhausted checkout. No added files, abstractions, duplicated logic or deletable scaffolding. Existing assertions remain intact.
+
+No bloat or duplication findings. Review ran in a separate session within the same OpenAI family as the code author.
+
+VERDICT: APPROVED
+```
+
+### lens-pgn-index-rg1
+
+```text
+NOT APPLICABLE: The two-line delta only separates healthy pool startup from exhausted checkout in a test fixture. It changes no PGN scanning, offsets, encoding, storage, search predicates or production cache behavior. RG1 closure is outside this lens.
+
+Review used the same OpenAI family in a separate session. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+### lens-platform-semantics-rg1
+
+```text
+RG1 CLOSED — `src-tauri/src/db/mod.rs:11525` restores r2d2’s bounded 30-second startup default. At `:11532`, the held sole connection makes zero-timeout checkout produce a genuine r2d2 error. All classification and cache assertions remain intact.
+
+No platform defects or connected blockers found. The fixture compiles on Linux and macOS and is excluded on Windows.
+
+Supplied Linux normal, pinned coverage and delayed-admission evidence supports closure. Non-Linux Unix source-probe compilation and `pnpm rust:windows:check` are not established by this packet. macOS runtime proof remains pending in `rust-macos-test`. Windows jobs do not exercise this Unix-only fixture.
+
+Read-only review, no files changed. Detection used the same OpenAI family as the author in a separate session.
+
+VERDICT: APPROVED
+```
+
+### lens-root-cause-rg1
+
+```text
+RG1 CLOSED — `src-tauri/src/db/mod.rs:11525–11532` separates healthy asynchronous startup from deliberate exhaustion. r2d2 uses the builder timeout during initialization, so the old 20 ms setting could fail before checkout. The change restores bounded 30 s startup and requests a genuine exhaustion error with zero wait.
+
+Identical 100 ms admission staging failed before and passed after. Classification/cache assertions remain intact. History and sibling inspection found no reintroduced prior defect or remaining copy of this cause. No findings.
+
+Review used the same OpenAI family as the author in a separate session. Root retains arbitration. No files changed or tests run.
+
+VERDICT: APPROVED
+```
+
+### lens-tests-rg1
+
+```text
+RG1 CLOSED — The identical real SQLite 100 ms admission delay makes old source fail at `build().unwrap()` with exit 101 and repaired source pass with exit 0. This supplies a concrete revert-sensitive witness.
+
+The exhausted checkout still produces a genuine r2d2 error. Existing assertions require error propagation and cache retention. Ordinary and pinned branch-coverage selectors execute the target, and full backend gates include it.
+
+No findings. Limitation: the admission-delay witness is preserved in proof artifacts, not retained in the routine suite. Full final gates remain pending.
+
+Review used a separate session in the same OpenAI family as the code author.
+
+VERDICT: APPROVED
+```
+
+The preceding candidate checkpoint is superseded by this independent closure. Full final gates, publication, required hosted jobs and installation remain pending.
 Felix requested full-auto Codex completion of the pending f-20261001-03 task and then a fresh drain with the original options. This report supersedes the earlier blocked checkpoint for source closure. It does not claim final publication or installation before their actual results are appended.
 
 The original source, plan and browser/native proof remain in tasks/handoffs/2026-10-21-f-20261001-03-review.md. Recovery preserves that history. The old supervisor was stopped through its documented controls, its exit merge allocated f-20261021-06 and f-20261021-07, and the root took over under the existing build lock. The saved run is still unfinished, so retirement through the documented hand-takeover route must precede the requested fresh start. Planner material is retained.
@@ -251,4 +349,16 @@ VERDICT: APPROVED
 ## Final source-closure snapshot
 
 R1 and R2 pending-work statements above are dated review checkpoints. All four adopted issues are now explicitly closed, with no new finding. Source closures are committed through 6ccbbeaa3f9a748d57c571d7bd8dffcfba59a523. Full final gate, publication, exact-pushed-SHA CI and installation are still pending at this snapshot. In raw reports, unchanged production code refers to the application, while the five CI/workflow/checker source changes are explicitly listed above. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
+
+## RG1 full-gate repair, 2026-10-21
+
+This supersedes the preceding final-gate-pending checkpoint. The first full `pnpm gates:push -- --rust --frontend --bindings` attempt on reviewed clean 41ee6553 failed. Both ordinary Rust tests and branch coverage failed `db::tests::finish_search_cache_after_transaction_classifies_errors` at healthy `Pool::build`, with `Error(None)`. Each reported 2,623 passed, one failed and two ignored. The fixture's pool-wide 20 ms timeout limited healthy asynchronous admission as well as the intended exhausted checkout. No production failure or host-I/O cause was diagnosed.
+
+Attempt `push-gate.U62hao` and `artifacts/gates/20261021T200512570Z-2808479` preserve the failure. Build, bindings, contract, Rust lint, frontend coverage, bundle and all 185 browser cases passed in that failed attempt. Root verified the owned scheduler identity before terminating it, and its supervisor cleaned up the then-running mutation lane. Wrapper completion was 143, with primary Rust lane exits 101 and 1. Cancellation is not successful full-gate proof. No push or installation followed that attempt.
+
+Commit 5ab63adb changes only the existing Unix test. Healthy real SQLite pool construction now uses r2d2's existing default 30 second bound. The deliberately exhausted checkout uses `get_timeout(Duration::ZERO)` while its sole connection remains held. The real manager, pool construction, maximum size one, genuine r2d2 error and every classification/cache assertion remain. This explicitly changes the healthy setup allowance and separates it from refusal proof. Production deadlines and behavior are unchanged.
+
+The sensitive Codex gpt-6.1-sol/high leaf measured the same 100 ms healthy after-connect admission delay against exact old Git source and repaired source. The old fixture failed construction with `Error(None)`, exit 101 in 0.02 seconds. The repaired fixture passed, with measured admission delay 100.378805 ms. Temporary customizer staging is absent from final source. Ordinary focused testing, pinned nightly-2025-06-01 branch coverage and formatting passed after exact restoration. Ten forward/reverse patch replays and byte identity outside the test are preserved under `/tmp/chessfable-drain-rescue-20261021/pool-fixture-proof`. The leaf's raw statement about no test wall-clock budget being raised is superseded by the explicit phase distinction here.
+
+The observed witness was immediately annotated on existing f-20261011-03 in 5351c138. That broader finding remains open. The third canonical pre-review passed with completion `0 recovery-pre-review-rg1 5351c138de90e08531f662fa4b7c32f834c1f925` in `gate-recovery-pre-review-rg1.A6TObR`. Both mutation packages scored 100%, with no survivors. Reports and wrapper evidence are archived in `/tmp/chessfable-drain-rescue-20261021/pre-review-rg1-archive`. Independent RG1 closure is pending at this candidate checkpoint. A complete final gate rerun, publication, successful required hosted jobs and installation remain obligations. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
 
