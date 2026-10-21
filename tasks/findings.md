@@ -17285,7 +17285,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Linked player rename rewrites an entire physical line and can drop unrelated PGN tags
 
-* **ID:** f-20261020-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-02 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** data-loss
 * **Follow-up of:** f-20261004-15
@@ -17296,6 +17296,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Review lens:** review-pgn-index.
 * **Related:** f-20261004-05 is a distinct existing scanner boundary defect for multiple tag pairs on one line. The rename defect is in the new transformation, and both paths need examination without conflating their causes. The pending Home-alias filing concerns renderer grouping, a separate cause.
 * **Found by:** Root source inspection during integrated proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+Linked player-tag edits preserve unrelated tags on the same physical PGN line and use the canonical scanner/tag-boundary contract.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"90a406a8e21712c9c158d040dc61fcbaa371a7d85d83275a93238e3e33b12366","header_sha256":"3908b991add9ccd608add2488dec853688e80b89fb681691a8abea2a84b2b8a4","header_status":"handled","input_sha256":"bafaca7a64f61f27c22b07666d07427e8c5d53f68ac7468f332703d07c8c81e3","kind":"mutation-receipt","operation":"7368edef099103d0cd8d9a6326676023d690c5acd286a7f49034b750c12dace7","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-02"],"target":"f-20261020-02","v":1} -->
 
 ### A linked reference change during report preparation can start obsolete analysis and strand progress
 
