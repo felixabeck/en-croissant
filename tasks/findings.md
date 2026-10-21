@@ -17465,7 +17465,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### A repertoire preset can publish a start path that does not exist from a custom root
 
-* **ID:** f-20261021-01 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261021-01 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
 * **Impact class:** behaviour
 * **Where:** `src/components/panels/practice/RepertoireInfo.tsx:451`, preset admission after makeMoves.
@@ -17477,6 +17477,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Proof:** Exercise the actual preset control and real tree store for the custom-root refusal and a legal standard-root control. Retain tests, remove only the repair, observe the intended state assertion fail, restore exactly and rerun the affected suite.
 * **Review lens:** review-chess-semantics.
 * **Found by:** Canonical review-chess-semantics R3, confidence99, 2026-10-21. Same-area repair remains in the active f-20261004-15 run.
+
+Preset insertion checks the existing typed makeMoves result and assigns the actual resulting cursor as start only after success. Invalid custom-root refusal preserves tree, headers, cursor, dirty state and sound.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"3910a7007a0da0b2e2817a37e131be8806d26fba2a81e7d35a5e263a8cbdb619","header_sha256":"83049ee9efc25ba8770c4c305d5c25224e3031fee459d3a8d78cec870b4a2116","header_status":"handled","input_sha256":"2c2b7dececae0f0aadd07dc309772eaa13fe8251b63e5a631f45fd93185d5be8","kind":"mutation-receipt","operation":"b6a76eb8ab98f666dbdfc1e09be566d89412fe545b4036aaaa849a9e0edc3279","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-01"],"target":"f-20261021-01","v":1} -->
 
 ### A failed repertoire coverage computation displays the green completeness claim
 
