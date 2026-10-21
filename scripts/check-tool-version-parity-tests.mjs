@@ -47,9 +47,9 @@ async function fixture() {
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-26-intel
             target: aarch64-apple-darwin
-          - os: macos-latest
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -62,7 +62,7 @@ async function fixture() {
       - name: Clippy all Rust targets
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
   rust-macos-test:
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     steps:
       - name: Install Rust toolchain
         shell: bash
@@ -206,7 +206,7 @@ function removeReleaseEntry(text, target) {
 }
 
 function removeRustPlatformEntry(text, target) {
-  const os = target.endsWith("windows-msvc") ? "windows-latest" : "macos-latest";
+  const os = target.endsWith("windows-msvc") ? "windows-latest" : "macos-26-intel";
   return removeMatrixEntry(
     text,
     `          - os: ${os}\n            target: ${target}`,
@@ -510,6 +510,20 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
         `(2) rust-platform matrix is missing target ${target}`,
       ),
     );
+    if (target.endsWith("-apple-darwin")) {
+      await t.test(`(2) rejects macos-latest for ${target}`, (subtest) =>
+        mutateCheckedInFileAndRunCli(
+          subtest,
+          ".github/workflows/test.yml",
+          (text) =>
+            text.replace(
+              `          - os: macos-26-intel\n            target: ${target}`,
+              `          - os: macos-latest\n            target: ${target}`,
+            ),
+          `(2) rust-platform target ${target} must use os macos-26-intel`,
+        ),
+      );
+    }
   }
   await t.test("(2) wrong target OS family", (subtest) =>
     mutateCheckedInFileAndRunCli(
@@ -517,10 +531,10 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
       ".github/workflows/test.yml",
       (text) =>
         text.replace(
-          "          - os: macos-latest\n            target: aarch64-apple-darwin",
+          "          - os: macos-26-intel\n            target: aarch64-apple-darwin",
           "          - os: windows-latest\n            target: aarch64-apple-darwin",
         ),
-      "(2) rust-platform target aarch64-apple-darwin must use os macos-latest",
+      "(2) rust-platform target aarch64-apple-darwin must use os macos-26-intel",
     ),
   );
   await t.test("(3) wrong runs-on", (subtest) =>
@@ -643,7 +657,7 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
 });
 
 const rustTestJobContracts = [
-  { job: "rust-macos-test", runner: "macos-latest", runnerClause: "6a", commandClause: "6b" },
+  { job: "rust-macos-test", runner: "macos-26-intel", runnerClause: "6a", commandClause: "6b" },
   {
     job: "rust-windows-test",
     runner: "windows-latest",
@@ -662,6 +676,16 @@ test("reports each Rust test-job contract clause through the CLI", async (t) => 
         `.github/workflows/test.yml: (${runnerClause}) ${job} must use runs-on: ${runner}`,
       ),
     );
+    if (job === "rust-macos-test") {
+      await t.test(`(${runnerClause}) rejects macos-latest`, (subtest) =>
+        mutateCheckedInFileAndRunCli(
+          subtest,
+          ".github/workflows/test.yml",
+          (text) => replaceNamedJobText(text, job, `runs-on: ${runner}`, "runs-on: macos-latest"),
+          `.github/workflows/test.yml: (${runnerClause}) ${job} must use runs-on: ${runner}`,
+        ),
+      );
+    }
     await t.test(`(${commandClause}) missing cargo test`, (subtest) =>
       mutateCheckedInFileAndRunCli(
         subtest,

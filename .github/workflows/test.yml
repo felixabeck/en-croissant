@@ -18,9 +18,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-26-intel
             target: aarch64-apple-darwin
-          - os: macos-latest
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -52,7 +52,7 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
   rust-macos-test:
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

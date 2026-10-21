@@ -59,7 +59,7 @@ const RUST_TEST_COMMAND = "cargo test --manifest-path src-tauri/Cargo.toml --all
 const SCCACHE_INSTALL_COMMAND_PATTERN =
   /cargo\s+install\s+sccache\s+--version\s+(\d+\.\d+\.\d+)\b/gu;
 const RUST_TEST_JOBS = [
-  { job: "rust-macos-test", runner: "macos-latest", clauses: ["6a", "6b"] },
+  { job: "rust-macos-test", runner: "macos-26-intel", clauses: ["6a", "6b"] },
   { job: "rust-windows-test", runner: "windows-latest", clauses: ["7a", "7b", "7c"] },
 ];
 const RUST_WORKFLOW_JOBS = [
@@ -375,7 +375,8 @@ function checkTargetCoverage(workflows, findings) {
   if (platformJob === undefined) return;
   const platformEntries = matrixIncludeEntries(platformJob.body) ?? [];
   for (const targetEntry of derived.filter((entry) => targetFamily(entry.target) !== undefined)) {
-    const expectedOs = `${targetFamily(targetEntry.target)}-latest`;
+    const family = targetFamily(targetEntry.target);
+    const expectedOs = family === "macos" ? "macos-26-intel" : `${family}-latest`;
     const matching = platformEntries.find(
       (entry) => entry.target?.isString && entry.target.value === targetEntry.target,
     );
