@@ -782,6 +782,8 @@ fn grant_pgn_file(
 }
 
 #[cfg(test)]
+mod acquisition_cancellation_tests;
+#[cfg(test)]
 mod conversion_cancellation_tests;
 
 #[cfg(test)]

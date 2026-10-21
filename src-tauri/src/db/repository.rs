@@ -885,6 +885,18 @@ impl DatabaseRepository {
         })
     }
 
+    /// Keep the production pool exhausted for command acquisition regression tests.
+    /// Remove with the shared acquisition contention harness if it is superseded.
+    #[cfg(test)]
+    pub(super) fn hold_all_connections_for_test(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> Result<Vec<DatabaseConnection>, Error> {
+        (0..MAX_CONNECTIONS_PER_DATABASE)
+            .map(|_| self.initialization_connection(target, None))
+            .collect()
+    }
+
     /// Test-fixture helper for creating non-game SQLite schemas. Production
     /// puzzle reads must use a retained authority descriptor below.
     #[cfg(all(test, unix))]
