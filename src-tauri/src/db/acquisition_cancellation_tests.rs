@@ -183,20 +183,13 @@ mod tests {
     fn ordinary_index_acquisition_cancels_and_recovers() {
         let fixture = OrdinaryFixture::new();
         let state = fixture.app.state::<AppState>();
-        let target = resolve_database(
-            &state.pgn_path_authority,
-            &fixture.database,
-            PathOperation::DatabaseRead,
-        )
-        .unwrap();
         fixture.assert_cancellation(|token| {
-            generate_search_index_locked(
-                &target,
+            generate_search_index(
+                &fixture.database,
+                &state.pgn_path_authority,
                 &state.database_repository,
                 &state.search_cache,
                 token,
-                &state.pgn_path_authority,
-                &fixture.database,
             )
         });
     }
