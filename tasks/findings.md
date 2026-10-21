@@ -17357,7 +17357,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Interrupted account creation can activate two collection identities for one published PGN after restart
 
-* **ID:** f-20261020-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-05 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** behaviour
 * **Follow-up of:** f-20261004-15
@@ -17394,6 +17394,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Complete preflight and remaining work:** Canonical root-r2-preflight.qJIH4R completed0 at launch HEAD3d8746a17943ecd439d8771adb90d09dc64f82a5 with the owned overlay, including fresh frontend build, all-target Clippy-Dwarnings and full contract. All123 entry hashes stayed unchanged. The earlier i1VRN1 test-lint101 is preserved separately and was not a product failure. Full eight-command integration, refreshed rebuilt-app and container acceptance, source repair commits, committed R3 closure, final gates, verified push/platform CI and installation remain pending. All source changes remain unstaged. Original28 and current11 mixed diff witnesses and original phase proof-fix count stay unchanged. Focused coordination-plan adoptionsr1=1 r2=0 remain separate.
 * **Evidence and provenance:** Complete retained packages are repair-native-r2-before-coordination, repair-native-r2-coordination-accepted, repair-native-r2-await-lock-accepted and the three frontend accepted directories in the parent build run-tmp. The full cumulative handoff preserves the raw reports and focused mechanism history. Follow-up authorship and arbitration share Root context. Detection and code use fresh sessions on the same OpenAI family. Original adopted planner lineage remains preserved.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"4a893fe5d545a037119f7d3d4590fb4ad86370da54c281e918b3afa5d9c09632","input_sha256":"12998081ec205b163a97edf03f890ffb689280d42a6a9e2c9d27560911bfef92","kind":"mutation-receipt","operation":"6c1be1fc0a35844d106b9c94f24de1ca8a516ab4599aa23d84adf98b2a91a581","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-05"],"target":"f-20261020-05","v":1} -->
+
+Durable account CreationIntent owns the original UUID before publication and through recovery. Shared existing workspace ownership precedes registry reconciliation, complete discovery refreshes current metadata and respects a live publisher. Restart cannot activate two identities, intent retirement preserves published source.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"540ad24767c89a42444600e868d6921fc4f05eb8d2491b573d528dd37db25181","header_sha256":"14bfee999abb8f873d50c1ecc3e4c99b52b44026cbbb165446f15e3835a80812","header_status":"handled","input_sha256":"dd1ec9c1a5c2f2df13bf038d34124e7607cc49fef928549219633821255e9167","kind":"mutation-receipt","operation":"24c4e7606a3d7ce15f2f24fde614a3f2b38399c0e0d1b52fea1890f0e8b8ca15","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-05"],"target":"f-20261020-05","v":1} -->
 
 ---
 
