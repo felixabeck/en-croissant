@@ -17441,7 +17441,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Saving during repertoire recomputation leaves coverage attached to old variation paths
 
-* **ID:** f-20261020-07 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-07 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
 * **Impact class:** behaviour
 * **Where:** `src/components/panels/practice/RepertoireInfo.tsx:206`, coverage effect cleanup and input ownership.
@@ -17451,6 +17451,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Review lens:** review-chess-semantics.
 * **Related:** f-20261004-22 shares the file but concerns en-passant position identity, a different cause. This repair is undertaken in the ongoing f-20261004-15 cumulative review because the loaded changed practice surface is affected.
 * **Found by:** Canonical R2 review-chess-semantics, independently source-traced by Root. Follow-up plan authorship and arbitration share Root context. Detection and code use the same OpenAI model family.
+
+Coverage scheduling and publication depend on actual repertoire inputs rather than dirty/Save state. A Save/autosave during real held recomputation cannot attach obsolete percentages to promoted variation paths.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"4c3404e38685a8cb082c44397d002e13d2195879536c4f74f0fc39e8ac334135","header_sha256":"84a8af74b8bcf68c03c448a99d1cf3ea338c8485a5396cdd0782cfe145fa53c3","header_status":"handled","input_sha256":"8dba995e1881119df1e75cc9c4743b34dedb4193ad7f008bf675a09b5476d86b","kind":"mutation-receipt","operation":"d846f4ba712734197b68d231be508a344e27cc2fb0e468d705500fb148344d3e","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-07"],"target":"f-20261020-07","v":1} -->
 
 ---
 
