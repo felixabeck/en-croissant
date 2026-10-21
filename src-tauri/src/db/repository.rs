@@ -4526,14 +4526,13 @@ mod tests {
             .err()
             .expect("the forced snapshot path must fail to open");
 
-        assert!(matches!(
-            &error,
-            Error::InvalidInput(message) if message == "could not open SQLite database"
-        ));
+        assert!(matches!(&error, Error::Io(source) if source.kind() == std::io::ErrorKind::Other));
+        assert!(error.diagnostic().contains(&native_cause));
         let payload = serde_json::to_value(&error).unwrap();
-        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(payload["category"], "io");
         let message = payload["message"].as_str().unwrap();
-        assert_eq!(message, "Invalid input: could not open SQLite database");
+        assert_eq!(message, "I/O failure");
+        assert!(!message.contains(&native_cause));
         for component in forced_path.components() {
             if let std::path::Component::Normal(fragment) = component {
                 assert!(!message.contains(fragment.to_str().unwrap()));
@@ -6096,7 +6095,6 @@ mod bound_sqlite_witnesses {
         infra::path_authority::database_test_support::replace_parent_with_same_inode_hard_link,
     };
     use diesel::connection::SimpleConnection as _;
-    #[cfg(unix)]
     use diesel::Connection as _;
     use rusqlite::Connection;
     use std::{
@@ -8118,7 +8116,11 @@ mod bound_sqlite_witnesses {
                         std::io::ErrorKind::PermissionDenied,
                     ))))
                 },
-                Error::InvalidInput("less specific SQLite establish failure".into()),
+                crate::error::map_sqlite_establish(
+                    SqliteConnection::establish(root.path().to_str().unwrap())
+                        .err()
+                        .expect("SQLite must refuse a directory"),
+                ),
             );
             assert!(matches!(
                 probed_io_error,
@@ -8141,14 +8143,28 @@ mod bound_sqlite_witnesses {
         let bound = BoundDatabase::acquire(&target).unwrap();
         let refusal_count = bound.refusal_count();
 
+        let host_error = || {
+            crate::error::map_sqlite_establish(
+                SqliteConnection::establish(root.path().to_str().unwrap())
+                    .err()
+                    .expect("SQLite must refuse a directory"),
+            )
+        };
+        let native_cause = host_error().diagnostic();
+        let refused = classify_bound_open_error_result(
+            true,
+            || panic!("an identity refusal must take precedence over probing"),
+            host_error(),
+        );
+        assert!(matches!(
+            refused,
+            Error::Conflict(message) if message == "database changed after capability resolution"
+        ));
+
         fs::rename(&path, &original).unwrap();
         fs::rename(&replacement, &path).unwrap();
-        let changed = repository.classify_bound_open_error(
-            &target,
-            &bound,
-            refusal_count,
-            Error::InvalidInput("simulated SQLite open failure".into()),
-        );
+        let changed =
+            repository.classify_bound_open_error(&target, &bound, refusal_count, host_error());
         assert!(matches!(
             changed,
             Error::Conflict(message) if message == "database changed after capability resolution"
@@ -8156,16 +8172,13 @@ mod bound_sqlite_witnesses {
 
         fs::remove_file(&path).unwrap();
         fs::rename(&original, &path).unwrap();
-        let unchanged = repository.classify_bound_open_error(
-            &target,
-            &bound,
-            refusal_count,
-            Error::InvalidInput("simulated SQLite open failure".into()),
-        );
+        let unchanged =
+            repository.classify_bound_open_error(&target, &bound, refusal_count, host_error());
         assert!(matches!(
-            unchanged,
-            Error::InvalidInput(message) if message == "simulated SQLite open failure"
+            &unchanged,
+            Error::Io(source) if source.kind() == std::io::ErrorKind::Other
         ));
+        assert_eq!(unchanged.diagnostic(), native_cause);
     }
 
     #[cfg(unix)]

@@ -932,7 +932,14 @@ pub(crate) fn map_sqlite_establish(error: diesel::ConnectionError) -> Error {
         Error::InvalidInput("SQLite file is not a database".into())
     } else {
         log::warn!("could not open SQLite database: {error}");
-        Error::InvalidInput("could not open SQLite database".into())
+        match error {
+            diesel::ConnectionError::InvalidCString(_)
+            | diesel::ConnectionError::InvalidConnectionUrl(_) => {
+                Error::InvalidInput("could not open SQLite database".into())
+            }
+            diesel::ConnectionError::CouldntSetupConfiguration(error) => Error::from(error),
+            error => Error::from(std::io::Error::other(error)),
+        }
     }
 }
 
@@ -1520,23 +1527,139 @@ mod tests {
         let capture = LogCaptureScope::start();
         let error =
             map_sqlite_establish(diesel::ConnectionError::BadConnection(NATIVE_CAUSE.into()));
+        let Error::Io(source) = &error else {
+            panic!("host open failure must remain an I/O failure: {error:?}");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::Other);
+        assert_eq!(source.raw_os_error(), None);
         assert!(matches!(
-            &error,
-            Error::InvalidInput(message) if message == "could not open SQLite database"
+            source.get_ref().unwrap().downcast_ref::<diesel::ConnectionError>(),
+            Some(diesel::ConnectionError::BadConnection(message)) if message == NATIVE_CAUSE
         ));
+        assert!(error.diagnostic().contains(NATIVE_CAUSE));
         let serialized = serde_json::to_string(&error).unwrap();
         let payload = parsed_payload(&serialized);
-        assert_eq!(payload["category"], "invalid-input");
-        assert_eq!(
-            payload["message"],
-            "Invalid input: could not open SQLite database"
-        );
+        assert_eq!(payload["category"], "io");
+        assert_eq!(payload["message"], "I/O failure");
         for native_fragment in NATIVE_CAUSE.split_whitespace() {
             assert!(!serialized.contains(native_fragment));
         }
         assert!(capture.records().iter().any(|record| {
             record.level == log::Level::Warn && record.message.contains(NATIVE_CAUSE)
         }));
+    }
+
+    #[test]
+    fn sqlite_establish_bad_connection_does_not_infer_os_error_from_messages() {
+        for message in [
+            "unable to open database file",
+            "permission denied",
+            "too many open files",
+        ] {
+            let error =
+                map_sqlite_establish(diesel::ConnectionError::BadConnection(message.into()));
+            let Error::Io(source) = &error else {
+                panic!("host open failure must remain an I/O failure: {error:?}");
+            };
+            assert_eq!(source.kind(), std::io::ErrorKind::Other);
+            assert_eq!(source.raw_os_error(), None);
+            assert!(error.diagnostic().contains(message));
+            let payload = parsed_payload(&serde_json::to_string(&error).unwrap());
+            assert_eq!(payload["category"], "io");
+            assert_eq!(payload["message"], "I/O failure");
+        }
+    }
+
+    #[test]
+    fn sqlite_establish_keeps_recognized_notadb_as_invalid_input() {
+        for message in ["file is not a database", "SQLITE_NOTADB", "code: 26"] {
+            for original in [
+                diesel::ConnectionError::BadConnection(message.into()),
+                diesel::ConnectionError::CouldntSetupConfiguration(
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown,
+                        Box::new(message.to_owned()),
+                    ),
+                ),
+            ] {
+                let error = map_sqlite_establish(original);
+                assert!(matches!(
+                    &error,
+                    Error::InvalidInput(message) if message == "SQLite file is not a database"
+                ));
+                assert!(is_sqlite_notadb(&error));
+                let payload = parsed_payload(&serde_json::to_string(&error).unwrap());
+                assert_eq!(payload["category"], "invalid-input");
+                assert_eq!(
+                    payload["message"],
+                    "Invalid input: SQLite file is not a database"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_establish_typed_invalid_configuration_has_a_safe_validation_payload() {
+        let nul_error = std::ffi::CString::new("/private/database\0.db3").unwrap_err();
+        for original in [
+            diesel::ConnectionError::InvalidCString(nul_error),
+            diesel::ConnectionError::InvalidConnectionUrl("/private/invalid-url".into()),
+        ] {
+            let native_cause = original.to_string();
+            let capture = LogCaptureScope::start();
+            let error = map_sqlite_establish(original);
+            assert!(matches!(
+                &error,
+                Error::InvalidInput(message) if message == "could not open SQLite database"
+            ));
+            let payload = parsed_payload(&serde_json::to_string(&error).unwrap());
+            assert_eq!(payload["category"], "invalid-input");
+            assert_eq!(
+                payload["message"],
+                "Invalid input: could not open SQLite database"
+            );
+            assert!(capture.records().iter().any(|record| {
+                record.level == log::Level::Warn && record.message.contains(&native_cause)
+            }));
+        }
+    }
+
+    #[test]
+    fn sqlite_establish_configuration_query_failure_retains_typed_native_cause() {
+        let originals = [
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UnableToSendCommand,
+                Box::new("/private/database: configuration query failed".to_owned()),
+            ),
+            diesel::result::Error::NotFound,
+        ];
+        for original in originals {
+            let native_cause = original.to_string();
+            let capture = LogCaptureScope::start();
+            let error =
+                map_sqlite_establish(diesel::ConnectionError::CouldntSetupConfiguration(original));
+            let Error::Diesel(source) = &error else {
+                panic!("configuration query failure must retain its Diesel error: {error:?}");
+            };
+            match source.as_ref() {
+                diesel::result::Error::DatabaseError(kind, information) => {
+                    assert!(matches!(
+                        kind,
+                        diesel::result::DatabaseErrorKind::UnableToSendCommand
+                    ));
+                    assert_eq!(information.message(), native_cause);
+                }
+                diesel::result::Error::NotFound => assert_eq!(native_cause, "Record not found"),
+                other => panic!("configuration query failure changed type: {other:?}"),
+            }
+            assert!(error.diagnostic().contains(&native_cause));
+            let payload = parsed_payload(&serde_json::to_string(&error).unwrap());
+            assert_eq!(payload["category"], "database");
+            assert_eq!(payload["message"], "database failure");
+            assert!(capture.records().iter().any(|record| {
+                record.level == log::Level::Warn && record.message.contains(&native_cause)
+            }));
+        }
     }
 
     #[test]
