@@ -441,6 +441,7 @@ test("unavailable threat uses the shipped empty state and idles every loading af
   expect(h.host.querySelector("[data-fen]")?.getAttribute("data-fen")).toBe(
     analysisSearch(INITIAL_FEN, [], true).searchedBoardFen,
   );
+  expect(h.host.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("65");
   await h.render(panel([], "4k3/8/8/8/8/8/4r3/4K3 w - - 0 7"));
   await act(async () => vi.advanceTimersByTime(5000));
   expect(h.host.textContent).toContain("Board.Analysis.NoAnalysisAvailable");
@@ -451,8 +452,13 @@ test("unavailable threat uses the shipped empty state and idles every loading af
   expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
   expect(h.store.get(threatFamily("display-tab"))).toBe(true);
   expect(h.store.get(h.settingsAtom).enabled).toBe(true);
+  expect(h.store.get(engineProgressFamily({ tab: "display-tab", engine: displayEngine.id }))).toBe(
+    65,
+  );
+  expect(h.host.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("0");
   await h.render(panel());
   expect(h.host.querySelector("[data-fen]")).not.toBeNull();
+  expect(h.host.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("65");
 });
 
 test("threat rows use the shared searched board once and keep its numbering anchor during fallback", async () => {
