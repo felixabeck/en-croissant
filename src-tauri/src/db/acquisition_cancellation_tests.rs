@@ -87,11 +87,8 @@ fn assert_acquisition_cancellation(
     let (arrived_tx, arrived_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let hooks = repository::configure_test_hooks(target.path(), |hooks| {
-        let mut arrived = Some(arrived_tx);
         hooks.before_pool_get = Some(Box::new(move || {
-            if let Some(arrived) = arrived.take() {
-                let _ = arrived.send(());
-            }
+            let _ = arrived_tx.send(());
         }));
     });
     thread::scope(|scope| {
