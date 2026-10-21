@@ -17672,3 +17672,19 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 The inbox entry is now merged as f-20261021-07. Its defect was repaired before intake by eea969c0, which waits for exact saved-engine card publication within the existing bound. The R3 correctness, tests, root-cause and error-handling reports in tasks/handoffs/2026-10-21-f-20261001-03-review.md close G1. The source-only old-wait control failed EP1-card at 261 ms, the repaired wait passed at 3112 ms, and persistent card withholding still failed the bounded oracle. The final unmodified native run passed with exit 0 on 5b30bf80, completion record gate-native-final-proof.TDqmkG. This closes the already repaired verifier defect after the supervisor's exit-path merge. It does not claim publication or installation. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"017cffad733c9f15a8b859f0079b9066dd4b90dbe6b5028f67b9a0a15c1a44ba","header_sha256":"2dda6f85c82e4dce18433101376aeac9e89b0a5571b38b614a7708bc15db9f05","header_status":"handled","input_sha256":"a15cc65aca4ab9a73ffb7ad5e38c651bc4fb875c59ba5e5b17a41651e48b74e8","kind":"mutation-receipt","operation":"0572581d77e6ce55b7a51fc2350ed2d5796d5eff8897dd10d5077bad31805c65","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-07"],"target":"f-20261021-07","v":1} -->
+
+---
+
+## 2026-10-21 — filed through the inbox spool
+
+### Remote CI retains cancelled jobs from superseded workflow matrix generations
+
+* **ID:** f-20261021-08 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** scripts/check-remote-ci.mjs, inspectRemoteCi, seenNames and jobsByName over all five workflow runs.
+* **Defect:** The checker unions names across the whole historical window. A successful completed workflow that renames a matrix runner from macos-latest to macos-26-intel still leaves the old cancelled matrix names in the judged set. Ordinary publication therefore remains refused until those old runs fall out of the window, even though all current workflow jobs succeeded.
+* **Failure scenario:** The required f-20261021-06 runner repair changes the default GitHub matrix job names. The subsequent green workflow has new Intel names, while the prior run's cancelled ARM names remain in the five-run window.
+* **Evidence:** Source trace of inspectRemoteCi adds seenNames for every run and retains a completed result for every name. Run 39608148446 contains two cancelled macos-latest rust-platform matrix names. No future success for those retired names is expected after the reviewed runner change. The agent-kit supervisor already defines current names from the newest completed workflow plus newer unfinished runs in scripts/drain_supervisor_release.py, _branch_remote_ci_once.
+* **Proof:** A regression with an older completed cancelled matrix generation and a newer completed successful renamed generation must pass, while still-current older red jobs and unfinished new names without completed proof must continue refusing. Remove only the checker repair with tests retained, observe the intended failures, restore and rerun green.
+* **Related:** f-20261006-02 is wrong repository selection rather than historical job-set retention. f-20261021-06 owns the runner-acquisition cancellations that expose the rename path. No shared root is claimed.
+* **Found by:** Codex interactive recovery, 2026-10-21. Plan authorship and arbitration share one context. Detection and code share the OpenAI model family in separate sessions.
