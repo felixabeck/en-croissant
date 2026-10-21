@@ -17656,7 +17656,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Native verifier rejects the saved engine card's shortened Name label
 
-* **ID:** f-20261021-07 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261021-07 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 8b1d9c57-ef43-495b-96b3-1dd931c9a194 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-8b1d9c57-ef43-495b-96b3-1dd931c9a194-1.jsonl
 * **Impact class:** tooling
 * **Where:** scripts/verify-app.mjs:3746-3767, EP1-card in canonical native-proof.mLI5xy on source f572a681 and HEAD 58332e94, 2026-10-21.
@@ -17666,3 +17666,6 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Proof:** Reproduce through the real application, preserve full-name persistence and correct publication assertions, stage each changed assertion against a disposable real input and verify its documented failure status, then pass the full real-app run. The mandatory review-tests lens must confirm the oracle still detects failed publication.
 * **Related:** f-20260920-16 concerns older verifier assertions and is rejected. f-20261019-05 repaired a workspace-envelope fixture in the same verifier, a different mechanism. No shared Root is evidenced. The one pending macOS capacity entry is unrelated.
 * **Found by:** Codex f-20261001-03 drain, 2026-10-21. Plan authorship and arbitration shared one context, detection ran on the same model family as the code.
+
+The inbox entry is now merged as f-20261021-07. Its defect was repaired before intake by eea969c0, which waits for exact saved-engine card publication within the existing bound. The R3 correctness, tests, root-cause and error-handling reports in tasks/handoffs/2026-10-21-f-20261001-03-review.md close G1. The source-only old-wait control failed EP1-card at 261 ms, the repaired wait passed at 3112 ms, and persistent card withholding still failed the bounded oracle. The final unmodified native run passed with exit 0 on 5b30bf80, completion record gate-native-final-proof.TDqmkG. This closes the already repaired verifier defect after the supervisor's exit-path merge. It does not claim publication or installation. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"017cffad733c9f15a8b859f0079b9066dd4b90dbe6b5028f67b9a0a15c1a44ba","header_sha256":"2dda6f85c82e4dce18433101376aeac9e89b0a5571b38b614a7708bc15db9f05","header_status":"handled","input_sha256":"a15cc65aca4ab9a73ffb7ad5e38c651bc4fb875c59ba5e5b17a41651e48b74e8","kind":"mutation-receipt","operation":"0572581d77e6ce55b7a51fc2350ed2d5796d5eff8897dd10d5077bad31805c65","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-07"],"target":"f-20261021-07","v":1} -->
