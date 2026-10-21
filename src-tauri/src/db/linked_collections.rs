@@ -37,6 +37,7 @@ const BACKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const BACKUP_PAGE_STEP: i32 = 128;
 const BACKUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const MIGRATION_SOURCE_OWNER_RETRY: std::time::Duration = std::time::Duration::from_millis(25);
+const SOURCE_REBUILD_ATTEMPTS: usize = 3;
 
 pub(crate) fn supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
@@ -2111,7 +2112,7 @@ impl CollectionService {
         let target = self.target(&record)?;
         self.repository.with_write_lock_cancellable(&target, cancellation, || {
             let mut db = self.repository.initialization_connection(&target, Some(cancellation))?;
-            for attempt in 0..3 {
+            for attempt in 0..SOURCE_REBUILD_ATTEMPTS {
                 let snapshot = Self::snapshot(&record, authority)?;
                 let generation = pgn::revision_string(&snapshot);
                 let prior = if has_info_table(&mut db)? { linked_metadata(&mut db)? } else { None };
@@ -2159,7 +2160,7 @@ impl CollectionService {
                     Ok((generation.clone(), omitted))
                 });
                 self.search_cache.invalidate_database(&target);
-                match result { Err(Error::StaleGame) if attempt < 2 => continue, result => return result }
+                match result { Err(Error::StaleGame) if attempt + 1 < SOURCE_REBUILD_ATTEMPTS => continue, result => return result }
             }
             Err(Error::StaleGame)
         })
