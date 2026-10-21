@@ -9326,3 +9326,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The initial test called generate_search_index_locked with a read-only target. Windows job119223474074 failed only strict recovery with uncertain search-index durability. The production facade at src-tauri/src/db/mod.rs:1204 resolves the correct mutation target. ParentAccess documentation and parent_access_for_operations explain the Windows write right. Updated-route None and unrelated-token controls both fail the held-pool assertion with exit101 and restore green. Reversal path: replace the entry point only with equivalent real authority and mutation-proven acquisition coverage.
 * **Decided by:** Codex, full auto G2 native-Windows repair, based on existing production behavior. Plan authorship and arbitration shared one context, detection uses the code model family · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"cf01d10a46eb5cc910d417ffdb0d260783c5e909e8bdbe152a7425a4957dfcd1","input_sha256":"d88955695acb04958da1555f498491ba1c9723912006617c0dc0188560ae4983","kind":"mutation-receipt","operation":"d232366479703311cbd09a90c8b3f5570ef700dd190b37e551ffc7c8034f21ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261021-15 — How is unavailable threat analysis represented across its consumers?
+
+* **Question:** How is unavailable threat analysis represented across its consumers?
+* **Governs:** f-20261001-03
+* **Chosen:** One typed available/unavailable search description in analysisSearch owns legal replay, the hypothetical turn change, cleared expired en passant and chessops validation. Search lifecycle, display memory and board arrows consume that description.
+* **Rejected:** Fabricating an initial-position key, relying on native validation errors, or permanently disabling threat mode after check.
+* **Reason:** The current producer and display derive the same domain concept separately and can publish illegal or mismatched positions. Absence must retire a predecessor without dispatching a successor. Reversal path: replace the internal representation while preserving legal identity, unavailable lifecycle and consumer regression tests.
+* **Decided by:** Codex, adopted reviewed plan, 2026-10-21 · **Superseded-by:** -
+
+### d-20261021-16 — How is an unavailable threat search presented?
+
+* **Question:** How is an unavailable threat search presented?
+* **Governs:** f-20261001-03
+* **Chosen:** Reuse BestMoves' shipped NoAnalysisAvailable state, DetachedEval's dash and EngineSummary's empty score. Invalid-root and original game-over presentation keep priority. Preserve the selected threat mode and engine-enabled preference.
+* **Rejected:** A threat-specific message or new setting.
+* **Reason:** Existing empty states already represent absence. This maps accurate search availability to shipped presentation without introducing copy or a new promise. Reversal path: separately authorized copy can replace the presentation while preserving legality and ownership.
+* **Decided by:** Codex, adopted reviewed plan, 2026-10-21 · **Superseded-by:** -
+
+### d-20261021-17 — Does threat analysis change the position editor's turn helper?
+
+* **Question:** Does threat analysis change the position editor's turn helper?
+* **Governs:** f-20261001-03
+* **Chosen:** Keep swapMove's explicit position-editor operation separate. Validated threat derivation belongs in analysisSearch, and BestMoves consumes its supplied board.
+* **Rejected:** Making the editor helper return unavailable or retaining an independent threat-board derivation in BestMoves.
+* **Reason:** FenInput uses swapMove to edit a selected side explicitly, a different operation from hypothetical legal search. Reversal path: trace all editor callers before a separate editor change.
+* **Decided by:** Codex, adopted reviewed plan, 2026-10-21 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"7da054adbcf407c4d6dc9bc0b1a3ed98c3df62b267031fd466f558a7af3fe1c0","input_sha256":"0bddd503ee595e5c010deb2ad48d644e69b339e2bb96012da36027ac18319ff3","kind":"mutation-receipt","operation":"74448881f0a8ab634b0e62ef1aa12ba245f7df743d365b20f2e962f452077847","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-15","d-20261021-16","d-20261021-17"],"target":"decisions-ledger","v":1} -->
