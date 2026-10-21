@@ -1524,6 +1524,126 @@ mod native_tests {
     }
 
     #[tokio::test]
+    async fn nested_collection_discovery_and_replacement_rebind_use_relative_locator() {
+        use tauri::Manager;
+        let mut fixture = Fixture::new();
+        let root_body = game(None, "e4 e5", "same basename at root");
+        let root_file = fixture.create("games", &root_body, WorkspaceFileType::Game);
+        let app = fixture.app();
+        let nested = crate::file_workspace::create_workspace_directory(
+            fixture.workspace.clone(),
+            fixture.workspace.clone(),
+            "nested".into(),
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap();
+        let deep = crate::file_workspace::create_workspace_directory(
+            fixture.workspace.clone(),
+            nested.handle,
+            "deep".into(),
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap();
+        let original = game(None, "d4 d5", "nested source");
+        let nested_file = crate::file_workspace::create_workspace_file_blocking(
+            fixture.workspace.clone(),
+            deep.handle,
+            "games".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Tournament,
+                tags: vec!["nested annotation".into()],
+            },
+            WorkspaceFileContent::Text {
+                pgn: original.clone(),
+            },
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.state.pgn_repository,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .handle;
+        drop(app);
+        let source = fixture
+            .directory
+            .path()
+            .join("library/nested/deep/games.pgn");
+        let sidecar = source.with_file_name(
+            authority::workspace_sidecar_leaf(source.file_name().unwrap()).unwrap(),
+        );
+        let metadata = std::fs::read(&sidecar).unwrap();
+        let listed = fixture.list();
+        assert_eq!(listed.len(), 2);
+        let collection = listed
+            .iter()
+            .find(|entry| entry.file == nested_file)
+            .unwrap();
+        let root = listed.iter().find(|entry| entry.file == root_file).unwrap();
+        assert_ne!(collection.id, root.id);
+        assert_eq!(collection.status, CollectionStatus::Ready);
+        assert!(fixture.rows(collection)[0].moves.contains("d4"));
+        let id = Uuid::parse_str(&collection.id).unwrap();
+        let held_source = File::open(&source).unwrap();
+        let original_identity = authority::opened_file_identity(&held_source).unwrap();
+        let replacement = game(None, "c4 c5", "replacement at the nested locator");
+        let temporary = fixture.directory.path().join("replacement.pgn");
+        std::fs::write(&temporary, &replacement).unwrap();
+        std::fs::rename(temporary, &source).unwrap();
+        // Exercise current_record's fallback before reconciliation can renew the source handle.
+        let rebound = fixture
+            .service
+            .current_record(
+                &fixture.state.pgn_path_authority,
+                id,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(rebound.id, id);
+        assert_eq!(
+            rebound.locator,
+            vec![
+                OsString::from("nested"),
+                OsString::from("deep"),
+                OsString::from("games.pgn")
+            ]
+        );
+        assert_ne!(rebound.identity, original_identity);
+        let current = fixture
+            .service
+            .describe(
+                &fixture.state.pgn_path_authority,
+                &rebound,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(current.status, CollectionStatus::Ready);
+        assert_eq!(fixture.rows(&current).len(), 1);
+        assert!(fixture.rows(&current)[0].moves.contains("c4"));
+        fixture.restart();
+        for _ in 0..2 {
+            let current = fixture.list();
+            assert_eq!(current.len(), 2);
+            assert!(
+                current
+                    .iter()
+                    .any(|entry| entry.id == id.to_string()
+                        && entry.status == CollectionStatus::Ready)
+            );
+            assert!(current
+                .iter()
+                .any(|entry| entry.id == root.id && entry.file == root_file));
+            assert_eq!(std::fs::read(&source).unwrap(), replacement.as_bytes());
+            assert_eq!(std::fs::read(&sidecar).unwrap(), metadata);
+            assert_eq!(
+                std::fs::read(fixture.path("games")).unwrap(),
+                root_body.as_bytes()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn native_repair_reselection_waits_for_admitted_pgn_publication() {
         use tauri::Manager;
         let fixture = Fixture::new();

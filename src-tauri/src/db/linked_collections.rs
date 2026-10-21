@@ -1,6 +1,8 @@
 //! Authoritative PGN collection identities and disposable, generation-qualified search caches.
 use super::*;
-use crate::file_workspace::{WorkspaceEntry, WorkspaceFileType, WorkspaceListing};
+use crate::file_workspace::{
+    WorkspaceEntry, WorkspaceEntryKind, WorkspaceFileType, WorkspaceListing,
+};
 use crate::infra::{
     fs::{
         atomic_create_at_identified, atomic_replace_at, create_regular_at, entry_identity_at,
@@ -129,6 +131,15 @@ impl Record {
             source_epoch: self.source_epoch,
             purpose: self.purpose.clone(),
             preserved_original: false,
+        }
+    }
+}
+
+fn visit_file_entries(entries: &[WorkspaceEntry], visit: &mut impl FnMut(&WorkspaceEntry)) {
+    for entry in entries {
+        match entry.kind {
+            WorkspaceEntryKind::File => visit(entry),
+            WorkspaceEntryKind::Directory => visit_file_entries(&entry.children, visit),
         }
     }
 }
@@ -1739,17 +1750,8 @@ impl CollectionService {
         if !supported() {
             return Ok(vec![]);
         }
-        fn visit(entries: &[WorkspaceEntry], result: &mut Vec<WorkspaceEntry>) {
-            for entry in entries {
-                if entry.kind == crate::file_workspace::WorkspaceEntryKind::Directory {
-                    visit(&entry.children, result);
-                } else {
-                    result.push(entry.clone());
-                }
-            }
-        }
         let mut entries = vec![];
-        visit(&listing.entries, &mut entries);
+        visit_file_entries(&listing.entries, &mut |entry| entries.push(entry.clone()));
         let mut guard = self.lock(cancellation)?;
         let mut registry = Self::state(&mut guard)?.clone();
         for entry in entries {
@@ -2037,17 +2039,10 @@ impl CollectionService {
                 &record.workspace,
                 cancellation,
             )?;
-            fn handles(entries: &[WorkspaceEntry], result: &mut Vec<FileWorkspaceHandle>) {
-                for entry in entries {
-                    if entry.kind == crate::file_workspace::WorkspaceEntryKind::File {
-                        result.push(entry.handle.clone());
-                    } else {
-                        handles(&entry.children, result);
-                    }
-                }
-            }
             let mut candidates = vec![];
-            handles(&listing.entries, &mut candidates);
+            visit_file_entries(&listing.entries, &mut |entry| {
+                candidates.push(entry.handle.clone());
+            });
             let matches = candidates
                 .into_iter()
                 .filter_map(|file| {
