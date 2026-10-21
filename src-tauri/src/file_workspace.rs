@@ -5,7 +5,7 @@
 //! path or sends one back for a PGN operation.
 
 use crate::{
-    error::{Error, ErrorCategory},
+    error::{CommittedRemoval, Error, ErrorCategory},
     infra::blocking::BLOCKING_GATEWAY,
     infra::cancellable_lock::lock_std_cancellable,
     infra::path_authority::{
@@ -1966,17 +1966,14 @@ async fn permanently_delete_entry(
         .retire_executables(dropped_engine_executables)
         .await;
     match (result, retirement_result) {
-        (Ok(removed_entries), Err(error)) => {
-            log::warn!(
-                "workspace removal engine retirement failed: {}",
-                error.diagnostic()
+        (Ok(mut removal), retirement) => {
+            removal.record(
+                retirement,
+                "workspace removal engine retirement",
+                Path::new("workspace entry"),
             );
-            Err(Error::PartialRemoval {
-                removed_entries,
-                cause: Box::new(error),
-            })
+            removal.finish()
         }
-        (Ok(_), Ok(())) => Ok(()),
         (Err(kept), Err(error)) => {
             log::warn!(
                 "workspace removal engine retirement failed: {}",
@@ -1992,15 +1989,15 @@ async fn permanently_delete_entry(
 // as the success path, so they cannot travel through the `Result`. A plain
 // `spawn(..).await?` would drop them on `Err` and leave a running engine holding
 // an unlinked inode.
-// The `Ok` value counts registry entries this delete removed, which the caller reports
-// if engine retirement fails.
+// A completed removal carries its physical target count and first failure through retirement.
+// An incomplete walk retains its original error instead of entering the completed policy.
 fn permanently_delete_entry_blocking(
     pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
     cancellation: &CancellationToken,
-) -> (Vec<PathRef>, Result<usize, Error>) {
+) -> (Vec<PathRef>, Result<CommittedRemoval, Error>) {
     let mut dropped_engine_executables = Vec::<PathRef>::new();
     let result = (|| {
         let _guard = lock_std_cancellable(
@@ -2014,27 +2011,31 @@ fn permanently_delete_entry_blocking(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let removal_error = match crate::infra::fs::remove_entry_at(
+        let mut removal = match crate::infra::fs::remove_entry_at_counted(
             &source.parent,
             &source.leaf,
             source.identity,
             source.is_dir,
         ) {
-            Ok(()) => None,
-            Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
-            Err(error @ Error::PartialRemoval { .. }) => Some(error),
+            Ok(removal) => Ok(removal),
+            Err(error @ Error::PartialRemoval { .. }) => Err(error),
             Err(error) => return Err(error),
         };
-        let sidecar_error = if source.is_dir {
-            None
+        let sidecar_result = if source.is_dir {
+            Ok(())
         } else {
-            sidecar_leaf(&source.leaf)
-                .and_then(|sidecar| {
-                    crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar)
-                })
-                .err()
+            sidecar_leaf(&source.leaf).and_then(|sidecar| {
+                crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar)
+            })
         };
-        let removal_status = if matches!(removal_error, Some(Error::PartialRemoval { .. })) {
+        if let Ok(removal) = &mut removal {
+            removal.record(
+                sidecar_result,
+                "workspace sidecar cleanup",
+                Path::new(&source.leaf),
+            );
+        }
+        let removal_status = if removal.is_err() {
             WorkspaceRemovalStatus::Partial
         } else {
             WorkspaceRemovalStatus::Complete
@@ -2049,7 +2050,7 @@ fn permanently_delete_entry_blocking(
             })?
         })();
 
-        if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
+        if let Err(error) = removal {
             match registry_result {
                 Ok((CommitDurability::Durable, _)) => {}
                 Ok((CommitDurability::DurabilityUncertain(stage), _)) => {
@@ -2057,54 +2058,23 @@ fn permanently_delete_entry_blocking(
                 }
                 Err(registry_error) => {
                     log::warn!(
-                        "partial workspace removal registry reconciliation failed: {registry_error}"
+                        "partial workspace removal registry reconciliation failed: {}",
+                        registry_error.diagnostic()
                     );
                 }
             }
             return Err(error);
         }
 
-        let (registry_durability, removed_entries) = match registry_result {
-            Ok(committed) => committed,
-            Err(error) => {
-                log::warn!("workspace removal registry reconciliation failed: {error}");
-                if let Some(sidecar_error) = sidecar_error {
-                    log::warn!(
-                        "workspace sidecar cleanup also failed after removal: {sidecar_error}"
-                    );
-                }
-                if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
-                    log::warn!("workspace removal durability also uncertain: {stage}");
-                }
-                return Err(Error::CommittedDurabilityUncertain(
-                    crate::error::DurabilityStage::RegistryReplacement,
-                ));
-            }
-        };
-        if let Some(error) = sidecar_error {
-            log::warn!("workspace sidecar cleanup failed after removal: {error}");
-            if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
-                log::warn!("workspace removal registry durability also uncertain: {stage}");
-            }
-            if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
-                log::warn!("workspace removal durability also uncertain: {stage}");
-            }
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::WorkspaceRemoval,
-            ));
-        }
-        if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
-            if let CommitDurability::DurabilityUncertain(registry_stage) = registry_durability {
-                log::warn!(
-                    "workspace removal registry durability also uncertain: {registry_stage}"
-                );
-            }
-            return Err(Error::CommittedDurabilityUncertain(stage));
-        }
-        if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
-            return Err(Error::CommittedDurabilityUncertain(stage));
-        }
-        Ok(removed_entries)
+        let mut removal = removal?;
+        removal.record(
+            registry_result.and_then(|(durability, _)| {
+                crate::infra::path_authority::require_durable(durability)
+            }),
+            "workspace removal registry reconciliation",
+            Path::new(&source.leaf),
+        );
+        Ok(removal)
     })();
     (dropped_engine_executables, result)
 }
@@ -3404,11 +3374,12 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        fs::create_dir(child.join("unregistered")).expect("unregistered directory");
+        fs::write(child.join("unregistered/extra"), b"extra").expect("unregistered file");
         set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
         let error = permanently_delete_entry(
             &state,
@@ -3422,8 +3393,10 @@ mod tests {
 
         assert!(!child.exists());
         assert!(matches!(
-            error,
-            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
+            &error,
+            Error::PartialRemoval { removed_entries: 4, cause }
+                if matches!(cause.as_ref(), Error::Io(_))
+                    && cause.diagnostic().contains("injected write failure")
         ));
         assert!(
             mutation_target(&state.pgn_path_authority, &entry).is_err(),
@@ -3442,24 +3415,23 @@ mod tests {
         let serialized = serde_json::to_string(&error).expect("serialize registry failure");
         let payload: serde_json::Value =
             serde_json::from_str(&serialized).expect("serialized error is a JSON object");
-        assert_eq!(payload["category"], "durability");
-        assert_eq!(
-            payload["message"],
-            "Committed but durability uncertain: registry replacement"
-        );
+        assert_eq!(payload["category"], "partial-removal");
+        assert!(payload["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("Partially removed: 4 entries"));
         assert!(!serialized.contains("/private/registry"));
         assert!(!serialized.contains(r"C:\private\registry"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn sidecar_failure_after_unlink_still_removes_authority_record() {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let file = root.join("victim.pgn");
         fs::write(&file, b"*").expect("victim file");
-        fs::create_dir(root.join("victim.info")).expect("invalid sidecar directory");
         let entry = registered_child_file(&state, &workspace, &file);
+        fs::create_dir(root.join("victim.info")).expect("invalid sidecar directory");
 
         let error = permanently_delete_entry(
             &state,
@@ -3472,8 +3444,9 @@ mod tests {
 
         assert!(!file.exists());
         assert!(matches!(
-            error,
-            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::WorkspaceRemoval)
+            &error,
+            Error::PartialRemoval { removed_entries: 1, cause }
+                if matches!(cause.as_ref(), Error::InvalidInput(_) | Error::Io(_))
         ));
         assert!(matches!(
             mutation_target(&state.pgn_path_authority, &entry),
@@ -3482,11 +3455,13 @@ mod tests {
         let serialized = serde_json::to_string(&error).expect("serialize sidecar failure");
         let payload: serde_json::Value =
             serde_json::from_str(&serialized).expect("serialized error is a JSON object");
-        assert_eq!(payload["category"], "durability");
-        assert_eq!(
-            payload["message"],
-            "Committed but durability uncertain: workspace removal"
-        );
+        assert_eq!(payload["category"], "partial-removal");
+        assert!(payload["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("Partially removed: 1 entries"));
+        assert!(root.join("victim.info").is_dir());
+        assert!(!serialized.contains(&root.to_string_lossy().to_string()));
     }
 
     #[cfg(unix)]
@@ -3536,9 +3511,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sidecar_failure_wins_over_registry_failure_or_uncertainty() {
+        for uncertain in [false, true] {
+            let (_directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let file = root.join("victim.pgn");
+            fs::write(&file, b"*").expect("file");
+            let entry = registered_child_file(&state, &workspace, &file);
+            fs::create_dir(root.join("victim.info")).expect("invalid sidecar");
+            let injector: Arc<dyn AtomicWriterInjector + Send + Sync> = if uncertain {
+                Arc::new(crate::infra::fs::ParentSyncFault(
+                    "later registry uncertainty",
+                ))
+            } else {
+                Arc::new(RegistryWriteFailure)
+            };
+            set_test_atomic_file_injector(Some(injector));
+            let result =
+                permanently_delete_entry(&state, &workspace, &entry, CancellationToken::new())
+                    .await;
+            set_test_atomic_file_injector(None);
+            let error = result.expect_err("sidecar failure must remain first");
+            assert!(
+                matches!(&error, Error::PartialRemoval { removed_entries: 1, cause }
+                if matches!(cause.as_ref(), Error::InvalidInput(_) | Error::Io(_))
+                    && !cause.diagnostic().contains("registry"))
+            );
+            assert!(!file.exists());
+            assert!(root.join("victim.info").is_dir());
+            assert!(mutation_target(&state.pgn_path_authority, &entry).is_err());
+        }
+    }
+
+    #[test]
+    fn completed_file_count_excludes_cleaned_sidecar() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let file = root.join("victim.pgn");
+        fs::write(&file, b"*").expect("file");
+        let entry = registered_child_file(&state, &workspace, &file);
+        fs::write(root.join("victim.info"), b"{}").expect("sidecar");
+        let (dropped, result) = permanently_delete_entry_blocking(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &entry,
+            &CancellationToken::new(),
+        );
+        let (count, failure) = result.expect("completed removal").into_parts();
+        assert_eq!(count, 1);
+        assert!(failure.is_none());
+        assert!(dropped.is_empty());
+        assert!(!file.exists());
+        assert!(!root.join("victim.info").exists());
+        assert!(mutation_target(&state.pgn_path_authority, &entry).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn removal_sync_uncertainty_wins_over_registry_and_retirement_failures() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+        supervise_test_actor(
+            &state,
+            &EngineKey::new("tab".into(), "operation".into()).expect("key"),
+            "application-engine",
+            executable.clone(),
+            crate::engine::EngineActor::failing_terminate_test_actor("later retirement failure"),
+        )
+        .await;
+        set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
+        let result =
+            delete_entry_with_fault(&state, &workspace, &entry, RemovalFaultPoint::ParentSync)
+                .await;
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!child.exists());
+        assert!(mutation_target(&state.pgn_path_authority, &entry).is_err());
+        assert_executable_retired(&state, executable).await;
+    }
+
+    #[tokio::test]
     async fn retirement_failure_after_committed_delete_is_partial_removal() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+        fs::create_dir(child.join("unregistered")).expect("unregistered directory");
+        fs::write(child.join("unregistered/extra"), b"extra").expect("unregistered file");
         supervise_test_actor(
             &state,
             &EngineKey::new("tab".into(), "operation".into()).expect("engine key"),
@@ -3563,7 +3626,7 @@ mod tests {
         else {
             panic!("expected partial removal");
         };
-        assert_eq!(removed_entries, 2);
+        assert_eq!(removed_entries, 4);
         assert_eq!(cause.category(), crate::error::ErrorCategory::Io);
         assert!(cause.diagnostic().contains("retirement failure"));
         assert!(!child.join("engine").exists());
@@ -3572,7 +3635,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_and_retirement_failure_keeps_durability_error() {
+    async fn registry_sync_uncertainty_survives_retirement_failure() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+        supervise_test_actor(
+            &state,
+            &EngineKey::new("tab".into(), "operation".into()).expect("key"),
+            "application-engine",
+            executable.clone(),
+            crate::engine::EngineActor::failing_terminate_test_actor("later retirement failure"),
+        )
+        .await;
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "registry uncertainty",
+        ))));
+        let result =
+            permanently_delete_entry(&state, &workspace, &entry, CancellationToken::new()).await;
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            ))
+        ));
+        assert!(!child.exists());
+        assert!(mutation_target(&state.pgn_path_authority, &entry).is_err());
+        assert_executable_retired(&state, executable).await;
+    }
+
+    #[tokio::test]
+    async fn registry_and_retirement_failure_keeps_first_typed_cause() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry, executable) = registered_engine_directory(&state, &workspace);
         supervise_test_actor(
@@ -3588,12 +3680,16 @@ mod tests {
             permanently_delete_entry(&state, &workspace, &entry, CancellationToken::new()).await;
         set_test_atomic_file_injector(None);
 
+        let error = result.expect_err("registry failure wins over retirement");
         assert!(matches!(
-            result,
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::RegistryReplacement
-            ))
+            &error,
+            Error::PartialRemoval { removed_entries: 2, cause }
+                if cause.diagnostic().contains("injected write failure")
+                    && !cause.diagnostic().contains("retirement failure")
         ));
+        let serialized = serde_json::to_string(&error).expect("safe wire error");
+        assert!(!serialized.contains("/private/registry"));
+        assert!(!serialized.contains(r"C:\private\registry"));
         assert!(!child.exists());
         assert_executable_retired(&state, executable).await;
     }
@@ -3863,9 +3959,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::RegistryReplacement
-            ))
+            Err(Error::PartialRemoval {
+                removed_entries: 3,
+                ..
+            })
         ));
         assert!(state.engine_supervisor.get_exact(&key).is_none());
     }
@@ -4975,8 +5072,8 @@ mod tests {
     /// A2b: a PGN that has no `.info` sidecar renames and deletes cleanly. The optional-sidecar
     /// helpers must report a missing leaf as success; mapping it to an error would report a
     /// fully successful delete to the user as an uncertain one.
-    #[test]
-    fn sidecar_less_pgn_renames_and_deletes_cleanly() {
+    #[tokio::test]
+    async fn sidecar_less_pgn_renames_and_deletes_cleanly() {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let source_path = root.join("bare.pgn");
@@ -5000,15 +5097,9 @@ mod tests {
         // The rename writes the sidecar the caller supplied; remove it again so the delete also
         // runs against a PGN with no `.info` beside it.
         fs::remove_file(root.join("renamed.info")).expect("drop the written sidecar");
-        let (dropped, result) = permanently_delete_entry_blocking(
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &workspace,
-            &bare,
-            &CancellationToken::new(),
-        );
-        result.expect("delete a PGN that has no sidecar");
-        assert!(dropped.is_empty());
+        permanently_delete_entry(&state, &workspace, &bare, CancellationToken::new())
+            .await
+            .expect("delete a PGN that has no sidecar");
         assert!(!root.join("renamed.pgn").exists());
         assert!(mutation_target(&state.pgn_path_authority, &bare).is_err());
     }

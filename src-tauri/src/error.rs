@@ -1274,6 +1274,33 @@ mod tests {
         assert!(payload.get("engineFailure").is_none());
     }
     #[test]
+    fn committed_removal_retains_native_cause_and_sanitizes_wire_message() {
+        for cause in [
+            Error::Io(Box::new(std::io::Error::other(
+                r"/private/registry C:\private\registry",
+            ))),
+            Error::EngineTimeout(r"/private/engine C:\private\engine".into()),
+        ] {
+            let diagnostic = cause.diagnostic();
+            let category = cause.category();
+            let error = CommittedRemoval::new(4, Some(cause))
+                .finish()
+                .expect_err("post-commit failure");
+            let payload = serde_json::to_string(&error).expect("wire payload");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&payload).unwrap()["category"],
+                "partial-removal"
+            );
+            assert!(!payload.contains("/private/"));
+            assert!(!payload.contains(r"C:\\private"));
+            assert!(
+                matches!(error, Error::PartialRemoval { removed_entries: 4, cause }
+                if cause.category() == category && cause.diagnostic() == diagnostic)
+            );
+        }
+    }
+
+    #[test]
     fn committed_removal_succeeds_without_failure() {
         let mut removal = CommittedRemoval::new(1, None);
         removal.record(Ok(()), "test cleanup", std::path::Path::new("database.db3"));

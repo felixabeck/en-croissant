@@ -9362,11 +9362,11 @@ impl PathAuthority {
 
     /// Remove workspace registry entries and return the save's durability and the number of
     /// registry ids this call removed that an earlier failed save had not already removed.
-    /// The count is returned only with a committed save and becomes `PartialRemoval.removed_entries`
-    /// if the workspace delete's engine retirement fails. Pending ids are excluded because an
-    /// earlier call removed them from its candidate map but failed to save it, so this directory's
-    /// candidate or the commit prune would otherwise count them again. This is neither a count of
-    /// filesystem entries nor the registry-size delta.
+    /// The count is returned only with a committed save. Workspace deletion error counts instead
+    /// come from physical target removal, including engine retirement errors. Pending ids are
+    /// excluded because an earlier call removed them from its candidate map but failed to save it,
+    /// so this directory's candidate or the commit prune would otherwise count them again.
+    /// This is neither a count of filesystem entries nor the registry-size delta.
     pub(crate) fn remove_workspace_entry(
         &mut self,
         handle: &FileWorkspaceHandle,

@@ -554,6 +554,104 @@ async function listFixtureEntries(invoke) {
   return listing.entries;
 }
 
+// WD0-WD7 exercise release IPC at disposable Files inputs. Native tests own injected registry,
+// sync and engine-retirement failures. No live engine is registered by this scenario.
+// Runtime staging receipts must be added only after root observes the actual failing runs.
+async function verifyWorkspaceDeletionOutcome(session, filesWorkspace) {
+  const name = "verify-deletion-outcome";
+  const primary = join(filesWorkspace, `${name}.pgn`);
+  const sidecar = join(filesWorkspace, `${name}.info`);
+  const unrelated = join(filesWorkspace, `${filesRowName}.pgn`);
+  const workspace = { id: { id: filesWorkspaceId }, kind: "fileWorkspace" };
+  const invokeListing = `window.__TAURI_INTERNALS__.invoke("list_file_workspace", { workspace: ${JSON.stringify(workspace)}, ticket: null })`;
+  console.log(`  .. deletion disposable inputs: ${primary}, ${sidecar}, ${unrelated}`);
+  let entry;
+  let setupError;
+  let deletion = {};
+  let rejection;
+  let listing;
+  try {
+    await writeFile(primary, filesGamePgn);
+    const before = await invokeJsonAndWait(
+      session,
+      "workspace deletion fixture registration",
+      "__verifyAppDeletionBefore",
+      invokeListing,
+    );
+    entry = before.value?.entries?.find((candidate) => candidate.name === name);
+    if (!entry?.handle?.id?.id)
+      throw new Error(`fixture handle unavailable: ${JSON.stringify(before)}`);
+    // Acquire the real handle first, so malformed metadata cannot prevent registration.
+    await mkdir(sidecar);
+    deletion = await invokeAndWait(
+      session,
+      "workspace deletion outcome",
+      "__verifyAppDeletionOutcome",
+      `window.__TAURI_INTERNALS__.invoke("permanently_delete_workspace_entry", { workspace: ${JSON.stringify(workspace)}, entry: ${JSON.stringify(entry.handle)} })`,
+    );
+    if (typeof deletion.rejected === "string") {
+      try {
+        rejection = JSON.parse(deletion.rejected);
+      } catch {
+        // The rejection assertions below also reject an unstructured backend failure.
+      }
+    }
+    listing = await invokeJsonAndWait(
+      session,
+      "workspace deletion reconciliation listing",
+      "__verifyAppDeletionAfter",
+      invokeListing,
+    );
+  } catch (error) {
+    setupError = error.message;
+  }
+  const detail = setupError ?? deletion.rejected ?? deletion.error;
+  check(
+    !setupError && !!entry?.handle?.id?.id,
+    "WD0 deletion fixture acquires a real registered handle before sidecar refusal",
+    detail,
+  );
+  check(
+    rejection?.tag === "backend-error",
+    "WD1 completed deletion rejects with a structured backend error",
+    detail,
+  );
+  check(
+    rejection?.category === "partial-removal",
+    "WD2 ordinary post-commit sidecar failure reports partial-removal",
+    detail,
+  );
+  check(
+    rejection?.message ===
+      "Partially removed: 1 entries were deleted before failing: invalid input" ||
+      rejection?.message ===
+        "Partially removed: 1 entries were deleted before failing: I/O failure",
+    "WD3 completed deletion reports exactly one removed primary target",
+    detail,
+  );
+  check(
+    !setupError && !existsSync(primary),
+    "WD4 post-commit rejection leaves the primary file deleted",
+    detail,
+  );
+  check(existsSync(unrelated), "WD5 post-commit deletion preserves the unrelated Files fixture");
+  check(
+    !!entry?.handle?.id?.id &&
+      Array.isArray(listing?.value?.entries) &&
+      !listing.value.entries.some((candidate) => candidate.handle?.id?.id === entry.handle.id.id),
+    "WD6 subsequent native listing excludes the deleted handle",
+    setupError ?? listing?.result?.rejected ?? listing?.result?.error,
+  );
+  check(
+    rejection?.tag === "backend-error" &&
+      !deletion.rejected.includes(filesWorkspace) &&
+      !deletion.rejected.includes(JSON.stringify(filesWorkspace).slice(1, -1)),
+    "WD7 serialized deletion rejection contains no private fixture path",
+    detail,
+  );
+  await rm(sidecar, { recursive: true, force: true });
+}
+
 // Conversion assertion staging receipts. Root observed these native application runs.
 // Negative evidence base: /tmp/build-943062b9-1e23-42b1-83a0-e262a3eac635/
 // native-fault.log, native-seed.log, native-setup.log and corresponding native-fault.actual-exit, native-seed.actual-exit, native-setup.actual-exit.
@@ -4042,6 +4140,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   // add a reservation to the destroyed-window log line checked below. Navigation stays in-app:
   // a URL load would replace the main webview document that line is about. Nothing after this
   // depends on the route the double-click leaves behind.
+  await verifyWorkspaceDeletionOutcome(session, filesWorkspace);
   const filesRowCheck = "the seeded workspace file row renders on the Files page";
   const filesRouteCheck = "a real double-click on the unselected Files row navigates to /";
   const filesNotationCheck = "a real double-click on the unselected Files row shows its game";

@@ -4120,16 +4120,16 @@ mod win {
         )
     }
 
-    pub(super) fn remove_entry_at(
+    pub(super) fn remove_entry_at_counted(
         parent: &File,
         name: &OsStr,
         expected: (u64, u64),
         is_dir: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<crate::error::CommittedRemoval, Error> {
         assert_entry_identity(parent, name, expected, is_dir)?;
+        let mut removed_entries = 0;
         if is_dir {
             let parent_volume = opened_file_identity(parent)?.0;
-            let mut removed_entries = 0;
             if let Err(cause) = remove_windows_tree_at(
                 parent,
                 name,
@@ -4156,8 +4156,12 @@ mod win {
                 child_delete_access(false),
                 |_| Ok(()),
             )?;
+            removed_entries = 1;
         }
-        super::sync_parent_after_workspace_removal(parent)
+        Ok(crate::error::CommittedRemoval::new(
+            removed_entries,
+            super::sync_parent_after_workspace_removal(parent).err(),
+        ))
     }
 
     pub(super) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
@@ -5357,21 +5361,32 @@ pub(crate) fn open_removal_directory_at(
     Ok(child)
 }
 
-#[cfg(unix)]
 pub(crate) fn remove_entry_at(
     parent: &File,
     name: &OsStr,
     expected: (u64, u64),
     is_dir: bool,
 ) -> Result<(), Error> {
+    remove_entry_at_counted(parent, name, expected, is_dir)?.finish()
+}
+
+/// Own the physical target count before syncing its parent. A recursive failure keeps its
+/// original partial progress error and never enters the completed-removal policy.
+#[cfg(unix)]
+pub(crate) fn remove_entry_at_counted(
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+    is_dir: bool,
+) -> Result<crate::error::CommittedRemoval, Error> {
     use rustix::fs::{self as rfs, AtFlags};
     single_leaf(name)?;
     assert_entry_identity(parent, name, expected, is_dir)?;
     #[cfg(test)]
     unix::inject_removal(unix::RemovalFaultPoint::BeforeTopOpen)?;
+    let mut removed_entries = 0;
     if is_dir {
         let parent_stat = rfs::fstat(parent).map_err(|error| Error::Io(Box::new(error.into())))?;
-        let mut removed_entries = 0;
         if let Err(cause) = unix::remove_tree_at(
             parent,
             name,
@@ -5392,8 +5407,12 @@ pub(crate) fn remove_entry_at(
     } else {
         rfs::unlinkat(parent, name, AtFlags::empty())
             .map_err(|error| Error::Io(Box::new(error.into())))?;
+        removed_entries = 1;
     }
-    sync_parent_after_workspace_removal(parent)
+    Ok(crate::error::CommittedRemoval::new(
+        removed_entries,
+        sync_parent_after_workspace_removal(parent).err(),
+    ))
 }
 
 fn sync_parent_after_workspace_removal(parent: &File) -> Result<(), Error> {
@@ -5430,13 +5449,13 @@ pub(crate) fn remove_empty_directory_at(
 }
 
 #[cfg(windows)]
-pub(crate) fn remove_entry_at(
+pub(crate) fn remove_entry_at_counted(
     parent: &File,
     name: &OsStr,
     expected: (u64, u64),
     is_dir: bool,
-) -> Result<(), Error> {
-    win::remove_entry_at(parent, name, expected, is_dir)
+) -> Result<crate::error::CommittedRemoval, Error> {
+    win::remove_entry_at_counted(parent, name, expected, is_dir)
 }
 
 #[cfg(windows)]
@@ -7523,6 +7542,64 @@ mod tests {
             std::fs::read(outside.join("sentinel.db3")).expect("outside intact"),
             b"outside"
         );
+    }
+
+    #[test]
+    fn counted_removal_owns_physical_file_and_tree_counts() {
+        for is_dir in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let target = temp.path().join("victim");
+            if is_dir {
+                std::fs::create_dir_all(target.join("nested")).expect("nested directory");
+                std::fs::write(target.join("first"), b"first").expect("first file");
+                std::fs::write(target.join("nested/second"), b"second").expect("second file");
+            } else {
+                std::fs::write(&target, b"file").expect("file");
+            }
+            let parent = test_parent(temp.path());
+            let identity =
+                entry_identity_at(&parent, OsStr::new("victim"), is_dir).expect("identity");
+            let removal = remove_entry_at_counted(&parent, OsStr::new("victim"), identity, is_dir)
+                .expect("completed removal");
+            assert!(!target.exists());
+            let (count, failure) = removal.into_parts();
+            assert_eq!(count, if is_dir { 4 } else { 1 });
+            assert!(failure.is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn counted_removal_keeps_count_at_parent_sync_and_legacy_category() {
+        for counted in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            std::fs::create_dir(temp.path().join("victim")).expect("directory");
+            std::fs::write(temp.path().join("victim/file"), b"file").expect("file");
+            let parent = test_parent(temp.path());
+            let identity =
+                entry_identity_at(&parent, OsStr::new("victim"), true).expect("identity");
+            let _guard = unix::scoped_test_removal_injector(Arc::new(RemovalFault(
+                RemovalFaultPoint::ParentSync,
+            )));
+            let error = if counted {
+                let (count, failure) =
+                    remove_entry_at_counted(&parent, OsStr::new("victim"), identity, true)
+                        .expect("primary completed before sync")
+                        .into_parts();
+                assert_eq!(count, 2);
+                failure.expect("sync uncertainty")
+            } else {
+                remove_entry_at(&parent, OsStr::new("victim"), identity, true)
+                    .expect_err("legacy sync uncertainty")
+            };
+            assert!(matches!(
+                error,
+                Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::WorkspaceRemoval
+                )
+            ));
+            assert!(!temp.path().join("victim").exists());
+        }
     }
 
     #[test]
