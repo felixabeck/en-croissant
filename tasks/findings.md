@@ -17514,7 +17514,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Applying a PGN text edit drops the current linked game's persisted source locator
 
-* **ID:** f-20261021-03 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261021-03 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
 * **Impact class:** behaviour
 * **Where:** `src/components/panels/info/PgnInput.tsx:107`, complete same-game state installation, `src/state/store/tree.ts:152,344`, and `src-tauri/src/pgn.rs:1894`.
@@ -17533,6 +17533,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 The early whole-project pnpm exec tsgo --noEmit proof stfx3o exited2 with three actual errors. PgnInput.tsx168 passes linkedSource to setState, whose declared TreeState input omits that field although treeReplacementState already accepts TreeState & Pick<TreeStoreState,"linkedSource"> and handles it at runtime. PgnInput.test.tsx387 reads headers from TabStorageRepository.read's unconstrained generic defaultunknown. RepertoireInfo.test.tsx678 assigns the real collectionForDatabase implementation to a vi.fn inferred as a zero-argument function. Align the existing complete-tree boundary declarations with the already accepted optional provenance, supply the actual persisted read generic and the mock's real native callable signature. Preserve runtime behavior and all assertions, no cast or excess-property workaround. These are current diff type errors, not another semantic defect count. The actual type completion and full output are preserved under the run's stfx3o attempt.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8ac15991f5518041257b1eac29038a72bf0ff7653ae6cb1bbcd34c2cb2ca7973","input_sha256":"5a230ca1c0ceff3958fb03a861e3300c729ad271ae84c4a9229f30814c905d21","kind":"mutation-receipt","operation":"26a7d50787733350303876159d728ddfbaec5287a7ae28ce395cad84b9616d0e","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-03"],"target":"f-20261021-03","v":1} -->
+
+Accepted PGN edits own the captured live document and preserve linkedSource/sourceStamp/appendAttempted through same-game replacement, cold reload, Save and close-save. Current owner/content/source guard and cleanup retire stale success/error and newer draft intent across remount, while valid accepted completion survives mere panel unmount.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"4b4383e4b2622a9420a3104dbe2ce21742475e62e8063edfb5be1e81627b1fd3","header_sha256":"944fd4262bfd9f7685b568c2fec15e1ccf871d421772e5b87b2705371457fcfd","header_status":"handled","input_sha256":"ff58aa553a7ed1615effd00db819c153490ca4988a7b6a922c99d15350cfa397","kind":"mutation-receipt","operation":"979d390c119a2b255dffe78ece1f774e73345b44c765c35c8e56ba7d9a5056f8","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-03"],"target":"f-20261021-03","v":1} -->
 
 ---
 
