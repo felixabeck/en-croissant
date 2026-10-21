@@ -13066,11 +13066,15 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 
 ### Threat mode's `swapMove` keeps the en-passant square and can put the side not to move in check
 
-* **ID:** f-20261001-03 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261001-03 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/chessops.ts:36-45` (`swapMove`), callers `src/components/boards/EvalListener.tsx:109,273`, `src/components/panels/analysis/BestMoves.tsx:142,330`, `src/components/common/DetachedEval.tsx:97`.
 * **Defect:** `swapMove` flips only `setup.turn`. An en-passant square that was legal for the original side to move is kept for the other side (an ep square on the wrong rank), and a position whose side to move is in check becomes one where the side not to move is in check. The backend's shakmaty validation rejects both, so threat mode shows an error toast instead of a threat line.
 * **Why it matters:** threat analysis fails in ordinary positions right after a double pawn push or a check.
 * **Found by:** Claude Code (Opus 5.5) Stockfish 19 upgrade planning run, GUI-side UCI audit leaf, confirmed by the orchestrator reading `swapMove`, 2026-10-01.
+* **Entry revalidation (2026-10-21):** lens → build. The shared-file candidate still holds, but fixing only its en-passant field leaves the ordinary in-check failure unresolved. `analysisSearch.ts:16-24` requires a string FEN, turn and stable key, `EvalListener.tsx:112-133` always supplies that search to its listeners, and `BestMoves.tsx:353` independently derives the same threat board. A skipped turn while in check is illegal, so a correct fix must define and propagate unavailable threat analysis rather than only mutate the FEN. No governing decision for that contract was found in `tasks/decisions.md`. Defer under push-review-policy §4's separate same-area open-design-question exception, retaining the finding open for its own build run. No partial fix is included in f-20260914-20.
+* **Open question:** How should the shared threat-position contract represent a position where skipping the current turn is illegal, and how should engine search, cached rows and detached analysis consume that unavailable state consistently?
+* **Proof:** Regress `analysisSearch` after a capturable double pawn push and while the original side is in check, then prove every search/display consumer agrees on availability, searched FEN and key and never submits an illegal setup to native validation.
+<!-- ledger-meta {"command":"set-header","effect_lines":3,"effect_sha256":"9bd432974187ca10edb665dedf8aa16379670da82e33f3d1b6f86b97ffbcadf1","header_sha256":"130a02bf576f6f06d12be3984be0c8aadac76795cf36dc57fa9876102c11df0e","header_status":"open","input_sha256":"85ed9bb986db3c7d85e55d4939e2eea90635d93515bb33ba0ccc3dbf370d1ff8","kind":"mutation-receipt","operation":"82afb17a7381de6d113bcd09cb2cd63dd00ea6110e3683d9479057b09332e4c2","options":{"headers":{"Entry":"build"},"section":null},"request_id_sha256":null,"results":["f-20261001-03"],"target":"f-20261001-03","v":1} -->
 
 ### `EditEngine.tsx` has no production importer
 
