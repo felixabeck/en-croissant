@@ -11,8 +11,10 @@ const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptsDirectory, "..");
 const cliPath = join(scriptsDirectory, "check-remote-ci.mjs");
 const upstreamArgs = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"];
+const defaultRepository = "felixabeck/en-croissant";
+const defaultRemoteUrl = `https://github.com/${defaultRepository}.git`;
 
-function listRunsArgs(branch) {
+function listRunsArgs(branch, repository = defaultRepository) {
   return [
     "run",
     "list",
@@ -24,7 +26,13 @@ function listRunsArgs(branch) {
     String(REMOTE_RUN_LIMIT),
     "--json",
     "databaseId,headSha,status,conclusion,createdAt",
+    "--repo",
+    repository,
   ];
+}
+
+function viewRunArgs(runId, repository = defaultRepository) {
+  return ["run", "view", String(runId), "--json", "jobs", "--repo", repository];
 }
 
 function writeFakeExecutable(binDirectory, command, responses) {
@@ -54,6 +62,10 @@ function runRemoteCiCli({ runs, jobsByRun, ghFailure = false }) {
 
     const gitResponses = new Map([
       [JSON.stringify(upstreamArgs), { status: 0, stdout: "origin/master\n", stderr: "" }],
+      [
+        JSON.stringify(["remote", "get-url", "origin"]),
+        { status: 0, stdout: `${defaultRemoteUrl}\n`, stderr: "" },
+      ],
     ]);
     const ghResponses = new Map([
       [
@@ -64,7 +76,7 @@ function runRemoteCiCli({ runs, jobsByRun, ghFailure = false }) {
       ],
     ]);
     for (const remoteRun of runs) {
-      const args = ["run", "view", String(remoteRun.databaseId), "--json", "jobs"];
+      const args = viewRunArgs(remoteRun.databaseId);
       ghResponses.set(JSON.stringify(args), {
         status: 0,
         stdout: `${JSON.stringify({ jobs: jobsByRun[remoteRun.databaseId] })}\n`,
@@ -107,13 +119,27 @@ function job(name, { status = "completed", conclusion = "success" } = {}) {
   };
 }
 
-function cannedRunner({ upstream = "origin/master", runs, jobsByRun, overrides = {} }) {
+function cannedRunner({
+  upstream = "origin/master",
+  remoteUrl = defaultRemoteUrl,
+  runs,
+  jobsByRun,
+  overrides = {},
+}) {
   const calls = [];
   const runner = (command, args, options) => {
     calls.push({ command, args, options });
     const key = `${command} ${args.join(" ")}`;
     if (key in overrides) return overrides[key];
-    if (command === "git") return { status: 0, stdout: `${upstream}\n`, stderr: "" };
+    if (command === "git" && JSON.stringify(args) === JSON.stringify(upstreamArgs)) {
+      return { status: 0, stdout: `${upstream}\n`, stderr: "" };
+    }
+    if (
+      command === "git" &&
+      JSON.stringify(args) === JSON.stringify(["remote", "get-url", upstream.split("/")[0]])
+    ) {
+      return { status: 0, stdout: `${remoteUrl}\n`, stderr: "" };
+    }
     if (command === "gh" && args[0] === "run" && args[1] === "list") {
       return { status: 0, stdout: JSON.stringify(runs), stderr: "" };
     }
@@ -201,6 +227,89 @@ test("a newer green result supersedes an older red result for the same job", () 
   assert.equal(checkRemoteCi({ runner }).exitCode, 0);
 });
 
+test("retires cancelled old matrix names after a newer completed green generation", () => {
+  const { runner } = cannedRunner({
+    runs: [run(120, older, { conclusion: "cancelled" }), run(121, recent)],
+    jobsByRun: {
+      121: [job("test"), job("rust-platform (macos-26-intel, test)")],
+      120: [
+        job("test", { conclusion: "cancelled" }),
+        job("rust-platform (macos-latest, test)", { conclusion: "cancelled" }),
+      ],
+    },
+  });
+  assert.deepEqual(checkRemoteCi({ runner }), { exitCode: 0, branch: "master", redJobs: [] });
+});
+
+test("a newer unfinished generation retains current prior red results and adds new jobs", () => {
+  const { runner } = cannedRunner({
+    runs: [
+      run(124, "2026-10-01T13:00:00Z", { status: "in_progress", conclusion: "" }),
+      run(123, recent, { conclusion: "failure" }),
+      run(122, older, { conclusion: "cancelled" }),
+    ],
+    jobsByRun: {
+      124: [
+        job("test", { status: "in_progress", conclusion: "" }),
+        job("new-job", { conclusion: "failure" }),
+      ],
+      123: [
+        job("test", { conclusion: "failure" }),
+        job("still-current", { conclusion: "failure" }),
+      ],
+      122: [job("retired-job", { conclusion: "cancelled" })],
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(
+    result.redJobs.map(({ name, conclusion, runId }) => [name, conclusion, runId]),
+    [
+      ["test", "failure", 123],
+      ["new-job", "failure", 124],
+      ["still-current", "failure", 123],
+    ],
+  );
+});
+
+test("refuses a new unfinished job with no completed proof in prior generations", () => {
+  const { runner } = cannedRunner({
+    runs: [run(126, recent, { status: "in_progress", conclusion: "" }), run(125, older)],
+    jobsByRun: {
+      126: [job("test"), job("new-job", { status: "queued", conclusion: "" })],
+      125: [job("test")],
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.error, /no completed result.*new-job/u);
+});
+
+test("uses all unfinished generations when no workflow run has completed", () => {
+  const { runner } = cannedRunner({
+    runs: [
+      run(128, recent, { status: "in_progress", conclusion: "" }),
+      run(127, older, { status: "in_progress", conclusion: "" }),
+    ],
+    jobsByRun: {
+      128: [job("test", { status: "in_progress", conclusion: "" })],
+      127: [
+        job("test", { conclusion: "failure" }),
+        job("earlier-unfinished-job", { conclusion: "failure" }),
+      ],
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(
+    result.redJobs.map(({ name, runId }) => [name, runId]),
+    [
+      ["test", 127],
+      ["earlier-unfinished-job", 127],
+    ],
+  );
+});
+
 test("treats skipped and neutral conclusions as red because Test has no designed job skips", () => {
   const { runner } = cannedRunner({
     runs: [run(106, recent)],
@@ -237,6 +346,79 @@ test("filters the gh query to the upstream branch and Test workflow", () => {
   assert.deepEqual(listCall.args, listRunsArgs("release/ci-remote"));
 });
 
+for (const remoteUrl of [
+  "https://github.com/another-owner/another.repo.git",
+  "https://github.com/another-owner/another.repo",
+  "git@github.com:another-owner/another.repo.git",
+  "git@github.com:another-owner/another.repo",
+]) {
+  test(`pins every gh call to the upstream repository from ${remoteUrl}`, () => {
+    const { runner, calls } = cannedRunner({
+      upstream: "fork/release/ci-remote",
+      remoteUrl,
+      runs: [run(113, recent), run(112, older)],
+      jobsByRun: { 113: [job("test")], 112: [job("test")] },
+    });
+    const result = checkRemoteCi({ runner });
+    assert.deepEqual(
+      calls.filter(({ command }) => command === "gh").map(({ args }) => args),
+      [
+        listRunsArgs("release/ci-remote", "another-owner/another.repo"),
+        viewRunArgs(113, "another-owner/another.repo"),
+        viewRunArgs(112, "another-owner/another.repo"),
+      ],
+    );
+    assert.deepEqual(
+      calls.filter(({ command }) => command === "git").map(({ args }) => args),
+      [upstreamArgs, ["remote", "get-url", "fork"]],
+    );
+    assert.equal(result.exitCode, 0);
+  });
+}
+
+for (const [remoteUrl, error] of [
+  ["", /must be a GitHub HTTPS or SCP-style SSH URL/u],
+  ["https://github.com/owner", /must be a GitHub HTTPS or SCP-style SSH URL/u],
+  ["file:///tmp/repository.git", /must be a GitHub HTTPS or SCP-style SSH URL/u],
+  ["https://gitlab.com/owner/repository.git", /unsupported host/u],
+  ["git@example.com:owner/repository.git", /unsupported host/u],
+  ["https://github.com/owner/repository.git?query", /invalid GitHub owner\/repository/u],
+  ["https://github.com/owner/..", /invalid GitHub owner\/repository/u],
+  ["https://github.com/owner/.git", /invalid GitHub owner\/repository/u],
+  ["https://github.com/owner/repository/extra", /must be a GitHub HTTPS or SCP-style SSH URL/u],
+]) {
+  test(`refuses invalid upstream remote URL ${JSON.stringify(remoteUrl)} before querying gh`, () => {
+    const { runner, calls } = cannedRunner({ remoteUrl });
+    const result = checkRemoteCi({ runner });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.error, error);
+    assert.equal(
+      calls.some(({ command }) => command === "gh"),
+      false,
+    );
+  });
+}
+
+test("refuses a missing upstream remote with the git failure cause", () => {
+  const { runner, calls } = cannedRunner({
+    upstream: "fork/master",
+    overrides: {
+      "git remote get-url fork": {
+        status: 2,
+        stdout: "",
+        stderr: "No such remote 'fork'",
+      },
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.error, /No such remote 'fork'/u);
+  assert.equal(
+    calls.some(({ command }) => command === "gh"),
+    false,
+  );
+});
+
 test("disables colour forcing for every gh call while preserving the parent environment", () => {
   const originalEnvironment = process.env;
   const parentEnvironment = {
@@ -246,6 +428,7 @@ test("disables colour forcing for every gh call while preserving the parent envi
     GH_FORCE_TTY: "120",
     NO_COLOR: "",
     GH_TOKEN: "regression-test-token",
+    GH_REPO: "franciscoBSalgueiro/en-croissant",
   };
   const { runner, calls } = cannedRunner({
     runs: [run(112, recent), run(111, older)],
@@ -279,10 +462,16 @@ test("disables colour forcing for every gh call while preserving the parent envi
         assert.ok(options.env[name] === value, `${name} must be preserved`);
       }
     }
+    assert.deepEqual(
+      ghCalls.map(({ args }) => args.slice(-2)),
+      ghCalls.map(() => ["--repo", defaultRepository]),
+      "conflicting GH_REPO must not select the repository",
+    );
     assert.equal(parentEnvironment.CLICOLOR_FORCE, "1");
     assert.equal(parentEnvironment.FORCE_COLOR, "1");
     assert.equal(parentEnvironment.GH_FORCE_TTY, "120");
     assert.equal(parentEnvironment.NO_COLOR, "");
+    assert.equal(parentEnvironment.GH_REPO, "franciscoBSalgueiro/en-croissant");
   } finally {
     process.env = originalEnvironment;
   }
@@ -293,12 +482,11 @@ test("refuses with the gh failure cause", () => {
     runs: [],
     jobsByRun: {},
     overrides: {
-      "gh run list --workflow Test --branch master --limit 5 --json databaseId,headSha,status,conclusion,createdAt":
-        {
-          status: 1,
-          stdout: "",
-          stderr: "API rate limit exceeded",
-        },
+      [`gh ${listRunsArgs("master").join(" ")}`]: {
+        status: 1,
+        stdout: "",
+        stderr: "API rate limit exceeded",
+      },
     },
   });
 
@@ -323,6 +511,39 @@ test("refuses with the git failure cause", () => {
   const result = checkRemoteCi({ runner });
   assert.equal(result.exitCode, 2);
   assert.match(result.error, /no upstream configured/u);
+});
+
+test("refuses when an older run's jobs API is unavailable", () => {
+  const { runner } = cannedRunner({
+    runs: [run(130, recent), run(129, older)],
+    jobsByRun: { 130: [job("test")] },
+    overrides: {
+      [`gh ${viewRunArgs(129).join(" ")}`]: {
+        status: 1,
+        stdout: "",
+        stderr: "HTTP 503 Service Unavailable",
+      },
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.error, /HTTP 503 Service Unavailable/u);
+});
+
+test("refuses malformed jobs from the API", () => {
+  const { runner } = cannedRunner({
+    runs: [run(131, recent)],
+    overrides: {
+      [`gh ${viewRunArgs(131).join(" ")}`]: {
+        status: 0,
+        stdout: JSON.stringify({ jobs: null }),
+        stderr: "",
+      },
+    },
+  });
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.error, /returned no jobs array/u);
 });
 
 test("reports when spawnSync terminated the command by signal", () => {
@@ -357,12 +578,11 @@ test("refuses a malformed gh payload with its cause", () => {
     runs: [],
     jobsByRun: {},
     overrides: {
-      "gh run list --workflow Test --branch master --limit 5 --json databaseId,headSha,status,conclusion,createdAt":
-        {
-          status: 0,
-          stdout: "{ malformed",
-          stderr: "",
-        },
+      [`gh ${listRunsArgs("master").join(" ")}`]: {
+        status: 0,
+        stdout: "{ malformed",
+        stderr: "",
+      },
     },
   });
 

@@ -73,7 +73,7 @@ function parseJson(output, label) {
   }
 }
 
-function upstreamBranch(runner, cwd) {
+function upstreamTarget(runner, cwd) {
   const output = runChecked(
     runner,
     "git",
@@ -85,7 +85,30 @@ function upstreamBranch(runner, cwd) {
   if (separator <= 0 || separator === upstream.length - 1 || upstream.includes("\n")) {
     throw new Error(`git rev-parse returned an invalid upstream ref: ${JSON.stringify(upstream)}`);
   }
-  return upstream.slice(separator + 1);
+  const remote = upstream.slice(0, separator);
+  const url = runChecked(runner, "git", ["remote", "get-url", remote], cwd).trim();
+  return { branch: upstream.slice(separator + 1), repository: githubRepository(url) };
+}
+
+function githubRepository(url) {
+  const match =
+    /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)$/u.exec(url) ??
+    /^git@([^:]+):([^/]+)\/([^/]+)$/u.exec(url);
+  if (!match) throw new Error("Upstream remote URL must be a GitHub HTTPS or SCP-style SSH URL");
+  const [, host, owner, repositoryPath] = match;
+  if (host.toLowerCase() !== "github.com") {
+    throw new Error("Upstream remote URL has an unsupported host, expected github.com");
+  }
+  const repository = repositoryPath.replace(/\.git$/u, "");
+  if (
+    !/^[a-z\d](?:[a-z\d-]*[a-z\d])?$/iu.test(owner) ||
+    !/^[a-z\d_.-]+$/iu.test(repository) ||
+    repository === "." ||
+    repository === ".."
+  ) {
+    throw new Error("Upstream remote URL has an invalid GitHub owner/repository identity");
+  }
+  return `${owner}/${repository}`;
 }
 
 function validateRun(value, index) {
@@ -128,7 +151,7 @@ function validateJob(value, runId, index) {
   return { name, status, conclusion: value.conclusion || null, url };
 }
 
-function runsForBranch(runner, cwd, branch) {
+function runsForBranch(runner, cwd, branch, repository) {
   const output = runChecked(
     runner,
     "gh",
@@ -143,6 +166,8 @@ function runsForBranch(runner, cwd, branch) {
       String(REMOTE_RUN_LIMIT),
       "--json",
       RUN_FIELDS,
+      "--repo",
+      repository,
     ],
     cwd,
   );
@@ -156,8 +181,8 @@ function runsForBranch(runner, cwd, branch) {
   });
 }
 
-function jobsForRun(runner, cwd, run) {
-  const args = ["run", "view", String(run.databaseId), "--json", "jobs"];
+function jobsForRun(runner, cwd, run, repository) {
+  const args = ["run", "view", String(run.databaseId), "--json", "jobs", "--repo", repository];
   const output = runChecked(runner, "gh", args, cwd);
   const payload = parseJson(output, `gh run view ${run.databaseId}`);
   if (!isRecord(payload) || !Array.isArray(payload.jobs)) {
@@ -170,24 +195,28 @@ function jobsForRun(runner, cwd, run) {
 }
 
 function inspectRemoteCi({ runner = spawnSync, cwd = process.cwd() } = {}) {
-  const branch = upstreamBranch(runner, cwd);
-  const runs = runsForBranch(runner, cwd, branch);
+  const { branch, repository } = upstreamTarget(runner, cwd);
+  const runs = runsForBranch(runner, cwd, branch, repository);
   const jobsByName = new Map();
-  const seenNames = new Set();
+  const activeNames = new Set();
+  let completedGenerationSeen = false;
 
   for (const run of runs) {
-    for (const job of jobsForRun(runner, cwd, run)) {
-      seenNames.add(job.name);
+    for (const job of jobsForRun(runner, cwd, run, repository)) {
+      // The latest completed workflow defines the generation. Newer unfinished runs can
+      // introduce jobs, while names exclusive to older completed generations are retired.
+      if (!completedGenerationSeen) activeNames.add(job.name);
       if (job.status === "completed" && !jobsByName.has(job.name)) {
         jobsByName.set(job.name, { ...job, runId: run.databaseId, headSha: run.headSha });
       }
     }
+    if (run.status === "completed") completedGenerationSeen = true;
   }
 
-  if (seenNames.size === 0) throw new Error("No Test workflow jobs were returned");
-  if (jobsByName.size === 0)
+  if (activeNames.size === 0) throw new Error("No Test workflow jobs were returned");
+  if (![...activeNames].some((name) => jobsByName.has(name)))
     throw new Error("No completed Test workflow jobs were returned in the recent-run window");
-  const missing = [...seenNames].filter((name) => !jobsByName.has(name));
+  const missing = [...activeNames].filter((name) => !jobsByName.has(name));
   if (missing.length > 0) {
     throw new Error(
       `Jobs have no completed result in the recent-run window: ${missing.join(", ")}`,
@@ -196,9 +225,9 @@ function inspectRemoteCi({ runner = spawnSync, cwd = process.cwd() } = {}) {
 
   // This workflow has no job-level conditional skips. A skipped or neutral job is therefore
   // treated as red, along with every other completed conclusion except success.
-  const redJobs = [...jobsByName.entries()]
-    .filter(([, job]) => job.conclusion !== "success")
-    .map(([name, job]) => ({ name, ...job }));
+  const redJobs = [...activeNames]
+    .map((name) => ({ name, ...jobsByName.get(name) }))
+    .filter((job) => job.conclusion !== "success");
   return { branch, redJobs };
 }
 
