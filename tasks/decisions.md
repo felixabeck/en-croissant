@@ -9306,3 +9306,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The finding concerns forwarding on current code. Reversal path: revise the map when production acquisition edges change, preserving mutation-proven coverage.
 * **Decided by:** Codex, full auto adopted plan for f-20261004-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"29031a543dbfa16ed41d09b6ce550e00778bc43da119912ec0a90fb7240339e8","input_sha256":"d3142e4d9af3bbfdec1ad37e349cc9e8d6ecba08db4944f98384447c6f3390a7","kind":"mutation-receipt","operation":"e6093c1055dada69f9b94c5f63c2e7ae0349090fd777a992fc3510853c64da44","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-11","d-20261021-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261021-13 — How does the external acquisition test file stay outside production source pins?
+
+* **Question:** Should src-tauri/src/db/acquisition_cancellation_tests.rs use the existing inline test-module layout or extend the production source checker?
+* **Governs:** f-20261004-17
+* **Chosen:** Keep its implementation inside an explicit inline cfg(test) tests module, matching linked_collections/tests.rs. The parent module remains test-only. Test selectors gain the tests namespace.
+* **Rejected:** A checker exception for this file, extending its custom source parser to derive external parent-module attributes, or changing the protected caller inventory.
+* **Reason:** The existing production_region checker intentionally blanks inline test modules. Final gate mSeab7 treated the new export test as a production caller and exited 101. Using its supported layout makes that exact pin and all eleven acquisition tests pass without weakening the verifier or altering any production behavior. Reversal path: remove the inner wrapper only when an independently proven checker can classify external test-only modules through their actual parent declarations.
+* **Decided by:** Codex, full auto G1 gate repair for f-20261004-17. Plan authorship and arbitration shared one context, detection uses the code model family · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"bde5b7d581df08af5e698090281542e4e6daf266c7f2ce3c9ba2458b79dce97e","input_sha256":"5abdf050571cd27a630a7fe1eae38dcd399128d364ec054134e1bd9aeeb076b7","kind":"mutation-receipt","operation":"1ccf09fdb2e1701112080ec978816bd78577e1443c2291073fe5541c04758d8e","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-13"],"target":"decisions-ledger","v":1} -->
