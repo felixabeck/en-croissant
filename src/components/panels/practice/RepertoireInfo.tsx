@@ -672,6 +672,7 @@ function MovesView({
       nextGapLabel={nextGapLabel}
       biggestGapLabel={biggestGapLabel}
       hasMoves={isUserTurn ? hasResponses : positionMoves.length > 0}
+      complete={coverageKnown && coverageMap?.get(startPath.join(",")) === 1}
       goToMove={goToMove}
       t={t}
     />
@@ -835,6 +836,7 @@ function CoverageFeedback({
   nextGapLabel,
   biggestGapLabel,
   hasMoves,
+  complete,
   goToMove,
   t,
 }: {
@@ -845,6 +847,7 @@ function CoverageFeedback({
   nextGapLabel: string | null;
   biggestGapLabel: string | null;
   hasMoves: boolean;
+  complete: boolean;
   goToMove: (path: number[]) => void;
   t: ReturnType<typeof useTranslation>["t"];
 }) {
@@ -905,7 +908,7 @@ function CoverageFeedback({
       </>
     );
   }
-  if (!hasMoves) return null;
+  if (!hasMoves || !complete) return null;
   return (
     <>
       <Divider />

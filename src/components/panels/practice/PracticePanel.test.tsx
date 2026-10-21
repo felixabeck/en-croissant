@@ -128,6 +128,19 @@ vi.mock("@/utils/treeReducer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/treeReducer")>()),
   findFen: (fen: string) => (fen === "gone" || fen === "root" ? null : [0]),
   getNodeAtPath: () => fixtures.node,
+  treeIterator: function* () {
+    // The isolated harness supplies card frames. Gameplay tests use the real tree iterator.
+    for (const card of [
+      ...fixtures.deck.positions,
+      { fen: fixtures.tree.currentNode().fen, answer: "e4" },
+    ]) {
+      if (card.fen === "gone" || card.fen === "root") continue;
+      yield {
+        position: [0],
+        node: { ...fixtures.node, fen: card.fen, children: [{ san: card.answer }] },
+      };
+    }
+  },
 }));
 vi.mock("@/components/common/AppModal", () => ({
   default: ({ opened, onClose, title, children }: any) =>

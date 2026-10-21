@@ -8,16 +8,18 @@ import { buildFromTree, updateCardPerformance } from "@/components/files/opening
 import {
   activeTabAtom,
   autoSaveAtom,
+  deckAtomFamily,
   practiceMoveControllerFamily,
   practiceStateFamily,
   practiceSessionStatsFamily,
   tabsAtom,
 } from "@/state/atoms";
-import { resetPracticeMigrationForTests } from "@/state/practiceStorage";
+import { PRACTICE_SYNC_DEBOUNCE_MS, resetPracticeMigrationForTests } from "@/state/practiceStorage";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { WorkspaceTabScope } from "@/state/tabScope";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { defaultTree, getNodeAtPath } from "@/utils/treeReducer";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { Chess } from "chessops/chess";
 import { parseFen } from "chessops/fen";
 import { parseSan } from "chessops/san";
@@ -138,14 +140,17 @@ afterEach(async () => {
   localStorage.clear();
 });
 
-async function mountStudy(spec = cases[0]) {
+async function mountStudy(spec = cases[0], variation?: string[], full = false) {
   tree = createTreeStore(undefined, defaultTree(spec.fen));
-  expect(tree.getState().makeMoves({ payload: spec.moves }).success).toBe(true);
+  for (const payload of variation ? [spec.moves, variation] : [spec.moves]) {
+    tree.getState().goToStart();
+    expect(tree.getState().makeMoves({ payload }).success).toBe(true);
+  }
   tree.getState().setHeaders({ ...tree.getState().headers, orientation: spec.orientation });
   tree.getState().goToMove([]);
   tree.getState().save("a".repeat(64));
   const cards = buildFromTree(tree.getState().root, spec.orientation, []);
-  expect(cards).toHaveLength(1);
+  expect(cards).toHaveLength(variation ? 3 : 1);
   mocks.native.loadPracticeDeck.mockResolvedValue({
     positionsDocument: JSON.stringify({ positions: cards }),
     revision: 1,
@@ -188,7 +193,7 @@ async function mountStudy(spec = cases[0]) {
       </MantineProvider>,
     ),
   );
-  await click("Board.Practice.StartPractice");
+  await click(full ? "Board.Practice.PracticeFullRepertoire" : "Board.Practice.StartPractice");
   expect(atoms.get(practiceStateFamily(owner.value)).phase).toBe("waiting");
   expect(tree.getState().currentNode().fen).toBe(cards[0].fen);
   return cards[0];
@@ -358,3 +363,140 @@ test("actual log writer retains repeated FEN IDs and root or missing-node fallba
   ]);
   expect(getNodeAtPath(tree.getState().root, tree.getState().position).fen).toBe(card.fen);
 });
+
+const transposedFen = "r1bqkb1r/pppppppp/2n2n2/8/8/2N2N2/PPPPPPPP/R1BQKB1R w KQkq - 4 3";
+const answerFrame = [1, 0, 0, 0];
+
+async function startTransposedCard() {
+  await mountStudy(
+    { ...cases[0], moves: ["Nf3", "Nf6", "Nc3", "Nc6"] },
+    ["Nc3", "Nc6", "Nf3", "Nf6", "e4"],
+    true,
+  );
+  const cards = buildFromTree(tree.getState().root, "white", []);
+  expect(cards.map((card) => card.answer)).toEqual(["Nc3", "Nf3", "e4"]);
+  expect(getNodeAtPath(tree.getState().root, [0, 0, 0, 0]).fen).toBe(transposedFen);
+  expect(getNodeAtPath(tree.getState().root, [0, 0, 0, 0]).children).toHaveLength(0);
+  for (const answer of ["Nc3", "Nf3"]) {
+    await act(async () => atoms.get(practiceMoveControllerFamily(owner.value))!.submitMove(answer));
+    expect(atoms.get(practiceStateFamily(owner.value)).phase).toBe("correct");
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+  }
+  expect(atoms.get(practiceStateFamily(owner.value))).toMatchObject({
+    phase: "waiting",
+    currentFen: transposedFen,
+  });
+  return cards.at(-1)!;
+}
+
+test("real producer transposition admits the answer-bearing frame and reveals its existing answer at 499/1ms", async () => {
+  const card = await startTransposedCard();
+  expect(tree.getState().position).toEqual(answerFrame);
+  expect(tree.getState().practicePath).toEqual(answerFrame);
+  expect(card.answer).toBe("e4");
+  const source = tree.getState();
+  expect(parseSan(Chess.fromSetup(parseFen(card.fen).unwrap()).unwrap(), "d4")).toBeDefined();
+  await act(async () => tree.getState().goToNext());
+  expect(tree.getState().position).toBe(source.position);
+  await act(async () => atoms.get(practiceMoveControllerFamily(owner.value))!.submitMove("d4"));
+  expect(atoms.get(practiceStateFamily(owner.value)).phase).toBe("incorrect");
+  await act(async () => vi.advanceTimersByTimeAsync(499));
+  expect(tree.getState().position).toBe(source.position);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(tree.getState().position).toEqual([...answerFrame, 0]);
+  expect(tree.getState().currentNode().san).toBe("e4");
+  expect(tree.getState().root).toBe(source.root);
+  expect(tree.getState().headers).toBe(source.headers);
+  expect(tree.getState().practicePath).toBe(source.practicePath);
+  expect(tree.getState().sourceStamp).toBe(source.sourceStamp);
+  expect(tree.getState().linkedSource).toBe(source.linkedSource);
+  expect(tree.getState().dirty).toBe(false);
+  expect(atoms.get(practiceSessionStatsFamily(owner.value))).toMatchObject({
+    correct: 2,
+    incorrect: 1,
+  });
+  expect(mocks.native.recordPracticeReview).not.toHaveBeenCalled();
+});
+
+test("current transposed card return and positions navigation use the answer-bearing current frame", async () => {
+  await startTransposedCard();
+  await act(async () => tree.getState().goToStart());
+  await click("Board.Practice.GoBackToPosition");
+  expect(tree.getState().position).toEqual(answerFrame);
+  expect(tree.getState().practicePath).toEqual(answerFrame);
+  await act(async () => tree.getState().goToStart());
+  await click("Board.Practice.ShowAll");
+  const positionCard = [...document.querySelectorAll(".mantine-Card-root")].find((element) =>
+    element.textContent?.includes("3. e4"),
+  );
+  expect(positionCard).toBeDefined();
+  await act(async () => positionCard!.querySelector<HTMLButtonElement>("button")!.click());
+  expect(tree.getState().position).toEqual(answerFrame);
+  expect(tree.getState().currentNode().children[0].san).toBe("e4");
+  expect(tree.getState().dirty).toBe(false);
+});
+
+test.each([false, true])(
+  "removing a transposed card answer retires waiting or pending feedback without fabricating moves, pending=%s",
+  async (pending) => {
+    await startTransposedCard();
+    if (pending)
+      await act(async () => atoms.get(practiceMoveControllerFamily(owner.value))!.submitMove("d4"));
+    await act(async () => tree.getState().deleteMove([...answerFrame, 0]));
+    const edited = tree.getState();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(atoms.get(practiceStateFamily(owner.value)).phase).toBe("idle");
+    expect(tree.getState().root).toBe(edited.root);
+    expect(tree.getState().headers).toBe(edited.headers);
+    expect(getNodeAtPath(tree.getState().root, answerFrame).children).toHaveLength(0);
+    expect(tree.getState().linkedSource).toBe(edited.linkedSource);
+    expect(tree.getState().dirty).toBe(true);
+    expect(mocks.native.recordPracticeReview).not.toHaveBeenCalled();
+  },
+);
+
+test.each([cases[0], cases[3]])(
+  "a stored $name root card keeps exact-frame admission and reveals its existing answer",
+  async (spec) => {
+    const originalCard = await mountStudy(spec);
+    await click("Common.Stop");
+    if (owner.gameOrigin.kind !== "file") throw new Error("Expected a file-backed practice owner");
+    const file = owner.gameOrigin.file.handle;
+    const rootCard = {
+      ...originalCard,
+      fen: tree.getState().root.fen,
+      answer: tree.getState().root.children[0].san!,
+    };
+    // A stored card uses the existing deck writer after tree synchronization has settled.
+    await act(async () => {
+      const writing = atoms.set(deckAtomFamily({ file: fileWorkspaceKey(file), game: 0 }), {
+        type: "sync",
+        positions: [rootCard],
+      });
+      await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+      await writing;
+    });
+    await click("Board.Practice.StartPractice");
+    expect(tree.getState().position).toEqual([]);
+    expect(atoms.get(practiceStateFamily(owner.value))).toMatchObject({
+      phase: "waiting",
+      currentFen: rootCard.fen,
+    });
+    const source = tree.getState();
+    expect(
+      parseSan(Chess.fromSetup(parseFen(rootCard.fen).unwrap()).unwrap(), spec.wrong),
+    ).toBeDefined();
+    await act(async () =>
+      atoms.get(practiceMoveControllerFamily(owner.value))!.submitMove(spec.wrong),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(499));
+    expect(tree.getState().position).toBe(source.position);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(tree.getState().position).toEqual([0]);
+    expect(tree.getState().currentNode().san).toBe(rootCard.answer);
+    expect(tree.getState().root).toBe(source.root);
+    expect(tree.getState().headers).toBe(source.headers);
+    expect(tree.getState().dirty).toBe(false);
+    expect(mocks.native.recordPracticeReview).toHaveBeenCalledOnce();
+  },
+);

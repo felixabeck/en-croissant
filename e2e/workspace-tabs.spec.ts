@@ -617,6 +617,280 @@ test("workspace-tabs: incorrect practice reveals the existing answer and its rev
     });
 });
 
+test("workspace-tabs: successful Italian marked-start coverage with a missing continuation stays incomplete and preparation recovers", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const database = { id: { id: "italian-reference" }, kind: "database" } as const;
+    await page.addInitScript((reference) => {
+        localStorage.setItem("reference-database", JSON.stringify(reference));
+        localStorage.setItem("coverage-min-games", "10");
+        localStorage.setItem("auto-save", "false");
+    }, database);
+    const repertoireFile = {
+        ...filesWorkspaceFixture.pgnFile,
+        metadata: { type: "repertoire" as const, tags: [] },
+    };
+    const game = {
+        pgn: '[Event "Italian start"]\n[Result "*"]\n\n*',
+        stamp: "d".repeat(64),
+        revision: "italian-start",
+        present: true,
+    };
+    const stats = (move: string) => [[{ move, white: 100, draw: 0, black: 0 }], []];
+    const commands = filesWorkspaceCommands([[repertoireFile]], {
+        ...pgnFileCommands,
+        read_game: { result: game },
+        read_games: { result: [game] },
+        file_revision: { result: game.revision },
+        lex_pgn: {
+            result: [
+                { type: "Header", value: { tag: "Event", value: "Italian start" } },
+                { type: "Header", value: { tag: "Result", value: "*" } },
+                { type: "Outcome", value: "*" },
+            ],
+        },
+        collection_for_database: { result: null },
+        search_position: { result: [[], []] },
+    });
+    await mockScenario({ commands });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    await page.getByRole("tab", { name: "Build", exact: true }).click();
+    const build = page.getByRole("tabpanel", { name: "Build", exact: true });
+    const complete = build.getByText("No gaps found — your repertoire is complete!", {
+        exact: true,
+    });
+    const queries = () =>
+        page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "search_position"),
+        );
+    await expect(
+        build.getByText("No moves found in the reference database for this position.", {
+            exact: true,
+        }),
+    ).toBeVisible();
+    await expect(build.getByText("Loading position data...", { exact: true })).toHaveCount(0);
+    expect(await queries()).toHaveLength(2);
+    await page.evaluate(
+        ({ commands, response }) =>
+            window.__E2E_TAURI__.configure({
+                commands: { ...commands, search_position: { result: response } },
+            }),
+        { commands, response: stats("Bc5") },
+    );
+    await build.getByRole("button", { name: "Italian Game", exact: true }).click();
+    const continuation = build.getByRole("button", { name: /3\.\.\. Bc5/ });
+    await expect(continuation).toBeVisible();
+    await expect(build.getByText("Loading position data...", { exact: true })).toHaveCount(0);
+    await expect(complete).toHaveCount(0);
+    await expect(build.getByRole("button", { name: /Next gap|Biggest gap/i })).toHaveCount(0);
+    await expect(build.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+    const startFen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -";
+    expect(
+        (await queries())
+            .slice(2)
+            .map(
+                ({ args }) => (args as { query: { position: { fen: string } } }).query.position.fen,
+            ),
+    ).toEqual([startFen, startFen]);
+    await assertNoHorizontalOverflow();
+    await testInfo.attach("repertoire-italian-successful-incomplete.png", {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: "image/png",
+    });
+
+    await page.evaluate(
+        ({ commands, outcomes }) =>
+            window.__E2E_TAURI__.configure({
+                commands: { ...commands, search_position: { outcomes, result: [[], []] } },
+            }),
+        {
+            commands,
+            outcomes: [{ result: stats("d3") }, { result: stats("Bc5") }, { result: stats("d3") }],
+        },
+    );
+    await continuation.click();
+    const response = build.getByRole("button", { name: /4\. d3/ });
+    await expect(response).toBeVisible();
+    await expect(build.getByText("Loading position data...", { exact: true })).toHaveCount(0);
+    expect(await queries()).toHaveLength(7);
+    await page.evaluate(
+        ({ commands, outcomes }) =>
+            window.__E2E_TAURI__.configure({
+                commands: { ...commands, search_position: { outcomes, result: [[], []] } },
+            }),
+        {
+            commands,
+            outcomes: [
+                { result: [[], []] },
+                { result: stats("Bc5") },
+                { result: stats("d3") },
+                { result: [[], []] },
+            ],
+        },
+    );
+    await response.click();
+    await expect(build.getByText("Loading position data...", { exact: true })).toHaveCount(0);
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await expect(complete).toBeVisible();
+    await expect(continuation.getByRole("progressbar").last()).toHaveAttribute(
+        "aria-valuenow",
+        "100",
+    );
+    expect(await queries()).toHaveLength(11);
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(calls.filter(({ command }) => command === "write_game")).toHaveLength(0);
+    await assertNothingClipped(complete, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    await testInfo.attach("repertoire-italian-prepared-complete.png", {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: "image/png",
+    });
+});
+
+test("workspace-tabs: real transposed practice card selects and reveals the existing answer-bearing occurrence", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}, testInfo) => {
+    const now = new Date("2026-10-21T12:00:00Z");
+    await page.clock.install({ time: now });
+    await page.clock.pauseAt(now.getTime() + 1000);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.addInitScript(() => localStorage.setItem("auto-save", "false"));
+    const repertoireFile = {
+        ...filesWorkspaceFixture.pgnFile,
+        metadata: { type: "repertoire" as const, tags: [] },
+    };
+    const game = {
+        pgn: '[Event "Transposed practice"]\n[Result "*"]\n\n1. Nf3 (1. Nc3 Nc6 2. Nf3 Nf6 3. e4) Nf6 2. Nc3 Nc6 *',
+        stamp: "f".repeat(64),
+        revision: "transposed-practice",
+        present: true,
+    };
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            read_game: { result: game },
+            read_games: { result: [game] },
+            file_revision: { result: game.revision },
+            lex_pgn: {
+                result: [
+                    { type: "Header", value: { tag: "Event", value: "Transposed practice" } },
+                    { type: "Header", value: { tag: "Result", value: "*" } },
+                    { type: "San", value: "Nf3" },
+                    { type: "ParenOpen" },
+                    ...["Nc3", "Nc6", "Nf3", "Nf6", "e4"].map((value) => ({ type: "San", value })),
+                    { type: "ParenClose" },
+                    ...["Nf6", "Nc3", "Nc6"].map((value) => ({ type: "San", value })),
+                    { type: "Outcome", value: "*" },
+                ],
+            },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    const full = page.getByRole("button", { name: /Practice full repertoire/i });
+    await expect(full).toBeVisible();
+    // Deliver the existing 250ms deck-sync debounce before starting the held-clock drill.
+    await page.clock.runFor(300);
+    await expect(full).toBeEnabled();
+    await full.click();
+    const board = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
+    for (const [from, to] of [
+        ["b1", "c3"],
+        ["g1", "f3"],
+    ]) {
+        await playBoardMove(page, page.locator("cg-board").first(), from, to);
+        await page.clock.runFor(1);
+        await page.clock.runFor(300);
+    }
+    await page.clock.runFor(300);
+    const tab = (await activeWorkspaceTab(page))!;
+    const storedTree = async () => {
+        const raw = await page.evaluate(
+            (key) => sessionStorage.getItem(key),
+            tab.treeKey ?? tab.value,
+        );
+        expect(raw).not.toBeNull();
+        return deserializeStorageValue<{
+            state: {
+                root: unknown;
+                headers: unknown;
+                position: number[];
+                practicePath: number[];
+                dirty: boolean;
+                sourceStamp: string;
+                linkedSource?: unknown;
+            };
+        }>(raw!)!.state;
+    };
+    const before = await storedTree();
+    expect(before).toMatchObject({
+        position: [1, 0, 0, 0],
+        practicePath: [1, 0, 0, 0],
+        dirty: false,
+        sourceStamp: game.stamp,
+    });
+    await page.keyboard.press("ArrowRight");
+    await playBoardMove(page, page.locator("cg-board").first(), "d2", "d4");
+    await page.clock.runFor(1);
+    await expect(page.getByText("The correct move was e4", { exact: true })).toBeVisible();
+    await page.clock.runFor(499);
+    expect((await storedTree()).position).toEqual(before.position);
+    await expect(board.getByRole("gridcell", { name: "e4, empty", exact: true })).toHaveCount(1);
+    await page.clock.runFor(1);
+    await expect(board.getByRole("gridcell", { name: "e4, White Pawn", exact: true })).toHaveCount(
+        1,
+    );
+    await page.clock.runFor(300);
+    const after = await storedTree();
+    expect(after.position).toEqual([1, 0, 0, 0, 0]);
+    expect(after.practicePath).toEqual(before.practicePath);
+    expect(after.root).toEqual(before.root);
+    expect(after.headers).toEqual(before.headers);
+    expect(after.linkedSource).toEqual(before.linkedSource);
+    expect(after.sourceStamp).toBe(before.sourceStamp);
+    expect(after.dirty).toBe(false);
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    const sync = calls.filter(({ command }) => command === "sync_practice_positions");
+    expect(sync).toHaveLength(1);
+    expect(
+        JSON.parse((sync[0].args as { positionsDocument: string }).positionsDocument).positions.map(
+            (position: { answer: string }) => position.answer,
+        ),
+    ).toEqual(["Nc3", "Nf3", "e4"]);
+    expect(calls.filter(({ command }) => command === "record_practice_review")).toHaveLength(0);
+    expect(calls.filter(({ command }) => command === "write_game")).toHaveLength(0);
+    await testInfo.attach("practice-transposed-existing-answer.png", {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: "image/png",
+    });
+    await page.clock.resume();
+    await page.getByRole("button", { name: "Show all positions", exact: true }).click();
+    const positionCard = page
+        .locator(".mantine-Card-root")
+        .filter({ has: page.getByText("3. e4", { exact: true }) });
+    await expect(positionCard).toBeVisible();
+    await positionCard.getByRole("button").click();
+    await expect.poll(async () => (await storedTree()).position).toEqual([1, 0, 0, 0]);
+    await assertNoHorizontalOverflow();
+    await testInfo.attach("practice-transposed-card-navigation.png", {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: "image/png",
+    });
+});
+
 async function rejectWorkspaceWrites(page: import("@playwright/test").Page) {
     await page.evaluate(() => {
         const target = window as typeof window & {

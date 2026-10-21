@@ -47,6 +47,7 @@ import {
   getStats,
   syncDeck,
   updateCardPerformance,
+  type Position,
 } from "@/components/files/opening";
 import {
   evalOpenFamily,
@@ -70,10 +71,17 @@ import {
 } from "@/state/practiceStorage";
 import { getTabFile, getTabGameNumber, sameTabOwner, useTabActions } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { findFen, getBoardState, getNodeAtPath } from "@/utils/treeReducer";
+import {
+  findFen,
+  getBoardState,
+  getNodeAtPath,
+  treeIterator,
+  type TreeNode,
+} from "@/utils/treeReducer";
 import RepertoireInfo from "./RepertoireInfo";
 import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import paneClasses from "@/components/common/PaneTabs.module.css";
+import { COMPACT_PANE_TABS_WIDTH_EM } from "@/components/boards/paneTabs";
 import {
   canSubmitPracticeMove,
   emptyPracticeStats,
@@ -85,9 +93,21 @@ import {
 const PRACTICE_ADVANCE_DELAY_MS = 300;
 const PRACTICE_INCORRECT_DELAY_MS = 500;
 
+function findPracticeCardFrame(card: Pick<Position, "fen" | "answer">, root: TreeNode) {
+  for (const frame of treeIterator(root)) {
+    if (
+      frame.node.fen === card.fen &&
+      frame.node.children.some((child) => child.san === card.answer)
+    ) {
+      return frame;
+    }
+  }
+  return undefined;
+}
+
 function PracticePanel() {
   const { t } = useTranslation();
-  const compactTabs = useScaledMaxWidth(36);
+  const compactTabs = useScaledMaxWidth(COMPACT_PANE_TABS_WIDTH_EM);
 
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
@@ -318,7 +338,7 @@ function PracticePanel() {
         completePracticeSession(currentStats);
         return;
       }
-      const path = findFen(card.fen, rootRef.current);
+      const path = findPracticeCardFrame(card, rootRef.current)?.position;
       if (!path) {
         setDeck({
           type: "sync",
@@ -543,11 +563,10 @@ function PracticePanel() {
             return;
           // Resolve the answer in the current tree. Drill arrows remain bounded at the card,
           // and feedback never creates a move or reuses a path across a source change.
-          const path = findFen(card.fen, state.root);
-          if (!path) return;
-          const node = getNodeAtPath(state.root, path);
-          const answerIndex = node.children.findIndex((child) => child.san === card.answer);
-          if (answerIndex !== -1) state.goToMove([...path, answerIndex]);
+          const frame = findPracticeCardFrame(card, state.root);
+          if (!frame) return;
+          const answerIndex = frame.node.children.findIndex((child) => child.san === card.answer);
+          if (answerIndex !== -1) state.goToMove([...frame.position, answerIndex]);
         },
         PRACTICE_INCORRECT_DELAY_MS,
       );
@@ -667,8 +686,14 @@ function PracticePanel() {
   }, [endPracticeSession, practiceState.phase, tab]);
 
   useEffect(() => {
-    const fen = sessionRef.current.currentFen;
-    if (fen && !findFen(fen, root)) completePracticeSession();
+    const session = sessionRef.current;
+    const fen = session.currentFen;
+    if (!fen) return;
+    const card = deck.positions.find((position) => position.fen === fen);
+    const currentCard = card ?? (session.answer ? { fen, answer: session.answer } : undefined);
+    if (currentCard ? !findPracticeCardFrame(currentCard, root) : !findFen(fen, root)) {
+      completePracticeSession();
+    }
   }, [completePracticeSession, deck.positions, root]);
 
   return (
@@ -997,12 +1022,18 @@ function PracticePanel() {
                               size="xs"
                               leftSection={<IconArrowBack size={14} />}
                               onClick={() => {
-                                const path = findFen(practiceState.currentFen!, root);
-                                if (!path) {
+                                const card = deckRef.current.positions.find(
+                                  (position) => position.fen === practiceState.currentFen,
+                                );
+                                const frame = card
+                                  ? findPracticeCardFrame(card, store.getState().root)
+                                  : undefined;
+                                if (!frame) {
                                   completePracticeSession();
                                   return;
                                 }
-                                goToMove(path);
+                                goToMove(frame.position);
+                                setPracticePath(frame.position);
                                 setInvisible(true);
                               }}
                             >
@@ -1272,9 +1303,9 @@ function PositionsModal({
       {deck.positions.length === 0 && <Text>{t("Board.Practice.NoPositionsYet")}</Text>}
       <SimpleGrid cols={2}>
         {deck.positions.map((c) => {
-          const position = findFen(c.fen, root);
-          if (!position) return null;
-          const node = getNodeAtPath(root, position);
+          const frame = findPracticeCardFrame(c, root);
+          if (!frame) return null;
+          const node = frame.node;
           return (
             <Card key={c.fen}>
               <Text>{`${formatMoveNumber(node.halfMoves + 1)} ${c.answer}`}</Text>
@@ -1304,7 +1335,9 @@ function PositionsModal({
                   label={t("Board.Practice.GoBackToPosition")}
                   variant="subtle"
                   onClick={() => {
-                    goToMove(position);
+                    const current = findPracticeCardFrame(c, store.getState().root);
+                    if (!current) return;
+                    goToMove(current.position);
                     setOpen(false);
                   }}
                 >

@@ -155,6 +155,7 @@ function computeCoverageForFen(
         }
         let weighted = 0;
         let maxMissing = 0;
+        let fullyCovered = true;
         for (const m of significant) {
             const freq = (m.white + m.draw + m.black) / sigTotal;
             const childFen = stateMoves.get(boardFen)?.get(m.move);
@@ -168,13 +169,15 @@ function computeCoverageForFen(
                     memo,
                 );
                 weighted += freq * child.coverage;
+                if (child.coverage !== 1) fullyCovered = false;
             } else {
+                fullyCovered = false;
                 if (m.white + m.draw + m.black > maxMissing) {
                     maxMissing = m.white + m.draw + m.black;
                 }
             }
         }
-        const res = { coverage: weighted, missing: maxMissing };
+        const res = { coverage: fullyCovered ? 1 : weighted, missing: maxMissing };
         memo.set(boardFen, res);
         return res;
     }

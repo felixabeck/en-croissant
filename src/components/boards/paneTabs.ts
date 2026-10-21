@@ -1,0 +1,1 @@
+export const COMPACT_PANE_TABS_WIDTH_EM = 36;

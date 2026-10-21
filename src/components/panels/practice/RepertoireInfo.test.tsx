@@ -10,7 +10,7 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
 import { activeTabAtom, coverageMinGamesAtom, referenceDbAtom, tabsAtom } from "@/state/atoms";
-import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
+import { createNode, defaultTree, getBoardState, getNodeAtPath } from "@/utils/treeReducer";
 import { parseUci } from "chessops";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import RepertoireInfo from "./RepertoireInfo";
@@ -1276,4 +1276,115 @@ test("shared teardown clears the debounce scheduled by repertoire edits", async 
       clear.mockRestore();
     }
   });
+});
+
+test.each([100, 9])(
+  "successful Italian marked-start coverage admits completeness only for covered significant games, games=%s",
+  async (games) => {
+    const actual = await vi.importActual<typeof import("@/utils/repertoire")>("@/utils/repertoire");
+    const builder = createTreeStore();
+    expect(
+      builder.getState().makeMoves({ payload: ["e4", "e5", "Nf3", "Nc6", "Bc4"] }).success,
+    ).toBe(true);
+    const startFen = getBoardState(builder.getState().currentNode().fen);
+    builder.dispose();
+    mocks.computeTreeCoverage.mockImplementation(actual.computeTreeCoverage);
+    mocks.fetchPositionMoves.mockImplementation(actual.fetchPositionMoves);
+    mocks.searchPosition.mockImplementation(async ({ fen }: { fen: string }) => [
+      fen === startFen ? [{ move: "Bc5", white: games, draw: 0, black: 0 }] : [],
+      [],
+    ]);
+    let tree!: TreeStore;
+    const atoms = await renderRepertoireInfo(defaultTree(), `italian-start-${games}`, (value) => {
+      tree = value;
+    });
+    await act(async () => atoms.set(coverageMinGamesAtom, 10));
+    const preset = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "Italian Game",
+    )!;
+    await act(async () => preset.click());
+    const state = tree.getState();
+    const start = state.headers.start!;
+    expect(state.currentNode().san).toBe("Bc4");
+    expect(state.position).toEqual(start);
+    const result = await mocks.computeTreeCoverage.mock.results.at(-1)!.value;
+    expect(result.coverageMap.get(start.join(","))).toBe(games >= 10 ? 0 : 1);
+    expect(result.missingGamesMap.get(start.join(","))).toBe(games >= 10 ? games : 0);
+    expect(result.gamesMap.get(start.join(","))).toBe(games);
+    expect(
+      actual.findNextGap(state.root, start, "white", result.coverageMap, result.gamesMap, 10),
+    ).toBeNull();
+    expect(
+      actual.findBiggestGap(
+        state.root,
+        "white",
+        result.coverageMap,
+        result.gamesMap,
+        result.missingGamesMap,
+        10,
+        start,
+      ),
+    ).toBeNull();
+    expect(host.textContent).toContain("3... Bc5");
+    expect(host.textContent?.includes("Board.Practice.Build.NoGapsFound")).toBe(games < 10);
+    expect(host.textContent).not.toContain("Common.Retry");
+    expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+    expect(host.textContent).not.toContain("Board.Practice.Build.NextGap");
+    expect(host.textContent).not.toContain("Board.Practice.Build.BiggestGap");
+    const computations = mocks.computeTreeCoverage.mock.calls.length;
+    await act(async () => tree.getState().save());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(computations);
+    expect(host.textContent?.includes("Board.Practice.Build.NoGapsFound")).toBe(games < 10);
+  },
+);
+
+test("ten fully covered fractional continuations admit healthy completeness and a real missing branch removes it", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/repertoire")>("@/utils/repertoire");
+  const builder = createTreeStore();
+  expect(builder.getState().makeMoves({ payload: ["e4", "e5", "Nf3", "Nc6", "Bc4"] }).success).toBe(
+    true,
+  );
+  const start = builder.getState().position;
+  builder.getState().setStart(start);
+  const replies = ["Bc5", "Be7", "Nf6", "d6", "a6", "h6", "d5", "f5", "g6", "b6"];
+  for (const san of replies) {
+    builder.getState().goToMove(start);
+    expect(builder.getState().makeMoves({ payload: [san, "d3"] }).success).toBe(true);
+  }
+  builder.getState().goToMove(start);
+  builder.getState().save();
+  const initial = builder.getState();
+  const startNode = getNodeAtPath(initial.root, start);
+  const continuations = new Set(startNode.children.map((node) => getBoardState(node.fen)));
+  mocks.searchPosition.mockImplementation(async ({ fen }: { fen: string }) => [
+    (fen === getBoardState(startNode.fen) ? replies : continuations.has(fen) ? ["d3"] : []).map(
+      (move) => ({ move, white: 10, draw: 0, black: 0 }),
+    ),
+    [],
+  ]);
+  mocks.computeTreeCoverage.mockImplementation(actual.computeTreeCoverage);
+  mocks.fetchPositionMoves.mockImplementation(actual.fetchPositionMoves);
+  let tree!: TreeStore;
+  const atoms = await renderRepertoireInfo(initial, "fractional-complete-start", (value) => {
+    tree = value;
+  });
+  builder.dispose();
+  await act(async () => atoms.set(coverageMinGamesAtom, 10));
+  expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+  let result = await mocks.computeTreeCoverage.mock.results.at(-1)!.value;
+  expect(result.coverageMap.get(start.join(","))).toBe(1);
+  expect(result.missingGamesMap.get(start.join(","))).toBe(0);
+  await act(async () => tree.getState().deleteMove([...start, 9]));
+  result = await mocks.computeTreeCoverage.mock.results.at(-1)!.value;
+  expect(result.coverageMap.get(start.join(","))).toBeLessThan(1);
+  expect(result.missingGamesMap.get(start.join(","))).toBe(10);
+  expect(host.textContent).not.toContain("Board.Practice.Build.NoGapsFound");
+  expect(host.textContent).not.toContain("Common.Retry");
+  await act(async () => {
+    tree.getState().goToMove(start);
+    expect(tree.getState().makeMoves({ payload: ["b6", "d3"] }).success).toBe(true);
+    tree.getState().goToMove(start);
+  });
+  expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
 });

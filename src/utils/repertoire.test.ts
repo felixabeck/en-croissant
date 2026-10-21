@@ -265,6 +265,50 @@ test("a repetition line terminates coverage instead of recursing until the stack
     expect(coverageMap.get("0,0")).toBe(1);
 });
 
+test.each([false, true])(
+    "fractional opponent weights are exactly full only with every significant continuation, missing=%s",
+    async (missing) => {
+        const builder = createTreeStore(
+            undefined,
+            defaultTree("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        );
+        const replies = ["e5", "c5", "e6", "c6", "d5", "d6", "Nf6", "Nc6", "g6", "b6"];
+        for (const san of replies.slice(0, missing ? 9 : 10)) {
+            builder.getState().goToStart();
+            expect(builder.getState().makeMoves({ payload: [san, "Nf3"] }).success).toBe(true);
+        }
+        const root = builder.getState().root;
+        const boardMap = getMemoizedBoardStateMap(root, []);
+        const stateMoves = new Map<string, Map<string, string>>(
+            Object.entries(boardMap).map(([fen, frames]) => [
+                fen,
+                new Map(
+                    frames.flatMap(({ node }) =>
+                        node.children.map((child): [string, string] => [
+                            child.san!,
+                            getBoardState(child.fen),
+                        ]),
+                    ),
+                ),
+            ]),
+        );
+        mocks.searchPosition.mockImplementation(async ({ fen }: { fen: string }) => [
+            (fen === getBoardState(root.fen)
+                ? replies
+                : root.children.some((node) => getBoardState(node.fen) === fen)
+                  ? ["Nf3"]
+                  : []
+            ).map((move) => ({ move, white: 10, draw: 0, black: 0 })),
+            [],
+        ]);
+        const result = await computeTreeCoverage(root, "white", database, 10, [], stateMoves);
+        expect(result.coverageMap.get("") === 1).toBe(!missing);
+        expect(result.coverageMap.get("")).toBeCloseTo(missing ? 0.9 : 1, 14);
+        expect(result.missingGamesMap.get("")).toBe(missing ? 10 : 0);
+        builder.dispose();
+    },
+);
+
 describe("findBiggestGap", () => {
     const TEST_MOVES = {
         e4: {

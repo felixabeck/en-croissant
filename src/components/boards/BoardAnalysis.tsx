@@ -44,10 +44,11 @@ import EvalListener from "./EvalListener";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
 import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import paneClasses from "../common/PaneTabs.module.css";
+import { COMPACT_PANE_TABS_WIDTH_EM } from "./paneTabs";
 
 function BoardAnalysis() {
   const { t } = useTranslation();
-  const compactTabs = useScaledMaxWidth(36);
+  const compactTabs = useScaledMaxWidth(COMPACT_PANE_TABS_WIDTH_EM);
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
