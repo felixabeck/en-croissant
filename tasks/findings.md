@@ -9350,11 +9350,15 @@ This supersedes all earlier implementation/review/native-pending status for this
 
 ### Practice synchronisation deduplicates by four FEN fields but later looks cards up by the full FEN
 
-* **ID:** f-20260914-17 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-17 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/components/files/opening.ts:135 (dedupe keeps the first card's full FEN), src/components/panels/practice/PracticePanel.tsx:240 (exact full-FEN equality)
 * **Defect:** Cards are deduplicated on the first four FEN fields, but the retained card keeps its original halfmove/fullmove counters. When the same position is reached with different counters (`8/8/8/8/8/8/4P3/K6k w - - 0 12` versus `... w - - 30 44`), the exact full-FEN lookup fails and practice drops the card instead of locating the node.
 * **Why it matters:** `.claude/rules/chess-tree-semantics.md`: position identity is the first four FEN fields; a lookup that compares counters treats one position as two.
 * **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 99, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `18f6a1a2`), outside that run's area, so deferred; not reproduced in that run.
+* **Pickup resolution (2026-10-21):** Already fixed by b912b80287f7f642c4ce4d34740012f124eb5335, which closed the duplicate f-20260922-02. Current syncDeck matches by getBoardState, carries the fresh full FEN and answer into the retained card, preserves its scheduling object and counts a clock-only FEN change as updated. PracticePanel persists updates even when card counts are unchanged, then resolves the card's exact current FEN together with its answer. The original stale-counter lookup failure no longer holds. Keep the current exact session-FEN gate governed by d-20261021-08 rather than broadening it.
+* **Proof:** pnpm exec vitest run src/components/files/opening.test.ts src/components/panels/practice/PracticePanel.gameplay.test.tsx completed with exit 0, 2 files and 28 tests passed. Existing synchronization regressions cover the finding's exact 0 12 to 30 44 clock change, unchanged answer and retained scheduling. No source change was needed.
+* **Scope:** Co-located candidates f-20260914-28 and f-20260922-12 stay open at lens tier. The anchor requires only this record closure, so neither candidate edits a file changed by its fix. Plan authorship and arbitration share this context. Detection and code use the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"77676f6f26d5ed1770dedc49f92d1b64e6f5d83f9b64ef8169ce2f4aa40275cc","header_sha256":"18bf52417d601612e88200be7d9133dc33a35c0abab1d512724cbdeb66bdbd50","header_status":"handled","input_sha256":"31bb0a244267acdf58cb751bae0b333240f6c67f2164d2facd20dde18a53ed26","kind":"mutation-receipt","operation":"4e77577a093ab4f2d3991ec54c907692f4ca4c217768d25749cba9b9b3c2f22e","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-17"],"target":"f-20260914-17","v":1} -->
 
 ### Database export ignores cancellation while decoding and writing rows
 
