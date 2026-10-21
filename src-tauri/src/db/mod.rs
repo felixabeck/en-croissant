@@ -11524,13 +11524,12 @@ mod tests {
         let pool_path = pool_dir.path().join("pool.db3");
         let pool = diesel::r2d2::Pool::builder()
             .max_size(1)
-            .connection_timeout(std::time::Duration::from_millis(20))
             .build(diesel::r2d2::ConnectionManager::<SqliteConnection>::new(
                 pool_path.to_string_lossy().into_owned(),
             ))
             .unwrap();
         let _held = pool.get().unwrap();
-        let pool_error = match pool.get() {
+        let pool_error = match pool.get_timeout(std::time::Duration::ZERO) {
             Err(error) => error,
             Ok(_) => panic!("exhausted pool unexpectedly yielded a connection"),
         };
