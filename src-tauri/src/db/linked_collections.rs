@@ -1685,16 +1685,14 @@ impl CollectionService {
         Ok(())
     }
 
-    /// Refresh caller snapshots through the verified walk under the publication owner.
+    /// Reconcile current workspace metadata through the verified walk under the publication owner.
     /// Locator equality permits replacement. App-renamed handles retain their collection UUID.
     pub(crate) fn reconcile(
         &self,
         authority: &SharedPathAuthority,
         workspace: &FileWorkspaceHandle,
-        _listing: &WorkspaceListing,
         cancellation: &CancellationToken,
     ) -> Result<Vec<CollectionDescriptor>, Error> {
-        // A caller snapshot may precede a publisher that held the workspace owner.
         self.discover(authority, workspace, cancellation)
             .map(|(_, _, collections)| collections)
     }
@@ -2459,13 +2457,8 @@ pub(crate) async fn prepare_account_collection(
                         )?
                         .handle
                     };
-                    let (listing, _) = crate::file_workspace::collect_tree_entries(
-                        &authority,
-                        &creation.workspace,
-                        token,
-                    )?;
                     let collection = service
-                        .reconcile(&authority, &creation.workspace, &listing, token)?
+                        .reconcile(&authority, &creation.workspace, token)?
                         .into_iter()
                         .find(|record| record.id == creation.id.to_string() && record.file == file)
                         .ok_or_else(|| {
@@ -3207,7 +3200,7 @@ pub(crate) async fn list_linked_collections_core(
         result.extend(
             BLOCKING_GATEWAY
                 .spawn_cancellable(cancellation.clone(), move |token| match listing {
-                    Ok(listing) => service.reconcile(&authority, &workspace, &listing, token),
+                    Ok(_) => service.reconcile(&authority, &workspace, token),
                     Err(Error::Cancellation) => Err(Error::Cancellation),
                     Err(error) => {
                         log::warn!("collection workspace unavailable: {}", error.diagnostic());

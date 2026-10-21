@@ -100,19 +100,8 @@ mod native_tests {
 
         pub fn list(&self) -> Vec<CollectionDescriptor> {
             let token = CancellationToken::new();
-            let (listing, _) = crate::file_workspace::collect_tree_entries(
-                &self.state.pgn_path_authority,
-                &self.workspace,
-                &token,
-            )
-            .unwrap();
             self.service
-                .reconcile(
-                    &self.state.pgn_path_authority,
-                    &self.workspace,
-                    &listing,
-                    &token,
-                )
+                .reconcile(&self.state.pgn_path_authority, &self.workspace, &token)
                 .unwrap()
         }
 
@@ -4132,7 +4121,7 @@ mod native_tests {
     }
 
     #[tokio::test]
-    async fn native_r2_coordination_stale_replay_uses_current_metadata_and_real_purpose_changes() {
+    async fn native_r2_coordination_uses_current_metadata_after_real_purpose_changes() {
         use tauri::Manager;
         for provider in ["chesscom", "lichess"] {
             let fixture = Fixture::new();
@@ -4141,14 +4130,18 @@ mod native_tests {
                 account: "player".into(),
             };
             let creation = interrupt_account_before_sidecar(&fixture, &account).await;
-            let (stale, _) = crate::file_workspace::collect_tree_entries(
+            let (before_publication, _) = crate::file_workspace::collect_tree_entries(
                 &fixture.state.pgn_path_authority,
                 &fixture.workspace,
                 &CancellationToken::new(),
             )
             .unwrap();
             assert_eq!(
-                stale.entries[0].metadata.as_ref().unwrap().file_type,
+                before_publication.entries[0]
+                    .metadata
+                    .as_ref()
+                    .unwrap()
+                    .file_type,
                 WorkspaceFileType::Other
             );
             let listing = crate::file_workspace::list_file_workspace_core(
@@ -4170,30 +4163,29 @@ mod native_tests {
             .unwrap()
             .creations
             .is_empty());
-            let replayed = fixture
+            let reconciled = fixture
                 .service
                 .reconcile(
                     &fixture.state.pgn_path_authority,
                     &fixture.workspace,
-                    &stale,
                     &CancellationToken::new(),
                 )
                 .unwrap();
-            assert_eq!(replayed.len(), 1);
-            assert_eq!(replayed[0].id, creation.id.to_string());
-            assert_eq!(replayed[0].account, Some(account));
+            assert_eq!(reconciled.len(), 1);
+            assert_eq!(reconciled[0].id, creation.id.to_string());
+            assert_eq!(reconciled[0].account, Some(account));
             assert_eq!(
-                replayed[0].status,
+                reconciled[0].status,
                 CollectionStatus::Ready,
-                "stale listing retired a current Game collection after intent retirement"
+                "reconciliation retired a current Game collection after intent retirement"
             );
-            assert!(replayed[0].database.is_some());
-            assert!(fixture.rows(&replayed[0]).is_empty());
+            assert!(reconciled[0].database.is_some());
+            assert!(fixture.rows(&reconciled[0]).is_empty());
             let source_before = std::fs::read(fixture.path(&creation.name)).unwrap();
             let app = fixture.app();
             crate::file_workspace::write_workspace_file_metadata(
                 fixture.workspace.clone(),
-                replayed[0].file.clone(),
+                reconciled[0].file.clone(),
                 WorkspaceMetadata {
                     file_type: WorkspaceFileType::Repertoire,
                     tags: vec!["intentional current purpose".into()],
@@ -4207,14 +4199,13 @@ mod native_tests {
                 .reconcile(
                     &fixture.state.pgn_path_authority,
                     &fixture.workspace,
-                    &listing,
                     &CancellationToken::new(),
                 )
                 .unwrap();
             assert_eq!(
                 current[0].status,
                 CollectionStatus::Retired,
-                "stale Game listing ignored a real current purpose change"
+                "reconciliation ignored a real current purpose change"
             );
             assert!(current[0].database.is_none());
             let listing = crate::file_workspace::list_file_workspace_core(
@@ -4395,19 +4386,11 @@ mod native_tests {
                 fixture.restart();
                 if discovery_first {
                     let token = CancellationToken::new();
-                    let discovery = crate::file_workspace::collect_tree_entries(
+                    let discovery = fixture.service.reconcile(
                         &fixture.state.pgn_path_authority,
                         &fixture.workspace,
                         &token,
-                    )
-                    .and_then(|(listing, _)| {
-                        fixture.service.reconcile(
-                            &fixture.state.pgn_path_authority,
-                            &fixture.workspace,
-                            &listing,
-                            &token,
-                        )
-                    });
+                    );
                     assert!(
                         discovery.is_err(),
                         "discovery accepted incompatible {scenario}"
@@ -4521,17 +4504,10 @@ mod native_tests {
             fixture.restart();
             if discovery_first {
                 let token = CancellationToken::new();
-                let (listing, _) = crate::file_workspace::collect_tree_entries(
-                    &fixture.state.pgn_path_authority,
-                    &fixture.workspace,
-                    &token,
-                )
-                .unwrap();
                 assert!(matches!(
                     fixture.service.reconcile(
                         &fixture.state.pgn_path_authority,
                         &fixture.workspace,
-                        &listing,
                         &token
                     ),
                     Err(Error::Conflict(_))
@@ -4777,7 +4753,6 @@ mod native_tests {
             let result = fixture.service.reconcile(
                 &fixture.state.pgn_path_authority,
                 &fixture.workspace,
-                &listing,
                 &token,
             );
             std::fs::set_permissions(&path, permissions).unwrap();
@@ -4904,17 +4879,10 @@ mod native_tests {
             std::fs::read(fixture.path("independent")).unwrap(),
             body.as_bytes()
         );
-        let (listing, _) = crate::file_workspace::collect_tree_entries(
-            &fixture.state.pgn_path_authority,
-            &fixture.workspace,
-            &CancellationToken::new(),
-        )
-        .unwrap();
         assert!(matches!(
             fixture.service.reconcile(
                 &fixture.state.pgn_path_authority,
                 &fixture.workspace,
-                &listing,
                 &CancellationToken::new()
             ),
             Err(Error::Conflict(_))
@@ -4972,16 +4940,9 @@ mod native_tests {
             }
         }
         fixture.restart();
-        let (listing, _) = crate::file_workspace::collect_tree_entries(
-            &fixture.state.pgn_path_authority,
-            &fixture.workspace,
-            &CancellationToken::new(),
-        )
-        .unwrap();
         let discovered = fixture.service.reconcile(
             &fixture.state.pgn_path_authority,
             &fixture.workspace,
-            &listing,
             &CancellationToken::new(),
         );
         assert!(
