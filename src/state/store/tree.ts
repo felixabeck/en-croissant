@@ -38,6 +38,8 @@ import {
     normalizeTreeHalfMoves,
 } from "@/utils/treeReducer";
 
+type CompleteTreeState = TreeState & Pick<TreeStoreState, "linkedSource">;
+
 export interface TreeStoreState extends TreeState {
     linkedSource?: import("@/bindings").LinkedGameLocator | null;
     setLinkedSource: (source: import("@/bindings").LinkedGameLocator | null) => void;
@@ -115,7 +117,7 @@ export interface TreeStoreState extends TreeState {
     practicePath: number[] | null;
     setPracticePath: (path: number[] | null) => void;
 
-    setState: (state: TreeState) => void;
+    setState: (state: CompleteTreeState) => void;
     reset: () => void;
     save: (stamp?: string, revision?: string) => void;
     setSourceStamp: (stamp: string | null, revision?: string) => void;
@@ -145,7 +147,7 @@ export function getCachedTreeStore(tab: string): TreeStore | undefined {
     return treeStores.get(tab);
 }
 
-function treeReplacementState(tree: TreeState & Pick<TreeStoreState, "linkedSource">) {
+function treeReplacementState(tree: CompleteTreeState) {
     return {
         puzzleSession: undefined,
         ...tree,
@@ -155,7 +157,7 @@ function treeReplacementState(tree: TreeState & Pick<TreeStoreState, "linkedSour
 }
 
 /** Prepare the adapter and state before admission, then install without queuing a seeded tree. */
-export function prepareTreeStoreRetarget(tab: string, treeKey: string, tree: TreeState) {
+export function prepareTreeStoreRetarget(tab: string, treeKey: string, tree: CompleteTreeState) {
     const store = treeStores.get(tab)!;
     const options = {
         name: treeKey,
@@ -173,7 +175,7 @@ export function prepareTreeStoreRetarget(tab: string, treeKey: string, tree: Tre
 }
 
 /** Switch the cached logical owner's persistence generation after durable admission. */
-export function retargetTreeStore(tab: string, treeKey: string, tree: TreeState): void {
+export function retargetTreeStore(tab: string, treeKey: string, tree: CompleteTreeState): void {
     prepareTreeStoreRetarget(tab, treeKey, tree)();
 }
 
@@ -294,7 +296,7 @@ function stepIntoChild(
     return { position: [...path, index] };
 }
 
-export const createTreeStore = (id?: string, initTree?: TreeState, treeKey = id) => {
+export const createTreeStore = (id?: string, initTree?: CompleteTreeState, treeKey = id) => {
     if (id) {
         const existing = treeStores.get(id);
         if (existing) return existing;
