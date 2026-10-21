@@ -17264,7 +17264,7 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 
 ### Linked account history disappears from Home when the session uses a player alias
 
-* **ID:** f-20261020-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-01 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** behaviour
 * **Follow-up of:** f-20261004-15
@@ -17275,6 +17275,13 @@ The boundary reproduction test pair passes after rebase with TMPDIR=/dev/shm, ex
 * **Review lens:** review-correctness.
 * **Related:** f-20261008-04 concerns substring matching of the player inside database statistics, a distinct cause. f-20260926-02 handled per-database statistics failure visibility, which must remain intact.
 * **Found by:** Root source inspection during the integrated phase proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+Linked account collection matching includes the actual stable account identity and player alias so Home retains downloaded history across player renames.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"3d372463a8a408fe63424c4eaa7eb76a4cc37488598c8832733c9f7644433b17","header_sha256":"819659913146cc87415e28e539484cb80c1ee98af4fd82f5cbcf6450877a2678","header_status":"handled","input_sha256":"89a16c5023f99fb636ceeae7f07e41e78a1b78a8f03a3d494b85fbb6a8b6814f","kind":"mutation-receipt","operation":"e9b01f8573de1123360e2df01606ce5727a4be3714c5dd538735e2ec67cc37e5","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-01"],"target":"f-20261020-01","v":1} -->
 
 ### Linked player rename rewrites an entire physical line and can drop unrelated PGN tags
 
