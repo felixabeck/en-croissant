@@ -9379,3 +9379,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, autonomously under Felix's full-auto recovery request. Plan authorship and arbitration share one context. Detection and code share the OpenAI model family in separate sessions.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":13,"effect_sha256":"39bd71f6c44994d87b180d8d1998ab3ddf5639fcb6d5ccda7dec4946c127efa5","input_sha256":"eac82f33798713ce23c37b5b3ac6328a3d18f3cf458df837d72026e589c71eb9","kind":"mutation-receipt","operation":"ca8e07e4c8225125e47e80be0c9f45f29de22963d4f9162bb82ef8872b6f8f03","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20261021-20 — How does completed workspace deletion share the committed-removal policy?
+
+* **Question:** Which outcome owner reports failures after the requested workspace entry has been removed?
+* **Governs:** f-20261004-20
+* **Chosen:** Reuse CommittedRemoval from src-tauri/src/error.rs for completed workspace deletion, recording parent sync, sidecar cleanup, registry require_durable and engine retirement in operation order. Preserve the original partial-walk error and Partial reconciliation separately, with retirement still executed once outside the blocking result. Preserve the bounded registry retry and pending-prune protocol from d-20260901-06, d-20260901-07 and d-20260901-09.
+* **Rejected:** Another workspace-specific precedence switch, synthetic durability for ordinary registry or sidecar failures, rewrapping partial-walk errors, retirement retry or startup records.
+* **Reason:** d-20261006-22 and d-20261006-23 settle shared ownership and first-failure precedence. d-20260830-04 settles partial versus complete reconciliation. This preserves d-20261007-23 and d-20261007-25 ownership and retained-error semantics. Reversal path: an evidenced workspace exception in the shared policy. Adopted reviewed plan tasks/plans/2026-10-21-workspace-deletion-outcome.md, O1 and O2.
+* **Decided by:** Codex, full auto adopting run fd2492e2-efa0-4ddf-9115-82d4cf3614a0, from the reviewed planner's autonomous decisions. Plan authorship and arbitration share one context. Detection and implementation use the same OpenAI model family in separate sessions. · **Superseded-by:** -
+
+### d-20261021-21 — Which count survives an ordinary post-delete registry failure?
+
+* **Question:** How does workspace deletion retain a truthful removed-target count even when registry reconciliation fails?
+* **Governs:** f-20261004-20
+* **Chosen:** Expose the physical count already measured by the single filesystem removal implementation, including the requested top entry and removed descendants, excluding separately cleaned metadata sidecars. Preserve the existing remove_entry_at Result<(), Error> contract through an adapter and preserve existing partial-walk counts. The workspace outcome carries the physical count across sync and registry failure through retirement.
+* **Rejected:** Guessed 0 or 1, registry map deltas, another walk or follow-up probes, and the successful-registry count as the only progress source.
+* **Reason:** New evidence refines d-20261007-24 for workspace error counts: ordinary registry failure now requires PartialRemoval, but has no successful registry count. The filesystem already measures real progress. The authority count API and pending-prune protocol remain unchanged. d-20261006-25 requires truthful user-visible counts. Reversal path: restore registry-based counts only with a truthful progress source for registry failure. Adopted reviewed plan tasks/plans/2026-10-21-workspace-deletion-outcome.md, O3.
+* **Decided by:** Codex, full auto adopting run fd2492e2-efa0-4ddf-9115-82d4cf3614a0, from the reviewed planner's autonomous decisions. Plan authorship and arbitration share one context. Detection and implementation use the same OpenAI model family in separate sessions. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"173f22ae347c2399d5b7df72dbf57d9982de4e361c1da2a082f9d911db629659","input_sha256":"1c6b3630a263879ee6c7d259a960907b957b0e258eecd1e39f4e6199d88b23ab","kind":"mutation-receipt","operation":"26a66403213b1033a84c74f72027a73f94a079a4dd9b288502121d04c754aed6","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-20","d-20261021-21"],"target":"decisions-ledger","v":1} -->
