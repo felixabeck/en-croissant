@@ -17433,3 +17433,18 @@ Current source-only identity repairs and37/70/25 unit checks passed, but the act
 
 The current canonical focused browser ulLflP exited1 with17passed2failed. Both ordinary800px board snapshots and desktop coverage passed. Compact Retry ratio is0.8734388947486877. Root extracted the actual standard HTML report's JSON geometry attachment and read its rectangles. Retry is121.36px wide, inside an Alert wrapper only90px wide and an overflow-hidden Alert126px wide. The Alert padding is16px each side plus2px borders. Retry's default scaled horizontal padding is28px each side. Thus the remaining clipping is a concrete child width-budget failure, not a missing vertical scroll range. Root viewed the actual compact PNG. Preserve the current font-scaled navigation and normal800px controls, fix local control sizing against its actual available width without hiding text, weakening viewport1 or requiring source input changes. Full current HTML/report/test-results/traces are archived asr3-browser-pane-practice-red. Fresh focused review-plan judgment is required before another source repair of this repeatedly failing pane mechanism.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"365697a399374cb59fc5556a3d472eb6fa814bd3888d5d4e9a5c4fd7ca430615","input_sha256":"0bb9731e28fe147ab5bdd376432f175fcc4543f72e98c62ea68a5540bf764646","kind":"mutation-receipt","operation":"1d1cfd4526d9a64e5505856a60bf672f3d51e4ab63b2167bc80e4465e4267bc5","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-04"],"target":"f-20261021-04","v":1} -->
+
+---
+
+## 2026-10-21 — filed through the inbox spool
+
+### Successful coverage can declare a legal marked start complete despite uncovered reference continuations
+* **ID:** f-20261021-05 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-7328103f-da3c-4f90-9686-4abe6e2beeb1-1.jsonl
+* **Impact class:** ux
+* **Follow-up of:** f-20261021-02, f-20261020-07 and f-20261004-15.
+* **Failure scenario:** Apply the legal White Italian preset, which marks 3.Bc4 as the start. With minGames10 and a reference containing100 continuations with 3...Bc5, successful coverage at the marked start is0 with100missing games. Both gap finders exclude the start itself, return null and the nonempty reference moves admit the green statement that the repertoire is complete.
+* **Evidence:** R4 correctness at committed27515c6114dcbd64bdaf5ebdeef3a3f154677675 reports RepertoireInfo.tsx908 and repertoire.ts292/339, confidence98. This is a concrete read-only source witness, not a claimed executed reproduction. The raw report is retained in the task's cumulative handoff route and current run lens-correctness-r4.txt.
+* **Spotted outside diff:** The successful-computation premise originates in5ef32ddf and is retained by the feedback extraction in27515c61. It is pre-existing behavior, not asserted correction-created. Unlike rejected f-20260906-02's empty-tree premise, this case has a nonempty repertoire, a SAN-bearing marked start and reference moves satisfying the display predicate.
+* **Expected:** A successful computation may show complete only when the admitted coverage supports that statement. Absence of a navigable gap is not itself proof of completeness. Preserve explicit Retry/current-result ownership, native-handle identity, Save continuity and valid preset behavior.
+* **Session:**7328103f-da3c-4f90-9686-4abe6e2beeb1. Root will trace and repair this same-area R4 witness before release. Follow-up plan authorship and arbitration share Root context. Detection and code use the same OpenAI family.
