@@ -102,6 +102,182 @@ test("editor normalization removes rights when the referenced rook was removed",
     );
 });
 
+const editedCastlingCases = [
+    {
+        name: "White king off its back rank",
+        board: "r3k2r/pppppppp/8/8/4P3/4K3/PPPP1PPP/R6R",
+        turn: "w",
+        rights: "KQkq",
+        expectedRights: "kq",
+    },
+    {
+        name: "Black king off its back rank",
+        board: "r6r/pppp1ppp/4k3/4p3/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "KQkq",
+        expectedRights: "KQ",
+    },
+    {
+        name: "missing White king",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R6R",
+        turn: "w",
+        rights: "KQkq",
+        expectedRights: "kq",
+        missingKing: true,
+    },
+    {
+        name: "missing Black king",
+        board: "r6r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "KQkq",
+        expectedRights: "KQ",
+        missingKing: true,
+    },
+    {
+        name: "Black rook referenced by White rights",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2r",
+        turn: "w",
+        rights: "HAha",
+        expectedRights: "Qkq",
+    },
+    {
+        name: "White rook referenced by Black rights",
+        board: "R3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "HAha",
+        expectedRights: "KQk",
+    },
+    {
+        name: "White kingside rook moved off its back rank",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPR/R3K3",
+        turn: "w",
+        rights: "KQkq",
+        expectedRights: "Qkq",
+    },
+    {
+        name: "Black queenside rook moved off its back rank",
+        board: "4k2r/rppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "KQkq",
+        expectedRights: "KQk",
+    },
+    {
+        name: "removed White queenside rook",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/4K2R",
+        turn: "w",
+        rights: "KQkq",
+        expectedRights: "Kkq",
+    },
+    {
+        name: "removed Black kingside rook",
+        board: "r3k3/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "KQkq",
+        expectedRights: "KQq",
+    },
+    {
+        name: "standard castling rights",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "KQkq",
+        expectedRights: "KQkq",
+    },
+    {
+        name: "no rights despite eligible kings and rooks",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "w",
+        rights: "-",
+        expectedRights: "-",
+    },
+    {
+        name: "Chess960 kings on d-files and non-corner rooks",
+        board: "1r1k1r2/pppppppp/8/8/8/8/PPPPPPPP/1R1K1R2",
+        turn: "b",
+        rights: "FBfb",
+        expectedRights: "KQkq",
+    },
+    {
+        name: "Chess960 existing rights without restoring lost rights",
+        board: "1r1k1r2/pppppppp/8/8/8/8/PPPPPPPP/1R1K1R2",
+        turn: "w",
+        rights: "Fb",
+        expectedRights: "Kq",
+    },
+    {
+        name: "Chess960 position with no rights",
+        board: "1r1k1r2/pppppppp/8/8/8/8/PPPPPPPP/1R1K1R2",
+        turn: "b",
+        rights: "-",
+        expectedRights: "-",
+    },
+    {
+        name: "only the outside White rook on the king's right",
+        board: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/3K1R1R",
+        turn: "w",
+        rights: "HFha",
+        expectedRights: "Kkq",
+    },
+    {
+        name: "only the outside Black rook on the king's left",
+        board: "rr1k4/pppppppp/8/8/8/8/PPPPPPPP/R3K2R",
+        turn: "b",
+        rights: "HAba",
+        expectedRights: "KQq",
+    },
+];
+
+test.each(editedCastlingCases)("editor normalization handles $name", (fixture) => {
+    const { board, turn, rights, expectedRights } = fixture;
+    const fen = `${board} ${turn} ${rights} - 17 23`;
+    const normalized = normalizeEditedFen(fen);
+    expect(normalized).toBe(`${board} ${turn} ${expectedRights} - 17 23`);
+    if (!normalized) throw new Error("Invalid editor fixture");
+    const editedSetup = parseFen(normalized).unwrap();
+    const originalSetup = parseFen(fen).unwrap();
+    expect(editedSetup).toEqual({
+        ...originalSetup,
+        castlingRights: editedSetup.castlingRights,
+    });
+});
+
+test.each(editedCastlingCases.filter((fixture) => !fixture.missingKing))(
+    "editor FEN roundtrip agrees with chessops castling rights for $name",
+    ({ board, turn, rights }) => {
+        const fen = `${board} ${turn} ${rights} - 17 23`;
+        const normalized = normalizeEditedFen(fen);
+        if (!normalized) throw new Error("Invalid editor fixture");
+        const editedSetup = parseFen(normalized).unwrap();
+        const [position, error] = positionFromFen(fen);
+        expect(error).toBeNull();
+        if (!position) throw new Error("Invalid castling fixture");
+        expect(editedSetup.castlingRights).toEqual(position.castles.castlingRights);
+        const [roundtrip, roundtripError] = positionFromFen(normalized);
+        expect(roundtripError).toBeNull();
+        expect(roundtrip?.castles.castlingRights).toEqual(editedSetup.castlingRights);
+    },
+);
+
+test("editor normalization preserves variant setup metadata while clearing en-passant", () => {
+    const fen = "r3k2r/pppppppp/8/8/4P3/4K3/PPPP1PPP/R2Q~3R[PNq] b KQkq e3 2+1 17 23";
+    const normalized = normalizeEditedFen(fen);
+    expect(normalized).toBe("r3k2r/pppppppp/8/8/4P3/4K3/PPPP1PPP/R2Q~3R[PNq] b kq - 2+1 17 23");
+    if (!normalized) throw new Error("Invalid editor fixture");
+    const original = parseFen(fen).unwrap();
+    const edited = parseFen(normalized).unwrap();
+    expect(edited).toEqual({
+        ...original,
+        castlingRights: edited.castlingRights,
+        epSquare: undefined,
+    });
+});
+
+test.each(["invalid", "8/8/8/8/8/8/8/8 w KQ - x 1"])(
+    "editor normalization returns null for invalid FEN: %s",
+    (fen) => {
+        expect(normalizeEditedFen(fen)).toBeNull();
+    },
+);
+
 test("maps every chessops error to its exact catalogue key", () => {
     for (const { error, key } of expectedChessopsErrors) {
         expect(keyOf(error)).toBe(key);

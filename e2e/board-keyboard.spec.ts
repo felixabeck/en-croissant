@@ -1,4 +1,5 @@
 import {
+    activeWorkspaceTab,
     assertChooserInsideBoard,
     drawMark,
     expect,
@@ -11,6 +12,73 @@ import {
     test,
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
+import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
+
+test("board-keyboard: editor castling rights follow a king dragged off its back rank", async ({
+    page,
+    capture,
+}) => {
+    const initialFen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 17 23";
+    const editedFen = "r3k2r/8/8/8/8/8/4K3/R6R w kq - 17 23";
+    await page.goto("/");
+    await page.getByRole("button", { name: /^import$/i }).click();
+    const modal = page.getByRole("dialog", { name: /import game/i });
+    await modal.getByText("FEN", { exact: true }).click();
+    await modal.getByRole("textbox", { name: "FEN" }).fill(initialFen);
+    await modal.getByRole("button", { name: /^import$/i }).click();
+    const grid = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
+    await expect(grid).toBeVisible();
+    await expect(grid.getByRole("gridcell", { name: "e1, White King", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(grid.getByRole("gridcell", { name: "e2, empty", exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: "Edit Position", exact: true }).click();
+    const fen = page.locator("#bottomRight").getByPlaceholder("Enter FEN", { exact: true });
+    await expect(fen).toHaveValue(initialFen);
+
+    // Edit mode uses Chessground's free drag movement rather than a played move.
+    const board = page.locator("cg-board").first();
+    await board.click({ trial: true });
+    const box = (await board.boundingBox())!;
+    const kingX = box.x + (4.5 * box.width) / 8;
+    await page.mouse.move(kingX, box.y + (7.5 * box.height) / 8);
+    await page.mouse.down();
+    await page.mouse.move(kingX, box.y + (6.5 * box.height) / 8, { steps: 8 });
+    await board.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await page.mouse.up();
+    await page.mouse.move(0, 0);
+    await expect(grid.getByRole("gridcell", { name: "e2, White King", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(grid.getByRole("gridcell", { name: "e1, empty", exact: true })).toHaveCount(1);
+    await expect(fen).toHaveValue(editedFen);
+
+    const tab = (await activeWorkspaceTab(page))!;
+    await expect
+        .poll(async () => {
+            const raw = await page.evaluate(
+                (key) => sessionStorage.getItem(key),
+                tab.treeKey ?? tab.value,
+            );
+            return raw
+                ? deserializeStorageValue<{
+                      state: {
+                          root: { fen: string; children: unknown[] };
+                          headers: { fen: string };
+                          position: number[];
+                      };
+                  }>(raw)?.state
+                : null;
+        })
+        .toMatchObject({
+            root: { fen: editedFen, children: [] },
+            headers: { fen: editedFen },
+            position: [],
+        });
+    await capture("board-editor-castling");
+});
 
 test("board-keyboard: user marks coexist, toggle individually, persist per node and clear on left click", async ({
     page,
