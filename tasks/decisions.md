@@ -9287,3 +9287,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, 2026-10-21. Plan authorship and arbitration share the root context. Detection and code use the same OpenAI model family in separate contexts.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"612df7958b50b3a2baa1fc698b492674e04e37d59597963b8c524f48dc32b31f","input_sha256":"86c18ddafc1d5b96a485c7a1532908a3cb820351a88970d64037fc930611a1a0","kind":"mutation-receipt","operation":"7d03084526aac1895cf41a8bc1dd629febf2637a9c3814852cc0c9d9849a1829","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261021-11 — How do database command tests observe connection acquisition cancellation?
+
+* **Question:** Should command acquisition cancellation be anchored with real contention or a token recorder?
+* **Governs:** f-20261004-17
+* **Chosen:** Exhaust the real pool and observe production blocking command cancellation at the existing portable acquisition hook. Require bounded typed Cancellation with connections held, plus a successful uncancelled retry.
+* **Rejected:** A token recorder proving only argument presence and new building-wait hooks where the existing portable hook suffices.
+* **Reason:** This isolates acquisition from later cancellation checks and detects unrelated tokens. Removal and reversal path: replace the harness and narrow cfg(test) support only with equally mutation-proven coverage of the same command-to-acquisition edges.
+* **Decided by:** Codex, full auto adopted plan for f-20261004-17. Plan authorship and arbitration shared one context, detection uses the code's model family · **Superseded-by:** -
+
+### d-20261021-12 — Which database acquisition edges belong to the regression coverage?
+
+* **Question:** Should coverage follow historical call sites or current shared and linked acquisition edges?
+* **Governs:** f-20261004-17
+* **Chosen:** Cover current equivalents of the filed call sites, the get_db_or_create forwarding edge, and both current index-generation branches. Ordinary cases remain portable, linked collection and export cases retain Unix support boundaries.
+* **Rejected:** Restoring historical duplication or expanding intentionally uncancellable commands and unsupported Windows routes.
+* **Reason:** The finding concerns forwarding on current code. Reversal path: revise the map when production acquisition edges change, preserving mutation-proven coverage.
+* **Decided by:** Codex, full auto adopted plan for f-20261004-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"29031a543dbfa16ed41d09b6ce550e00778bc43da119912ec0a90fb7240339e8","input_sha256":"d3142e4d9af3bbfdec1ad37e349cc9e8d6ecba08db4944f98384447c6f3390a7","kind":"mutation-receipt","operation":"e6093c1055dada69f9b94c5f63c2e7ae0349090fd777a992fc3510853c64da44","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-11","d-20261021-12"],"target":"decisions-ledger","v":1} -->
