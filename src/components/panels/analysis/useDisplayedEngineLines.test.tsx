@@ -73,7 +73,7 @@ test("uses current lines immediately, then dimmed previous lines with their orig
   await h.render(<Probe moves={["d2d4"]} />);
   expect(display.lines).toEqual(displayLines);
   expect(display.dimmed).toBe(true);
-  expect(display.finalFen).toBe(INITIAL_FEN);
+  expect(display.searchedBoardFen).toBe(INITIAL_FEN);
   expect(display.halfMoves).toBe(0);
   await act(async () => vi.advanceTimersByTime(999));
   expect(display.loading).toBe(false);
@@ -93,7 +93,7 @@ test("changing the active workspace tab leaves the owning reader's fallback inta
   await h.render(<Probe moves={["e2e4"]} />);
   expect(display.lines).toEqual(displayLines);
   expect(display.dimmed).toBe(true);
-  expect(display.finalFen).toBe(INITIAL_FEN);
+  expect(display.searchedBoardFen).toBe(INITIAL_FEN);
 });
 
 test("first start stays empty until 1000 ms and navigation restarts the deadline", async () => {
@@ -267,7 +267,7 @@ test("the fallback tracks the latest displayed payload and its move-number ancho
   await h.render(<Probe moves={["d2d4"]} />);
   expect(display.lines).toEqual(latest);
   expect(display.halfMoves).toBe(1);
-  expect(display.finalFen).toBe(analysisSearch(INITIAL_FEN, ["e2e4"], false).finalFen);
+  expect(display.searchedBoardFen).toBe(analysisSearch(INITIAL_FEN, ["e2e4"], false).finalFen);
 });
 
 test("unavailable threats suppress cached and historical lines, failure and waiting, then recover", async () => {
@@ -301,7 +301,7 @@ test("unavailable threats suppress cached and historical lines, failure and wait
     dimmed: false,
     failure: null,
     loading: false,
-    finalFen: null,
+    searchedBoardFen: null,
     error: null,
     isGameOver: false,
   });
@@ -310,7 +310,7 @@ test("unavailable threats suppress cached and historical lines, failure and wait
   expect(h.store.get(h.settingsAtom).enabled).toBe(true);
   await h.render(<Probe />);
   expect(display.lines).toEqual(displayLines);
-  expect(display.finalFen).toBe(legal.searchedBoardFen);
+  expect(display.searchedBoardFen).toBe(legal.searchedBoardFen);
   expect(display.dimmed).toBe(false);
 });
 
@@ -325,7 +325,7 @@ test("historical threat lines retain their actual searched board and source half
   await h.render(<Probe fen={fen} moves={["d7d6"]} />);
   expect(display.lines).toEqual(displayLines);
   expect(display.dimmed).toBe(true);
-  expect(display.finalFen).toBe("4k3/8/8/3pP3/8/8/8/4K3 b - - 0 8");
+  expect(display.searchedBoardFen).toBe("4k3/8/8/3pP3/8/8/8/4K3 b - - 0 8");
   expect(display.halfMoves).toBe(1);
 });
 

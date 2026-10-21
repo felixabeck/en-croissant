@@ -10,7 +10,7 @@ import {
     type MockScenario,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
-import type { ErrorPayload } from "../src/bindings/generated";
+import type { BestMovesPayload, ErrorPayload } from "../src/bindings/generated";
 
 async function setupNotationMenu(
     page: Page,
@@ -261,6 +261,48 @@ test("engine-gap: warm actor contract preserves ownership and isolates searches"
     });
 });
 
+type AnalysisRequest = {
+    id: string;
+    tab: string;
+    generation: string;
+    options: { fen: string; moves: string[] };
+};
+
+// Native IPC serializes these bigint counters as JSON numbers.
+type BestMovesFixturePayload = Omit<BestMovesPayload, "bestLines"> & {
+    bestLines: (Omit<BestMovesPayload["bestLines"][number], "nodes" | "nps"> & {
+        nodes: number;
+        nps: number;
+    })[];
+};
+
+function bestMovesPayload(
+    request: AnalysisRequest,
+    sanMoves: string[],
+    uciMoves: string[],
+    score: number,
+): BestMovesFixturePayload {
+    return {
+        engine: request.id,
+        tab: request.tab,
+        generation: request.generation,
+        fen: request.options.fen,
+        moves: request.options.moves,
+        progress: 50,
+        bestLines: [
+            {
+                depth: 20,
+                multipv: 1,
+                nodes: 1234,
+                nps: 5678,
+                score: { value: { type: "cp", value: score }, wdl: null },
+                sanMoves,
+                uciMoves,
+            },
+        ],
+    };
+}
+
 async function setupAnalysisEngine(page: Page) {
     await page.addInitScript(() => {
         localStorage.setItem("erase-drawables-on-click", "false");
@@ -311,33 +353,10 @@ test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B 
         uciMoves: string[],
         score: number,
     ) => {
-        const request = (await searches())[index].args as {
-            id: string;
-            tab: string;
-            generation: string;
-            options: { fen: string; moves: string[] };
-        };
+        const request = (await searches())[index].args as AnalysisRequest;
         await emitTauriEvent({
             event: "best-moves-payload",
-            payload: {
-                engine: request.id,
-                tab: request.tab,
-                generation: request.generation,
-                fen: request.options.fen,
-                moves: request.options.moves,
-                progress: 50,
-                bestLines: [
-                    {
-                        depth: 20,
-                        multipv: 1,
-                        nodes: 1234,
-                        nps: 5678,
-                        score: { value: { type: "cp", value: score }, wdl: null },
-                        sanMoves,
-                        uciMoves,
-                    },
-                ],
-            },
+            payload: bestMovesPayload(request, sanMoves, uciMoves, score),
         });
     };
     await emitLines(0, ["e4", "e5", "Nf3"], ["e2e4", "e7e5", "g1f3"], 34);
@@ -428,39 +447,15 @@ test("engine-gap: legal threat after a double push becomes unavailable in check 
     }
     await panel.getByRole("button", { name: "Check the opponent's threat", exact: true }).click();
     await expect.poll(async () => (await searches()).length).toBe(6);
-    type Request = {
-        id: string;
-        tab: string;
-        generation: string;
-        options: { fen: string; moves: string[] };
-    };
-    const request = (await searches())[5].args as Request;
+    const request = (await searches())[5].args as AnalysisRequest;
     expect(request.options.fen).toBe(
         "rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 3",
     );
     expect(request.options.moves).toEqual([]);
-    const emit = async (request: Request) =>
+    const emit = async (request: AnalysisRequest) =>
         emitTauriEvent({
             event: "best-moves-payload",
-            payload: {
-                engine: request.id,
-                tab: request.tab,
-                generation: request.generation,
-                fen: request.options.fen,
-                moves: request.options.moves,
-                progress: 50,
-                bestLines: [
-                    {
-                        depth: 20,
-                        multipv: 1,
-                        nodes: 1234,
-                        nps: 5678,
-                        score: { value: { type: "cp", value: 34 }, wdl: null },
-                        sanMoves: ["d4", "Nf3"],
-                        uciMoves: ["d5d4", "g1f3"],
-                    },
-                ],
-            },
+            payload: bestMovesPayload(request, ["d4", "Nf3"], ["d5d4", "g1f3"], 34),
         });
     await emit(request);
     await expect(panel.getByRole("button", { name: "d4", exact: true })).toBeVisible();
@@ -506,7 +501,7 @@ test("engine-gap: legal threat after a double push becomes unavailable in check 
     await expect(page).toHaveScreenshot("engine-threat-unavailable.png", { fullPage: true });
     await page.getByRole("button", { name: "Previous move", exact: true }).click();
     await expect.poll(async () => (await searches()).length).toBe(7);
-    const recovered = (await searches())[6].args as Request;
+    const recovered = (await searches())[6].args as AnalysisRequest;
     expect(recovered.options).toEqual(request.options);
     expect(recovered.generation).not.toBe(request.generation);
     await emit(recovered);
@@ -529,31 +524,13 @@ for (const partial of [false, true]) {
         await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
         await mockScenario({ commands: { get_engine_logs: { result: [] } } });
         const { searches, panel } = await setupAnalysisEngine(page);
-        const request = (await searches())[0].args as {
-            id: string;
-            tab: string;
-            generation: string;
-            options: { fen: string; moves: string[] };
-        };
-        const payload = {
-            engine: request.id,
-            tab: request.tab,
-            generation: request.generation,
-            fen: request.options.fen,
-            moves: request.options.moves,
-            progress: 50,
-            bestLines: [
-                {
-                    depth: 20,
-                    multipv: 1,
-                    nodes: 1234,
-                    nps: 5678,
-                    score: { value: { type: "cp", value: 34 }, wdl: null },
-                    sanMoves: ["e4", "e5", "Nf3"],
-                    uciMoves: ["e2e4", "e7e5", "g1f3"],
-                },
-            ],
-        };
+        const request = (await searches())[0].args as AnalysisRequest;
+        const payload = bestMovesPayload(
+            request,
+            ["e4", "e5", "Nf3"],
+            ["e2e4", "e7e5", "g1f3"],
+            34,
+        );
         if (partial) {
             await emitTauriEvent({ event: "best-moves-payload", payload });
             await expect(panel.getByRole("button", { name: "e4", exact: true })).toBeVisible();

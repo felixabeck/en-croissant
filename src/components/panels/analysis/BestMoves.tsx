@@ -145,7 +145,7 @@ function BestMovesComponent({
     loading,
     error,
     isGameOver,
-    finalFen,
+    searchedBoardFen,
     halfMoves: displayedHalfMoves,
     available,
   } = useDisplayedEngineLines(engine, fen, moves, halfMoves);
@@ -339,7 +339,7 @@ function BestMovesComponent({
               ))}
             {!isGameOver &&
               !error &&
-              finalFen &&
+              searchedBoardFen &&
               engineVariations &&
               engineVariations.map((engineVariation, index) => {
                 return (
@@ -352,7 +352,7 @@ function BestMovesComponent({
                     halfMoves={displayedHalfMoves}
                     inert={dimmed}
                     threat={threat}
-                    fen={finalFen}
+                    fen={searchedBoardFen}
                     orientation={orientation}
                   />
                 );

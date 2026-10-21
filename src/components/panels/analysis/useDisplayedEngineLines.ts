@@ -20,7 +20,7 @@ import { engineIdentity, engineLineContext } from "./analysisLineContext";
 
 export const ENGINE_LINES_LOADING_DELAY_MS = 1000;
 
-type DisplayedLines = { lines: BestMoves[]; finalFen: string | null; halfMoves: number };
+type DisplayedLines = { lines: BestMoves[]; searchedBoardFen: string | null; halfMoves: number };
 
 /** The native snapshot is already safe. Render its text without interpreting markup. */
 export function engineFailureMessage(
@@ -121,7 +121,7 @@ export function useDisplayedEngineLines(
                 const displays = new Map(previous?.displays);
                 displays.set(threat, {
                     lines: current,
-                    finalFen: search.searchedBoardFen,
+                    searchedBoardFen: search.searchedBoardFen,
                     halfMoves,
                 });
                 return { scope, displays };
@@ -153,7 +153,7 @@ export function useDisplayedEngineLines(
         dimmed: fallback !== undefined || (failure !== null && current !== undefined),
         failure,
         loading,
-        finalFen: fallback ? fallback.finalFen : search.searchedBoardFen,
+        searchedBoardFen: fallback ? fallback.searchedBoardFen : search.searchedBoardFen,
         halfMoves: fallback ? fallback.halfMoves : halfMoves,
         error,
         isGameOver,
