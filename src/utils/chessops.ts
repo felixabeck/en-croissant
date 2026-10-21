@@ -10,13 +10,11 @@ import {
     type Setup,
     type Square,
     type SquareName,
-    SquareSet,
     squareFile,
     squareRank,
 } from "chessops";
 import { type FenError, InvalidFen, makeFen, parseFen } from "chessops/fen";
 import { parseSan } from "chessops/san";
-import { squareFromCoords } from "chessops/util";
 import type { TFunction } from "i18next";
 
 export function positionFromFen(fen: string): [Chess, null] | [null, FenError | PositionError] {
@@ -177,29 +175,13 @@ export function parseSanOrUci(pos: Chess, sanOrUci: string): Move | null {
 }
 
 export function getCastlingSquare(setup: Setup, color: "w" | "b", side: "q" | "k") {
-    const kingSquare = (color === "w" ? setup.board.white : setup.board.black)
-        .intersect(setup.board.king)
-        .singleSquare();
-    if (kingSquare === undefined) {
-        return;
-    }
-
-    let possibleRookSquares = SquareSet.empty();
-    for (let file = 0; file < 8; file++) {
-        const newSquare = squareFromCoords(file, squareRank(kingSquare));
-        if (newSquare === undefined) {
-            continue;
-        }
-        if (side === "q" && file < squareFile(kingSquare)) {
-            possibleRookSquares = possibleRookSquares.set(newSquare, true);
-        } else if (side === "k" && file > squareFile(kingSquare)) {
-            possibleRookSquares = possibleRookSquares.set(newSquare, true);
-        }
-    }
-
-    const rookSquares = (color === "w" ? setup.board.white : setup.board.black)
-        .intersect(setup.board.rook)
-        .intersect(possibleRookSquares);
-
-    return rookSquares.first();
+    const chessColor = color === "w" ? "white" : "black";
+    const castlingSide = side === "q" ? "a" : "h";
+    // Keep the referenced rook before considering candidates for enabling a lost right.
+    return (
+        Castles.fromSetup(setup).rook[chessColor][castlingSide] ??
+        Castles.fromSetup({ ...setup, castlingRights: setup.board.rook }).rook[chessColor][
+            castlingSide
+        ]
+    );
 }

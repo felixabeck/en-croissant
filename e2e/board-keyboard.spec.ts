@@ -1,6 +1,7 @@
 import {
     activeWorkspaceTab,
     assertChooserInsideBoard,
+    dragBoard,
     drawMark,
     expect,
     filesWorkspaceCommands,
@@ -13,13 +14,9 @@ import {
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
 import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
+import type { Page } from "@playwright/test";
 
-test("board-keyboard: editor castling rights follow a king dragged off its back rank", async ({
-    page,
-    capture,
-}) => {
-    const initialFen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 17 23";
-    const editedFen = "r3k2r/8/8/8/8/8/4K3/R6R w kq - 17 23";
+async function importAnalysisFen(page: Page, initialFen: string) {
     await page.goto("/");
     await page.getByRole("button", { name: /^import$/i }).click();
     const modal = page.getByRole("dialog", { name: /import game/i });
@@ -28,33 +25,10 @@ test("board-keyboard: editor castling rights follow a king dragged off its back 
     await modal.getByRole("button", { name: /^import$/i }).click();
     const grid = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
     await expect(grid).toBeVisible();
-    await expect(grid.getByRole("gridcell", { name: "e1, White King", exact: true })).toHaveCount(
-        1,
-    );
-    await expect(grid.getByRole("gridcell", { name: "e2, empty", exact: true })).toHaveCount(1);
-    await page.getByRole("button", { name: "Edit Position", exact: true }).click();
-    const fen = page.locator("#bottomRight").getByPlaceholder("Enter FEN", { exact: true });
-    await expect(fen).toHaveValue(initialFen);
+    return grid;
+}
 
-    // Edit mode uses Chessground's free drag movement rather than a played move.
-    const board = page.locator("cg-board").first();
-    await board.click({ trial: true });
-    const box = (await board.boundingBox())!;
-    const kingX = box.x + (4.5 * box.width) / 8;
-    await page.mouse.move(kingX, box.y + (7.5 * box.height) / 8);
-    await page.mouse.down();
-    await page.mouse.move(kingX, box.y + (6.5 * box.height) / 8, { steps: 8 });
-    await board.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-    );
-    await page.mouse.up();
-    await page.mouse.move(0, 0);
-    await expect(grid.getByRole("gridcell", { name: "e2, White King", exact: true })).toHaveCount(
-        1,
-    );
-    await expect(grid.getByRole("gridcell", { name: "e1, empty", exact: true })).toHaveCount(1);
-    await expect(fen).toHaveValue(editedFen);
-
+async function expectEditorRoot(page: Page, expectedFen: string) {
     const tab = (await activeWorkspaceTab(page))!;
     await expect
         .poll(async () => {
@@ -73,12 +47,61 @@ test("board-keyboard: editor castling rights follow a king dragged off its back 
                 : null;
         })
         .toMatchObject({
-            root: { fen: editedFen, children: [] },
-            headers: { fen: editedFen },
+            root: { fen: expectedFen, children: [] },
+            headers: { fen: expectedFen },
             position: [],
         });
+}
+
+test("board-keyboard: editor castling rights follow a king dragged off its back rank", async ({
+    page,
+    capture,
+}) => {
+    const initialFen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 17 23";
+    const editedFen = "r3k2r/8/8/8/8/8/4K3/R6R w kq - 17 23";
+    const grid = await importAnalysisFen(page, initialFen);
+    await expect(grid.getByRole("gridcell", { name: "e1, White King", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(grid.getByRole("gridcell", { name: "e2, empty", exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: "Edit Position", exact: true }).click();
+    const fen = page.locator("#bottomRight").getByPlaceholder("Enter FEN", { exact: true });
+    await expect(fen).toHaveValue(initialFen);
+
+    // Edit mode uses Chessground's free drag movement rather than a played move.
+    await dragBoard(page, page.locator("cg-board").first(), "e1", "e2", "left");
+    await expect(grid.getByRole("gridcell", { name: "e2, White King", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(grid.getByRole("gridcell", { name: "e1, empty", exact: true })).toHaveCount(1);
+    await expect(fen).toHaveValue(editedFen);
+    await expectEditorRoot(page, editedFen);
     await capture("board-editor-castling");
 });
+
+for (const fixture of [
+    { name: "white-outer", fen: "4k3/8/8/8/8/8/8/3K1R1R w K - 17 23", checkbox: 0 },
+    { name: "white-inner", fen: "4k3/8/8/8/8/8/8/3K1R1R w F - 17 23", checkbox: 0 },
+    { name: "black-outer", fen: "3k1r1r/8/8/8/8/8/8/4K3 b k - 17 23", checkbox: 1 },
+    { name: "black-inner", fen: "3k1r1r/8/8/8/8/8/8/4K3 b f - 17 23", checkbox: 1 },
+]) {
+    test(`board-keyboard: editor castling preserves the existing ${fixture.name} rook right`, async ({
+        page,
+        capture,
+    }) => {
+        await importAnalysisFen(page, fixture.fen);
+        await page.getByRole("button", { name: "Edit Position", exact: true }).click();
+        const editor = page.locator("#bottomRight");
+        await expect(editor.getByPlaceholder("Enter FEN", { exact: true })).toHaveValue(
+            fixture.fen,
+        );
+        await expect(
+            editor.getByRole("checkbox", { name: "O-O", exact: true }).nth(fixture.checkbox),
+        ).toBeChecked();
+        await expectEditorRoot(page, fixture.fen);
+        await capture(`board-editor-castling-${fixture.name}`);
+    });
+}
 
 test("board-keyboard: user marks coexist, toggle individually, persist per node and clear on left click", async ({
     page,
@@ -256,12 +279,7 @@ test("board-keyboard: refuses an excess-material engine game with its localized 
             },
         },
     });
-    await page.goto("/");
-    await page.getByRole("button", { name: /^import$/i }).click();
-    const modal = page.getByRole("dialog", { name: /import game/i });
-    await modal.getByText("FEN", { exact: true }).click();
-    await modal.getByRole("textbox", { name: "FEN" }).fill(fen);
-    await modal.getByRole("button", { name: /^import$/i }).click();
+    await importAnalysisFen(page, fen);
     await page.getByRole("button", { name: "Play from here", exact: true }).click();
     await page.getByText("Engine", { exact: true }).last().click();
     await expect(page.locator("input[value='Stockfish 19']")).toBeVisible();

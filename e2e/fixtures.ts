@@ -385,20 +385,30 @@ function squarePosition(square: string, box: { width: number; height: number }) 
     };
 }
 
-export async function drawMark(page: Page, board: Locator, from: string, to = from) {
-    await expect(board).toBeVisible();
+export async function dragBoard(
+    page: Page,
+    board: Locator,
+    from: string,
+    to: string,
+    button: "left" | "right",
+) {
+    await board.click({ trial: true, button });
     const box = (await board.boundingBox())!;
     const start = squarePosition(from, box);
     const end = squarePosition(to, box);
     await page.mouse.move(box.x + start.x, box.y + start.y);
-    await page.mouse.down({ button: "right" });
+    await page.mouse.down({ button });
     await page.mouse.move(box.x + end.x, box.y + end.y, { steps: 4 });
-    // Chessground resolves the drawing endpoint on its animation frame.
+    // Chessground resolves gesture endpoints on its animation frame.
     await board.evaluate(
         () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
     );
-    await page.mouse.up({ button: "right" });
+    await page.mouse.up({ button });
     await page.mouse.move(0, 0);
+}
+
+export async function drawMark(page: Page, board: Locator, from: string, to = from) {
+    await dragBoard(page, board, from, to, "right");
 }
 
 export async function playBoardMove(_page: Page, board: Locator, from: string, to: string) {

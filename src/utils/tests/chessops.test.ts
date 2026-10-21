@@ -90,6 +90,84 @@ test("should get the correct castling square in FRC 608", () => {
     expect(getCastlingSquare(setup, "b", "q")).toBe(parseSquare("a8"));
 });
 
+test.each([
+    ["White outer kingside right", "4k3/8/8/8/8/8/8/3K1R1R w K - 17 23", "w", undefined, "h1"],
+    ["Black outer kingside right", "3k1r1r/8/8/8/8/8/8/4K3 b k - 17 23", "b", undefined, "h8"],
+    [
+        "White explicit inner kingside right",
+        "4k3/8/8/8/8/8/8/3K1R1R w F - 17 23",
+        "w",
+        undefined,
+        "f1",
+    ],
+    [
+        "Black explicit inner kingside right",
+        "3k1r1r/8/8/8/8/8/8/4K3 b f - 17 23",
+        "b",
+        undefined,
+        "f8",
+    ],
+    ["White outer queenside right", "4k3/8/8/8/8/8/8/R1R2K2 w Q - 17 23", "w", "a1", undefined],
+    ["Black outer queenside right", "r1r2k2/8/8/8/8/8/8/4K3 b q - 17 23", "b", "a8", undefined],
+    [
+        "White explicit inner queenside right",
+        "4k3/8/8/8/8/8/8/R1R2K2 w C - 17 23",
+        "w",
+        "c1",
+        undefined,
+    ],
+    [
+        "Black explicit inner queenside right",
+        "r1r2k2/8/8/8/8/8/8/4K3 b c - 17 23",
+        "b",
+        "c8",
+        undefined,
+    ],
+    ["White prospective rights", "4k3/8/8/8/8/8/8/1R1K1R1R w - - 17 23", "w", "b1", "h1"],
+    ["Black prospective rights", "1r1k1r1r/8/8/8/8/8/8/4K3 b - - 17 23", "b", "b8", "h8"],
+    ["White without eligible rooks", "4k3/8/8/8/8/8/8/4K3 w - - 17 23", "w", undefined, undefined],
+    ["Black without eligible rooks", "4k3/8/8/8/8/8/8/4K3 b - - 17 23", "b", undefined, undefined],
+    [
+        "White with wrong-colour rooks",
+        "4k3/8/8/8/8/8/8/r2K3r w HA - 17 23",
+        "w",
+        undefined,
+        undefined,
+    ],
+    [
+        "Black with wrong-colour rooks",
+        "R2k3R/8/8/8/8/8/8/4K3 b ha - 17 23",
+        "b",
+        undefined,
+        undefined,
+    ],
+    [
+        "White king off its back rank",
+        "4k3/8/8/8/8/8/1R1K1R2/8 w FB - 17 23",
+        "w",
+        undefined,
+        undefined,
+    ],
+    [
+        "Black king off its back rank",
+        "8/1r1k1r2/8/8/8/8/8/4K3 b fb - 17 23",
+        "b",
+        undefined,
+        undefined,
+    ],
+    ["missing White king", "4k3/8/8/8/8/8/8/R6R w HA - 17 23", "w", undefined, undefined],
+    ["missing Black king", "r6r/8/8/8/8/8/8/4K3 b ha - 17 23", "b", undefined, undefined],
+] as const)(
+    "castling control resolves %s without mutating the setup",
+    (_name, fen, color, q, k) => {
+        const setup = parseFen(fen).unwrap();
+        const original = parseFen(fen).unwrap();
+        expect(getCastlingSquare(setup, color, "q")).toBe(q ? parseSquare(q) : undefined);
+        expect(getCastlingSquare(setup, color, "k")).toBe(k ? parseSquare(k) : undefined);
+        expect(setup).toEqual(original);
+    },
+);
+
 test("normalizes transient editor state while preserving valid Chess960 castling rooks", () => {
     expect(normalizeEditedFen("rqnkrnbb/pppppppp/8/8/8/8/PPPPPPPP/RQNKRNBB w EAea e3 12 3")).toBe(
         "rqnkrnbb/pppppppp/8/8/8/8/PPPPPPPP/RQNKRNBB w KQkq - 12 3",
