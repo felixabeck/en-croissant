@@ -17547,7 +17547,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### The focused repertoire Build pane clips Retry outside the reachable viewport at 320px and 200% font size
 
-* **ID:** f-20261021-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261021-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** ux
 * **Where:** `src/components/boards/BoardAnalysis.tsx` top-right Tabs and `src/components/panels/practice/PracticePanel.tsx` nested vertical Train/Build Tabs, `RepertoireInfo.tsx` error feedback.
@@ -17560,6 +17560,13 @@ Current source-only identity repairs and37/70/25 unit checks passed, but the act
 
 The current canonical focused browser ulLflP exited1 with17passed2failed. Both ordinary800px board snapshots and desktop coverage passed. Compact Retry ratio is0.8734388947486877. Root extracted the actual standard HTML report's JSON geometry attachment and read its rectangles. Retry is121.36px wide, inside an Alert wrapper only90px wide and an overflow-hidden Alert126px wide. The Alert padding is16px each side plus2px borders. Retry's default scaled horizontal padding is28px each side. Thus the remaining clipping is a concrete child width-budget failure, not a missing vertical scroll range. Root viewed the actual compact PNG. Preserve the current font-scaled navigation and normal800px controls, fix local control sizing against its actual available width without hiding text, weakening viewport1 or requiring source input changes. Full current HTML/report/test-results/traces are archived asr3-browser-pane-practice-red. Fresh focused review-plan judgment is required before another source repair of this repeatedly failing pane mechanism.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"365697a399374cb59fc5556a3d472eb6fa814bd3888d5d4e9a5c4fd7ca430615","input_sha256":"0bb9731e28fe147ab5bdd376432f175fcc4543f72e98c62ea68a5540bf764646","kind":"mutation-receipt","operation":"1d1cfd4526d9a64e5505856a60bf672f3d51e4ab63b2167bc80e4465e4267bc5","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-04"],"target":"f-20261021-04","v":1} -->
+
+The focused repertoire pane preserves nested tab navigation and provides bounded reachable compact content so actual coverage Error/Retry and successful recovery are usable at320px and200percent font scale, with healthy desktop composition retained. Pixel proof uses the canonical container and an independent layout-only source reversal with unchanged assertions.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"20f51596bc970d08c2a9b72e21f345494bb13b3adaceed9e0c85d2ca20784e60","header_sha256":"4a4be42bc88aba9e2f7b26cff95c910593528bcda8a66fef5d427f602bfe6000","header_status":"handled","input_sha256":"bf87a02c9acebf331d4504e3d6fa4110afd6c7783be392f8475d8476982450a0","kind":"mutation-receipt","operation":"bb77090b97c8220870ff13868253c9f8decff8166222c11e20e3d2f688ec9c38","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-04"],"target":"f-20261021-04","v":1} -->
 
 ---
 
