@@ -11770,7 +11770,7 @@ Commits: `61b5e792` (owner and migration), `b7c87f3b` (named `PICKER_DIALOG_GRAN
 
 ### The practice logs modal numbers every move from the wrong side and keys its cards by a repeating FEN
 
-* **ID:** f-20260922-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260922-03 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/panels/practice/PracticePanel.tsx:1063-1075` (`logs.map`, `Card
   key={log.fen}`, and the `Math.floor(node.halfMoves / 2) + 1` / `node.halfMoves % 2 === 0`
   formatting of `node.san`).
@@ -11795,6 +11795,13 @@ Commits: `61b5e792` (owner and migration), `b7c87f3b` (named `PICKER_DIALOG_GRAN
   it. Both verified in source. Filed rather than folded in: the plan for `f-20260906-23` changes how
   the modal *loads* its entries, not how it renders one, and no obligation of that mandate fails
   without this (rule 12a adoption gate).
+
+Practice review log labels use the previous SAN move's own completed ply through the existing formatter, including custom start positions and raw FEN fallback with no previous move. Native entry IDs and stable React keys were already fixed before this run and are preserved. Actual writer/render and repeated-FEN entries are proved.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"1f8be3f39e6ab1dc79a5e8475778c6deba17d1e3ffd26d9d158201bb4357aad9","header_sha256":"f84b83b04e139811104007a5d1ce2ff556439846778c857261385a4c9751ebeb","header_status":"handled","input_sha256":"26fede342e8185e2c10c47f365ca9ef2ab919a37c5becdc667e8d27e8edf2f07","kind":"mutation-receipt","operation":"ba9aa402fe8d645d59ee2d51e0a6777f00e8fcfeb804506e2e5b4120d2af9de3","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-03"],"target":"f-20260922-03","v":1} -->
 
 ---
 
