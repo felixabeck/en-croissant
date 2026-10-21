@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: e318fe98c5e478439d5f7508ff5441c16331539d475d8ebae4ee5973e33b79b1
+# agent-kit-sha256: fcf4c15f0e1a1bdea7259e31b15a97ee584707668106bea6f198d940aaf1121e
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -101,6 +101,7 @@ IMPACT_QUEUE_CONTRACT_LEVEL = 2
 # levels, including the supervisor's IMPACT_QUEUE_CONTRACT_LEVEL, keep the previous behaviour.
 STRICT_REPORTING_CONTRACT_LEVEL = 3
 ANSWERED_SPOOL_CONTRACT_LEVEL = 4
+EFFECTIVE_FOLLOW_UP_CONTRACT_LEVEL = 5
 
 
 def _parse_supervisor_contract_level(value: str | None) -> int | None:
@@ -148,6 +149,12 @@ def _answered_spool_enabled() -> bool:
     """Keep lower-level waiting counts while showing published answers to new callers."""
     level = supervisor_contract_level()
     return level is None or level >= ANSWERED_SPOOL_CONTRACT_LEVEL
+
+
+def _effective_follow_up_enabled() -> bool:
+    """Keep historical ancestry and annotation admission for lower declared levels."""
+    level = supervisor_contract_level()
+    return level is None or level >= EFFECTIVE_FOLLOW_UP_CONTRACT_LEVEL
 
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
@@ -640,6 +647,13 @@ IMPACT_CLASS_RE = re.compile(
 FOLLOW_UP_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Follow-up of:\*\*[ \t]*(?P<ids>[^\n]*)$",
     re.MULTILINE,
+)
+EFFECTIVE_FOLLOW_UP_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Effective Follow-up of:\*\*[ \t]*(?P<ids>[^\n]*)$",
+    re.MULTILINE,
+)
+EFFECTIVE_FOLLOW_UP_MARKER_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Effective Follow-up of\b",
 )
 OUTSIDE_DIFF_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Spotted outside diff:\*\*",
@@ -3724,20 +3738,44 @@ def _impact_cell_entry(members: list[Finding], cells: ImpactCells) -> str:
     return max((cells.entries[f.id] for f in members), key=ENTRY_RANK.__getitem__)
 
 
+def _effective_follow_up_ids(value: str) -> set[str] | None:
+    """Parse a complete replacement, distinguishing a clear from malformed prose."""
+    value = value.strip()
+    if value == "-":
+        return set()
+    if re.fullmatch(r"f-\d{8}-\d{2,}(?:[ \t]*,[ \t]*f-\d{8}-\d{2,})*", value):
+        return {part.strip() for part in value.split(",")}
+    return None
+
+
+def _follow_up_ancestry(finding: Finding) -> tuple[bool, set[str]]:
+    """Resolve membership and edges together, retaining legacy unions without a directive."""
+    body = _unfenced_body(finding)
+    if _effective_follow_up_enabled():
+        for match in reversed(list(EFFECTIVE_FOLLOW_UP_RE.finditer(body))):
+            parents = _effective_follow_up_ids(match.group("ids"))
+            if parents is not None:
+                return bool(parents), parents
+    matches = list(FOLLOW_UP_RE.finditer(body))
+    return bool(matches), {
+        parent for match in matches
+        for parent in re.findall(r"f-\d{8}-\d{2,}", match.group("ids"))
+    }
+
+
 def _follow_up_escalations(findings: list[Finding]) -> dict[str, tuple[str, list[str]]]:
     """Find three lineage follow-ups on one full source path, cycle-safe and status-independent."""
     by_id = {finding.id: finding for finding in findings}
     links: dict[str, set[str]] = {fid: set() for fid in by_id}
     follow_ups: set[str] = set()
     for finding in findings:
-        matches = list(FOLLOW_UP_RE.finditer(_unfenced_body(finding)))
-        if matches:
+        is_follow_up, parents = _follow_up_ancestry(finding)
+        if is_follow_up:
             follow_ups.add(finding.id)
-        for match in matches:
-            for parent in re.findall(r"f-\d{8}-\d{2,}", match.group("ids")):
-                if parent in by_id:
-                    links[finding.id].add(parent)
-                    links[parent].add(finding.id)
+        for parent in parents:
+            if parent in by_id:
+                links[finding.id].add(parent)
+                links[parent].add(finding.id)
     full_paths: dict[str, set[str]] = {}
     escalations: dict[str, tuple[str, list[str]]] = {}
     visited: set[str] = set()
@@ -12239,6 +12277,15 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
     for line, fence_state in zip(lines, fence_states, strict=True):
         if fence_state is not FenceState.OUTSIDE:
             continue
+
+        if _effective_follow_up_enabled() and EFFECTIVE_FOLLOW_UP_MARKER_RE.match(line):
+            directive = EFFECTIVE_FOLLOW_UP_RE.fullmatch(line)
+            if directive is None or _effective_follow_up_ids(directive.group("ids")) is None:
+                return (
+                    f"{source} contains a malformed Effective Follow-up of directive. "
+                    "Use '* **Effective Follow-up of:** -' to clear ancestry or a "
+                    "comma-separated list of f-YYYYMMDD-nn ids to replace it."
+                )
 
         if _has_ledger_meta_comment(line):
             return (
