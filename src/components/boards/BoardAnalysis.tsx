@@ -42,9 +42,12 @@ import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
 import EvalListener from "./EvalListener";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
+import paneClasses from "../common/PaneTabs.module.css";
 
 function BoardAnalysis() {
   const { t } = useTranslation();
+  const compactTabs = useScaledMaxWidth(36);
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
@@ -214,9 +217,10 @@ function BoardAnalysis() {
           selectedPiece={selectedPiece}
         />
       </Portal>
-      <Portal target="#topRight" style={{ height: "100%" }}>
+      <Portal target="#topRight" className={paneClasses.root} style={{ height: "100%" }}>
         <Paper
           withBorder
+          className={paneClasses.root}
           style={{
             height: "100%",
           }}
@@ -229,14 +233,19 @@ function BoardAnalysis() {
             onChange={(v) => setCurrentTabSelected(v || "info")}
             keepMounted={false}
             activateTabWithKeyboard={false}
+            data-compact={compactTabs || undefined}
+            classNames={{
+              root: paneClasses.root,
+              list: paneClasses.list,
+              panel: paneClasses.panel,
+              tab: paneClasses.tab,
+              tabLabel: paneClasses.label,
+            }}
             style={{
               display: "flex",
               flexDirection: "column",
             }}
             styles={{
-              tabLabel: {
-                flex: 0,
-              },
               tab: {
                 display: "flex",
                 justifyContent: "center",
@@ -245,7 +254,7 @@ function BoardAnalysis() {
               panel: { flex: 1, overflowY: "hidden" },
             }}
           >
-            <Tabs.List grow>
+            <Tabs.List grow={!compactTabs}>
               {[
                 ...(isRepertoire
                   ? [{ value: "practice", title: t("Board.Tabs.Practice"), Icon: IconTargetArrow }]

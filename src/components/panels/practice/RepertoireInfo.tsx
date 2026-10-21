@@ -31,6 +31,7 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, referenceDbAtom } from "@/state/atoms";
 import { useCollectionCurrency } from "@/state/linkedCollections";
+import { capabilityKey } from "@/utils/pathCapabilities";
 import { formatMoveNumber, roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
 import {
@@ -48,10 +49,13 @@ import {
   type TreeNode,
 } from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
+import paneClasses from "@/components/common/PaneTabs.module.css";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
   return `${formatMoveNumber(halfMoves)} ${san}`;
 }
+
+type CoverageStatus = "absent" | "loading" | "error" | "success";
 
 function RepertoireInfo() {
   const { t } = useTranslation();
@@ -68,14 +72,23 @@ function RepertoireInfo() {
   const setStart = useStore(store, (s) => s.setStart);
 
   const selectedReference = useAtomValue(referenceDbAtom);
+  const selectedReferenceKey = selectedReference ? capabilityKey(selectedReference) : null;
   const currency = useCollectionCurrency(selectedReference);
-  const referenceDb =
+  const resolvedReference =
     currency.pending ||
     currency.error ||
     (currency.collection &&
       (currency.collection.status !== "ready" || !currency.collection.database))
       ? null
       : (currency.collection?.database ?? selectedReference);
+  const referenceKey = resolvedReference ? capabilityKey(resolvedReference) : null;
+  // Native metadata checks decode new handle objects for the same capability. Retain the
+  // admitted handle until its authority changes, so polling is not an implicit coverage Retry.
+  const referenceHandle = useRef(resolvedReference);
+  if ((referenceHandle.current ? capabilityKey(referenceHandle.current) : null) !== referenceKey) {
+    referenceHandle.current = resolvedReference;
+  }
+  const referenceDb = referenceHandle.current;
   useEffect(() => {
     if (currency.error) notifyUnlessCancelled(commonErrorRef.current, currency.error);
   }, [currency.error]);
@@ -86,30 +99,20 @@ function RepertoireInfo() {
 
   const stats = useStore(store, getStats);
 
-  const [coverageMap, setCoverageMap] = useState<Map<string, number>>(new Map());
   const [dbMovesMap, setDbMovesMap] = useState<
     Map<
       string,
       { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
     >
   >(new Map());
-  const [gamesMap, setGamesMap] = useState<Map<string, number>>(new Map());
-  const [missingGamesMap, setMissingGamesMap] = useState<Map<string, number>>(new Map());
   const [currentPosLoading, setCurrentPosLoading] = useState(false);
-  const [coverageLoading, setCoverageLoading] = useState(false);
-  const coverageVersionRef = useRef(0);
   const positionRequest = useRef<AbortController | null>(null);
-  const coverageRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     positionRequest.current?.abort();
-    coverageRequest.current?.abort();
-    coverageVersionRef.current += 1;
     setDbMovesMap(new Map());
-    setCoverageMap(new Map());
-    setGamesMap(new Map());
-    setMissingGamesMap(new Map());
   }, [
-    selectedReference,
+    selectedReferenceKey,
+    referenceKey,
     currency.collection?.generation,
     currency.collection?.status,
     currency.error,
@@ -119,7 +122,6 @@ function RepertoireInfo() {
   useEffect(
     () => () => {
       positionRequest.current?.abort();
-      coverageRequest.current?.abort();
     },
     [],
   );
@@ -151,6 +153,52 @@ function RepertoireInfo() {
     return movesMap;
   }, [boardStateMap, startPath]);
 
+  const [coverageRetry, setCoverageRetry] = useState(0);
+  const coverageInput = useMemo(
+    () => ({
+      root,
+      orientation,
+      referenceDb,
+      selectedReference: selectedReferenceKey,
+      generation: currency.collection?.generation,
+      status: currency.collection?.status,
+      error: currency.error,
+      pending: currency.pending,
+      minGames,
+      startPath,
+      startStateMoves,
+      retry: coverageRetry,
+    }),
+    [
+      root,
+      orientation,
+      referenceDb,
+      selectedReferenceKey,
+      currency.collection?.generation,
+      currency.collection?.status,
+      currency.error,
+      currency.pending,
+      minGames,
+      startPath,
+      startStateMoves,
+      coverageRetry,
+    ],
+  );
+  type CoverageOutcome = { input: typeof coverageInput } & (
+    | { status: "loading" | "error" }
+    | { status: "success"; result: Awaited<ReturnType<typeof computeTreeCoverage>> }
+  );
+  const [coverageOutcome, setCoverageOutcome] = useState<CoverageOutcome | null>(null);
+  const liveCoverageInput = useRef(coverageInput);
+  liveCoverageInput.current = coverageInput;
+  const currentCoverage = coverageOutcome?.input === coverageInput ? coverageOutcome : null;
+  const coverageResult = currentCoverage?.status === "success" ? currentCoverage.result : null;
+  const coverageStatus: CoverageStatus = !referenceDb
+    ? "absent"
+    : (currentCoverage?.status ?? "loading");
+  const coverageMap = coverageResult?.coverageMap;
+  const retryCoverage = useCallback(() => setCoverageRetry((attempt) => attempt + 1), []);
+
   useEffect(() => {
     if (!referenceDb) return;
     const boardFen = getBoardState(currentNode.fen);
@@ -180,64 +228,35 @@ function RepertoireInfo() {
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
   useEffect(() => {
-    if (!referenceDb) {
-      setCoverageMap(new Map());
-      setGamesMap(new Map());
-      setMissingGamesMap(new Map());
-      setDbMovesMap(new Map());
-      setCoverageLoading(false);
-      setCurrentPosLoading(false);
-      return;
-    }
-
-    const version = ++coverageVersionRef.current;
-    coverageRequest.current?.abort();
+    if (!coverageInput.referenceDb) return;
     const controller = new AbortController();
-    coverageRequest.current = controller;
-    // Paths belong to this tree order. Save only changes persistence state and must not cancel it.
-    setCoverageMap(new Map());
-    setGamesMap(new Map());
-    setMissingGamesMap(new Map());
-    setCoverageLoading(true);
+    const isCurrent = () =>
+      !controller.signal.aborted && liveCoverageInput.current === coverageInput;
+    setCoverageOutcome({ input: coverageInput, status: "loading" });
 
     computeTreeCoverage(
-      root,
-      orientation,
-      referenceDb,
-      minGames,
-      startPath,
-      startStateMoves,
+      coverageInput.root,
+      coverageInput.orientation,
+      coverageInput.referenceDb,
+      coverageInput.minGames,
+      coverageInput.startPath,
+      coverageInput.startStateMoves,
       controller.signal,
     )
       .then((result) => {
-        if (version === coverageVersionRef.current && !controller.signal.aborted) {
-          setCoverageMap(result.coverageMap);
-          setGamesMap(result.gamesMap);
-          setMissingGamesMap(result.missingGamesMap);
+        if (isCurrent()) {
+          setCoverageOutcome({ input: coverageInput, status: "success", result });
           setDbMovesMap(result.dbMovesMap);
-          setCoverageLoading(false);
         }
       })
       .catch((error) => {
-        if (!controller.signal.aborted && version === coverageVersionRef.current) {
-          setCoverageLoading(false);
+        if (isCurrent()) {
+          setCoverageOutcome({ input: coverageInput, status: "error" });
           notifyUnlessCancelled(commonErrorRef.current, error);
         }
       });
     return () => controller.abort();
-  }, [
-    referenceDb,
-    selectedReference,
-    currency.collection?.generation,
-    currency.collection?.status,
-    currency.error,
-    currency.pending,
-    minGames,
-    orientation,
-    root,
-    startPath,
-    startStateMoves,
-  ]);
+  }, [coverageInput]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();
@@ -283,7 +302,7 @@ function RepertoireInfo() {
       const dbMove = dbMoveMap.get(san);
       const games = dbMove ? dbMove.white + dbMove.draw + dbMove.black : 0;
       const coveragePath = targetPath.join(",");
-      const coverage = coverageMap.get(coveragePath) ?? 0;
+      const coverage = coverageMap?.get(coveragePath) ?? 0;
       seenSans.add(san);
       allMoves.push({
         san,
@@ -336,29 +355,41 @@ function RepertoireInfo() {
   );
 
   const nextGap = useMemo(
-    () => findNextGap(root, position, orientation, coverageMap, gamesMap, minGames),
-    [root, position, orientation, coverageMap, gamesMap, minGames],
+    () =>
+      coverageResult
+        ? findNextGap(
+            root,
+            position,
+            orientation,
+            coverageResult.coverageMap,
+            coverageResult.gamesMap,
+            minGames,
+          )
+        : null,
+    [root, position, orientation, coverageResult, minGames],
   );
 
   const biggestGap = useMemo(
     () =>
-      findBiggestGap(
-        root,
-        orientation,
-        coverageMap,
-        gamesMap,
-        missingGamesMap,
-        minGames,
-        startPath,
-      ),
-    [root, orientation, coverageMap, gamesMap, missingGamesMap, startPath, minGames],
+      coverageResult
+        ? findBiggestGap(
+            root,
+            orientation,
+            coverageResult.coverageMap,
+            coverageResult.gamesMap,
+            coverageResult.missingGamesMap,
+            minGames,
+            startPath,
+          )
+        : null,
+    [root, orientation, coverageResult, startPath, minGames],
   );
 
   if (!currentTab) return null;
 
   if (!referenceDb) {
     return (
-      <Stack p="sm">
+      <Stack h="100%" p="sm" className={`${paneClasses.root} ${paneClasses.content}`}>
         <TreeStatsBar stats={stats} t={t} />
         <Alert icon={<IconInfoCircle />} color={selectedReference ? "yellow" : undefined}>
           {selectedReference
@@ -373,7 +404,7 @@ function RepertoireInfo() {
   }
 
   return (
-    <Stack h="100%" p="sm" gap={0} style={{ overflow: "hidden" }}>
+    <Stack h="100%" p="sm" gap={0} className={`${paneClasses.root} ${paneClasses.content}`}>
       {isBeforeStart && (
         <Paper p="sm" my="sm" withBorder>
           <Stack gap="xs">
@@ -447,8 +478,12 @@ function RepertoireInfo() {
                   size="xs"
                   justify="start"
                   onClick={() => {
-                    makeMoves({ payload: preset.moves });
-                    setStart(Array(preset.moves.length).fill(0));
+                    const result = makeMoves({ payload: preset.moves });
+                    if (!result.success) {
+                      notifyUnlessCancelled(commonErrorRef.current, result.error);
+                      return;
+                    }
+                    setStart(store.getState().position);
                   }}
                 >
                   {preset.name}
@@ -464,7 +499,8 @@ function RepertoireInfo() {
         currentNode={currentNode}
         positionMoves={positionMoves}
         coverageMap={coverageMap}
-        coverageLoading={coverageLoading}
+        coverageStatus={coverageStatus}
+        onRetryCoverage={retryCoverage}
         currentPosLoading={currentPosLoading}
         root={root}
         nextGap={nextGap}
@@ -523,7 +559,8 @@ function MovesView({
   currentNode,
   positionMoves,
   coverageMap,
-  coverageLoading,
+  coverageStatus,
+  onRetryCoverage,
   root,
   nextGap,
   biggestGap,
@@ -538,8 +575,9 @@ function MovesView({
   isUserTurn: boolean;
   currentNode: TreeNode;
   positionMoves: PositionMove[];
-  coverageMap: Map<string, number>;
-  coverageLoading: boolean;
+  coverageMap: Map<string, number> | undefined;
+  coverageStatus: CoverageStatus;
+  onRetryCoverage: () => void;
   currentPosLoading: boolean;
   root: TreeNode;
   nextGap: number[] | null;
@@ -567,7 +605,7 @@ function MovesView({
           if (childPath && isPrefix(startPath, childPath)) {
             seenSans.add(child.san);
             const coveragePath = childPath.join(",");
-            const coverage = coverageMap.get(coveragePath) ?? 0;
+            const coverage = coverageMap?.get(coveragePath) ?? 0;
             const dbEntry = positionMoves.find((pm) => pm.san === child.san);
             responses.push({
               san: child.san,
@@ -623,56 +661,47 @@ function MovesView({
   const title = isUserTurn
     ? t("Board.Practice.Build.YourResponse")
     : t("Board.Practice.Build.OpponentMoves");
+  const coverageLoading = coverageStatus === "loading";
+  const coverageKnown = coverageStatus === "success";
+  const feedback = (
+    <CoverageFeedback
+      status={coverageStatus}
+      onRetry={onRetryCoverage}
+      nextGap={nextGap}
+      biggestGap={biggestGap}
+      nextGapLabel={nextGapLabel}
+      biggestGapLabel={biggestGapLabel}
+      hasMoves={isUserTurn ? hasResponses : positionMoves.length > 0}
+      goToMove={goToMove}
+      t={t}
+    />
+  );
 
   if (positionMoves.length === 0 && !hasResponses) {
     return (
-      <ScrollArea style={{ flex: 1 }} pt="sm">
+      <ScrollArea
+        className={paneClasses.scroll}
+        classNames={{ content: paneClasses.scrollContent }}
+        pt="sm"
+      >
         <Stack gap="md">
           <Stack align="center" py="xl">
             <Text c="dimmed" fz="sm">
               {t("Board.Practice.Build.NoMovesFound")}
             </Text>
           </Stack>
-          {coverageLoading ? (
-            <>
-              <Divider />
-              <Group justify="center" py="sm" gap="xs">
-                <Loader size={12} />
-                <Text fz="xs" c="dimmed">
-                  {t("Board.Practice.Build.Loading")}
-                </Text>
-              </Group>
-            </>
-          ) : (
-            (nextGap || biggestGap) && (
-              <>
-                <Divider />
-                <Stack gap={0}>
-                  {nextGap && (
-                    <GapButton
-                      label={t("Board.Practice.Build.NextGap")}
-                      detail={nextGapLabel}
-                      onClick={() => goToMove(nextGap)}
-                    />
-                  )}
-                  {biggestGap && (
-                    <GapButton
-                      label={t("Board.Practice.Build.BiggestGap")}
-                      detail={biggestGapLabel}
-                      onClick={() => goToMove(biggestGap)}
-                    />
-                  )}
-                </Stack>
-              </>
-            )
-          )}
+          {feedback}
         </Stack>
       </ScrollArea>
     );
   }
 
   return (
-    <ScrollArea style={{ flex: 1 }} pt="sm">
+    <ScrollArea
+      className={paneClasses.scroll}
+      classNames={{ content: paneClasses.scrollContent }}
+      pt="sm"
+    >
       <Stack gap="md">
         <Stack gap={0}>
           <Group justify="space-between" mb={4} px="xs">
@@ -721,6 +750,7 @@ function MovesView({
                 onClick={() => goToMove(response.childPath)}
                 dimmed={false}
                 showCoverage
+                coverageKnown={coverageKnown}
                 minGames={minGames}
               />
             ))}
@@ -747,6 +777,7 @@ function MovesView({
                 halfMoves={currentNode.halfMoves + 1}
                 onClick={() => onMoveClick(move)}
                 dimmed={false}
+                coverageKnown={coverageKnown}
                 minGames={minGames}
               />
             ))}
@@ -784,66 +815,111 @@ function MovesView({
                 halfMoves={currentNode.halfMoves + 1}
                 onClick={() => onMoveClick(move)}
                 dimmed
+                coverageKnown={coverageKnown}
                 minGames={minGames}
               />
             ))}
         </Stack>
 
-        {coverageLoading && (
-          <>
-            <Divider />
-            <Group justify="center" py="sm" gap="xs">
-              <Loader size={12} />
-              <Text fz="xs" c="dimmed">
-                {t("Board.Practice.Build.Loading")}
-              </Text>
-            </Group>
-          </>
-        )}
-
-        {!coverageLoading && (
-          <>
-            {(nextGap || biggestGap) && (
-              <>
-                <Divider />
-                <Stack gap={0}>
-                  {nextGap && (
-                    <GapButton
-                      label={t("Board.Practice.Build.NextGap")}
-                      detail={nextGapLabel}
-                      onClick={() => goToMove(nextGap)}
-                    />
-                  )}
-                  {biggestGap && (
-                    <GapButton
-                      label={t("Board.Practice.Build.BiggestGap")}
-                      detail={biggestGapLabel}
-                      onClick={() => goToMove(biggestGap)}
-                    />
-                  )}
-                </Stack>
-              </>
-            )}
-
-            {!nextGap && !biggestGap && (isUserTurn ? hasResponses : positionMoves.length > 0) && (
-              <>
-                <Divider />
-                <Paper p="sm" withBorder>
-                  <Group gap="xs" justify="center">
-                    <ThemeIcon size="sm" color="green" variant="light" radius="xl">
-                      <IconCheck size={14} />
-                    </ThemeIcon>
-                    <Text fz="sm" c="green" fw={500}>
-                      {t("Board.Practice.Build.NoGapsFound")}
-                    </Text>
-                  </Group>
-                </Paper>
-              </>
-            )}
-          </>
-        )}
+        {feedback}
       </Stack>
     </ScrollArea>
+  );
+}
+
+function CoverageFeedback({
+  status,
+  onRetry,
+  nextGap,
+  biggestGap,
+  nextGapLabel,
+  biggestGapLabel,
+  hasMoves,
+  goToMove,
+  t,
+}: {
+  status: CoverageStatus;
+  onRetry: () => void;
+  nextGap: number[] | null;
+  biggestGap: number[] | null;
+  nextGapLabel: string | null;
+  biggestGapLabel: string | null;
+  hasMoves: boolean;
+  goToMove: (path: number[]) => void;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  if (status === "absent") return null;
+  if (status === "loading") {
+    return (
+      <>
+        <Divider />
+        <Group justify="center" py="sm" gap="xs">
+          <Loader size={12} />
+          <Text fz="xs" c="dimmed">
+            {t("Board.Practice.Build.Loading")}
+          </Text>
+        </Group>
+      </>
+    );
+  }
+  if (status === "error") {
+    return (
+      <Alert
+        className={paneClasses.feedback}
+        classNames={{ body: paneClasses.feedbackBody }}
+        color="red"
+        title={t("Common.Error")}
+      >
+        <Button
+          className={paneClasses.feedbackButton}
+          classNames={{ label: paneClasses.feedbackLabel }}
+          variant="light"
+          size="xs"
+          onClick={onRetry}
+        >
+          {t("Common.Retry")}
+        </Button>
+      </Alert>
+    );
+  }
+  if (nextGap || biggestGap) {
+    return (
+      <>
+        <Divider />
+        <Stack gap={0}>
+          {nextGap && (
+            <GapButton
+              label={t("Board.Practice.Build.NextGap")}
+              detail={nextGapLabel}
+              onClick={() => goToMove(nextGap)}
+            />
+          )}
+          {biggestGap && (
+            <GapButton
+              label={t("Board.Practice.Build.BiggestGap")}
+              detail={biggestGapLabel}
+              onClick={() => goToMove(biggestGap)}
+            />
+          )}
+        </Stack>
+      </>
+    );
+  }
+  if (!hasMoves) return null;
+  return (
+    <>
+      <Divider />
+      <Paper p="sm" withBorder>
+        <Group gap="xs" justify="center">
+          <ThemeIcon size="sm" color="green" variant="light" radius="xl">
+            <IconCheck size={14} />
+          </ThemeIcon>
+          <Text fz="sm" c="green" fw={500}>
+            {t("Board.Practice.Build.NoGapsFound")}
+          </Text>
+        </Group>
+      </Paper>
+    </>
   );
 }
 
@@ -860,6 +936,7 @@ function MoveRow({
   onClick,
   dimmed,
   showCoverage = true,
+  coverageKnown,
   minGames,
 }: {
   move: PositionMove;
@@ -867,6 +944,7 @@ function MoveRow({
   onClick: () => void;
   dimmed: boolean;
   showCoverage?: boolean;
+  coverageKnown?: boolean;
   minGames: number;
 }) {
   const { t } = useTranslation();
@@ -929,7 +1007,11 @@ function MoveRow({
           </Tooltip>
           {showCoverage && (
             <Box w={100}>
-              {dimmed || move.games < minGames ? (
+              {!coverageKnown ? (
+                <Text fz="xs" c="dimmed" ta="center">
+                  —
+                </Text>
+              ) : dimmed || move.games < minGames ? (
                 <Tooltip label={t("Board.Practice.Build.RareTooltip")} withArrow>
                   <Text fz="xs" c="dimmed" ta="center">
                     {t("Common.NotAvailable")}

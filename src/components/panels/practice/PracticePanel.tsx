@@ -68,10 +68,12 @@ import {
   type PracticeDeckValue,
   type PracticeDeckKey,
 } from "@/state/practiceStorage";
-import { getTabFile, getTabGameNumber } from "@/utils/tabs";
+import { getTabFile, getTabGameNumber, sameTabOwner, useTabActions } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { findFen, getBoardState, getNodeAtPath } from "@/utils/treeReducer";
 import RepertoireInfo from "./RepertoireInfo";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
+import paneClasses from "@/components/common/PaneTabs.module.css";
 import {
   canSubmitPracticeMove,
   emptyPracticeStats,
@@ -85,17 +87,18 @@ const PRACTICE_INCORRECT_DELAY_MS = 500;
 
 function PracticePanel() {
   const { t } = useTranslation();
+  const compactTabs = useScaledMaxWidth(36);
 
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const goToMove = useStore(store, (s) => s.goToMove);
-  const goToNext = useStore(store, (s) => s.goToNext);
   const makeMove = useStore(store, (s) => s.makeMove);
   const setPracticePath = useStore(store, (s) => s.setPracticePath);
   const currentFen = useStore(store, (s) => s.currentNode().fen);
 
   const [currentTab] = useOwnerTab();
+  const { getTab } = useTabActions();
   const tabFile = getTabFile(currentTab);
   const [resetModal, toggleResetModal] = useToggle();
   const [repairModal, toggleRepairModal] = useToggle();
@@ -184,8 +187,6 @@ function PracticePanel() {
   sessionStatsRef.current = sessionStats;
   const autoDifficultyRef = useRef(practiceAutoDifficulty);
   autoDifficultyRef.current = practiceAutoDifficulty;
-  const goToNextRef = useRef(goToNext);
-  goToNextRef.current = goToNext;
   const goToMoveRef = useRef(goToMove);
   goToMoveRef.current = goToMove;
   const makeMoveRef = useRef(makeMove);
@@ -515,11 +516,50 @@ function PracticePanel() {
       };
       sessionStatsRef.current = nextStats;
       setSessionStats(nextStats);
-      scheduleForSession(session.token, () => goToNextRef.current(), PRACTICE_INCORRECT_DELAY_MS);
+      const source = store.getState();
+      const owner = currentTab;
+      scheduleForSession(
+        session.token,
+        () => {
+          const state = store.getState();
+          const liveOwner = owner ? getTab(owner.value) : undefined;
+          const liveFile = getTabFile(liveOwner);
+          if (
+            sessionRef.current.phase !== "incorrect" ||
+            sessionRef.current.currentFen !== card.fen ||
+            !owner ||
+            !sameTabOwner(liveOwner, owner) ||
+            (liveFile ? fileWorkspaceKey(liveFile.handle) : "") !== deckIdentity.file ||
+            getTabGameNumber(liveOwner) !== deckIdentity.game ||
+            state.root !== source.root ||
+            state.headers !== source.headers ||
+            state.sourceStamp !== source.sourceStamp ||
+            state.linkedSource !== source.linkedSource ||
+            state.appendAttempted !== source.appendAttempted ||
+            state.position !== source.position ||
+            state.practicePath !== source.practicePath ||
+            state.currentNode().fen !== card.fen
+          )
+            return;
+          // Resolve the answer in the current tree. Drill arrows remain bounded at the card,
+          // and feedback never creates a move or reuses a path across a source change.
+          const path = findFen(card.fen, state.root);
+          if (!path) return;
+          const node = getNodeAtPath(state.root, path);
+          const answerIndex = node.children.findIndex((child) => child.san === card.answer);
+          if (answerIndex !== -1) state.goToMove([...path, answerIndex]);
+        },
+        PRACTICE_INCORRECT_DELAY_MS,
+      );
     },
     [
       cardStartTime,
       currentFen,
+      currentTab,
+      deckIdentity.file,
+      deckIdentity.game,
+      getTab,
+      store,
       newPractice,
       scheduleForSession,
       rateCard,
@@ -635,10 +675,18 @@ function PracticePanel() {
     <>
       <Tabs
         h="100%"
-        orientation="vertical"
+        orientation={compactTabs ? "horizontal" : "vertical"}
         placement="right"
         value={tab}
         onChange={(v) => setTab(v!)}
+        data-compact={compactTabs || undefined}
+        classNames={{
+          root: paneClasses.root,
+          list: paneClasses.list,
+          panel: paneClasses.panel,
+          tab: paneClasses.tab,
+          tabLabel: paneClasses.label,
+        }}
         style={{
           display: "flex",
         }}
@@ -648,7 +696,7 @@ function PracticePanel() {
           <Tabs.Tab value="build">{t("Board.Practice.Build")}</Tabs.Tab>
         </Tabs.List>
 
-        <Tabs.Panel value="train" style={{ overflow: "hidden" }}>
+        <Tabs.Panel value="train" style={{ overflow: compactTabs ? "auto" : "hidden" }}>
           <Stack p="sm" gap="md">
             {deck.status === "loading" && (
               <Alert icon={<IconInfoCircle />}>{t("Board.Practice.Loading")}</Alert>
@@ -1352,7 +1400,7 @@ function LogsModal({
 
           return (
             <Card key={log.id} data-practice-entry-id={log.id}>
-              <Text>{node ? `${formatMoveNumber(node.halfMoves + 1)} ${node.san}` : log.fen}</Text>
+              <Text>{node?.san ? `${formatMoveNumber(node.halfMoves)} ${node.san}` : log.fen}</Text>
 
               <Divider my="xs" />
               <Group justify="space-between">

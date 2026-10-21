@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+vi.mock("@/hooks/useScaledMaxWidth", () => ({ useScaledMaxWidth: () => false }));
+
 const fixtures = vi.hoisted(() => ({
   atoms: {
     currentEvalOpen: Symbol("current-eval-open"),
@@ -116,6 +118,8 @@ vi.mock("@/components/files/opening", () => ({
   updateCardPerformance: fixtures.updateCardPerformance,
 }));
 vi.mock("@/utils/tabs", () => ({
+  useTabActions: () => ({ getTab: () => fixtures.currentTab }),
+  sameTabOwner: (current: unknown, captured: unknown) => current === captured,
   getTabFile: () => ({ handle: { id: { id: "file-a" } }, name: "opening.pgn" }),
   getTabGameNumber: () => 0,
 }));
@@ -494,8 +498,8 @@ test.each([
 });
 
 test.each([
-  { halfMoves: 2, san: "e5", expected: "2. e5" },
-  { halfMoves: 1, san: "e4", expected: "1... e4" },
+  { halfMoves: 2, san: "e5", expected: "1... e5" },
+  { halfMoves: 1, san: "e4", expected: "1. e4" },
 ])("renders the exact logs card label $expected", async ({ halfMoves, san, expected }) => {
   fixtures.node = { halfMoves, san };
   fixtures.loadPracticeReviews.mockResolvedValueOnce({

@@ -1,7 +1,8 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
-import { act, useContext } from "react";
+import { act, useContext, useLayoutEffect } from "react";
+import { useStore } from "zustand";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
@@ -20,14 +21,27 @@ const mocks = vi.hoisted(() => ({
   fetchPositionMoves: vi.fn(),
   searchPosition: vi.fn(),
   notificationShow: vi.fn(),
-  collection: vi.fn(async () => null as import("@/bindings").CollectionDescriptor | null),
+  playSound: vi.fn(),
+  collection: vi.fn<typeof import("@/platform/tauri").tauri.collectionForDatabase>(
+    async () => null,
+  ),
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/utils/db", () => ({ searchPosition: mocks.searchPosition }));
+vi.mock("@/utils/sound", () => ({ playSound: mocks.playSound }));
 vi.mock("@/platform/tauri", async (original) => {
   const actual = await original<typeof import("@/platform/tauri")>();
-  return { ...actual, tauri: { ...actual.tauri, collectionForDatabase: mocks.collection } };
+  return {
+    ...actual,
+    tauri: new Proxy(actual.tauri, {
+      get(target, property, receiver) {
+        return property === "collectionForDatabase"
+          ? mocks.collection
+          : Reflect.get(target, property, receiver);
+      },
+    }),
+  };
 });
 vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationShow },
@@ -54,6 +68,18 @@ Object.defineProperty(window, "ResizeObserver", {
 });
 
 const database = { id: { id: "reference" }, kind: "database" as const };
+const readyReference: import("@/bindings").CollectionDescriptor = {
+  id: "22222222-2222-4222-8222-222222222222",
+  name: "Reference",
+  file: { id: { id: "source" }, kind: "fileWorkspace" },
+  database,
+  status: "ready",
+  generation: "ready-generation",
+  omitted: 0,
+  account: null,
+  retiredDatabase: null,
+  fetchSinceMs: null,
+};
 const emptyCoverage = {
   coverageMap: new Map<string, number>(),
   gamesMap: new Map<string, number>(),
@@ -99,6 +125,7 @@ async function renderRepertoireInfo(
   initial = defaultTree(),
   id = "repertoire-info-test",
   onStore?: (store: TreeStore) => void,
+  onCommit?: () => void,
 ) {
   const store = createStore();
   store.set(tabsAtom, [
@@ -118,6 +145,7 @@ async function renderRepertoireInfo(
             <CaptureStore onStore={onStore}>
               <WorkspaceTabScope tabId="tab">
                 <RepertoireInfo />
+                <CoverageCommitProbe onCommit={onCommit} />
               </WorkspaceTabScope>
             </CaptureStore>
           </TreeStateProvider>
@@ -128,6 +156,13 @@ async function renderRepertoireInfo(
   });
   await act(async () => store.set(referenceDbAtom, database));
   return store;
+}
+
+function CoverageCommitProbe({ onCommit }: { onCommit?: () => void }) {
+  const store = useContext(TreeStateContext)!;
+  const tree = useStore(store, (state) => state.root);
+  useLayoutEffect(() => onCommit?.(), [tree, onCommit]);
+  return null;
 }
 
 async function realCoverageFixture() {
@@ -148,13 +183,14 @@ async function realCoverageFixture() {
     [getBoardState(e5.fen), ["Nf3"]],
     [getBoardState(d4.fen), ["d5"]],
   ]);
-  const pending: { signal: AbortSignal; release: () => void }[] = [];
+  const pending: { signal: AbortSignal; release: () => void; reject: (error: Error) => void }[] =
+    [];
   let hold = false;
   mocks.searchPosition.mockImplementation(
     async ({ fen }: { fen: string }, _operation: string, signal: AbortSignal) => {
       if (hold && fen === getBoardState(initial.root.fen)) {
         // Hold the real algorithm at its database boundary, including late obsolete replies.
-        await new Promise<void>((release) => pending.push({ signal, release }));
+        await new Promise<void>((release, reject) => pending.push({ signal, release, reject }));
       }
       return [(replies.get(fen) ?? []).map((move) => ({ move, white: 100, draw: 0, black: 0 }))];
     },
@@ -265,7 +301,7 @@ test("superseded actual tree computations cannot publish after a newer promotion
   await act(async () => tree.getState().save());
   await act(async () => obsolete.release());
   expect(host.textContent).toContain("Board.Practice.Build.Loading");
-  expect(renderedCoverage("e4")).toBe("3");
+  expect(renderedCoverage("e4")).toBeUndefined();
   await act(async () => fixture.pending[1].release());
   expect(renderedCoverage("e4")).toBe("100");
   expect(renderedCoverage("d4")).toBe("3");
@@ -486,6 +522,561 @@ test("renders exact White and Black move labels", async () => {
   await act(async () => store?.getState().goToMove([0]));
   expect(renderedLabels()).toContain("1... e5");
 });
+
+function retryButton() {
+  const button = [...host.querySelectorAll("button")].find(
+    (element) => element.textContent === "Common.Retry",
+  );
+  expect(button).toBeDefined();
+  return button!;
+}
+
+function expectUnknownCoverage() {
+  expect(host.textContent).not.toContain("Board.Practice.Build.NoGapsFound");
+  expect(host.textContent).not.toContain("Board.Practice.Build.NextGap");
+  expect(host.textContent).not.toContain("Board.Practice.Build.BiggestGap");
+  for (const row of host.querySelectorAll("button")) {
+    expect(row.querySelectorAll('[role="progressbar"]').length).toBeLessThanOrEqual(3);
+  }
+}
+
+test("initial ready-reference cache reset can deliver the second native query failure to position statistics", async () => {
+  const fixture = await realCoverageFixture();
+  mocks.collection.mockResolvedValue(readyReference);
+  const { commands } = await vi.importActual<{ commands: typeof import("@/bindings").commands }>(
+    "@/bindings/generated",
+  );
+  const actualDb = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
+  const actual = await vi.importActual<typeof import("@/utils/repertoire")>("@/utils/repertoire");
+  let ticket = 0;
+  const prepare = vi.spyOn(commands, "prepareNativeRead").mockImplementation(async () => ({
+    status: "ok",
+    data: `coverage-initial-${++ticket}`,
+  }));
+  const cancel = vi
+    .spyOn(commands, "cancelNativeRead")
+    .mockResolvedValue({ status: "ok", data: null });
+  const stats = (
+    move: string,
+  ): [import("@/bindings").PositionStats[], import("@/bindings").NormalizedGame[]] => [
+    [{ move, white: 100, draw: 0, black: 0 }],
+    [],
+  ];
+  const query = vi
+    .spyOn(commands, "searchPosition")
+    .mockResolvedValueOnce({ status: "ok", data: stats("e4") })
+    .mockResolvedValueOnce({
+      status: "error",
+      error: {
+        tag: "backend-error",
+        category: "database",
+        message: "Repertoire coverage query failed",
+      },
+    })
+    .mockResolvedValueOnce({ status: "ok", data: stats("e4") })
+    .mockResolvedValueOnce({ status: "ok", data: stats("c5") })
+    .mockResolvedValue({ status: "ok", data: [[], []] });
+  onTestFinished(() => {
+    prepare.mockRestore();
+    cancel.mockRestore();
+    query.mockRestore();
+  });
+  mocks.searchPosition.mockImplementation(actualDb.searchPosition);
+  mocks.fetchPositionMoves.mockImplementation(actual.fetchPositionMoves);
+  mocks.computeTreeCoverage.mockImplementation(actual.computeTreeCoverage);
+  let tree!: TreeStore;
+  await renderRepertoireInfo(fixture.initial, "coverage-initial-native-order", (value) => {
+    tree = value;
+  });
+  expect(mocks.computeTreeCoverage).toHaveBeenCalledOnce();
+  expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(2);
+  expect(cancel).toHaveBeenCalledWith("coverage-initial-1");
+  expect(query.mock.calls.map((args) => args[3])).toEqual([
+    "coverage-initial-2",
+    "coverage-initial-3",
+    "coverage-initial-4",
+    "coverage-initial-5",
+    "coverage-initial-6",
+    "coverage-initial-7",
+  ]);
+  const result = await mocks.computeTreeCoverage.mock.results[0].value;
+  expect(result.coverageMap.size).toBeGreaterThan(0);
+  expect(host.textContent).not.toContain("Common.Retry");
+  expect(host.textContent).toContain("Board.Practice.Build.BiggestGap");
+  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+    title: "Common.Error",
+    message: "Repertoire coverage query failed",
+    color: "red",
+  });
+
+  // Once metadata and the independent cache are ready, the same-FEN ordinary edit owns
+  // one new coverage request. Its failure stays current until the explicit Retry.
+  query.mockResolvedValueOnce({
+    status: "error",
+    error: { tag: "backend-error", category: "database", message: "Stable edited coverage failed" },
+  });
+  await act(async () => tree.getState().setAnnotation("!"));
+  expect(tree.getState()).toMatchObject({ dirty: true, root: { nags: [1] } });
+  expect(query).toHaveBeenCalledTimes(7);
+  expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(2);
+  expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(2);
+  expectUnknownCoverage();
+  await act(async () => tree.getState().save());
+  expect(query).toHaveBeenCalledTimes(7);
+  expect(retryButton().disabled).toBe(false);
+  await act(async () => retryButton().click());
+  expect(query).toHaveBeenCalledTimes(12);
+  expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(3);
+  expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(2);
+  expect(host.textContent).not.toContain("Common.Retry");
+  expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+  expect(mocks.notificationShow).toHaveBeenCalledTimes(2);
+});
+
+test.each(["success", "error"] as const)(
+  "fresh native metadata with equivalent capabilities preserves failed coverage until Retry, stale %s stays retired",
+  async (staleOutcome) => {
+    const fixture = await realCoverageFixture();
+    const actual = await vi.importActual<typeof import("@/utils/repertoire")>("@/utils/repertoire");
+    const actualDb = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
+    const actualPlatform =
+      await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+    const { commands } = await vi.importActual<{ commands: typeof import("@/bindings").commands }>(
+      "@/bindings/generated",
+    );
+    let metadata = readyReference;
+    const decoded: import("@/bindings").CollectionDescriptor[] = [];
+    let ticket = 0;
+    const prepare = vi.spyOn(commands, "prepareNativeRead").mockImplementation(async () => ({
+      status: "ok",
+      data: `metadata-coverage-${++ticket}`,
+    }));
+    const cancel = vi
+      .spyOn(commands, "cancelNativeRead")
+      .mockResolvedValue({ status: "ok", data: null });
+    const read = vi.spyOn(commands, "collectionForDatabase").mockImplementation(async () => {
+      // Model native IPC decoding, not the browser fixture's shared object reference.
+      const value = structuredClone(metadata);
+      decoded.push(value);
+      return { status: "ok", data: value };
+    });
+    const e4 = fixture.initial.root.children[0];
+    const replies = new Map([
+      [getBoardState(fixture.initial.root.fen), ["e4", "d4"]],
+      [getBoardState(e4.fen), ["e5"]],
+      [getBoardState(e4.children[0].fen), ["Nf3"]],
+      [getBoardState(fixture.initial.root.children[1].fen), ["d5"]],
+    ]);
+    const query = vi
+      .spyOn(commands, "searchPosition")
+      .mockImplementation(async (_file, request) => ({
+        status: "ok",
+        data: [
+          (replies.get(request.position?.fen ?? "") ?? []).map((move) => ({
+            move,
+            white: 100,
+            draw: 0,
+            black: 0,
+          })),
+          [],
+        ],
+      }));
+    mocks.collection.mockImplementation(actualPlatform.tauri.collectionForDatabase);
+    mocks.searchPosition.mockImplementation(actualDb.searchPosition);
+    mocks.fetchPositionMoves.mockImplementation(actual.fetchPositionMoves);
+    mocks.computeTreeCoverage.mockImplementation(actual.computeTreeCoverage);
+    vi.useFakeTimers();
+    let focus!: () => void;
+    const stop = startFileRevisionPoll({
+      getTabs: () => [],
+      fileRevision: vi.fn(),
+      subscribeFocus: (callback) => {
+        focus = callback;
+        return () => undefined;
+      },
+    });
+    onTestFinished(() => {
+      stop();
+      prepare.mockRestore();
+      cancel.mockRestore();
+      read.mockRestore();
+      query.mockRestore();
+      vi.useRealTimers();
+    });
+    let tree!: TreeStore;
+    const atoms = await renderRepertoireInfo(
+      fixture.initial,
+      `coverage-native-metadata-${staleOutcome}`,
+      (value) => {
+        tree = value;
+      },
+    );
+    expect(read).toHaveBeenCalledOnce();
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledTimes(6);
+    expect(renderedCoverage("e4")).toBe("100");
+
+    query.mockResolvedValueOnce({
+      status: "error",
+      error: {
+        tag: "backend-error",
+        category: "database",
+        message: "Current edited coverage failed",
+      },
+    });
+    await act(async () => tree.getState().setAnnotation("!"));
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(7);
+    expectUnknownCoverage();
+    expect(retryButton().disabled).toBe(false);
+    expect(moveRow("e4").textContent).toContain("100");
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+    const positionReads = mocks.fetchPositionMoves.mock.calls.length;
+    for (const count of [2, 3]) {
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      expect(read).toHaveBeenCalledTimes(count);
+      expect(decoded.at(-1)).not.toBe(decoded.at(-2));
+      expect(decoded.at(-1)?.database).not.toBe(decoded.at(-2)?.database);
+      expect(decoded.at(-1)?.database).toEqual(database);
+      expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(2);
+      expect(query).toHaveBeenCalledTimes(7);
+      expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(positionReads);
+      expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+      expectUnknownCoverage();
+      expect(retryButton().disabled).toBe(false);
+      expect(moveRow("e4").textContent).toContain("100");
+    }
+    await act(async () => atoms.set(referenceDbAtom, structuredClone(database)));
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(7);
+    await act(async () => retryButton().click());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(12);
+    expect(renderedCoverage("e4")).toBe("100");
+    expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(positionReads);
+
+    // A real capability replacement must retire the cache even with unchanged generation.
+    const held = Promise.withResolvers<Awaited<ReturnType<typeof commands.searchPosition>>>();
+    query.mockReturnValueOnce(held.promise);
+    metadata = { ...metadata, database: { id: { id: "replacement-reference" }, kind: "database" } };
+    await act(async () => focus());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(4);
+    const obsolete = mocks.computeTreeCoverage.mock.calls.at(-1)![6] as AbortSignal;
+    expect(obsolete.aborted).toBe(false);
+    expect(mocks.fetchPositionMoves).toHaveBeenCalledTimes(positionReads + 1);
+    expect(query.mock.calls.at(-1)![0]).toEqual(metadata.database);
+    expectUnknownCoverage();
+    metadata = { ...metadata, generation: "next-generation" };
+    await act(async () => focus());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(5);
+    expect(obsolete.aborted).toBe(true);
+    expect(renderedCoverage("e4")).toBe("100");
+    const currentQueries = query.mock.calls.length;
+    await act(async () =>
+      held.resolve(
+        staleOutcome === "success"
+          ? { status: "ok", data: [[], []] }
+          : {
+              status: "error",
+              error: {
+                tag: "backend-error",
+                category: "database",
+                message: "Obsolete native error",
+              },
+            },
+      ),
+    );
+    expect(query).toHaveBeenCalledTimes(currentQueries);
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+    expect(renderedCoverage("e4")).toBe("100");
+
+    metadata = { ...metadata, status: "unavailable" };
+    await act(async () => focus());
+    expect(host.textContent).toContain("Collections.Unavailable");
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(5);
+    metadata = { ...metadata, status: "ready" };
+    await act(async () => focus());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(6);
+    expect(renderedCoverage("e4")).toBe("100");
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each([
+  { empty: false, orientation: "white" as const },
+  { empty: false, orientation: "black" as const },
+  { empty: true, orientation: "white" as const },
+  { empty: true, orientation: "black" as const },
+])(
+  "current search failure is unknown and explicit Retry recovers, empty=$empty orientation=$orientation",
+  async ({ empty, orientation }) => {
+    const fixture = await realCoverageFixture();
+    mocks.collection.mockResolvedValue(readyReference);
+    const initial = empty
+      ? defaultTree()
+      : { ...fixture.initial, headers: { ...fixture.initial.headers } };
+    initial.headers.orientation = orientation;
+    let tree!: TreeStore;
+    await renderRepertoireInfo(initial, `coverage-failure-${empty}-${orientation}`, (value) => {
+      tree = value;
+    });
+    expect(host.textContent?.includes("Board.Practice.Build.BiggestGap")).toBe(
+      !empty && orientation === "black",
+    );
+    const before = mocks.computeTreeCoverage.mock.calls.length;
+    const failure = new Error("Current coverage search refused");
+    mocks.searchPosition.mockRejectedValueOnce(failure);
+    await act(async () => tree.getState().setComment("Ordinary edited repertoire"));
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(before + 1);
+    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+      title: "Common.Error",
+      message: failure.message,
+      color: "red",
+    });
+    expect(host.textContent).not.toContain("Collections.Unavailable");
+    expect(host.textContent).toContain("Common.Error");
+    expectUnknownCoverage();
+    expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+    expect(host.textContent).toContain("1. e4");
+    const queriesAfterFailure = mocks.searchPosition.mock.calls.length;
+    await act(async () => {
+      tree.getState().save();
+      await Promise.resolve();
+    });
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(before + 1);
+    expect(mocks.searchPosition).toHaveBeenCalledTimes(queriesAfterFailure);
+    await act(async () => retryButton().click());
+    expect(mocks.computeTreeCoverage).toHaveBeenCalledTimes(before + 2);
+    expect(host.textContent).not.toContain("Common.Retry");
+    expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+    const result = await mocks.computeTreeCoverage.mock.results.at(-1)!.value;
+    expect(result.coverageMap.size).toBeGreaterThan(0);
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each(["white", "black"] as const)(
+  "empty MovesView feedback permits explicit Retry for %s without inventing completeness",
+  async (orientation) => {
+    await realCoverageFixture();
+    mocks.collection.mockResolvedValue(readyReference);
+    mocks.searchPosition.mockResolvedValue([[], []]);
+    const initial = defaultTree();
+    initial.headers.orientation = orientation;
+    let tree!: TreeStore;
+    await renderRepertoireInfo(initial, `coverage-no-position-moves-${orientation}`, (value) => {
+      tree = value;
+    });
+    expect(host.textContent).toContain("Board.Practice.Build.NoMovesFound");
+    mocks.searchPosition.mockRejectedValueOnce(new Error("Empty coverage search failed"));
+    await act(async () => tree.getState().setComment("Empty repertoire edit"));
+    expectUnknownCoverage();
+    expect(host.textContent).toContain("Board.Practice.Build.NoMovesFound");
+    expect(retryButton().disabled).toBe(false);
+    const attempts = mocks.searchPosition.mock.calls.length;
+    await act(async () => tree.getState().save());
+    expect(mocks.searchPosition).toHaveBeenCalledTimes(attempts);
+    await act(async () => retryButton().click());
+    expect(mocks.searchPosition).toHaveBeenCalledTimes(attempts + 1);
+    expect(host.textContent).toContain("Board.Practice.Build.NoMovesFound");
+    expect(host.textContent).not.toContain("Common.Retry");
+    expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+    expect(host.textContent).not.toContain("Board.Practice.Build.NoGapsFound");
+  },
+);
+
+test("coverage failure after an ordinary edit cannot claim completeness and Retry restores real success", async () => {
+  const fixture = await realCoverageFixture();
+  mocks.collection.mockResolvedValue(readyReference);
+  let tree!: TreeStore;
+  await renderRepertoireInfo(fixture.initial, "coverage-completeness-recovery", (value) => {
+    tree = value;
+  });
+  expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+  mocks.searchPosition.mockRejectedValueOnce(new Error("Edited search failed"));
+  await act(async () => tree.getState().deleteMove([1]));
+  expectUnknownCoverage();
+  expect(renderedCoverage("e4")).toBeUndefined();
+  expect(moveRow("e4").textContent).toContain("100");
+  expect(retryButton().disabled).toBe(false);
+  await act(async () => retryButton().click());
+  expect(renderedCoverage("e4")).toBe("100");
+  expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+  expect(host.textContent).not.toContain("Common.Retry");
+});
+
+test("old coverage success is ineligible in the commit before the next effect", async () => {
+  const fixture = await realCoverageFixture();
+  let tree!: TreeStore;
+  const committedCoverage: (string | undefined | null)[] = [];
+  await renderRepertoireInfo(
+    fixture.initial,
+    "coverage-before-passive-effect",
+    (value) => {
+      tree = value;
+    },
+    () => {
+      const row = [...host.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("1. e4"),
+      );
+      committedCoverage.push(
+        row?.querySelectorAll('[role="progressbar"]').item(3)?.getAttribute("aria-valuenow"),
+      );
+    },
+  );
+  expect(renderedCoverage("e4")).toBe("100");
+  fixture.hold();
+  await act(async () => tree.getState().promoteVariation([1]));
+  expect(committedCoverage.at(-1)).toBeUndefined();
+  expectUnknownCoverage();
+  await act(async () => fixture.pending[0].release());
+  expect(renderedCoverage("e4")).toBe("100");
+});
+
+test.each(["success", "error"] as const)(
+  "stale %s cannot publish or notify over a newer explicit Retry",
+  async (staleOutcome) => {
+    const fixture = await realCoverageFixture();
+    let tree!: TreeStore;
+    await renderRepertoireInfo(fixture.initial, `coverage-stale-${staleOutcome}`, (value) => {
+      tree = value;
+    });
+    const actual = await vi.importActual<typeof import("@/utils/repertoire")>("@/utils/repertoire");
+    let releaseOld!: () => void;
+    let oldSignal!: AbortSignal;
+    mocks.computeTreeCoverage.mockImplementationOnce(
+      async (...args: Parameters<typeof actual.computeTreeCoverage>) => {
+        oldSignal = args[6]!;
+        const result = await actual.computeTreeCoverage(...args);
+        return new Promise((resolve, reject) => {
+          releaseOld = () =>
+            staleOutcome === "success"
+              ? resolve(result)
+              : reject(new Error("Obsolete coverage failure"));
+        });
+      },
+    );
+    await act(async () => tree.getState().setComment("Earlier edit"));
+    expect(releaseOld).toBeTypeOf("function");
+    mocks.searchPosition.mockRejectedValueOnce(new Error("Current retryable coverage failure"));
+    await act(async () => tree.getState().setComment("Current edit"));
+    expect(oldSignal.aborted).toBe(true);
+    expectUnknownCoverage();
+    fixture.hold();
+    await act(async () => retryButton().click());
+    expect(fixture.pending).toHaveLength(1);
+    await act(async () => releaseOld());
+    expectUnknownCoverage();
+    expect(host.textContent).toContain("Board.Practice.Build.Loading");
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+    await act(async () => fixture.pending[0].release());
+    expect(renderedCoverage("e4")).toBe("100");
+    expect(host.textContent).toContain("Board.Practice.Build.NoGapsFound");
+    expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+    expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+  },
+);
+
+test("a canceled Retry cannot replace or notify over a successful newer tree", async () => {
+  const fixture = await realCoverageFixture();
+  let tree!: TreeStore;
+  await renderRepertoireInfo(fixture.initial, "coverage-canceled-retry", (value) => {
+    tree = value;
+  });
+  mocks.searchPosition.mockRejectedValueOnce(new Error("Retryable coverage error"));
+  await act(async () => tree.getState().setComment("Current coverage edit"));
+  fixture.hold();
+  await act(async () => retryButton().click());
+  const retry = fixture.pending[0];
+  await act(async () => tree.getState().promoteVariation([1]));
+  expect(retry.signal.aborted).toBe(true);
+  expect(fixture.pending).toHaveLength(2);
+  await act(async () => fixture.pending[1].release());
+  expect(renderedCoverage("e4")).toBe("100");
+  expect(renderedCoverage("d4")).toBe("3");
+  await act(async () => retry.reject(new Error("Canceled Retry failure")));
+  expect(renderedCoverage("e4")).toBe("100");
+  expect(renderedCoverage("d4")).toBe("3");
+  expect(host.textContent).not.toContain("Common.Retry");
+  expect(host.textContent).not.toContain("Board.Practice.Build.Loading");
+  expect(mocks.notificationShow).toHaveBeenCalledTimes(1);
+});
+
+test("a refused Italian preset preserves the reported black-to-move tree and all user state", async () => {
+  const initial = defaultTree("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+  let tree!: TreeStore;
+  await renderRepertoireInfo(initial, "preset-refused-custom-root", (value) => {
+    tree = value;
+  });
+  const before = tree.getState();
+  const preset = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Italian Game",
+  )!;
+  expect(preset).toBeDefined();
+  mocks.playSound.mockClear();
+  await act(async () => preset.click());
+  expect(tree.getState()).toBe(before);
+  expect(tree.getState().headers.start).toBeUndefined();
+  expect(tree.getState().root.children).toEqual([]);
+  expect(mocks.playSound).not.toHaveBeenCalled();
+  expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+    title: "Common.Error",
+    message: expect.stringContaining("(1)"),
+    color: "red",
+  });
+  expect(host.textContent).not.toContain("Board.Practice.Build.GoToStart");
+});
+
+test.each([
+  {
+    name: "standard-white",
+    fen: undefined,
+    orientation: "white" as const,
+    preset: "Italian Game",
+    length: 5,
+    final: "Bc4",
+  },
+  {
+    name: "standard-black",
+    fen: undefined,
+    orientation: "black" as const,
+    preset: "French Defense",
+    length: 4,
+    final: "d5",
+  },
+  {
+    name: "custom-white",
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 7 4",
+    orientation: "white" as const,
+    preset: "Italian Game",
+    length: 5,
+    final: "Bc4",
+  },
+])(
+  "legal $name preset installs its actual resulting cursor as start",
+  async ({ name, fen, orientation, preset, length, final }) => {
+    const initial = defaultTree(fen);
+    initial.headers.orientation = orientation;
+    let tree!: TreeStore;
+    await renderRepertoireInfo(initial, `preset-legal-${name}`, (value) => {
+      tree = value;
+    });
+    const button = [...host.querySelectorAll("button")].find(
+      (element) => element.textContent === preset,
+    )!;
+    expect(button).toBeDefined();
+    mocks.playSound.mockClear();
+    await act(async () => button.click());
+    const state = tree.getState();
+    expect(state.position).toHaveLength(length);
+    expect(state.headers.start).toBe(state.position);
+    expect(state.currentNode().san).toBe(final);
+    expect(state.root.fen).toBe(initial.root.fen);
+    expect(state.dirty).toBe(true);
+    expect(mocks.playSound).toHaveBeenCalledTimes(1);
+    expect(mocks.notificationShow).not.toHaveBeenCalled();
+  },
+);
 
 test("reports the current-position query failure", async () => {
   mocks.fetchPositionMoves.mockRejectedValue(new Error("position query failed"));

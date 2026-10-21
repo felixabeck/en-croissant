@@ -54,7 +54,10 @@ const mocks = vi.hoisted(() => ({
   translate: (key: string) => key,
   addGameActivation: undefined as (() => void) | undefined,
   realTabs: false,
+  compactTabs: false,
 }));
+
+vi.mock("@/hooks/useScaledMaxWidth", () => ({ useScaledMaxWidth: () => mocks.compactTabs }));
 
 vi.mock("react-i18next", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-i18next")>()),
@@ -275,6 +278,7 @@ describe("BoardAnalysis add game durability", () => {
 
   beforeEach(async () => {
     mocks.realTabs = false;
+    mocks.compactTabs = false;
     sessionStorage.clear();
     localStorage.clear();
     mocks.notifyUnlessCancelled.mockReset();
@@ -384,99 +388,105 @@ describe("BoardAnalysis add game durability", () => {
     }
   });
 
-  test("real board tabs preserve heading order, panel layout, unmounting and special shortcuts", async () => {
-    mocks.realTabs = true;
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn(() => ({
-        matches: false,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
-    );
-    await act(async () => {
-      jotaiStore.set(tabFamily(tabId), "info");
-      root.render(
-        <MantineProvider>
-          <JotaiProvider store={jotaiStore}>
-            <TreeStateContext.Provider value={treeStore}>
-              <RetainedBoardHarness />
-            </TreeStateContext.Provider>
-          </JotaiProvider>
-        </MantineProvider>,
+  test.each([false, true])(
+    "real board tabs preserve heading order, panel layout, unmounting and special shortcuts, compact=%s",
+    async (compact) => {
+      mocks.realTabs = true;
+      mocks.compactTabs = compact;
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({
+          matches: false,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })),
       );
-    });
-    const headings = () =>
-      Array.from(container.querySelectorAll('[role="tab"]')).map((heading) => heading.textContent);
-    expect(headings()).toEqual([
-      "Board.Tabs.Analysis",
-      "Board.Tabs.Database",
-      "Board.Tabs.Annotate",
-      "Board.Tabs.Info",
-    ]);
-    const shortcut = async (keys: string) => {
-      const binding = hotkeys.mock.calls
-        .flatMap(([bindings]) => bindings)
-        .findLast(([bound]) => bound === keys);
-      expect(binding).toBeDefined();
-      const event = new KeyboardEvent("keydown", { cancelable: true });
-      await act(async () => binding![1](event));
-      return event;
-    };
-    const keys = jotaiStore.get(keyMapAtom);
-    await shortcut(keys.PRACTICE_TAB.keys);
-    expect(jotaiStore.get(tabFamily(tabId))).toBe("info");
-    for (const [binding, panel] of [
-      [keys.ANALYSIS_TAB.keys, "analysis"],
-      [keys.DATABASE_TAB.keys, "database"],
-      [keys.ANNOTATE_TAB.keys, "annotate"],
-      [keys.INFO_TAB.keys, "info"],
-    ] as const) {
-      await shortcut(binding);
-      expect(jotaiStore.get(tabFamily(tabId))).toBe(panel);
-      expect(container.querySelector('[data-testid="add-game"]') !== null).toBe(panel === "info");
-      for (const element of container.querySelectorAll<HTMLElement>('[role="tabpanel"]')) {
-        expect(element.style.flex).toBe("1 1 0%");
-        expect(element.style.overflowY).toBe("hidden");
+      await act(async () => {
+        jotaiStore.set(tabFamily(tabId), "info");
+        root.render(
+          <MantineProvider>
+            <JotaiProvider store={jotaiStore}>
+              <TreeStateContext.Provider value={treeStore}>
+                <RetainedBoardHarness />
+              </TreeStateContext.Provider>
+            </JotaiProvider>
+          </MantineProvider>,
+        );
+      });
+      const headings = () =>
+        Array.from(container.querySelectorAll('[role="tab"]')).map(
+          (heading) => heading.textContent,
+        );
+      expect(headings()).toEqual([
+        "Board.Tabs.Analysis",
+        "Board.Tabs.Database",
+        "Board.Tabs.Annotate",
+        "Board.Tabs.Info",
+      ]);
+      const shortcut = async (keys: string) => {
+        const binding = hotkeys.mock.calls
+          .flatMap(([bindings]) => bindings)
+          .findLast(([bound]) => bound === keys);
+        expect(binding).toBeDefined();
+        const event = new KeyboardEvent("keydown", { cancelable: true });
+        await act(async () => binding![1](event));
+        return event;
+      };
+      const keys = jotaiStore.get(keyMapAtom);
+      await shortcut(keys.PRACTICE_TAB.keys);
+      expect(jotaiStore.get(tabFamily(tabId))).toBe("info");
+      for (const [binding, panel] of [
+        [keys.ANALYSIS_TAB.keys, "analysis"],
+        [keys.DATABASE_TAB.keys, "database"],
+        [keys.ANNOTATE_TAB.keys, "annotate"],
+        [keys.INFO_TAB.keys, "info"],
+      ] as const) {
+        await shortcut(binding);
+        expect(jotaiStore.get(tabFamily(tabId))).toBe(panel);
+        expect(container.querySelector('[data-testid="add-game"]') !== null).toBe(panel === "info");
+        for (const element of container.querySelectorAll<HTMLElement>('[role="tabpanel"]')) {
+          expect(element.style.flex).toBe("1 1 0%");
+          expect(element.style.overflowY).toBe("hidden");
+        }
       }
-    }
-    const reportEvent = await shortcut(keys.GENERATE_REPORT.keys);
-    expect(reportEvent.defaultPrevented).toBe(true);
-    expect(jotaiStore.get(tabFamily(tabId))).toBe("analysis");
-    expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
-    expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
-    if (!isFileBackedTab(tab)) throw new Error("Expected file owner");
-    await act(async () =>
-      jotaiStore.set(
-        tabsAtom,
-        [
-          {
-            ...tab,
-            gameOrigin: {
-              ...tab.gameOrigin,
-              file: {
-                ...tab.gameOrigin.file,
-                metadata: { type: "repertoire", tags: [] },
+      const reportEvent = await shortcut(keys.GENERATE_REPORT.keys);
+      expect(reportEvent.defaultPrevented).toBe(true);
+      expect(jotaiStore.get(tabFamily(tabId))).toBe("analysis");
+      expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
+      expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
+      if (!isFileBackedTab(tab)) throw new Error("Expected file owner");
+      await act(async () =>
+        jotaiStore.set(
+          tabsAtom,
+          [
+            {
+              ...tab,
+              gameOrigin: {
+                ...tab.gameOrigin,
+                file: {
+                  ...tab.gameOrigin.file,
+                  metadata: { type: "repertoire", tags: [] },
+                },
               },
             },
-          },
-        ],
-        tabId,
-      ),
-    );
-    expect(headings()).toEqual([
-      "Board.Tabs.Practice",
-      "Board.Tabs.Analysis",
-      "Board.Tabs.Database",
-      "Board.Tabs.Annotate",
-      "Board.Tabs.Info",
-    ]);
-    await shortcut(keys.PRACTICE_TAB.keys);
-    expect(jotaiStore.get(tabFamily(tabId))).toBe("practice");
-    expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(5);
-    expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
-    expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
-  });
+          ],
+          tabId,
+        ),
+      );
+      expect(headings()).toEqual([
+        "Board.Tabs.Practice",
+        "Board.Tabs.Analysis",
+        "Board.Tabs.Database",
+        "Board.Tabs.Annotate",
+        "Board.Tabs.Info",
+      ]);
+      await shortcut(keys.PRACTICE_TAB.keys);
+      expect(jotaiStore.get(tabFamily(tabId))).toBe("practice");
+      expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(5);
+      expect(jotaiStore.get(analysisTabFamily(tabId))).toBe("report");
+      expect(jotaiStore.get(reportModalOpenFamily(tabId))).toBe(true);
+    },
+  );
 
   test("dirty Add Game asks first and Cancel keeps the edited tree without writing", async () => {
     const treeBefore = structuredClone(treeStore.getState().root);
