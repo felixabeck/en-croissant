@@ -17306,7 +17306,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### A linked reference change during report preparation can start obsolete analysis and strand progress
 
-* **ID:** f-20261020-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-03 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** behaviour
 * **Follow-up of:** f-20261004-15
@@ -17317,6 +17317,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Review lens:** review-engine-protocol.
 * **Related:** f-20260904-09 concerns durable report-result ownership across panel unmount, and f-20260901-08/f-20260904-02 concern progress-event correlation. Those mechanisms must remain intact. The pending Home-alias and player-tag filings have distinct causes.
 * **Found by:** Root source inspection during integrated proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+Report preparation rechecks live reference ownership after await, retires obsolete progress and prevents obsolete engine analysis. Shared outage identity maps one failure until recovery while allowing valid document-owned completion after unmount.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"9488b34b24d5d90739d147e7ed3206005a92f798a0d91ed9ffa52436e9e32137","header_sha256":"956175133c573c45c432be90c03905d477cbef5c5b2fc07a6455b89234ae9b77","header_status":"handled","input_sha256":"f7aafceec78e3758ade76b5a0d4ff62a3891c6ee754ff30a737b1bbdd55b51ba","kind":"mutation-receipt","operation":"d6e48777d8122fc8cc643e9c82ea0030f335dd6ae43280f852494fd268b908b7","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-03"],"target":"f-20261020-03","v":1} -->
 
 ---
 
