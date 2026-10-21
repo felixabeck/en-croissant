@@ -1266,7 +1266,7 @@ fn windows_rename_and_remove_children_carry_delete() {
         rename.contains("child_delete_access(source_is_dir)"),
         "{rename}"
     );
-    let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
+    let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at_counted(")]);
     assert!(
         remove.contains("child_delete_access(false)")
             || remove.contains("child_delete_access(true)"),
@@ -1457,7 +1457,7 @@ fn windows_recursive_removal_keeps_unix_containment() {
         tree.contains("DirectoryEntryKind::Other=>{returnErr(Error::InvalidInput("),
         "reparse entries must be refused, not unlinked: {tree}"
     );
-    let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
+    let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at_counted(")]);
     assert!(remove.contains("Error::PartialRemoval"), "{remove}");
     assert!(
         remove.contains("sync_parent_after_workspace_removal(parent)"),
