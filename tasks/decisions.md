@@ -9265,3 +9265,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Replace only the local resolver with a canonical card-location mechanism that retains real producer transposition, root/custom, current-consumer, removed-answer and stale-source proofs. No native schema or session format changes.
 * **Decided by:** Codex autonomously under full auto, active drain7328103f-da3c-4f90-9686-4abe6e2beeb1. Follow-up plan authorship and arbitration share Root context, detection and code use the same OpenAI family. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"0c63767d3748d9fc5d066b59f3047d80a864cff9fb55aca55ee088ba4c82a4da","input_sha256":"d7543c48dddcf878b29d3ccf43aa85b41504d6e8e62edaa76c97aa9be54c668f","kind":"mutation-receipt","operation":"79bc62a46879fdba9513abbdec9fcd540c50f6aab94b6f30a18366b3364c1e35","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261021-09 — Which castling rights survive a piece-editor change?
+
+* **Governs:** f-20260914-20
+* **Question:** How should the board editor discard impossible castling rights without losing valid Chess960 rights?
+* **Chosen:** Route `normalizeEditedFen` through the installed chessops `Castles.fromSetup(setup).castlingRights` normalizer, preserving only existing rights and clearing en-passant as before. Retain partially edited boards and their clocks rather than requiring the entire board to be legal.
+* **Rejected:** Adding an e-file/corner-only rule, extending the manual king/rook filter, or round-tripping through `Chess.fromSetup` and rejecting incomplete boards.
+* **Reason:** `node_modules/chessops/src/chess.ts:114-129` already defines king back-rank, own-colour/back-rank rook and relative king/rook placement semantics including Chess960. Using that primitive removes the duplicated legality subset and works while the editor temporarily has missing pieces. Reversal path: replace this call only with a chess-library-backed mechanism proven equivalent for standard and Chess960 rights, incomplete boards, unchanged clocks and source-only regression proof. No new gate or tool is introduced.
+* **Decided by:** Codex, 2026-10-21. Plan authorship and arbitration share the root context. Detection and implementation use the same OpenAI model family, with separate executor contexts.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"359148d4bf7167d3ea423fa0332007ab2183116c49eab64fa19b5ba7b1d1ed4a","input_sha256":"3597d904cb7849efc1111cefa0d9c4dcff4bfbf35e979bc62dcda32984ee9026","kind":"mutation-receipt","operation":"26400ce62ad9264332b4b0a1ad92d2e43d48f0ded795619572875b1dac632eff","options":{"section":null},"request_id_sha256":null,"results":["d-20261021-09"],"target":"decisions-ledger","v":1} -->
