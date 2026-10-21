@@ -17700,7 +17700,7 @@ The inbox entry is now merged as f-20261021-07. Its defect was repaired before i
 
 ### Remote CI retains cancelled jobs from superseded workflow matrix generations
 
-* **ID:** f-20261021-08 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261021-08 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Impact class:** tooling
 * **Where:** scripts/check-remote-ci.mjs, inspectRemoteCi, seenNames and jobsByName over all five workflow runs.
 * **Defect:** The checker unions names across the whole historical window. A successful completed workflow that renames a matrix runner from macos-latest to macos-26-intel still leaves the old cancelled matrix names in the judged set. Ordinary publication therefore remains refused until those old runs fall out of the window, even though all current workflow jobs succeeded.
@@ -17709,3 +17709,8 @@ The inbox entry is now merged as f-20261021-07. Its defect was repaired before i
 * **Proof:** A regression with an older completed cancelled matrix generation and a newer completed successful renamed generation must pass, while still-current older red jobs and unfinished new names without completed proof must continue refusing. Remove only the checker repair with tests retained, observe the intended failures, restore and rerun green.
 * **Related:** f-20261006-02 is wrong repository selection rather than historical job-set retention. f-20261021-06 owns the runner-acquisition cancellations that expose the rename path. No shared root is claimed.
 * **Found by:** Codex interactive recovery, 2026-10-21. Plan authorship and arbitration share one context. Detection and code share the OpenAI model family in separate sessions.
+
+Commit 5d577be0 defines active names from the newest completed workflow plus newer unfinished runs. Older-only names are retired while current jobs still use their newest completed result within the bounded window. A newly introduced unfinished job without completed proof remains refused. Non-success current jobs and unavailable or malformed API results remain refused.
+
+The new retired-matrix regression passes after a completed successful Intel generation and fails against the actual old Git-controlled checker. The isolated six-case root control preserves the current tests and entrypoint, yields six intended failures with old source at exit 1 and six passes with fixed source at exit 0. The full 39-case suite passes. Recovery R1 correctness, root-cause, tests and error-handling found no issue in the new generation semantics, and R2 source closure found no new defect. This closes the deterministic checker mechanism, not the separately pending hosted Intel acquisition proof. That remains f-20261021-06. Plan authorship and arbitration share one root context. Detection and code share the OpenAI family in separate sessions.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"499bd18705c4c99c2b4143a31e23706ed3b4e69630f15b98e9b9ce2ce8364849","header_sha256":"1b281fa82658eceaed6872fee746fbf134318c526572c9873e5f6b4e3e5156bc","header_status":"handled","input_sha256":"bb7c7711be0ed5799f2205cd3a8d7a51711bb1d637e2668be35a7581211aee98","kind":"mutation-receipt","operation":"78580f5be2f943e8b475f72c22c8e92f56cf2c4f6d63dcd23d3a69341bc5cbf5","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-08"],"target":"f-20261021-08","v":1} -->
