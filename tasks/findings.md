@@ -17674,7 +17674,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Three upstream macOS Test jobs are cancelled on c3158cb5
 
-* **ID:** f-20261021-06 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261021-06 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** 8b1d9c57-ef43-495b-96b3-1dd931c9a194 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-8b1d9c57-ef43-495b-96b3-1dd931c9a194-1.jsonl
 * **Impact class:** tooling
 * **Where:** GitHub Test run 39608148446 on c3158cb5c9b6d179b40d546e97b6f250cb5010df, jobs 119249652554 (rust-macos-test), 119249652624 (macOS ARM platform) and 119249652781 (macOS Intel platform).
@@ -17684,6 +17684,9 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Proof:** Inspect the cancelled job logs and check-run annotations, use the existing hosted recovery route once if permitted, then verify successful replacement conclusions on the same upstream SHA and a green fork-specific remote check before publication.
 * **Related:** f-20261019-06 records prior macOS runner-acquisition cancellations and recovery on another SHA. f-20261008-14 records an earlier ARM cancellation. Their Root is absent and no common cause has yet been established. f-20261006-02 already tracks incorrect default-repository selection by the remote checker, which is distinct from these explicitly selected fork results.
 * **Found by:** Codex pinned f-20261001-03 drain, 2026-10-21. Plan authorship and arbitration shared one context, detection ran on the same model family as the code.
+
+Handled by 15b40ffe and decision d-20261021-19, confirmed on published source a49c0b71de4e6a6f4ab373607c0fe736e0ded012 in Test run 39676402327. Actual successful jobs: full macOS suite119487281744, Apple ARM target Clippy119487281597 and Apple Intel target Clippy119487281730. All three acquired macos-26-intel runners and concluded success. Both declared Apple targets and the full macOS suite remain required. Native runtime proof is Intel macOS, ARM remains cross-target Clippy. Windows full suite119487281944 and MSVC target119487281877 also succeeded on the same SHA. The complete local Rust/frontend/bindings gate passed before publication. Installer completion0 install-verified on the exact pushed source installed a49c0b71 with reviewed provenance. No ARM runtime proof or whole-Linux-workflow success is claimed. The old ARM acquisition cancellations remain historical failed attempts, superseded by actual replacement proof. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ac4b1c1d1bc1d6095a733cf8c1adaf58033c9cb06acce39c96aa46b741607da9","header_sha256":"1755789842e64c937560a277b50cab5b83b352f6944b84c23da5394ee7a3e788","header_status":"handled","input_sha256":"f8a35e59bb810a6333319a8a106637e301c30818287b3fc2b60ffc365742479d","kind":"mutation-receipt","operation":"21c97f786e1fefa8a993e9a93898c5dc1550a960a4b0fa47c3234aa2681329a4","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-06"],"target":"f-20261021-06","v":1} -->
 
 ### Native verifier rejects the saved engine card's shortened Name label
 

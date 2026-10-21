@@ -98,6 +98,43 @@ VERDICT: APPROVED
 ```
 
 The preceding candidate checkpoint is superseded by this independent closure. Full final gates, publication, required hosted jobs and installation remain pending.
+
+## Verified publication and installation
+
+This supersedes the preceding release-pending checkpoints. Final records witness `lens-records-rg1` approved without findings. All known records were committed in a49c0b71 before the final gate, with a clean tree and unchanged upstream c3158cb5. Canonical `push-gate.3pTdTH` completed `0 push-gate a49c0b71de4e6a6f4ab373607c0fe736e0ded012`. Logs are `artifacts/gates/20261021T204403998Z-3038961`.
+
+| Lane | Exit | Duration |
+| --- | --- | --- |
+| Mutation guard | 0 | 0.3 s |
+| Rust setup | 0 | 0.1 s |
+| Frontend build | 0 | 10.3 s |
+| Bindings | 0 | 10.6 s |
+| Contract | 0 | 133.2 s |
+| Rust lint | 0 | 56.1 s |
+| Rust tests | 0 | 134.1 s |
+| Rust coverage | 0 | 145.2 s |
+| Frontend coverage | 0 | 118.3 s |
+| Bundle | 0 | 0.7 s |
+| Browser | 0 | 71.6 s |
+| Frontend mutation | 0 | 1211.0 s |
+
+Rust reported 2,624 passed, zero failed and two existing ignored. All 185 browser cases passed. All four mutation packages passed with no surviving mutants. Root polled the canonical completion before recording gate success. The fork-pinned pre-push checker reported exactly the three old macOS acquisition cancellations owned by f-20261021-06. The reviewed host repair addressed all three, so the existing repair-publication exception applied. Non-force `git push origin HEAD:refs/heads/master` published c3158cb5..a49c0b71, and root verified HEAD equalled origin/master.
+
+Actual Test run [39676402327](https://github.com/felixabeck/en-croissant/actions/runs/39676402327) on the exact pushed SHA completed these required jobs successfully:
+
+| Job | Successful job ID |
+| --- | --- |
+| Full macOS Rust suite | 119487281744 |
+| Apple ARM target Clippy on Intel macOS | 119487281597 |
+| Apple Intel target Clippy on Intel macOS | 119487281730 |
+| Full Windows Rust suite | 119487281944 |
+| Windows MSVC target Clippy | 119487281877 |
+
+All three macOS jobs acquired `macos-26-intel` runners. Root waited for each job's actual success conclusion, including cache cleanup. Native macOS runtime proof is Intel, with ARM cross-target Clippy retained. The Linux job was still running at confirmation. No whole-workflow success is claimed. Capacity finding f-20261021-06 is handled using this actual replacement proof. Broader fixture finding f-20261011-03 remains open.
+
+The installer ran from HEAD and upstream both equal to the verified source SHA. `install-verified.5sxHqZ` completed `0 install-verified a49c0b71de4e6a6f4ab373607c0fe736e0ded012`. Release compilation took 1 minute 10 seconds. The atomic desktop installation reports `a49c0b71`, and VERSION records that full SHA, timestamp 2026-10-21T23:29:21+02:00 and provenance reviewed. The current running application was not stopped. The updated installed copy takes effect on next launch.
+
+These results could only be recorded after publication, so they use the named post-push coordination-record exception with its contract gate. The installed source SHA precedes this records-only commit. Retirement of the interrupted saved run and fresh drain startup with `--executor codex --orchestrator codex --plan-ahead 1 --yes` remain the next operational steps. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code in separate sessions. No force, tag, release or deployment occurred.
 Felix requested full-auto Codex completion of the pending f-20261001-03 task and then a fresh drain with the original options. This report supersedes the earlier blocked checkpoint for source closure. It does not claim final publication or installation before their actual results are appended.
 
 The original source, plan and browser/native proof remain in tasks/handoffs/2026-10-21-f-20261001-03-review.md. Recovery preserves that history. The old supervisor was stopped through its documented controls, its exit merge allocated f-20261021-06 and f-20261021-07, and the root took over under the existing build lock. The saved run is still unfinished, so retirement through the documented hand-takeover route must precede the requested fresh start. Planner material is retained.
