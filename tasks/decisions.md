@@ -4667,8 +4667,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Supersedes:** d-20260914-08, as to its `cargo check` step only. New evidence: a rule-12b probe on 2026-09-30 — in a throwaway worktree with `mkdir -p dist`, a type error inside the `#[cfg(test)]` fn `set_test_lexer_hook` (`src-tauri/src/lexer.rs`) made the clippy command exit 101 with `E0308`, and exit 0 without it.
 * **Reason:** the mandate removes unjustified gate work; clippy `--all-targets` type-checks every target, so the separate check proves nothing clippy does not.
 * **Review:** `tasks/handoffs/2026-09-30-push-gate-parallelism-review.md`
-* **Decided by:** Claude Code (Opus 5.5), build run for the push-gate parallelism plan (session a3a230ef-7b5b-4be0-82ec-2e5fb8953292), 2026-09-30 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"95d4e065fcb8caf04064e5f8c8b7d8726c3f3d7c4e55c394415fb556357d7a30","input_sha256":"9c3941ad2107575b008a9976649b74437f95937cfb0ffa6be8256d58538a83b5","kind":"mutation-receipt","operation":"3a0259226a21054b7c1fab87d1b10ac72ababe217c39c4edcf0102045cbbb2c7","options":{"section":null},"request_id_sha256":null,"results":["d-20260930-02"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Claude Code (Opus 5.5), build run for the push-gate parallelism plan (session a3a230ef-7b5b-4be0-82ec-2e5fb8953292), 2026-09-30 · **Superseded-by:** d-20261021-19
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"f826237f473c8240ec59309256c8245eeebc5ed2978c04fd81c027dc57b146a3","input_sha256":"9c3941ad2107575b008a9976649b74437f95937cfb0ffa6be8256d58538a83b5","kind":"mutation-receipt","operation":"3a0259226a21054b7c1fab87d1b10ac72ababe217c39c4edcf0102045cbbb2c7","options":{"section":null},"request_id_sha256":null,"results":["d-20260930-02"],"target":"decisions-ledger","v":1} -->
 
 ### d-20260930-03 — How do gate tools choose their worker counts inside an 8 GiB agent scope?
 
