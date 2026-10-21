@@ -1,12 +1,18 @@
 import { act } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { createTreeStore } from "@/state/store/tree";
-import { currentDetachedEngineAtom, enginesAtom, engineTerminalFamily } from "@/state/atoms";
+import {
+  currentDetachedEngineAtom,
+  enginesAtom,
+  engineTerminalFamily,
+  threatFamily,
+} from "@/state/atoms";
 import { INITIAL_FEN } from "chessops/fen";
 import { engineIdentity, engineLineContext } from "../panels/analysis/analysisLineContext";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { TreeStateContext } from "./TreeStateContext";
 import DetachedEval from "./DetachedEval";
+import { analysisSearch } from "../panels/analysis/analysisSearch";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
@@ -19,6 +25,30 @@ vi.mock("@/platform/tauri", async (importOriginal) => {
 });
 let h: ReturnType<typeof engineDisplayHarness>;
 afterEach(async () => h.close());
+test("DetachedEval drops historical threat PV and score in check and restores legal analysis", async () => {
+  h = engineDisplayHarness();
+  const tree = createTreeStore();
+  await h.store.set(enginesAtom, [displayEngine]);
+  h.store.set(currentDetachedEngineAtom, displayEngine.id);
+  h.store.set(threatFamily("display-tab"), true);
+  h.store.set(h.memoryAtom, new Map([[analysisSearch(INITIAL_FEN, [], true).key!, displayLines]]));
+  await h.render(
+    <TreeStateContext.Provider value={tree}>
+      <DetachedEval />
+    </TreeStateContext.Provider>,
+  );
+  expect(h.host.textContent).toContain("e4 e5 Nf3");
+  await act(async () => tree.getState().makeMoves({ payload: ["e4", "d5", "Bb5+"] }));
+  expect(h.host.textContent).toContain("—");
+  expect(h.host.textContent).not.toContain("e4 e5 Nf3");
+  expect(h.host.textContent).not.toContain("0.34");
+  expect(h.host.textContent).not.toContain("Board.Analysis.EngineFailed");
+  expect(h.host.querySelector("[inert]")).toBeNull();
+  await act(async () => tree.getState().goToStart());
+  expect(h.host.textContent).toContain("e4 e5 Nf3");
+  expect(h.store.get(threatFamily("display-tab"))).toBe(true);
+  tree.dispose();
+});
 test("DetachedEval uses the shared dimmed fallback and replaces it with current lines", async () => {
   h = engineDisplayHarness();
   const tree = createTreeStore();

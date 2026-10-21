@@ -6,6 +6,7 @@ import {
     pgnFileCommands,
     selectFilesTreeRow,
     whitePawnSquares,
+    playBoardMove,
     type MockScenario,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
@@ -402,6 +403,120 @@ test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B 
     await expect(panel.getByRole("button", { name: "d5", exact: true })).toBeVisible();
     await expect(panel).toContainText("0.55");
     await expect(panel).not.toContainText("Loading");
+});
+
+test("engine-gap: legal threat after a double push becomes unavailable in check and recovers", async ({
+    page,
+    emitTauriEvent,
+}) => {
+    await page.clock.install({ time: new Date("2026-10-21T12:00:00Z") });
+    const { searches, panel } = await setupAnalysisEngine(page);
+    await panel.getByRole("button", { name: "Pin above notation", exact: true }).click();
+    const detached = page.locator(".mantine-Paper-root").filter({
+        has: page.getByRole("button", { name: "Unpin engine", exact: true }),
+    });
+    const board = page.locator("cg-board");
+    for (const [index, [from, to]] of [
+        ["e2", "e4"],
+        ["a7", "a6"],
+        ["e4", "e5"],
+        ["d7", "d5"],
+    ].entries()) {
+        await playBoardMove(page, board, from, to);
+        await expect.poll(async () => (await searches()).length).toBe(index + 2);
+        await page.clock.runFor(250);
+    }
+    await panel.getByRole("button", { name: "Check the opponent's threat", exact: true }).click();
+    await expect.poll(async () => (await searches()).length).toBe(6);
+    type Request = {
+        id: string;
+        tab: string;
+        generation: string;
+        options: { fen: string; moves: string[] };
+    };
+    const request = (await searches())[5].args as Request;
+    expect(request.options.fen).toBe(
+        "rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 3",
+    );
+    expect(request.options.moves).toEqual([]);
+    const emit = async (request: Request) =>
+        emitTauriEvent({
+            event: "best-moves-payload",
+            payload: {
+                engine: request.id,
+                tab: request.tab,
+                generation: request.generation,
+                fen: request.options.fen,
+                moves: request.options.moves,
+                progress: 50,
+                bestLines: [
+                    {
+                        depth: 20,
+                        multipv: 1,
+                        nodes: 1234,
+                        nps: 5678,
+                        score: { value: { type: "cp", value: 34 }, wdl: null },
+                        sanMoves: ["d4", "Nf3"],
+                        uciMoves: ["d5d4", "g1f3"],
+                    },
+                ],
+            },
+        });
+    await emit(request);
+    await expect(panel.getByRole("button", { name: "d4", exact: true })).toBeVisible();
+    await expect(detached).toContainText("d4 Nf3");
+    const preparations = () =>
+        page.evaluate(
+            () =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .filter(({ command }) => command === "prepare_engine_search").length,
+        );
+    const prepared = await preparations();
+    await playBoardMove(page, board, "f1", "b5");
+    await page.clock.runFor(1500);
+    await expect(panel).toContainText("No analysis available");
+    await expect(detached).toContainText("—");
+    await emit(request);
+    await expect(panel.getByRole("button", { name: "d4", exact: true })).toHaveCount(0);
+    await expect(detached).not.toContainText("d4 Nf3");
+    await expect(panel).not.toContainText("Loading");
+    await expect(panel).not.toContainText("n/s");
+    await expect(panel.locator(".mantine-Skeleton-root, [data-animated], tr[inert]")).toHaveCount(
+        0,
+    );
+    await expect(board.locator("svg.cg-shapes line")).toHaveCount(0);
+    expect((await searches()).length).toBe(6);
+    expect(await preparations()).toBe(prepared);
+    const state = await page.evaluate(() => window.__E2E_TAURI__.engineSearchState());
+    expect(state.stops).toContainEqual({
+        engine: request.id,
+        tab: request.tab,
+        expectedGeneration: request.generation,
+        result: true,
+    });
+    expect(state.pending).toEqual([]);
+    await expect(
+        panel.getByRole("button", { name: "Check the opponent's threat", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(panel.getByRole("button", { name: "Disable engine", exact: true })).toBeVisible();
+    await expect(page.locator(".mantine-Notification-root")).toHaveCount(0);
+    await page.mouse.move(1400, 850);
+    await page.clock.runFor(200);
+    await expect(page).toHaveScreenshot("engine-threat-unavailable.png", { fullPage: true });
+    await page.getByRole("button", { name: "Previous move", exact: true }).click();
+    await expect.poll(async () => (await searches()).length).toBe(7);
+    const recovered = (await searches())[6].args as Request;
+    expect(recovered.options).toEqual(request.options);
+    expect(recovered.generation).not.toBe(request.generation);
+    await emit(recovered);
+    await expect(panel.getByRole("button", { name: "d4", exact: true })).toBeVisible();
+    await expect(detached).toContainText("d4 Nf3");
+    await expect(panel.locator("tr[inert]")).toHaveCount(0);
+    await expect(page.locator(".mantine-Notification-root")).toHaveCount(0);
+    await page.mouse.move(1400, 850);
+    await page.clock.runFor(250);
+    await expect(page).toHaveScreenshot("engine-threat-recovered.png", { fullPage: true });
 });
 
 for (const partial of [false, true]) {

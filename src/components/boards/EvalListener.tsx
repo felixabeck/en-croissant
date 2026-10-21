@@ -147,9 +147,9 @@ function EngineListener({
   engine: Engine;
   firstEngineWithLines: string | null;
   isGameOver: boolean;
-  searchingFen: string;
-  searchingMoves: string[];
-  searchedKey: string;
+  searchingFen: string | null;
+  searchingMoves: string[] | null;
+  searchedKey: string | null;
   threat: boolean;
 }) {
   const { t } = useTranslation();
@@ -260,6 +260,7 @@ function EngineListener({
     ({ payload }: { payload: BestMovesPayload }) => {
       const ev = payload.bestLines;
       if (
+        searchedKey !== null &&
         payload.engine === engine.id &&
         payload.tab === ownerTabId &&
         payload.fen === searchingFen &&
@@ -387,8 +388,8 @@ function EngineListener({
     const attempt = activeAttempt.current;
     if (!attempt || attempt.fingerprint !== requestFingerprint || attempt.dispatched) return;
     attempt.dispatched = true;
-    const terminalIdentity = () => ({
-      searchedKey,
+    const terminalIdentity = (key: string) => ({
+      searchedKey: key,
       context: lineContext,
       fingerprint: attempt.fingerprint,
       engineIdentity: attempt.engineIdentity,
@@ -396,18 +397,23 @@ function EngineListener({
       retry,
     });
     const finishWithoutLines = () => {
-      if (engine.type === "local" && isCurrentAttempt(attempt) && !attempt.hasLines) {
-        setTerminal({ ...terminalIdentity(), type: "completed-without-lines" });
+      if (
+        searchedKey !== null &&
+        engine.type === "local" &&
+        isCurrentAttempt(attempt) &&
+        !attempt.hasLines
+      ) {
+        setTerminal({ ...terminalIdentity(searchedKey), type: "completed-without-lines" });
       }
     };
     const failAttempt = (error: unknown) => {
-      if (!isCurrentAttempt(attempt)) return;
+      if (searchedKey === null || !isCurrentAttempt(attempt)) return;
       const failure = errorUnlessCancelled(error);
       if (!failure || failure.category === "cancelled") return;
       if (engine.type === "local") {
         attempt.failed = true;
         setTerminal({
-          ...terminalIdentity(),
+          ...terminalIdentity(searchedKey),
           type: "failed",
           snapshot: failure.engineFailure,
           message: failure.message,
@@ -429,6 +435,9 @@ function EngineListener({
         }
         attempt.predecessorOwner = null;
       }
+      // Absence is a lifecycle boundary too. Retire the predecessor above,
+      // without reserving a generation or submitting a local or remote request.
+      if (searchingFen === null || searchingMoves === null || searchedKey === null) return;
       if (engine.type === "local") {
         if (!isCurrentAttempt(attempt)) return;
         let nativeGeneration: string;

@@ -130,8 +130,8 @@ test("both atoms select only the current mode with coexisting normal and threat 
     store.set(activeTabAtom, tab);
     const threatEngine = { ...engine, id: "threat-engine" };
     await store.set(enginesAtom, [engine, threatEngine]);
-    const normal = analysisSearch(INITIAL_FEN, ["e2e4"], false).key;
-    const threat = analysisSearch(INITIAL_FEN, ["e2e4"], true).key;
+    const normal = analysisSearch(INITIAL_FEN, ["e2e4"], false).key!;
+    const threat = analysisSearch(INITIAL_FEN, ["e2e4"], true).key!;
     store.set(
         engineMovesFamily({ tab, engine: engine.id }),
         new AnalysisLineMemory(new Map([[normal, lines("e7e5")]])),
@@ -180,7 +180,7 @@ test("line atoms read their owner at the same position while another tab is acti
     const otherEngine = { ...engine, id: "other-engine" };
     await store.set(enginesAtom, [engine, otherEngine]);
     const moves = ["e2e4"];
-    const key = analysisSearch(INITIAL_FEN, moves, false).key;
+    const key = analysisSearch(INITIAL_FEN, moves, false).key!;
     store.set(engineMovesFamily({ tab: "A", engine: engine.id }), new Map([[key, lines("e7e5")]]));
     store.set(
         engineMovesFamily({ tab: "B", engine: otherEngine.id }),
@@ -242,7 +242,7 @@ test("threat at A, navigate away, threat off, return to A exposes no threat arro
     store.set(threatFamily(tab), true);
     const position = { fen: INITIAL_FEN, gameMoves: ["e2e4"] };
     const memory = new AnalysisLineMemory();
-    memory.set(analysisSearch(position.fen, position.gameMoves, true).key, lines("d2d4"));
+    memory.set(analysisSearch(position.fen, position.gameMoves, true).key!, lines("d2d4"));
     store.set(engineMovesFamily({ tab, engine: engine.id }), memory);
     expect(store.get(createFirstEngineWithLinesAtom(tab, position.fen, position.gameMoves))).toBe(
         engine.id,
@@ -268,7 +268,7 @@ test("atom display selection refreshes LRU recency and tab close disposes line m
     await store.set(enginesAtom, [engine]);
     store.set(threatFamily(tab), false);
     const position = { fen: INITIAL_FEN, gameMoves: [] };
-    const key = analysisSearch(position.fen, position.gameMoves, false).key;
+    const key = analysisSearch(position.fen, position.gameMoves, false).key!;
     const memory = new AnalysisLineMemory();
     memory.set(key, lines("e2e4"));
     for (let i = 0; i < ENGINE_LINE_MEMORY_CAPACITY - 1; i++) memory.set(String(i), lines("d2d4"));
@@ -379,8 +379,8 @@ test("threat arrows compare White-perspective scores against the searched turn a
         engineMovesFamily({ tab, engine: engine.id }),
         new AnalysisLineMemory(
             new Map([
-                [analysisSearch(fen, [], true).key, [mate, inferior]],
-                [analysisSearch(fen, [], false).key, [mate, inferior]],
+                [analysisSearch(fen, [], true).key!, [mate, inferior]],
+                [analysisSearch(fen, [], false).key!, [mate, inferior]],
             ]),
         ),
     );
@@ -394,5 +394,35 @@ test("threat arrows compare White-perspective scores against the searched turn a
     expect(normal.map((line) => line.pv)).toEqual([["h5f7"], ["a2a3"]]);
     expect(normal[0].winChance).toBeLessThan(10);
     expect(normal[1].winChance).toBe(50);
+    disposeTabAtoms(tab);
+});
+
+test("unavailable threat returns no arrows or line owner despite poisoned cache and recovers the available key", async () => {
+    const store = createStore();
+    const tab = "unavailable-threat-arrows";
+    store.set(tabsAtom, [
+        { value: tab, name: "Analysis", type: "analysis", gameOrigin: { kind: "none" } },
+    ]);
+    await store.set(enginesAtom, [engine]);
+    store.set(threatFamily(tab), true);
+    const fen = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 7";
+    store.set(
+        engineMovesFamily({ tab, engine: engine.id }),
+        new Map([
+            [analysisSearch(INITIAL_FEN, [], true).key!, lines("e7e5")],
+            ["4k3/8/8/8/8/8/4r3/4K3 b - - 0 7:", lines("e2e1")],
+            [`${fen}:`, lines("e1e2")],
+        ]),
+    );
+    expect(store.get(createBestMovesAtom(tab, INITIAL_FEN, [])).size).toBe(1);
+    expect(store.get(createFirstEngineWithLinesAtom(tab, INITIAL_FEN, []))).toBe(engine.id);
+    expect(store.get(createBestMovesAtom(tab, fen, [])).size).toBe(0);
+    expect(store.get(createFirstEngineWithLinesAtom(tab, fen, []))).toBeNull();
+    store.set(threatFamily(tab), false);
+    expect(store.get(createBestMovesAtom(tab, fen, [])).size).toBe(1);
+    expect(store.get(createFirstEngineWithLinesAtom(tab, fen, []))).toBe(engine.id);
+    store.set(threatFamily(tab), true);
+    expect(store.get(createBestMovesAtom(tab, INITIAL_FEN, [])).size).toBe(1);
+    expect(store.get(createFirstEngineWithLinesAtom(tab, INITIAL_FEN, []))).toBe(engine.id);
     disposeTabAtoms(tab);
 });

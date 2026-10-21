@@ -56,7 +56,7 @@ afterEach(async () => {
 function terminal(moves: string[] = []) {
   return {
     type: "completed-without-lines" as const,
-    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key,
+    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key!,
     context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
     fingerprint: "attempt",
     engineIdentity: engineIdentity(displayEngine),
@@ -207,12 +207,15 @@ test.each(["engine", "executable", "tab", "settings", "go", "mode"])(
 test("rejects memory from old settings and reads remembered lines only for the current mode", async () => {
   const memory = new AnalysisLineMemory();
   memory.context = "old context";
-  memory.set(analysisSearch(INITIAL_FEN, [], false).key, displayLines);
+  memory.set(analysisSearch(INITIAL_FEN, [], false).key!, displayLines);
   await act(async () => h.store.set(h.memoryAtom, memory));
   await h.render(<Probe />);
   expect(display.lines).toBeUndefined();
   await act(async () =>
-    h.store.set(h.memoryAtom, new Map([[analysisSearch(INITIAL_FEN, [], true).key, displayLines]])),
+    h.store.set(
+      h.memoryAtom,
+      new Map([[analysisSearch(INITIAL_FEN, [], true).key!, displayLines]]),
+    ),
   );
   expect(display.lines).toBeUndefined();
   await act(async () => h.store.set(threatFamily("display-tab"), true));
@@ -243,7 +246,7 @@ test("each mode retains its most recently displayed lines without exposing the o
   await act(async () =>
     h.store.set(
       h.memoryAtom,
-      new Map([[analysisSearch(INITIAL_FEN, ["e2e4"], true).key, threats]]),
+      new Map([[analysisSearch(INITIAL_FEN, ["e2e4"], true).key!, threats]]),
     ),
   );
   expect(display.lines).toEqual(threats);
@@ -265,6 +268,65 @@ test("the fallback tracks the latest displayed payload and its move-number ancho
   expect(display.lines).toEqual(latest);
   expect(display.halfMoves).toBe(1);
   expect(display.finalFen).toBe(analysisSearch(INITIAL_FEN, ["e2e4"], false).finalFen);
+});
+
+test("unavailable threats suppress cached and historical lines, failure and waiting, then recover", async () => {
+  const fen = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 7";
+  const legal = analysisSearch(INITIAL_FEN, [], true);
+  const legacyKey = "4k3/8/8/8/8/8/4r3/4K3 b - - 0 7:";
+  await act(async () => {
+    h.store.set(threatFamily("display-tab"), true);
+    h.store.set(
+      h.memoryAtom,
+      new Map([
+        [legal.key!, displayLines],
+        [legacyKey, displayLines],
+      ]),
+    );
+  });
+  await h.render(<Probe />);
+  expect(display.lines).toEqual(displayLines);
+  await h.render(<Probe fen={fen} />);
+  await act(async () =>
+    h.store.set(engineTerminalFamily({ tab: "display-tab", engine: displayEngine.id }), {
+      ...terminal(),
+      type: "failed",
+      searchedKey: legacyKey,
+    }),
+  );
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(display).toMatchObject({
+    available: false,
+    lines: [],
+    dimmed: false,
+    failure: null,
+    loading: false,
+    finalFen: null,
+    error: null,
+    isGameOver: false,
+  });
+  expect(vi.getTimerCount()).toBe(0);
+  expect(h.store.get(threatFamily("display-tab"))).toBe(true);
+  expect(h.store.get(h.settingsAtom).enabled).toBe(true);
+  await h.render(<Probe />);
+  expect(display.lines).toEqual(displayLines);
+  expect(display.finalFen).toBe(legal.searchedBoardFen);
+  expect(display.dimmed).toBe(false);
+});
+
+test("historical threat lines retain their actual searched board and source halfMoves after a double push", async () => {
+  const fen = "4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 7";
+  const source = analysisSearch(fen, ["d7d5"], true);
+  await act(async () => {
+    h.store.set(threatFamily("display-tab"), true);
+    h.store.set(h.memoryAtom, new Map([[source.key!, displayLines]]));
+  });
+  await h.render(<Probe fen={fen} moves={["d7d5"]} />);
+  await h.render(<Probe fen={fen} moves={["d7d6"]} />);
+  expect(display.lines).toEqual(displayLines);
+  expect(display.dimmed).toBe(true);
+  expect(display.finalFen).toBe("4k3/8/8/3pP3/8/8/8/4K3 b - - 0 8");
+  expect(display.halfMoves).toBe(1);
 });
 
 test("old deadlines are cancelled on navigation and unmount, and current results create no timer", async () => {
@@ -307,7 +369,7 @@ test("invalid and game-over positions suppress even remembered entries", async (
 test("matching contextual memory is eligible and remote executable identity scopes the fallback", async () => {
   const memory = new AnalysisLineMemory();
   memory.context = engineLineContext(h.store.get(h.settingsAtom), displayEngine);
-  memory.set(analysisSearch(INITIAL_FEN, [], false).key, displayLines);
+  memory.set(analysisSearch(INITIAL_FEN, [], false).key!, displayLines);
   await act(async () => h.store.set(h.memoryAtom, memory));
   await h.render(<Probe />);
   expect(display.lines).toEqual(displayLines);
@@ -326,7 +388,7 @@ test("matching contextual memory is eligible and remote executable identity scop
 test("contextual remembered lines remain current across pause, resume and sync toggles", async () => {
   const memory = new AnalysisLineMemory();
   memory.context = engineLineContext(h.store.get(h.settingsAtom), displayEngine);
-  memory.set(analysisSearch(INITIAL_FEN, [], false).key, displayLines);
+  memory.set(analysisSearch(INITIAL_FEN, [], false).key!, displayLines);
   await act(async () => h.store.set(h.memoryAtom, memory));
   await h.render(<Probe />);
   expect(display.lines).toEqual(displayLines);

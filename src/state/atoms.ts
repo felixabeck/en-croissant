@@ -999,20 +999,22 @@ export const createBestMovesAtom = (tab: string, fen: string, gameMoves: string[
         const engines = get(enginesAtom);
         if (!engines) return new Map();
         const bestMoves = new Map<number, { pv: string[]; winChance: number }[]>();
+        const search = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
+        if (!search.available) return bestMoves;
+        const { searchingTurn, key } = search;
         let n = 0;
         for (const engine of engines.filter((e) => e.loaded)) {
             const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-            const { searchingTurn, key } = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
             const moves = engineMoves.get(key);
             if (moves && moves.length > 0) {
                 const bestWinChange = getWinChance(
-                    normalizeScore(moves[0].score.value, searchingTurn || "white"),
+                    normalizeScore(moves[0].score.value, searchingTurn),
                 );
                 bestMoves.set(
                     n,
                     moves.reduce<{ pv: string[]; winChance: number }[]>((acc, m) => {
                         const winChance = getWinChance(
-                            normalizeScore(m.score.value, searchingTurn || "white"),
+                            normalizeScore(m.score.value, searchingTurn),
                         );
                         if (bestWinChange - winChance < BEST_MOVE_ARROW_MAX_WIN_CHANCE_LOSS) {
                             acc.push({ pv: m.uciMoves, winChance });
@@ -1032,7 +1034,9 @@ export const createFirstEngineWithLinesAtom = (tab: string, fen: string, gameMov
         const engines = get(enginesAtom);
         if (!engines) return null;
 
-        const { key } = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
+        const search = analysisSearch(fen, gameMoves, get(threatFamily(tab)));
+        if (!search.available) return null;
+        const { key } = search;
 
         for (const engine of engines.filter((e) => e.loaded)) {
             const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));

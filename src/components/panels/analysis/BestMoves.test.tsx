@@ -8,6 +8,8 @@ import {
   engineRetryFamily,
   enginesAtom,
   tabEngineSettingsFamily,
+  threatFamily,
+  engineProgressFamily,
 } from "@/state/atoms";
 import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
 import { useAtomValue } from "jotai";
@@ -382,15 +384,15 @@ afterEach(async () => {
   await h.close();
   vi.useRealTimers();
 });
-const panel = (moves: string[] = []) => (
+const panel = (moves: string[] = [], fen = INITIAL_FEN, halfMoves = moves.length) => (
   <Accordion value="engine">
     <Accordion.Item value="engine">
       <BestMoves
         id={0}
         engine={displayEngine}
-        fen={INITIAL_FEN}
+        fen={fen}
         moves={moves}
-        halfMoves={moves.length}
+        halfMoves={halfMoves}
         dragHandleProps={{}}
         orientation="white"
       />
@@ -401,7 +403,7 @@ const panel = (moves: string[] = []) => (
 function terminal(moves: string[] = []) {
   return {
     type: "completed-without-lines" as const,
-    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key,
+    searchedKey: analysisSearch(INITIAL_FEN, moves, false).key!,
     context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
     fingerprint: "attempt",
     engineIdentity: engineIdentity(displayEngine),
@@ -409,6 +411,84 @@ function terminal(moves: string[] = []) {
     retry: 0,
   };
 }
+
+test("unavailable threat uses the shipped empty state and idles every loading affordance", async () => {
+  const key = analysisSearch(INITIAL_FEN, [], true).key!;
+  await act(async () => {
+    h.store.set(threatFamily("display-tab"), true);
+    h.store.set(
+      h.memoryAtom,
+      new Map([
+        [
+          key,
+          [
+            {
+              depth: 20,
+              multipv: 1,
+              nodes: 1n,
+              nps: 1n,
+              score: { value: { type: "cp", value: 34 }, wdl: null },
+              sanMoves: ["e5"],
+              uciMoves: ["e7e5"],
+            },
+          ],
+        ],
+      ]),
+    );
+    h.store.set(engineProgressFamily({ tab: "display-tab", engine: displayEngine.id }), 65);
+  });
+  await h.render(panel());
+  expect(h.host.querySelector("[data-fen]")?.getAttribute("data-fen")).toBe(
+    analysisSearch(INITIAL_FEN, [], true).searchedBoardFen,
+  );
+  await h.render(panel([], "4k3/8/8/8/8/8/4r3/4K3 w - - 0 7"));
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(h.host.textContent).toContain("Board.Analysis.NoAnalysisAvailable");
+  for (const text of ["Common.Loading", "Board.Analysis.EngineFailed", "n/s", "e5"])
+    expect(h.host.textContent).not.toContain(text);
+  expect(h.host.querySelector("[data-fen]")).toBeNull();
+  expect(h.host.querySelector("[data-animated]")).toBeNull();
+  expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
+  expect(h.store.get(threatFamily("display-tab"))).toBe(true);
+  expect(h.store.get(h.settingsAtom).enabled).toBe(true);
+  await h.render(panel());
+  expect(h.host.querySelector("[data-fen]")).not.toBeNull();
+});
+
+test("threat rows use the shared searched board once and keep its numbering anchor during fallback", async () => {
+  const fen = "4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 7";
+  const source = analysisSearch(fen, ["d7d5"], true);
+  await act(async () => {
+    h.store.set(threatFamily("display-tab"), true);
+    h.store.set(
+      h.memoryAtom,
+      new Map([
+        [
+          source.key!,
+          [
+            {
+              depth: 20,
+              multipv: 1,
+              nodes: 1n,
+              nps: 1n,
+              score: { value: { type: "cp", value: 34 }, wdl: null },
+              sanMoves: ["d4"],
+              uciMoves: ["d5d4"],
+            },
+          ],
+        ],
+      ]),
+    );
+  });
+  await h.render(panel(["d7d5"], fen, 14));
+  expect(h.host.querySelector("[data-fen]")?.getAttribute("data-fen")).toBe(
+    source.searchedBoardFen,
+  );
+  await h.render(panel(["d7d6"], fen, 20));
+  const row = h.host.querySelector('[data-inert="true"]');
+  expect(row?.getAttribute("data-fen")).toBe("4k3/8/8/3pP3/8/8/8/4K3 b - - 0 8");
+  expect(row?.getAttribute("data-ply")).toBe("14");
+});
 
 test("first start has neither skeleton rows nor Loading at 999 ms and has both at 1000 ms", async () => {
   await h.render(panel());

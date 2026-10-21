@@ -107,7 +107,7 @@ export function useDisplayedEngineLines(
     const context = engineLineContext(settings, engine);
     const scope = JSON.stringify([tab, context]);
     const current =
-        memory instanceof AnalysisLineMemory && memory.context !== context
+        !search.available || (memory instanceof AnalysisLineMemory && memory.context !== context)
             ? undefined
             : memory.get(search.key);
     const [previous, setPrevious] = useState<{
@@ -119,12 +119,16 @@ export function useDisplayedEngineLines(
         if (current && !error && !isGameOver)
             setPrevious((previous) => {
                 const displays = new Map(previous?.displays);
-                displays.set(threat, { lines: current, finalFen: search.finalFen, halfMoves });
+                displays.set(threat, {
+                    lines: current,
+                    finalFen: search.searchedBoardFen,
+                    halfMoves,
+                });
                 return { scope, displays };
             });
-    }, [current, scope, search.finalFen, halfMoves, error, isGameOver, threat]);
+    }, [current, scope, search.searchedBoardFen, halfMoves, error, isGameOver, threat]);
 
-    const eligible = settings.enabled && !error && !isGameOver;
+    const eligible = search.available && settings.enabled && !error && !isGameOver;
     const currentTerminal = eligible
         ? matchingEngineTerminal(terminal, engine, context, retry, search.key)
         : null;
@@ -144,15 +148,17 @@ export function useDisplayedEngineLines(
             ? previous?.displays.get(threat)
             : undefined;
     return {
-        lines: error || isGameOver ? undefined : (current ?? fallback?.lines),
+        lines:
+            error || isGameOver ? undefined : search.available ? (current ?? fallback?.lines) : [],
         dimmed: fallback !== undefined || (failure !== null && current !== undefined),
         failure,
         loading,
-        finalFen: fallback ? fallback.finalFen : search.finalFen,
+        finalFen: fallback ? fallback.finalFen : search.searchedBoardFen,
         halfMoves: fallback ? fallback.halfMoves : halfMoves,
         error,
         isGameOver,
         threat,
         settings,
+        available: search.available,
     };
 }

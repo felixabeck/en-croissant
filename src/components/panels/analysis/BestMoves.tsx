@@ -39,7 +39,7 @@ import {
   engineRetryFamily,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
-import { swapMove, translateChessopsError } from "@/utils/chessops";
+import { translateChessopsError } from "@/utils/chessops";
 import type { Engine } from "@/utils/engines";
 import { formatNodes } from "@/utils/format";
 import { formatScore } from "@/utils/score";
@@ -77,7 +77,7 @@ function BestMovesComponent({
   const { t } = useTranslation();
 
   const ownerTabId = useOwnerTabId();
-  const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
+  const engineProgress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: ownerTabId }));
   const [, setRetry] = useAtom(engineRetryFamily({ engine: engine.id, tab: ownerTabId }));
   const { displayed, readDisplayed, submit } = useEngineEditDraft(engine);
   const store = useStore();
@@ -147,7 +147,9 @@ function BestMovesComponent({
     isGameOver,
     finalFen,
     halfMoves: displayedHalfMoves,
+    available,
   } = useDisplayedEngineLines(engine, fen, moves, halfMoves);
+  const progress = available ? engineProgress : 0;
 
   return (
     <>
@@ -241,9 +243,9 @@ function BestMovesComponent({
 
       <Progress
         value={isGameOver || failure ? 0 : progress}
-        animated={progress < 100 && settings.enabled && !isGameOver && !failure}
+        animated={available && progress < 100 && settings.enabled && !isGameOver && !failure}
         size="xs"
-        striped={progress < 100 && !settings.enabled && !failure}
+        striped={available && progress < 100 && !settings.enabled && !failure}
         color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
       />
       <Accordion.Panel pos="relative">
@@ -350,7 +352,7 @@ function BestMovesComponent({
                     halfMoves={displayedHalfMoves}
                     inert={dimmed}
                     threat={threat}
-                    fen={threat ? swapMove(finalFen) : finalFen}
+                    fen={finalFen}
                     orientation={orientation}
                   />
                 );

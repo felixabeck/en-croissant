@@ -23,9 +23,10 @@ const fixtures = vi.hoisted(() => ({
     url: "https://chessdb.cn",
     loaded: true,
   },
-  fen: "start-fen",
+  fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   moves: [] as string[],
   chessdbGetBestMoves: vi.fn(),
+  lichessGetBestMoves: vi.fn(),
   getBestMoves: vi.fn(),
   prepareEngineSearch: vi.fn(),
   listeners: [] as Array<(event: any) => void>,
@@ -36,6 +37,10 @@ const fixtures = vi.hoisted(() => ({
   scoreOwner: null as string | null,
   t: (key: string) => key,
 }));
+
+const positionB = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+const positionC = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1";
+const positionD = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1";
 
 const engine = fixtures.engine;
 const chessdbEngine = fixtures.chessdbEngine;
@@ -52,12 +57,8 @@ vi.mock("@/utils/engines", () => ({
   releaseEngineSearch: fixtures.releaseEngineSearch,
 }));
 vi.mock("@/utils/chess", () => ({ getVariationLine: () => fixtures.moves }));
-vi.mock("@/utils/chessops", () => ({
-  positionFromFen: () => [null],
-  swapMove: (fen: string) => `threat:${fen}`,
-}));
 vi.mock("@/utils/chessdb/api", () => ({ getBestMoves: fixtures.chessdbGetBestMoves }));
-vi.mock("@/utils/lichess/api", () => ({ getBestMoves: vi.fn() }));
+vi.mock("@/utils/lichess/api", () => ({ getBestMoves: fixtures.lichessGetBestMoves }));
 vi.mock("@/platform/tauri", () => ({
   tauriSubscriptions: {
     bestMoves: vi.fn(async (listener: (event: any) => void) => {
@@ -138,6 +139,7 @@ import {
 } from "@/state/atoms";
 import EvalListener from "./EvalListener";
 import { useDisplayedEngineLines } from "../panels/analysis/useDisplayedEngineLines";
+import { analysisSearch } from "../panels/analysis/analysisSearch";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -207,11 +209,12 @@ beforeEach(() => {
     fixtures.prepareEngineSearch,
     fixtures.getBestMoves,
     fixtures.chessdbGetBestMoves,
+    fixtures.lichessGetBestMoves,
     fixtures.stopEngine,
     fixtures.releaseEngineSearch,
   ])
     mock.mockReset();
-  fixtures.fen = "start-fen";
+  fixtures.fen = INITIAL_FEN;
   fixtures.moves = [];
   fixtures.scoreOwner = null;
   fixtures.listeners = [];
@@ -220,6 +223,7 @@ beforeEach(() => {
   fixtures.releaseEngineSearch.mockResolvedValue(undefined);
   fixtures.getBestMoves.mockImplementation(() => new Promise(() => undefined));
   fixtures.chessdbGetBestMoves.mockImplementation(() => new Promise(() => undefined));
+  fixtures.lichessGetBestMoves.mockImplementation(() => new Promise(() => undefined));
   store.set(activeTabAtom, "tab-1");
   store.set(tabsAtom, [{ value: "tab-1" }, { value: "tab-2" }] as any);
   store.set(closingTabsAtom, new Set());
@@ -265,7 +269,11 @@ test("first change starts immediately without advancing timers", async () => {
     engine,
     "tab-1",
     { t: "Infinite" },
-    { fen: "start-fen", moves: [], extraOptions: [] },
+    {
+      fen: INITIAL_FEN,
+      moves: [],
+      extraOptions: [],
+    },
     "generation-1",
   );
 });
@@ -280,14 +288,18 @@ test("a current ChessDB promise result populates its cache and progress", async 
   expect(fixtures.chessdbGetBestMoves).toHaveBeenCalledWith(
     "tab-1",
     { t: "Infinite" },
-    { fen: "start-fen", moves: [], extraOptions: [] },
+    {
+      fen: INITIAL_FEN,
+      moves: [],
+      extraOptions: [],
+    },
   );
   await act(async () => {
     result.resolve(remoteResult(81));
     await flush();
   });
 
-  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get(`${INITIAL_FEN}:`)).toEqual(
     remoteResult(81)[1],
   );
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(81);
@@ -307,10 +319,10 @@ test("A to B to A does not let a generation-equivalent remote attempt complete",
   await rerender();
   await settleTransition();
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
-  fixtures.fen = "start-fen";
+  fixtures.fen = INITIAL_FEN;
   await rerender();
   await settleTransition();
 
@@ -325,7 +337,7 @@ test("A to B to A does not let a generation-equivalent remote attempt complete",
     results[2].resolve(remoteResult(82));
     await flush();
   });
-  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toBeDefined();
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get(`${INITIAL_FEN}:`)).toBeDefined();
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(82);
 });
 
@@ -338,7 +350,7 @@ test("position, settings, and tab changes reject stale ChessDB promise results",
   await rerender();
   await settleTransition();
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
   await act(async () => {
@@ -385,17 +397,19 @@ test("close intent preserves remote line memory through refusal and a stale resu
   store.set(enginesAtom, [chessdbEngine] as any);
   await rerender();
   await settleTransition();
-  const remembered = store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:");
+  const remembered = store.get(movesAtom("tab-1", chessdbEngine.id)).get(`${INITIAL_FEN}:`);
   expect(remembered).toEqual(remoteResult(65)[1]);
   const result = deferred<ReturnType<typeof remoteResult>>();
   fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
 
   await act(async () => {
     store.set(closingTabsAtom, new Set(["tab-1"]));
-    expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(remembered);
+    expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get(`${INITIAL_FEN}:`)).toEqual(
+      remembered,
+    );
     expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
     store.set(closingTabsAtom, new Set());
     await flush();
@@ -406,8 +420,10 @@ test("close intent preserves remote line memory through refusal and a stale resu
   });
 
   expect(store.get(movesAtom("tab-1", chessdbEngine.id)).size).toBe(1);
-  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(remembered);
-  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).has("fen-b:")).toBe(false);
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get(`${INITIAL_FEN}:`)).toEqual(
+    remembered,
+  );
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).has(`${positionB}:`)).toBe(false);
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
 });
 
@@ -485,7 +501,7 @@ test("settings and go changes reject old events during transition and clear cach
     .mockResolvedValueOnce("generation-new");
   await rerender();
   await settleTransition();
-  store.set(movesAtom(), new Map([["start-fen:", payload("old").bestLines]]));
+  store.set(movesAtom(), new Map([[`${INITIAL_FEN}:`, payload("old").bestLines]]));
   store.set(progressAtom(), 61);
 
   await act(async () => {
@@ -512,7 +528,7 @@ test("settings and go changes reject old events during transition and clear cach
     "tab-1",
     { t: "Depth", c: 18 },
     {
-      fen: "start-fen",
+      fen: INITIAL_FEN,
       moves: [],
       extraOptions: [{ type: "string", name: "MultiPV", value: "3" }],
     },
@@ -580,7 +596,7 @@ test("an executable change rejects the old owner during transition", async () =>
     .mockResolvedValueOnce("new-binary-owner");
   await rerender();
   await settleTransition();
-  store.set(movesAtom(), new Map([["start-fen:", payload("old").bestLines]]));
+  store.set(movesAtom(), new Map([[`${INITIAL_FEN}:`, payload("old").bestLines]]));
   store.set(progressAtom(), 64);
   const replacement = {
     ...engine,
@@ -612,7 +628,9 @@ test("accepts current info and terminal results but rejects an old generation", 
   expect(store.get(progressAtom())).toBe(0);
 
   await broadcast(payload("generation-current"));
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(payload("generation-current").bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(
+    payload("generation-current").bestLines,
+  );
   expect(store.get(progressAtom())).toBe(50);
 
   await broadcast(payload("generation-current", { progress: 100 }));
@@ -628,10 +646,10 @@ test("A to B to A and unmount/remount never reuse an attempt identity", async ()
   await rerender();
   await settleTransition();
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
-  fixtures.fen = "start-fen";
+  fixtures.fen = INITIAL_FEN;
   await rerender();
   await settleTransition();
 
@@ -663,7 +681,7 @@ test("stale and unmounted preparations release exactly their returned owners", a
   await rerender();
   await settleTransition();
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
   await act(async () => {
@@ -717,7 +735,7 @@ test("tab switch and unmount during transition release the captured predecessor"
   await settleTransition();
   expect(fixtures.stopEngine).not.toHaveBeenCalled();
 
-  fixtures.fen = "third-fen";
+  fixtures.fen = positionD;
   await rerender();
   await unmount();
   expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-2", "tab-2-owner");
@@ -729,7 +747,7 @@ test("position changes stop the search and keep its actor warm", async () => {
     .mockResolvedValueOnce("position-b");
   await rerender();
   await settleTransition();
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
   expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "position-a");
@@ -752,7 +770,7 @@ test("pause and resume retain remembered lines while releasing the owner and rej
   await settleTransition();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
   expect(fixtures.stopEngine).not.toHaveBeenCalled();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(remembered.bestLines);
   const stale = payload("generation-1", { progress: 91 });
   stale.bestLines[0].score.value.value = 999;
   await broadcast(stale);
@@ -763,9 +781,9 @@ test("pause and resume retain remembered lines while releasing the owner and rej
   });
   await settleTransition();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(remembered.bestLines);
   await broadcast(stale);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(remembered.bestLines);
   expect(store.get(progressAtom())).toBe(0);
 });
 
@@ -787,7 +805,7 @@ test.each(["settings", "go", "synced"])(
       await flush();
     });
     expect(store.get(movesAtom()).size).toBe(field === "synced" ? 1 : 0);
-    expect(store.get(movesAtom()).get("start-fen:")).toEqual(
+    expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(
       field === "synced" ? remembered.bestLines : undefined,
     );
   },
@@ -798,7 +816,7 @@ test("unmount during preparation releases the retained warm actor and the late r
   await settleTransition();
   const prepare = deferred<string>();
   fixtures.prepareEngineSearch.mockReturnValueOnce(prepare.promise);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
   await unmount();
@@ -816,11 +834,11 @@ test("a cancelled pending successor preserves the actual warm owner for cleanup"
   fixtures.prepareEngineSearch
     .mockResolvedValueOnce("pending-b")
     .mockResolvedValueOnce("pending-c");
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
   fixtures.stopEngine.mockResolvedValueOnce(false);
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
   await settleTransition();
   await unmount();
@@ -834,13 +852,13 @@ test("a rejected predecessor stop is notified once, retired, and the newest requ
   const failure = new Error("stop failed");
   fixtures.stopEngine.mockRejectedValueOnce(failure);
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await settleTransition();
 
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(3);
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
@@ -856,7 +874,7 @@ test("a superseded preparation rejection does not mark while the current rejecti
   await rerender();
   await settleTransition();
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await act(async () => {
     first.reject(conflict);
@@ -869,7 +887,7 @@ test("a superseded preparation rejection does not mark while the current rejecti
     await flush();
   });
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", conflict);
-  expect(store.get(noLinesAtom())?.searchedKey).toBe("fen-b:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe(`${positionB}:`);
   expect(fixtures.getBestMoves).not.toHaveBeenCalled();
 });
 
@@ -906,7 +924,7 @@ test("close intent arriving during predecessor stop blocks preparation", async (
   const stop = deferred<void>();
   fixtures.stopEngine.mockReturnValueOnce(stop.promise);
 
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await act(async () => {
     await flush();
@@ -938,7 +956,7 @@ test("a fast failed close preserves remembered lines, cancels the old attempt an
     await flush();
   });
   await broadcast(payload("before-close", { progress: 91 }));
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(remembered.bestLines);
   expect(store.get(progressAtom())).toBe(0);
 
   await settleTransition();
@@ -982,8 +1000,8 @@ test("same-name engines retain independent cache, progress, and native owners", 
   );
   await broadcast(payload("owner-1"));
   await broadcast(payload("owner-2", { engine: "engine-2", progress: 75 }));
-  expect(store.get(movesAtom("tab-1", "engine-1")).get("start-fen:")).toBeDefined();
-  expect(store.get(movesAtom("tab-1", "engine-2")).get("start-fen:")).toBeDefined();
+  expect(store.get(movesAtom("tab-1", "engine-1")).get(`${INITIAL_FEN}:`)).toBeDefined();
+  expect(store.get(movesAtom("tab-1", "engine-2")).get(`${INITIAL_FEN}:`)).toBeDefined();
   expect(store.get(progressAtom("tab-1", "engine-1"))).toBe(50);
   expect(store.get(progressAtom("tab-1", "engine-2"))).toBe(75);
 });
@@ -992,11 +1010,11 @@ test("a navigation burst during stop runs only the newest request next", async (
   await rerender();
   const stop = deferred<boolean>();
   fixtures.stopEngine.mockReturnValueOnce(stop.promise);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
-  fixtures.fen = "fen-d";
+  fixtures.fen = positionD;
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
   await broadcast(payload("generation-1"));
@@ -1009,8 +1027,8 @@ test("a navigation burst during stop runs only the newest request next", async (
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
   expect(fixtures.getBestMoves).toHaveBeenCalledTimes(2);
   expect(fixtures.getBestMoves.mock.calls.map((call) => call[3].fen)).toEqual([
-    "start-fen",
-    "fen-d",
+    INITIAL_FEN,
+    positionD,
   ]);
 });
 
@@ -1018,9 +1036,9 @@ test("a navigation burst during preparation retires the stale reservation then p
   const prepare = deferred<string>();
   fixtures.prepareEngineSearch.mockReturnValueOnce(prepare.promise).mockResolvedValueOnce("newest");
   await rerender();
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
   expect(fixtures.getBestMoves).not.toHaveBeenCalled();
@@ -1031,7 +1049,7 @@ test("a navigation burst during preparation retires the stale reservation then p
   expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "stale");
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
   expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
-  expect(fixtures.getBestMoves.mock.calls[0][3].fen).toBe("fen-c");
+  expect(fixtures.getBestMoves.mock.calls[0][3].fen).toBe(positionC);
 });
 
 test("a stop rejected after navigation is notified once and cannot poison the coalescing slot", async () => {
@@ -1039,9 +1057,9 @@ test("a stop rejected after navigation is notified once and cannot poison the co
   const stop = deferred<boolean>();
   const failure = new Error("stop failed while superseded");
   fixtures.stopEngine.mockReturnValueOnce(stop.promise);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
   await act(async () => {
     stop.reject(failure);
@@ -1050,7 +1068,7 @@ test("a stop rejected after navigation is notified once and cannot poison the co
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
   expect(fixtures.stopEngine).toHaveBeenCalledTimes(1);
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
-  expect(fixtures.getBestMoves.mock.calls[1][3].fen).toBe("fen-c");
+  expect(fixtures.getBestMoves.mock.calls[1][3].fen).toBe(positionC);
   await unmount();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
 });
@@ -1064,7 +1082,7 @@ test("a rejected predecessor release is notified once and the new tab prepares a
     store.set(activeTabAtom, "tab-2");
     await flush();
   });
-  fixtures.fen = "fen-c";
+  fixtures.fen = positionC;
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
   await act(async () => {
@@ -1074,7 +1092,7 @@ test("a rejected predecessor release is notified once and the new tab prepares a
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
   expect(fixtures.releaseEngineSearch).toHaveBeenCalledTimes(1);
   expect(fixtures.prepareEngineSearch).toHaveBeenLastCalledWith(engine, "tab-2");
-  expect(fixtures.getBestMoves.mock.calls[1][3].fen).toBe("fen-c");
+  expect(fixtures.getBestMoves.mock.calls[1][3].fen).toBe(positionC);
   expect(fixtures.stopEngine).not.toHaveBeenCalled();
   await unmount();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
@@ -1085,7 +1103,7 @@ test("a failed stop does not retain its actor while the successor prepares", asy
   const prepare = deferred<string>();
   fixtures.stopEngine.mockRejectedValueOnce(new Error("stop failed"));
   fixtures.prepareEngineSearch.mockReturnValueOnce(prepare.promise);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await unmount();
   expect(fixtures.releaseEngineSearch).not.toHaveBeenCalled();
@@ -1111,28 +1129,28 @@ test("remembered lines survive A to B to A and restarted shallow output cannot d
   deep.bestLines[0].depth = 20;
   await broadcast(deep);
   expect(fixtures.setScore).toHaveBeenCalledExactlyOnceWith(deep.bestLines[0].score);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(deep.bestLines);
-  fixtures.fen = "start-fen";
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(deep.bestLines);
+  fixtures.fen = INITIAL_FEN;
   await rerender();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(deep.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(deep.bestLines);
   const shallow = payload("a2");
   shallow.bestLines[0].depth = 19;
   shallow.bestLines[0].score.value.value = 2;
   await broadcast(shallow);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(deep.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(deep.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledTimes(1);
   const equalDepth = payload("a2");
   equalDepth.bestLines[0].depth = 20;
   equalDepth.bestLines[0].score.value.value = 33;
   await broadcast(equalDepth);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(equalDepth.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(equalDepth.bestLines);
   expect(fixtures.setScore).toHaveBeenLastCalledWith(equalDepth.bestLines[0].score);
   expect(fixtures.setScore).toHaveBeenCalledTimes(2);
   // Once this search has written the entry, its own revisions may be shallower.
   await broadcast(shallow);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(shallow.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(shallow.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledTimes(3);
   expect(fixtures.setScore).toHaveBeenLastCalledWith(shallow.bestLines[0].score);
 });
@@ -1150,24 +1168,28 @@ test("normal and threat entries coexist and threat toggles restore lines without
     store.set(threatFamily("tab-1"), true);
     await flush();
   });
-  const threat = payload("threat", { fen: `threat:${INITIAL_FEN}` });
+  const threat = payload("threat", {
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+  });
   threat.bestLines[0].depth = 30;
   threat.bestLines[0].score.value.value = -50;
   await broadcast(threat);
   expect(store.get(movesAtom()).size).toBe(2);
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(normal.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(normal.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledExactlyOnceWith(normal.bestLines[0].score);
   await act(async () => {
     store.set(threatFamily("tab-1"), false);
     await flush();
   });
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(normal.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(normal.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledTimes(1);
   await act(async () => {
     store.set(threatFamily("tab-1"), true);
     await flush();
   });
-  expect(store.get(movesAtom()).get(`threat:${INITIAL_FEN}:`)).toEqual(threat.bestLines);
+  expect(
+    store.get(movesAtom()).get("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1:"),
+  ).toEqual(threat.bestLines);
   expect(fixtures.setScore).toHaveBeenCalledTimes(1);
 });
 
@@ -1175,7 +1197,7 @@ test("only the first engine with lines writes the node score", async () => {
   fixtures.scoreOwner = "another-engine";
   await rerender();
   await broadcast(payload("generation-1"));
-  expect(store.get(movesAtom()).get("start-fen:")).toBeDefined();
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toBeDefined();
   expect(fixtures.setScore).not.toHaveBeenCalled();
 });
 
@@ -1194,8 +1216,8 @@ test("a synchronous launch failure marks its key, notifies once and retires the 
   });
   await rerender();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
-  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
-  fixtures.fen = "fen-b";
+  expect(store.get(noLinesAtom())?.searchedKey).toBe(`${INITIAL_FEN}:`);
+  fixtures.fen = positionB;
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
   expect(fixtures.getBestMoves).toHaveBeenCalledTimes(2);
@@ -1225,10 +1247,10 @@ test("line context survives listener remount and changes only for settings or ex
   root = createRoot(host);
   mounted = true;
   await rerender();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(result.bestLines);
-  fixtures.fen = "fen-b";
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(result.bestLines);
+  fixtures.fen = positionB;
   await rerender();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(result.bestLines);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(result.bestLines);
   await act(async () => {
     store.set(settingsAtom(), {
       ...store.get(settingsAtom()),
@@ -1237,7 +1259,7 @@ test("line context survives listener remount and changes only for settings or ex
     await flush();
   });
   expect(store.get(movesAtom()).size).toBe(0);
-  await broadcast(payload("generation-1", { fen: "fen-b" }));
+  await broadcast(payload("generation-1", { fen: positionB }));
   expect(store.get(movesAtom()).size).toBe(1);
   const replacement = {
     ...engine,
@@ -1256,7 +1278,7 @@ test("a payload move list must match by deep equality even when joined strings m
   await broadcast(payload("generation-1", { moves: ["e2e4,e7e5"] }));
   expect(store.get(movesAtom()).size).toBe(0);
   await broadcast(payload("generation-1", { moves: ["e2e4", "e7e5"] }));
-  expect(store.get(movesAtom()).get("start-fen:e2e4,e7e5")).toBeDefined();
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:e2e4,e7e5`)).toBeDefined();
 });
 
 test("a current local rejection without lines marks its key, notifies once and navigation clears the mark", async () => {
@@ -1268,13 +1290,13 @@ test("a current local rejection without lines marks its key, notifies once and n
     result.reject(failure);
     await flush();
   });
-  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe(`${INITIAL_FEN}:`);
   expect(store.get(movesAtom()).size).toBe(0);
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   expect(store.get(noLinesAtom())).toBeNull();
-  fixtures.fen = "start-fen";
+  fixtures.fen = INITIAL_FEN;
   await rerender();
   expect(store.get(noLinesAtom())).toBeNull();
 });
@@ -1291,7 +1313,7 @@ test("an empty local terminal payload followed by a null result marks completion
     result.resolve(null);
     await flush();
   });
-  expect(store.get(noLinesAtom())?.searchedKey).toBe("start-fen:");
+  expect(store.get(noLinesAtom())?.searchedKey).toBe(`${INITIAL_FEN}:`);
   expect(store.get(movesAtom()).size).toBe(0);
   expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
   // The same searched key gets a new attempt when its go mode changes.
@@ -1305,7 +1327,7 @@ test.each(["reject", "resolve"])(
     const result = deferred<null>();
     fixtures.getBestMoves.mockReturnValueOnce(result.promise);
     await rerender();
-    fixtures.fen = "fen-b";
+    fixtures.fen = positionB;
     await rerender();
     await act(async () => {
       if (outcome === "reject") result.reject(new Error("obsolete failure"));
@@ -1338,7 +1360,7 @@ test.each(["reject", "resolve"])(
       await flush();
     });
     expect(store.get(noLinesAtom())?.type).toBe(outcome === "reject" ? "failed" : undefined);
-    expect(store.get(movesAtom()).get("start-fen:")).toEqual(lines.bestLines);
+    expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(lines.bestLines);
   },
 );
 
@@ -1346,14 +1368,20 @@ test("usable terminal results and normal payloads clear a no-lines mark", async 
   const result = deferred<ReturnType<typeof remoteResult>>();
   fixtures.getBestMoves.mockReturnValueOnce(result.promise);
   await rerender();
-  store.set(noLinesAtom(), { type: "completed-without-lines", searchedKey: "start-fen:" } as any);
+  store.set(noLinesAtom(), {
+    type: "completed-without-lines",
+    searchedKey: `${INITIAL_FEN}:`,
+  } as any);
   await act(async () => {
     result.resolve(remoteResult(100));
     await flush();
   });
   expect(store.get(noLinesAtom())).toBeNull();
-  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remoteResult(100)[1]);
-  store.set(noLinesAtom(), { type: "completed-without-lines", searchedKey: "start-fen:" } as any);
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toEqual(remoteResult(100)[1]);
+  store.set(noLinesAtom(), {
+    type: "completed-without-lines",
+    searchedKey: `${INITIAL_FEN}:`,
+  } as any);
   await broadcast(payload("generation-1"));
   expect(store.get(noLinesAtom())).toBeNull();
 });
@@ -1431,12 +1459,12 @@ test.each([false, true])(
     const terminal = store.get(noLinesAtom());
     expect(terminal).toMatchObject({
       type: "failed",
-      searchedKey: "start-fen:",
+      searchedKey: `${INITIAL_FEN}:`,
       generation: "generation-1",
       snapshot: terminalFailure.engineFailure,
       retry: 0,
     });
-    expect(terminal!.fingerprint).toContain('"fen":"start-fen"');
+    expect(terminal!.fingerprint).toContain(`"fen":"${INITIAL_FEN}"`);
     expect(terminal!.context).toBe((store.get(movesAtom()) as any).context);
     await broadcast(payload("generation-1", { progress: 99 }));
     expect(store.get(progressAtom())).toBe(0);
@@ -1475,7 +1503,7 @@ test("P2 same-position Retry reserves a fresh generation via the serialized tran
   await broadcast(payload("generation-1"));
   expect(store.get(movesAtom()).size).toBe(0);
   await broadcast(payload("generation-retry"));
-  expect(store.get(movesAtom()).get("start-fen:")).toBeDefined();
+  expect(store.get(movesAtom()).get(`${INITIAL_FEN}:`)).toBeDefined();
 });
 
 test.each(["unload", "remove", "dispose", "context"])(
@@ -1514,7 +1542,7 @@ test("P2 equal-name and equal-path engines keep failures and other-tab state sep
   expect(store.get(noLinesAtom("tab-1", sibling.id))).toBeNull();
   expect(store.get(noLinesAtom("tab-2"))).toBe(neighbour);
   await broadcast(payload("generation-1", { engine: sibling.id }));
-  expect(store.get(movesAtom("tab-1", sibling.id)).get("start-fen:")).toBeDefined();
+  expect(store.get(movesAtom("tab-1", sibling.id)).get(`${INITIAL_FEN}:`)).toBeDefined();
 });
 
 test("P2 an old rejection cannot replace its successor's terminal diagnostic", async () => {
@@ -1522,7 +1550,7 @@ test("P2 an old rejection cannot replace its successor's terminal diagnostic", a
   const current = deferred<null>();
   fixtures.getBestMoves.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
   await rerender();
-  fixtures.fen = "fen-b";
+  fixtures.fen = positionB;
   await rerender();
   await act(async () => {
     current.reject(terminalFailure);
@@ -1535,6 +1563,162 @@ test("P2 an old rejection cannot replace its successor's terminal diagnostic", a
   });
   expect(store.get(noLinesAtom())).toBe(terminal);
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
+});
+
+test.each(["resolve", "empty", "reject"])(
+  "unavailable threat stops the exact generation and suppresses late %s and events until recovery",
+  async (outcome) => {
+    const result = deferred<ReturnType<typeof remoteResult> | null>();
+    fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+    store.set(threatFamily("tab-1"), true);
+    await rerender();
+    const search = analysisSearch(INITIAL_FEN, [], true);
+    expect(fixtures.getBestMoves.mock.calls[0][3]).toMatchObject({
+      fen: search.searchingFen,
+      moves: [],
+    });
+    const oldPayload = payload("generation-1", { fen: search.searchingFen! });
+    await broadcast(oldPayload);
+    const remembered = store.get(movesAtom());
+    expect(remembered.get(search.key!)).toEqual(oldPayload.bestLines);
+    fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+    expect(analysisSearch(fixtures.fen, fixtures.moves, true).position?.isCheck()).toBe(true);
+    await rerender();
+    await settleTransition();
+    expect(fixtures.stopEngine).toHaveBeenCalledExactlyOnceWith(engine, "tab-1", "generation-1");
+    expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
+    expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
+    await broadcast({ ...oldPayload, progress: 99 });
+    await act(async () => {
+      if (outcome === "resolve") result.resolve(remoteResult(99));
+      else if (outcome === "empty") result.resolve(null);
+      else result.reject(new Error("retired search failure"));
+      await flush();
+    });
+    expect(store.get(movesAtom())).toEqual(remembered);
+    expect(store.get(noLinesAtom())).toBeNull();
+    expect(store.get(progressAtom())).toBe(0);
+    expect(fixtures.setScore).not.toHaveBeenCalled();
+    expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(store.get(settingsAtom()).enabled).toBe(true);
+    expect(store.get(threatFamily("tab-1"))).toBe(true);
+    await act(async () => store.set(threatFamily("tab-1"), false));
+    expect(fixtures.getBestMoves).toHaveBeenCalledTimes(2);
+    expect(fixtures.getBestMoves.mock.calls[1][3]).toMatchObject({
+      fen: INITIAL_FEN,
+      moves: fixtures.moves,
+    });
+    await act(async () => store.set(threatFamily("tab-1"), true));
+    expect(fixtures.getBestMoves).toHaveBeenCalledTimes(2);
+    fixtures.moves = [];
+    fixtures.prepareEngineSearch.mockResolvedValueOnce("recovered");
+    await rerender();
+    expect(fixtures.getBestMoves).toHaveBeenCalledTimes(3);
+    await broadcast(payload("recovered", { fen: search.searchingFen!, progress: 75 }));
+    expect(store.get(progressAtom())).toBe(75);
+  },
+);
+
+test.each(["local", "chessdb", "lichess"] as const)(
+  "initially unavailable threat never dispatches or prepares %s analysis",
+  async (type) => {
+    fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+    store.set(threatFamily("tab-1"), true);
+    store.set(enginesAtom, [type === "local" ? engine : { ...chessdbEngine, type }] as any);
+    await rerender();
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(fixtures.prepareEngineSearch).not.toHaveBeenCalled();
+    expect(fixtures.getBestMoves).not.toHaveBeenCalled();
+    expect(fixtures.chessdbGetBestMoves).not.toHaveBeenCalled();
+    expect(fixtures.lichessGetBestMoves).not.toHaveBeenCalled();
+    expect(fixtures.setScore).not.toHaveBeenCalled();
+  },
+);
+
+test("unavailable threat rejects a late preparation failure without terminal publication or notification", async () => {
+  store.set(threatFamily("tab-1"), true);
+  const preparation = deferred<string>();
+  fixtures.prepareEngineSearch.mockReturnValueOnce(preparation.promise);
+  await rerender();
+  fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+  await rerender();
+  await act(async () => {
+    preparation.reject(new Error("retired preparation failure"));
+    await flush();
+  });
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
+  expect(fixtures.getBestMoves).not.toHaveBeenCalled();
+  expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(store.get(noLinesAtom())).toBeNull();
+  expect(store.get(progressAtom())).toBe(0);
+});
+
+test("unavailable threat retires a late preparation and retains the actual warm owner for cleanup", async () => {
+  store.set(threatFamily("tab-1"), true);
+  await rerender();
+  const preparation = deferred<string>();
+  fixtures.prepareEngineSearch.mockReturnValueOnce(preparation.promise);
+  fixtures.moves = ["e2e4"];
+  await rerender();
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
+  fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+  await rerender();
+  await act(async () => {
+    preparation.resolve("late-preparation");
+    await flush();
+  });
+  await settleTransition();
+  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "late-preparation");
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
+  expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
+  expect(store.get(noLinesAtom())).toBeNull();
+  expect(store.get(progressAtom())).toBe(0);
+  await unmount();
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+});
+
+test.each(["chessdb", "lichess"] as const)(
+  "unavailable threat starts no %s request and rejects a retired remote completion",
+  async (type) => {
+    const remote = { ...chessdbEngine, type };
+    const getBestMoves =
+      type === "chessdb" ? fixtures.chessdbGetBestMoves : fixtures.lichessGetBestMoves;
+    const result = deferred<ReturnType<typeof remoteResult>>();
+    getBestMoves.mockReturnValueOnce(result.promise);
+    store.set(enginesAtom, [remote] as any);
+    store.set(threatFamily("tab-1"), true);
+    await rerender();
+    fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+    await rerender();
+    await act(async () => {
+      result.resolve(remoteResult(99));
+      await flush();
+    });
+    expect(getBestMoves).toHaveBeenCalledTimes(1);
+    expect(fixtures.prepareEngineSearch).not.toHaveBeenCalled();
+    expect(store.get(movesAtom("tab-1", remote.id)).size).toBe(0);
+    expect(store.get(progressAtom("tab-1", remote.id))).toBe(0);
+    expect(store.get(noLinesAtom("tab-1", remote.id))).toBeNull();
+    expect(fixtures.setScore).not.toHaveBeenCalled();
+    expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+    fixtures.moves = [];
+    await rerender();
+    expect(getBestMoves).toHaveBeenCalledTimes(2);
+  },
+);
+
+test("a real stop failure on unavailable navigation still reports cleanup failure without starting another search", async () => {
+  store.set(threatFamily("tab-1"), true);
+  await rerender();
+  const failure = new Error("native stop failed");
+  fixtures.stopEngine.mockRejectedValueOnce(failure);
+  fixtures.moves = ["e2e4", "d7d5", "f1b5"];
+  await rerender();
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
+  expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
+  expect(store.get(noLinesAtom())).toBeNull();
 });
 
 function payload(generation: string, overrides: Partial<BestMovesPayload> = {}): BestMovesPayload {
@@ -1552,7 +1736,7 @@ function payload(generation: string, overrides: Partial<BestMovesPayload> = {}):
     ],
     engine: overrides.engine ?? "engine-1",
     tab: "tab-1",
-    fen: overrides.fen ?? "start-fen",
+    fen: overrides.fen ?? INITIAL_FEN,
     moves: overrides.moves ?? [],
     progress: overrides.progress ?? 50,
     generation,

@@ -1,6 +1,6 @@
 import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
-import { engineTerminalFamily, enginesAtom } from "@/state/atoms";
+import { engineTerminalFamily, enginesAtom, threatFamily } from "@/state/atoms";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { createTreeStore } from "@/state/store/tree";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
@@ -8,6 +8,7 @@ import { engineIdentity, engineLineContext } from "./analysisLineContext";
 import { afterEach, expect, test, vi } from "vitest";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import AnalysisPanel, { applyEngineOrder, EngineSummary } from "./AnalysisPanel";
+import { analysisSearch } from "./analysisSearch";
 
 const reorder = vi.hoisted(() => ({
   reconcile: vi.fn(),
@@ -152,6 +153,24 @@ test("EngineSummary uses the shared dimmed fallback instead of ??? until a curre
   );
   expect(h.host.querySelector("[inert]")).toBeNull();
   expect(h.host.textContent).toContain("0.55");
+});
+
+test("EngineSummary clears historical threat evaluation while unavailable and restores the legal key", async () => {
+  h = engineDisplayHarness();
+  h.store.set(threatFamily("display-tab"), true);
+  h.store.set(h.memoryAtom, new Map([[analysisSearch(INITIAL_FEN, [], true).key!, displayLines]]));
+  const summary = (moves: string[]) => (
+    <EngineSummary engine={displayEngine} fen={INITIAL_FEN} moves={moves} shorten={false} i={0} />
+  );
+  await h.render(summary([]));
+  expect(h.host.textContent).toContain("0.34");
+  await h.render(summary(["e2e4", "d7d5", "f1b5"]));
+  expect(h.host.textContent).toContain("???");
+  expect(h.host.textContent).not.toContain("0.34");
+  expect(h.host.textContent).not.toContain("Board.Analysis.EngineFailed");
+  expect(h.host.querySelector("[inert]")).toBeNull();
+  await h.render(summary([]));
+  expect(h.host.textContent).toContain("0.34");
 });
 
 test.each([false, true])(
