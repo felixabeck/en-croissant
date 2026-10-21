@@ -554,9 +554,46 @@ async function listFixtureEntries(invoke) {
   return listing.entries;
 }
 
-// WD0-WD7 exercise release IPC at disposable Files inputs. Native tests own injected registry,
-// sync and engine-retirement failures. No live engine is registered by this scenario.
-// Runtime staging receipts must be added only after root observes the actual failing runs.
+// WD0-WD7 exercise real release IPC against disposable Files inputs. No live engine is registered
+// by this scenario. Native actor tests cover injected registry, sync and retirement failure paths.
+// Root measured staging on 2026-10-22. Evidence directory:
+// /tmp/build-fd2492e2-efa0-4ddf-9115-82d4cf3614a0. Each stage-<case>.exit is 1, the verifier's
+// documented failure status. Each run used unchanged assertion code. An external Node debugger
+// changed only harness-owned temporary filesystem inputs and restored them. Each stage log records
+// its STAGE inputs restored marker.
+// stage-registration.log moved the freshly created primary aside before registration. WD0 is its
+// direct receipt. Later WD failures are dependencies, not additional direct receipts.
+// stage-success.log removed the empty non-regular sidecar before real deletion IPC and restored it
+// before listing. It directly fails WD1, WD2 and WD3 on the unexpected successful command. WD7's
+// missing-rejection guard also fails. Two unrelated metadata assertions failed in that run and are
+// not staging evidence. The later disk and listing runs did not repeat those failures.
+// stage-disk.log recreated the primary immediately before WD4 and removed that recreation. It
+// temporarily moved the unrelated fixture for WD5, then restored it. Exactly WD4 and WD5 fail and
+// all other checks pass.
+// stage-listing.log temporarily moved the owned workspace before the post-delete native listing
+// and restored it before assertions. Exactly WD6 fails and all other checks pass.
+// Each case's .exit records status 1. These exact check messages appear in the stage logs:
+// FAIL  WD0 deletion fixture acquires a real registered handle before sidecar refusal
+// FAIL  WD1 completed deletion rejects with a structured backend error
+// FAIL  WD2 ordinary post-commit sidecar failure reports partial-removal
+// FAIL  WD3 completed deletion reports exactly one removed primary target
+// FAIL  WD4 post-commit rejection leaves the primary file deleted
+// FAIL  WD5 post-commit deletion preserves the unrelated Files fixture
+// FAIL  WD6 subsequent native listing excludes the deleted handle
+// FAIL  WD7 serialized deletion rejection contains no private fixture path
+// WD7's private-path leak branch is argued coverage. Sanitized native errors cannot contain a
+// private path through a disposable filesystem input, so failing its missing-rejection guard does
+// not stage a leak. Native wire-sanitization tests cover safe construction.
+// WD3's wrong-numeric-count branch is not independently staged by filesystem input. Native
+// physical-count tests cover it.
+// native-old.log and native-old.exit show WD2 and WD3 failing with status 1 after the actual original
+// Git workspace production hunks were restored, while all candidate tests stayed byte-identical.
+// Exactly those two app checks failed. Root restored the exact source. This is the real-product
+// revert witness, separate from the filesystem-only assertion matrix. After exact source
+// restoration and rebuilding, native-restored.log reports all checks passed at exit 0. Every
+// WD0-WD7 check passed and no metadata failure recurred. The canonical
+// gate-native-revert.UjhVXT/completion.record records 0 native-revert
+// 62f64d42c7b55bd510e437250fb52ba8a2435b01. Root inspected native-restored.png.
 async function verifyWorkspaceDeletionOutcome(session, filesWorkspace) {
   const name = "verify-deletion-outcome";
   const primary = join(filesWorkspace, `${name}.pgn`);
