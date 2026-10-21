@@ -14389,12 +14389,19 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Practice log cards may number the opponent's previous move as the next move
 
-* **ID:** f-20261004-23 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261004-23 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** e4b79fe4-2380-43d2-a016-dabae3856113
 * **Where:** `src/components/panels/practice/PracticePanel.tsx` ~1355-1360, the review-log cards: `node = getNodeAtPath(root, findFen(log.fen, root))`, label `${Math.floor(node.halfMoves / 2) + 1}${node.halfMoves % 2 === 0 ? ". " : "... "}${node.san}` (being routed through `formatMoveNumber(node.halfMoves + 1)` with identical output on branch `variation-picker`).
 * **Suspected defect:** the number is the one for the move *after* `node` (ply `halfMoves + 1`), but the SAN shown is `node.san`, the move that *led to* `node`. If `log.fen` is the position the user had to answer (as in the deck cards just above, which correctly print `c.answer` with the same number), a log after `1.e4 e5` reads "2. e5" instead of "1... e5" or "2. <answer>". Not verified which position `log.fen` holds; the deck cards at ~1231 use the same numbering with the answer SAN and look correct.
 * **Why deferred:** noticed while extracting the shared move-number formatter for the variation-chooser review (2026-10-04); the extraction deliberately preserved today's output. Practice panel area, outside that change.
 * **Proof sought:** establish what `log.fen` denotes from the log writer, then a render test of one log card with a known tree asserting the exact label.
+
+The actual review writer stores the position being answered. LogsModal now pairs its previous node SAN with that move's own ply, preserving the correct separate positions-card answer numbering. Actual known-tree render tests prove the formerly suspected label defect and its correction.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"87477b878ddcda47f4b75487c3575f952013eaa22a828439898caa3235816d77","header_sha256":"d3006ba2aabd3ebb21fd14b809f0eb1c29c32c5a802dbdec0678bda9720ec912","header_status":"handled","input_sha256":"2a9b419ebe600637571d913aa375fe7b4075a21226aff8765513aa412d7135be","kind":"mutation-receipt","operation":"ec458514bc610ae65fef0a3ce6092a7ea76b90845a3675e0ffa0a7c2f6b896b2","options":{"section":null},"request_id_sha256":null,"results":["f-20261004-23"],"target":"f-20261004-23","v":1} -->
 
 ---
 
