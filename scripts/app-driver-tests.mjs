@@ -6,6 +6,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { verifyConversionCancellationContract } from "./verify-app.mjs";
 import {
@@ -128,6 +129,70 @@ test("prerequisites check the selected application even when the default binary 
     (error) => error.message.includes(`${APP_BINARY} — build it with: pnpm build`),
   );
 });
+
+for (const cpuRendering of [undefined, "0"]) {
+  test(`startDriver spawns with CPU rendering ${cpuRendering === undefined ? "enabled by default" : "explicitly disabled"}`, async (t) => {
+    const variable = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
+    const hadVariable = Object.hasOwn(process.env, variable);
+    const originalValue = process.env[variable];
+    const child = {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null,
+      signalCode: null,
+    };
+    let driver;
+    let profile;
+    t.after(async () => {
+      try {
+        await driver?.shutdown();
+        assert.equal(child.stdout.destroyed, true);
+        assert.equal(child.stderr.destroyed, true);
+        if (profile) assert.equal(fs.existsSync(profile), false);
+      } finally {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+        if (hadVariable) process.env[variable] = originalValue;
+        else delete process.env[variable];
+      }
+    });
+
+    if (cpuRendering === undefined) delete process.env[variable];
+    else process.env[variable] = cpuRendering;
+    const spawn = t.mock.method(childProcess, "spawn", () => child);
+    let statusRequests = 0;
+    const fetch = t.mock.method(globalThis, "fetch", async () => {
+      if (++statusRequests === 1) {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:4444");
+      }
+      return { ok: true, body: null };
+    });
+    syncBuiltinESMExports();
+    driver = await import(`./app-driver.mjs?cpu-rendering=${cpuRendering ?? "default"}`);
+    await driver.startDriver({ waylandDisplay: "offscreen-test-display" });
+
+    assert.equal(spawn.mock.calls.length, 1);
+    const [command, args, options] = spawn.mock.calls[0].arguments;
+    profile = options.env.HOME;
+    assert.equal(command, "tauri-driver");
+    assert.deepEqual(args, ["--port", "4444", "--native-port", "4445"]);
+    assert.equal(options.env[variable], cpuRendering ?? "1");
+    assert.equal(options.env.WAYLAND_DISPLAY, "offscreen-test-display");
+    assert.equal(options.env.GST_PLUGIN_FEATURE_RANK, "fakeaudiosink:MAX");
+    assert.equal(options.env.LANG, "en_US.UTF-8");
+    assert.equal(options.env.LC_ALL, "en_US.UTF-8");
+    assert.notEqual(profile, process.env.HOME);
+    assert.ok(profile.startsWith(join(tmpdir(), "chessfable-verify-")));
+    assert.equal(fs.existsSync(profile), true);
+    for (const name of ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+      assert.equal(Object.hasOwn(options.env, name), false);
+    }
+    assert.deepEqual(
+      fetch.mock.calls.map(({ arguments: [url] }) => url),
+      ["http://127.0.0.1:4444/status", "http://127.0.0.1:4444/status"],
+    );
+  });
+}
 
 async function webdriverServer() {
   const server = createServer(async (request, response) => {

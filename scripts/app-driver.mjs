@@ -203,6 +203,11 @@ export async function startDriver({ waylandDisplay }) {
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
     GST_PLUGIN_FEATURE_RANK: "fakeaudiosink:MAX",
+    // WebKitGTK 2.52.6 has an EGL/Skia GPU-worker teardown race
+    // (webkit.org/b/305909, webkit.org/b/315577). Default to CPU painting only
+    // for this off-screen verifier. Remove the default after the installed
+    // WebKit contains those fixes and passes shutdown validation.
+    WEBKIT_SKIA_ENABLE_CPU_RENDERING: process.env.WEBKIT_SKIA_ENABLE_CPU_RENDERING ?? "1",
   };
 
   try {
