@@ -23,6 +23,22 @@
 // rebuilt producer exit 0. It is not the six-assertion staging run.
 // Earlier diagnostic failure logs are incomplete and are not matrix evidence. Root ordinary
 // recovery and final browser verification are separate and are not claimed by this evidence.
+// EP1 settlement staging: 2026-10-21, existing release producer f572a681.
+// Evidence directory: /tmp/ep1-native-proof.O9Cfzs, including retained input-only injections.
+// fixed-absent-real.log printed the following distinct failure and fixed-absent-real.exit records 1:
+// FAIL  EP1-card successful Name edit publishes the saved engine card
+// A disposable MutationObserver withheld the actual selected card text node while retaining
+// later React writes. The unchanged observer saw "Scratch EP1 withheld card" after the existing
+// 20000 ms timeout, with correct input and decoded storage. EP1-storage and every EP2 check passed.
+// The observer was disconnected and the captured full card text restored before EP2.
+// Source-only Git control: wait-condition.patch was reversed and restored cleanly, without offsets.
+// old-delay.log and old-delay.exit record EP1-card FAIL at exit 1 after a 261 ms observation.
+// fixed-delay.log and fixed-delay.exit record all checks passed at exit 0 after a 3112 ms observation.
+// Both scratch runs used the same input-only 3000 ms delayed DOM restoration. Their only source
+// difference was the card equality below. Production observers and assertions stayed byte-identical.
+// Every DOM observer, timer and override was restored. The real harness removed disposable profiles.
+// The six historical assertion receipts above remain intact. New staging covers only EP1-card,
+// with no new staging claim for inherited non-EP assertions or error exits.
 import { existsSync } from "node:fs";
 import {
   appendFile,
@@ -3752,6 +3768,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       return (
         publicationStoredName(snapshot) === savedEngineName &&
         snapshot.input === savedEngineName &&
+        snapshot.card === savedEngineName &&
         snapshot
       );
     },
