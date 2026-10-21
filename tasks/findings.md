@@ -17636,3 +17636,33 @@ Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-
 
 This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"ed192c75cbb39b7e7be02a6635e9c7fb5eb1642896598b8b68377feddd7a1205","header_sha256":"c598ea5c8b30785a5a6fb1f5ef5d93ea9697cccdaf916a22a06322d2f8edb4a2","header_status":"handled","input_sha256":"62dab6caf6f27a02705461a1265bf8bc5521c8ea72c3ab8bb1ef6f3f9f9ff195","kind":"mutation-receipt","operation":"e0a255cac53a69ba10a7319471759044d68b4adb2e00dfc4f039368fc3f38a10","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-05"],"target":"f-20261021-05","v":1} -->
+
+---
+
+## 2026-10-21 — filed through the inbox spool
+
+### Three upstream macOS Test jobs are cancelled on c3158cb5
+
+* **ID:** f-20261021-06 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 8b1d9c57-ef43-495b-96b3-1dd931c9a194 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-8b1d9c57-ef43-495b-96b3-1dd931c9a194-1.jsonl
+* **Impact class:** tooling
+* **Where:** GitHub Test run 39608148446 on c3158cb5c9b6d179b40d546e97b6f250cb5010df, jobs 119249652554 (rust-macos-test), 119249652624 (macOS ARM platform) and 119249652781 (macOS Intel platform).
+* **Defect:** The fork-specific `GH_REPO=felixabeck/en-croissant pnpm ci:remote:check` exited 1 on 2026-10-21 and reported these three newest completed jobs as cancelled. Release policy refuses the next ordinary push without successful replacement evidence.
+* **Spotted outside diff:** yes, upstream release prerequisite found during f-20261001-03.
+* **Failure scenario:** An ordinary push checks the fork's newest completed Test jobs, receives the three cancellations and refuses publication of the reviewed threat-analysis fix.
+* **Proof:** Inspect the cancelled job logs and check-run annotations, use the existing hosted recovery route once if permitted, then verify successful replacement conclusions on the same upstream SHA and a green fork-specific remote check before publication.
+* **Related:** f-20261019-06 records prior macOS runner-acquisition cancellations and recovery on another SHA. f-20261008-14 records an earlier ARM cancellation. Their Root is absent and no common cause has yet been established. f-20261006-02 already tracks incorrect default-repository selection by the remote checker, which is distinct from these explicitly selected fork results.
+* **Found by:** Codex pinned f-20261001-03 drain, 2026-10-21. Plan authorship and arbitration shared one context, detection ran on the same model family as the code.
+
+### Native verifier rejects the saved engine card's shortened Name label
+
+* **ID:** f-20261021-07 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 8b1d9c57-ef43-495b-96b3-1dd931c9a194 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-8b1d9c57-ef43-495b-96b3-1dd931c9a194-1.jsonl
+* **Impact class:** tooling
+* **Where:** scripts/verify-app.mjs:3746-3767, EP1-card in canonical native-proof.mLI5xy on source f572a681 and HEAD 58332e94, 2026-10-21.
+* **Defect:** The real-app verifier exited 1 only on EP1-card successful Name publication. Its observed card string was Fixture saved publicati while the input string was Fixture saved publication. EP1-storage, all four EP2 refused-write checks and the rest of the native proof passed. The observation must be traced against the shipped card representation before changing either the product or the oracle.
+* **Spotted outside diff:** yes, required existing real-app proof for f-20261001-03.
+* **Failure scenario:** An ordinary verify:app run saves the fixture engine name, receives a shortened visible card label and refuses verification despite the successful persisted-name and input observations.
+* **Proof:** Reproduce through the real application, preserve full-name persistence and correct publication assertions, stage each changed assertion against a disposable real input and verify its documented failure status, then pass the full real-app run. The mandatory review-tests lens must confirm the oracle still detects failed publication.
+* **Related:** f-20260920-16 concerns older verifier assertions and is rejected. f-20261019-05 repaired a workspace-envelope fixture in the same verifier, a different mechanism. No shared Root is evidenced. The one pending macOS capacity entry is unrelated.
+* **Found by:** Codex f-20261001-03 drain, 2026-10-21. Plan authorship and arbitration shared one context, detection ran on the same model family as the code.
