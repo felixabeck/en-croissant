@@ -9410,3 +9410,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The installed Diesel 2.1.4 raw SQLite open maps sqlite3_open_v2 status to BadConnection(String) and drops the code. ConnectionError separately identifies invalid C strings, URLs and configuration failures. The existing safe Io and Diesel variants preserve the honest available distinction without guessing. The actual snapshot-directory refusal already reproduces a host open failure in db/repository.rs and can prove the new mapping. Reverse by changing this one mapper, supported by evidence requiring a different classification.
 * **Decided by:** Codex, full auto drain fd2492e2-efa0-4ddf-9115-82d4cf3614a0, co-located lens fix after adopted phase 1. Plan authorship and arbitration share one context. Detection and code use the same OpenAI model family in separate sessions. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ad54066fb533e8213bca11023b6b50db0971403158b4245f60017ad2823e2904","input_sha256":"6cc753290f076431bb38da5739f2e6233f50dcf773768e973e3d8ce48c973980","kind":"mutation-receipt","operation":"b37b165a55b087ca8f8f8c48d5cf74f738d71b661dcb35286b7d9e393771d057","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-02 — Where is engine root failure provenance established?
+
+* **Question:** How can engine installation label root read/search failures without labelling child, write-only or transaction failures?
+* **Governs:** f-20261004-21
+* **Chosen:** Producer-local provenance at engine root acquisition and the existing shared post-failure probe at mixed filesystem substeps, with independently authorized read/search-only evidence when the original open requested write access.
+* **Rejected:** Catching the entire install, labelling generic resolve errors, or treating writable-open denial as read denial.
+* **Reason:** These alternatives mislabel child, authority, persistence or write-only failures. Reversal path: another independently proven root-only discriminator preserving the public error shape.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, technical judgment · **Superseded-by:** -
+
+### d-20261022-03 — How does puzzle listing expose unreadable selected roots?
+
+* **Question:** Should puzzle listing reuse its existing root probe and renderer guidance?
+* **Governs:** f-20261004-21
+* **Chosen:** Reuse the shared listing probe with PuzzleRead and the existing renderer copy.
+* **Rejected:** Reopening every active root, new pickers or new labels.
+* **Reason:** d-20261003-21, d-20261003-22 and d-20261004-40 already establish the contract. Reversal requires new product authority or evidence invalidating those precedents.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, technical judgment · **Superseded-by:** -
+
+### d-20261022-04 — Which later engine use belongs to the install error contract?
+
+* **Question:** Does installed-executable registration belong in this root failure fix?
+* **Governs:** f-20261004-21
+* **Chosen:** Include registration's root acquisition, exclude configuration and UCI failures.
+* **Rejected:** Ending diagnosis at destination acquisition or wrapping configuration and UCI errors.
+* **Reason:** Add and Upgrade still access the chosen root during registration. Reversal path: evidence that registration cannot encounter root access failure.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, technical judgment · **Superseded-by:** -
+
+### d-20261022-05 — How is actual root-error transport verified?
+
+* **Question:** How do tests prove native root labels reach existing renderer guidance?
+* **Governs:** f-20261004-21
+* **Chosen:** Extend existing tests and verify:app with disposable selected roots, staged assertion failures and source-only fix-revert proof.
+* **Rejected:** A second driver or mocked browser IPC as native evidence.
+* **Reason:** The observed gap is OS-to-IPC-to-copy proof. A failed verification preserves the previous app and user data. Removal path: delete the added scenario and its evidence when the obligation disappears.
+* **Decided by:** Codex, adopting the reviewed full-auto plan, technical judgment · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"99f4341f8b1c368faad7c39872fba854dbebdf090db98e1e2262b13226ae6a8f","input_sha256":"812594d25d73f1289b831dab0e3686afaec9956d33c923ee96cf06ebdb4a0f9f","kind":"mutation-receipt","operation":"c54102a69f83f1b9acff6474259341b2242f925cb7e97e91f482208937e68751","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-02","d-20261022-03","d-20261022-04","d-20261022-05"],"target":"decisions-ledger","v":1} -->
