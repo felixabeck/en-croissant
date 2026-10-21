@@ -1,5 +1,7 @@
 # `build` run ledger
 
+Recovery update, 2026-10-21: the f-20261001-03 row below is the original blocked checkpoint. Supervisor exit commit 9e5fa3bc merged its two inbox entries as f-20261021-06 and f-20261021-07. The verifier entry is handled, so neither entry still awaits merge or ID allocation. Manual Codex recovery subsequently committed the Intel macOS host repair 15b40ffe and fork/workflow-generation checker repair 5d577be0. Review R1 found one test-assertion gap and three records corrections, which are being repaired. Final release gates, pushed-SHA hosted proof and installation remain pending at this recovery update. Original plan authorship and arbitration shared one context, and detection ran on the same OpenAI model family as the code in separate sessions.
+
 One line per `build` run in this repository. Everything else about a run can be reconstructed
 afterwards from the transcripts (`~/.claude/scripts/agent-usage.py`) or from git. This file exists
 for the one thing that cannot: **whether plan review caught defects earlier than the diff review
