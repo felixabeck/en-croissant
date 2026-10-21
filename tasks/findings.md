@@ -17331,7 +17331,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### Reselecting a source can leave legacy identity evidence blocking games whose IDs are explicit in the new PGN
 
-* **ID:** f-20261020-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261020-04 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 7328103f-da3c-4f90-9686-4abe6e2beeb1
 * **Impact class:** behaviour
 * **Follow-up of:** f-20261004-15
@@ -17343,6 +17343,13 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Related:** f-20261020-02 concerns physical player-tag replacement, a different cause. d-20261020-10 requires current-source revalidation of durable identity evidence. This finding does not reverse that decision.
 * **Evidence:** Root preserved the native worker's actual pre-fault baseline in `/tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1/native-inspection-snapshot-r1/`, verifying all seven hashes against the producer's fault-baseline-hashes.json before and after capture. legacy.rs SHA256ef155e526d1a774c04ed27f50d728d82db35d5f6629a68492148932cfa74780d, batch.rs SHA256033486cb7632e2067ed1ab032c27ebccb6ec81fc68cad4eab9c94cc5a675a9e2. The native writer remains active and may correct this before its final handoff.
 * **Found by:** Root inspection of the preserved production candidate. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+Durable source-qualified one-to-one legacy evidence is revalidated against the currently selected PGN. Explicit current provider IDs resolve without stale legacy ambiguity, preserving genuine local edits and source-authority refusal.
+
+Implementation and cumulative review are preserved in tasks/handoffs/2026-10-20-f-20261004-15-review.md, the original /tmp/build-7328103f-da3c-4f90-9686-4abe6e2beeb1 archive and /tmp/chessfable-drain-recovery-20261021. Current committed source closure is recorded by review-r6 and its root dispositions. The recovery integration passed 2613 backend tests with two existing ignored cases and 4869 frontend cases, bindings generation/check, localization extraction, coverage ratchets, canonical pre-review and contract checks. Current R5 preservation and runtime/browser attempts and their exact completion records are named in the durable handoff. Existing source-derived counterproofs retain their source revision and limitations. No baseline, floor or budget was weakened.
+
+This entry closes the repaired source obligation after review. Final clean publication gates, verified ordinary push, required hosted platform jobs and local installation remain subsequent release obligations at closure time. Separate scanner and position-identity joiners are outside this closure. Plan authorship and arbitration share one root context. Detection and code use fresh Codex sessions within the same OpenAI model family.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"8c197d69dacad369aad7b0db517eb30071e7ca26e06be71c0181c0b1376f8891","header_sha256":"4d376df3d189fbd64c28446bfbb33cbcd1ce6b82d283792831fcb98b862cb512","header_status":"handled","input_sha256":"faaf8a9d68e075d3c2753ed6ad5b0d2570f064a4177aad6b27045b1a17b73788","kind":"mutation-receipt","operation":"12fa7c3dfcbb4e3ccced06077e61a8a9a9cf409df89b3d8436b9adb68b8f6b7e","options":{"section":null},"request_id_sha256":null,"results":["f-20261020-04"],"target":"f-20261020-04","v":1} -->
 
 ---
 
