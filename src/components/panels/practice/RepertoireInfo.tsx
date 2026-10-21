@@ -105,7 +105,6 @@ function RepertoireInfo() {
       { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
     >
   >(new Map());
-  const [currentPosLoading, setCurrentPosLoading] = useState(false);
   const positionRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     positionRequest.current?.abort();
@@ -207,7 +206,6 @@ function RepertoireInfo() {
     positionRequest.current?.abort();
     const controller = new AbortController();
     positionRequest.current = controller;
-    setCurrentPosLoading(true);
     fetchPositionMoves(referenceDb, boardFen, controller.signal)
       .then((data) => {
         if (controller.signal.aborted) return;
@@ -217,11 +215,9 @@ function RepertoireInfo() {
           next.set(boardFen, data);
           return next;
         });
-        setCurrentPosLoading(false);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
-        setCurrentPosLoading(false);
         notifyUnlessCancelled(commonErrorRef.current, error);
       });
     return () => controller.abort();
@@ -501,7 +497,6 @@ function RepertoireInfo() {
         coverageMap={coverageMap}
         coverageStatus={coverageStatus}
         onRetryCoverage={retryCoverage}
-        currentPosLoading={currentPosLoading}
         root={root}
         nextGap={nextGap}
         biggestGap={biggestGap}
@@ -578,7 +573,6 @@ function MovesView({
   coverageMap: Map<string, number> | undefined;
   coverageStatus: CoverageStatus;
   onRetryCoverage: () => void;
-  currentPosLoading: boolean;
   root: TreeNode;
   nextGap: number[] | null;
   biggestGap: number[] | null;
