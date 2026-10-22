@@ -9490,3 +9490,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** replace the internal handoff while preserving O1–O4 and every native regression.
 * **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f3246d50b203ddeacc641618a53a7208741914de8633857d0ef27e4ed3b75893","input_sha256":"ab0210a86031be99a37215e90289a80ad0c2623a49cfde90b6d1b42e1f4dfd33","kind":"mutation-receipt","operation":"10ddf823141b8768cbc8ad93a7892eb18336f963a0b05fc70bd3c2447426fe6c","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-10 — What happens if Unix cannot recover the created descriptor identity?
+
+* **Governs:** f-20261004-24
+* **Question:** What happens if Unix cannot recover the created descriptor identity?
+* **Chosen:** one bounded observation, then preserve the unknown name and combine the primary and cleanup failure.
+* **Rejected:** blind unlink or treating a pathname observation as provenance.
+* **Reason:** no evidence authorizes deleting a replacement.
+* **Reversal path:** a measured equivalent descriptor-bound deletion primitive can replace the guarded name removal, preserving the d-20260906-01 limit until then.
+* **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b49396e6ed4dc724316c50c34942e0dc231419e738f1e85b3ca912e198991552","input_sha256":"a8505cc793bc883bce909d9e323047811d4be458ea1f6a25812c44e1248e68fc","kind":"mutation-receipt","operation":"ef8bb10b088e6b585711a8b430bcf00129effb69323fedbec4f7f9726d6e59b2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-10"],"target":"decisions-ledger","v":1} -->
