@@ -9523,3 +9523,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** replace the native observation with an existing equivalent diagnostic carrier only when a regression proves both causes survive the real boundary without leaking into user-facing messages.
 * **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1f5c07d663c7829d0bd1a37165d2205ae0b218ea3ec683c1b0072fd086d04407","input_sha256":"bcfbee6fa7a59abdfbf7d227ba0f1642e0c0a2392d51ea870ad9afc798419a1b","kind":"mutation-receipt","operation":"96d3f52a5ccd998b985bd063a9d62dadab2f7923c7ed47fcba934787e3dbdfc2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-12"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-13 — How does Windows open-or-create distinguish creation ownership?
+
+* **Governs:** f-20261004-24
+* **Question:** How does Windows open-or-create distinguish creation ownership?
+* **Chosen:** open an existing file normally, and route confirmed absence through the shared exclusive creator, handling creation collisions through existing-file admission with bounded competing-change behavior.
+* **Rejected:** keeping FILE_OPEN_IF while discarding its outcome, adding deletion access to all opens or broadening the low-level NT result contract for every traversal caller.
+* **Reason:** only exclusive success proves ownership and the existing shared creator already carries compensation through admission.
+* **Reversal path:** an outcome-carrying native adapter may replace this dispatch after equivalent cleanup, existing-byte preservation and bounded-race proof, with no loss of authority checks.
+* **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"935baeadff3f2de91bca6912d40bb905c36a519a3248920c4a05ff2c6c121fb0","input_sha256":"779eb5cee95ada28ebdee4b9c0daa58bbd7cd4331607fb7d6f8fef149037cd17","kind":"mutation-receipt","operation":"9878113e9ed0ef232fbb028918b488edb378f1270127ab8a199c6580850d6e0d","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-13"],"target":"decisions-ledger","v":1} -->
