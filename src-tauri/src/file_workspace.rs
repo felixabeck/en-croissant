@@ -1196,7 +1196,7 @@ fn paired_rename(
 /// Forward Files mutations own the destination sidecar even when there was none to move.
 /// Publication refusal belongs to the pair so only its retained primary object is reversed.
 /// The returned bool is true when metadata was newly published for an absent source sidecar,
-/// and false when the existing source sidecar was moved to the destination.
+/// and false when the existing source sidecar was moved or its name aliases the owned primary.
 fn paired_workspace_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -1255,21 +1255,31 @@ fn paired_rename_inner(
         let Some((bytes, cancellation)) = forward_metadata else {
             return Ok(None);
         };
+        let precommit = || {
+            native_fs::assert_entry_identity(
+                target_parent,
+                target_leaf,
+                source.identity,
+                source.is_dir,
+            )?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            Ok(())
+        };
+        if source.is_dir
+            && matches!(
+                native_fs::entry_identity_at(target_parent, &target_info, true),
+                Ok(identity) if identity == source.identity
+            )
+        {
+            precommit()?;
+            return Ok(None);
+        }
         let installed = native_fs::atomic_create_workspace_sidecar_at(
             target_parent,
             &target_info,
-            || {
-                native_fs::assert_entry_identity(
-                    target_parent,
-                    target_leaf,
-                    source.identity,
-                    source.is_dir,
-                )?;
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancellation);
-                }
-                Ok(())
-            },
+            precommit,
             |file| {
                 use std::io::Write;
                 file.write_all(bytes).map_err(Error::from)
@@ -5707,6 +5717,308 @@ mod tests {
             );
             assert_workspace_entry_names(&destination, &["before.info", "removed"]);
         }
+    }
+
+    #[test]
+    fn folder_sidecar_alias_move_preserves_listed_directory_and_child_handles() {
+        for sync in [None, Some(0), Some(1)] {
+            assert_folder_sidecar_alias_move("games.info", sync);
+        }
+    }
+
+    #[test]
+    fn folder_sidecar_alias_move_uses_observed_case_equivalence() {
+        assert_folder_sidecar_alias_move("games.INFO", None);
+    }
+
+    fn assert_folder_sidecar_alias_move(name: &str, sync: Option<usize>) {
+        let (_temporary, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let source_path = root.join(name);
+        let child_path = source_path.join("child.pgn");
+        let destination = root.join("destination");
+        // Existing external directories reach move through listing, without validate_name.
+        fs::create_dir(&source_path).unwrap();
+        fs::write(&child_path, b"1. e4 *").unwrap();
+        fs::write(source_path.join("notes.txt"), b"retained directory bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let (listing, missing) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list and register the existing games.info directory");
+        eprintln!(
+            "folder_sidecar_alias listing: {}",
+            serde_json::to_string(&listing).unwrap()
+        );
+        assert!(listing.unread.is_empty());
+        assert_eq!(missing.len(), 1);
+        let source = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .expect("existing .info directory is listed");
+        assert_eq!(source.kind, WorkspaceEntryKind::Directory);
+        assert!(source.metadata.is_none());
+        let child = source.children.first().expect("listed child PGN");
+        assert_eq!(source.children.len(), 1);
+        assert_eq!(child.name, "child");
+        assert_eq!(child.kind, WorkspaceEntryKind::File);
+        let parent = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "destination")
+            .expect("listed destination directory");
+        let source_handle = source.handle.clone();
+        let child_handle = child.handle.clone();
+        let source_identity = mutation_target(&state.pgn_path_authority, &source_handle)
+            .unwrap()
+            .identity;
+        let child_identity = mutation_target(&state.pgn_path_authority, &child_handle)
+            .unwrap()
+            .identity;
+        assert_workspace_entry_names(&destination, &[]);
+
+        let _injector = sync.map(|sync| {
+            crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
+            ))
+        });
+        // Observe case equivalence in the actual target directory after the primary lands.
+        let alias_observation = Arc::new(StdMutex::new(None));
+        let observed_alias = Arc::clone(&alias_observation);
+        let observed_sidecar = destination.join("games.info");
+        PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    *observed_alias.lock().unwrap() = Some(observed_sidecar.is_dir());
+                })))
+                .is_none());
+        });
+        let result = move_workspace_entry_blocking(
+            workspace.clone(),
+            source_handle.clone(),
+            parent.handle.clone(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        );
+        let aliases_primary = alias_observation
+            .lock()
+            .unwrap()
+            .expect("observed moved primary");
+        eprintln!("folder_sidecar_alias {name}: aliases_primary={aliases_primary}, sync={sync:?}");
+        let refusal = result
+            .as_ref()
+            .err()
+            .map(|error| serde_json::to_value(error).unwrap());
+        if sync.is_some() {
+            assert_workspace_rename_uncertainty(&result.unwrap_err());
+        } else {
+            assert!(
+                result.is_ok(),
+                "moving the listed games.info directory to an empty target should succeed, refusal: {refusal:?}"
+            );
+        }
+
+        let moved_path = destination.join(name);
+        assert!(!source_path.exists());
+        assert!(moved_path.is_dir());
+        assert_eq!(fs::read(moved_path.join("child.pgn")).unwrap(), b"1. e4 *");
+        assert_eq!(
+            fs::read(moved_path.join("notes.txt")).unwrap(),
+            b"retained directory bytes"
+        );
+        if aliases_primary {
+            // The sidecar name denotes the primary, with no synthetic metadata object.
+            assert_workspace_entry_names(&destination, &[name]);
+        } else {
+            assert_workspace_entry_names(&destination, &[name, "games.info"]);
+            let metadata: WorkspaceMetadata =
+                serde_json::from_slice(&fs::read(destination.join("games.info")).unwrap()).unwrap();
+            assert_eq!(metadata, WorkspaceMetadata::default());
+        }
+        assert_workspace_entry_names(&moved_path, &["child.pgn", "notes.txt"]);
+        let rebound = mutation_target(&state.pgn_path_authority, &source_handle).unwrap();
+        assert_eq!(rebound.path(), moved_path);
+        assert_eq!(rebound.identity, source_identity);
+        let rebound_child = mutation_target(&state.pgn_path_authority, &child_handle).unwrap();
+        assert_eq!(rebound_child.path(), moved_path.join("child.pgn"));
+        assert_eq!(rebound_child.identity, child_identity);
+        let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
+        let authority = authority.as_mut().unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(child_handle.path_ref()),
+            Some(source_identity)
+        );
+        assert!(authority
+            .resolve(child_handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn folder_sidecar_alias_cancellation_after_primary_compensates_inside_the_pair() {
+        let (temporary, state, workspace) = workspace_state();
+        let (source_path, source) = registered_child_directory(&state, &workspace, "games.info");
+        let child_path = source_path.join("child.pgn");
+        fs::write(&child_path, b"1. e4 *").unwrap();
+        let child = registered_child_file(&state, &workspace, &child_path);
+        let original = mutation_target(&state.pgn_path_authority, &source).unwrap();
+        let child_identity = mutation_target(&state.pgn_path_authority, &child)
+            .unwrap()
+            .identity;
+        let (destination, parent) = registered_child_directory(&state, &workspace, "destination");
+        let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+        let cancellation = CancellationToken::new();
+        let token = cancellation.clone();
+        let moved_path = destination.join("games.info");
+        PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    assert!(moved_path.is_dir());
+                    assert_eq!(fs::read(moved_path.join("child.pgn")).unwrap(), b"1. e4 *");
+                    token.cancel();
+                })))
+                .is_none());
+        });
+        let result = move_workspace_entry_blocking(
+            workspace.clone(),
+            source.clone(),
+            parent,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &cancellation,
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(fs::read(&child_path).unwrap(), b"1. e4 *");
+        assert_eq!(fs::read(source_path.join("removed")).unwrap(), b"content");
+        assert_workspace_entry_names(&destination, &["removed"]);
+        assert_workspace_entry_names(&source_path, &["child.pgn", "removed"]);
+        let retained = mutation_target(&state.pgn_path_authority, &source).unwrap();
+        assert_eq!(retained.path(), source_path);
+        assert_eq!(retained.identity, original.identity);
+        let retained_child = mutation_target(&state.pgn_path_authority, &child).unwrap();
+        assert_eq!(retained_child.path(), child_path);
+        assert_eq!(retained_child.identity, child_identity);
+        assert_eq!(
+            fs::read(temporary.path().join("registry.json")).unwrap(),
+            registry
+        );
+    }
+
+    #[test]
+    fn folder_sidecar_alias_probe_failure_and_foreign_identity_keep_exclusive_refusal() {
+        for failed_probe in [false, true] {
+            let (temporary, state, workspace) = workspace_state();
+            let name = if failed_probe { "games.info" } else { "before" };
+            let (source_path, source) = registered_child_directory(&state, &workspace, name);
+            let original = mutation_target(&state.pgn_path_authority, &source).unwrap();
+            let (destination, parent) =
+                registered_child_directory(&state, &workspace, "destination");
+            let foreign = destination.join("before.info");
+            if failed_probe {
+                PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+                    assert!(slot
+                        .replace(Some(Box::new(|| {
+                            crate::infra::fs::set_entry_observation_fault(Some(Error::Conflict(
+                                "injected alias observation failure".into(),
+                            )));
+                        })))
+                        .is_none());
+                });
+            } else {
+                fs::create_dir(&foreign).unwrap();
+                fs::write(foreign.join("retained"), b"foreign bytes").unwrap();
+            }
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            let result = move_workspace_entry_blocking(
+                workspace.clone(),
+                source.clone(),
+                parent,
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            );
+            crate::infra::fs::set_entry_observation_fault(None);
+            assert_name_taken(&result.unwrap_err());
+            assert_eq!(fs::read(source_path.join("removed")).unwrap(), b"content");
+            assert!(!destination.join(name).exists());
+            if failed_probe {
+                assert_workspace_entry_names(&destination, &["removed"]);
+            } else {
+                assert_eq!(
+                    fs::read(foreign.join("retained")).unwrap(),
+                    b"foreign bytes"
+                );
+                assert_workspace_entry_names(&destination, &["before.info", "removed"]);
+            }
+            let retained = mutation_target(&state.pgn_path_authority, &source).unwrap();
+            assert_eq!(retained.path(), source_path);
+            assert_eq!(retained.identity, original.identity);
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_sidecar_alias_revalidates_primary_after_alias_observation() {
+        let (temporary, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let (source_path, source) = registered_child_directory(&state, &workspace, "games.info");
+        let (destination, parent) = registered_child_directory(&state, &workspace, "destination");
+        let moved_path = destination.join("games.info");
+        let parked = root.join("parked");
+        let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+        let substituted = Arc::new(AtomicUsize::new(0));
+        let substituted_hook = Arc::clone(&substituted);
+        let moved_hook = moved_path.clone();
+        let parked_hook = parked.clone();
+        PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    crate::infra::fs::set_entry_observation_post_stat_hook(Some(Box::new(
+                        move || {
+                            fs::rename(&moved_hook, &parked_hook).unwrap();
+                            fs::create_dir(&moved_hook).unwrap();
+                            fs::write(moved_hook.join("foreign"), b"replacement bytes").unwrap();
+                            substituted_hook.fetch_add(1, Ordering::SeqCst);
+                        },
+                    )));
+                })))
+                .is_none());
+        });
+        let error = move_workspace_entry_blocking(
+            workspace.clone(),
+            source,
+            parent,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        crate::infra::fs::set_entry_observation_post_stat_hook(None);
+        assert_eq!(substituted.load(Ordering::SeqCst), 1);
+        // Revalidation refuses the replacement, and exact-object rollback cannot move it back.
+        assert_eq!(error.category(), ErrorCategory::OperationAndCleanup);
+        let payload = serde_json::to_value(&error).unwrap();
+        assert!(payload.get("nameTaken").is_none(), "{payload}");
+        assert!(!source_path.exists());
+        assert_eq!(fs::read(parked.join("removed")).unwrap(), b"content");
+        assert_eq!(
+            fs::read(moved_path.join("foreign")).unwrap(),
+            b"replacement bytes"
+        );
+        assert_workspace_entry_names(&destination, &["games.info", "removed"]);
+        assert_workspace_entry_names(&moved_path, &["foreign"]);
+        assert_eq!(
+            fs::read(temporary.path().join("registry.json")).unwrap(),
+            registry
+        );
     }
 
     #[test]
