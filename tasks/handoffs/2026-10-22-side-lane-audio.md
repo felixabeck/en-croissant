@@ -2,11 +2,13 @@
 
 Date: 2026-10-22. This terminal runs the side lane Felix authorized with “Alright, do this now. Set this up and run it autonomously here in this terminal session.”
 
+Release status: the audio cluster and required fixture repairs were pushed and installed at `2da572a4`. All required local gates and the five required platform CI jobs passed. The lane is stopping at Felix's requested boundary, with its claims released and no further finding selected.
+
 ## Isolation and selection
 
 The worktree is `/home/felixb/Projekte/chessfable.worktrees/side-lane-codex-20261022`, branch `build/side-lane-codex-20261022-20261022`, tracking `origin/master`. It uses the existing worktree setup, findings claims, leaf launcher and machine gate scheduler. No new service, hook, scheduler or persistent orchestration tool was added. The main checkout was left untouched.
 
-At selection, the active drain owned `f-20261005-04`, with `f-20261005-05` prepared for engine, download and account work. This lane selected `f-20260920-15`, whose sound files and gate-repair test files do not overlap that scope. Co-claimed `f-20260930-02` is excluded because its sound import component was already fixed and its remaining startup/storage work is broader. Its claim returns after this package completes. Felix subsequently instructed this lane to stop after the current cluster. No next finding will be selected.
+At selection, the active drain owned `f-20261005-04`, with `f-20261005-05` prepared for engine, download and account work. This lane selected `f-20260920-15`, whose sound files and gate-repair test files do not overlap that scope. Co-claimed `f-20260930-02` was excluded because its sound import component was already fixed and its remaining startup/storage work is broader. Its claim was returned after verified publication. Felix subsequently instructed this lane to stop after the current cluster. No next finding will be selected.
 
 ## Implementation and proof
 
@@ -18,7 +20,7 @@ The first pre-review exposed inaccurate native-warning mocks. `2fa6a957` makes t
 
 Canonical pre-review r3 passed after the repair. Workspace-storage scored 100%, with 1233 killed, zero survivors and zero timeouts. Tree-path scored 100%, with 170 killed, 6 timeouts and zero survivors. Build, formatting, lint, types, coverage mapping and bundle checks passed. The proof uses mocked Audio and native logging, so it establishes warning submission and playback calls rather than native log persistence or audible output. No visible UI changed.
 
-## Review and remaining release work
+## Review history
 
 Round 1 used correctness, root-cause, error-handling, tests, code-quality and minimalism lenses. It adopted two findings: the missing throttle-boundary assertion and the unnamed collection bound. Both received Fix. There were no Skip or Defer verdicts in that round. Source authorship used Codex normal and sensitive write leaves on gpt-6.1-sol/high, with the exact mock repair on the mechanical gpt-6-luna/max rung. Read-only source detection used gpt-6.1-sol/medium in separate sessions.
 
@@ -26,7 +28,7 @@ Round 2 correctness, tests and code-quality reviews all approved at `56d9c83d`, 
 
 Plan authorship and arbitration shared one root context. Detection ran on the same OpenAI model family as the code. This is session separation, not model-family independence.
 
-Full frontend gates, publication, required pushed-SHA CI and installation are pending. This record does not claim they completed. The final push uses the rebased, reviewed tree and the opted-in master refspec. Evidence is retained under `/tmp/chessfable-side-lane-20261022.bllvDe`.
+The release steps described as pending at the earlier review checkpoints are complete. The final push used the rebased, reviewed tree and the opted-in master refspec. Release evidence is recorded below and retained under `/tmp/chessfable-side-lane-20261022.bllvDe`.
 
 ## Separate gate observation
 
@@ -44,8 +46,22 @@ Canonical pre-review r4 passed on the repaired working tree before that commit. 
 
 This repair pre-review also recovered from two cgroup OOM worker kills. `pre-review-r4-memory.txt` retains the counters, adding evidence for `f-20261022-05`. No scheduler, timeout, worker-count or gate-threshold change was made.
 
-Round 3 correctness, root-cause, error-handling, tests and code-quality reviewers all approved `589f83ee` with no findings. Source `REVIEWED_THROUGH` is `589f83ee`. `diff_adopted_per_round`: r1=2, r2=0, r3=0. Plan authorship and arbitration shared one root context. Detection and code used the same OpenAI model family in separate sessions.
+Round 3 correctness, root-cause, error-handling, tests and code-quality reviewers all approved `589f83ee` with no findings. The additional required persisted-state lens also approved the fixture repair with no findings. The mechanical records review approved the final record delta at `2da572a4`, which became the complete release `REVIEWED_THROUGH`. `diff_adopted_per_round`: r1=2, r2=0, r3=0. Plan authorship and arbitration shared one root context. Detection and code used the same OpenAI model family in separate sessions.
+
+## Completed release
+
+The second full frontend attempt at `2da572a4` passed build, bundle, contract, all 193 browser tests and all four mutation packages. It failed solely on a 5000 ms timeout in `src/state/workspace.test.ts:1697`, reported at 5481 ms, with 4976 other tests passing and no unhandled warning error. The complete attempt ended 1. Its raw evidence is in `final-r2-red/`. The workspace mutation run recovered two OOM worker kills, with a contemporaneous cgroup snapshot in `final-r2-memory.txt`. No surviving mutant was reported. Annotation/comment had 629 killed and 1 timeout, game/practice 87 killed, workspace/storage 1233 killed, and tree-path 170 killed and 6 timeouts.
+
+The complete instrumented coverage gate then passed separately on the unchanged clean tree: 226 files and all 4977 tests passed in 81.88 seconds, followed by the coverage ratchet and area floors. Its completion record is `0 sound-coverage 2da572a47da53c70e9b7987c4647c124b8dcbfe4` in `gate-sound-coverage.aHSrhs`. This establishes a full passing coverage run without changing timeouts, selection, worker configuration or thresholds. The broader load-time and resource questions remain open under `f-20260930-02` and `f-20261022-05`. No common cold-transform cause or repair of those broader issues is claimed.
+
+Fresh fetch and ordinary rebase checks found upstream unchanged at `879f1b47`. Every one of the 15 range-diff pairs was unchanged. The final aggregate `pnpm gates:push -- --frontend` passed on clean reviewed `2da572a4`, reusing valid exact-tree coverage, browser and mutation receipts. Build and bundle passed again, and the unconditional contract lane passed in 92.5 seconds. Completion is `0 sound-final-r3 2da572a47da53c70e9b7987c4647c124b8dcbfe4` in `gate-sound-final-r3.gp2NYt`, with logs in `final-r3-green/`.
+
+`pnpm ci:remote:check` passed immediately before the non-force `git push origin HEAD:refs/heads/master`. Publication advanced `master` from `879f1b47` to `2da572a4`, and local HEAD equalled `origin/master`. On [Test run 39828427697](https://github.com/felixabeck/en-croissant/actions/runs/39828427697), both native test jobs and all three platform matrix jobs concluded success for that exact SHA. Those are the five required post-push jobs. The separate general `test` job was still running when installation completed.
+
+The normal `bash scripts/install-local.sh` rebuilt from a checkout whose HEAD matched the verified pushed SHA immediately before invocation. It completed successfully through `gate-sound-install.XdZhq3`. The installed VERSION records `2da572a47da53c70e9b7987c4647c124b8dcbfe4`, short `2da572a4`, provenance `reviewed`, installed at 2026-10-22T20:37:55+02:00. The former reviewed `799d7025` installation remains the previous version. The application-menu entry uses the new version on the next launch. No release or deployment was performed.
+
+All four owned claims were released through `findings.py unclaim` and their absence verified: `f-20260920-15`, `f-20260930-02`, `f-20261022-04` and `f-20261022-06`. The isolated worktree is retained. The main checkout and other drain were left untouched. This final handoff update follows the post-push coordination-record exception.
 
 ## Stopping boundary
 
-Felix subsequently instructed: “Stop your work after the current cluster. After the current finding. Don't start a new one.” This lane will finish only this audio and required fixture-repair release, then stop. No LocalImage, PGN or other finding will be started. Unused claims return on completion.
+Felix subsequently instructed: “Stop your work after the current cluster. After the current finding. Don't start a new one.” This lane completed only this audio and required fixture-repair release. No LocalImage, PGN or other finding was started. The claims have been returned, and the lane stops after publishing this handoff.
