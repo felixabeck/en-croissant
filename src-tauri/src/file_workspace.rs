@@ -1195,6 +1195,8 @@ fn paired_rename(
 
 /// Forward Files mutations own the destination sidecar even when there was none to move.
 /// Publication refusal belongs to the pair so only its retained primary object is reversed.
+/// The returned bool is true when metadata was newly published for an absent source sidecar,
+/// and false when the existing source sidecar was moved to the destination.
 fn paired_workspace_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -5481,6 +5483,96 @@ mod tests {
                     fs::read(temporary.path().join("registry.json")).unwrap(),
                     registry
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn absent_sidecar_cancellation_after_primary_rename_compensates_inside_the_pair() {
+        for moving in [false, true] {
+            let (temporary, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let created = create_named_text(&state, &workspace, "before", "1. e4 *").unwrap();
+            fs::remove_file(root.join("before.info")).unwrap();
+            let (destination, parent) = if moving {
+                registered_child_directory(&state, &workspace, "destination")
+            } else {
+                (root.clone(), workspace.clone())
+            };
+            let name = if moving { "before" } else { "after" };
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            let parent_identity =
+                crate::infra::path_authority::opened_file_identity(&source.parent).unwrap();
+            let cancellation = CancellationToken::new();
+            let token = cancellation.clone();
+            let observed_source = root.join("before.pgn");
+            let observed_primary = destination.join(format!("{name}.pgn"));
+            let observed_sidecar = destination.join(format!("{name}.info"));
+            PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+                assert!(slot
+                    .replace(Some(Box::new(move || {
+                        assert!(!observed_source.exists());
+                        assert_eq!(fs::read(observed_primary).unwrap(), b"1. e4 *");
+                        assert!(!observed_sidecar.exists());
+                        token.cancel();
+                    })))
+                    .is_none());
+            });
+            let result = if moving {
+                move_workspace_entry_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    parent,
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &cancellation,
+                )
+            } else {
+                rename_workspace_file_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    name.into(),
+                    WorkspaceMetadata::default(),
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &cancellation,
+                )
+            };
+            assert!(cancellation.is_cancelled());
+            assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+            assert_eq!(fs::read(root.join("before.pgn")).unwrap(), b"1. e4 *");
+            assert!(!root.join("before.info").exists());
+            assert!(!destination.join(format!("{name}.pgn")).exists());
+            assert!(!destination.join(format!("{name}.info")).exists());
+            let retained = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            assert_eq!(retained.path(), source.path());
+            assert_eq!(retained.identity, source.identity);
+            {
+                let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
+                let authority = authority.as_mut().unwrap();
+                assert_eq!(
+                    authority.parent_identity_for_test(created.handle.path_ref()),
+                    Some(parent_identity)
+                );
+                assert!(authority
+                    .resolve(created.handle.path_ref(), PathOperation::ReadPgn, &[])
+                    .is_ok());
+            }
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+            assert_workspace_entry_names(
+                &root,
+                if moving {
+                    &["before.pgn", "destination"]
+                } else {
+                    &["before.pgn"]
+                },
+            );
+            if moving {
+                assert_workspace_entry_names(&destination, &["removed"]);
             }
         }
     }
