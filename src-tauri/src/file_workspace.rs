@@ -1218,18 +1218,22 @@ fn paired_rename_inner(
     target_leaf: &OsStr,
     forward_metadata: Option<(&[u8], &CancellationToken)>,
 ) -> Result<(crate::infra::fs::AtomicFileOutcome, bool), Error> {
-    use crate::infra::fs::{self as native_fs, AtomicFileOutcome};
+    use crate::infra::fs::{
+        assert_entry_identity, atomic_create_workspace_sidecar_at, entry_identity_at,
+        rename_entry_at, rename_optional_regular_at, rename_workspace_entry_at,
+        rename_workspace_sidecar_at, AtomicFileOutcome,
+    };
     let source_info = sidecar_leaf(&source.leaf)?;
     let target_info = sidecar_leaf(target_leaf)?;
     let rename_entry_at = if forward_metadata.is_some() {
-        native_fs::rename_workspace_entry_at
+        rename_workspace_entry_at
     } else {
-        native_fs::rename_entry_at
+        rename_entry_at
     };
     let rename_optional_regular_at = if forward_metadata.is_some() {
-        native_fs::rename_workspace_sidecar_at
+        rename_workspace_sidecar_at
     } else {
-        native_fs::rename_optional_regular_at
+        rename_optional_regular_at
     };
     let primary = rename_entry_at(
         &source.parent,
@@ -1256,12 +1260,7 @@ fn paired_rename_inner(
             return Ok(None);
         };
         let precommit = || {
-            native_fs::assert_entry_identity(
-                target_parent,
-                target_leaf,
-                source.identity,
-                source.is_dir,
-            )?;
+            assert_entry_identity(target_parent, target_leaf, source.identity, source.is_dir)?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
@@ -1269,22 +1268,18 @@ fn paired_rename_inner(
         };
         if source.is_dir
             && matches!(
-                native_fs::entry_identity_at(target_parent, &target_info, true),
+                entry_identity_at(target_parent, &target_info, true),
                 Ok(identity) if identity == source.identity
             )
         {
             precommit()?;
             return Ok(None);
         }
-        let installed = native_fs::atomic_create_workspace_sidecar_at(
-            target_parent,
-            &target_info,
-            precommit,
-            |file| {
+        let installed =
+            atomic_create_workspace_sidecar_at(target_parent, &target_info, precommit, |file| {
                 use std::io::Write;
                 file.write_all(bytes).map_err(Error::from)
-            },
-        )?;
+            })?;
         created_metadata = true;
         Ok(Some(installed.outcome))
     })();
