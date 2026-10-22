@@ -9635,3 +9635,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
 * **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"672b272ae69a26562369ca9f651a941458886b459b227797342310e77b900875","input_sha256":"81ac6e3a2ce4eb78df2d1d76798b25e7fdeee92965ffcc1491d67d888837fa06","kind":"mutation-receipt","operation":"56a6e0100436f58be374a71b933a7867009cea361a9d42e939fbd1ac6b8ec7c6","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-22"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-23 — How should resource-limit guidance cover both producers?
+
+* **Question:** How should resource-limit guidance cover both producers?
+* **Governs:** f-20261005-04
+* **Chosen:** Use capacity-neutral resource-limit guidance for both large metadata and native-operation saturation. Reject metadata-only instructions without a typed size discriminator. Reason: both producers share the same category. Reverse when a typed contract distinguishes them.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f2da218d129deb3e6d6c2b44e8b8d852d183b1c72cb7477748dc0e0a71771dab","input_sha256":"c3f674e59f42911eccbcd584c93ba8fb9d5db1948370e1777cecce2953f6e115","kind":"mutation-receipt","operation":"3372ccaf11cf3b73cc6b2618c59ca16a63d5e483ba8da70b3008da08e25e81c4","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-23"],"target":"decisions-ledger","v":1} -->
