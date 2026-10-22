@@ -9447,3 +9447,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The observed gap is OS-to-IPC-to-copy proof. A failed verification preserves the previous app and user data. Removal path: delete the added scenario and its evidence when the obligation disappears.
 * **Decided by:** Codex, adopting the reviewed full-auto plan, technical judgment · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"99f4341f8b1c368faad7c39872fba854dbebdf090db98e1e2262b13226ae6a8f","input_sha256":"812594d25d73f1289b831dab0e3686afaec9956d33c923ee96cf06ebdb4a0f9f","kind":"mutation-receipt","operation":"c54102a69f83f1b9acff6474259341b2242f925cb7e97e91f482208937e68751","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-02","d-20261022-03","d-20261022-04","d-20261022-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-06 — How are long root guidance notifications kept reachable?
+
+* **Question:** Which existing control removes the fixed notification-height assumption exposed by the root permission journeys?
+* **Governs:** f-20261004-21, f-20261022-01
+* **Chosen:** Use Notifications.notificationMaxHeight with one CSS viewport-height expression subtracting Mantine's existing edge spacing. Reuse it on the stack container, permit vertical scrolling, and align oversized content safely from its start while preserving short notification layout, dismissal, timings and exit transitions.
+* **Rejected:** Keeping the 200px cap, accepting clipped screenshots, changing copy or timing, arbitrary larger pixel caps, new measurement hooks/observers, or overriding transition styles with CSS specificity.
+* **Reason:** Actual container proof measured 366px of guidance inside a 200px box at 320px/200%. The installed Mantine API accepts CSS strings and existing root/notification style slots. Four amendment lenses approved O3a with no finding. Reversal path: remove these overrides only when the component itself provides equivalent bounded, scrollable reachability with the same regression proof.
+* **Decided by:** Codex, full-auto technical layout repair during the pinned root-failure build · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"25bfd2a4cd4d135224afee93b0b0d2bc80875e1d8f8575ec90bf75562672d3c0","input_sha256":"340a2a4425aba3de4e69e367a4d4c3e39e4e288bc86a2b8e1939b37a3447ce4a","kind":"mutation-receipt","operation":"b38bcd8fdd3f66f8e36e8290b8218bdc5e031d1769926b74bb61a439de4aa3ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-06"],"target":"decisions-ledger","v":1} -->
