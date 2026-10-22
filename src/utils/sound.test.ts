@@ -54,6 +54,12 @@ async function settle() {
     await Promise.resolve();
 }
 
+function playbackWarning(index = 0) {
+    const message = mocks.warn.mock.calls[index]?.[0];
+    expect(message).toEqual(expect.stringContaining("Sound playback failed:"));
+    return JSON.parse(message.slice(message.indexOf("{")));
+}
+
 beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-06T12:00:00Z"));
@@ -229,5 +235,254 @@ describe("playSound", () => {
 
         expect(playFailedSound(false, false)).toBeUndefined();
         await settle();
+    });
+
+    describe("playback diagnostics", () => {
+        beforeEach(() => {
+            mocks.getSoundServerPort.mockResolvedValue(43123);
+            vi.spyOn(console, "error").mockImplementation(() => {});
+        });
+
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        test.each([
+            ["standard", false, true, "Move"],
+            ["standard", true, true, "Capture"],
+            ["piano", true, true, "Check"],
+        ] as const)(
+            "attributes rejected playback to %s and its resolved %s/%s kind",
+            async (collection, capture, check, kind) => {
+                const { playSound } = await loadSound({ collection });
+                audioInstances[0].play.mockRejectedValue(new Error("decoder unavailable"));
+
+                expect(playSound(capture, check)).toBeUndefined();
+                await settle();
+
+                expect(mocks.warn).toHaveBeenCalledOnce();
+                expect(playbackWarning()).toEqual({
+                    collection,
+                    kind,
+                    url: `http://127.0.0.1:43123/${collection}/${kind}.mp3`,
+                    failure: { category: "unexpected", message: "decoder unavailable" },
+                });
+                expect(console.error).not.toHaveBeenCalled();
+            },
+        );
+
+        test("reports a collection and kind only once across pool rotations", async () => {
+            const { playSound, THROTTLE_MS } = await loadSound({ collection: "piano" });
+            for (const player of audioInstances) {
+                player.play.mockRejectedValue(new Error("decoder unavailable"));
+            }
+
+            for (let attempt = 0; attempt < 12; attempt++) {
+                playSound(false, true);
+                await settle();
+                vi.advanceTimersByTime(THROTTLE_MS + 1);
+            }
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(
+                audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
+            ).toBe(12);
+        });
+
+        test("reports distinct collections and kinds independently", async () => {
+            const { playSound, THROTTLE_MS } = await loadSound();
+            for (const player of audioInstances) {
+                player.play.mockRejectedValue(new Error("decoder unavailable"));
+            }
+
+            playSound(false, false);
+            await settle();
+            vi.advanceTimersByTime(THROTTLE_MS + 1);
+            playSound(true, false);
+            await settle();
+            await loadSound({ collection: "piano" });
+            vi.advanceTimersByTime(THROTTLE_MS + 1);
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledTimes(3);
+            expect([playbackWarning(0), playbackWarning(1), playbackWarning(2)]).toMatchObject([
+                { collection: "standard", kind: "Move" },
+                { collection: "standard", kind: "Capture" },
+                { collection: "piano", kind: "Move" },
+            ]);
+        });
+
+        test("preserves a late rejection's identity after real pool reuse", async () => {
+            const { playSound, THROTTLE_MS } = await loadSound({ collection: "piano" });
+            const firstPlayback = Promise.withResolvers<void>();
+            audioInstances[0].play.mockReturnValueOnce(firstPlayback.promise);
+
+            playSound(false, true);
+            await settle();
+            await loadSound({ collection: "standard" });
+            for (let attempt = 0; attempt < 5; attempt++) {
+                vi.advanceTimersByTime(THROTTLE_MS + 1);
+                playSound(true, false);
+                await settle();
+            }
+            expect(audioInstances).toHaveLength(5);
+            expect(audioInstances[0].play).toHaveBeenCalledTimes(2);
+            expect(audioInstances[0].src).toBe("http://127.0.0.1:43123/standard/Capture.mp3");
+
+            firstPlayback.reject(new Error("late decoder rejection"));
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning()).toMatchObject({
+                collection: "piano",
+                kind: "Check",
+                url: "http://127.0.0.1:43123/piano/Check.mp3",
+                failure: { message: "late decoder rejection" },
+            });
+        });
+
+        test("falls back with the same context when the native playback warning rejects", async () => {
+            const { playSound } = await loadSound({ collection: "woodland" });
+            audioInstances[0].play.mockRejectedValue(new Error("decoder unavailable"));
+            mocks.warn.mockRejectedValue(new Error("token=logger-secret /home/private/logger.log"));
+            const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+            playSound(true, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning()).toMatchObject({ collection: "woodland", kind: "Capture" });
+            expect(consoleWarn).toHaveBeenCalledExactlyOnceWith(mocks.warn.mock.calls[0][0], {
+                loggerFailure: { category: "unexpected", message: "token=[redacted] [path]" },
+            });
+        });
+
+        test("caps reports at 24 without evicting keys or stopping playback", async () => {
+            const { playSound, THROTTLE_MS } = await loadSound();
+            for (const player of audioInstances) {
+                player.play.mockRejectedValue(new Error("decoder unavailable"));
+            }
+
+            for (let index = 0; index < 30; index++) {
+                await loadSound({ collection: `collection-${index}` });
+                playSound(false, false);
+                await settle();
+                vi.advanceTimersByTime(THROTTLE_MS + 1);
+            }
+            await loadSound({ collection: "collection-0" });
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledTimes(24);
+            expect(playbackWarning(0).collection).toBe("collection-0");
+            expect(playbackWarning(23).collection).toBe("collection-23");
+            expect(
+                audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
+            ).toBe(31);
+        });
+
+        test.each([
+            "password=collection-secret /home/private/sounds\nforged warning",
+            `piano${"x".repeat(10000)}`,
+        ])("sanitizes and bounds persisted collection context", async (collection) => {
+            const { playSound } = await loadSound({ collection });
+            audioInstances[0].play.mockRejectedValue(new Error("decoder unavailable"));
+
+            playSound(false, true);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            const context = playbackWarning();
+            expect(context.collection).toBe("[invalid collection]");
+            expect(context.url).toBe("http://127.0.0.1:43123/[invalid collection]/Check.mp3");
+            expect(mocks.warn.mock.calls[0][0]).not.toContain(collection);
+            expect(mocks.warn.mock.calls[0][0].length).toBeLessThan(1024);
+            // Diagnostics must not change the resource requested by playback.
+            expect(audioInstances[0].src).toBe(`http://127.0.0.1:43123/${collection}/Check.mp3`);
+        });
+
+        test.each([
+            new Error("password=error-secret /home/private/sound.mp3\nforged\u0000\u2028warning"),
+            {
+                category: "unexpected",
+                message: "password=error-secret /home/private/sound.mp3\nforged\u0000\u2028warning",
+            },
+        ])("sanitizes arbitrary error messages before native logging", async (cause) => {
+            const { playSound } = await loadSound();
+            audioInstances[0].play.mockRejectedValue(cause);
+
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning().failure.message).toBe(
+                "password=[redacted] [path] forged  warning",
+            );
+            expect(mocks.warn.mock.calls[0][0]).not.toContain("error-secret");
+            expect(mocks.warn.mock.calls[0][0]).not.toContain("/home/private");
+        });
+
+        test("bounds error context after redaction even when a secret crosses the length limit", async () => {
+            const { playSound } = await loadSound();
+            audioInstances[0].play.mockRejectedValue(
+                new Error(`${"x".repeat(240)} token=${"s".repeat(10000)}`),
+            );
+
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning().failure.message).toHaveLength(256);
+            expect(playbackWarning().failure.message).toContain("token=[redacted");
+            expect(mocks.warn.mock.calls[0][0]).not.toContain("ssss");
+            expect(mocks.warn.mock.calls[0][0].length).toBeLessThan(1024);
+        });
+
+        test("reports synchronous play failures through the same contextual reporter", async () => {
+            const { playSound } = await loadSound({ collection: "nes" });
+            audioInstances[0].play.mockImplementation(() => {
+                throw new Error("password=sync-secret /home/private/sound.mp3");
+            });
+
+            expect(playSound(true, false)).toBeUndefined();
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning()).toEqual({
+                collection: "nes",
+                kind: "Capture",
+                url: "http://127.0.0.1:43123/nes/Capture.mp3",
+                failure: { category: "unexpected", message: "password=[redacted] [path]" },
+            });
+            expect(console.error).not.toHaveBeenCalled();
+        });
+
+        test("reports setup failures contextually without latching the port or leaking raw errors", async () => {
+            const { playSound, THROTTLE_MS } = await loadSound({ collection: "robot" });
+            Object.defineProperty(audioInstances[0], "volume", {
+                set() {
+                    throw new Error("password=setup-secret /home/private/sound.mp3");
+                },
+            });
+
+            playSound(false, false);
+            await settle();
+            vi.advanceTimersByTime(THROTTLE_MS + 1);
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning()).toMatchObject({
+                collection: "robot",
+                kind: "Move",
+                url: "http://127.0.0.1:43123/robot/Move.mp3",
+                failure: { message: "password=[redacted] [path]" },
+            });
+            expect(audioInstances[0].play).not.toHaveBeenCalled();
+            expect(audioInstances[1].play).toHaveBeenCalledOnce();
+            expect(mocks.getSoundServerPort).toHaveBeenCalledOnce();
+            expect(console.error).not.toHaveBeenCalled();
+        });
     });
 });
