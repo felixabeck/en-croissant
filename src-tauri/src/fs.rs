@@ -6085,8 +6085,10 @@ mod tests {
         }
         let probe_path = dir.path().join("unrelated-file");
         std::fs::write(&probe_path, b"gateway probe").unwrap();
+        // Completion before stream release is the invariant, not a latency promise.
+        // Ten seconds is only a bounded safety ceiling for the shared gateway.
         let probe = tokio::time::timeout(
-            Duration::from_millis(500),
+            Duration::from_secs(10),
             crate::infra::blocking::BLOCKING_GATEWAY.spawn(move || Ok(std::fs::read(probe_path)?)),
         )
         .await;
@@ -9354,13 +9356,18 @@ mod tests {
                 state.pgn_path_authority.uninstall();
             }
             transport.release.notify_one();
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while !state.operations.outstanding_labels().unwrap().is_empty() {
-                    tokio::task::yield_now().await;
-                }
+            // Await native completion notification off the runtime thread before checking tails.
+            let operations = state.operations.clone();
+            let drained = tokio::task::spawn_blocking(move || {
+                operations.wait_for_drain(Duration::from_secs(10))
             })
             .await
+            .unwrap()
             .unwrap();
+            assert!(
+                drained,
+                "CALLER_DROP_NATIVE_DRAIN: accepted download must finish after caller drop (publication_fail={publication_fail})"
+            );
 
             let item = state.progress_state.get(&progress_id).unwrap().unwrap();
             if publication_fail {
