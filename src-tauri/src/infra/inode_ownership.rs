@@ -847,7 +847,7 @@ fn open_at_mode_class(
     #[cfg(not(target_os = "linux"))]
     {
         let expected = match rfs::statat(parent, name, rfs::AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => Some(crate::infra::fs::raw_stat_identity(&stat)),
+            Ok(stat) => crate::infra::fs::raw_stat_identity(&stat),
             Err(error) if error == rustix::io::Errno::NOENT && create => {
                 #[cfg(test)]
                 after_identify();
@@ -866,9 +866,7 @@ fn open_at_mode_class(
         if !registry.open_admitted() {
             return Err(Error::from(io::Error::from_raw_os_error(libc::EMFILE)));
         }
-        if let Some(identity) = expected {
-            registry.check_class(identity, class)?;
-        }
+        registry.check_class(expected, class)?;
         let opened = File::from(
             rfs::openat(
                 parent,
@@ -892,7 +890,7 @@ fn open_at_mode_class(
         }
         let owned = OwnedFile::admitted(opened, identity, class);
         drop(registry);
-        if expected.is_some_and(|expected| expected != identity) {
+        if expected != identity {
             return Err(Error::Conflict("file changed while opening".into()));
         }
         if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {

@@ -1470,13 +1470,7 @@ mod verified_identity {
                 .leaf()
                 .ok_or_else(|| Error::InvalidInput("database child has no retained leaf".into()))?;
             let (file, observed) = crate::infra::fs::create_regular_at(parent, leaf)?;
-            let actual = super::opened_file_identity(&file)?;
-            if actual != observed {
-                return Err(Error::Conflict(
-                    super::VERIFIED_REGISTRATION_CONFLICT.into(),
-                ));
-            }
-            Ok((file, VerifiedIdentity(actual)))
+            Ok((file, VerifiedIdentity(observed)))
         }
     }
 }
@@ -1502,6 +1496,9 @@ type RefreshEntryHook = Box<dyn Fn(&str)>;
 
 #[cfg(all(test, unix))]
 std::thread_local! {
+    // Remove with the database-create captured-identity regression.
+    static DATABASE_CREATE_IDENTITY_FAILURE: std::cell::Cell<Option<(u64, u64)>> =
+        const { std::cell::Cell::new(None) };
     static CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static CAPABILITY_CHILD_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -4138,7 +4135,16 @@ pub(crate) fn opened_file_identity(file: &impl FileMetadata) -> Result<(u64, u64
     {
         use std::os::unix::fs::MetadataExt;
         let meta = file.metadata()?;
-        Ok((meta.dev(), meta.ino()))
+        let identity = (meta.dev(), meta.ino());
+        #[cfg(test)]
+        if DATABASE_CREATE_IDENTITY_FAILURE
+            .with(|slot| slot.get() == Some(identity) && slot.take().is_some())
+        {
+            return Err(Error::from(std::io::Error::other(
+                "injected database-create post-handoff identity failure",
+            )));
+        }
+        Ok(identity)
     }
     #[cfg(windows)]
     {
@@ -14870,6 +14876,69 @@ mod tests {
         assert_eq!(message, VERIFIED_REGISTRATION_CONFLICT);
         assert!(!message.contains('/'), "{message}");
         assert!(!message.contains("child.db3"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_uses_captured_identity_without_post_handoff_query() {
+        use crate::infra::inode_ownership::{CreateTestControls, CREATE_TEST_CONTROLS};
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let leaf = root_path.join("captured.db3");
+        let created_identity = Arc::new(std::sync::OnceLock::new());
+        let captured = created_identity.clone();
+        let created_leaf = leaf.clone();
+        CREATE_TEST_CONTROLS.with(|slot| {
+            *slot.borrow_mut() = CreateTestControls {
+                after_create: Some(Box::new(move || {
+                    let metadata = fs::metadata(&created_leaf).unwrap();
+                    let identity = (metadata.dev(), metadata.ino());
+                    captured.set(identity).unwrap();
+                    DATABASE_CREATE_IDENTITY_FAILURE.with(|slot| {
+                        assert_eq!(slot.replace(Some(identity)), None);
+                    });
+                })),
+                ..Default::default()
+            };
+        });
+        let captured = created_identity.clone();
+        DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    // Registration keeps its own later identity checks.
+                    DATABASE_CREATE_IDENTITY_FAILURE.with(|slot| {
+                        assert_eq!(slot.take(), captured.get().copied());
+                    });
+                })))
+                .is_none());
+        });
+
+        let result = authority.create_database_child(&root, OsStr::new("captured.db3"));
+        DATABASE_CREATE_IDENTITY_FAILURE.with(|slot| slot.set(None));
+        DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| slot.borrow_mut().take());
+        let created = result.expect(
+            "database creation must use the creator's captured identity without querying metadata again",
+        );
+        let expected = *created_identity.get().unwrap();
+        let stored = &authority.persistent[&created.path_ref().id].stored.identity;
+        assert_eq!((stored.a, stored.b), expected);
+        assert_eq!(fs::read(&leaf).unwrap(), b"");
+
+        let ordinary = fs::File::open(&leaf).unwrap();
+        DATABASE_CREATE_IDENTITY_FAILURE.with(|slot| slot.set(Some(expected)));
+        let error = opened_file_identity(&ordinary)
+            .expect_err("ordinary verified identity acquisition still queries metadata");
+        assert!(error
+            .diagnostic()
+            .contains("injected database-create post-handoff identity failure"));
+        DATABASE_CREATE_IDENTITY_FAILURE.with(|slot| assert_eq!(slot.take(), None));
     }
 
     #[cfg(unix)]
