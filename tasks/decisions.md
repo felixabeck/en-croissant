@@ -9501,3 +9501,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** a measured equivalent descriptor-bound deletion primitive can replace the guarded name removal, preserving the d-20260906-01 limit until then.
 * **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b49396e6ed4dc724316c50c34942e0dc231419e738f1e85b3ca912e198991552","input_sha256":"a8505cc793bc883bce909d9e323047811d4be458ea1f6a25812c44e1248e68fc","kind":"mutation-receipt","operation":"ef8bb10b088e6b585711a8b430bcf00129effb69323fedbec4f7f9726d6e59b2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-11 — Which Windows deletion contract covers failed created-file admission?
+
+* **Governs:** f-20261004-24
+* **Question:** Which Windows deletion contract covers failed created-file admission?
+* **Chosen:** same-handle classic disposition with DELETE granted only to exclusive creation and shared with the existing private-temp operation.
+* **Rejected:** reopening by pathname, blanket broader access on ordinary opens or relying on Ex-only removal.
+* **Reason:** the retained handle supplies exact object authority before identity admission.
+* **Reversal path:** replace only this primitive after native platform proof while retaining ownership and failure semantics.
+* **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"123838a0a6873028f9d0b9bf4c1625e74ec1e90a70263c0353748384c2ca0163","input_sha256":"e7da18315dd61fda0438cbf252fa5cccb5d4e3f43ab78efa2c94bbe90d23822e","kind":"mutation-receipt","operation":"726a1dfad62f0de3c89a984f8f6dad7dee56bf8249d0def77b276e4df0cf67fa","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-11"],"target":"decisions-ledger","v":1} -->
