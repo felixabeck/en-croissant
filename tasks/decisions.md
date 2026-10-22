@@ -9615,3 +9615,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
 * **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"25eb8d3e76626a1acc8a4d2f5e94a1ada381bfdfa1458e2fbdbe4a98043c7671","input_sha256":"4405560ad2d571ea383e4645789704020cb8265501614eacc9f72fe0a96da72c","kind":"mutation-receipt","operation":"ad82e69551572a2b58d377c2ae412e2bca9db2eabb76e9029c64a60cb89fe3fc","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-20"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-21 — Which consumers receive broader refusal guidance?
+
+* **Question:** Which consumers receive broader refusal guidance?
+* **Governs:** f-20261005-04
+* **Chosen:** Scope new guidance to these Files actions and preserve other workspaceErrorMessage callers. Reject silently changing repertoire/import/notifications or root-listing instructions. Reason: shared helpers serve different operation contracts. Reverse when independently authorized consumer work supplies its recovery semantics.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"9296b33b7d807a22d32fe403f4fbaf61bce99e753b85a6b65cc90991e94b89dc","input_sha256":"5b21ce40f9f3fe96c18119c2d9dae88e1768217d7362fef474dcdfae0c09e891","kind":"mutation-receipt","operation":"b63589b072ff60cd1d49f378d425f8f3eff437d3b1a276d1a8674311dae5a631","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-21"],"target":"decisions-ledger","v":1} -->
