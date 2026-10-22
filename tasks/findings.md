@@ -17903,3 +17903,18 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Related:** `f-20260930-03` moved gates into their own scheduled cgroup. `d-20261002-03` deliberately treats OOM counters rather than peak memory as the relevant whole-run evidence and records a historical 28 GiB scope. That earlier fix remains in place. This observation concerns the current workload and allocation, so it does not reopen that historical scope-placement diagnosis. `f-20261022-04` is the separately diagnosed inaccurate native warning mocks and is not this memory issue.
 * **Open question:** Does the current complete gate workload require different per-runner memory accounting or a different scheduler allocation? Re-measure the workload and actual allocation before choosing. Preserve every test, mutation selection, score threshold and timeout policy. No gate or scheduler change was made by the audio side lane.
 * **Found by:** Interactive Codex side lane, 2026-10-22. Plan authorship and arbitration shared one root context. Source detection and code review used the same OpenAI model family in separate sessions.
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### BoardsPage duplication fixture omits the native warning export used by its real storage flush
+
+* **ID:** f-20261022-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/tabs/BoardsPage.test.tsx`, native mock at line 138 and the real-storage puzzle Duplicate refusal test. `src/state/store/tabStorage.ts:860` reaches the warning helper from its scheduled flush.
+* **Observed failure:** Final frontend coverage at `43cf663c` on 2026-10-22 ended with an uncaught Vitest error: no warn export is defined on the native mock. The stack is `warnSafely` to `TabStorageRepository.flush` to the flush timer. Vitest attributed it to the BoardsPage fixture's legacy-owner duplication test. That test intentionally refuses writes to the source's physical key while retaining pending writes. The native mock supplies only platform, although a real flush can warn while that fault is active.
+* **Impact:** The required coverage gate exits 1. Missing mock behavior makes the test timing-dependent and obscures whether the real duplication behavior passed. The same run also had six five-second timeouts in other files, which are separate evidence and are not diagnosed by this entry.
+* **Fix:** Add the promise-returning native warning mock required by the real boundary. Exercise a refused pending flush deterministically in the existing real-storage duplication test while preserving its source/destination durability assertions and cleanup. Prove the anchor red by removing only the mock repair, then restore and run the whole BoardsPage suite. No production storage change, timeout increase, reduced test selection or new runner mechanism.
+* **Related:** `f-20261022-04` repaired undefined-return native warning mocks in InfoPanel and GamePreview. This is a separately observed missing export in BoardsPage, reached by real storage rather than sound. No shared Root is assigned without a broader cause. No existing finding named this path in the related lookup.
+* **Evidence:** `/tmp/chessfable-side-lane-20261022.bllvDe/gate-sound-final.91Byni` and `artifacts/gates/20261022T162145718Z-1548197/receipt-frontend-coverage.log`. Source tracing confirms the mock omission and the intentional source-write refusal. The drain's effective committed and dirty diffs contain no BoardsPage test change.
+* **Found by:** Interactive Codex side lane, 2026-10-22. Plan authorship and arbitration shared one root context. Detection and code used the same OpenAI model family in separate sessions.
