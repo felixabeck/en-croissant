@@ -9555,3 +9555,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the existing type already preserves the native cause and forces consumption. Reversal path: migrate both helpers and all consumers together if a future evidenced contract requires additional state.
 * **Decided by:** Codex, full auto, adopted reviewed plan tasks/plans/2026-10-22-workspace-rename-durability.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c4585dc453e183dfd1fab5a1511fb76e05dae79a7c5877f4ac7a5a2cb1d0b82d","input_sha256":"3e83e5b6668bced035f08d716b1d3f9682189533899eb13772eda83a400359b8","kind":"mutation-receipt","operation":"a01f026ae5dc936d5ba9311042d80197466ae6b63c6a6c789043c8257e47c375","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-15"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-16 — continue or compensate a rename solely because parent sync failed?
+
+* **Question:** continue or compensate a rename solely because parent sync failed?
+* **Governs:** f-20261005-03
+* **Chosen:** continue sidecar and authority completion, then report.
+* **Rejected:** early return or reversing a completed pair merely for uncertainty.
+* **Reason:** d-20260830-04 and d-20260901-06 require state to follow a landed mutation. Reversal path: a separately reviewed transactional recovery protocol, supported by new evidence.
+* **Decided by:** Codex, full auto, adopted reviewed plan tasks/plans/2026-10-22-workspace-rename-durability.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"64b4156ba138731020e6bbe99d13a0c3f86f4ba2fa507199b228e4d9d365bc39","input_sha256":"59171f3edfb0c4a5eb820fb4ca47f1d0c9b5a143ebe885ff2d7dcac8b40f5dba","kind":"mutation-receipt","operation":"21243ee151dcaf397bbe840d989200331bbc334d0d6293c7ec933f445a355520","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-16"],"target":"decisions-ledger","v":1} -->
