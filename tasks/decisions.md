@@ -9737,3 +9737,42 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Native2704/0/2, contract and Rust lint passed. Coverage failed before its tests, and kernel journal identifies two rustc OOM kills in the exact gate scope at19:20:59 and19:22:05. Existing receipt commands preserve the complete required proof and remove the observed cold compiler overlap without adding permanent machinery. Failure cost remains an explicit red gate if any proof or receipt validation fails. Removal path: the one-off preparation ends with this run, no operative rule or program is added. Reversal path: stop this recovery if a command still fails or its receipt is not accepted, and repair the evidenced resource mechanism before push. Do not infer the cause of earlier pool or fixture failures from this evidence.
 * **Decided by:** Codex, autonomously under full auto. Plan authorship and arbitration shared one root context. Detection uses fresh Codex contexts on the same OpenAI model family as code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"dbedeabff457d0d85b29ca8535a70941aebe9db4f19588d5d4b165c615ad1275","input_sha256":"009ac5da6a9a92b6bcf88e96d2744065bbcfbfabbe1e16c95d8e6f279bd3195b","kind":"mutation-receipt","operation":"0679c12a1e8fc8f5d538af0d9f5caec29bce87a7d36fb061a33d66765a99c752","options":{"section":null},"request_id_sha256":null,"results":["d-20261023-14"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-23 — recorded through the decisions lock
+
+### d-20261023-01 — Does a renderer reload cancel a download whose remaining step still lives in JavaScript, or does the accepted workflow survive and finish?
+
+* **Question:** Does a renderer reload cancel a download whose remaining step still lives in JavaScript, or does the accepted workflow survive and finish?
+* **Governs:** f-20261005-05
+* **Chosen:** Accepted engine-install, engine-upgrade and account-import work survives the reload. Native code retains the typed completion and the replacement document applies it once, replay-safe.
+* **Rejected:** Cancelling those downloads on reload, and scanning the install directory at startup to guess what to register. A scan cannot tell Add from Upgrade or which engine and account the user selected.
+* **Reason:** d-20261005-07 already keeps accepted downloads alive across a reload. The missing half is the post-download registration, upgrade application or import, which this workflow now retains with the same operation. Reversal path: change the survival decision with new evidence and migrate any pending records before the new rule takes effect.
+* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
+
+### d-20261023-02 — Do engine preferences move into native storage, or do the three renderer owner keys stay authoritative?
+
+* **Question:** Do engine preferences move into native storage, or do the three renderer owner keys stay authoritative?
+* **Governs:** f-20261005-05
+* **Chosen:** The three existing engine-owner keys stay authoritative. Each gains an atomic completion receipt in the same stored value, and native code holds the result until that receipt is acknowledged.
+* **Rejected:** Migrating engine settings into native storage, and saving the receipt in a separate key from the engine list. The first widens authority past this defect. The second can commit the list and lose the receipt, or the reverse, across a crash.
+* **Reason:** The defect is a lost continuation, not a wrong storage owner. One envelope per existing key closes the save/receipt gap without a settings migration. Reversal path: move complete versioned owner values and outstanding receipts together if authority later moves.
+* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
+
+### d-20261023-03 — Does this workflow persist a general job queue across process exit?
+
+* **Question:** Does this workflow persist a general job queue across process exit?
+* **Governs:** f-20261005-05
+* **Chosen:** Completion records live for the native process lifetime. Durable artifacts and the existing account-batch receipts stay the only records that survive process exit.
+* **Rejected:** A new durable job scheduler. The filed failure is a document reload while the native process is still alive, not an application restart.
+* **Reason:** A process-lifetime mailbox rejoins the replacement document to work the process already accepted. Restart recovery would be a different product. Reversal path: add restart recovery only under an evidenced mandate, reusing the existing domain receipts.
+* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
+
+### d-20261023-04 — Where does the account import that follows a provider download run?
+
+* **Question:** Where does the account import that follows a provider download run?
+* **Governs:** f-20261005-05
+* **Chosen:** After the renderer has chosen the workspace, association and migration, one native account workflow downloads or adopts the pending batch and imports it on both the linked and unlinked paths.
+* **Rejected:** Keeping conversion in the renderer and trying to resume that JavaScript continuation after reload. The import effects already have native cores and do not need renderer storage.
+* **Reason:** A native owner can finish the import after the document that started it is gone, and a second document cannot start a second transfer for the same operation. Reversal path: if a future import has a renderer-owned effect, preserve exactly-once receipts and the existing authority checks.
+* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"181e70a77b92f3e0bf3f4c1e407921ddb7a29afe4b12c808d848ac49853c5c52","input_sha256":"5535a27cfcc8849f0b25fd59d37fc467e962465809fd2212e0eb43823964ede3","kind":"mutation-receipt","operation":"9c72397753dab7f442f9248f5546b5ed8a721a3dbd0f09c37cfc86f63def1069","options":{"section":null},"request_id_sha256":null,"results":["d-20261023-01","d-20261023-02","d-20261023-03","d-20261023-04"],"target":"decisions-ledger","v":1} -->
