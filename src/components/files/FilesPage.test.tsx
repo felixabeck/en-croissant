@@ -2,6 +2,9 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
+import type { ErrorCategory } from "@/bindings";
+import englishCatalogue from "@/translation/en-US.json";
 
 const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
@@ -78,8 +81,8 @@ vi.mock("react-i18next", async () => {
   return {
     useTranslation: () => ({
       t: (key: string, options?: { defaultValue?: string; name?: string }) =>
-        key === "Common.NameAlreadyUsed"
-          ? catalogue.translation["Common.NameAlreadyUsed"]
+        key === "Common.NameAlreadyUsed" || key.startsWith("Files.Refusal.")
+          ? catalogue.translation[key as keyof typeof catalogue.translation]
           : options?.defaultValue?.replace("{{name}}", options.name || "") || key,
     }),
   };
@@ -113,13 +116,16 @@ vi.mock("@mantine/core", async (importOriginal) => ({
     opened,
     title,
     children,
+    onClose,
   }: {
     opened: boolean;
     title: string;
     children: React.ReactNode;
+    onClose: () => void;
   }) =>
     opened ? (
       <div role="dialog" aria-label={title}>
+        <button onClick={onClose}>Close dialog</button>
         {children}
       </div>
     ) : null,
@@ -259,7 +265,7 @@ const entry = {
 };
 const destination = {
   type: "directory",
-  handle: { id: { id: "destination-token" }, kind: "fileWorkspace" },
+  handle: { id: { id: "destination-token" }, kind: "fileWorkspace" as const },
   name: "Destination",
   children: [],
   lastModified: 1,
@@ -349,12 +355,13 @@ async function realWorkspace() {
     config = useSWRConfig();
     return <FilesPage />;
   }
-  async function render() {
+  async function render(provider = cache) {
     await act(async () =>
       root.render(
         <SWRConfig
+          key={provider === cache ? "original" : "replacement"}
           value={{
-            provider: () => cache,
+            provider: () => provider,
             shouldRetryOnError: false,
             revalidateOnFocus: false,
             dedupingInterval: 0,
@@ -487,19 +494,27 @@ test("cleanup drains an old native listing and late resolution cannot overwrite 
   const old = deferred<unknown[]>();
   mocks.listFileWorkspace
     .mockReset()
+    .mockResolvedValueOnce({ entries: [], unread: [] })
     .mockReturnValueOnce(old.promise.then((entries) => ({ entries, unread: [] })))
     .mockResolvedValueOnce({ entries: [nativeLeftover], unread: [] });
   mocks.createWorkspaceDirectory.mockRejectedValueOnce(
     commandError("operation-and-cleanup", "private diagnostic"),
   );
-  const { cache } = await realWorkspace();
+  const { cache, config } = await realWorkspace();
+  let prior!: Promise<unknown>;
+  await act(async () => {
+    prior = config.mutate(workspaceListingKey(workspace));
+  });
   click("Create folder");
   await setDialogName("Leftover");
   await act(async () => dialogButton("Confirm").click());
-  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
-  expect(mocks.listFileWorkspace.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(3);
+  expect(mocks.listFileWorkspace.mock.calls[1][1].signal.aborted).toBe(true);
   expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
-  await act(async () => old.resolve([]));
+  await act(async () => {
+    old.resolve([]);
+    await prior;
+  });
   expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
   expect(cache.get(unstable_serialize(workspaceListingKey(workspace))).data[0].name).toBe(
     "Leftover",
@@ -531,7 +546,7 @@ test("cleanup reconciles captured A while switched B keeps its own listing and A
   expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(3);
   await act(async () => freshA.resolve([nativeLeftover]));
   expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B only");
-  expect(cache.get(unstable_serialize(workspaceListingKey(workspace))).data).toBeUndefined();
+  expect(cache.get(unstable_serialize(workspaceListingKey(workspace)))?.data).toBeUndefined();
   expect(mocks.listFileWorkspace.mock.calls.map(([handle]) => handle)).toEqual([
     workspace,
     other,
@@ -587,26 +602,416 @@ test("cleanup rejection after switching pending mutation A to B reconciles only 
   expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("B listing");
   expect(cache.get(bKey).data).toBe(bData);
   expect(cache.get(bKey).error).toBeUndefined();
-  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(cleanupCopy);
-  expect(container.textContent).not.toContain(
-    "The file operation could not be completed. Please try again.",
-  );
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.textContent).not.toContain(cleanupCopy);
   expect(container.textContent).not.toContain("private A diagnostic");
-  expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
-    "A leftover",
-  );
 });
 
-function commandError(
-  category: "durability" | "partial-removal" | "operation-and-cleanup",
-  message: string,
-) {
+function commandError(category: ErrorCategory, message: string) {
   return new TauriCommandError({
     tag: "backend-error",
     category,
     message,
   });
 }
+
+const mutationCommands = {
+  file: mocks.createWorkspaceFile,
+  folder: mocks.createWorkspaceDirectory,
+  rename: mocks.renameWorkspaceFile,
+  metadata: mocks.writeWorkspaceFileMetadata,
+  move: mocks.moveWorkspaceEntry,
+};
+type MutationAction = keyof typeof mutationCommands;
+const refusalCopy = englishCatalogue.translation;
+
+async function openMutation(action: MutationAction) {
+  if (action === "file" || action === "folder")
+    click(action === "file" ? "Create file" : "Create folder");
+  else {
+    click("Select sample file");
+    click(action === "rename" ? "Rename" : action === "metadata" ? "Files.EditMetadata" : "Move");
+  }
+  if (action !== "move") await setDialogName(action === "metadata" ? entry.name : "Retained draft");
+  if (action === "metadata") setDialogType("repertoire");
+}
+
+const refusalCases = [
+  ["invalid-input", "Files.Refusal.Invalid", false],
+  ["resource-limit", "Files.Refusal.Limit", false],
+  ["permission", "Files.Refusal.Permission", false],
+  ["conflict", "Files.Refusal.Changed", true],
+  ["missing-resource", "Files.Refusal.Unavailable", true],
+  ["network", "Files.OperationFailed", false],
+  ["io", "Files.OperationFailed", false],
+  ["cancellation", null, false],
+] as const;
+
+describe.each(Object.keys(mutationCommands) as MutationAction[])("%s typed refusal", (action) => {
+  test.each(refusalCases)(
+    "%s displays catalogue guidance and retains the action",
+    async (category, key, relists) => {
+      mocks.listFileWorkspace
+        .mockReset()
+        .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+        .mockResolvedValue({
+          entries: [nativeFile, nativeDestination, nativeLeftover],
+          unread: [],
+        });
+      const command = mutationCommands[action];
+      command.mockRejectedValueOnce(commandError(category, "private diagnostic"));
+      await realWorkspace();
+      await openMutation(action);
+      await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+      const dialog = container.querySelector('[role="dialog"]')!;
+      expect(dialog).not.toBeNull();
+      expect(dialog.querySelector('[role="alert"]')?.textContent ?? "").toBe(
+        key ? refusalCopy[key] : "",
+      );
+      expect(container.textContent).not.toContain("private diagnostic");
+      expect(command).toHaveBeenCalledOnce();
+      expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(relists ? 2 : 1);
+      expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe(
+        [entry.name, destination.name, ...(relists ? ["Leftover"] : [])].join(","),
+      );
+      expect((dialog.querySelector("input") as HTMLInputElement | null)?.value).toBe(
+        action === "move" ? undefined : action === "metadata" ? entry.name : "Retained draft",
+      );
+      expect((dialog.querySelector("select") as HTMLSelectElement | null)?.value).toBe(
+        action === "metadata"
+          ? "repertoire"
+          : action === "move"
+            ? fileWorkspaceKey(workspace)
+            : undefined,
+      );
+      expect(dialogButton(action === "move" ? "Move" : "Confirm").disabled).toBe(false);
+    },
+  );
+
+  test("name-taken stays correctable without relisting", async () => {
+    mutationCommands[action].mockRejectedValueOnce(
+      new TauriCommandError({
+        tag: "backend-error",
+        category: "conflict",
+        nameTaken: true,
+        message: "private diagnostic",
+      }),
+    );
+    await openMutation(action);
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Name already used");
+    expect(mocks.mutate).not.toHaveBeenCalled();
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+  });
+});
+
+test.each(["folder", "move"] as const)(
+  "%s holds synchronous admission through delayed refusal reconciliation",
+  async (action) => {
+    const listing = deferred<unknown[]>();
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockReturnValueOnce(listing.promise.then((entries) => ({ entries, unread: [] })));
+    mutationCommands[action].mockRejectedValueOnce(commandError("conflict", "private diagnostic"));
+    await realWorkspace();
+    await openMutation(action);
+    const confirm = dialogButton(action === "move" ? "Move" : "Confirm");
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+    await settle();
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+    expect(confirm.disabled).toBe(true);
+    expect(container.textContent).not.toContain(refusalCopy["Files.Refusal.Changed"]);
+    await act(async () => listing.resolve([nativeFile, nativeDestination, nativeLeftover]));
+    expect(confirm.disabled).toBe(false);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+      refusalCopy["Files.Refusal.Changed"],
+    );
+    expect(container.querySelector('[data-testid="entries"]')?.textContent).toContain("Leftover");
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["conflict", "missing-resource"] as const)(
+  "%s relist failure keeps original refusal and refuses retry against unavailable listing",
+  async (category) => {
+    const listing = deferred<never>();
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce({ entries: [], unread: [] })
+      .mockReturnValueOnce(listing.promise);
+    mocks.createWorkspaceDirectory.mockRejectedValueOnce(
+      commandError(category, "private diagnostic"),
+    );
+    await realWorkspace();
+    await openMutation("folder");
+    await act(async () => dialogButton("Confirm").click());
+    expect(dialogButton("Confirm").disabled).toBe(true);
+    await act(async () => listing.reject(commandError("permission", "private list diagnostic")));
+    const key = category === "conflict" ? "Files.Refusal.Changed" : "Files.Refusal.Unavailable";
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(refusalCopy[key]);
+    expect(container.textContent).toContain("Files could not be loaded. Please try again.");
+    await act(async () => dialogButton("Confirm").click());
+    expect(mocks.createWorkspaceDirectory).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(refusalCopy[key]);
+    expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
+      "Retained draft",
+    );
+    expect(container.textContent).not.toContain("private list diagnostic");
+  },
+);
+
+test.each(["file", "folder", "rename", "metadata", "move"] as const)(
+  "%s refuses retry when its bound source or creation parent disappears",
+  async (action) => {
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockResolvedValue({ entries: [nativeLeftover], unread: [] });
+    mutationCommands[action].mockRejectedValueOnce(commandError("conflict", "private diagnostic"));
+    await realWorkspace();
+    if (action === "file" || action === "folder") click("Select destination folder");
+    await openMutation(action);
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+      refusalCopy["Files.Refusal.Changed"],
+    );
+    expect(
+      (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
+    ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Retained draft");
+    expect(mutationCommands[action].mock.calls[0].slice(0, 2)).toEqual([
+      workspace,
+      action === "file" || action === "folder" ? destination.handle : entry.handle,
+    ]);
+  },
+);
+
+test("move retains a removed destination and refuses a second write", async () => {
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+    .mockResolvedValue({ entries: [nativeFile], unread: [] });
+  mocks.moveWorkspaceEntry.mockRejectedValueOnce(
+    commandError("missing-resource", "private diagnostic"),
+  );
+  await realWorkspace();
+  await openMutation("move");
+  const select = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
+  await act(async () => {
+    select.value = fileWorkspaceKey(destination.handle);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => dialogButton("Move").click());
+  await act(async () => dialogButton("Move").click());
+  expect(mocks.moveWorkspaceEntry).toHaveBeenCalledExactlyOnceWith(
+    workspace,
+    entry.handle,
+    destination.handle,
+  );
+  expect(select.value).toBe(fileWorkspaceKey(destination.handle));
+  expect(select.selectedOptions[0].textContent).toBe(destination.name);
+  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+    refusalCopy["Files.Refusal.Unavailable"],
+  );
+});
+
+test.each(["file", "folder", "rename", "metadata", "move"] as const)(
+  "%s stays bound when selection changes before submission",
+  async (action) => {
+    await openMutation(action);
+    act(() => controller.listProps.setSelectedFile(destination as Entry));
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+    expect(mutationCommands[action].mock.calls[0].slice(0, 2)).toEqual([
+      workspace,
+      action === "file" || action === "folder" ? workspace : entry.handle,
+    ]);
+  },
+);
+
+test.each(["rename", "metadata"] as const)(
+  "%s refuses an unreadable bound source before writing",
+  async (action) => {
+    await openMutation(action);
+    mocks.data = [{ ...entry, readError: "permission" }, destination];
+    await rerender();
+    await act(async () => dialogButton("Confirm").click());
+    expect(mutationCommands[action]).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+      refusalCopy["Files.Refusal.Unavailable"],
+    );
+  },
+);
+
+test("a refusal drains a preceding listing and keeps the reconciled current files", async () => {
+  const old = deferred<unknown[]>();
+  mocks.listFileWorkspace
+    .mockReset()
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockReturnValueOnce(old.promise.then((entries) => ({ entries, unread: [] })))
+    .mockResolvedValueOnce({ entries: [nativeLeftover], unread: [] });
+  mocks.createWorkspaceDirectory.mockRejectedValueOnce(
+    commandError("conflict", "private diagnostic"),
+  );
+  const { config } = await realWorkspace();
+  let prior!: Promise<unknown>;
+  await act(async () => {
+    prior = config.mutate(workspaceListingKey(workspace));
+  });
+  await openMutation("folder");
+  await act(async () => dialogButton("Confirm").click());
+  expect(mocks.listFileWorkspace.mock.calls[1][1].signal.aborted).toBe(true);
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
+  await act(async () => {
+    old.resolve([]);
+    await prior;
+  });
+  expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe("Leftover");
+  expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+    refusalCopy["Files.Refusal.Changed"],
+  );
+});
+
+test.each(["reject", "resolve", "relist"] as const)(
+  "old %s completion cannot change a reopened form or release its pending guard",
+  async (outcome) => {
+    const old = deferred<void>();
+    const next = deferred<void>();
+    const listing = deferred<unknown[]>();
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockImplementation(() =>
+        outcome === "relist"
+          ? listing.promise.then((entries) => ({ entries, unread: [] }))
+          : Promise.resolve({ entries: [nativeFile, nativeDestination], unread: [] }),
+      );
+    mocks.createWorkspaceDirectory
+      .mockReturnValueOnce(old.promise)
+      .mockReturnValueOnce(next.promise);
+    await realWorkspace();
+    await openMutation("folder");
+    await act(async () => dialogButton("Confirm").click());
+    if (outcome === "relist")
+      await act(async () => old.reject(commandError("conflict", "old diagnostic")));
+    click("Close dialog");
+    await openMutation("folder");
+    await setDialogName("New owner draft");
+    if (outcome !== "relist") await act(async () => dialogButton("Confirm").click());
+    await act(async () => {
+      if (outcome === "reject") old.reject(commandError("permission", "old diagnostic"));
+      else if (outcome === "resolve") old.resolve();
+      else listing.resolve([nativeFile, nativeDestination]);
+    });
+    expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
+      "New owner draft",
+    );
+    expect(dialogButton("Confirm").disabled).toBe(outcome !== "relist");
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    if (outcome === "relist") await act(async () => dialogButton("Confirm").click());
+    await act(async () => next.reject(commandError("permission", "new diagnostic")));
+    expect(dialogButton("Confirm").disabled).toBe(false);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+      refusalCopy["Files.Refusal.Permission"],
+    );
+  },
+);
+
+test.each(["workspace", "provider", "unmount"] as const)(
+  "%s replacement retires presentation while the old cache reconciles",
+  async (replacement) => {
+    const pending = deferred<void>();
+    const other = { id: { id: "owner-B" }, kind: "fileWorkspace" } as const;
+    mocks.listFileWorkspace.mockReset().mockResolvedValue({ entries: [], unread: [] });
+    mocks.createWorkspaceDirectory.mockReturnValueOnce(pending.promise);
+    const { cache, render } = await realWorkspace();
+    await openMutation("folder");
+    await act(async () => dialogButton("Confirm").click());
+    const foreign = new Map();
+    if (replacement === "workspace") mocks.workspace = other;
+    if (replacement === "unmount") await act(async () => root.render(<div>Unmounted</div>));
+    else await render(replacement === "provider" ? foreign : cache);
+    if (replacement !== "unmount") {
+      await openMutation("folder");
+      await setDialogName("New workspace draft");
+    }
+    const count = mocks.listFileWorkspace.mock.calls.length;
+    await act(async () => pending.reject(commandError("conflict", "old diagnostic")));
+    await vi.waitFor(() => expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(count + 1));
+    expect(mocks.listFileWorkspace.mock.calls.at(-1)?.[0]).toEqual(workspace);
+    expect(cache.get(unstable_serialize(workspaceListingKey(workspace)))?.data).toBeUndefined();
+    expect(
+      (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
+    ).toBe(replacement === "unmount" ? undefined : "New workspace draft");
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(
+      [...container.querySelectorAll('[role="dialog"] button')]
+        .find((button) => button.textContent === "Confirm")
+        ?.hasAttribute("disabled"),
+    ).toBe(replacement === "unmount" ? undefined : false);
+    expect(mocks.createWorkspaceDirectory).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["reject", "resolve", "relist"] as const)(
+  "old move %s cannot publish into a newer move or release its pending guard",
+  async (outcome) => {
+    const old = deferred<void>();
+    const next = deferred<void>();
+    const listing = deferred<unknown[]>();
+    mocks.listFileWorkspace
+      .mockReset()
+      .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+      .mockImplementation(() =>
+        outcome === "relist"
+          ? listing.promise.then((entries) => ({ entries, unread: [] }))
+          : Promise.resolve({ entries: [nativeFile, nativeDestination], unread: [] }),
+      );
+    mocks.moveWorkspaceEntry.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    await realWorkspace();
+    await openMutation("move");
+    await act(async () => dialogButton("Move").click());
+    if (outcome === "relist")
+      await act(async () => old.reject(commandError("conflict", "old diagnostic")));
+    click("Close dialog");
+    // Reopen from the original entry while reconciliation has temporarily cleared the listing.
+    act(() => controller.listProps.onRequestMove(entry as Entry));
+    if (outcome !== "relist") await act(async () => dialogButton("Move").click());
+    await act(async () => {
+      if (outcome === "reject") old.reject(commandError("permission", "old diagnostic"));
+      else if (outcome === "resolve") old.resolve();
+      else listing.resolve([nativeFile, nativeDestination]);
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(dialogButton("Move").disabled).toBe(outcome !== "relist");
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    if (outcome === "relist") await act(async () => dialogButton("Move").click());
+    await act(async () => dialogButton("Move").click());
+    expect(mocks.moveWorkspaceEntry).toHaveBeenCalledTimes(2);
+    await act(async () => next.reject(commandError("permission", "new diagnostic")));
+    expect(dialogButton("Move").disabled).toBe(false);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+      refusalCopy["Files.Refusal.Permission"],
+    );
+  },
+);
+
+test("a folder parent stays bound across an unrelated selection change", async () => {
+  click("Select destination folder");
+  await openMutation("folder");
+  act(() => controller.listProps.setSelectedFile(entry as Entry));
+  await act(async () => dialogButton("Confirm").click());
+  expect(mocks.createWorkspaceDirectory).toHaveBeenCalledExactlyOnceWith(
+    workspace,
+    destination.handle,
+    "Retained draft",
+  );
+});
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 installMatchMediaStub();
@@ -652,7 +1057,7 @@ async function completeTrash() {
 }
 
 beforeEach(async () => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   mocks.realSWR = false;
   mocks.workspace = undefined;
   mocks.data = [entry, destination];
@@ -898,7 +1303,7 @@ test.each([
   { nameTaken: true, message: "unrelated diagnostic", expected: "Name already used" },
   {
     message: "Conflict: source PGN changed",
-    expected: "The file operation could not be completed. Please try again.",
+    expected: refusalCopy["Files.Refusal.Changed"],
   },
 ])("create conflict $message keeps its name and shows $expected", async (failure) => {
   mocks.createWorkspaceFile.mockRejectedValueOnce(
@@ -924,7 +1329,7 @@ test.each([
       : "Name already used",
   );
   expect(mocks.createWorkspaceFile).toHaveBeenCalledOnce();
-  expect(mocks.mutate).not.toHaveBeenCalled();
+  expect(mocks.mutate).toHaveBeenCalledTimes(failure.nameTaken ? 0 : 2);
 });
 
 test("applied-despite-error move refreshes and clears the move", async () => {
@@ -1033,7 +1438,7 @@ describe("move controller", () => {
     await act(async () => undefined);
     expect(mocks.moveWorkspaceEntry).toHaveBeenCalledWith(workspace, entry.handle, workspace);
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
-      "The file operation could not be completed. Please try again.",
+      refusalCopy["Files.Refusal.Permission"],
     );
     expect(container.querySelector("output")?.textContent).toBe("sample.pgn");
     expect(document.activeElement).toBe(move);
@@ -1069,7 +1474,7 @@ describe("move controller", () => {
     expect(mocks.moveWorkspaceEntry).toHaveBeenCalledTimes(1);
     await act(async () => reject(new Error("native drag denied")));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "The file operation could not be completed. Please try again.",
+      refusalCopy["Files.Refusal.Permission"],
     );
     expect(container.querySelector("output")?.textContent).toBe("sample.pgn");
     expect(document.activeElement).toBe(drag);
@@ -1265,11 +1670,9 @@ describe("metadata and rename submissions", () => {
       await act(async () => dialogButton("Confirm").click());
       expect(mocks.mutate).toHaveBeenCalledTimes(applied ? 1 : 0);
       expect(container.querySelector('[role="dialog"]') === null).toBe(applied);
-      expect(
-        container.textContent?.includes(
-          "The file operation could not be completed. Please try again.",
-        ),
-      ).toBe(!applied);
+      expect(container.textContent?.includes(refusalCopy["Files.Refusal.Permission"])).toBe(
+        !applied,
+      );
     },
   );
 });

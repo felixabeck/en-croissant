@@ -6,7 +6,11 @@ import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { createFile } from "@/utils/files";
 import { TauriCommandError } from "@/platform/tauri";
 import { workspaceListingToEntries } from "./file";
-import { workspaceListingKey, type WorkspaceListingCache } from "./workspaceListing";
+import {
+  reconcileWorkspaceListing,
+  workspaceListingKey,
+  type WorkspaceListingCache,
+} from "./workspaceListing";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -201,4 +205,81 @@ test("inactive cleanup retires SWR's completed pre-mutation fetch before immedia
   await render(true);
   await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("Created"));
   expect(native.listFileWorkspace).toHaveBeenCalledTimes(3);
+});
+
+test("reconciliation survives disposal of the submitting SWR provider and never restores stale cached data", async () => {
+  native.listFileWorkspace
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockResolvedValue({ entries: [leftover], unread: [] });
+  const cache = new Map();
+  const foreign = new Map([[unstable_serialize(key), { data: [{ name: "foreign" }] }]]);
+  async function mount() {
+    await act(async () =>
+      root.render(
+        <SWRConfig
+          value={{ provider: () => cache, shouldRetryOnError: false, revalidateOnFocus: false }}
+        >
+          <Reader visible />
+        </SWRConfig>,
+      ),
+    );
+  }
+  await mount();
+  const captured = context;
+  await act(async () =>
+    root.render(
+      <SWRConfig value={{ provider: () => foreign }}>
+        <span>Other provider</span>
+      </SWRConfig>,
+    ),
+  );
+  await expect(reconcileWorkspaceListing(workspace, captured)).resolves.toBeUndefined();
+  expect(native.listFileWorkspace).toHaveBeenCalledTimes(2);
+  expect(native.listFileWorkspace).toHaveBeenLastCalledWith(workspace);
+  expect(cache.get(unstable_serialize(key))?.data).toBeUndefined();
+  expect(foreign.get(unstable_serialize(key))?.data).toEqual([{ name: "foreign" }]);
+  await mount();
+  await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("Created"));
+  expect(native.listFileWorkspace).toHaveBeenCalledTimes(3);
+});
+
+test("provider disposal during reconciliation still finishes the captured native read without publishing into its replacement", async () => {
+  const listing = deferred<(typeof leftover)[]>();
+  native.listFileWorkspace
+    .mockResolvedValueOnce({ entries: [], unread: [] })
+    .mockReturnValueOnce(listing.promise.then((entries) => ({ entries, unread: [] })))
+    .mockResolvedValue({ entries: [leftover], unread: [] });
+  const cache = new Map();
+  const foreign = new Map();
+  await act(async () =>
+    root.render(
+      <SWRConfig
+        value={{ provider: () => cache, shouldRetryOnError: false, revalidateOnFocus: false }}
+      >
+        <Reader visible />
+      </SWRConfig>,
+    ),
+  );
+  let reconciliation!: Promise<void>;
+  await act(async () => {
+    reconciliation = reconcileWorkspaceListing(workspace, context);
+  });
+  expect(native.listFileWorkspace).toHaveBeenCalledTimes(2);
+  await act(async () =>
+    root.render(
+      <SWRConfig key="replacement" value={{ provider: () => foreign }}>
+        <span>New owner</span>
+      </SWRConfig>,
+    ),
+  );
+  expect(native.listFileWorkspace.mock.calls[1][1].signal.aborted).toBe(true);
+  await act(async () => {
+    listing.resolve([leftover]);
+    await reconciliation;
+  });
+  expect(native.listFileWorkspace).toHaveBeenCalledTimes(3);
+  expect(native.listFileWorkspace).toHaveBeenLastCalledWith(workspace);
+  expect(foreign.size).toBe(0);
+  expect(cache.get(unstable_serialize(key))?.data).toBeUndefined();
+  expect(host.textContent).toBe("New owner");
 });

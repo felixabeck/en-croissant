@@ -1,9 +1,14 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import i18n, { type SupportedLocale } from "@/i18n";
 import { normalizeError } from "@/platform/errors";
 import { catalogueI18n, shippedCatalogues } from "@/tests/catalogues";
 import { TauriCommandError } from "@/platform/tauri";
-import { workspaceErrorMessage } from "./workspaceError";
+import {
+    filesMutationErrorMessage,
+    runFilesMutationWithRefresh,
+    workspaceErrorMessage,
+} from "./workspaceError";
+import type { ErrorCategory } from "@/bindings";
 
 const cleanup = new TauriCommandError({
     tag: "backend-error",
@@ -100,4 +105,118 @@ test("classification uses the typed category and preserves unrelated fallbacks",
     ]) {
         expect(workspaceErrorMessage(error, "fallback", i18n.t)).toBe("fallback");
     }
+});
+
+const refusals = [
+    ["invalid-input", "Files.Refusal.Invalid"],
+    ["parsing", "Files.Refusal.Invalid"],
+    ["resource-limit", "Files.Refusal.Limit"],
+    ["permission", "Files.Refusal.Permission"],
+    ["conflict", "Files.Refusal.Changed"],
+    ["missing-resource", "Files.Refusal.Unavailable"],
+] as const;
+
+test.each(shippedCatalogues())(
+    "$locale has translated Files refusal guidance without fallback",
+    async ({ locale, translation }) => {
+        const translator = await catalogueI18n(locale as SupportedLocale);
+        const english = await catalogueI18n("en-US");
+        for (const [category, key] of refusals) {
+            const cause = new TauriCommandError({
+                tag: "backend-error",
+                category,
+                message: "private diagnostic",
+            });
+            const value = translation[key];
+            expect(value).toBeTruthy();
+            expect(filesMutationErrorMessage(cause, "fallback", translator.t)).toBe(value);
+            expect(workspaceErrorMessage(cause, "fallback", translator.t)).toBe("fallback");
+            expect(value).not.toContain("private diagnostic");
+            expect(value === english.t(key)).toBe(locale.startsWith("en-"));
+        }
+    },
+);
+
+test.each(["metadata exceeds size bound", "native operation capacity reached"])(
+    "resource-limit guidance covers %s without diagnosing the producer",
+    async (message) => {
+        const translator = await catalogueI18n("en-US");
+        expect(
+            filesMutationErrorMessage(
+                { tag: "backend-error", category: "resource-limit", message },
+                "fallback",
+                translator.t,
+            ),
+        ).toBe(
+            "The operation reached a limit. Check the file details or try again after other operations finish.",
+        );
+    },
+);
+
+test.each(["io", "network", "cancellation", "operation-and-cleanup", "conflict"] as const)(
+    "Files guidance preserves special %s behavior",
+    async (category) => {
+        const translator = await catalogueI18n("en-US");
+        const cause = {
+            tag: "backend-error",
+            category,
+            message: "private diagnostic",
+            ...(category === "conflict" ? { nameTaken: true } : {}),
+        };
+        expect(filesMutationErrorMessage(cause, "fallback", translator.t)).toBe(
+            category === "cancellation"
+                ? ""
+                : category === "operation-and-cleanup"
+                  ? translator.t("Files.OperationAndCleanupFailed")
+                  : category === "conflict"
+                    ? "Name already used"
+                    : "fallback",
+        );
+    },
+);
+
+test.each([false, true])(
+    "Files refusal reconciliation preserves original identity, secondary failure=%s",
+    async (fails) => {
+        for (const category of ["conflict", "missing-resource"] as const) {
+            const cause = new TauriCommandError({
+                tag: "backend-error",
+                category,
+                message: "private diagnostic",
+            });
+            const run = vi.fn().mockRejectedValue(cause);
+            const refresh = vi.fn();
+            const reconcile = vi.fn(async () => {
+                if (fails) throw new Error("secondary list error");
+            });
+            await expect(runFilesMutationWithRefresh(run, refresh, reconcile)).rejects.toBe(cause);
+            expect(run).toHaveBeenCalledOnce();
+            expect(reconcile).toHaveBeenCalledOnce();
+            expect(refresh).not.toHaveBeenCalled();
+        }
+    },
+);
+
+test.each([
+    "invalid-input",
+    "resource-limit",
+    "permission",
+    "io",
+    "network",
+    "cancellation",
+    "conflict",
+] as const)("Files %s refusal does not relist or retry", async (category: ErrorCategory) => {
+    const cause = {
+        tag: "backend-error",
+        category,
+        message: "private diagnostic",
+        ...(category === "conflict" ? { nameTaken: true } : {}),
+    };
+    const run = vi.fn().mockRejectedValue(cause);
+    const refresh = vi.fn();
+    const reconcile = vi.fn();
+    await expect(runFilesMutationWithRefresh(run, refresh, reconcile)).rejects.toBe(cause);
+    expect(run).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
 });

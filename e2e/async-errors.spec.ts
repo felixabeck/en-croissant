@@ -238,6 +238,194 @@ for (const locale of ["en-US", "de-DE"] as const) {
     }
 }
 
+for (const locale of ["en-US", "de-DE"] as const) {
+    for (const action of ["file", "folder", "rename", "metadata", "move"] as const) {
+        const reconciles = action === "folder" || action === "rename" || action === "move";
+        for (const relistFails of reconciles ? [false, true] : [false]) {
+            test(`Files refusal ${action}: ${locale}, relist fails=${relistFails}, 320px and 200%`, async ({
+                page,
+                mockScenario,
+                assertNoHorizontalOverflow,
+                capture,
+            }) => {
+                const copy =
+                    locale === "de-DE" ? germanCatalogue.translation : englishCatalogue.translation;
+                const destination = { ...openingDirectory, name: "Target" };
+                const current = {
+                    ...openingDirectory,
+                    handle: { id: { id: "current-directory" }, kind: "fileWorkspace" },
+                    name: "Current",
+                };
+                const command = {
+                    file: "create_workspace_file",
+                    folder: "create_workspace_directory",
+                    rename: "rename_workspace_file",
+                    metadata: "write_workspace_file_metadata",
+                    move: "move_workspace_entry",
+                }[action];
+                const category =
+                    action === "file"
+                        ? "invalid-input"
+                        : action === "metadata"
+                          ? "resource-limit"
+                          : action === "rename"
+                            ? "missing-resource"
+                            : "conflict";
+                const key =
+                    action === "file"
+                        ? "Files.Refusal.Invalid"
+                        : action === "metadata"
+                          ? "Files.Refusal.Limit"
+                          : action === "rename"
+                            ? "Files.Refusal.Unavailable"
+                            : "Files.Refusal.Changed";
+                await page.setViewportSize({ width: 320, height: 900 });
+                await page.addInitScript((language) => {
+                    localStorage.setItem("font-size", "200");
+                    localStorage.setItem("i18nextLng", language);
+                }, locale);
+                await mockScenario({
+                    commands: filesWorkspaceCommands([], {
+                        ...pgnFileCommands,
+                        [command]: {
+                            error: {
+                                tag: "backend-error",
+                                category,
+                                message: "private mutation diagnostic",
+                            },
+                        },
+                        list_file_workspace: {
+                            outcomes: [
+                                { result: { entries: [pgnFile, destination], unread: [] } },
+                                relistFails
+                                    ? {
+                                          error: {
+                                              tag: "backend-error",
+                                              category: "permission",
+                                              message: "private listing diagnostic",
+                                          },
+                                      }
+                                    : { result: { entries: [current], unread: [] } },
+                            ],
+                        },
+                    }),
+                });
+                await page.goto("/library");
+                await page
+                    .getByRole("button", { name: copy["Files.ChooseCollection"], exact: true })
+                    .click();
+                await expect(
+                    page.getByRole("treeitem", { name: destination.name, exact: true }),
+                ).toBeVisible();
+                if (action === "folder") await selectFilesTreeRow(page, destination.name);
+                else if (action !== "file") await selectFilesTreeRow(page, pgnFile.name);
+                const trigger =
+                    action === "file"
+                        ? "Files.CreateFile"
+                        : action === "folder"
+                          ? "Files.CreateFolder"
+                          : action === "rename"
+                            ? "Files.Rename"
+                            : action === "metadata"
+                              ? "Files.EditMetadata"
+                              : "Files.Move";
+                if (action === "move")
+                    await page
+                        .getByRole("treeitem", { name: pgnFile.name, exact: true })
+                        .getByRole("button", { name: copy[trigger], exact: true })
+                        .click();
+                else await page.getByRole("button", { name: copy[trigger], exact: true }).click();
+                const dialog = page.getByRole("dialog");
+                const input = dialog.getByRole("textbox", {
+                    name: copy["Common.Name"],
+                    exact: true,
+                });
+                if (action === "metadata") {
+                    await dialog
+                        .getByRole("textbox", { name: copy["Files.FileType"], exact: true })
+                        .click();
+                    await page
+                        .getByRole("option", {
+                            name: copy["Files.FileType.Repertoire"],
+                            exact: true,
+                        })
+                        .click();
+                } else if (action === "move") {
+                    // The existing open-ended Select design belongs to f-20261007-04.
+                    // Exercise its existing choice contract without changing its presentation.
+                    await dialog
+                        .getByRole("textbox", {
+                            name: copy["Files.DestinationFolder"],
+                            exact: true,
+                        })
+                        .click();
+                    await page.getByRole("option", { name: destination.name, exact: true }).click();
+                } else await input.fill("Retained draft");
+                const submit = dialog.getByRole("button", {
+                    name: copy[action === "move" ? "Files.Move" : "Common.Confirm"],
+                    exact: true,
+                });
+                await submit.click();
+                await expect(dialog).toContainText(copy[key]);
+                await expect(dialog).not.toContainText(copy["Files.OperationFailed"]);
+                if (action !== "move")
+                    await expect(input).toHaveValue(
+                        action === "metadata" ? pgnFile.name : "Retained draft",
+                    );
+                if (action === "metadata")
+                    await expect(
+                        dialog.getByRole("textbox", { name: copy["Files.FileType"], exact: true }),
+                    ).toHaveValue(copy["Files.FileType.Repertoire"]);
+                if (action === "move")
+                    await expect(
+                        dialog.getByRole("textbox", {
+                            name: copy["Files.DestinationFolder"],
+                            exact: true,
+                        }),
+                    ).toHaveValue(destination.name);
+                if (reconciles) {
+                    await expect(
+                        page.getByRole("treeitem", {
+                            name: current.name,
+                            exact: true,
+                            includeHidden: true,
+                        }),
+                    ).toHaveCount(relistFails ? 0 : 1);
+                    await submit.click();
+                    await expect(dialog).toContainText(copy[key]);
+                }
+                const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+                expect(invocations.filter((call) => call.command === command)).toHaveLength(1);
+                expect(
+                    invocations.filter((call) => call.command === "list_file_workspace"),
+                ).toHaveLength(reconciles ? 2 : 1);
+                if (action === "folder")
+                    expect(
+                        invocations.find((call) => call.command === command)?.args.parent,
+                    ).toEqual(destination.handle);
+                if (action === "move")
+                    expect(
+                        invocations.find((call) => call.command === command)?.args.targetDirectory,
+                    ).toEqual(destination.handle);
+                await expect(page.locator("body")).not.toContainText("private mutation diagnostic");
+                await expect(page.locator("body")).not.toContainText("private listing diagnostic");
+                await submit.scrollIntoViewIfNeeded();
+                await expect(submit).toBeEnabled();
+                await assertNothingClipped(submit, { mode: "reachable" });
+                await dialog
+                    .getByRole("button", { name: copy["Common.Close"], exact: true })
+                    .scrollIntoViewIfNeeded();
+                await assertDialogWithinViewport(dialog);
+                await assertNothingClipped(dialog, { mode: "reachable" });
+                await assertNoHorizontalOverflow();
+                const screenshot = `workspace-refusal-${action}-${relistFails ? "relist-failed" : "retained"}-320-200-${locale}`;
+                await expect(dialog).toHaveScreenshot(`${screenshot}.png`);
+                await capture(screenshot);
+            });
+        }
+    }
+}
+
 async function assertNativeTextValueReachable(input: Locator, expectedValue: string) {
     await input.focus();
     await input.press("End");

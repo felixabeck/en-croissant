@@ -2,7 +2,7 @@ import { libraryButtonProps } from "@/components/library/presentation";
 import { tauri } from "@/platform/tauri";
 import { listingFailure, rootFailureMessage } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
-import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
+import { runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import { Box, Button, Center, Group, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useAtom } from "jotai";
@@ -19,11 +19,26 @@ import ConfirmModal from "../common/ConfirmModal";
 import AppModal from "../common/AppModal";
 import type { Entry, UsableEntry, FileType } from "./file";
 import { FILE_TYPES, workspaceListingToEntries } from "./file";
-import { workspaceErrorMessage } from "./workspaceError";
-import { reconcileWorkspaceListing, workspaceListingKey } from "./workspaceListing";
+import { filesMutationErrorMessage, runFilesMutationWithRefresh } from "./workspaceError";
+import {
+  reconcileWorkspaceListing,
+  workspaceListingKey,
+  type WorkspaceListingCache,
+} from "./workspaceListing";
+import type { FileWorkspaceHandle } from "@/bindings";
 
 const fileAction = { file: "file", folder: "folder", rename: "rename", edit: "edit" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
+type ActionTarget =
+  | { kind: "root"; handle: FileWorkspaceHandle }
+  | { kind: "entry"; entry: UsableEntry };
+type Presentation = {
+  workspace: FileWorkspaceHandle;
+  cache: WorkspaceListingCache;
+  target: ActionTarget;
+  pending: boolean;
+  destination?: { handle: FileWorkspaceHandle; label: string };
+};
 const FILE_CARD_MIN_HEIGHT = "32rem";
 const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // At 320px/200% the default modal clipped the type Select's "Repertoire";
@@ -72,27 +87,37 @@ export function useFileWorkspace(
   const [purgeTarget, setPurgeTarget] = useState<UsableEntry | null>(null);
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const operationFailed = t("Files.OperationFailed", {
     defaultValue: "The file operation could not be completed. Please try again.",
   });
-  const moveInFlight = useRef(false);
+  const presentation = useRef<Presentation | null>(null);
+  const moveInFlight = useRef<Presentation | null>(null);
   const actionInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (action) actionInputRef.current?.focus();
   }, [action]);
   const workspaceKey = workspace ? workspaceListingKey(workspace) : null;
+  const workspaceIdentity = workspace ? fileWorkspaceKey(workspace) : null;
+  const environment = useRef({ workspaceIdentity, cache: listingCache.cache });
+  environment.current = { workspaceIdentity, cache: listingCache.cache };
+  useEffect(() => {
+    setAction(null);
+    setMoveTarget(null);
+    setActionError("");
+    setSubmitting(false);
+    setMoving(false);
+    return () => {
+      presentation.current = null;
+      moveInFlight.current = null;
+    };
+  }, [workspaceIdentity, listingCache.cache]);
   const workspaceOwner = useNativeRequestOwner(workspaceKey);
   const { data, error, mutate } = useSWR(workspaceKey, async () =>
     workspaceOwner!.run(async (signal) =>
       workspaceListingToEntries(await tauri.listFileWorkspace(workspace!, { signal }), workspace!),
     ),
   );
-  const refreshWorkspace = (cleanupFailure?: unknown) => {
-    if (!workspace || !workspaceKey) return;
-    return cleanupFailure
-      ? reconcileWorkspaceListing(workspace, listingCache)
-      : listingCache.mutate(workspaceKey);
-  };
   const failure = listingFailure(error);
   const loadFailureMessage =
     rootFailureMessage("files", error, t) ??
@@ -123,7 +148,78 @@ export function useFileWorkspace(
       setWorkspaceDisplayName(result.displayName);
     });
   }
-  const parent = selected?.type === "directory" ? selected.handle : workspace;
+  function owns(owner: Presentation) {
+    return (
+      presentation.current === owner &&
+      environment.current.workspaceIdentity === fileWorkspaceKey(owner.workspace) &&
+      environment.current.cache === owner.cache.cache
+    );
+  }
+  function closePresentation() {
+    moveInFlight.current = null;
+    presentation.current = null;
+    setAction(null);
+    setMoveTarget(null);
+    setActionError("");
+    setSubmitting(false);
+    setMoving(false);
+  }
+  function openPresentation(target: ActionTarget) {
+    if (!workspace) return;
+    const owner: Presentation = { workspace, cache: listingCache, target, pending: false };
+    presentation.current = owner;
+    moveInFlight.current = null;
+    setActionError("");
+    setSubmitting(false);
+    setMoving(false);
+    return owner;
+  }
+  function openAction(next: FileAction) {
+    const editing = next === fileAction.edit || next === fileAction.rename;
+    if (editing && selected?.type !== "file") return;
+    const target: ActionTarget =
+      editing || selected?.type === "directory"
+        ? { kind: "entry", entry: selected! }
+        : { kind: "root", handle: workspace! };
+    if (!openPresentation(target)) return;
+    setMoveTarget(null);
+    setName(editing ? selected!.name : "");
+    if (selected?.type === "file") setFileType(selected.metadata.type);
+    setAction(next);
+  }
+  function openMove(entry: UsableEntry) {
+    const owner = openPresentation({ kind: "entry", entry });
+    if (!owner) return;
+    owner.destination = {
+      handle: owner.workspace,
+      label: t("Files.CollectionRoot", { defaultValue: "Collection root" }),
+    };
+    setAction(null);
+    setSelectedEntry(entry);
+    setMoveTarget(fileWorkspaceKey(workspace!));
+  }
+  function currentTarget(owner: Presentation, target: ActionTarget) {
+    if (!owns(owner) || !data || failure !== "silent" || error) return null;
+    if (target.kind === "root") return target.handle;
+    const found = findEntry(data, fileWorkspaceKey(target.entry.handle), target.entry.type);
+    return found && !(found.type === "file" && found.readError) ? found : null;
+  }
+  function refuseUnavailable() {
+    setActionError(
+      (previous) =>
+        previous ||
+        filesMutationErrorMessage({ category: "not-found", message: "" }, operationFailed, t),
+    );
+  }
+  function runMutation(owner: Presentation, run: () => Promise<unknown>) {
+    const reconcile = () => reconcileWorkspaceListing(owner.workspace, owner.cache);
+    return runFilesMutationWithRefresh(
+      run,
+      (cleanupFailure) =>
+        cleanupFailure ? reconcile() : owner.cache.mutate(workspaceListingKey(owner.workspace)),
+      reconcile,
+    );
+  }
   const directories = (
     entries: Entry[],
   ): { handle: NonNullable<typeof workspace>; label: string }[] =>
@@ -133,7 +229,7 @@ export function useFileWorkspace(
         : [],
     );
   const destinationDirectories = data ? directories(data) : [];
-  const moveTargetHandle = [
+  const moveDestinations = [
     ...(workspace
       ? [
           {
@@ -143,32 +239,82 @@ export function useFileWorkspace(
         ]
       : []),
     ...destinationDirectories,
-  ].find((entry) => fileWorkspaceKey(entry.handle) === moveTarget)?.handle;
-  async function moveEntry(entry: Entry, destination: UsableEntry["handle"]) {
+  ];
+  // Keep the chosen destination visible after it disappears, without making it writable.
+  const retainedDestination = presentation.current?.destination;
+  if (
+    retainedDestination &&
+    !moveDestinations.some(
+      (entry) => fileWorkspaceKey(entry.handle) === fileWorkspaceKey(retainedDestination.handle),
+    )
+  )
+    moveDestinations.push(retainedDestination);
+  const moveTargetHandle = moveDestinations.find(
+    (entry) => fileWorkspaceKey(entry.handle) === moveTarget,
+  )?.handle;
+  async function moveEntry(
+    entry: Entry,
+    destination: UsableEntry["handle"],
+    dialogOwner?: Presentation,
+  ) {
     if (entry.type === "unreadable") return;
     if (moveInFlight.current) return;
     if (!workspace) return;
-    moveInFlight.current = true;
+    const owner = dialogOwner ?? openPresentation({ kind: "entry", entry });
+    if (!owner || !owns(owner) || owner.pending) return;
+    const destinationEntry = data
+      ? findEntry(data, fileWorkspaceKey(destination), "directory")
+      : null;
+    const destinationTarget: ActionTarget | null =
+      fileWorkspaceKey(destination) === fileWorkspaceKey(owner.workspace)
+        ? { kind: "root", handle: destination }
+        : destinationEntry
+          ? { kind: "entry", entry: destinationEntry }
+          : null;
+    const source = currentTarget(owner, owner.target);
+    if (
+      !source ||
+      !("type" in source) ||
+      !destinationTarget ||
+      !currentTarget(owner, destinationTarget)
+    ) {
+      refuseUnavailable();
+      return;
+    }
+    owner.pending = true;
+    moveInFlight.current = owner;
     setMoving(true);
     setActionError("");
-    setSelectedEntry(entry);
+    setSelectedEntry(source);
     try {
-      await runAppliedMutationWithRefresh(
-        () => tauri.moveWorkspaceEntry(workspace, entry.handle, destination),
-        refreshWorkspace,
+      await runMutation(owner, () =>
+        tauri.moveWorkspaceEntry(owner.workspace, source.handle, destination),
       );
-      setMoveTarget(null);
+      if (owns(owner)) closePresentation();
     } catch (cause) {
-      setActionError(workspaceErrorMessage(cause, operationFailed, t));
+      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
     } finally {
-      moveInFlight.current = false;
-      setMoving(false);
+      owner.pending = false;
+      if (moveInFlight.current === owner) moveInFlight.current = null;
+      if (owns(owner)) setMoving(false);
     }
   }
   async function submitAction() {
-    const nameUnchanged = selected?.type === "file" && name === selected.name;
-    if (!workspace || !parent) return;
+    const owner = presentation.current;
+    if (!owner || !owns(owner) || owner.pending || !action) return;
+    const target = currentTarget(owner, owner.target);
+    if (!target) {
+      refuseUnavailable();
+      return;
+    }
+    const source = "type" in target && target.type === "file" ? target : null;
+    const parent = "type" in target ? target.handle : target;
+    const nameUnchanged = source && name === source.name;
     const editing = action === fileAction.edit || action === fileAction.rename;
+    if (editing && !source) {
+      refuseUnavailable();
+      return;
+    }
     if (
       !name.trim() &&
       (action === fileAction.file || action === fileAction.folder || (editing && !nameUnchanged))
@@ -176,26 +322,19 @@ export function useFileWorkspace(
       return;
     setActionError("");
     const chosenType =
-      action === fileAction.edit
-        ? fileType
-        : selected?.type === "file"
-          ? selected.metadata.type
-          : "other";
-    if (
-      editing &&
-      selected?.type === "file" &&
-      nameUnchanged &&
-      chosenType === selected.metadata.type
-    ) {
-      setAction(null);
+      action === fileAction.edit ? fileType : source ? source.metadata.type : "other";
+    if (editing && source && nameUnchanged && chosenType === source.metadata.type) {
+      closePresentation();
       setName("");
       return;
     }
+    owner.pending = true;
+    setSubmitting(true);
     try {
-      await runAppliedMutationWithRefresh(async () => {
+      await runMutation(owner, async () => {
         if (action === fileAction.file)
           await tauri.createWorkspaceFile(
-            workspace,
+            owner.workspace,
             parent,
             name,
             { type: "game", tags: [] },
@@ -205,21 +344,26 @@ export function useFileWorkspace(
             },
           );
         if (action === fileAction.folder)
-          await tauri.createWorkspaceDirectory(workspace, parent, name);
-        if (editing && selected?.type === "file") {
+          await tauri.createWorkspaceDirectory(owner.workspace, parent, name);
+        if (editing && source) {
           const metadata = {
             type: chosenType,
-            tags: selected.metadata.tags,
+            tags: source.metadata.tags,
           };
           if (nameUnchanged)
-            await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
-          else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
+            await tauri.writeWorkspaceFileMetadata(owner.workspace, source.handle, metadata);
+          else await tauri.renameWorkspaceFile(owner.workspace, source.handle, name, metadata);
         }
-      }, refreshWorkspace);
-      setAction(null);
-      setName("");
+      });
+      if (owns(owner)) {
+        closePresentation();
+        setName("");
+      }
     } catch (cause) {
-      setActionError(workspaceErrorMessage(cause, operationFailed, t));
+      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
+    } finally {
+      owner.pending = false;
+      if (owns(owner)) setSubmitting(false);
     }
   }
   async function clearTrashAndRelist() {
@@ -254,7 +398,7 @@ export function useFileWorkspace(
           miw={0}
           {...libraryButtonProps}
           disabled={!workspace}
-          onClick={() => setAction(fileAction.file)}
+          onClick={() => openAction(fileAction.file)}
         >
           {t("Files.CreateFile", { defaultValue: "Create file" })}
         </Button>
@@ -262,7 +406,7 @@ export function useFileWorkspace(
           miw={0}
           {...libraryButtonProps}
           disabled={!workspace}
-          onClick={() => setAction(fileAction.folder)}
+          onClick={() => openAction(fileAction.folder)}
         >
           {t("Files.CreateFolder", { defaultValue: "Create folder" })}
         </Button>
@@ -328,9 +472,7 @@ export function useFileWorkspace(
       },
       onRequestMove: (entry: Entry) => {
         if (entry.type === "unreadable") return;
-        setActionError("");
-        setSelectedEntry(entry);
-        setMoveTarget(fileWorkspaceKey(workspace!));
+        openMove(entry);
       },
       onMove: (entry: Entry, destination: Entry) => {
         if (destination.type !== "unreadable") return moveEntry(entry, destination.handle);
@@ -345,9 +487,7 @@ export function useFileWorkspace(
                 size="xs"
                 {...libraryButtonProps}
                 onClick={() => {
-                  setName(selected.name);
-                  setActionError("");
-                  setAction(fileAction.rename);
+                  openAction(fileAction.rename);
                 }}
               >
                 {t("Files.Rename", { defaultValue: "Rename" })}
@@ -356,7 +496,7 @@ export function useFileWorkspace(
                 size="xs"
                 {...libraryButtonProps}
                 onClick={() => {
-                  if (workspace) setMoveTarget(fileWorkspaceKey(workspace));
+                  openMove(selected);
                 }}
               >
                 {t("Files.Move", { defaultValue: "Move" })}
@@ -378,10 +518,7 @@ export function useFileWorkspace(
                 key={`file:${fileWorkspaceKey(selected.handle)}`}
                 selected={selected}
                 onEditMetadata={() => {
-                  setName(selected.name);
-                  setFileType(selected.metadata.type);
-                  setActionError("");
-                  setAction(fileAction.edit);
+                  openAction(fileAction.edit);
                 }}
               />
             </Box>
@@ -414,7 +551,7 @@ export function useFileWorkspace(
         <AppModal
           opened={action !== null}
           fullScreen={compactDialog}
-          onClose={() => setAction(null)}
+          onClose={closePresentation}
           title={
             action === fileAction.edit
               ? t("Files.EditMetadata")
@@ -449,41 +586,47 @@ export function useFileWorkspace(
                 data={fileTypeOptions}
               />
             )}
-            <Button miw={0} {...libraryButtonProps} onClick={submitAction}>
+            <Button miw={0} {...libraryButtonProps} disabled={submitting} onClick={submitAction}>
               {t("Common.Confirm", { defaultValue: "Confirm" })}
             </Button>
           </Stack>
         </AppModal>
         <AppModal
           opened={moveTarget !== null}
-          onClose={() => setMoveTarget(null)}
+          onClose={closePresentation}
           title={t("Files.MoveFile", { defaultValue: "Move file" })}
         >
           <Stack>
             <Select
               label={t("Files.DestinationFolder", { defaultValue: "Destination folder" })}
               value={moveTarget}
-              onChange={setMoveTarget}
-              data={[
-                ...(workspace
-                  ? [
-                      {
-                        value: fileWorkspaceKey(workspace),
-                        label: t("Files.CollectionRoot", { defaultValue: "Collection root" }),
-                      },
-                    ]
-                  : []),
-                ...destinationDirectories.map((entry) => ({
-                  value: fileWorkspaceKey(entry.handle),
-                  label: entry.label,
-                })),
-              ]}
+              onChange={(value) => {
+                const owner = presentation.current;
+                if (!owner || !owns(owner)) return;
+                if (!value) {
+                  closePresentation();
+                  return;
+                }
+                owner.destination = moveDestinations.find(
+                  (entry) => fileWorkspaceKey(entry.handle) === value,
+                );
+                setMoveTarget(value);
+              }}
+              data={moveDestinations.map((entry) => ({
+                value: fileWorkspaceKey(entry.handle),
+                label: entry.label,
+              }))}
             />
             <Button
-              disabled={!moveTarget || !selected || moving}
+              disabled={!moveTarget || moving}
               onClick={async () => {
-                if (!workspace || !selected || !moveTargetHandle) return;
-                await moveEntry(selected, moveTargetHandle);
+                const owner = presentation.current;
+                if (!owner || !owns(owner) || owner.pending) return;
+                if (owner.target.kind !== "entry" || !moveTargetHandle) {
+                  refuseUnavailable();
+                  return;
+                }
+                await moveEntry(owner.target.entry, moveTargetHandle, owner);
               }}
             >
               {t("Files.Move", { defaultValue: "Move" })}

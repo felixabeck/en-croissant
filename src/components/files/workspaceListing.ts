@@ -1,4 +1,4 @@
-import type { useSWRConfig } from "swr";
+import { unstable_serialize, type useSWRConfig } from "swr";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { hasNativeRequestSubscribers, supersedeNativeRequest } from "@/hooks/useNativeRequestOwner";
 import { tauri } from "@/platform/tauri";
@@ -16,10 +16,20 @@ export async function reconcileWorkspaceListing(
 ): Promise<void> {
     const key = workspaceListingKey(workspace);
     await supersedeNativeRequest(cache, key);
-    const active = hasNativeRequestSubscribers(cache, key);
     // Invalidate first, then await no-data revalidation to settle the actual native fetch.
     // This also clears completed SWR fetches. Inactive keys stay empty for next mount.
-    await mutate(key, undefined, { revalidate: false });
-    await mutate(key);
-    if (!active) await tauri.listFileWorkspace(workspace);
+    try {
+        await mutate(key, undefined, { revalidate: false });
+        await mutate(key);
+    } catch (cause) {
+        if (hasNativeRequestSubscribers(cache, key)) throw cause;
+        // SWR removes its provider state on unmount, so its captured mutate can no longer run.
+        // No reader owns this cache entry now. Leave it empty for a later mount and still
+        // reconcile the original native workspace below.
+        cache.delete(unstable_serialize(key));
+    }
+    if (!hasNativeRequestSubscribers(cache, key)) {
+        cache.delete(unstable_serialize(key));
+        await tauri.listFileWorkspace(workspace);
+    }
 }
