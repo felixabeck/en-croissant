@@ -9595,3 +9595,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
 * **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"96b5f89a1c2213536357f67cc501a3cc9ffd80d77cd096b671df5e0d54604b48","input_sha256":"5e0e5fb4328ccf3ff62db9e2eac185806026c4a969339703443c0cb9b9f3b2d7","kind":"mutation-receipt","operation":"d0de046f845fe72a226a6b0afcd79de37c644ec7b8bc67efd3e73c047e89742f","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-18"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-19 — How are destination collisions classified across platforms?
+
+* **Question:** How are destination collisions classified across platforms?
+* **Governs:** f-20261005-04
+* **Chosen:** Uniformly mark folder/rename/move destination collision as nameTaken, while preserving the create-file non-regular policy and cleanup precedence. Reject treating every conflict as name-taken. Reason: the frozen finding explicitly requires platform-uniform collision guidance. Reverse only if the operation's actual native collision evidence supports another stable distinction.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ee3ea9f947e64431c34f6ecebb105a3812023b9579d5b46e2ac5f0d36acdcf77","input_sha256":"ea7bf128dd38c6860249887572e325bbbe3df3a3cbc326e365fd95a0acd511ae","kind":"mutation-receipt","operation":"19b8e5ce6ab6f145c56212a88dc462ff534938729f78be9da80953181bf1fd01","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-19"],"target":"decisions-ledger","v":1} -->
