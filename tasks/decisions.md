@@ -9585,3 +9585,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The observed failure is missing attributable native diagnostics. The eight currently selectable collections and three sound kinds fit within 24 entries, while the explicit cap also bounds corrupt persisted values. Existing d-20260920-08 port semantics and d-20260930-09 test import semantics are preserved. Reversal path: replace the diagnostic cap or retention policy only with evidence that required failures are suppressed, retaining bounded logs and request identity.
 * **Decided by:** Codex during the authorized ChessFable side lane, 2026-10-22. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d23a95c41c41f2544c75abefaf79557c904fbd85a3fee5b6f40e28a2efbd6456","input_sha256":"ab6fe41049342d427c864e8c1e9b28b768bcace6d48ea35fd8bf923a768b0738","kind":"mutation-receipt","operation":"b80effb6865829eccb47888a923c1ae31f64ddb4bcd01b6440bb51de124b420e","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-18 — Which typed contract selects Files mutation guidance?
+
+* **Question:** Which typed contract selects Files mutation guidance?
+* **Governs:** f-20261005-04
+* **Chosen:** Use native backendCategory plus the existing nameTaken detail, rather than expanding the UI taxonomy or matching diagnostics. Reason: the existing two-level contract preserves every required distinction. Reverse only with a reviewed equally precise typed contract.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"96b5f89a1c2213536357f67cc501a3cc9ffd80d77cd096b671df5e0d54604b48","input_sha256":"5e0e5fb4328ccf3ff62db9e2eac185806026c4a969339703443c0cb9b9f3b2d7","kind":"mutation-receipt","operation":"d0de046f845fe72a226a6b0afcd79de37c644ec7b8bc67efd3e73c047e89742f","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-18"],"target":"decisions-ledger","v":1} -->
