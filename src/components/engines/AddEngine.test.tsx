@@ -236,6 +236,47 @@ test.each([true, false])(
   },
 );
 
+test.each([
+  "engineArchiveDestination",
+  "downloadEngineArchive",
+  "registerInstalledEngine",
+] as const)("%s preserves saved engines and presents use-time failures", async (boundary) => {
+  const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
+  mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
+  const prior = [{ id: "prior", type: "local" as const, name: "Prior engine" }];
+  mocks.engines = prior;
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  for (const outcome of ["permission", "child", "cancellation"] as const) {
+    mocks.notificationShow.mockClear();
+    mocks[boundary].mockRejectedValueOnce({
+      tag: "backend-error",
+      category: outcome === "cancellation" ? "cancellation" : "permission",
+      message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
+      ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
+    });
+    await act(async () => mocks.progressButtonProps!.onClick());
+    expect(mocks.notificationShow.mock.calls).toEqual(
+      outcome === "cancellation"
+        ? []
+        : [
+            [
+              {
+                color: "red",
+                title: "Common.Error",
+                message:
+                  outcome === "permission"
+                    ? "ChessFable is not allowed to read this engine folder. Choose another in Settings."
+                    : "I/O failure",
+              },
+            ],
+          ],
+    );
+    expect(mocks.engines).toEqual(prior);
+    expect(mocks.saveEngines).not.toHaveBeenCalled();
+    expect(mocks.getEngineConfig).not.toHaveBeenCalled();
+  }
+});
+
 test("wires installed state and progress id from the download URL", async () => {
   mocks.engines = [
     {

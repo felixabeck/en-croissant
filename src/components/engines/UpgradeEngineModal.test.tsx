@@ -33,6 +33,7 @@ const mocks = await vi.hoisted(async () => {
     notify: vi.fn(),
     notificationShow: vi.fn(),
     getEngineWorkspace: vi.fn(),
+    destination: vi.fn(),
     close: undefined as (() => void) | undefined,
     catalogError: undefined as unknown,
     progress: new Map<string, number>(),
@@ -43,7 +44,7 @@ vi.mock("@/platform/tauri", async (original) => ({
   withDownloadTicket: (run: (ticket: string) => Promise<unknown>) => run("ticket"),
   tauri: {
     getEngineWorkspace: mocks.getEngineWorkspace,
-    engineArchiveDestination: async () => ({ id: "destination" }),
+    engineArchiveDestination: mocks.destination,
     downloadEngineArchive: mocks.download,
     registerInstalledEngine: mocks.register,
     getEngineConfig: mocks.config,
@@ -218,6 +219,7 @@ beforeEach(async () => {
     .mockReset()
     .mockResolvedValue({ id: { id: "root" }, kind: "engineRoot" });
   mocks.close = undefined;
+  mocks.destination.mockReset().mockResolvedValue({ id: "destination" });
   mocks.progress.clear();
   mocks.reconcile.mockReset().mockResolvedValue(undefined);
   mocks.download.mockReset().mockResolvedValue(undefined);
@@ -307,6 +309,45 @@ test.each([true, false])(
     });
     expect(mocks.download).not.toHaveBeenCalled();
     expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: old.handle });
+  },
+);
+
+test.each(["destination", "download", "register"] as const)(
+  "%s preserves the old engine and saved bytes on use-time failure",
+  async (boundary) => {
+    await render();
+    const bytes = localStorage.getItem("engines");
+    for (const outcome of ["permission", "child", "cancellation"] as const) {
+      mocks.notificationShow.mockClear();
+      mocks[boundary].mockRejectedValueOnce({
+        tag: "backend-error",
+        category: outcome === "cancellation" ? "cancellation" : "permission",
+        message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
+        ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
+      });
+      await click("Common.Install");
+      expect(mocks.notificationShow.mock.calls).toEqual(
+        outcome === "cancellation"
+          ? []
+          : [
+              [
+                {
+                  color: "red",
+                  title: "Common.Error",
+                  message:
+                    outcome === "permission"
+                      ? "ChessFable is not allowed to read this engine folder. Choose another in Settings."
+                      : "I/O failure",
+                },
+              ],
+            ],
+      );
+      expect(store.get(enginesAtom)).toEqual([old]);
+      expect(localStorage.getItem("engines")).toBe(bytes);
+      expect(mocks.retire).not.toHaveBeenCalled();
+      expect(mocks.reconcile).not.toHaveBeenCalled();
+      expect(mocks.config).not.toHaveBeenCalled();
+    }
   },
 );
 

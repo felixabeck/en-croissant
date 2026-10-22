@@ -227,6 +227,50 @@ describe("default-engine download cancellation", () => {
 });
 
 describe("engine persistence", () => {
+    it.each([
+        "engineArchiveDestination",
+        "downloadEngineArchive",
+        "registerInstalledEngine",
+    ] as const)(
+        "%s preserves the exact root, child and cancellation rejection",
+        async (boundary) => {
+            for (const outcome of ["permission", "child", "cancellation"] as const) {
+                installMocks.getEngineWorkspace
+                    .mockReset()
+                    .mockResolvedValue({ id: { id: "root" } });
+                installMocks.engineArchiveDestination
+                    .mockReset()
+                    .mockResolvedValue({ id: "destination" });
+                installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
+                installMocks.registerInstalledEngine
+                    .mockReset()
+                    .mockResolvedValue({ id: { id: "binary" }, kind: "engine" });
+                installMocks.getEngineConfig.mockReset();
+                const failure = {
+                    tag: "backend-error",
+                    category: outcome === "cancellation" ? "cancellation" : "permission",
+                    message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
+                    ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
+                };
+                installMocks[boundary].mockRejectedValueOnce(failure);
+                await expect(
+                    installDefaultEngine(
+                        { ...manifestEntry, path: "stockfish" } as never,
+                        "progress",
+                        "ticket",
+                    ),
+                ).rejects.toBe(failure);
+                expect(installMocks.getEngineConfig).not.toHaveBeenCalled();
+                expect(installMocks.downloadEngineArchive).toHaveBeenCalledTimes(
+                    boundary === "engineArchiveDestination" ? 0 : 1,
+                );
+                expect(installMocks.registerInstalledEngine).toHaveBeenCalledTimes(
+                    boundary === "registerInstalledEngine" ? 1 : 0,
+                );
+            }
+        },
+    );
+
     it("shares required defaults and excludes button and non-required options", () => {
         expect(
             requiredEngineSettingsDefaults({

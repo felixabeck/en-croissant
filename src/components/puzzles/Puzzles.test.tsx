@@ -3103,6 +3103,43 @@ test.each(["workspace", "listing"] as const)(
   },
 );
 
+test.each(["permission", "child", "cancellation"] as const)(
+  "listing %s keeps saved selection and puzzle history",
+  async (outcome) => {
+    const store = await renderPriorPuzzle([puzzleRow()]);
+    const selection = localStorage.getItem("puzzle-db");
+    const history = storedHistoryBytes();
+    mocks.notificationShow.mockClear();
+    mocks.listPuzzleDatabases.mockRejectedValue(
+      new TauriCommandError({
+        tag: "backend-error",
+        category: outcome === "cancellation" ? "cancellation" : "permission",
+        message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
+        ...(outcome === "permission" ? { rootFailure: "permission" as const } : {}),
+      }),
+    );
+    await act(async () => store.set(puzzleWorkspaceGenerationAtom, (generation) => generation + 1));
+    expect(mocks.notificationShow.mock.calls).toEqual(
+      outcome === "cancellation"
+        ? []
+        : [
+            [
+              {
+                color: "red",
+                title: "Common.Error",
+                message:
+                  outcome === "permission"
+                    ? "ChessFable is not allowed to read this puzzle folder. Choose another in Settings."
+                    : "I/O failure",
+              },
+            ],
+          ],
+    );
+    expect(localStorage.getItem("puzzle-db")).toBe(selection);
+    expect(storedHistoryBytes()).toBe(history);
+  },
+);
+
 test("shows the outdated-database alert for puzzle-themes-unavailable", async () => {
   // Message is neither the old Diesel substring nor the variant Display.
   mocks.getPuzzleThemes.mockRejectedValue(

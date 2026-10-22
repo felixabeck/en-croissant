@@ -39,7 +39,80 @@
 // Every DOM observer, timer and override was restored. The real harness removed disposable profiles.
 // The six historical assertion receipts above remain intact. New staging covers only EP1-card,
 // with no new staging claim for inherited non-EP assertions or error exits.
-import { existsSync } from "node:fs";
+// f-20261004-21 root-permission proof receipts, 2026-10-22.
+// Observed need: mocked IPC cannot prove OS root read/search denial reaches renderer guidance.
+// Failure costs one disposable verification run and preserves saved engines. Removal path:
+// delete verifySelectedRootPermissions, its seed entries and this block when that obligation ends.
+// No new gate, hook, service or driver. Container screenshots own canonical pixel evidence.
+// Run evidence: /tmp/build-43307881-0e65-4348-98b2-3c4089f02858/.
+// Durable history: tasks/handoffs/2026-10-22-f-20261004-21-review.md.
+// Main matrix: root-permission-staging/ROOT-VERDICT.md, with <case>.log, <case>.actual-exit,
+// <case>.injections.json and <case>.recovery.json. Each case below observed actual native exit 1,
+// the documented failed-check/fatal-error status. Root inspected raw failures and restoration.
+// Input-only blocks change owned real inputs between unchanged observations. Removing exactly
+// those blocks recovers verifier SHA256 57f2dad9d6317c17849e9eb2b88cf45dd0071fdbaf2e717408e439d606cc1900.
+// That hash precedes this comment-only receipt update. Assertions, helpers and seeds stayed exact.
+// Release SHA256: 67b5f107623e130311929d8651764189858b32f6ca37ffce16495bb61dd882fb.
+// No fake IPC or verifier/library mutation was used. All inputs and modes were restored, all
+// observers disconnected, disposable profiles removed, and both driver ports confirmed closed.
+// rf0.log, actual-exit 1:
+// FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+// rf1-8-matrix.log, each distinct failure below observed in that same run, actual-exit 1:
+// FAIL  RF1 puzzle read denial preserves Permission and I/O failure with a permission root label
+// FAIL  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+// FAIL  RF3 later engine registration search denial preserves Permission and I/O failure with a permission root label
+// FAIL  RF4 healthy engine root leaves child permission failure unlabelled
+// FAIL  RF5 puzzle permission guidance is visible through the actual renderer
+// FAIL  RF6 Add permission guidance is visible through the actual renderer
+// FAIL  RF7 permission failures retain saved engines and unrelated filesystem bytes
+// FAIL  RF8 restoring access recovers the same selected roots
+// RF7 storage-only input retained the child bytes and restored exact saved engines. Separately,
+// rf7-bytes.log observed the same RF7 FAIL at actual-exit 1 with unchanged saved engines, then
+// restored the exact child bytes. These are independent witnesses for its two conjuncts.
+// action-train.log, actual-exit 1:
+// verify:app could not run: timed out waiting for root permission action Train
+// action-add-new.log, actual-exit 1:
+// verify:app could not run: timed out waiting for root permission action Add New
+// action-install.log, actual-exit 1:
+// verify:app could not run: timed out waiting for root permission action Install
+// action-close-dialog.log, actual-exit 1:
+// verify:app could not run: timed out waiting for root permission action Close dialog
+// Actual DOM controls were withheld and restored around the unchanged wait helper. Later
+// unreachable assertions are not counted. Close dialog also had the two existing Files metadata
+// failures f-20261008-01 before its fault, so no isolated exit-causality claim is made for it.
+// rf9-local.log, actual-exit 1:
+// verify:app could not run: RF9 disposable root permission restoration failed
+// rf9-normal-fatal.log, actual-exit 1:
+// verify:app normal/fatal permission cleanup failed: AggregateError: RF9 disposable root permission restoration failed
+// rf9-signal.log, actual-exit 1, actual signal delivered only to the test process:
+// verify:app signal permission cleanup failed: AggregateError: RF9 disposable root permission restoration failed
+// rf9-exit-dependent.log, actual-exit 1:
+// verify:app exit permission cleanup failed: AggregateError: RF9 disposable root permission restoration failed
+// These real missing-path faults observed later paths restored despite the first failure, only
+// failed keys retained for retry, exact moved names/modes restored, and profile cleanup completed.
+// Normal/fatal and exit retry statuses depend on an earlier local failure. Signal already exits 1
+// by its inherited contract. Their error contexts are staged, independent exit-code attribution
+// is not claimed. Isolating a failed exit retry without an earlier failure would change the
+// tracking logic, because successful local restoration removes every tracked key.
+// Optional image-write failure after RF6: root-permission-image-stage/full.log and actual-exit 1.
+// verify:app could not run: EISDIR: illegal operation on a directory, open '/tmp/build-43307881-0e65-4348-98b2-3c4089f02858/root-permission-image-stage/output.png'
+// The original optional write failed at verifySelectedRootPermissions after RF6 passed. A real
+// directory temporarily occupied the requested output path, then exact prior image bytes were
+// restored. Original cleanup restored all three modes, removed the profile and stopped drivers.
+// That run also had an earlier single freshness apply-budget miss (1279 ms against 1000 ms),
+// disclosed separately, with no isolated image-error exit-causality claim or threshold change.
+// Safe-message private-path leakage in RF1-RF4 is argued, not independently staged. Path-only
+// inputs cannot make the safe serializer emit a private path. Native tests, including
+// root_failure_serialization_and_diagnostics_are_additive, own that branch. Native green does
+// not claim an independently staged serializer canary or isolated cleanup retry exit status.
+// Actual production-only Git control: native-production-control/, exact patch native-production-only.patch.
+// Only the puzzle failure wrapper and five-line mixed engine resolution marker were removed.
+// Tests and this verifier stayed. Old build succeeded, old-native.log failed exactly RF1, RF3
+// and RF5 at exit 1. RF2 remained green and is not claimed as a source-control failure.
+// Git reverse/restore applied without offsets, source hashes matched, fixed build succeeded and
+// restored-native.log passed the whole ordinary verifier at actual exit 0. Canonical polled proof:
+// gate-native-production-control.7vvZ5h/completion.record, exit 0 in this run's DRAIN_GATE_DIR.
+import { chmodSync, existsSync, statSync } from "node:fs";
 import {
   appendFile,
   mkdir,
@@ -170,6 +243,29 @@ const closeControlAction = `
 `;
 
 const failures = [];
+const rootPermissionRestorations = new Map();
+function restoreRootPermissions() {
+  const errors = [];
+  for (const [path, mode] of rootPermissionRestorations) {
+    try {
+      chmodSync(path, mode);
+    } catch (cause) {
+      errors.push(new Error(`permission restoration failed for ${path}`, { cause }));
+      continue;
+    }
+    rootPermissionRestorations.delete(path);
+  }
+  if (errors.length)
+    throw new AggregateError(errors, "RF9 disposable root permission restoration failed");
+}
+function restoreRootPermissionsForCleanup(context) {
+  try {
+    restoreRootPermissions();
+  } catch (error) {
+    console.error(`verify:app ${context} permission cleanup failed:`, error);
+    process.exitCode = 1;
+  }
+}
 const check = (condition, description, detail) => {
   console.log(`${condition ? "  ok  " : "FAIL  "}${description}`);
   if (!condition) {
@@ -687,6 +783,169 @@ async function verifyWorkspaceDeletionOutcome(session, filesWorkspace) {
     detail,
   );
   await rm(sidecar, { recursive: true, force: true });
+}
+
+async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
+  const puzzle = { id: { id: "verify-permission-puzzles" }, kind: "puzzleRoot" };
+  const engine = { id: { id: "verify-permission-engines" }, kind: "engineRoot" };
+  const child = join(engineRoot, "blocked-child");
+  console.log(`  .. root-permission disposable inputs: ${puzzleRoot}, ${engineRoot}, ${child}`);
+  for (const path of [puzzleRoot, engineRoot, child])
+    rootPermissionRestorations.set(path, statSync(path).mode & 0o777);
+  const ipc = (command, args) =>
+    `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`;
+  const invoke = (command, args) =>
+    invokeJsonAndWait(session, command, "__verifyRootPermission", ipc(command, args));
+  const rejection = (response) => {
+    try {
+      return JSON.parse(response.result.rejected);
+    } catch {
+      return null;
+    }
+  };
+  const safePermission = (response) => {
+    const error = rejection(response);
+    return (
+      error?.tag === "backend-error" &&
+      error.category === "permission" &&
+      error.message === "I/O failure" &&
+      error.rootFailure === "permission"
+    );
+  };
+  const visible = (message) =>
+    waitFor(message, () =>
+      session.execute(
+        `
+    return [...document.querySelectorAll('.mantine-Notification-description')].some(node =>
+      node.textContent === arguments[0] && node.getBoundingClientRect().height > 0 &&
+      getComputedStyle(node).visibility !== 'hidden');
+  `,
+        [message],
+      ),
+    ).catch(() => false);
+  const click = (label) =>
+    waitFor(`root permission action ${label}`, () =>
+      session.execute(
+        `
+    const button = [...document.querySelectorAll('button')].find(node =>
+      (node.textContent.trim() === arguments[0] || node.getAttribute('aria-label') === arguments[0]) && !node.disabled);
+    if (!button) return false;
+    button.click();
+    return true;
+  `,
+        [label],
+      ),
+    );
+  const savedEngines = await session.execute("return localStorage.getItem('engines')");
+  try {
+    const before = await invoke("list_puzzle_databases", { ticket: null });
+    const acquired = await invoke("engine_archive_destination", { root: engine });
+    const selectedPuzzle = await invoke("get_puzzle_workspace", {});
+    const selectedEngine = await invoke("get_engine_workspace", {});
+    const ready =
+      Array.isArray(before.value) &&
+      before.value.length === 0 &&
+      acquired.value?.id === engine.id.id &&
+      selectedPuzzle.value?.root?.id?.id === puzzle.id.id &&
+      selectedEngine.value?.id?.id === engine.id.id;
+    check(
+      ready,
+      "RF0 selected puzzle and engine roots accept real IPC before access loss",
+      JSON.stringify({ before, acquired, selectedPuzzle, selectedEngine }),
+    );
+    if (!ready) return;
+
+    chmodSync(puzzleRoot, 0o300);
+    const puzzleDenied = await invoke("list_puzzle_databases", { ticket: null });
+    check(
+      safePermission(puzzleDenied),
+      "RF1 puzzle read denial preserves Permission and I/O failure with a permission root label",
+      JSON.stringify(puzzleDenied),
+    );
+    await session.execute(`document.querySelector('a[href="/"]')?.click(); return true;`);
+    await click("Train");
+    check(
+      await visible(
+        "ChessFable is not allowed to read this puzzle folder. Choose another in Settings.",
+      ),
+      "RF5 puzzle permission guidance is visible through the actual renderer",
+    );
+    chmodSync(puzzleRoot, 0o700);
+
+    chmodSync(engineRoot, 0o300);
+    const destinationDenied = await invoke("engine_archive_destination", { root: engine });
+    check(
+      safePermission(destinationDenied),
+      "RF2 engine destination read denial preserves Permission and I/O failure with a permission root label",
+      JSON.stringify(destinationDenied),
+    );
+    await session.execute(`document.querySelector('a[href="/engines"]')?.click(); return true;`);
+    await click("Add New");
+    await click("Install");
+    check(
+      await visible(
+        "ChessFable is not allowed to read this engine folder. Choose another in Settings.",
+      ),
+      "RF6 Add permission guidance is visible through the actual renderer",
+    );
+    if (screenshotPath) {
+      await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
+      console.log(`  ..  Add permission guidance screenshot written to ${screenshotPath}`);
+    }
+    await click("Close dialog");
+
+    // This is a later use of the same selected root after successful destination acquisition.
+    // A denied child gives an independent error with the same safe category/message when the
+    // root is restored. No catalog record is seeded for this child, so the precheck confirms no
+    // pending catalog publication. resolve_unix's descendant stat/open returns Io(PermissionDenied)
+    // for root search loss and child traversal denial. Serialization retains category Permission
+    // and message I/O failure, the root-only probe adds a label only for the first case.
+    // Registration never executes these deliberately non-executable bytes.
+    chmodSync(child, 0o000);
+    chmodSync(engineRoot, 0o400);
+    const laterDenied = await invoke("register_installed_engine", {
+      root: engine,
+      relativePath: "blocked-child/engine",
+    });
+    check(
+      safePermission(laterDenied),
+      "RF3 later engine registration search denial preserves Permission and I/O failure with a permission root label",
+      JSON.stringify(laterDenied),
+    );
+    chmodSync(engineRoot, 0o700);
+    const childDenied = await invoke("register_installed_engine", {
+      root: engine,
+      relativePath: "blocked-child/engine",
+    });
+    const childError = rejection(childDenied);
+    check(
+      childError?.tag === "backend-error" &&
+        childError.category === "permission" &&
+        childError.message === "I/O failure" &&
+        childError.rootFailure === undefined,
+      "RF4 healthy engine root leaves child permission failure unlabelled",
+      JSON.stringify(childDenied),
+    );
+    chmodSync(child, 0o700);
+    check(
+      (await session.execute("return localStorage.getItem('engines')")) === savedEngines &&
+        (await readFile(join(child, "engine"), "utf8")) === "not an executable\n",
+      "RF7 permission failures retain saved engines and unrelated filesystem bytes",
+    );
+    const recovered = await invoke("list_puzzle_databases", { ticket: null });
+    const recoveredPuzzle = await invoke("get_puzzle_workspace", {});
+    const destination = await invoke("engine_archive_destination", { root: engine });
+    check(
+      Array.isArray(recovered.value) &&
+        recovered.value.length === 0 &&
+        recoveredPuzzle.value?.root?.id?.id === puzzle.id.id &&
+        destination.value?.id === acquired.value.id,
+      "RF8 restoring access recovers the same selected roots",
+      JSON.stringify({ recovered, recoveredPuzzle, destination }),
+    );
+  } finally {
+    restoreRootPermissions();
+  }
 }
 
 // Conversion assertion staging receipts. Root observed these native application runs.
@@ -2737,6 +2996,7 @@ let cleanupSettled = false;
 let signalShutdown;
 const handleSignal = () => {
   if (signalShutdown) return;
+  restoreRootPermissionsForCleanup("signal");
   signalShutdown = shutdown()
     .catch((error) => console.error(`cleanup failed: ${error.message}`))
     .finally(() => {
@@ -2835,6 +3095,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   const fixtureDirectory = join(profileDirectory, "path-owner-fixture");
   const ownedRoot = join(fixtureDirectory, "owned-database-root");
   const downloadDestination = join(fixtureDirectory, "download-destination");
+  const permissionPuzzleRoot = join(fixtureDirectory, "permission-puzzles");
+  const permissionEngineRoot = join(fixtureDirectory, "permission-engines");
   const orphanFile = join(fixtureDirectory, "orphan-opening-book.bin");
   const imageDirectory = join(
     profileDirectory,
@@ -2852,6 +3114,9 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   const largePracticeMetadataPath = join(filesWorkspace, `${largePracticeName}.info`);
   const legacyPracticePath = join(fixtureDirectory, "legacy-practice-repertoire.pgn");
   await mkdir(ownedRoot, { recursive: true });
+  await mkdir(permissionPuzzleRoot, { recursive: true, mode: 0o700 });
+  await mkdir(join(permissionEngineRoot, "blocked-child"), { recursive: true, mode: 0o700 });
+  await writeFile(join(permissionEngineRoot, "blocked-child/engine"), "not an executable\n");
   await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
@@ -2940,6 +3205,22 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       schema_version: 1,
       entries: [
         await storedEntry(
+          "verify-permission-puzzles",
+          "Permission puzzles",
+          permissionPuzzleRoot,
+          "puzzleRoot",
+          ["puzzleRead", "puzzleDelete", "downloadFile"],
+          true,
+        ),
+        await storedEntry(
+          "verify-permission-engines",
+          "Permission engines",
+          permissionEngineRoot,
+          "engineRoot",
+          ["downloadArchive", "engineInstall", "engineExecute", "engineConfigure"],
+          true,
+        ),
+        await storedEntry(
           "verify-owned-root",
           "Owned fixture root",
           ownedRoot,
@@ -3013,8 +3294,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
         ),
       ],
       active_database_root: { id: "verify-owned-root" },
-      active_puzzle_root: null,
-      active_engine_root: null,
+      active_puzzle_root: { id: "verify-permission-puzzles" },
+      active_engine_root: { id: "verify-permission-engines" },
       pending_artifacts: [],
       provisional_attachments: [],
       image_cleanup: [],
@@ -4102,7 +4383,9 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     prepareRetireImageResult.rejected ?? prepareRetireImageResult.error,
   );
   await session.execute(`localStorage.setItem("engines", arguments[0]); return true`, [
-    JSON.stringify([ownerEngine("retained", retainedImageId)]),
+    serializeStorageValue([
+      { ...ownerEngine("retained", retainedImageId), legacyAssessment: null },
+    ]),
   ]);
   const retireImageResult = await invokeAndWait(
     session,
@@ -4864,6 +5147,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     check(false, workspaceSelectionCheck, error.message);
   }
 
+  await verifySelectedRootPermissions(session, permissionPuzzleRoot, permissionEngineRoot);
+
   // The reload log wait above confirms the startup sweep ran before this new-document reservation.
   // Its presence in the destroyed-window log below proves it survived that sweep until close.
   const retainedRead = await invokeAndWait(
@@ -5027,6 +5312,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
 
 async function main() {
   process.on("exit", () => {
+    restoreRootPermissionsForCleanup("exit");
     if (!cleanupSettled) console.error("cleanup did not finish before process exit");
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
@@ -5078,6 +5364,7 @@ async function main() {
     if (diagnostics) console.error(`  .. tauri-driver output:\n${diagnostics}`);
     process.exitCode = 1;
   } finally {
+    restoreRootPermissionsForCleanup("normal/fatal");
     try {
       await shutdown();
     } catch (error) {
