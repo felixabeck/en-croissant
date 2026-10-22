@@ -17794,6 +17794,9 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Found by:** Root actual-product verification during pinned f-20261004-21, followed by the sensitive Codex regression/repair leaf and independent root source-control proof. The cumulative records lens identified these missing required body fields at round 1, confidence 100. This append preserves the original intake and impact correction.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"47a5dd8dcdf71017863ac858cee652287b8a65ae58518ad4929e9bec3ac5b9ff","input_sha256":"a012b01ee7347f60001a18d4b4836be9cab5dc3d3a7420610876c2f8c2571cd5","kind":"mutation-receipt","operation":"b434b2c82bef82ead77d10567055797202e932b2939546878b1b56dd10a17e26","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-02"],"target":"f-20261022-02","v":1} -->
 
+* **Where:** src-tauri/src/db/repository.rs:795 guards ordinary acquisition before SQLite opens, src-tauri/src/db/migrations.rs:146 defines the shared uninitialized error, and src-tauri/src/db/linked_collections/tests.rs:422 begins the three real empty-metadata regressions. These line-specific pointers refine the preceding appended location field without changing the original observation.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fc33bcd84fe6b1fe38372ff3b2f8421f1a315fd3ec846ecde1033b1bcc3e33fb","input_sha256":"fcee94862ad52c73ebc7f50adab010bd632926de084fb55382ff806c145991b7","kind":"mutation-receipt","operation":"88385744f04a4d5022a0c2019d063badbca3e7b1a56d2ba1a48d3a07344239de","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-02"],"target":"f-20261022-02","v":1} -->
+
 ---
 
 ## 2026-10-22 — filed through the inbox spool
