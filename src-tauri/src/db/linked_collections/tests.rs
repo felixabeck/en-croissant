@@ -295,6 +295,231 @@ mod native_tests {
         }
     }
 
+    struct EmptyMetadataRestoreCase {
+        fixture: Fixture,
+        collection: Uuid,
+        archive: PathBuf,
+        destination: DatabaseHandle,
+        destination_path: PathBuf,
+        expected_export: Vec<u8>,
+    }
+
+    impl EmptyMetadataRestoreCase {
+        fn new() -> Self {
+            let fixture = Fixture::new();
+            let database = fixture.reference(
+                "archive-source",
+                &game(Some("789"), "c4 c5", "preserved archive annotation"),
+            );
+            let expected = fixture.create("expected-archive", "", WorkspaceFileType::Other);
+            export_to_pgn_blocking(
+                &fixture.state.pgn_path_authority,
+                &fixture.state.database_repository,
+                database.clone(),
+                expected,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let expected_export = std::fs::read(fixture.path("expected-archive")).unwrap();
+            let intent = fixture.migration(database, None, MigrationChoice::Database);
+            let archive = fixture
+                .service
+                .root
+                .path()
+                .join(format!("{}-original.db3", intent.id));
+            let collection = fixture
+                .service
+                .migrate(
+                    &fixture.state.pgn_path_authority,
+                    &fixture.state.workspace_mutation,
+                    intent,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let root_path = fixture.directory.path().join("databases");
+            std::fs::create_dir(&root_path).unwrap();
+            let root = fixture
+                .state
+                .pgn_path_authority
+                .with_mut(|authority| {
+                    authority.get_or_create_database_root(&root_path, "Databases", None)
+                })
+                .unwrap()
+                .unwrap();
+            // Use the same exclusive raw-file producer as create_workspace_database.
+            let destination = crate::create_workspace_database_blocking(
+                &fixture.state.pgn_path_authority,
+                root,
+                "restored.db3".into(),
+            )
+            .unwrap();
+            Self {
+                fixture,
+                collection: Uuid::parse_str(&collection.id).unwrap(),
+                archive,
+                destination,
+                destination_path: root_path.join("restored.db3"),
+                expected_export,
+            }
+        }
+
+        fn read_metadata(&self) {
+            let before = empty_metadata_file_snapshot(&self.destination_path);
+            let result = get_db_info_blocking(
+                &self.fixture.state.pgn_path_authority,
+                &self.fixture.state.database_repository,
+                self.destination.clone(),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("ordinary metadata unexpectedly initialized the restore target"),
+            };
+            let after = empty_metadata_file_snapshot(&self.destination_path);
+            println!("empty restore target metadata before={before} after={after} error={error:?}");
+            assert!(
+                matches!(&error, Error::InvalidInput(message) if message == "Database has not been initialized yet"),
+                "ordinary metadata changed the not-initialized error: {error:?}"
+            );
+        }
+
+        fn restore(&self) -> Result<(), Error> {
+            self.fixture.service.restore_archive(
+                &self.fixture.state.pgn_path_authority,
+                self.collection,
+                &self.destination,
+                &CancellationToken::new(),
+            )
+        }
+    }
+
+    fn empty_metadata_file_snapshot(path: &std::path::Path) -> serde_json::Value {
+        let bytes = std::fs::read(path).unwrap();
+        let sidecars: Vec<_> = ["-wal", "-shm", "-journal", ".integrity"]
+            .into_iter()
+            .map(|suffix| {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                let bytes = match std::fs::read(&sidecar) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("cannot inspect fixture sidecar {sidecar:?}: {error}"),
+                };
+                serde_json::json!({
+                    "suffix": suffix,
+                    "length": bytes.as_ref().map(Vec::len),
+                    "header": bytes.as_ref().map(|bytes| &bytes[..bytes.len().min(32)]),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "length": bytes.len(),
+            "header": &bytes[..bytes.len().min(32)],
+            "sidecars": sidecars,
+        })
+    }
+
+    #[test]
+    fn root_prerequisite_empty_metadata_preserves_restore_target_bytes() {
+        let case = EmptyMetadataRestoreCase::new();
+        let before = std::fs::read(&case.destination_path).unwrap();
+        let snapshot_before = empty_metadata_file_snapshot(&case.destination_path);
+        let target = resolve_database(
+            &case.fixture.state.pgn_path_authority,
+            &case.destination,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        let identity_before = target.probe_current().unwrap().identity;
+        let archive_before = std::fs::read(&case.archive).unwrap();
+        assert!(
+            before.is_empty(),
+            "exclusive creation must produce raw empty bytes"
+        );
+        assert!(snapshot_before["sidecars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|sidecar| sidecar["length"].is_null()));
+        for _ in 0..3 {
+            case.read_metadata();
+            let after = std::fs::read(&case.destination_path).unwrap();
+            assert_eq!(std::fs::read(&case.archive).unwrap(), archive_before);
+            assert_eq!(
+                after.len(),
+                before.len(),
+                "ordinary metadata changed the empty archive restore destination length"
+            );
+            assert_eq!(after, before, "ordinary metadata changed destination bytes");
+            assert_eq!(target.probe_current().unwrap().identity, identity_before);
+            assert_eq!(
+                empty_metadata_file_snapshot(&case.destination_path),
+                snapshot_before,
+                "ordinary metadata created a SQLite or integrity sidecar"
+            );
+        }
+    }
+
+    #[test]
+    fn root_prerequisite_empty_metadata_preserves_restore_target_for_same_handle_restore() {
+        let mut case = EmptyMetadataRestoreCase::new();
+        assert!(std::fs::read(&case.destination_path).unwrap().is_empty());
+        let archive_before = std::fs::read(&case.archive).unwrap();
+        for _ in 0..3 {
+            case.read_metadata();
+        }
+        // Keep restoration separate so the byte-preservation failure cannot hide it.
+        let restored = case.restore();
+        println!("same-handle archive restoration after ordinary metadata: {restored:?}");
+        assert_eq!(std::fs::read(&case.archive).unwrap(), archive_before);
+        assert!(
+            restored.is_ok(),
+            "the same exclusively created handle must remain restorable after metadata: {restored:?}"
+        );
+        let exported = case
+            .fixture
+            .create("restored-export", "", WorkspaceFileType::Other);
+        export_to_pgn_blocking(
+            &case.fixture.state.pgn_path_authority,
+            &case.fixture.state.database_repository,
+            case.destination.clone(),
+            exported,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(case.fixture.path("restored-export")).unwrap(),
+            case.expected_export,
+            "restoration must recover the actual archived games and annotations"
+        );
+        assert_eq!(std::fs::read(&case.archive).unwrap(), archive_before);
+        let restored_before_retry = std::fs::read(&case.destination_path).unwrap();
+        case.fixture.restart();
+        for _ in 0..2 {
+            case.restore().unwrap();
+            assert_eq!(
+                std::fs::read(&case.destination_path).unwrap(),
+                restored_before_retry,
+                "restart retry changed the completed restoration"
+            );
+            assert_eq!(std::fs::read(&case.archive).unwrap(), archive_before);
+        }
+    }
+
+    #[test]
+    fn root_prerequisite_empty_metadata_preserves_restore_target_nonempty_refusal() {
+        let case = EmptyMetadataRestoreCase::new();
+        let archive_before = std::fs::read(&case.archive).unwrap();
+        let saved = b"existing destination bytes must survive archive restoration";
+        std::fs::write(&case.destination_path, saved).unwrap();
+        let result = case.restore();
+        assert!(
+            matches!(&result, Err(Error::Conflict(message)) if message == "archive restore requires an exclusively created empty database"),
+            "nonempty destination must retain the restore guard: {result:?}"
+        );
+        assert_eq!(std::fs::read(&case.destination_path).unwrap(), saved);
+        assert_eq!(std::fs::read(&case.archive).unwrap(), archive_before);
+    }
+
     #[test]
     fn migration_database_choice_preserves_original_without_duplicate_active_versions() {
         let mut fixture = Fixture::new();

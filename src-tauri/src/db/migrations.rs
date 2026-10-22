@@ -143,6 +143,10 @@ pub fn prepare_database_with_validation(
     Ok((false, migrate_database(conn)?))
 }
 
+pub(super) fn uninitialized_database_error() -> Error {
+    Error::InvalidInput("Database has not been initialized yet".into())
+}
+
 /// Verifies an existing database before it is handed to an ordinary command.
 /// Creation is intentionally excluded: only the import command has the title
 /// and description required to initialize a new database.
@@ -150,9 +154,7 @@ pub fn prepare_database_with_validation(
 /// the cheap schema contract was checked.
 pub fn validate_existing_database(conn: &mut SqliteConnection) -> Result<bool, Error> {
     if non_internal_table_count(conn)? == 0 {
-        return Err(Error::InvalidInput(
-            "Database has not been initialized yet".into(),
-        ));
+        return Err(uninitialized_database_error());
     }
     migrate_database(conn)
 }

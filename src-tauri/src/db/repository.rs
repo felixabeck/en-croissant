@@ -797,6 +797,19 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DatabaseConnection, Error> {
+        // Ordinary reads must not let the pool's WAL PRAGMA initialize a raw-empty
+        // destination. The metadata-only identity probe preserves lifecycle refusals.
+        if self
+            .identity_from_probe(
+                target,
+                cancellation.unwrap_or(&CancellationToken::new()),
+                false,
+            )?
+            .length
+            == 0
+        {
+            return Err(migrations::uninitialized_database_error());
+        }
         super::sqlite_cancellation::install()?;
         let (entry, lease, mut connection, probe) = self.acquire_probed(target, cancellation)?;
         let identity = DatabaseSchemaIdentity::from_probe(&probe);
@@ -2588,6 +2601,128 @@ mod retirement_tests {
     const FIRST_PREDECESSOR_RELEASE_DELAY: Duration = Duration::from_millis(500);
     // Above the single retirement budget, below release delay + a refreshed retirement budget.
     const MULTI_PREDECESSOR_COMPLETION_BOUND: Duration = Duration::from_millis(1050);
+
+    #[test]
+    fn ordinary_empty_refusal_preserves_explicit_initialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        for _ in 0..3 {
+            assert!(matches!(
+                repository.connection(&target, None),
+                Err(Error::InvalidInput(message))
+                    if message == "Database has not been initialized yet"
+            ));
+            assert!(std::fs::read(&path).unwrap().is_empty());
+            assert_eq!(target.probe_current().unwrap().identity, target.identity());
+            assert!(repository.state.lock().unwrap().entries.is_empty());
+        }
+        let mut initialized = repository.initialization_connection(&target, None).unwrap();
+        assert!(migrations::prepare_database(&mut initialized, "Explicit import", "kept").unwrap());
+        drop(initialized);
+        let mut ordinary = repository.connection(&target, None).unwrap();
+        let title = sql_query("SELECT Value AS value FROM Info WHERE Name='Title'")
+            .get_result::<RevisionRow>(&mut *ordinary)
+            .unwrap();
+        assert_eq!(title.value.as_deref(), Some("Explicit import"));
+    }
+
+    #[test]
+    fn ordinary_empty_cancellation_and_deletion_precede_uninitialized() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            repository.connection(&target, Some(&cancellation)),
+            Err(Error::Cancellation)
+        ));
+        let deletion = repository.reserve_for_deletion(&target, None).unwrap();
+        assert!(matches!(
+            repository.connection(&target, None),
+            Err(Error::Conflict(message)) if message == "database is being deleted"
+        ));
+        assert!(matches!(
+            repository.connection(&target, Some(&cancellation)),
+            Err(Error::Cancellation)
+        ));
+        repository.release_deletion(deletion).unwrap();
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(repository.state.lock().unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn ordinary_empty_retained_identity_refuses_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.db3");
+        let held = directory.path().join("held.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        std::fs::rename(&path, &held).unwrap();
+        std::fs::File::create(&path).unwrap();
+        assert!(matches!(
+            repository.connection(&target, None),
+            Err(Error::Conflict(message))
+                if message == "database changed after capability resolution"
+        ));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            repository.connection(&target, Some(&cancellation)),
+            Err(Error::Cancellation)
+        ));
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(std::fs::read(&held).unwrap().is_empty());
+        assert!(repository.state.lock().unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn ordinary_empty_mid_probe_cancellation_precedes_uninitialized() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let cancellation = CancellationToken::new();
+        let callback_token = cancellation.clone();
+        let _hooks = configure_test_hooks(&path, |hooks| {
+            hooks.after_probe_current = Some(Box::new(move |_| callback_token.cancel()));
+        });
+        assert!(matches!(
+            repository.connection(&target, Some(&cancellation)),
+            Err(Error::Cancellation)
+        ));
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(repository.state.lock().unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn ordinary_empty_mid_probe_tombstone_precedes_uninitialized() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.db3");
+        let target = test_target(&path);
+        let repository = Arc::new(DatabaseRepository::default());
+        let callback_repository = Arc::clone(&repository);
+        let callback_path = path.clone();
+        let _hooks = configure_test_hooks(&path, |hooks| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
+                callback_repository
+                    .state
+                    .lock()
+                    .unwrap()
+                    .tombstones
+                    .insert(callback_path.clone());
+            }));
+        });
+        assert!(matches!(
+            repository.connection(&target, None),
+            Err(Error::Conflict(message)) if message == "database is being deleted"
+        ));
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(repository.state.lock().unwrap().entries.is_empty());
+    }
 
     #[test]
     fn pool_wake_preserves_a_notification_published_before_wait() {
@@ -5017,6 +5152,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
         let target = test_target(&path);
+        // Ordinary empty reads refuse before pool construction. Seed a valid database
+        // so this test still reaches cancellation at the pool-publication checkpoint.
+        {
+            let mut seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+            migrations::prepare_database(&mut seed, "Cancellation fixture", "").unwrap();
+        }
         let repository = Arc::new(DatabaseRepository::default());
         let cancellation = CancellationToken::new();
         let (entered, entered_rx) = mpsc::channel();
