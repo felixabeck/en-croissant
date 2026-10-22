@@ -17782,7 +17782,7 @@ Additional direct visual evidence from the same notification readability surface
 
 ### Native verifier aborts linked archive restoration before root permission proof
 
-* **ID:** f-20261022-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261022-02 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 43307881-0e65-4348-98b2-3c4089f02858 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-43307881-0e65-4348-98b2-3c4089f02858-1.jsonl
 * **Impact class:** tooling
 
@@ -17808,6 +17808,12 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 
 * **Where:** src-tauri/src/db/repository.rs:795 guards ordinary acquisition before SQLite opens, src-tauri/src/db/migrations.rs:146 defines the shared uninitialized error, and src-tauri/src/db/linked_collections/tests.rs:422 begins the three real empty-metadata regressions. These line-specific pointers refine the preceding appended location field without changing the original observation.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fc33bcd84fe6b1fe38372ff3b2f8421f1a315fd3ec846ecde1033b1bcc3e33fb","input_sha256":"fcee94862ad52c73ebc7f50adab010bd632926de084fb55382ff806c145991b7","kind":"mutation-receipt","operation":"88385744f04a4d5022a0c2019d063badbca3e7b1a56d2ba1a48d3a07344239de","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-02"],"target":"f-20261022-02","v":1} -->
+
+* **Handled 2026-10-22:** adcc7bfb rejects a raw-empty target through the existing authority-backed identity probe before ordinary acquisition opens SQLite or runs write-capable PRAGMAs. Both call sites share the existing uninitialized error through migrations::uninitialized_database_error. Explicit initialization, cancellation, retained identity and lifecycle refusals remain. The raw-empty archive guard, durable restore path and public/persisted contracts are unchanged. Decision d-20261022-07 settles the original design question, the exact actor in the original runtime race remains inferred.
+* **Proof:** Real create_database_child/get_db_info_blocking reproduction on old production changed zero bytes to a 4096-byte header and sidecars, then same-handle restore failed. The production-only Git control retained all regressions and shared error extraction, compiled and failed two behavioral tests at exit 101. Exact no-offset restoration passed all three regressions at exit 0. Root independently passed three focused, 131 repository, 80 linked-collection and 23 content-validation tests. Both restored ordinary control and final post-review full verifier passed all unchanged archive checks at exit 0. Final canonical receipt is gate-post-review-ui.j0FGUJ on 2512acd1. Cumulative R2 approved this repair and closed the test fixture follow-up, corrected by 33633c84.
+* **Rejected:** Weakening archive empty-target predicates, isolating the harness from real Library metadata reads, changing persisted formats or replacing the existing initialization route. Required Where, Proof and Found by fields were appended through findings.py and independently closed by the records lens. Original intake, impact correction and receipts remain historical evidence. This note supersedes the initial Next and Open question.
+* **Closure record:** tasks/handoffs/2026-10-22-f-20261004-21-review.md and archive-repair-evidence/report.md under the retained run directory. Plan authorship and arbitration shared root context, detection used separate Codex sessions on the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"80e5970334348ef939cf793c3741e3eebdeafd007f2a99e356b12a329027ee7b","header_sha256":"74ac5f7d798e878799b871e31dcf4856049b4a45a1e6430f45b6b36f9652489c","header_status":"handled","input_sha256":"c99e9151f8ef97bb17cce217ca319cb8f257bf241cb9b33bee383fdc9688ed50","kind":"mutation-receipt","operation":"82477ef940e8fbb933c212563e8290e10fbee3b4381fb569b9162b7c513622b5","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-02"],"target":"f-20261022-02","v":1} -->
 
 ---
 
