@@ -39,7 +39,11 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("@/platform/native", () => ({ platform: () => "linux", warn: vi.fn(), error: vi.fn() }));
+vi.mock("@/platform/native", () => ({
+  platform: () => "linux",
+  warn: vi.fn().mockResolvedValue(undefined),
+  error: vi.fn(),
+}));
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
     getTotalSize: () => count * 32,

@@ -54,7 +54,7 @@ vi.mock("@mantine/notifications", () => ({
 vi.mock("@/platform/native", () => ({
   platform: () => "linux",
   error: mocks.logError,
-  warn: vi.fn(),
+  warn: vi.fn().mockResolvedValue(undefined),
   info: vi.fn(),
   debug: vi.fn(),
   trace: vi.fn(),
