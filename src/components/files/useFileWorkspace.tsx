@@ -211,14 +211,31 @@ export function useFileWorkspace(
         filesMutationErrorMessage({ category: "not-found", message: "" }, operationFailed, t),
     );
   }
-  function runMutation(owner: Presentation, run: () => Promise<unknown>) {
+  async function runMutation(
+    owner: Presentation,
+    run: () => Promise<unknown>,
+    setPending: (pending: boolean) => void,
+    onSuccess: () => void,
+  ) {
+    if (!owns(owner) || owner.pending) return;
+    owner.pending = true;
+    setPending(true);
+    setActionError("");
     const reconcile = () => reconcileWorkspaceListing(owner.workspace, owner.cache);
-    return runFilesMutationWithRefresh(
-      run,
-      (cleanupFailure) =>
-        cleanupFailure ? reconcile() : owner.cache.mutate(workspaceListingKey(owner.workspace)),
-      reconcile,
-    );
+    try {
+      await runFilesMutationWithRefresh(
+        run,
+        (cleanupFailure) =>
+          cleanupFailure ? reconcile() : owner.cache.mutate(workspaceListingKey(owner.workspace)),
+        reconcile,
+      );
+      if (owns(owner)) onSuccess();
+    } catch (cause) {
+      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
+    } finally {
+      owner.pending = false;
+      if (owns(owner)) setPending(false);
+    }
   }
   const directories = (
     entries: Entry[],
@@ -281,22 +298,19 @@ export function useFileWorkspace(
       refuseUnavailable();
       return;
     }
-    owner.pending = true;
-    moveInFlight.current = owner;
-    setMoving(true);
-    setActionError("");
-    setSelectedEntry(source);
     try {
-      await runMutation(owner, () =>
-        tauri.moveWorkspaceEntry(owner.workspace, source.handle, destination),
+      await runMutation(
+        owner,
+        () => {
+          moveInFlight.current = owner;
+          setSelectedEntry(source);
+          return tauri.moveWorkspaceEntry(owner.workspace, source.handle, destination);
+        },
+        setMoving,
+        closePresentation,
       );
-      if (owns(owner)) closePresentation();
-    } catch (cause) {
-      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
     } finally {
-      owner.pending = false;
       if (moveInFlight.current === owner) moveInFlight.current = null;
-      if (owns(owner)) setMoving(false);
     }
   }
   async function submitAction() {
@@ -320,7 +334,6 @@ export function useFileWorkspace(
       (action === fileAction.file || action === fileAction.folder || (editing && !nameUnchanged))
     )
       return;
-    setActionError("");
     const chosenType =
       action === fileAction.edit ? fileType : source ? source.metadata.type : "other";
     if (editing && source && nameUnchanged && chosenType === source.metadata.type) {
@@ -328,10 +341,9 @@ export function useFileWorkspace(
       setName("");
       return;
     }
-    owner.pending = true;
-    setSubmitting(true);
-    try {
-      await runMutation(owner, async () => {
+    await runMutation(
+      owner,
+      async () => {
         if (action === fileAction.file)
           await tauri.createWorkspaceFile(
             owner.workspace,
@@ -354,17 +366,13 @@ export function useFileWorkspace(
             await tauri.writeWorkspaceFileMetadata(owner.workspace, source.handle, metadata);
           else await tauri.renameWorkspaceFile(owner.workspace, source.handle, name, metadata);
         }
-      });
-      if (owns(owner)) {
+      },
+      setSubmitting,
+      () => {
         closePresentation();
         setName("");
-      }
-    } catch (cause) {
-      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
-    } finally {
-      owner.pending = false;
-      if (owns(owner)) setSubmitting(false);
-    }
+      },
+    );
   }
   async function clearTrashAndRelist() {
     setTrashed(null);
