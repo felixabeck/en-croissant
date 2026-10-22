@@ -6,7 +6,7 @@ Date: 2026-10-22. This terminal runs the side lane Felix authorized with “Alri
 
 The worktree is `/home/felixb/Projekte/chessfable.worktrees/side-lane-codex-20261022`, branch `build/side-lane-codex-20261022-20261022`, tracking `origin/master`. It uses the existing worktree setup, findings claims, leaf launcher and machine gate scheduler. No new service, hook, scheduler or persistent orchestration tool was added. The main checkout was left untouched.
 
-The active drain owns `f-20261005-04`, with `f-20261005-05` prepared for engine, download and account work. This lane selected `f-20260920-15`, whose sound files and two gate-repair test files do not overlap that scope. Co-claimed `f-20260930-02` is excluded because its sound import component was already fixed and its remaining startup/storage work is broader. Its claim returns after this package completes. The next candidate is revalidated against live drain scope and claims after release.
+At selection, the active drain owned `f-20261005-04`, with `f-20261005-05` prepared for engine, download and account work. This lane selected `f-20260920-15`, whose sound files and gate-repair test files do not overlap that scope. Co-claimed `f-20260930-02` is excluded because its sound import component was already fixed and its remaining startup/storage work is broader. Its claim returns after this package completes. Felix subsequently instructed this lane to stop after the current cluster. No next finding will be selected.
 
 ## Implementation and proof
 
@@ -22,7 +22,7 @@ Canonical pre-review r3 passed after the repair. Workspace-storage scored 100%, 
 
 Round 1 used correctness, root-cause, error-handling, tests, code-quality and minimalism lenses. It adopted two findings: the missing throttle-boundary assertion and the unnamed collection bound. Both received Fix. There were no Skip or Defer verdicts in that round. Source authorship used Codex normal and sensitive write leaves on gpt-6.1-sol/high, with the exact mock repair on the mechanical gpt-6-luna/max rung. Read-only source detection used gpt-6.1-sol/medium in separate sessions.
 
-Round 2 correctness, tests and code-quality reviews all approved at `56d9c83d`, explicitly closing both adopted issues with no new findings. `diff_adopted_per_round`: r1=2, r2=0. Source `REVIEWED_THROUGH` is `56d9c83d`. Known record updates receive their own mechanical records review before final gates. Full SHA and raw reports are in `review-r2-head` and `lens-*-r2.txt` in the evidence directory.
+Round 2 correctness, tests and code-quality reviews all approved at `56d9c83d`, explicitly closing both adopted issues with no new findings. At that round, `diff_adopted_per_round` was r1=2, r2=0, and source `REVIEWED_THROUGH` was `56d9c83d`. Known record updates receive their own mechanical records review before final gates. Full SHA and raw reports are in `review-r2-head` and `lens-*-r2.txt` in the evidence directory.
 
 Plan authorship and arbitration shared one root context. Detection ran on the same OpenAI model family as the code. This is session separation, not model-family independence.
 
@@ -31,3 +31,21 @@ Full frontend gates, publication, required pushed-SHA CI and installation are pe
 ## Separate gate observation
 
 Two consecutive scheduled pre-review runs lost workspace mutation workers to confirmed cgroup OOM and recovered. Their scopes reported `oom_kill 2` and `oom_kill 1`, both at `memory.max` 11596410880. The first complete mutation lane took 1497.2 seconds and the second 1481.7 seconds. Those totals do not measure the delay attributable to worker recovery. This recurring gate cost was filed as `f-20261022-05` for a separate allocation/accounting investigation. Both pre-review runs completed green. No false green or product defect was inferred from it.
+
+## Final-gate repair
+
+The first full frontend gate at `43cf663c` failed coverage. Build, bundle and the contract lane passed, and all 193 browser tests passed. Coverage reported six five-second timeouts across fontScale, atoms, TopBar and Puzzles, plus an uncaught missing native warning export in the BoardsPage duplication fixture. After those lanes completed, root cancelled the remaining mutation lane through the verified scheduler's normal signal-forwarding path. The attempt ended 143 and is not a passing release gate. Its complete coverage log is retained in `final-r1-red/`.
+
+The four timeout-affected files passed all 196 tests unchanged in an isolated uninstrumented run. That narrower result does not establish full coverage under load. The evidence was appended to existing `f-20260930-02`, which remains open. No common cold-transform diagnosis was asserted for all six failures.
+
+`589f83ee` repairs the separate fixture defect `f-20261022-06`. BoardsPage's native mock now returns a warning promise. Both existing legacy/migrated duplication cases deterministically exercise the real pending flush while source writes are refused, asserting the failed source id, retained pending entry and unchanged source bytes. All 40 fixture tests passed. Reversing only the mock fix left the new assertions in place and caused both cases to fail at the missing export, exit 1. Exact restoration returned all 40 passes with matching hashes and no patch offsets. The implementation used a bounded mechanical Codex write leaf.
+
+Canonical pre-review r4 passed on the repaired working tree before that commit. Mutation scores were 100% for all four selected packages: annotation/comment 629 killed and 1 timeout, game/practice 87 killed and no timeouts, workspace/storage 1233 killed and no timeouts, and tree-path 168 killed and 8 timeouts. Every package had zero survivors. The mutation lane took 1792.5 seconds. Build, formatting, lint, types, coverage mapping and bundle also passed. Raw logs are in `pre-review-r4-green/`.
+
+This repair pre-review also recovered from two cgroup OOM worker kills. `pre-review-r4-memory.txt` retains the counters, adding evidence for `f-20261022-05`. No scheduler, timeout, worker-count or gate-threshold change was made.
+
+Round 3 correctness, root-cause, error-handling, tests and code-quality reviewers all approved `589f83ee` with no findings. Source `REVIEWED_THROUGH` is `589f83ee`. `diff_adopted_per_round`: r1=2, r2=0, r3=0. Plan authorship and arbitration shared one root context. Detection and code used the same OpenAI model family in separate sessions.
+
+## Stopping boundary
+
+Felix subsequently instructed: “Stop your work after the current cluster. After the current finding. Don't start a new one.” This lane will finish only this audio and required fixture-repair release, then stop. No LocalImage, PGN or other finding will be started. Unused claims return on completion.
