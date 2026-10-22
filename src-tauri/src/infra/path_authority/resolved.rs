@@ -867,6 +867,7 @@ pub(super) fn resolve_unix(
     stored_parent_identity: Option<&Option<super::Identity>>,
     components: &[OsString],
     operation: PathOperation,
+    engine_root: Option<&super::StoredEntry>,
 ) -> Result<ResolvedPath, Error> {
     use rustix::fs::{self as rfs, FileType, Mode, OFlags};
     let base = if root_is_dir {
@@ -883,14 +884,25 @@ pub(super) fn resolve_unix(
             Mode::empty(),
         )
         .map_err(|e| {
-            super::conflict_if_replaced(
+            let error = super::conflict_if_replaced(
                 Error::from(std::io::Error::from(e)),
                 "path authority is unavailable because its object changed",
-            )
+            );
+            super::label_engine_root_open(error, engine_root, false)
         })?,
     );
-    if root_is_dir && file_identity(&handle.metadata()?) != *expected_root {
-        return Err(Error::Conflict("root changed concurrently".into()));
+    if root_is_dir
+        && file_identity(
+            &handle
+                .metadata()
+                .map_err(|error| super::label_engine_root_open(error.into(), engine_root, false))?,
+        ) != *expected_root
+    {
+        return Err(super::label_engine_root_open(
+            Error::Conflict("root changed concurrently".into()),
+            engine_root,
+            false,
+        ));
     }
     if !root_is_dir {
         if let Some(expected_parent) = stored_parent_identity {
@@ -1057,6 +1069,7 @@ pub(super) fn resolve_windows(
     stored_parent_identity: Option<&Option<super::Identity>>,
     components: &[OsString],
     operation: PathOperation,
+    engine_root: Option<&super::StoredEntry>,
 ) -> Result<ResolvedPath, Error> {
     use std::ptr::null;
     use windows_sys::{
@@ -1100,13 +1113,21 @@ pub(super) fn resolve_windows(
         SYNCHRONIZE | GENERIC_READ | if parent_writable { GENERIC_WRITE } else { 0 };
     let mut handle = if root_is_dir {
         let handle = super::open_windows_nofollow(root, parent_writable).map_err(|error| {
-            super::conflict_if_replaced(
+            let error = super::conflict_if_replaced(
                 error,
                 "path authority is unavailable because its object changed",
-            )
+            );
+            super::label_engine_root_open(error, engine_root, parent_writable)
         })?;
-        if super::windows_file_identity(&handle)? != *expected_root {
-            return Err(Error::Conflict("root changed concurrently".into()));
+        if super::windows_file_identity(&handle)
+            .map_err(|error| super::label_engine_root_open(error, engine_root, false))?
+            != *expected_root
+        {
+            return Err(super::label_engine_root_open(
+                Error::Conflict("root changed concurrently".into()),
+                engine_root,
+                false,
+            ));
         }
         handle
     } else if !components.is_empty() {
@@ -1447,6 +1468,7 @@ mod windows_tests {
             None,
             &components,
             PathOperation::DownloadArchive,
+            None,
         ) {
             Ok(_) => panic!("a file at the archive destination must be refused"),
             Err(error) => error,

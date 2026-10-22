@@ -1670,7 +1670,13 @@ fn engine_archive_destination_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::EngineRootHandle,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    authority.with_mut(|authority| authority.engine_archive_destination(&root))?
+    crate::infra::path_authority::with_engine_root_probe(
+        authority,
+        root.path_ref(),
+        crate::infra::path_authority::PathOperation::DownloadArchive,
+        &tokio_util::sync::CancellationToken::new(),
+        |authority, probe| authority.engine_archive_destination_with_probe(&root, probe),
+    )
 }
 
 #[tauri::command]
@@ -1694,7 +1700,13 @@ fn register_installed_engine_blocking(
     root: crate::infra::path_authority::EngineRootHandle,
     relative_path: String,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    authority.with_mut(|authority| authority.register_installed_engine(&root, &relative_path))?
+    crate::infra::path_authority::with_engine_root_probe(
+        authority,
+        root.path_ref(),
+        crate::infra::path_authority::PathOperation::EngineInstall,
+        &tokio_util::sync::CancellationToken::new(),
+        |authority, probe| authority.register_installed_engine(&root, &relative_path, probe),
+    )
 }
 
 #[tauri::command]

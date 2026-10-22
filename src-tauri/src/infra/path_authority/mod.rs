@@ -54,6 +54,33 @@ pub(crate) fn probe_listing_root_failure(
     original: Error,
     cancellation: &CancellationToken,
 ) -> Error {
+    probe_root_failure(authority, root, operation, original, cancellation, false)
+}
+
+pub(crate) fn probe_engine_root_failure(
+    authority: &SharedPathAuthority,
+    root: &PathRef,
+    original: Error,
+    cancellation: &CancellationToken,
+) -> Error {
+    probe_root_failure(
+        authority,
+        root,
+        PathOperation::DownloadArchive,
+        original,
+        cancellation,
+        true,
+    )
+}
+
+fn probe_root_failure(
+    authority: &SharedPathAuthority,
+    root: &PathRef,
+    operation: PathOperation,
+    original: Error,
+    cancellation: &CancellationToken,
+    engine: bool,
+) -> Error {
     #[cfg(test)]
     if let Some(hook) = LISTING_ROOT_FAILURE_HOOKS.take(&root.id) {
         hook(&original);
@@ -69,9 +96,16 @@ pub(crate) fn probe_listing_root_failure(
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            authority.capability_directory(root, operation)
+            if engine {
+                authority.engine_probe_directory(root, operation)
+            } else {
+                authority.capability_directory(root, operation).map(Some)
+            }
         })? {
-            Ok(directory) => directory?,
+            Ok(directory) => match directory? {
+                Some(directory) => directory,
+                None => return Ok(()),
+            },
             Err(_) => return Ok(()),
         };
         directory.entries(cancellation, &mut |_| false)?;
@@ -83,11 +117,50 @@ pub(crate) fn probe_listing_root_failure(
     match probe {
         Err(Error::Cancellation) => Error::Cancellation,
         Err(error) => match error.root_failure_reason() {
+            Some(crate::error::RootFailure::TooLarge) if engine => original,
             Some(reason) => original.with_root_failure(reason),
             None => original,
         },
         Ok(()) => original,
     }
+}
+
+/// Marks only filesystem substeps that can depend on the selected engine root.
+/// Transactions, inventory and capability admission never pass through this marker.
+#[derive(Default)]
+pub(crate) struct EngineRootProbe {
+    failed: bool,
+}
+
+impl EngineRootProbe {
+    pub(crate) fn filesystem<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
+        if result.as_ref().is_err_and(|error| {
+            !matches!(error.unlabelled(), Error::CommittedDurabilityUncertain(_))
+        }) {
+            self.failed = true;
+        }
+        result
+    }
+}
+
+/// Release the authority guard before rechecking a failed filesystem substep.
+/// A successful committed outcome never gets replaced by a late cancellation.
+pub(crate) fn with_engine_root_probe<T>(
+    authority: &SharedPathAuthority,
+    root: &PathRef,
+    operation: PathOperation,
+    cancellation: &CancellationToken,
+    use_root: impl FnOnce(&mut PathAuthority, &mut EngineRootProbe) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let mut probe = EngineRootProbe::default();
+    let result = authority.with_mut(|authority| use_root(authority, &mut probe))?;
+    result.map_err(|error| {
+        if probe.failed {
+            probe_root_failure(authority, root, operation, error, cancellation, true)
+        } else {
+            error
+        }
+    })
 }
 
 #[cfg(test)]
@@ -107,6 +180,32 @@ pub(crate) struct ListingRootFailureHookGuard(pub(crate) String);
 impl Drop for ListingRootFailureHookGuard {
     fn drop(&mut self) {
         LISTING_ROOT_FAILURE_HOOKS.clear(&self.0);
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct TestRootPermissionGuard {
+    path: PathBuf,
+    original: fs::Permissions,
+}
+
+#[cfg(all(test, unix))]
+impl TestRootPermissionGuard {
+    pub(crate) fn restrict(path: &Path, mode: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let original = fs::metadata(path).unwrap().permissions();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        Self {
+            path: path.to_path_buf(),
+            original,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for TestRootPermissionGuard {
+    fn drop(&mut self) {
+        fs::set_permissions(&self.path, self.original.clone()).unwrap();
     }
 }
 
@@ -386,6 +485,7 @@ mod windows_tests {
             None,
             &components,
             PathOperation::DownloadFile,
+            None,
         );
         assert!(matches!(
             result,
@@ -1458,6 +1558,11 @@ fn reject_disagreeing_expected_identity(
 #[cfg(test)]
 pub(crate) fn set_resolve_pre_root_open_hook(hook: Option<Box<dyn FnOnce()>>) {
     RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn set_puzzle_child_post_resolve_hook(hook: Option<Box<dyn FnOnce()>>) {
+    PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[cfg(all(test, unix))]
@@ -4510,6 +4615,75 @@ struct StoredEntry {
     #[serde(default)]
     purpose: Option<EntryPurpose>,
 }
+
+fn is_engine_root_use(stored: &StoredEntry, operation: PathOperation) -> bool {
+    stored.target_is_dir
+        && stored.purpose == Some(EntryPurpose::EngineRoot)
+        && stored.operations.contains(&operation)
+        && matches!(
+            operation,
+            PathOperation::DownloadArchive | PathOperation::EngineInstall
+        )
+}
+
+fn engine_read_search_directory(stored: &StoredEntry) -> Result<CapabilityDirectory, Error> {
+    let acquired = acquire_stored_target(
+        stored,
+        AcquireShape::Root {
+            parent_access: ParentAccess::Readable,
+        },
+        "workspace is unavailable because its root changed",
+    )?;
+    let directory = if let Some((parent, leaf)) = acquired.parent_and_leaf {
+        open_directory_at(&parent, &leaf, false)?
+    } else {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{self as rfs, Mode, OFlags};
+            fs::File::from(
+                rfs::openat(
+                    rfs::CWD,
+                    &acquired.path,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| Error::from(std::io::Error::from(error)))?,
+            )
+        }
+        #[cfg(windows)]
+        {
+            open_windows_nofollow(&acquired.path, false)?
+        }
+    };
+    if opened_file_identity(&directory)? != (stored.identity.a, stored.identity.b) {
+        return Err(Error::Conflict("root changed concurrently".into()));
+    }
+    Ok(CapabilityDirectory { directory })
+}
+
+/// A writable open alone cannot establish read/search permission loss.
+fn label_engine_root_open(error: Error, stored: Option<&StoredEntry>, writable: bool) -> Error {
+    let Some(stored) = stored else { return error };
+    if writable && error.root_failure_reason() == Some(crate::error::RootFailure::Permission) {
+        let probe = engine_read_search_directory(stored).and_then(|directory| {
+            directory
+                .entries(&CancellationToken::new(), &mut |_| false)
+                .map(|_| ())
+        });
+        return match probe.err().and_then(|error| error.root_failure_reason()) {
+            Some(crate::error::RootFailure::Permission) => error.label_root_failure(),
+            _ => error,
+        };
+    }
+    error.label_root_failure()
+}
+
+fn engine_install_directory(stored: &StoredEntry) -> Result<fs::File, Error> {
+    let path = stored.path.to_path().map_err(Error::label_root_failure)?;
+    crate::infra::fs::open_verified_directory(&path, (stored.identity.a, stored.identity.b))
+        .map(VerifiedDir::into_file)
+        .map_err(|error| label_engine_root_open(error, Some(stored), true))
+}
 #[derive(Serialize, Deserialize)]
 struct Registry {
     schema_version: u32,
@@ -5046,6 +5220,25 @@ impl PathAuthority {
             .take_directory()
             .ok_or_else(|| Error::InvalidInput("path capability is not a directory".into()))?;
         Ok(CapabilityDirectory { directory })
+    }
+
+    /// Keep the install operation's admission, but request only read/search access.
+    /// Unlike resolve, diagnosis neither records catalog use nor protects a session entry.
+    fn engine_probe_directory(
+        &self,
+        id: &PathRef,
+        operation: PathOperation,
+    ) -> Result<Option<CapabilityDirectory>, Error> {
+        if self.pending_unpersisted_removals.contains(&id.id) {
+            return Ok(None);
+        }
+        let Some(entry) = self.persistent.get(&id.id) else {
+            return Ok(None);
+        };
+        if !is_engine_root_use(&entry.stored, operation) {
+            return Ok(None);
+        }
+        engine_read_search_directory(&entry.stored).map(Some)
     }
 
     /// Windows counterpart of the unix arm below, keeping its split exactly: an **existing**
@@ -7099,10 +7292,20 @@ impl PathAuthority {
         Ok(OpeningBookDescriptor { file_name, file })
     }
 
+    #[cfg(test)]
+    pub(crate) fn register_installed_engine_for_test(
+        &mut self,
+        root: &EngineRootHandle,
+        relative_path: &str,
+    ) -> Result<EngineHandle, Error> {
+        self.register_installed_engine(root, relative_path, &mut EngineRootProbe::default())
+    }
+
     pub(crate) fn register_installed_engine(
         &mut self,
         root: &EngineRootHandle,
         relative_path: &str,
+        probe: &mut EngineRootProbe,
     ) -> Result<EngineHandle, Error> {
         let components: Vec<OsString> = Path::new(relative_path)
             .components()
@@ -7118,8 +7321,13 @@ impl PathAuthority {
         }
         validate_components(&components)?;
         let (catalog_root, catalog_path, root_directory) =
-            self.prepare_catalog_engine_registration(root, &components)?;
-        let resolved = self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
+            self.prepare_catalog_engine_registration(root, &components, probe)?;
+        let resolved = self.resolve_with_engine_probe(
+            root.path_ref(),
+            PathOperation::EngineInstall,
+            &components,
+            probe,
+        )?;
         if resolved.file().is_none() {
             return Err(Error::InvalidInput(
                 "installed engine must be a regular file".into(),
@@ -7142,6 +7350,7 @@ impl PathAuthority {
             &catalog_path,
             &root_directory,
             Some((&path, identity)),
+            probe,
         )?;
         resolved.mark_engine_executable()?;
         let display_name = components
@@ -7152,11 +7361,25 @@ impl PathAuthority {
         self.register_engine_file_from_resolved(&path, display_name, identity, parent_identity)
     }
 
+    #[cfg(test)]
     pub(crate) fn engine_archive_destination(
         &mut self,
         root: &EngineRootHandle,
     ) -> Result<PathRef, Error> {
-        let _ = self.resolve(root.path_ref(), PathOperation::DownloadArchive, &[])?;
+        self.engine_archive_destination_with_probe(root, &mut EngineRootProbe::default())
+    }
+
+    pub(crate) fn engine_archive_destination_with_probe(
+        &mut self,
+        root: &EngineRootHandle,
+        probe: &mut EngineRootProbe,
+    ) -> Result<PathRef, Error> {
+        let _ = self.resolve_with_engine_probe(
+            root.path_ref(),
+            PathOperation::DownloadArchive,
+            &[],
+            probe,
+        )?;
         Ok(root.path_ref().clone())
     }
 
@@ -8397,6 +8620,16 @@ impl PathAuthority {
         operation: PathOperation,
         components: &[OsString],
     ) -> Result<ResolvedPath, Error> {
+        self.resolve_with_engine_probe(id, operation, components, &mut EngineRootProbe::default())
+    }
+
+    pub(crate) fn resolve_with_engine_probe(
+        &mut self,
+        id: &PathRef,
+        operation: PathOperation,
+        components: &[OsString],
+        probe: &mut EngineRootProbe,
+    ) -> Result<ResolvedPath, Error> {
         validate_components(components)?;
         if self.pending_unpersisted_removals.contains(&id.id) {
             return Err(Error::InvalidInput(
@@ -8420,7 +8653,15 @@ impl PathAuthority {
                 "path capability does not permit this operation".into(),
             ));
         }
-        let root = entry.stored.path.to_path()?;
+        let engine_root = is_engine_root_use(&entry.stored, operation);
+        let root_error = |error: Error| {
+            if engine_root {
+                error.label_root_failure()
+            } else {
+                error
+            }
+        };
+        let root = entry.stored.path.to_path().map_err(root_error)?;
         let actual = validate_target(
             &root,
             if entry.stored.target_is_dir {
@@ -8428,11 +8669,12 @@ impl PathAuthority {
             } else {
                 PathClass::PersistentFile
             },
-        )?;
+        )
+        .map_err(root_error)?;
         if actual != entry.stored.identity {
-            return Err(Error::Conflict(
+            return Err(root_error(Error::Conflict(
                 "path authority is unavailable because its object changed".into(),
-            ));
+            )));
         }
         #[cfg(test)]
         RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
@@ -8448,6 +8690,7 @@ impl PathAuthority {
             parent_binding,
             components,
             operation,
+            engine_root.then_some(&entry.stored),
         );
         #[cfg(windows)]
         let resolved = resolved::resolve_windows(
@@ -8457,7 +8700,13 @@ impl PathAuthority {
             parent_binding,
             components,
             operation,
+            engine_root.then_some(&entry.stored),
         );
+        let resolved = if engine_root {
+            probe.filesystem(resolved)
+        } else {
+            resolved
+        };
         if let Ok(resolved) = &resolved {
             if let Some(target) = resolved.target() {
                 let recursive = operation == PathOperation::EngineResourceRead
@@ -14936,7 +15185,7 @@ mod tests {
             "fn prepare_puzzle_listing_child(",
         ] {
             let body = body_at_indent(source, signature);
-            assert!(body.contains("let resolved = self.resolve("), "{body}");
+            assert!(body.contains("let resolved = self.resolve"), "{body}");
             assert!(body.contains("resolved.identity()?"), "{body}");
             assert!(!body.contains("let _ = self.resolve("), "{body}");
             assert!(!body.contains("validate_target("), "{body}");
@@ -14973,7 +15222,7 @@ mod tests {
                 .is_none());
         });
         let handle = authority
-            .register_installed_engine(&root, "engine")
+            .register_installed_engine_for_test(&root, "engine")
             .expect("resolved descriptor identity is persisted despite pathname replacement");
         let stored = &authority.persistent[&handle.id.id].stored;
         assert_eq!((stored.identity.a, stored.identity.b), original_identity);
@@ -15003,7 +15252,7 @@ mod tests {
             .get_or_create_engine_root(&root_path, "Engines", None)
             .unwrap();
         let first = authority
-            .register_installed_engine(&root, "engine")
+            .register_installed_engine_for_test(&root, "engine")
             .unwrap();
         let expected_parent = authority
             .capability_directory(root.path_ref(), PathOperation::EngineInstall)
@@ -15018,23 +15267,29 @@ mod tests {
             .resolve(first.path_ref(), PathOperation::EngineBinaryInspect, &[])
             .is_ok());
         let second = authority
-            .register_installed_engine(&root, "engine")
+            .register_installed_engine_for_test(&root, "engine")
             .unwrap();
         assert_eq!(first.id, second.id);
         for invalid in ["", "../engine", "/engine", "directory"] {
             assert!(
-                authority.register_installed_engine(&root, invalid).is_err(),
+                authority
+                    .register_installed_engine_for_test(&root, invalid)
+                    .is_err(),
                 "{invalid}"
             );
         }
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("engine", root_path.join("link")).unwrap();
-            assert!(authority.register_installed_engine(&root, "link").is_err());
+            assert!(authority
+                .register_installed_engine_for_test(&root, "link")
+                .is_err());
         }
         drop(authority);
         let mut reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let after_restart = reopened.register_installed_engine(&root, "engine").unwrap();
+        let after_restart = reopened
+            .register_installed_engine_for_test(&root, "engine")
+            .unwrap();
         assert_eq!(first.id, after_restart.id);
 
         let replacement = root_path.join("replacement");
@@ -15043,7 +15298,7 @@ mod tests {
         fs::rename(replacement, root_path.join("engine")).unwrap();
         let entries_before_refusal = reopened.persistent.len();
         let error = reopened
-            .register_installed_engine(&root, "engine")
+            .register_installed_engine_for_test(&root, "engine")
             .expect_err("a replaced engine must not reuse its stored capability");
         assert!(matches!(
             error,
@@ -15075,7 +15330,7 @@ mod tests {
             .unwrap();
         let before = authority.persistent.len();
         set_test_atomic_file_injector(Some(Arc::new(RegistryFailure)));
-        let result = authority.register_installed_engine(&root, "engine");
+        let result = authority.register_installed_engine_for_test(&root, "engine");
         set_test_atomic_file_injector(None);
         assert!(result.is_err());
         assert_eq!(authority.persistent.len(), before);
@@ -20933,7 +21188,7 @@ mod tests {
         });
 
         let handle = authority
-            .register_installed_engine(&root, "sub/engine")
+            .register_installed_engine_for_test(&root, "sub/engine")
             .unwrap();
 
         assert_eq!(

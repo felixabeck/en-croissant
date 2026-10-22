@@ -1385,26 +1385,65 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     Ok(publication)
 }
 
+#[cfg(test)]
 fn resolve_engine_archive_destination(
     state: &AppState,
     destination: &crate::infra::path_authority::PathRef,
     directory_name: &std::ffi::OsStr,
 ) -> Result<(OpClass, crate::infra::path_authority::ResolvedPath), Error> {
-    state.pgn_path_authority.with_mut(|authority| {
-        let operations = authority.download_operations(destination)?;
-        let op = OpClass::from_operations(&operations)?;
-        if op != OpClass::Engine {
-            return Err(Error::InvalidInput(
-                "engine archive requires an engine destination".into(),
-            ));
-        }
-        let resolved = authority.resolve(
+    resolve_engine_archive_destination_cancellable(
+        state,
+        destination,
+        directory_name,
+        &CancellationToken::new(),
+    )
+}
+
+fn resolve_engine_archive_destination_cancellable(
+    state: &AppState,
+    destination: &crate::infra::path_authority::PathRef,
+    directory_name: &std::ffi::OsStr,
+    cancellation: &CancellationToken,
+) -> Result<(OpClass, crate::infra::path_authority::ResolvedPath), Error> {
+    use crate::infra::path_authority::{with_engine_root_probe, PathOperation};
+    with_engine_root_probe(
+        &state.pgn_path_authority,
+        destination,
+        PathOperation::DownloadArchive,
+        cancellation,
+        |authority, probe| {
+            let operations = authority.download_operations(destination)?;
+            let op = OpClass::from_operations(&operations)?;
+            if op != OpClass::Engine {
+                return Err(Error::InvalidInput(
+                    "engine archive requires an engine destination".into(),
+                ));
+            }
+            let resolved = authority.resolve_with_engine_probe(
+                destination,
+                crate::infra::path_authority::PathOperation::DownloadArchive,
+                &[directory_name.to_os_string()],
+                probe,
+            )?;
+            Ok((op, resolved))
+        },
+    )
+}
+
+fn create_engine_archive_staging(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    destination: &crate::infra::path_authority::PathRef,
+    resolved: &crate::infra::path_authority::ResolvedPath,
+    cancellation: &CancellationToken,
+) -> Result<crate::infra::fs::OwnedStagingDir, Error> {
+    resolved.create_archive_staging().map_err(|error| {
+        crate::infra::path_authority::probe_engine_root_failure(
+            authority,
             destination,
-            crate::infra::path_authority::PathOperation::DownloadArchive,
-            &[directory_name.to_os_string()],
-        )?;
-        Ok((op, resolved))
-    })?
+            error,
+            cancellation,
+        )
+    })
 }
 
 /// Downloads and atomically installs an engine archive into an authority-managed directory.
@@ -1474,12 +1513,14 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         let directory_name = std::ffi::OsString::from(directory_name);
         let resolution_state = state.clone();
         let resolution_destination = destination.clone();
+        let resolution_cancellation = cancellation.clone();
         let (op, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
             .spawn(move || {
-                resolve_engine_archive_destination(
+                resolve_engine_archive_destination_cancellable(
                     &resolution_state,
                     &resolution_destination,
                     &directory_name,
+                    &resolution_cancellation,
                 )
             })
             .await?;
@@ -1491,11 +1532,22 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         // it may be registered already, and an engine may still be executing from it.
         let adoption_authority = state.pgn_path_authority.clone();
         let adoption_destination = destination.clone();
+        let adoption_cancellation = cancellation.clone();
         let (adopted, resolved) = crate::infra::blocking::BLOCKING_GATEWAY
             .spawn(move || {
-                let adopted = adoption_authority.with_mut(|authority| {
-                    authority.confirm_catalog_archive_adoption(&adoption_destination, &resolved)
-                })??;
+                let adopted = crate::infra::path_authority::with_engine_root_probe(
+                    &adoption_authority,
+                    &adoption_destination,
+                    crate::infra::path_authority::PathOperation::DownloadArchive,
+                    &adoption_cancellation,
+                    |authority, probe| {
+                        authority.confirm_catalog_archive_adoption_with_probe(
+                            &adoption_destination,
+                            &resolved,
+                            probe,
+                        )
+                    },
+                )?;
                 Ok((adopted, resolved))
             })
             .await?;
@@ -1513,6 +1565,9 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
             .to_path_buf();
         let resolved = std::sync::Arc::new(resolved);
         let staging_authority = resolved.clone();
+        let staging_registry = state.pgn_path_authority.clone();
+        let staging_destination = destination.clone();
+        let staging_cancellation = cancellation.clone();
         let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
         let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
         let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
@@ -1527,7 +1582,14 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                 expected_sha256: Some(&integrity.sha256),
             },
             &archive_target,
-            move |_prefix| staging_authority.create_archive_staging(),
+            move |_prefix| {
+                create_engine_archive_staging(
+                    &staging_registry,
+                    &staging_destination,
+                    &staging_authority,
+                    &staging_cancellation,
+                )
+            },
             cancellation.clone(),
             |progress| {
                 update_progress_with_state(
@@ -1591,9 +1653,15 @@ pub(crate) fn publish_engine_archive_tree(
     resolved: &crate::infra::path_authority::ResolvedPath,
     staging_dir: &mut crate::infra::fs::OwnedStagingDir,
 ) -> Result<(), Error> {
-    authority.with_mut(|authority| {
-        authority.publish_catalog_install(destination, resolved, staging_dir)
-    })?
+    crate::infra::path_authority::with_engine_root_probe(
+        authority,
+        destination,
+        crate::infra::path_authority::PathOperation::DownloadArchive,
+        &CancellationToken::new(),
+        |authority, probe| {
+            authority.publish_catalog_install_with_probe(destination, resolved, staging_dir, probe)
+        },
+    )
 }
 
 #[tauri::command]
@@ -2725,7 +2793,7 @@ mod tests {
                     "real catalog registration",
                     move || {
                         authority.with_mut(|authority| {
-                            authority.register_installed_engine(&root, &relative_path)
+                            authority.register_installed_engine_for_test(&root, &relative_path)
                         })?
                     },
                 )
@@ -3184,6 +3252,388 @@ mod tests {
 
         assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
         assert!(!target.exists(), "the refusal installs nothing");
+    }
+
+    fn root_failure_engine_fixture() -> (
+        tempfile::TempDir,
+        AppState,
+        crate::infra::path_authority::PathRef,
+        PathBuf,
+        crate::infra::path_authority::EngineRootHandle,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (authority, destination, path, root) = engine_destination(&directory);
+        let state = AppState::default();
+        state.pgn_path_authority.install(authority).unwrap();
+        crate::engine_archive_destination_blocking(&state.pgn_path_authority, root.clone())
+            .unwrap();
+        (directory, state, destination, path, root)
+    }
+
+    fn root_failure_assert_permission(error: &Error) {
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Permission),
+            "{error:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["rootFailure"],
+            "permission"
+        );
+        assert_eq!(error.to_string(), error.unlabelled().to_string());
+        assert_eq!(error.diagnostic(), error.unlabelled().diagnostic());
+    }
+
+    fn root_failure_engine_error_preserves_original<T>(
+        destination: &crate::infra::path_authority::PathRef,
+        action: impl FnOnce() -> Result<T, Error>,
+    ) -> Error {
+        use crate::infra::path_authority::{
+            ListingRootFailureHookGuard, LISTING_ROOT_FAILURE_HOOKS,
+        };
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let hook_observed = observed.clone();
+        let _hook = ListingRootFailureHookGuard(destination.id.clone());
+        LISTING_ROOT_FAILURE_HOOKS.arm(
+            destination.id.clone(),
+            Box::new(move |error| {
+                *hook_observed.lock().unwrap() =
+                    Some((error.category(), error.to_string(), error.diagnostic()));
+            }),
+        );
+        let error = action().err().expect("filesystem use must fail");
+        let original = observed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("filesystem failure must reach root probe");
+        assert_eq!(
+            (error.category(), error.to_string(), error.diagnostic()),
+            original
+        );
+        error
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_engine_read_loss_at_destination_and_later_resolution() {
+        use crate::infra::path_authority::TestRootPermissionGuard;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_directory, state, destination, path, root) = root_failure_engine_fixture();
+        let permissions = TestRootPermissionGuard::restrict(&path, 0o300);
+        let destination_error =
+            crate::engine_archive_destination_blocking(&state.pgn_path_authority, root.clone())
+                .unwrap_err();
+        let resolution_error = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .err()
+        .unwrap();
+        drop(permissions);
+        for error in [destination_error, resolution_error] {
+            root_failure_assert_permission(&error);
+            assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+            assert_eq!(error.to_string(), "I/O failure");
+            assert!(
+                error.diagnostic().contains("Permission denied"),
+                "{}",
+                error.diagnostic()
+            );
+        }
+        assert!(!path.join("installed").exists());
+        crate::engine_archive_destination_blocking(&state.pgn_path_authority, root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_engine_retained_read_lost_search_at_resolution_and_staging() {
+        use crate::infra::path_authority::TestRootPermissionGuard;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_directory, state, destination, path, _root) = root_failure_engine_fixture();
+        let (_, resolved) = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .unwrap();
+        let permissions = TestRootPermissionGuard::restrict(&path, 0o400);
+        assert!(
+            std::fs::File::open(&path).is_ok(),
+            "root read-open must still succeed"
+        );
+        let resolution_error = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .err()
+        .unwrap();
+        let staging_error = create_engine_archive_staging(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &CancellationToken::new(),
+        )
+        .err()
+        .unwrap();
+        drop(permissions);
+        for error in [resolution_error, staging_error] {
+            root_failure_assert_permission(&error);
+            assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+            assert_eq!(error.to_string(), "I/O failure");
+        }
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_engine_later_adoption_publication_and_registration() {
+        use crate::infra::path_authority::{
+            with_engine_root_probe, PathOperation, TestRootPermissionGuard,
+        };
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for mode in [0o300, 0o400] {
+            let (_directory, state, destination, path, root) = root_failure_engine_fixture();
+            std::fs::write(path.join("engine"), b"engine").unwrap();
+            let (_, resolved) = resolve_engine_archive_destination(
+                &state,
+                &destination,
+                std::ffi::OsStr::new("installed"),
+            )
+            .unwrap();
+            let mut staging = resolved.create_archive_staging().unwrap();
+            let permissions = TestRootPermissionGuard::restrict(&path, mode);
+            let adoption_error = root_failure_engine_error_preserves_original(&destination, || {
+                with_engine_root_probe(
+                    &state.pgn_path_authority,
+                    &destination,
+                    PathOperation::DownloadArchive,
+                    &CancellationToken::new(),
+                    |authority, probe| {
+                        authority.confirm_catalog_archive_adoption_with_probe(
+                            &destination,
+                            &resolved,
+                            probe,
+                        )
+                    },
+                )
+            });
+            let publication_error =
+                root_failure_engine_error_preserves_original(&destination, || {
+                    publish_engine_archive_tree(
+                        &state.pgn_path_authority,
+                        &destination,
+                        &resolved,
+                        &mut staging,
+                    )
+                });
+            let registration_error =
+                root_failure_engine_error_preserves_original(&destination, || {
+                    crate::register_installed_engine_blocking(
+                        &state.pgn_path_authority,
+                        root,
+                        "engine".into(),
+                    )
+                });
+            drop(permissions);
+            for error in [adoption_error, publication_error, registration_error] {
+                root_failure_assert_permission(&error);
+            }
+            drop(staging);
+            assert!(!path.join("installed").exists());
+            assert_eq!(std::fs::read_dir(&path).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn root_failure_engine_healthy_root_child_and_authority_errors_are_unlabelled() {
+        let (_directory, state, destination, path, root) = root_failure_engine_fixture();
+        std::fs::write(path.join("engine"), b"engine").unwrap();
+        let error = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("../invalid"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::InvalidInput);
+        let error = root_failure_engine_error_preserves_original(&destination, || {
+            crate::register_installed_engine_blocking(
+                &state.pgn_path_authority,
+                root.clone(),
+                "missing".into(),
+            )
+        });
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.to_string(), "I/O failure");
+        for poison in [false, true] {
+            let authority = crate::infra::path_authority::SharedPathAuthority::uninitialized();
+            if poison {
+                authority.poison();
+            }
+            let error =
+                crate::engine_archive_destination_blocking(&authority, root.clone()).unwrap_err();
+            assert_eq!(error.root_failure(), None);
+            assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_engine_write_only_denial_stays_unlabelled_and_probe_cancels() {
+        use crate::infra::path_authority::{
+            ListingRootFailureHookGuard, TestRootPermissionGuard, LISTING_ROOT_FAILURE_HOOKS,
+        };
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_directory, state, destination, path, _root) = root_failure_engine_fixture();
+        let (_, resolved) = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .unwrap();
+        let permissions = TestRootPermissionGuard::restrict(&path, 0o500);
+        let error = create_engine_archive_staging(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &CancellationToken::new(),
+        )
+        .err()
+        .unwrap();
+        drop(permissions);
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+        let _hook = ListingRootFailureHookGuard(destination.id.clone());
+        LISTING_ROOT_FAILURE_HOOKS.arm(
+            destination.id.clone(),
+            Box::new(move |_| hook_cancellation.cancel()),
+        );
+        let permissions = TestRootPermissionGuard::restrict(&path, 0o400);
+        let result = resolve_engine_archive_destination_cancellable(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+            &cancellation,
+        );
+        drop(permissions);
+        let error = result.err().unwrap();
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(error.root_failure(), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn root_failure_engine_windows_read_denied_and_write_only_denied() {
+        use windows_sys::Win32::{
+            Foundation::GENERIC_READ,
+            Storage::FileSystem::{
+                FILE_ALL_ACCESS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_EA,
+                READ_CONTROL, SYNCHRONIZE,
+            },
+        };
+        for read_denied in [false, true] {
+            let (_directory, state, destination, path, root) = root_failure_engine_fixture();
+            let access = if read_denied {
+                FILE_ALL_ACCESS & !(FILE_LIST_DIRECTORY | FILE_READ_EA | FILE_READ_ATTRIBUTES)
+            } else {
+                GENERIC_READ | READ_CONTROL | SYNCHRONIZE
+            };
+            let mut security =
+                crate::infra::fs::TestTargetSecurityGuard::restrict(&path, access).unwrap();
+            let result =
+                crate::engine_archive_destination_blocking(&state.pgn_path_authority, root.clone());
+            let resolution = resolve_engine_archive_destination(
+                &state,
+                &destination,
+                std::ffi::OsStr::new("installed"),
+            );
+            security.restore().unwrap();
+            for error in [result.unwrap_err(), resolution.err().unwrap()] {
+                if read_denied {
+                    root_failure_assert_permission(&error);
+                }
+                assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+                assert_eq!(
+                    error.root_failure(),
+                    read_denied.then_some(crate::error::RootFailure::Permission),
+                    "{error:?}"
+                );
+                assert_eq!(error.to_string(), "I/O failure");
+            }
+            crate::engine_archive_destination_blocking(&state.pgn_path_authority, root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_engine_listing_bound_is_inconclusive_without_install_limit() {
+        use crate::infra::path_authority::TestRootPermissionGuard;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_directory, state, destination, path, _root) = root_failure_engine_fixture();
+        for index in 0..=crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES {
+            std::fs::write(path.join(format!("unrelated-{index}")), b"").unwrap();
+        }
+        let (_, resolved) = resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("installed"),
+        )
+        .unwrap();
+        let mut staging = create_engine_archive_staging(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        staging
+            .create_relative_regular(Path::new("engine"))
+            .unwrap()
+            .write_all(b"engine")
+            .unwrap();
+        let permissions = TestRootPermissionGuard::restrict(&path, 0o500);
+        let error = create_engine_archive_staging(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &CancellationToken::new(),
+        )
+        .err()
+        .unwrap();
+        drop(permissions);
+        assert_eq!(
+            error.root_failure(),
+            None,
+            "an enumeration bound is inconclusive for engine use"
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+        publish_engine_archive_tree(
+            &state.pgn_path_authority,
+            &destination,
+            &resolved,
+            &mut staging,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(path.join("installed/engine")).unwrap(),
+            b"engine"
+        );
     }
 
     #[test]
@@ -4514,7 +4964,7 @@ mod tests {
             .mode()
             & 0o777;
         authority
-            .register_installed_engine(&root_handle, "engine/engine")
+            .register_installed_engine_for_test(&root_handle, "engine/engine")
             .unwrap();
         let registration_mode = std::fs::metadata(&installed_path)
             .unwrap()
@@ -5285,14 +5735,14 @@ mod tests {
         .await
         .unwrap();
         let handle = authority
-            .register_installed_engine(&root, "stockfish.tar.gz/stockfish/engine")
+            .register_installed_engine_for_test(&root, "stockfish.tar.gz/stockfish/engine")
             .unwrap();
         assert_eq!(
             std::fs::read(target.join("stockfish/engine")).unwrap(),
             b"#!/bin/sh\necho fixture\n"
         );
         let adopted = authority
-            .register_installed_engine(&root, "stockfish.tar.gz/stockfish/engine")
+            .register_installed_engine_for_test(&root, "stockfish.tar.gz/stockfish/engine")
             .unwrap();
         assert_eq!(handle, adopted);
     }
@@ -5466,7 +5916,7 @@ mod tests {
                     state
                         .pgn_path_authority
                         .with_mut(|authority| authority
-                            .register_installed_engine(&root, "managed/engine.bin"))
+                            .register_installed_engine_for_test(&root, "managed/engine.bin"))
                         .unwrap(),
                     Err(Error::Conflict(_))
                 ),
@@ -6470,9 +6920,19 @@ mod tests {
             );
             match outcome {
                 ArchiveReplacementOutcome::Swapped => {
+                    let error = result
+                        .as_ref()
+                        .expect_err("replaced root must refuse publication");
                     assert!(
-                        matches!(result, Err(Error::Conflict(_) | Error::InvalidInput(_))),
+                        matches!(
+                            error.unlabelled(),
+                            Error::Conflict(_) | Error::InvalidInput(_)
+                        ),
                         "replaced authority root must refuse publication: {result:?}"
+                    );
+                    assert_eq!(
+                        error.root_failure(),
+                        error.unlabelled().root_failure_reason()
                     );
                     assert!(
                         leaves(authorized).is_empty(),
@@ -7043,7 +7503,7 @@ mod tests {
                     .pgn_path_authority
                     .with_mut(|authority| {
                         authority
-                            .register_installed_engine(
+                            .register_installed_engine_for_test(
                                 &root,
                                 &format!("{directory}/stockfish/engine"),
                             )
@@ -7118,7 +7578,7 @@ mod tests {
                 .unwrap()
                 .as_mut()
                 .unwrap()
-                .register_installed_engine(&root, &relative)
+                .register_installed_engine_for_test(&root, &relative)
                 .unwrap();
             let installed_path = engine_root.join(&relative);
             let identity = crate::infra::path_authority::opened_file_identity(
@@ -7172,7 +7632,7 @@ mod tests {
                 .unwrap()
                 .as_mut()
                 .unwrap()
-                .register_installed_engine(&root, &relative)
+                .register_installed_engine_for_test(&root, &relative)
                 .unwrap();
             assert_eq!(handle, adopted);
             handles.push(handle);

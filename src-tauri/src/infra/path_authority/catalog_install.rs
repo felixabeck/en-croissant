@@ -569,6 +569,15 @@ impl PathAuthority {
         id: &str,
         retained_root: Option<&fs::File>,
     ) -> Result<bool, Error> {
+        self.confirm_catalog_install_with_probe(id, retained_root, &mut EngineRootProbe::default())
+    }
+
+    fn confirm_catalog_install_with_probe(
+        &mut self,
+        id: &str,
+        retained_root: Option<&fs::File>,
+        probe: &mut EngineRootProbe,
+    ) -> Result<bool, Error> {
         let record = self
             .catalog_installs
             .get(id)
@@ -580,20 +589,25 @@ impl PathAuthority {
         let present = (|| {
             let opened_root;
             let root = if let Some(root) = retained_root {
-                if opened_file_identity(root)? != (record.root.identity.a, record.root.identity.b) {
+                if probe.filesystem(opened_file_identity(root))?
+                    != (record.root.identity.a, record.root.identity.b)
+                {
                     return Err(Error::Conflict("catalog publication root changed".into()));
                 }
                 root
             } else {
-                opened_root = open_verified_directory(
-                    &record.root.path.to_path()?,
-                    (record.root.identity.a, record.root.identity.b),
-                )?
-                .into_file();
+                opened_root = probe
+                    .filesystem(open_verified_directory(
+                        &record.root.path.to_path()?,
+                        (record.root.identity.a, record.root.identity.b),
+                    ))?
+                    .into_file();
                 &opened_root
             };
             let leaf = relative_path(&record.destination)?;
-            let Some(identity) = catalog_directory_identity(root, leaf.as_os_str())? else {
+            let Some(identity) =
+                probe.filesystem(catalog_directory_identity(root, leaf.as_os_str()))?
+            else {
                 return Ok(false);
             };
             if identity != (record.identity.a, record.identity.b) {
@@ -601,8 +615,9 @@ impl PathAuthority {
                     "catalog publication could not be confirmed".into(),
                 ));
             }
-            let directory =
-                open_removal_directory_at(root, leaf.as_os_str(), identity)?.into_file();
+            let directory = probe
+                .filesystem(open_removal_directory_at(root, leaf.as_os_str(), identity))?
+                .into_file();
             let observed = inventory(&directory, record.root.identity.a)?;
             if observed.len() != record.inventory.len()
                 || !observed
@@ -613,7 +628,12 @@ impl PathAuthority {
                     "catalog publication could not be confirmed".into(),
                 ));
             }
-            assert_entry_identity(root, leaf.as_os_str(), identity, true)?;
+            probe.filesystem(assert_entry_identity(
+                root,
+                leaf.as_os_str(),
+                identity,
+                true,
+            ))?;
             // Recovery may observe a rename whose producer never reached its parent sync.
             // Only after exact proof may this failure be described as applied uncertainty.
             root.sync_all().map_err(|error| {
@@ -653,17 +673,17 @@ impl PathAuthority {
         path: &Path,
         retained_root: Option<&fs::File>,
         retained_file: Option<(&Path, VerifiedIdentity)>,
+        probe: &mut EngineRootProbe,
     ) -> Result<bool, Error> {
         let opened_root;
         let directory = if let Some(directory) = retained_root {
             directory
         } else {
-            opened_root =
-                open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
-                    .into_file();
+            opened_root = probe.filesystem(engine_install_directory(root))?;
             &opened_root
         };
-        if opened_file_identity(directory)? != (root.identity.a, root.identity.b) {
+        if probe.filesystem(opened_file_identity(directory))? != (root.identity.a, root.identity.b)
+        {
             return Err(Error::Conflict("catalog publication root changed".into()));
         }
         let leaf = path.file_name().ok_or_else(invalid_record)?;
@@ -707,27 +727,39 @@ impl PathAuthority {
         }
         let mut confirmed = true;
         for id in ids {
-            confirmed &= self.confirm_catalog_install(&id, Some(directory))?;
+            confirmed &= self.confirm_catalog_install_with_probe(&id, Some(directory), probe)?;
         }
         Ok(confirmed)
     }
 
     /// Confirms adoption without acquiring ownership of legacy trees. Pending provenance may
     /// require full inventory validation, parent sync and durable publication confirmation.
+    #[cfg(test)]
     pub(crate) fn confirm_catalog_archive_adoption(
         &mut self,
         destination: &PathRef,
         resolved: &ResolvedPath,
     ) -> Result<bool, Error> {
+        self.confirm_catalog_archive_adoption_with_probe(
+            destination,
+            resolved,
+            &mut EngineRootProbe::default(),
+        )
+    }
+
+    pub(crate) fn confirm_catalog_archive_adoption_with_probe(
+        &mut self,
+        destination: &PathRef,
+        resolved: &ResolvedPath,
+        probe: &mut EngineRootProbe,
+    ) -> Result<bool, Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
         let root = self.catalog_destination_root(destination, path)?;
         self.protect_catalog_path(path, false, false, None)?;
-        let confirmed = self.confirm_catalog_destination(&root, path, None, None)?;
-        let directory =
-            open_verified_directory(&root.path.to_path()?, (root.identity.a, root.identity.b))?
-                .into_file();
+        let confirmed = self.confirm_catalog_destination(&root, path, None, None, probe)?;
+        let directory = probe.filesystem(engine_install_directory(&root))?;
         let leaf = path.file_name().ok_or_else(invalid_record)?;
-        match catalog_directory_identity(&directory, leaf)? {
+        match probe.filesystem(catalog_directory_identity(&directory, leaf))? {
             None => Ok(false),
             Some(_) if confirmed => Ok(true),
             _ => Err(Error::Conflict(
@@ -742,6 +774,7 @@ impl PathAuthority {
         &mut self,
         root: &EngineRootHandle,
         components: &[OsString],
+        probe: &mut EngineRootProbe,
     ) -> Result<(StoredEntry, PathBuf, fs::File), Error> {
         let stored = self
             .persistent
@@ -754,12 +787,11 @@ impl PathAuthority {
             .to_path()?
             .join(components.first().ok_or_else(invalid_record)?);
         let stored = self.catalog_destination_root(root.path_ref(), &path)?;
-        let directory = open_verified_directory(
-            &stored.path.to_path()?,
-            (stored.identity.a, stored.identity.b),
-        )?
-        .into_file();
-        self.confirm_catalog_engine_registration(&stored, &path, &directory, None)?;
+        if !is_engine_root_use(&stored, PathOperation::EngineInstall) {
+            return Err(invalid_record());
+        }
+        let directory = probe.filesystem(engine_install_directory(&stored))?;
+        self.confirm_catalog_engine_registration(&stored, &path, &directory, None, probe)?;
         Ok((stored, path, directory))
     }
 
@@ -769,6 +801,7 @@ impl PathAuthority {
         path: &Path,
         retained_root: &fs::File,
         retained_file: Option<(&Path, VerifiedIdentity)>,
+        probe: &mut EngineRootProbe,
     ) -> Result<(), Error> {
         if let Some((target, identity)) = retained_file {
             let (a, b) = identity.pair();
@@ -776,7 +809,13 @@ impl PathAuthority {
         } else {
             self.protect_catalog_path(path, false, false, None)?;
         }
-        if self.confirm_catalog_destination(root, path, Some(retained_root), retained_file)? {
+        if self.confirm_catalog_destination(
+            root,
+            path,
+            Some(retained_root),
+            retained_file,
+            probe,
+        )? {
             Ok(())
         } else {
             Err(Error::Conflict(
@@ -911,29 +950,48 @@ impl PathAuthority {
     }
 
     /// Called under authority serialization on the existing blocking worker.
+    #[cfg(test)]
     pub(crate) fn publish_catalog_install(
         &mut self,
         destination: &PathRef,
         resolved: &ResolvedPath,
         staging: &mut crate::infra::fs::OwnedStagingDir,
     ) -> Result<(), Error> {
+        self.publish_catalog_install_with_probe(
+            destination,
+            resolved,
+            staging,
+            &mut EngineRootProbe::default(),
+        )
+    }
+
+    pub(crate) fn publish_catalog_install_with_probe(
+        &mut self,
+        destination: &PathRef,
+        resolved: &ResolvedPath,
+        staging: &mut crate::infra::fs::OwnedStagingDir,
+        probe: &mut EngineRootProbe,
+    ) -> Result<(), Error> {
         let path = resolved.target().ok_or_else(invalid_record)?;
-        if self.confirm_catalog_archive_adoption(destination, resolved)? {
+        if self.confirm_catalog_archive_adoption_with_probe(destination, resolved, probe)? {
             return Err(Error::Conflict(
                 "directory target was created concurrently".into(),
             ));
         }
         let root = self.catalog_destination_root(destination, path)?;
-        let root_path = root.path.to_path()?;
-        if staging.parent_identity()? != (root.identity.a, root.identity.b) {
+        if probe.filesystem(staging.parent_identity())? != (root.identity.a, root.identity.b) {
             return Err(Error::InvalidInput(
                 "catalog staging must share the destination parent".into(),
             ));
         }
-        let root_directory =
-            open_verified_directory(&root_path, (root.identity.a, root.identity.b))?.into_file();
+        let root_directory = probe.filesystem(engine_install_directory(&root))?;
         let (source_parent, source_leaf, (a, b)) = staging.binding();
-        assert_entry_identity(source_parent, source_leaf, (a, b), true)?;
+        probe.filesystem(assert_entry_identity(
+            source_parent,
+            source_leaf,
+            (a, b),
+            true,
+        ))?;
         let identity = Identity { a, b };
         let directory = staging.directory()?;
         let mut record = CatalogInstall {
@@ -976,10 +1034,15 @@ impl PathAuthority {
         records.insert(id.clone(), record);
         self.commit_catalog(records)?;
         self.catalog_protected.insert(id.clone());
-        assert_entry_identity(&root_directory, source_leaf, (identity.a, identity.b), true)?;
-        resolved.atomic_install_download_dir(staging)?;
-        self.confirm_catalog_install(&id, Some(&root_directory))?;
-        if !self.confirm_catalog_destination(&root, path, Some(&root_directory), None)? {
+        probe.filesystem(assert_entry_identity(
+            &root_directory,
+            source_leaf,
+            (identity.a, identity.b),
+            true,
+        ))?;
+        probe.filesystem(resolved.atomic_install_download_dir(staging))?;
+        self.confirm_catalog_install_with_probe(&id, Some(&root_directory), probe)?;
+        if !self.confirm_catalog_destination(&root, path, Some(&root_directory), None, probe)? {
             return Err(Error::Conflict(
                 "catalog publication could not be confirmed".into(),
             ));
@@ -1241,7 +1304,7 @@ mod tests {
 
         fn engine(&mut self, name: &str) -> EngineHandle {
             self.authority
-                .register_installed_engine(&self.handle, &format!("{name}/engine"))
+                .register_installed_engine_for_test(&self.handle, &format!("{name}/engine"))
                 .unwrap()
         }
 
@@ -1387,10 +1450,10 @@ mod tests {
         fs::write(f.root.join("independent-engine"), b"independent file").unwrap();
         let alias = f
             .authority
-            .register_installed_engine(&f.handle, "alias-engine");
+            .register_installed_engine_for_test(&f.handle, "alias-engine");
         let independent = f
             .authority
-            .register_installed_engine(&f.handle, "independent-engine");
+            .register_installed_engine_for_test(&f.handle, "independent-engine");
         let original = fs::read(f.root.join("original/engine"));
         let alias_bytes = fs::read(f.root.join("alias-engine"));
         let target_bytes = fs::read(f.root.join("managed"));
@@ -1493,7 +1556,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "independent");
+            .register_installed_engine_for_test(&f.handle, "independent");
         drop(cleanup);
         let moved = swaps.borrow().first().is_some_and(Result::is_ok);
         let actual_root = if moved { &moved_root } else { &f.root };
@@ -1626,7 +1689,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "alias-dir/extra/added");
+            .register_installed_engine_for_test(&f.handle, "alias-dir/extra/added");
         drop(cleanup);
         let first_moved = swaps.borrow().first().is_some_and(Result::is_ok);
         let completed = swaps.borrow().len() == 2 && swaps.borrow().iter().all(Result::is_ok);
@@ -1793,7 +1856,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "alias-dir/extra/added");
+            .register_installed_engine_for_test(&f.handle, "alias-dir/extra/added");
         drop(cleanup);
         let stored_identity = result.as_ref().ok().map(|handle| {
             f.authority.persistent[&handle.path_ref().id]
@@ -1896,7 +1959,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "alias-dir/engine");
+            .register_installed_engine_for_test(&f.handle, "alias-dir/engine");
         drop(cleanup);
         let stored_identity = result.as_ref().ok().map(|handle| {
             f.authority.persistent[&handle.path_ref().id]
@@ -1970,10 +2033,10 @@ mod tests {
         fs::write(f.root.join("independent"), b"independent file").unwrap();
         let independent = f
             .authority
-            .register_installed_engine(&f.handle, "independent");
+            .register_installed_engine_for_test(&f.handle, "independent");
         let direct_bad = f
             .authority
-            .register_installed_engine(&f.handle, "direct-bad");
+            .register_installed_engine_for_test(&f.handle, "direct-bad");
         let staged = f.root.join("staged-alias");
         let locator = f.root.join("alias-engine");
         fs::hard_link(f.root.join("managed"), &staged).unwrap();
@@ -1992,7 +2055,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "alias-engine");
+            .register_installed_engine_for_test(&f.handle, "alias-engine");
         drop(cleanup);
         let no_bad_capability = f
             .authority
@@ -2091,7 +2154,7 @@ mod tests {
         });
         let result = f
             .authority
-            .register_installed_engine(&f.handle, "independent");
+            .register_installed_engine_for_test(&f.handle, "independent");
         drop(cleanup);
         let stored_identity = result.as_ref().ok().map(|handle| {
             f.authority.persistent[&handle.path_ref().id]
@@ -2438,7 +2501,7 @@ mod tests {
                     };
                     let registration = f
                         .authority
-                        .register_installed_engine(&f.handle, &executable);
+                        .register_installed_engine_for_test(&f.handle, &executable);
                     assert!(
                         matches!(&registration, Err(Error::Conflict(_))),
                         "pending {alteration} alias={name} cycle={cycle} registration refusal required: {registration:?}"
@@ -2580,7 +2643,7 @@ mod tests {
                     assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
                     assert!(matches!(
                         f.authority
-                            .register_installed_engine(&f.handle, "managed/user"),
+                            .register_installed_engine_for_test(&f.handle, "managed/user"),
                         Err(Error::Conflict(_))
                     ));
                     assert_eq!(
@@ -2784,12 +2847,139 @@ mod tests {
                 assert!(matches!(f.adopt("managed"), Err(Error::Conflict(_))));
                 assert!(matches!(
                     f.authority
-                        .register_installed_engine(&f.handle, "managed/engine"),
+                        .register_installed_engine_for_test(&f.handle, "managed/engine"),
                     Err(Error::Conflict(_))
                 ));
                 assert!(f.root.join("managed/engine").exists());
             }
         }
+    }
+
+    #[test]
+    fn root_failure_catalog_registry_and_durability_errors_are_unlabelled() {
+        for point in [
+            AtomicFileFaultPoint::Write,
+            AtomicFileFaultPoint::Rename,
+            AtomicFileFaultPoint::ParentSync,
+        ] {
+            let f = Fixture::new();
+            let mut staging = f.stage();
+            let Fixture {
+                temp: _temp,
+                root,
+                handle,
+                mut authority,
+            } = f;
+            let resolved = authority
+                .resolve(
+                    handle.path_ref(),
+                    PathOperation::DownloadArchive,
+                    &["managed".into()],
+                )
+                .unwrap();
+            let authority = SharedPathAuthority::installed(authority);
+            let guard = install_test_atomic_file_injector(Arc::new(FileFault(point)));
+            let error = crate::fs::publish_engine_archive_tree(
+                &authority,
+                handle.path_ref(),
+                &resolved,
+                &mut staging.owner,
+            )
+            .unwrap_err();
+            drop(guard);
+            assert_eq!(error.root_failure(), None, "{point:?}: {error:?}");
+            assert!(!root.join("managed").exists());
+        }
+        let f = Fixture::new();
+        let mut staging = f.stage();
+        let Fixture {
+            temp: _temp,
+            root,
+            handle,
+            mut authority,
+        } = f;
+        let resolved = authority
+            .resolve(
+                handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &["managed".into()],
+            )
+            .unwrap();
+        let authority = SharedPathAuthority::installed(authority);
+        set_test_atomic_dir_injector(Some(Box::new(DirFault(AtomicDirFaultPoint::ParentSync))));
+        let result = crate::fs::publish_engine_archive_tree(
+            &authority,
+            handle.path_ref(),
+            &resolved,
+            &mut staging.owner,
+        );
+        set_test_atomic_dir_injector(None);
+        let error = result.unwrap_err();
+        assert_eq!(error.root_failure(), None);
+        assert!(
+            matches!(error, Error::CommittedDurabilityUncertain(_)),
+            "{error:?}"
+        );
+        assert!(root.join("managed/engine").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_catalog_registry_failure_with_root_read_loss_stays_unlabelled() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        struct RegistryFault(PathBuf);
+        impl AtomicWriterInjector for RegistryFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Write {
+                    fs::set_permissions(&self.0, fs::Permissions::from_mode(0o300))?;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "registry fault with unreadable root",
+                    ));
+                }
+                Ok(())
+            }
+        }
+        let f = Fixture::new();
+        let mut staging = f.stage();
+        let Fixture {
+            temp: _temp,
+            root,
+            handle,
+            mut authority,
+        } = f;
+        let resolved = authority
+            .resolve(
+                handle.path_ref(),
+                PathOperation::DownloadArchive,
+                &["managed".into()],
+            )
+            .unwrap();
+        let authority = SharedPathAuthority::installed(authority);
+        let permissions = TestRootPermissionGuard::restrict(&root, 0o700);
+        let guard = install_test_atomic_file_injector(Arc::new(RegistryFault(root.clone())));
+        let result = crate::fs::publish_engine_archive_tree(
+            &authority,
+            handle.path_ref(),
+            &resolved,
+            &mut staging.owner,
+        );
+        drop(guard);
+        assert!(
+            fs::read_dir(&root).is_err(),
+            "registry failure must coincide with actual read loss"
+        );
+        drop(permissions);
+        let error = result.unwrap_err();
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+        assert!(error
+            .diagnostic()
+            .contains("registry fault with unreadable root"));
+        assert!(!root.join("managed").exists());
     }
 
     #[test]
@@ -2939,7 +3129,7 @@ mod tests {
             "PHYSICAL_ROOT_PENDING_FENCE: a different spelling of the same authorized root cannot adopt a modified pending tree: {result:?}");
         assert!(matches!(
             f.authority
-                .register_installed_engine(&f.handle, "managed/engine"),
+                .register_installed_engine_for_test(&f.handle, "managed/engine"),
             Err(Error::Conflict(_))
         ));
     }

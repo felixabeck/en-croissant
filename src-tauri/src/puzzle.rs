@@ -531,9 +531,18 @@ fn list_puzzle_databases_blocking<R: tauri::Runtime>(
         &|| crate::infra::path_authority::AppDataDir::for_app(app),
         authority,
     )?;
-    authority.with_mut(|authority| {
+    let result = authority.with_mut(|authority| {
         authority.list_puzzle_children_cancellable(&workspace.root, cancellation)
-    })?
+    })?;
+    result.map_err(|error| {
+        crate::infra::path_authority::probe_listing_root_failure(
+            authority,
+            workspace.root.path_ref(),
+            crate::infra::path_authority::PathOperation::PuzzleRead,
+            error,
+            cancellation,
+        )
+    })
 }
 
 async fn puzzle_database_info_for_file(
@@ -2621,6 +2630,117 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn root_failure_puzzle_read_loss_and_probe_cancellation_preserve_original() {
+        use crate::infra::path_authority::{
+            ListingRootFailureHookGuard, TestRootPermissionGuard, LISTING_ROOT_FAILURE_HOOKS,
+        };
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for cancel in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root_path = directory.path().join("puzzles");
+            std::fs::create_dir(&root_path).unwrap();
+            std::fs::write(root_path.join("child.db3"), b"puzzle").unwrap();
+            let (authority, root) = puzzle_workspace_authority(directory.path(), &root_path);
+            assert_active_puzzle_root(&authority, "selected puzzle root must exist");
+            let before = std::fs::read(directory.path().join("registry.json")).unwrap();
+            let cancellation = CancellationToken::new();
+            let hook_cancellation = cancellation.clone();
+            let observed = Arc::new(std::sync::Mutex::new(None));
+            let hook_observed = observed.clone();
+            let _hook = ListingRootFailureHookGuard(root.path_ref().id.clone());
+            LISTING_ROOT_FAILURE_HOOKS.arm(
+                root.path_ref().id.clone(),
+                Box::new(move |error| {
+                    *hook_observed.lock().unwrap() =
+                        Some((error.category(), error.to_string(), error.diagnostic()));
+                    if cancel {
+                        hook_cancellation.cancel();
+                    }
+                }),
+            );
+            let permissions = TestRootPermissionGuard::restrict(&root_path, 0o300);
+            let app = tauri::test::mock_app();
+            let result = list_puzzle_databases_blocking(app.handle(), &authority, &cancellation);
+            drop(permissions);
+            let error = result.unwrap_err();
+            let original = observed
+                .lock()
+                .unwrap()
+                .take()
+                .expect("actual failed listing must reach probe");
+            if cancel {
+                assert!(matches!(error, Error::Cancellation));
+                assert_eq!(error.root_failure(), None);
+            } else {
+                assert_eq!(
+                    error.root_failure(),
+                    Some(crate::error::RootFailure::Permission),
+                    "{error:?}"
+                );
+                assert_eq!(
+                    (error.category(), error.to_string(), error.diagnostic()),
+                    original
+                );
+            }
+            assert_eq!(
+                std::fs::read(directory.path().join("registry.json")).unwrap(),
+                before
+            );
+            assert_eq!(
+                list_puzzle_databases_blocking(app.handle(), &authority, &CancellationToken::new())
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn root_failure_puzzle_healthy_root_keeps_replaced_child_error() {
+        use crate::infra::path_authority::{
+            set_puzzle_child_post_resolve_hook, ListingRootFailureHookGuard,
+            LISTING_ROOT_FAILURE_HOOKS,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("puzzles");
+        std::fs::create_dir(&root_path).unwrap();
+        let child = root_path.join("child.db3");
+        std::fs::write(&child, b"puzzle").unwrap();
+        let (authority, root) = puzzle_workspace_authority(directory.path(), &root_path);
+        assert_active_puzzle_root(&authority, "selected puzzle root must exist");
+        let saved = directory.path().join("original.db3");
+        set_puzzle_child_post_resolve_hook(Some(Box::new(move || {
+            std::fs::rename(&child, saved).unwrap();
+            std::fs::write(&child, b"replacement").unwrap();
+        })));
+        let observed = Arc::new(std::sync::Mutex::new(None));
+        let hook_observed = observed.clone();
+        let _hook = ListingRootFailureHookGuard(root.path_ref().id.clone());
+        LISTING_ROOT_FAILURE_HOOKS.arm(
+            root.path_ref().id.clone(),
+            Box::new(move |error| {
+                *hook_observed.lock().unwrap() =
+                    Some((error.category(), error.to_string(), error.diagnostic()));
+            }),
+        );
+        let app = tauri::test::mock_app();
+        let error =
+            list_puzzle_databases_blocking(app.handle(), &authority, &CancellationToken::new())
+                .unwrap_err();
+        set_puzzle_child_post_resolve_hook(None);
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        assert_eq!(
+            (error.category(), error.to_string(), error.diagnostic()),
+            observed.lock().unwrap().take().unwrap()
+        );
+    }
+
+    #[test]
     fn puzzle_workspace_without_an_authority_is_a_conflict() {
         let authority = crate::infra::path_authority::SharedPathAuthority::uninitialized();
         let app = tauri::test::mock_app();
@@ -2631,5 +2751,6 @@ mod tests {
             matches!(error, Error::Conflict(ref message) if message == "path authority is not initialized"),
             "unexpected error: {error:?}"
         );
+        assert_eq!(error.root_failure(), None);
     }
 }
