@@ -9565,3 +9565,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20260830-04 and d-20260901-06 require state to follow a landed mutation. Reversal path: a separately reviewed transactional recovery protocol, supported by new evidence.
 * **Decided by:** Codex, full auto, adopted reviewed plan tasks/plans/2026-10-22-workspace-rename-durability.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"64b4156ba138731020e6bbe99d13a0c3f86f4ba2fa507199b228e4d9d365bc39","input_sha256":"59171f3edfb0c4a5eb820fb4ca47f1d0c9b5a143ebe885ff2d7dcac8b40f5dba","kind":"mutation-receipt","operation":"21243ee151dcaf397bbe840d989200331bbc334d0d6293c7ec933f445a355520","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-16"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-17 — change later hard-failure precedence as part of this task?
+
+* **Question:** change later hard-failure precedence as part of this task?
+* **Governs:** f-20261005-03
+* **Chosen:** retain it, log observed uncertainty, and leave the ordinary post-pair design with f-20261006-03.
+* **Rejected:** replacing every later ordinary error with durability or introducing new post-pair compensation.
+* **Reason:** d-20260906-03's combine contract and d-20261004-20 already settle precedence. Reversal path: f-20261006-03 must load its inherited review and record any evidenced refinement.
+* **Decided by:** Codex, full auto, adopted reviewed plan tasks/plans/2026-10-22-workspace-rename-durability.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e3b749bce4b8cd41473b50305beb3446889a0f74c671bbaa7a9da5347fa05ab5","input_sha256":"611127aae3e231d38c9e5f11298978c81f87b4c201e8fda4f77cd2efa4b932cc","kind":"mutation-receipt","operation":"617c08f86c286de7a1136b3e0502e9b56e4fbca9b2f0176db605aa269be8468e","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-17"],"target":"decisions-ledger","v":1} -->
