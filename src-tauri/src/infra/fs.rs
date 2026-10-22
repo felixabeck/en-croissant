@@ -600,9 +600,9 @@ pub(crate) fn map_atomic_file_outcome(
     }
 }
 
-/// The contract for a caller that has nothing left to do after the replacement: the rename
-/// landed either way, so the state is kept and uncertain durability is reported as
-/// `Error::CommittedDurabilityUncertain(stage)` after logging the cause.
+/// Maps a committed outcome to a result, logging the cause and reporting uncertain durability
+/// as `Error::CommittedDurabilityUncertain(stage)`. A terminal caller propagates the result.
+/// An intermediate caller must retain uncertainty and complete dependent work before reporting it.
 pub(crate) fn require_durable(
     outcome: AtomicFileOutcome,
     stage: crate::error::DurabilityStage,
@@ -5159,13 +5159,14 @@ fn take_entry_observation_fault() -> Result<(), Error> {
 
 fn parent_sync_as_atomic_outcome(parent: &File) -> AtomicFileOutcome {
     #[cfg(test)]
-    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
-        let Error::Io(error) = error else {
-            unreachable!("atomic file injectors only produce I/O errors");
-        };
-        return AtomicFileOutcome::CommittedDurabilityUncertain(*error);
-    }
-    match parent.sync_all() {
+    let sync_result = match inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
+        Ok(()) => parent.sync_all(),
+        Err(Error::Io(error)) => Err(*error),
+        Err(_) => unreachable!("atomic file injectors only produce I/O errors"),
+    };
+    #[cfg(not(test))]
+    let sync_result = parent.sync_all();
+    match sync_result {
         Ok(()) => AtomicFileOutcome::DurableCommit,
         Err(error) => AtomicFileOutcome::CommittedDurabilityUncertain(error),
     }

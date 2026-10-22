@@ -5338,6 +5338,151 @@ mod tests {
         assert!(!root.join("before.info").exists());
     }
 
+    struct WorkspaceRenameScenario {
+        command: QueuedWorkspaceCommand,
+        directory: bool,
+        root: PathBuf,
+        entry: FileWorkspaceHandle,
+        file: FileWorkspaceHandle,
+        original_path: PathBuf,
+        identity: (u64, u64),
+        info_bytes: Vec<u8>,
+    }
+
+    impl WorkspaceRenameScenario {
+        fn prepare(
+            state: &AppState,
+            workspace: &FileWorkspaceHandle,
+            command: QueuedWorkspaceCommand,
+            directory: bool,
+        ) -> Self {
+            let root = workspace_root(&state.pgn_path_authority, workspace).unwrap();
+            let origin = create_named_directory(state, workspace, "origin").unwrap();
+            let source_dir = create_workspace_directory_inner(
+                workspace.clone(),
+                origin.handle.clone(),
+                "source".into(),
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let parent = if directory {
+                &source_dir.handle
+            } else {
+                &origin.handle
+            };
+            let created = create_workspace_file_blocking(
+                workspace.clone(),
+                parent.clone(),
+                "before".into(),
+                WorkspaceMetadata {
+                    file_type: WorkspaceFileType::Game,
+                    tags: vec!["preserved".into()],
+                },
+                WorkspaceFileContent::Text {
+                    pgn: "1. e4 *".into(),
+                },
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &state.pgn_repository,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let original = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let original_path = original.path().to_path_buf();
+            let info_bytes = fs::read(original_path.with_extension("info")).unwrap();
+            Self {
+                command,
+                directory,
+                root,
+                entry: if directory {
+                    source_dir.handle
+                } else {
+                    created.handle.clone()
+                },
+                file: created.handle,
+                original_path,
+                identity: original.identity,
+                info_bytes,
+            }
+        }
+
+        fn prepare_invocation(&self, state: &AppState, workspace: &FileWorkspaceHandle) -> PathBuf {
+            if matches!(self.command, QueuedWorkspaceCommand::Restore) {
+                trash_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    workspace,
+                    &self.entry,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            }
+            mutation_target(&state.pgn_path_authority, &self.entry)
+                .unwrap()
+                .path()
+                .to_path_buf()
+        }
+
+        fn sync_fault_indices(command: QueuedWorkspaceCommand, directory: bool) -> [usize; 2] {
+            // Cross-parent file pairs sync both primary parents before the sidecar.
+            // Directory renames instead exercise the source and target parent syncs.
+            let later = if !directory && !matches!(command, QueuedWorkspaceCommand::Rename) {
+                2
+            } else {
+                1
+            };
+            // A fresh trash operation syncs its hidden directory and bucket first.
+            let setup = if matches!(command, QueuedWorkspaceCommand::Trash) {
+                2
+            } else {
+                0
+            };
+            [setup, setup + later]
+        }
+
+        fn assert_landed(&self, state: &AppState, before: &Path, sync: usize) -> PathBuf {
+            let rebound = mutation_target(&state.pgn_path_authority, &self.file).unwrap();
+            assert_eq!(rebound.identity, self.identity);
+            assert!(
+                !before.exists(),
+                "{:?} directory={} sync={sync}",
+                self.command,
+                self.directory
+            );
+            assert_eq!(fs::read(rebound.path()).unwrap(), b"1. e4 *");
+            let expected = match self.command {
+                QueuedWorkspaceCommand::Move | QueuedWorkspaceCommand::Restore => {
+                    self.root.join(if self.directory {
+                        "source/before.pgn"
+                    } else {
+                        "before.pgn"
+                    })
+                }
+                QueuedWorkspaceCommand::Rename => self.original_path.with_file_name("after.pgn"),
+                QueuedWorkspaceCommand::Trash => {
+                    assert!(rebound.path().starts_with(self.root.join(TRASH_DIRECTORY)));
+                    rebound.path().to_path_buf()
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(rebound.path(), expected);
+            if matches!(self.command, QueuedWorkspaceCommand::Rename) {
+                let metadata: WorkspaceMetadata =
+                    serde_json::from_slice(&fs::read(expected.with_extension("info")).unwrap())
+                        .unwrap();
+                assert_eq!(metadata.tags, ["updated"]);
+            } else {
+                assert_eq!(
+                    fs::read(expected.with_extension("info")).unwrap(),
+                    self.info_bytes
+                );
+            }
+            expected
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn committed_rename_commands_finish_real_collection_reconciliation() {
@@ -5352,91 +5497,29 @@ mod tests {
                 if directory && matches!(command, QueuedWorkspaceCommand::Rename) {
                     continue;
                 }
-                // A cross-parent file pair has two primary syncs before the sidecar.
-                let later_sync = if !directory && !matches!(command, QueuedWorkspaceCommand::Rename)
-                {
-                    2
-                } else {
-                    1
-                };
-                for sync in [0, later_sync] {
+                for sync in WorkspaceRenameScenario::sync_fault_indices(command, directory) {
                     let fixture = Fixture::new();
                     let state = &fixture.state;
                     let workspace = &fixture.workspace;
-                    let root = workspace_root(&state.pgn_path_authority, workspace).unwrap();
-                    let origin = create_named_directory(state, workspace, "origin").unwrap();
-                    let source_dir = create_workspace_directory_inner(
-                        workspace.clone(),
-                        origin.handle.clone(),
-                        "source".into(),
-                        &state.pgn_path_authority,
-                        &state.workspace_mutation,
-                        &CancellationToken::new(),
-                    )
-                    .unwrap();
-                    let parent = if directory {
-                        &source_dir.handle
-                    } else {
-                        &origin.handle
-                    };
-                    let created = create_workspace_file_blocking(
-                        workspace.clone(),
-                        parent.clone(),
-                        "before".into(),
-                        WorkspaceMetadata {
-                            file_type: WorkspaceFileType::Game,
-                            tags: vec!["preserved".into()],
-                        },
-                        WorkspaceFileContent::Text {
-                            pgn: "1. e4 *".into(),
-                        },
-                        &state.pgn_path_authority,
-                        &state.workspace_mutation,
-                        &state.pgn_repository,
-                        &CancellationToken::new(),
-                    )
-                    .unwrap();
-                    let entry = if directory {
-                        &source_dir.handle
-                    } else {
-                        &created.handle
-                    };
-                    let original =
-                        mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
-                    let original_path = original.path().to_path_buf();
-                    let info_bytes = fs::read(original_path.with_extension("info")).unwrap();
+                    let scenario =
+                        WorkspaceRenameScenario::prepare(state, workspace, command, directory);
                     let collections = fixture.list();
                     assert_eq!(collections.len(), 1);
                     let collection_id = collections[0].id.clone();
-                    if matches!(command, QueuedWorkspaceCommand::Restore) {
-                        trash_entry(
-                            &state.pgn_path_authority,
-                            &state.workspace_mutation,
-                            workspace,
-                            entry,
-                            &CancellationToken::new(),
-                        )
-                        .unwrap();
-                    }
-                    let before = mutation_target(&state.pgn_path_authority, entry)
-                        .unwrap()
-                        .path()
-                        .to_path_buf();
+                    let before = scenario.prepare_invocation(state, workspace);
                     // An external collection appears after the initial discovery. Its durable
                     // registration proves that the real command wrapper ran discovery.
-                    fs::write(root.join("probe.pgn"), b"1. d4 *").unwrap();
-                    fs::write(root.join("probe.info"), br#"{"type":"game","tags":[]}"#).unwrap();
+                    fs::write(scenario.root.join("probe.pgn"), b"1. d4 *").unwrap();
+                    fs::write(
+                        scenario.root.join("probe.info"),
+                        br#"{"type":"game","tags":[]}"#,
+                    )
+                    .unwrap();
                     let app = fixture.app();
-                    // Trash creates its directory and bucket before the namespace rename.
-                    let sync = sync
-                        + if matches!(command, QueuedWorkspaceCommand::Trash) {
-                            2
-                        } else {
-                            0
-                        };
                     let reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
                         FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
                     ));
+                    let entry = &scenario.entry;
                     let result = match command {
                         QueuedWorkspaceCommand::Move => {
                             move_workspace_entry(
@@ -5480,41 +5563,7 @@ mod tests {
                     };
                     drop(reset);
                     assert_workspace_rename_uncertainty(&result.unwrap_err());
-                    let rebound =
-                        mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
-                    assert_eq!(rebound.identity, original.identity);
-                    assert!(
-                        !before.exists(),
-                        "{command:?} directory={directory} sync={sync}"
-                    );
-                    assert_eq!(fs::read(rebound.path()).unwrap(), b"1. e4 *");
-                    let expected = match command {
-                        QueuedWorkspaceCommand::Move | QueuedWorkspaceCommand::Restore => root
-                            .join(if directory {
-                                "source/before.pgn"
-                            } else {
-                                "before.pgn"
-                            }),
-                        QueuedWorkspaceCommand::Rename => root.join("origin/after.pgn"),
-                        QueuedWorkspaceCommand::Trash => {
-                            assert!(rebound.path().starts_with(root.join(TRASH_DIRECTORY)));
-                            rebound.path().to_path_buf()
-                        }
-                        _ => unreachable!(),
-                    };
-                    assert_eq!(rebound.path(), expected);
-                    if matches!(command, QueuedWorkspaceCommand::Rename) {
-                        let metadata: WorkspaceMetadata = serde_json::from_slice(
-                            &fs::read(expected.with_extension("info")).unwrap(),
-                        )
-                        .unwrap();
-                        assert_eq!(metadata.tags, ["updated"]);
-                    } else {
-                        assert_eq!(
-                            fs::read(expected.with_extension("info")).unwrap(),
-                            info_bytes
-                        );
-                    }
+                    let expected = scenario.assert_landed(state, &before, sync);
                     let registry: serde_json::Value = serde_json::from_slice(
                         &fs::read(
                             fixture
@@ -5538,14 +5587,14 @@ mod tests {
                         .map(|part| part.to_path().unwrap())
                         .collect::<PathBuf>();
                     let indexed_path = if matches!(command, QueuedWorkspaceCommand::Trash) {
-                        original_path
+                        &scenario.original_path
                     } else {
-                        expected
+                        &expected
                     };
-                    assert_eq!(root.join(locator), indexed_path);
+                    assert_eq!(scenario.root.join(locator), *indexed_path);
                     assert_eq!(
                         record["file"],
-                        serde_json::to_value(&created.handle).unwrap()
+                        serde_json::to_value(&scenario.file).unwrap()
                     );
                 }
             }
@@ -5560,66 +5609,20 @@ mod tests {
             QueuedWorkspaceCommand::Restore,
         ] {
             for directory in [false, true] {
-                for sync in [0, if directory { 1 } else { 2 }] {
+                for sync in WorkspaceRenameScenario::sync_fault_indices(command, directory) {
                     let (_directory, state, workspace) = workspace_state();
-                    let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
-                    let parent = create_named_directory(&state, &workspace, "source").unwrap();
-                    let destination =
-                        create_named_directory(&state, &workspace, "destination").unwrap();
-                    let child = create_workspace_file_blocking(
-                        workspace.clone(),
-                        parent.handle.clone(),
-                        "game".into(),
-                        WorkspaceMetadata {
-                            file_type: WorkspaceFileType::Game,
-                            tags: vec!["preserved".into()],
-                        },
-                        WorkspaceFileContent::Text {
-                            pgn: "1. e4 *".into(),
-                        },
-                        &state.pgn_path_authority,
-                        &state.workspace_mutation,
-                        &state.pgn_repository,
-                        &CancellationToken::new(),
-                    )
-                    .unwrap();
-                    let entry = if directory {
-                        &parent.handle
-                    } else {
-                        &child.handle
-                    };
-                    let original =
-                        mutation_target(&state.pgn_path_authority, &child.handle).unwrap();
-                    let info = fs::read(original.path().with_extension("info")).unwrap();
-                    if matches!(command, QueuedWorkspaceCommand::Restore) {
-                        trash_entry(
-                            &state.pgn_path_authority,
-                            &state.workspace_mutation,
-                            &workspace,
-                            entry,
-                            &CancellationToken::new(),
-                        )
-                        .unwrap();
-                    }
-                    let before = mutation_target(&state.pgn_path_authority, entry)
-                        .unwrap()
-                        .path()
-                        .to_path_buf();
-                    // A fresh trash operation syncs its hidden directory and bucket first.
-                    let sync = sync
-                        + if matches!(command, QueuedWorkspaceCommand::Trash) {
-                            2
-                        } else {
-                            0
-                        };
+                    let scenario =
+                        WorkspaceRenameScenario::prepare(&state, &workspace, command, directory);
+                    let before = scenario.prepare_invocation(&state, &workspace);
                     let reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
                         FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
                     ));
+                    let entry = &scenario.entry;
                     let result = match command {
                         QueuedWorkspaceCommand::Move => move_workspace_entry_blocking(
                             workspace.clone(),
                             entry.clone(),
-                            destination.handle,
+                            workspace.clone(),
                             &state.pgn_path_authority,
                             &state.workspace_mutation,
                             &CancellationToken::new(),
@@ -5642,41 +5645,15 @@ mod tests {
                     };
                     drop(reset);
                     assert_workspace_rename_uncertainty(&result.unwrap_err());
-                    let rebound =
-                        mutation_target(&state.pgn_path_authority, &child.handle).unwrap();
-                    assert_eq!(rebound.identity, original.identity);
-                    assert!(!before.exists());
-                    assert_eq!(fs::read(rebound.path()).unwrap(), b"1. e4 *");
-                    assert_eq!(
-                        fs::read(rebound.path().with_extension("info")).unwrap(),
-                        info
-                    );
-                    let expected = match command {
-                        QueuedWorkspaceCommand::Move => root.join(if directory {
-                            "destination/source/game.pgn"
-                        } else {
-                            "destination/game.pgn"
-                        }),
-                        QueuedWorkspaceCommand::Restore => root.join(if directory {
-                            "source/game.pgn"
-                        } else {
-                            "game.pgn"
-                        }),
-                        QueuedWorkspaceCommand::Trash => {
-                            assert!(rebound.path().starts_with(root.join(TRASH_DIRECTORY)));
-                            rebound.path().to_path_buf()
-                        }
-                        _ => unreachable!(),
-                    };
-                    assert_eq!(rebound.path(), expected);
-                    let parent = crate::infra::fs::open_parent_no_follow(rebound.path()).unwrap();
+                    let expected = scenario.assert_landed(&state, &before, sync);
+                    let parent = crate::infra::fs::open_parent_no_follow(&expected).unwrap();
                     let identity =
                         crate::infra::path_authority::opened_file_identity(&parent).unwrap();
                     state
                         .pgn_path_authority
                         .with_mut(|authority| {
                             assert_eq!(
-                                authority.parent_identity_for_test(child.handle.path_ref()),
+                                authority.parent_identity_for_test(scenario.file.path_ref()),
                                 Some(identity)
                             );
                         })
