@@ -18053,3 +18053,32 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Related findings:** f-20260930-03 fixed the earlier8GiB session placement. f-20261011-03 tracks test timing witnesses, and f-20261022-05 tracks frontend mutation OOM. No shared Root is established. The present gate ran inside a real agent-gate scope, not the old session scope.
 * **Bounded recovery:** Use existing exact-tree backend receipts to complete affected proofs without cold compiler overlap, then rerun the unchanged canonical full scheduler. No deadline, scope limit, test worker count, source code, gate command or baseline changes. This is operational recovery, not a persistent scheduler repair. Keep this finding open for the separate build-tier resource design.
 * **Proof:** Preserve the exact OOM evidence. Require a source-derived bounded resource design and discriminating proof before closing this finding. A successful warmed run does not demonstrate that the cold scheduler is repaired.
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### Real-app verification times out waiting for startup reconciliation after legacy-key removal
+
+* **ID:** f-20261022-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 2d4ecbcd-3b97-4d89-b5ba-08d6cded2273
+* **Impact class:** tooling
+* **Where:** scripts/verify-app.mjs:3422 and :3715, on source bf399374614dd8de64086caa615d0378243ecf0f.
+* **Defect:** The real-product verifier passed all fifty renderer ratings and their native-store assertions, closed its application, armed verify-unowned-book in its disposable registry, and reopened. It then timed out waiting for legacy-key removal startup reconciliation to remove the freshly seeded probe, exit 1. This blocked the planned Files real-product assertions. No underlying production failure or shared cause is established yet.
+* **Evidence:** Canonical gate-real-app-proof.OM7fLK completed 1. Log and completion are under /home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-2d4ecbcd-3b97-4d89-b5ba-08d6cded2273. Throwaway profile /tmp/chessfable-verify-UPB7Nc. Stack is waitFor at app-driver.mjs:117, reopenAssertionSession at verify-app.mjs:3422, verifyFullApplication at :3715. Release build succeeded. Pixel command was not reached because the script stops on failure.
+* **Open question:** Does the reopened real application fail reconciliation, or is the existing fixed startup-probe deadline or profile handoff unreliable? Inspect the retained profile and exact execution path, then require an unmodified rerun before treating a transient failure as established.
+* **Related:** f-20261011-05 is a rejected earlier practice-stage timeout at rating 25, a different assertion. f-20261008-01 is an open Files metadata Repertoire check failure, also a different assertion. No common root claimed.
+* **Found by:** Root real-app verification during f-20261005-04, 2026-10-22. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code.
+
+### Archive gateway availability and dropped-caller download-tail tests fail short completion bounds in a full native gate
+
+* **ID:** f-20261022-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Impact class:** tooling
+* **Filed from:** 2d4ecbcd-3b97-4d89-b5ba-08d6cded2273
+* **Where:** `src-tauri/src/fs.rs:6045-6103`, `:9294-9363`.
+* **Defect:** Complete push-gate x7zjoM at 1aeb5f0d on 2026-10-22 fails native testing with 2684 passed, two failed and two existing ignored. archive_staging_authority_four_stalled_streams_leave_gateway_available fails ARCHIVE_STREAM_GATEWAY_AVAILABLE after its unrelated gateway read exceeds 500 ms while four archive streams are held. production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop fails the two-second terminal-tail wait at line9363. The concurrent full backend-coverage lane passes all tests and its ratchets. This does not establish host pressure or production deadlock as a cause.
+* **Why it matters:** These observed failures block the full release gate for f-20261005-04. The download-tail test is a second independent witness of rejected f-20261012-05, whose rejection explicitly requested filing at a second witness. The archive availability test measures relative progress before release but uses a short absolute bound alongside unrelated process-wide gateway consumers.
+* **Open question:** Distinguish the test staging/completion witnesses from real gateway starvation or lost detached completion. Preserve bounded waiting, all production deadlines, pre-release availability, terminal state and on-disk assertions. Reproduce a healthy delayed schedule and actual producer regressions before changing assertions.
+* **Evidence:** artifacts/gates/20261022T190040181Z-2739083/rust-test.log and receipt-backend-test.log, rust-coverage.log, canonical gate-push-gate.x7zjoM completion143 after root supervised stop. No production source repair is assumed.
+* **Related:** f-20261012-05 rejected first download-tail occurrence, f-20261011-03 open broader gate timeout design. This entry records two exact witnesses and does not claim to resolve the broader finding.
+* **Found by:** Codex root during the f-20261005-04 full-auto final gates. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
