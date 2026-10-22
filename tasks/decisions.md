@@ -9645,3 +9645,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
 * **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f2da218d129deb3e6d6c2b44e8b8d852d183b1c72cb7477748dc0e0a71771dab","input_sha256":"c3f674e59f42911eccbcd584c93ba8fb9d5db1948370e1777cecce2953f6e115","kind":"mutation-receipt","operation":"3372ccaf11cf3b73cc6b2618c59ca16a63d5e483ba8da70b3008da08e25e81c4","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-23"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-24 — Which native committed-rename contract is preserved?
+
+* **Question:** Which native committed-rename contract is preserved?
+* **Governs:** f-20261005-04
+* **Chosen:** Build the native refusal change on the landed committed-rename helpers rather than restoring their old Result<(), Error> or boolean sidecar contract. Reject rollback solely for sync uncertainty and generic post-pair compensation. Reason: NEW-BASE and d-20261022-15 through d-20261022-17 already fix committed completion and reserve the independent ordinary post-pair design for f-20261006-03. Reverse only with new evidence under those decisions and a reviewed replacement preserving committed-state truth.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"96e604775f2bb24574c91c7fd56ff9571cb542b34f2437a9dc460ddf32d925aa","input_sha256":"5548d9e34cf04890e6c015460d81f1da97035f9008647101f77876e33e377707","kind":"mutation-receipt","operation":"fe53f24fe2aa9c91288d15bf3e270be3fe9fcae2fd2af7b10d28ccc72023d84b","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-24"],"target":"decisions-ledger","v":1} -->
