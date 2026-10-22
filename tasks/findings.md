@@ -17793,3 +17793,19 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Proof:** The three root_prerequisite_empty_metadata tests against the old production precheck failed two byte-preservation and same-handle-restoration assertions at exit 101. With adcc7bfb they passed at exit 0. Root independently passed those three tests, 131 repository, 80 linked-collection and 23 content-validation selections. The later ordinary full native verifier passed all unchanged archive and new root checks at exit 0 in native-production-control/restored-native.log. Exact actor in the original runtime race remains inferred. Complete retained evidence is /tmp/build-43307881-0e65-4348-98b2-3c4089f02858/archive-repair-evidence/report.md.
 * **Found by:** Root actual-product verification during pinned f-20261004-21, followed by the sensitive Codex regression/repair leaf and independent root source-control proof. The cumulative records lens identified these missing required body fields at round 1, confidence 100. This append preserves the original intake and impact correction.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"47a5dd8dcdf71017863ac858cee652287b8a65ae58518ad4929e9bec3ac5b9ff","input_sha256":"a012b01ee7347f60001a18d4b4836be9cab5dc3d3a7420610876c2f8c2571cd5","kind":"mutation-receipt","operation":"b434b2c82bef82ead77d10567055797202e932b2939546878b1b56dd10a17e26","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-02"],"target":"f-20261022-02","v":1} -->
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### Empty-database tombstone regression injects an unbound path spelling on Windows
+
+* **ID:** f-20261022-03 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 43307881-0e65-4348-98b2-3c4089f02858 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-43307881-0e65-4348-98b2-3c4089f02858-1.jsonl
+* **Impact class:** tooling
+* **Follow-up of:** f-20261022-02
+* **Where:** src-tauri/src/db/repository.rs:2708, ordinary_empty_mid_probe_tombstone_precedes_uninitialized, introduced by adcc7bfb.
+* **Defect:** The new test injects path.clone() into the tombstone set after test_target has acquired its canonical target. Windows normal TEMP spellings and the bound verbatim spelling differ. tombstone_conflict checks target.path(), so this injected deletion misses and ordinary acquisition returns the empty-file InvalidInput instead of the asserted deletion Conflict. This is a source-confirmed runtime test failure, not a measured Windows run. Local GNU compilation cannot detect it.
+* **Proof:** Run agent-gate cargo test --manifest-path src-tauri/Cargo.toml ordinary_empty_mid_probe_tombstone_precedes_uninitialized -- --nocapture with a portable real alias path if supported by the existing target fixture. Retain the alias regression, remove only the bound-key correction through Git, observe the behavioral assertion fail, restore exact source and pass. The actual rust-windows-test job remains required on the pushed SHA.
+* **Found by:** review-platform-semantics in cumulative review round 1 for f-20261004-21, confidence 97. Root confirmed test_target uses acquired.path and tombstone_conflict compares target.path().
+* **Related:** f-20260912-05 and f-20260919-05 are prior canonical Windows spelling incidents, not evidence of a common root. Repair in this current review batch. No product behavior changes.
