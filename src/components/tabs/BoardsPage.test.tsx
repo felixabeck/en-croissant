@@ -126,7 +126,10 @@ vi.mock("@/state/keybinds", async () => {
     }),
   };
 });
-vi.mock("@/platform/native", () => ({ platform: () => "linux" }));
+vi.mock("@/platform/native", () => ({
+  platform: () => "linux",
+  warn: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
 vi.mock("@/platform/tauri", () => ({
   tauri: { abortGame: fixtures.abortGame, killEngines: fixtures.killEngines },
@@ -704,6 +707,9 @@ test.each(["legacy", "migrated"] as const)(
       expect(live.getState()).toBe(state);
       expect(owns()).toBe(true);
       expect(repository.pendingCount()).toBe(pending);
+      expect(repository.flush({ notify: true })).toEqual([physical]);
+      expect(repository.pendingCount()).toBe(pending);
+      expect(sessionStorage.getItem(physical)).toBe(bytes);
       const copy = realTree.getCachedTreeStore(destination.value)!;
       expect(
         copy.getState().transitionPuzzleSession((draft) => {
