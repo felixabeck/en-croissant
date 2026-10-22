@@ -9605,3 +9605,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
 * **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ee3ea9f947e64431c34f6ecebb105a3812023b9579d5b46e2ac5f0d36acdcf77","input_sha256":"ea7bf128dd38c6860249887572e325bbbe3df3a3cbc326e365fd95a0acd511ae","kind":"mutation-receipt","operation":"19b8e5ce6ab6f145c56212a88dc462ff534938729f78be9da80953181bf1fd01","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-20 — Which Files refusals reconcile before presentation?
+
+* **Question:** Which Files refusals reconcile before presentation?
+* **Governs:** f-20261005-04
+* **Chosen:** Reconcile non-name conflicts and missing items before surfacing the original error. Reject automatic write retry, name-collision refresh and successful-object recovery. Reason: existing cleanup reconciliation supplies ownership/freshness without reclassifying failure. Reverse with equally strong freshness, owner-isolation and retry-safety proof.
+* **Rejected:** The alternatives explicitly rejected in the chosen contract above.
+* **Reason:** Adopted reviewed plan for Files mutation refusal guidance at 879f1b47. Source pickup confirms the defect remains. Supporting evidence and reversal paths are preserved above.
+* **Decided by:** Codex, full auto, adopted reviewed plan. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"25eb8d3e76626a1acc8a4d2f5e94a1ada381bfdfa1458e2fbdbe4a98043c7671","input_sha256":"4405560ad2d571ea383e4645789704020cb8265501614eacc9f72fe0a96da72c","kind":"mutation-receipt","operation":"ad82e69551572a2b58d377c2ae412e2bca9db2eabb76e9029c64a60cb89fe3fc","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-20"],"target":"decisions-ledger","v":1} -->
