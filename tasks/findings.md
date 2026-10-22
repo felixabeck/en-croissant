@@ -17860,3 +17860,18 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Rejected:** Raw caller-path injection, dropping the portable test or weakening its asserted Conflict. The original report records an inferred Windows runtime failure, the real Linux alias now independently measures its key mismatch. This closing note supersedes its conditional planned proof and repair-next state.
 * **Closure record:** tombstone-repair-evidence/REPORT.md, raw Git/test logs and root-tombstone-proof/ under /tmp/build-43307881-0e65-4348-98b2-3c4089f02858, plus the tracked handoff. Plan authorship and arbitration shared root context, detection used separate Codex sessions on the same model family as the code.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"c7935e68a87a877c4660f415355b994f75727e2e894343cf2c93408438793098","header_sha256":"abcdf3c2443aec26061cc19572f629af2e51ac57a011a7b589d46219f39b8709","header_status":"handled","input_sha256":"b4d51744b31b6260525470ec7d93d95fd6598b952896db4e78f5c6fd682275b3","kind":"mutation-receipt","operation":"cf5b91bbc1ca171cdee581394bbe04e36a3cd247c1e72e14697f337f959445d9","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-03"],"target":"f-20261022-03","v":1} -->
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### Frontend mutation dry run crashes while formatting a Vitest error
+* **ID:** f-20261022-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** `scripts/run-frontend-mutation.mjs`, `stryker.config.mjs`, and the installed Stryker 9.6.1 Vitest runner's initial test run.
+* **Defect:** ChessFable side-lane pre-review on base `879f1b478f0649d0560a59fa5dba582f13aa5f81`, with only `src/utils/sound.ts` and `src/utils/sound.test.ts` modified, failed its selected workspace-storage mutation dry run on 2026-10-22. Stryker started seven runners at 15:48:39 Europe/Berlin. At 15:55:14 it reported that the runner had crashed after two restarts. The last stack is `TypeError: Cannot convert object to primitive value` at `@stryker-mutator/util/dist/src/errors.js:22`, called from the Vitest runner's `ctx.state.errorsSet` mapping. The formatter masks an underlying Vitest error, whose cause is not yet established.
+* **Failure scenario:** Required `pnpm checks:pre-review` reaches changed-file frontend mutation and exits 1 before any mutant score, blocking the otherwise focused audio finding. Build, lint/types, frontend coverage mapping and bundle checks passed in the same attempt.
+* **Evidence:** `artifacts/gates/20261022T134824003Z-594119/`, with the original failure retained at `/tmp/chessfable-side-lane-20261022.bllvDe/pre-review-red/workspace-stryker.log` and the gate artifacts beside it. The headless completion record is `1 sound-pre-review 879f1b478f0649d0560a59fa5dba582f13aa5f81`.
+* **Open question:** What error is being masked and which existing test, dependency or runner path must be repaired so the complete baseline and mutation proof run successfully without weakening gates?
+* **Related:** `f-20261015-08` settled a different whole-suite deadline. This run did not report that deadline and establishes no common root cause or host-load diagnosis.
+* **Found by:** Codex side lane while verifying `f-20260920-15`. Plan authorship and arbitration share one context. Detection uses the same OpenAI model family as the code.
