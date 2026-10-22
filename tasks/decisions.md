@@ -9479,3 +9479,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, full-auto technical verification setup. Plan authorship and arbitration shared one context, detection used separate Codex sessions on the code's model family.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2cec72662f0b8a5faac7dd0b7343e5568a090ddc83cfeebbb0dfc9c3b8cb4c2d","input_sha256":"ae7f3a8ac2afa5134d1d639c9aa935c1a17583a6451abbf69f237601096c4f1e","kind":"mutation-receipt","operation":"3ad63c081a1599aebbbf19dc457496344ad81407efc0ec51c21e404047b760f2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-09 — Where does rollback ownership begin and end after the Unix adapter moved?
+
+* **Governs:** f-20261004-24
+* **Question:** Where does rollback ownership begin and end after the Unix adapter moved?
+* **Chosen:** exclusive creation through completed checked `OwnedFile` handoff, with captured verified identity returned without a new fallible query.
+* **Rejected:** caller-only rollback or fixing only the old fs wrapper.
+* **Reason:** callers cannot compensate an adapter error and the source now has failures below that wrapper.
+* **Reversal path:** replace the internal handoff while preserving O1–O4 and every native regression.
+* **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f3246d50b203ddeacc641618a53a7208741914de8633857d0ef27e4ed3b75893","input_sha256":"ab0210a86031be99a37215e90289a80ad0c2623a49cfde90b6d1b42e1f4dfd33","kind":"mutation-receipt","operation":"10ddf823141b8768cbc8ad93a7892eb18336f963a0b05fc70bd3c2447426fe6c","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-09"],"target":"decisions-ledger","v":1} -->
