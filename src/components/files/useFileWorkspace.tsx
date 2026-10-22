@@ -626,6 +626,8 @@ export function useFileWorkspace(
               }))}
             />
             <Button
+              styles={libraryButtonProps.styles}
+              px="xs"
               disabled={!moveTarget || moving}
               onClick={async () => {
                 const owner = presentation.current;
