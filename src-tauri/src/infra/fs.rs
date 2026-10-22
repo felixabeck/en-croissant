@@ -804,6 +804,7 @@ struct TempMetadata {
 enum AtomicFileMode {
     Replace,
     Create,
+    CreateWorkspaceSidecar,
 }
 
 trait AtomicReplaceAdapter {
@@ -1126,12 +1127,34 @@ fn atomic_create_collision_error(is_regular: bool) -> Error {
     }
 }
 
+/// Only the forward workspace mutation boundary opts into name-taken guidance.
+fn workspace_collision(error: Error) -> Error {
+    match error {
+        Error::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into())
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn create_workspace_directory_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<AtomicFileOutcome, Error> {
+    create_dir_at_committed(parent, name).map_err(workspace_collision)
+}
+
 fn initial_atomic_target<A: AtomicReplaceAdapter>(
     adapter: &A,
     dir: &File,
     target: &OsStr,
     mode: AtomicFileMode,
 ) -> Result<Option<A::Target>, Error> {
+    // Forward pairs refuse every occupied sidecar name through the no-replace publication.
+    // Never open an unrelated destination object, including a directory or reparse point.
+    if mode == AtomicFileMode::CreateWorkspaceSidecar {
+        return Ok(None);
+    }
     let result = adapter.target_stat(dir, target, mode);
     record_durability("target_stat:initial");
     match result? {
@@ -1247,7 +1270,11 @@ where
             &adapter, &dir, &temp_name, &mut temp, error,
         ));
     }
-    let current = adapter.target_stat(&dir, target_name_ref, mode);
+    let current = if mode == AtomicFileMode::CreateWorkspaceSidecar {
+        Ok(None)
+    } else {
+        adapter.target_stat(&dir, target_name_ref, mode)
+    };
     record_durability("target_stat:revalidation");
     let current = match current {
         Ok(current) => current,
@@ -2154,6 +2181,9 @@ mod unix {
             } else {
                 fs::renameat_with(dir, temp_name, dir, target, RenameFlags::NOREPLACE).map_err(
                     |error| {
+                        if mode == AtomicFileMode::CreateWorkspaceSidecar {
+                            return workspace_collision(io(error.into()));
+                        }
                         if mode == AtomicFileMode::Create && error == rustix::io::Errno::EXIST {
                             match self.target_stat(dir, target, mode) {
                                 Ok(Some(actual)) => {
@@ -3033,6 +3063,7 @@ mod win {
             target,
             replace,
             AtomicFileMode::Replace,
+            false,
         )
     }
 
@@ -3043,6 +3074,7 @@ mod win {
         target: &OsStr,
         replace: bool,
         mode: AtomicFileMode,
+        workspace_name: bool,
     ) -> Result<(), Error> {
         super::single_leaf(target)?;
         // FILE_RENAME_INFORMATION is a variable-length structure: FileName is declared [u16; 1]
@@ -3099,6 +3131,11 @@ mod win {
             )
         };
         if status != 0 {
+            if (workspace_name || mode == AtomicFileMode::CreateWorkspaceSidecar)
+                && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
+            {
+                return Err(Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into()));
+            }
             if mode == AtomicFileMode::Create
                 && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
             {
@@ -3858,6 +3895,7 @@ mod win {
         source_is_dir: bool,
         target_parent: &File,
         target: &OsStr,
+        workspace_name: bool,
     ) -> Result<AtomicFileOutcome, Error> {
         let distinct_parents =
             opened_file_identity(source_parent)? != opened_file_identity(target_parent)?;
@@ -3876,7 +3914,15 @@ mod win {
                 "workspace entry changed concurrently".into(),
             ));
         }
-        rename_child(target_parent, &mut opened, source, target, false)?;
+        rename_child_with_mode(
+            target_parent,
+            &mut opened,
+            source,
+            target,
+            false,
+            AtomicFileMode::Replace,
+            workspace_name,
+        )?;
         Ok(super::sync_rename_parents(
             source_parent,
             target_parent,
@@ -3889,6 +3935,7 @@ mod win {
         source: &OsStr,
         target_parent: &File,
         target: &OsStr,
+        workspace_name: bool,
     ) -> Result<Option<AtomicFileOutcome>, Error> {
         let mut opened = match open_windows_child(
             source_parent,
@@ -3910,7 +3957,15 @@ mod win {
         }
         let distinct_parents =
             opened_file_identity(source_parent)? != opened_file_identity(target_parent)?;
-        rename_child(target_parent, &mut opened, source, target, false)?;
+        rename_child_with_mode(
+            target_parent,
+            &mut opened,
+            source,
+            target,
+            false,
+            AtomicFileMode::Replace,
+            workspace_name,
+        )?;
         Ok(Some(super::sync_rename_parents(
             source_parent,
             target_parent,
@@ -4679,7 +4734,7 @@ mod win {
             replace: bool,
             mode: AtomicFileMode,
         ) -> Result<(), Error> {
-            rename_child_with_mode(dir, temp, temp_name, target, replace, mode)
+            rename_child_with_mode(dir, temp, temp_name, target, replace, mode, false)
         }
 
         fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
@@ -5449,7 +5504,6 @@ pub(crate) fn created_leaf_error_after_cleanup(
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn rename_entry_at(
     source_parent: &File,
     source: &OsStr,
@@ -5457,6 +5511,46 @@ pub(crate) fn rename_entry_at(
     source_is_dir: bool,
     target_parent: &File,
     target: &OsStr,
+) -> Result<AtomicFileOutcome, Error> {
+    rename_entry_at_with_collision(
+        source_parent,
+        source,
+        expected,
+        source_is_dir,
+        target_parent,
+        target,
+        false,
+    )
+}
+
+pub(crate) fn rename_workspace_entry_at(
+    source_parent: &File,
+    source: &OsStr,
+    expected: (u64, u64),
+    source_is_dir: bool,
+    target_parent: &File,
+    target: &OsStr,
+) -> Result<AtomicFileOutcome, Error> {
+    rename_entry_at_with_collision(
+        source_parent,
+        source,
+        expected,
+        source_is_dir,
+        target_parent,
+        target,
+        true,
+    )
+}
+
+#[cfg(unix)]
+fn rename_entry_at_with_collision(
+    source_parent: &File,
+    source: &OsStr,
+    expected: (u64, u64),
+    source_is_dir: bool,
+    target_parent: &File,
+    target: &OsStr,
+    workspace_name: bool,
 ) -> Result<AtomicFileOutcome, Error> {
     use rustix::fs::{self as rfs, RenameFlags};
     let distinct_parents = crate::infra::path_authority::opened_file_identity(source_parent)?
@@ -5469,7 +5563,14 @@ pub(crate) fn rename_entry_at(
         target,
         RenameFlags::NOREPLACE,
     )
-    .map_err(|error| Error::Io(Box::new(error.into())))?;
+    .map_err(|error| {
+        let error = Error::Io(Box::new(error.into()));
+        if workspace_name {
+            workspace_collision(error)
+        } else {
+            error
+        }
+    })?;
     Ok(sync_rename_parents(
         source_parent,
         target_parent,
@@ -5478,13 +5579,14 @@ pub(crate) fn rename_entry_at(
 }
 
 #[cfg(windows)]
-pub(crate) fn rename_entry_at(
+fn rename_entry_at_with_collision(
     source_parent: &File,
     source: &OsStr,
     expected: (u64, u64),
     source_is_dir: bool,
     target_parent: &File,
     target: &OsStr,
+    workspace_name: bool,
 ) -> Result<AtomicFileOutcome, Error> {
     win::rename_entry_at(
         source_parent,
@@ -5493,15 +5595,35 @@ pub(crate) fn rename_entry_at(
         source_is_dir,
         target_parent,
         target,
+        workspace_name,
     )
 }
 
-#[cfg(unix)]
 pub(crate) fn rename_optional_regular_at(
     source_parent: &File,
     source: &OsStr,
     target_parent: &File,
     target: &OsStr,
+) -> Result<Option<AtomicFileOutcome>, Error> {
+    rename_optional_regular_at_with_collision(source_parent, source, target_parent, target, false)
+}
+
+pub(crate) fn rename_workspace_sidecar_at(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+) -> Result<Option<AtomicFileOutcome>, Error> {
+    rename_optional_regular_at_with_collision(source_parent, source, target_parent, target, true)
+}
+
+#[cfg(unix)]
+fn rename_optional_regular_at_with_collision(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+    workspace_name: bool,
 ) -> Result<Option<AtomicFileOutcome>, Error> {
     use rustix::{
         fs::{self as rfs, AtFlags, FileType, RenameFlags},
@@ -5526,7 +5648,14 @@ pub(crate) fn rename_optional_regular_at(
         target,
         RenameFlags::NOREPLACE,
     )
-    .map_err(|error| Error::Io(Box::new(error.into())))?;
+    .map_err(|error| {
+        let error = Error::Io(Box::new(error.into()));
+        if workspace_name {
+            workspace_collision(error)
+        } else {
+            error
+        }
+    })?;
     Ok(Some(sync_rename_parents(
         source_parent,
         target_parent,
@@ -5535,13 +5664,14 @@ pub(crate) fn rename_optional_regular_at(
 }
 
 #[cfg(windows)]
-pub(crate) fn rename_optional_regular_at(
+fn rename_optional_regular_at_with_collision(
     source_parent: &File,
     source: &OsStr,
     target_parent: &File,
     target: &OsStr,
+    workspace_name: bool,
 ) -> Result<Option<AtomicFileOutcome>, Error> {
-    win::rename_optional_regular_at(source_parent, source, target_parent, target)
+    win::rename_optional_regular_at(source_parent, source, target_parent, target, workspace_name)
 }
 
 /// The catalog authority validates its complete inventory before invoking recursive removal.
@@ -5760,6 +5890,27 @@ where
         parent,
         leaf,
         AtomicFileMode::Create,
+        precommit,
+        write_fn,
+    )
+}
+
+/// Exclusive sidecar publication inside a forward workspace pair. Unlike file creation,
+/// every occupied destination name is a collision, without opening or following that object.
+pub(crate) fn atomic_create_workspace_sidecar_at<F, P>(
+    parent: &File,
+    leaf: &OsStr,
+    precommit: P,
+    write_fn: F,
+) -> Result<AtomicInstalledFile, Error>
+where
+    F: FnOnce(&mut OwnedFile) -> Result<(), Error>,
+    P: FnOnce() -> Result<(), Error>,
+{
+    atomic_publish_at_identified_with_precommit(
+        parent,
+        leaf,
+        AtomicFileMode::CreateWorkspaceSidecar,
         precommit,
         write_fn,
     )
@@ -8151,6 +8302,135 @@ mod tests {
             b"occupied"
         );
         assert!(!temp.path().join("free").exists());
+    }
+
+    #[test]
+    fn workspace_rename_collision_payload_is_opt_in_and_identity_conflicts_stay_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = test_parent(temp.path());
+        std::fs::write(temp.path().join("source"), b"source").unwrap();
+        std::fs::write(temp.path().join("occupied"), b"occupied").unwrap();
+        let identity = entry_identity_at(&parent, OsStr::new("source"), false).unwrap();
+        for optional in [false, true] {
+            let error = if optional {
+                rename_workspace_sidecar_at(
+                    &parent,
+                    OsStr::new("source"),
+                    &parent,
+                    OsStr::new("occupied"),
+                )
+                .unwrap_err()
+            } else {
+                rename_workspace_entry_at(
+                    &parent,
+                    OsStr::new("source"),
+                    identity,
+                    false,
+                    &parent,
+                    OsStr::new("occupied"),
+                )
+                .unwrap_err()
+            };
+            let payload = serde_json::to_value(error).unwrap();
+            assert_eq!(payload["category"], "conflict");
+            assert_eq!(payload["nameTaken"], true);
+            let generic = if optional {
+                rename_optional_regular_at(
+                    &parent,
+                    OsStr::new("source"),
+                    &parent,
+                    OsStr::new("occupied"),
+                )
+                .unwrap_err()
+            } else {
+                rename_entry_at(
+                    &parent,
+                    OsStr::new("source"),
+                    identity,
+                    false,
+                    &parent,
+                    OsStr::new("occupied"),
+                )
+                .unwrap_err()
+            };
+            assert!(serde_json::to_value(generic)
+                .unwrap()
+                .get("nameTaken")
+                .is_none());
+        }
+        let stale = rename_workspace_entry_at(
+            &parent,
+            OsStr::new("source"),
+            (identity.0, identity.1.wrapping_add(1)),
+            false,
+            &parent,
+            OsStr::new("occupied"),
+        )
+        .unwrap_err();
+        let payload = serde_json::to_value(stale).unwrap();
+        assert_eq!(payload["category"], "conflict");
+        assert!(payload.get("nameTaken").is_none());
+        assert_eq!(
+            std::fs::read(temp.path().join("source")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("occupied")).unwrap(),
+            b"occupied"
+        );
+        let permission = workspace_collision(Error::from(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
+        let payload = serde_json::to_value(permission).unwrap();
+        assert_eq!(payload["category"], "permission");
+        assert!(payload.get("nameTaken").is_none());
+    }
+
+    #[test]
+    fn forward_sidecar_publication_refuses_occupied_objects_without_following_them() {
+        for kind in ["file", "directory", "link"] {
+            #[cfg(not(unix))]
+            if kind == "link" {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let parent = test_parent(temp.path());
+            let target = temp.path().join("destination.info");
+            let preserved = if kind == "directory" {
+                std::fs::create_dir(&target).unwrap();
+                target.join("child")
+            } else if kind == "link" {
+                let outside = temp.path().join("outside");
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&outside, &target).unwrap();
+                outside
+            } else {
+                target.clone()
+            };
+            std::fs::write(&preserved, b"unrelated bytes").unwrap();
+            let error = atomic_create_workspace_sidecar_at(
+                &parent,
+                OsStr::new("destination.info"),
+                || Ok(()),
+                |file| file.write_all(b"new metadata").map_err(io),
+            )
+            .unwrap_err();
+            assert_eq!(std::fs::read(&preserved).unwrap(), b"unrelated bytes");
+            let payload = serde_json::to_value(error).unwrap();
+            assert_eq!(payload["category"], "conflict");
+            assert_eq!(payload["nameTaken"], true);
+            if kind == "link" {
+                assert!(std::fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+            }
+            assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".atomic-")));
+        }
     }
 
     #[cfg(unix)]
