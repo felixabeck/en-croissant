@@ -9512,3 +9512,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** replace only this primitive after native platform proof while retaining ownership and failure semantics.
 * **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"123838a0a6873028f9d0b9bf4c1625e74ec1e90a70263c0353748384c2ca0163","input_sha256":"e7da18315dd61fda0438cbf252fa5cccb5d4e3f43ab78efa2c94bbe90d23822e","kind":"mutation-receipt","operation":"726a1dfad62f0de3c89a984f8f6dad7dee56bf8249d0def77b276e4df0cf67fa","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-12 — How does the SQLite sidecar ABI retain a combined cleanup error?
+
+* **Governs:** f-20261004-24
+* **Question:** How does the SQLite sidecar ABI retain a combined cleanup error?
+* **Chosen:** retain its existing errno failure behavior and emit both causes once through the existing native log sink at that boundary.
+* **Rejected:** silently discarding the combined error, changing the C ABI or adding a persistent diagnostic registry.
+* **Reason:** the shared exclusive adapter reaches this consumer and errno cannot carry both causes.
+* **Reversal path:** replace the native observation with an existing equivalent diagnostic carrier only when a regression proves both causes survive the real boundary without leaking into user-facing messages.
+* **Decided by:** Codex planner, full auto, adopted by Codex from the reviewed 2026-10-22 create-cleanup plan. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1f5c07d663c7829d0bd1a37165d2205ae0b218ea3ec683c1b0072fd086d04407","input_sha256":"bcfbee6fa7a59abdfbf7d227ba0f1642e0c0a2392d51ea870ad9afc798419a1b","kind":"mutation-receipt","operation":"96d3f52a5ccd998b985bd063a9d62dadab2f7923c7ed47fcba934787e3dbdfc2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-12"],"target":"decisions-ledger","v":1} -->
