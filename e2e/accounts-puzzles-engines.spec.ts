@@ -5,15 +5,383 @@ import {
     playBoardMove,
     preserveStorageForReload,
     expect,
+    expectNotificationSettled,
     test,
     type MockScenario,
 } from "./fixtures";
 import {
     decodeCompressedOrJson,
     deserializeStorageValue,
+    serializeStorageValue,
 } from "../src/state/store/debouncedStorage";
 import type { TreeState } from "../src/utils/treeReducer";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+const rootPermissionError = {
+    tag: "backend-error" as const,
+    category: "permission" as const,
+    message: "I/O failure",
+    rootFailure: "permission" as const,
+};
+const rootPermissionCommands = {
+    verify_signed_bytes: { result: null },
+    is_bmi2_compatible: { result: false },
+    get_progress: { result: null },
+    prepare_download: { result: "permission-ticket" },
+    get_engine_workspace: { result: { id: { id: "selected-engine-root" }, kind: "engineRoot" } },
+    engine_archive_destination: { result: { id: "destination" } },
+    download_engine_archive: { result: null },
+    get_engine_config: { result: { name: "Stockfish 18", options: [] } },
+};
+
+for (const layout of ["desktop", "320-200"] as const) {
+    for (const surface of ["puzzle", "add", "upgrade"] as const) {
+        test(`root permission guidance: ${surface} ${layout}`, async ({
+            page,
+            mockScenario,
+            assertNoHorizontalOverflow,
+        }) => {
+            if (layout === "320-200") await page.setViewportSize({ width: 320, height: 900 });
+            await page.addInitScript(
+                ({ layout, engines }) => {
+                    localStorage.setItem("font-size", layout === "desktop" ? "100" : "200");
+                    localStorage.setItem("i18nextLng", "en-US");
+                    localStorage.setItem("engines", engines);
+                },
+                {
+                    layout,
+                    engines: serializeStorageValue(
+                        surface === "upgrade"
+                            ? [
+                                  {
+                                      type: "local",
+                                      id: "prior-engine",
+                                      legacyAssessment: null,
+                                      name: "Stockfish 18",
+                                      version: "18",
+                                      filename: "old-stockfish",
+                                      handle: { id: { id: "prior-binary" }, kind: "engine" },
+                                      settings: [],
+                                  },
+                              ]
+                            : [],
+                    ),
+                },
+            );
+            const boundary =
+                surface === "puzzle"
+                    ? "list_puzzle_databases"
+                    : surface === "add"
+                      ? "engine_archive_destination"
+                      : "register_installed_engine";
+            await mockScenario({
+                commands: {
+                    ...rootPermissionCommands,
+                    [boundary]: { error: rootPermissionError },
+                },
+            });
+            await page.goto(
+                surface === "puzzle"
+                    ? "/"
+                    : surface === "upgrade"
+                      ? "/engines?selected=0"
+                      : "/engines",
+            );
+            const saved = await page.evaluate(() => localStorage.getItem("engines"));
+            if (surface === "puzzle")
+                await page.getByRole("button", { name: "Train", exact: true }).click();
+            else {
+                await page
+                    .getByRole("button", {
+                        name: surface === "add" ? "Add New" : "Upgrade from catalog",
+                        exact: true,
+                    })
+                    .click();
+                const dialog = page.getByRole("dialog", {
+                    name: surface === "add" ? "Add Engine" : "Upgrade from catalog",
+                    exact: true,
+                });
+                await dialog.getByRole("button", { name: "Install", exact: true }).first().click();
+            }
+            await page.mouse.move(0, 0);
+            await page.keyboard.press("Escape");
+            const notification = page.locator(".mantine-Notification-root");
+            const guidance = notification.locator(".mantine-Notification-description");
+            await expect(guidance).toHaveText(
+                `ChessFable is not allowed to read this ${surface === "puzzle" ? "puzzle" : "engine"} folder. Choose another in Settings.`,
+            );
+            await expectNotificationSettled(notification);
+            expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(saved);
+            expect(
+                (await page.evaluate(() => window.__E2E_TAURI__.invocations())).some(
+                    ({ command }) => command === boundary,
+                ),
+            ).toBe(true);
+            await assertNoHorizontalOverflow();
+            await assertNothingClipped(notification, { mode: "reachable" });
+            await expect(guidance).toBeInViewport({ ratio: 1 });
+            await expectNotificationTextReachable(
+                notification,
+                "all",
+                surface === "puzzle" ? "puzzle" : "engine",
+            );
+            await expect(notification).toHaveScreenshot(
+                `root-permission-${surface}-${layout}.png`,
+                {
+                    stylePath: fileURLToPath(
+                        new URL("./notification-screenshot.css", import.meta.url),
+                    ),
+                },
+            );
+        });
+    }
+}
+
+async function showPermissionNotifications(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+    count: number,
+) {
+    const clockStart = new Date("2026-10-22T12:00:00Z");
+    await page.clock.install({ time: clockStart });
+    await page.addInitScript((engines) => {
+        localStorage.setItem("font-size", "200");
+        localStorage.setItem("i18nextLng", "en-US");
+        localStorage.setItem("engines", engines);
+    }, serializeStorageValue([]));
+    await mockScenario({
+        commands: {
+            ...rootPermissionCommands,
+            engine_archive_destination: { error: rootPermissionError },
+        },
+    });
+    await page.goto("/engines");
+    await page.getByRole("button", { name: "Add New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Add Engine", exact: true });
+    await expect(
+        dialog.getByRole("button", { name: "Install", exact: true }).first(),
+    ).toBeVisible();
+    // Let startup and the catalog finish before pausing notification expiry timers.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+    for (let index = 0; index < count; index++) {
+        await dialog.getByRole("button", { name: "Install", exact: true }).first().click();
+        // Advance the paused application clock through transition timers, retaining production
+        // expiry settings. Geometry still waits on the actual final CSS transform below.
+        await page.clock.runFor(400);
+        await expect(page.locator(".mantine-Notification-root")).toHaveCount(index + 1);
+        await expectNotificationSettled(page.locator(".mantine-Notification-root").nth(index));
+    }
+    await page.keyboard.press("Escape");
+    await page.clock.runFor(400);
+    await expect(dialog).toBeHidden();
+}
+
+async function expectResizedNotificationSettled(notification: Locator) {
+    await expectNotificationSettled(notification);
+    const height = await notification.evaluate(
+        (node) => getComputedStyle(node.closest(".mantine-Notifications-root")!).maxHeight,
+    );
+    // Resizing also animates max-height. Wait for the actual CSS viewport bound before measuring.
+    await expect(notification).toHaveCSS("max-height", height);
+}
+
+async function expectNotificationTextReachable(
+    notification: Locator,
+    edge: "start" | "end" | "all",
+    folder: "engine" | "puzzle" = "engine",
+) {
+    const geometry = await notification.evaluate((node, edge) => {
+        const description = node.querySelector(".mantine-Notification-description")!;
+        const range = document.createRange();
+        range.selectNodeContents(description);
+        const lines = [...range.getClientRects()].map((line) => ({
+            x: line.x,
+            y: line.y,
+            right: line.right,
+            bottom: line.bottom,
+            width: line.width,
+            height: line.height,
+        }));
+        const line = edge === "start" ? lines[0] : lines.at(-1)!;
+        const descriptionBox = description.getBoundingClientRect();
+        const style = getComputedStyle(description);
+        const contentBox = {
+            left:
+                descriptionBox.left +
+                parseFloat(style.borderLeftWidth) +
+                parseFloat(style.paddingLeft),
+            top:
+                descriptionBox.top +
+                parseFloat(style.borderTopWidth) +
+                parseFloat(style.paddingTop),
+            right:
+                descriptionBox.right -
+                parseFloat(style.borderRightWidth) -
+                parseFloat(style.paddingRight),
+            bottom:
+                descriptionBox.bottom -
+                parseFloat(style.borderBottomWidth) -
+                parseFloat(style.paddingBottom),
+        };
+        const box = node.getBoundingClientRect();
+        const container = node.closest(".mantine-Notifications-root")!.getBoundingClientRect();
+        const x = line.x + line.width / 2;
+        const y = line.y + line.height / 2;
+        return {
+            edge,
+            text: description.textContent,
+            lines,
+            contentBox,
+            line: { x: line.x, y: line.y, right: line.right, bottom: line.bottom },
+            clip: {
+                left: Math.max(0, box.left, container.left, contentBox.left),
+                top: Math.max(0, box.top, container.top, contentBox.top),
+                right: Math.min(innerWidth, box.right, container.right, contentBox.right),
+                bottom: Math.min(innerHeight, box.bottom, container.bottom, contentBox.bottom),
+            },
+            x,
+            y,
+            pointerReaches: node.contains(document.elementFromPoint(x, y)),
+            scrollTop: node.scrollTop,
+            clientHeight: node.clientHeight,
+            scrollHeight: node.scrollHeight,
+        };
+    }, edge);
+    expect(geometry.text).toBe(
+        `ChessFable is not allowed to read this ${folder} folder. Choose another in Settings.`,
+    );
+    expect(geometry.lines.length).toBeGreaterThan(0);
+    // Range rects measure the complete painted sentence even when Mantine permits ellipsis.
+    for (const line of geometry.lines) {
+        expect(line.x).toBeGreaterThanOrEqual(geometry.contentBox.left);
+        expect(line.right).toBeLessThanOrEqual(geometry.contentBox.right);
+    }
+    for (const line of edge === "all" ? geometry.lines : [geometry.line]) {
+        expect(line.x).toBeGreaterThanOrEqual(geometry.clip.left);
+        expect(line.y).toBeGreaterThanOrEqual(geometry.clip.top);
+        expect(line.right).toBeLessThanOrEqual(geometry.clip.right);
+        expect(line.bottom).toBeLessThanOrEqual(geometry.clip.bottom);
+    }
+    expect(geometry.pointerReaches).toBe(true);
+    console.log("ROOT_PERMISSION_REACHABILITY", JSON.stringify(geometry));
+    return geometry;
+}
+
+async function dismissPermissionNotification(page: Page, notification: Locator, remaining: number) {
+    const close = notification.locator(".mantine-Notification-closeButton");
+    await expect(close).toBeInViewport({ ratio: 1 });
+    const geometry = await close.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return {
+            x: box.x,
+            y: box.y,
+            right: box.right,
+            bottom: box.bottom,
+            viewport: { width: innerWidth, height: innerHeight },
+            pointerReaches: node.contains(
+                document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2),
+            ),
+        };
+    });
+    expect(geometry.pointerReaches).toBe(true);
+    console.log("ROOT_PERMISSION_DISMISS", JSON.stringify({ ...geometry, remaining }));
+    await close.click();
+    await page.clock.runFor(400);
+    await expect(page.locator(".mantine-Notification-root")).toHaveCount(remaining);
+}
+
+test("root permission guidance: oversized notification remains reachable", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}) => {
+    await showPermissionNotifications(page, mockScenario, 1);
+    await page.setViewportSize({ width: 320, height: 260 });
+    const notification = page.locator(".mantine-Notification-root");
+    await expectResizedNotificationSettled(notification);
+    const box = await notification.evaluate((node) => ({
+        scrollHeight: node.scrollHeight,
+        height: node.clientHeight,
+        viewport: innerHeight,
+    }));
+    expect(box.scrollHeight).toBeGreaterThan(box.viewport);
+    expect(box.height).toBeLessThan(box.viewport);
+    await assertNothingClipped(notification, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    const start = await expectNotificationTextReachable(notification, "start");
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.click(start.x, start.y);
+    await page.mouse.wheel(0, 10000);
+    await expect.poll(() => notification.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+    await expect
+        .poll(async () =>
+            notification.evaluate(
+                (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 1,
+            ),
+        )
+        .toBe(true);
+    const end = await expectNotificationTextReachable(notification, "end");
+    await page.mouse.move(end.x, end.y);
+    await page.mouse.click(end.x, end.y);
+    await page.mouse.wheel(0, -10000);
+    await expect.poll(() => notification.evaluate((node) => node.scrollTop)).toBe(0);
+    await expectNotificationTextReachable(notification, "start");
+    await dismissPermissionNotification(page, notification, 0);
+});
+
+test("root permission guidance: oversized stack remains reachable", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}) => {
+    await showPermissionNotifications(page, mockScenario, 3);
+    await page.setViewportSize({ width: 320, height: 600 });
+    const notifications = page.locator(".mantine-Notification-root");
+    for (const notification of await notifications.all())
+        await expectResizedNotificationSettled(notification);
+    const container = page.locator('.mantine-Notifications-root[data-position="bottom-right"]');
+    const geometry = await container.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return {
+            top: box.top,
+            bottom: box.bottom,
+            height: node.clientHeight,
+            scrollHeight: node.scrollHeight,
+            viewport: innerHeight,
+        };
+    });
+    console.log("ROOT_PERMISSION_STACK", JSON.stringify(geometry));
+    expect(geometry.scrollHeight).toBeGreaterThan(geometry.viewport);
+    expect(geometry.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewport);
+    await assertNothingClipped(container, { mode: "reachable" });
+    await assertNoHorizontalOverflow();
+    await expectNotificationTextReachable(notifications.first(), "start");
+    await container.hover();
+    await page.mouse.wheel(0, 10000);
+    await expect
+        .poll(() =>
+            container.evaluate(
+                (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 1,
+            ),
+        )
+        .toBe(true);
+    const end = await expectNotificationTextReachable(notifications.last(), "end");
+    console.log(
+        "ROOT_PERMISSION_STACK_SCROLL_END",
+        await container.evaluate((node) => node.scrollTop),
+    );
+    await page.mouse.move(end.x, end.y);
+    await page.mouse.click(end.x, end.y);
+    await page.mouse.wheel(0, -10000);
+    await expect.poll(() => container.evaluate((node) => node.scrollTop)).toBe(0);
+    for (const remaining of [2, 1, 0]) {
+        await expectNotificationTextReachable(notifications.first(), "start");
+        await expectNotificationTextReachable(notifications.first(), "end");
+        await dismissPermissionNotification(page, notifications.first(), remaining);
+    }
+});
 
 async function refusePuzzleStorage(page: Page, target: string) {
     await page.evaluate((target) => {
@@ -495,7 +863,7 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
     await expect(download).toBeEnabled();
     const notification = page.locator(".mantine-Notification-root");
     await expect(notification).toHaveCount(1);
-    await expect(notification).toHaveCSS("opacity", "1");
+    await expectNotificationSettled(notification);
 
     const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
     expect(invocations.filter(({ command }) => command === "convert_pgn")).toEqual([
@@ -958,6 +1326,10 @@ for (const [outcome, reason] of [
         expect(invocations.filter(({ command }) => command === "remove_lichess_account")).toEqual([
             { command: "remove_lichess_account", args: { handle: "logout-handle" } },
         ]);
+        const notifications = page.locator(".mantine-Notification-root");
+        await expect(notifications).toHaveCount(2);
+        for (const notification of await notifications.all())
+            await expectNotificationSettled(notification);
         await capture(`account-logout-${outcome}`);
         await expect(page).toHaveScreenshot(`account-logout-${outcome}.png`, { fullPage: true });
     });

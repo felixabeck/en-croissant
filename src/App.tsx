@@ -47,6 +47,8 @@ const colorSchemeManager = localStorageColorSchemeManager({
   key: "mantine-color-scheme",
 });
 
+const notificationMaxHeight = "calc(100dvh - 2 * var(--mantine-spacing-md))";
+
 import ErrorComponent from "@/components/ErrorComponent";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 import { useDatabaseContentValidation } from "@/hooks/useDatabaseContentValidation";
@@ -228,7 +230,14 @@ export default function App() {
         theme={theme}
       >
         <ContextMenuProvider>
-          <Notifications />
+          <Notifications
+            classNames={{ notification: "wrap-anywhere" }}
+            notificationMaxHeight={notificationMaxHeight}
+            styles={{
+              root: { maxHeight: notificationMaxHeight, overflowY: "auto" },
+              notification: { overflowY: "auto", alignItems: "safe center" },
+            }}
+          />
           <RouterProvider router={router} />
           <SessionPersistenceNotice />
         </ContextMenuProvider>

@@ -67,6 +67,12 @@ const stampedPgnGame = {
     present: true,
 };
 
+export async function expectNotificationSettled(notification: Locator) {
+    await expect(notification).toHaveCSS("opacity", "1");
+    // Opacity completes before Mantine's cubic transform stops overshooting its container.
+    await expect(notification).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+}
+
 export async function waitForScrollAreaScrollbarsHidden(page: Page) {
     await expect(page.locator('.mantine-ScrollArea-scrollbar[data-state="visible"]')).toHaveCount(
         0,

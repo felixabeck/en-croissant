@@ -6,6 +6,7 @@ import englishCatalogue from "../src/translation/en-US.json" with { type: "json"
 import {
     databaseCommands,
     expect,
+    expectNotificationSettled,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
     pgnFileCommands,
@@ -127,7 +128,7 @@ for (const scenario of [
         await expect(notification).toContainText(copy[key]);
         const guidance = notification.locator(".mantine-Notification-description");
         await expect(guidance).toHaveText(copy[key]);
-        await expect(notification).toHaveCSS("opacity", "1");
+        await expectNotificationSettled(notification);
         await expect(download).toBeEnabled();
         const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
         expect(invocations.filter(({ command: invoked }) => invoked === command)).toHaveLength(1);
