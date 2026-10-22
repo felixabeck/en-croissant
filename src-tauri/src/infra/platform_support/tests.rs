@@ -1,6 +1,155 @@
 /*!
 Phase A through Phase E refusal-pin proof records (2026-09-17).
 
+G2 assertion repair proof (2026-10-22).
+The Windows calls retain replace=false independently of AtomicFileMode::Replace,
+and forward workspace_name unchanged. The paired-rename wrappers delegate to one
+shared implementation with ordinary/forward helper selection and retained descriptors.
+All four original declaration, uniqueness, no-cfg and no-refusal checks remain,
+and the same checks cover paired_workspace_rename and paired_rename_inner.
+
+Each staged case below changed only production inputs, compiled on Linux, and failed
+the named actual test with exit 101. The verifier stayed byte-identical throughout.
+Every case restored both production files exactly before the next case, including
+the patch-runner error paths. Actual git diff seed/restore patches, full logs, statuses
+and hashes are under:
+/tmp/build-2d4ecbcd-3b97-4d89-b5ba-08d6cded2273/g2-repair/
+Two patch-adapter attempts stopped before cargo. One invalid cfg seed failed at
+compilation. All three restored exactly. Retained rejection logs distinguish
+those attempts from the five assertion-failure runs below.
+
+S-windows-primary — flipped only the Windows primary call's actual replace bool to true.
+```text
+Windows primary rename must pass replace=false and forward workspace_name: {letdistinct_parents=opened_file_identity(source_parent)?!=opened_file_identity(target_parent)?;assert_entry_identity(source_parent,source,expected,source_is_dir)?;letmutopened=open_windows_child(source_parent,source,FILE_OPEN,child_delete_access(source_is_dir),null(),source_is_dir,true,)?;ifopened_file_identity(&opened)?!=expected{returnErr(Error::Conflict(.into(),));}rename_child_with_mode(target_parent,&mutopened,source,target,true,AtomicFileMode::Replace,workspace_name,)?;Ok(super::sync_rename_parents(source_parent,target_parent,distinct_parents,))}
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.03s
+Exit status: 101.
+```
+
+S-windows-optional-sidecar — flipped only the Windows optional-sidecar call's actual replace bool to true.
+```text
+Windows optional sidecar rename must pass replace=false and forward workspace_name: {letmutopened=matchopen_windows_child(source_parent,source,FILE_OPEN,child_delete_access(false),null(),false,true,){Ok(opened)=>opened,Err(error)iferror.is_missing_entry()=>returnOk(None),Err(error)=>returnErr(error),};if!opened_is_disk(&opened){returnErr(Error::InvalidInput(.into(),));}letdistinct_parents=opened_file_identity(source_parent)?!=opened_file_identity(target_parent)?;rename_child_with_mode(target_parent,&mutopened,source,target,true,AtomicFileMode::Replace,workspace_name,)?;Ok(Some(super::sync_rename_parents(source_parent,target_parent,distinct_parents,)))}
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.07s
+Exit status: 101.
+```
+
+S-lost-delegations — replaced both wrapper bodies and the shared inner body with typed errors.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn paired_rename(: lost delegation paired_rename_inner(source,target_parent,target_leaf,None).map(|(outcome,_)|outcome)
+file_workspace.rs: fn paired_workspace_rename(: lost delegation paired_rename_inner(source,target_parent,target_leaf,Some((metadata_bytes,cancellation)),)
+file_workspace.rs: fn paired_rename_inner(: lost delegation letrename_entry_at=ifforward_metadata.is_some(){rename_workspace_entry_at}else{rename_entry_at};
+file_workspace.rs: fn paired_rename_inner(: lost delegation letrename_optional_regular_at=ifforward_metadata.is_some(){rename_workspace_sidecar_at}else{rename_optional_regular_at};
+file_workspace.rs: fn paired_rename_inner(: lost delegation letprimary=rename_entry_at(&source.parent,&source.leaf,source.identity,source.is_dir,target_parent,target_leaf,)?;
+file_workspace.rs: fn paired_rename_inner(: lost delegation rename_optional_regular_at(&source.parent,&source_info,target_parent,&target_info)?
+file_workspace.rs: fn paired_rename_inner(: lost delegation crate::infra::fs::rename_entry_at(target_parent,target_leaf,source.identity,source.is_dir,&source.parent,&source.leaf,)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.67s
+Exit status: 101.
+```
+
+S-duplicate-platform-counterparts — added a Windows-only counterpart for each of the original four entry points and both extracted helpers.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn mutation_target(: expected one declaration, found 2
+file_workspace.rs: fn register_created_entry(: expected one declaration, found 2
+file_workspace.rs: fn collect_tree_entries(: expected one declaration, found 2
+file_workspace.rs: fn paired_rename(: expected one declaration, found 2
+file_workspace.rs: fn paired_workspace_rename(: expected one declaration, found 2
+file_workspace.rs: fn paired_rename_inner(: expected one declaration, found 2
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.14s
+Exit status: 101.
+```
+
+S-cfg-declarations — added #[cfg(unix)] to all six original/extracted declarations.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn mutation_target(: declaration carries cfg
+file_workspace.rs: fn register_created_entry(: declaration carries cfg
+file_workspace.rs: fn collect_tree_entries(: declaration carries cfg
+file_workspace.rs: fn paired_rename(: declaration carries cfg
+file_workspace.rs: fn paired_workspace_rename(: declaration carries cfg
+file_workspace.rs: fn paired_rename_inner(: declaration carries cfg
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.35s
+Exit status: 101.
+```
+
+Baseline and restored SHA-256:
+```text
+449633cd3705aeac3bdeaa550257903b9ee937dfd04c9129418704bf44a071d0  src-tauri/src/infra/fs.rs
+54b65c8045ab0a9aff581cdfb149286d169c3fefa2f89b83fade0b17ae757600  src-tauri/src/file_workspace.rs
+```
+Windows staged evidence is a Linux-executed source contract check.
+Plan authorship and arbitration shared one context.
+Detection ran on the same OpenAI model family as code.
+
+G2 supplemental producer proof (2026-10-22).
+Assertion logic and all expected pin rows are unchanged. Five additional cases
+changed only production sources and kept the verifier byte-identical throughout.
+Every case compiled on Linux and failed the actual intended assertion with exit 101.
+Both producer hashes returned exactly to the existing G2 baseline after every case.
+There were no failed seed attempts in this supplemental run.
+Actual git diff seed/restore patches, full logs, statuses and source/verifier hashes:
+/tmp/build-2d4ecbcd-3b97-4d89-b5ba-08d6cded2273/g2-repair/extra-proof/
+The declaration-spelling case also reports four textual delegation mismatches
+because the calls use the renamed bindings. No native delegation was removed.
+All observed messages are recorded below, including those four mismatches.
+
+S-workspace-name-primary — replaced only the Windows primary call's workspace_name argument with false, retaining replace=false.
+```text
+Windows primary rename must pass replace=false and forward workspace_name: {letdistinct_parents=opened_file_identity(source_parent)?!=opened_file_identity(target_parent)?;assert_entry_identity(source_parent,source,expected,source_is_dir)?;letmutopened=open_windows_child(source_parent,source,FILE_OPEN,child_delete_access(source_is_dir),null(),source_is_dir,true,)?;ifopened_file_identity(&opened)?!=expected{returnErr(Error::Conflict(.into(),));}rename_child_with_mode(target_parent,&mutopened,source,target,false,AtomicFileMode::Replace,false,)?;Ok(super::sync_rename_parents(source_parent,target_parent,distinct_parents,))}
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.02s
+Exit status: 101.
+```
+
+S-workspace-name-optional-sidecar — replaced only the Windows optional-sidecar call's workspace_name argument with false, retaining replace=false.
+```text
+Windows optional sidecar rename must pass replace=false and forward workspace_name: {letmutopened=matchopen_windows_child(source_parent,source,FILE_OPEN,child_delete_access(false),null(),false,true,){Ok(opened)=>opened,Err(error)iferror.is_missing_entry()=>returnOk(None),Err(error)=>returnErr(error),};if!opened_is_disk(&opened){returnErr(Error::InvalidInput(.into(),));}letdistinct_parents=opened_file_identity(source_parent)?!=opened_file_identity(target_parent)?;rename_child_with_mode(target_parent,&mutopened,source,target,false,AtomicFileMode::Replace,false,)?;Ok(Some(super::sync_rename_parents(source_parent,target_parent,distinct_parents,)))}
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.05s
+Exit status: 101.
+```
+
+S-declaration-spelling — consistently renamed one parameter binding in each of the six real functions, preserving types and calls.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn mutation_target(: declaration changed: fnmutation_target(g2_pgn_path_authority:&SharedPathAuthority,entry:&FileWorkspaceHandle,)->Result<WorkspaceMutationTarget,Error>
+file_workspace.rs: fn register_created_entry(: declaration changed: fnregister_created_entry(g2_pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),parent_identity:(u64,u64),is_dir:bool,)->Result<FileWorkspaceHandle,Error>
+file_workspace.rs: fn collect_tree_entries(: declaration changed: fncollect_tree_entries(g2_pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(WorkspaceListing,Vec<FileWorkspaceHandle>),Error>
+file_workspace.rs: fn paired_rename(: declaration changed: fnpaired_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,g2_target_leaf:&std::ffi::OsStr,)->Result<crate::infra::fs::AtomicFileOutcome,Error>
+file_workspace.rs: fn paired_rename(: lost delegation paired_rename_inner(source,target_parent,target_leaf,None).map(|(outcome,_)|outcome)
+file_workspace.rs: fn paired_workspace_rename(: declaration changed: fnpaired_workspace_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,metadata_bytes:&[u8],g2_cancellation:&CancellationToken,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>
+file_workspace.rs: fn paired_workspace_rename(: lost delegation paired_rename_inner(source,target_parent,target_leaf,Some((metadata_bytes,cancellation)),)
+file_workspace.rs: fn paired_rename_inner(: declaration changed: fnpaired_rename_inner(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,g2_forward_metadata:Option<(&[u8],&CancellationToken)>,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>
+file_workspace.rs: fn paired_rename_inner(: lost delegation letrename_entry_at=ifforward_metadata.is_some(){rename_workspace_entry_at}else{rename_entry_at};
+file_workspace.rs: fn paired_rename_inner(: lost delegation letrename_optional_regular_at=ifforward_metadata.is_some(){rename_workspace_sidecar_at}else{rename_optional_regular_at};
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.48s
+Exit status: 101.
+```
+
+S-body-platform-cfg — inserted a valid #[cfg(unix)] body statement in each of the six functions, retaining all native delegations.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn mutation_target(: body split by a platform cfg
+file_workspace.rs: fn register_created_entry(: body split by a platform cfg
+file_workspace.rs: fn collect_tree_entries(: body split by a platform cfg
+file_workspace.rs: fn paired_rename(: body split by a platform cfg
+file_workspace.rs: fn paired_workspace_rename(: body split by a platform cfg
+file_workspace.rs: fn paired_rename_inner(: body split by a platform cfg
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.35s
+Exit status: 101.
+```
+
+S-off-unix-refusal — inserted an if cfg!(not(unix)) early Err using the real unsupported helper in each of the six functions, retaining native delegations.
+```text
+workspace delegation pins failed:
+file_workspace.rs: fn mutation_target(: a platform refusal came back
+file_workspace.rs: fn register_created_entry(: a platform refusal came back
+file_workspace.rs: fn collect_tree_entries(: a platform refusal came back
+file_workspace.rs: fn paired_rename(: a platform refusal came back
+file_workspace.rs: fn paired_workspace_rename(: a platform refusal came back
+file_workspace.rs: fn paired_rename_inner(: a platform refusal came back
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.28s
+Exit status: 101.
+```
+
 The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
 four `file_workspace.rs` rows and the seven named under "B rows"). The O4d exclusion is
@@ -1398,16 +1547,23 @@ fn windows_identity_is_read_from_the_retained_handle() {
 #[test]
 fn windows_workspace_renames_do_not_replace() {
     let source = source_for("infra/fs.rs");
-    let rename_entry = compact(&source[braced_body(source, "pub(super) fn rename_entry_at(")]);
+    // The replace bool controls overwrite permission. AtomicFileMode::Replace only selects
+    // error classification here, with the typed workspace-name policy forwarded unchanged.
+    let rename_entry = compact(&normalise(
+        &source[braced_body(source, "pub(super) fn rename_entry_at(")],
+        Literals::Blank,
+    ));
     assert!(
-        rename_entry.contains("rename_child(target_parent,&mutopened,source,target,false)"),
-        "{rename_entry}"
+        rename_entry.contains("rename_child_with_mode(target_parent,&mutopened,source,target,false,AtomicFileMode::Replace,workspace_name,)?"),
+        "Windows primary rename must pass replace=false and forward workspace_name: {rename_entry}"
     );
-    let rename_optional =
-        compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
+    let rename_optional = compact(&normalise(
+        &source[braced_body(source, "pub(super) fn rename_optional_regular_at(")],
+        Literals::Blank,
+    ));
     assert!(
-        rename_optional.contains("rename_child(target_parent,&mutopened,source,target,false)"),
-        "{rename_optional}"
+        rename_optional.contains("rename_child_with_mode(target_parent,&mutopened,source,target,false,AtomicFileMode::Replace,workspace_name,)?"),
+        "Windows optional sidecar rename must pass replace=false and forward workspace_name: {rename_optional}"
     );
 }
 
@@ -3328,14 +3484,15 @@ fn check_helper(
 /// `non_unix_counterparts_have_only_typed_refusal_bodies` stopped being able to notice their
 /// return: it checks listed rows and explicitly disclaims closed-world completeness
 /// (`f-20260916-01`). This is the replacement, and it executes on Linux: each of the four
-/// workspace entry points must be ONE declaration, un-gated, delegating to the
+/// workspace entry points and the extracted paired-rename helpers must each be ONE
+/// declaration, un-gated, delegating to the
 /// path-authority or descriptor-relative call that does the work. Restoring a
 /// `#[cfg(not(unix))]` counterpart makes it two declarations and gates the survivor, so this
 /// reddens the Linux run rather than only `rust-windows-test`.
 #[test]
 fn workspace_bodies_are_single_ungated_delegations() {
-    // `collect_tree_entries` and `paired_rename` have bodies of 180 and 45 lines, so the
-    // pinned property is the delegation call each one may not lose, not the whole body.
+    // Pin each wrapper's delegation and the shared implementation's descriptor-relative
+    // calls, including ordinary/forward helper selection, without freezing whole bodies.
     let rows: &[(&str, &str, &[&str])] = &[
         (
             "fn mutation_target(",
@@ -3360,7 +3517,23 @@ fn workspace_bodies_are_single_ungated_delegations() {
         (
             "fn paired_rename(",
             "fnpaired_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&std::ffi::OsStr,)->Result<crate::infra::fs::AtomicFileOutcome,Error>",
-            &["rename_entry_at(", "rename_optional_regular_at("],
+            &["paired_rename_inner(source,target_parent,target_leaf,None).map(|(outcome,_)|outcome)"],
+        ),
+        (
+            "fn paired_workspace_rename(",
+            "fnpaired_workspace_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,metadata_bytes:&[u8],cancellation:&CancellationToken,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>",
+            &["paired_rename_inner(source,target_parent,target_leaf,Some((metadata_bytes,cancellation)),)"],
+        ),
+        (
+            "fn paired_rename_inner(",
+            "fnpaired_rename_inner(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,forward_metadata:Option<(&[u8],&CancellationToken)>,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>",
+            &[
+                "letrename_entry_at=ifforward_metadata.is_some(){rename_workspace_entry_at}else{rename_entry_at};",
+                "letrename_optional_regular_at=ifforward_metadata.is_some(){rename_workspace_sidecar_at}else{rename_optional_regular_at};",
+                "letprimary=rename_entry_at(&source.parent,&source.leaf,source.identity,source.is_dir,target_parent,target_leaf,)?;",
+                "rename_optional_regular_at(&source.parent,&source_info,target_parent,&target_info)?",
+                "crate::infra::fs::rename_entry_at(target_parent,target_leaf,source.identity,source.is_dir,&source.parent,&source.leaf,)",
+            ],
         ),
     ];
     let source = source_for("file_workspace.rs");
@@ -3375,7 +3548,7 @@ fn workspace_bodies_are_single_ungated_delegations() {
         ) else {
             continue;
         };
-        let compacted = compact(&source[body]);
+        let compacted = compact(&normalise(&source[body], Literals::Blank));
         for delegation in *delegations {
             if !compacted.contains(delegation) {
                 errors.push(format!(
