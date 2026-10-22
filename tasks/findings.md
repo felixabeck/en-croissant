@@ -17736,3 +17736,20 @@ Commit 5d577be0 defines active names from the newest completed workflow plus new
 
 The new retired-matrix regression passes after a completed successful Intel generation and fails against the actual old Git-controlled checker. The isolated six-case root control preserves the current tests and entrypoint, yields six intended failures with old source at exit 1 and six passes with fixed source at exit 0. The full 39-case suite passes. Recovery R1 correctness, root-cause, tests and error-handling found no issue in the new generation semantics, and R2 source closure found no new defect. This closes the deterministic checker mechanism, not the separately pending hosted Intel acquisition proof. That remains f-20261021-06. Plan authorship and arbitration share one root context. Detection and code share the OpenAI family in separate sessions.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"499bd18705c4c99c2b4143a31e23706ed3b4e69630f15b98e9b9ce2ce8364849","header_sha256":"1b281fa82658eceaed6872fee746fbf134318c526572c9873e5f6b4e3e5156bc","header_status":"handled","input_sha256":"bb7c7711be0ed5799f2205cd3a8d7a51711bb1d637e2668be35a7581211aee98","kind":"mutation-receipt","operation":"78580f5be2f943e8b475f72c22c8e92f56cf2c4f6d63dcd23d3a69341bc5cbf5","options":{"section":null},"request_id_sha256":null,"results":["f-20261021-08"],"target":"f-20261021-08","v":1} -->
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### Root permission guidance is vertically clipped by the default notification height at 320px and 200% text
+
+* **ID:** f-20261022-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 43307881-0e65-4348-98b2-3c4089f02858 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-43307881-0e65-4348-98b2-3c4089f02858-1.jsonl
+* **Impact class:** ux
+* **Where:** `src/App.tsx:231` renders Mantine Notifications with its default notificationMaxHeight of 200. New existing-copy journeys in `e2e/accounts-puzzles-engines.spec.ts` reproduce the same notification clipping on puzzle, Add and Upgrade.
+* **Defect:** At a 320px viewport and 200% app font size, the existing root permission sentence requires 366px while the notification holds 200px. The current real container clipping assertion reports lost vertical content on all three surfaces.
+* **Failure scenario:** Set 200% text in a 320px app window, then encounter a puzzle or engine root read failure. The notification clips the guidance explaining how to recover.
+* **Proof:** The container runs retained at `/tmp/build-43307881-0e65-4348-98b2-3c4089f02858/phase-2-evidence/e2e-compare.log` and `e2e-compare-2.log` report root notification scrollHeight 366 versus clientHeight 200 and the description beginning before its visible container. Desktop cases reach only missing-new-snapshot failures.
+* **Open question:** Which existing notification layout control should remove the fixed text-height assumption while keeping long notifications reachable within the viewport and preserving dismissal and transitions?
+* **Related:** f-20260829-02 handled the broader responsive matrix, but these long root guidance notifications were not part of it. This was found during f-20261004-21 verification and blocks that finding's required 320px/200% proof.
+* **Found by:** Codex root inspection of the actual container failures, with Mantine Notifications default confirmed in the installed component source. Plan authorship and arbitration shared one context, detection ran on the same model family as the code.
