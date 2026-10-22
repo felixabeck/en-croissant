@@ -9468,3 +9468,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex, autonomously in the pinned full-auto drain build. Plan authorship and arbitration shared one context, detection used separate Codex sessions on the code's model family.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"5483ded507ecf422eec885dc68e7f1f27ab3e405cae7660494fdff82805ae18a","input_sha256":"2bdb91adda17a1535824819520605192648508936d23f25faa4a6c498baa5afd","kind":"mutation-receipt","operation":"abd622a2117ca659a88b944892de560c44ebf1e3aa7a62cff52c0eb84340564f","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261022-08 — How does native permission proof avoid ordinary fixture migration and redundant tab creation?
+
+* **Question:** How should the real-app permission scenario retain an exact saved-engine baseline without conflating ordinary owner hydration or a redundant tab transition with a failed install?
+* **Governs:** f-20261004-21
+* **Chosen:** Canonicalize only the later retained-owner reset with serializeStorageValue and explicit legacyAssessment null before the final real document reload. Keep the original RF7 raw-byte and sentinel comparisons. Use the already selected type-new Home tab from the reload fixture for Train, removing the redundant New Tab action and its staging obligation.
+* **Rejected:** Rebaselining after permission failure, decoded-value equality, tolerating a failed assertion, changing intentionally legacy initial attachment seeds, extra navigation machinery or arbitrary waits.
+* **Reason:** A read-only diagnostic measured storage migration before Add, preserving every original engine field and sentinel bytes while adding only legacyAssessment. The reloaded selected Home panel already supplies Train. A fresh focused review-plan approved M1, while explicitly leaving ordinary runtime closure pending and the earlier RF5 actor unmeasured. Reversal path: replace this setup only with equivalent pre-fault canonical ownership and real-renderer proof that retains exact failure assertions and staged receipts. No product contract, service or gate is added.
+* **Decided by:** Codex, full-auto technical verification setup. Plan authorship and arbitration shared one context, detection used separate Codex sessions on the code's model family.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2cec72662f0b8a5faac7dd0b7343e5568a090ddc83cfeebbb0dfc9c3b8cb4c2d","input_sha256":"ae7f3a8ac2afa5134d1d639c9aa935c1a17583a6451abbf69f237601096c4f1e","kind":"mutation-receipt","operation":"3ad63c081a1599aebbbf19dc457496344ad81407efc0ec51c21e404047b760f2","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-08"],"target":"decisions-ledger","v":1} -->
