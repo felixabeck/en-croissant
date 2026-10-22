@@ -1800,7 +1800,7 @@ fn windows_optional_regular_missing_entry_is_success() {
     assert!(!source.contains("fn missing(error: &Error)"));
     let rename = compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
     assert!(rename.contains("error.is_missing_entry()"), "{rename}");
-    assert!(rename.contains("returnOk(false)"), "{rename}");
+    assert!(rename.contains("returnOk(None)"), "{rename}");
     let remove = compact(&source[braced_body(source, "pub(super) fn remove_optional_regular_at(")]);
     assert!(remove.contains("error.is_missing_entry()"), "{remove}");
     assert!(remove.contains("returnOk(())"), "{remove}");
@@ -3359,7 +3359,7 @@ fn workspace_bodies_are_single_ungated_delegations() {
         ),
         (
             "fn paired_rename(",
-            "fnpaired_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&std::ffi::OsStr,)->Result<(),Error>",
+            "fnpaired_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&std::ffi::OsStr,)->Result<crate::infra::fs::AtomicFileOutcome,Error>",
             &["rename_entry_at(", "rename_optional_regular_at("],
         ),
     ];

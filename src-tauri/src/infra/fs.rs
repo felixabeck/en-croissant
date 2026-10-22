@@ -548,6 +548,31 @@ pub enum AtomicFileOutcome {
     CommittedDurabilityUncertain(std::io::Error),
 }
 
+/// Both retained parents must be offered a sync after a namespace commit. Identity
+/// comparison is supplied by the caller before the rename, while failure is still precommit.
+fn sync_rename_parents(
+    source_parent: &File,
+    target_parent: &File,
+    distinct_parents: bool,
+) -> AtomicFileOutcome {
+    let mut first = None;
+    for parent in std::iter::once(source_parent).chain(distinct_parents.then_some(target_parent)) {
+        if let AtomicFileOutcome::CommittedDurabilityUncertain(error) =
+            parent_sync_as_atomic_outcome(parent)
+        {
+            if first.is_some() {
+                log::warn!("additional workspace rename parent sync failed: {error}");
+            } else {
+                first = Some(error);
+            }
+        }
+    }
+    match first {
+        Some(error) => AtomicFileOutcome::CommittedDurabilityUncertain(error),
+        None => AtomicFileOutcome::DurableCommit,
+    }
+}
+
 impl AtomicFileOutcome {
     /// Test assertion: a replacement inside a fresh temporary directory has no reason to lose
     /// its parent sync, so a test that only needs the file placed asserts that rather than
@@ -3833,7 +3858,9 @@ mod win {
         source_is_dir: bool,
         target_parent: &File,
         target: &OsStr,
-    ) -> Result<(), Error> {
+    ) -> Result<AtomicFileOutcome, Error> {
+        let distinct_parents =
+            opened_file_identity(source_parent)? != opened_file_identity(target_parent)?;
         assert_entry_identity(source_parent, source, expected, source_is_dir)?;
         let mut opened = open_windows_child(
             source_parent,
@@ -3850,11 +3877,11 @@ mod win {
             ));
         }
         rename_child(target_parent, &mut opened, source, target, false)?;
-        source_parent.sync_all()?;
-        if opened_file_identity(source_parent)? != opened_file_identity(target_parent)? {
-            target_parent.sync_all()?;
-        }
-        Ok(())
+        Ok(super::sync_rename_parents(
+            source_parent,
+            target_parent,
+            distinct_parents,
+        ))
     }
 
     pub(super) fn rename_optional_regular_at(
@@ -3862,7 +3889,7 @@ mod win {
         source: &OsStr,
         target_parent: &File,
         target: &OsStr,
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<AtomicFileOutcome>, Error> {
         let mut opened = match open_windows_child(
             source_parent,
             source,
@@ -3873,7 +3900,7 @@ mod win {
             true,
         ) {
             Ok(opened) => opened,
-            Err(error) if error.is_missing_entry() => return Ok(false),
+            Err(error) if error.is_missing_entry() => return Ok(None),
             Err(error) => return Err(error),
         };
         if !opened_is_disk(&opened) {
@@ -3881,8 +3908,14 @@ mod win {
                 "workspace sidecar must be a regular file".into(),
             ));
         }
+        let distinct_parents =
+            opened_file_identity(source_parent)? != opened_file_identity(target_parent)?;
         rename_child(target_parent, &mut opened, source, target, false)?;
-        Ok(true)
+        Ok(Some(super::sync_rename_parents(
+            source_parent,
+            target_parent,
+            distinct_parents,
+        )))
     }
 
     fn remove_regular_child(
@@ -5423,9 +5456,10 @@ pub(crate) fn rename_entry_at(
     source_is_dir: bool,
     target_parent: &File,
     target: &OsStr,
-) -> Result<(), Error> {
+) -> Result<AtomicFileOutcome, Error> {
     use rustix::fs::{self as rfs, RenameFlags};
-    use std::os::unix::fs::MetadataExt;
+    let distinct_parents = crate::infra::path_authority::opened_file_identity(source_parent)?
+        != crate::infra::path_authority::opened_file_identity(target_parent)?;
     assert_entry_identity(source_parent, source, expected, source_is_dir)?;
     rfs::renameat_with(
         source_parent,
@@ -5435,13 +5469,11 @@ pub(crate) fn rename_entry_at(
         RenameFlags::NOREPLACE,
     )
     .map_err(|error| Error::Io(Box::new(error.into())))?;
-    source_parent.sync_all()?;
-    if source_parent.metadata()?.ino() != target_parent.metadata()?.ino()
-        || source_parent.metadata()?.dev() != target_parent.metadata()?.dev()
-    {
-        target_parent.sync_all()?;
-    }
-    Ok(())
+    Ok(sync_rename_parents(
+        source_parent,
+        target_parent,
+        distinct_parents,
+    ))
 }
 
 #[cfg(windows)]
@@ -5452,7 +5484,7 @@ pub(crate) fn rename_entry_at(
     source_is_dir: bool,
     target_parent: &File,
     target: &OsStr,
-) -> Result<(), Error> {
+) -> Result<AtomicFileOutcome, Error> {
     win::rename_entry_at(
         source_parent,
         source,
@@ -5469,13 +5501,13 @@ pub(crate) fn rename_optional_regular_at(
     source: &OsStr,
     target_parent: &File,
     target: &OsStr,
-) -> Result<bool, Error> {
+) -> Result<Option<AtomicFileOutcome>, Error> {
     use rustix::{
         fs::{self as rfs, AtFlags, FileType, RenameFlags},
         io::Errno,
     };
     match rfs::statat(source_parent, source, AtFlags::SYMLINK_NOFOLLOW) {
-        Err(error) if error == Errno::NOENT => return Ok(false),
+        Err(error) if error == Errno::NOENT => return Ok(None),
         Err(error) => return Err(Error::Io(Box::new(error.into()))),
         Ok(stat) if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile => {
             return Err(Error::InvalidInput(
@@ -5484,6 +5516,8 @@ pub(crate) fn rename_optional_regular_at(
         }
         Ok(_) => {}
     }
+    let distinct_parents = crate::infra::path_authority::opened_file_identity(source_parent)?
+        != crate::infra::path_authority::opened_file_identity(target_parent)?;
     rfs::renameat_with(
         source_parent,
         source,
@@ -5492,7 +5526,11 @@ pub(crate) fn rename_optional_regular_at(
         RenameFlags::NOREPLACE,
     )
     .map_err(|error| Error::Io(Box::new(error.into())))?;
-    Ok(true)
+    Ok(Some(sync_rename_parents(
+        source_parent,
+        target_parent,
+        distinct_parents,
+    )))
 }
 
 #[cfg(windows)]
@@ -5501,7 +5539,7 @@ pub(crate) fn rename_optional_regular_at(
     source: &OsStr,
     target_parent: &File,
     target: &OsStr,
-) -> Result<bool, Error> {
+) -> Result<Option<AtomicFileOutcome>, Error> {
     win::rename_optional_regular_at(source_parent, source, target_parent, target)
 }
 
@@ -7935,10 +7973,183 @@ mod tests {
         let parent = windows_test_parent(temp.path());
         let missing = OsStr::new("sidecar.info");
         assert!(
-            !rename_optional_regular_at(&parent, missing, &parent, OsStr::new("other.info"))
+            rename_optional_regular_at(&parent, missing, &parent, OsStr::new("other.info"))
                 .expect("missing sidecar rename")
+                .is_none()
         );
         remove_optional_regular_at(&parent, missing).expect("missing sidecar removal");
+    }
+
+    #[test]
+    fn rename_parent_sync_failures_preserve_commit_and_offer_every_parent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct SyncFault(Arc<AtomicUsize>, usize);
+        impl AtomicWriterInjector for SyncFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    let call = self.0.fetch_add(1, Ordering::SeqCst);
+                    if call >= self.1 {
+                        return Err(std::io::Error::other(format!("rename sync {call}")));
+                    }
+                }
+                Ok(())
+            }
+        }
+        for optional in [false, true] {
+            for distinct in [false, true] {
+                for fail_from in 0..=usize::from(distinct) {
+                    let temp = tempfile::tempdir().unwrap();
+                    let target_dir = if distinct {
+                        let path = temp.path().join("target");
+                        std::fs::create_dir(&path).unwrap();
+                        path
+                    } else {
+                        temp.path().to_path_buf()
+                    };
+                    let source = test_parent(temp.path());
+                    let target = test_parent(&target_dir);
+                    std::fs::write(temp.path().join("before"), b"identity and contents").unwrap();
+                    let expected = entry_identity_at(&source, OsStr::new("before"), false).unwrap();
+                    let calls = Arc::new(AtomicUsize::new(0));
+                    let _reset = install_test_atomic_file_injector(Arc::new(SyncFault(
+                        calls.clone(),
+                        fail_from,
+                    )));
+                    let capture = crate::error::LogCaptureScope::start();
+                    let outcome = if optional {
+                        rename_optional_regular_at(
+                            &source,
+                            OsStr::new("before"),
+                            &target,
+                            OsStr::new("after"),
+                        )
+                        .unwrap()
+                        .expect("present sidecar")
+                    } else {
+                        rename_entry_at(
+                            &source,
+                            OsStr::new("before"),
+                            expected,
+                            false,
+                            &target,
+                            OsStr::new("after"),
+                        )
+                        .unwrap()
+                    };
+                    assert!(
+                        matches!(outcome, AtomicFileOutcome::CommittedDurabilityUncertain(ref error) if error.to_string() == format!("rename sync {fail_from}"))
+                    );
+                    assert_eq!(calls.load(Ordering::SeqCst), if distinct { 2 } else { 1 });
+                    assert!(!temp.path().join("before").exists());
+                    assert_eq!(
+                        std::fs::read(target_dir.join("after")).unwrap(),
+                        b"identity and contents"
+                    );
+                    assert_eq!(
+                        entry_identity_at(&target, OsStr::new("after"), false).unwrap(),
+                        expected
+                    );
+                    if distinct && fail_from == 0 {
+                        assert!(capture
+                            .messages()
+                            .iter()
+                            .any(|line| line.contains("rename sync 1")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rename_refusals_do_not_commit_or_sync() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountSync(Arc<AtomicUsize>);
+        impl AtomicWriterInjector for CountSync {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let parent = test_parent(temp.path());
+        std::fs::write(temp.path().join("source"), b"source").unwrap();
+        std::fs::write(temp.path().join("occupied"), b"occupied").unwrap();
+        let identity = entry_identity_at(&parent, OsStr::new("source"), false).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let _reset = install_test_atomic_file_injector(Arc::new(CountSync(calls.clone())));
+        assert!(rename_entry_at(
+            &parent,
+            OsStr::new("source"),
+            identity,
+            false,
+            &parent,
+            OsStr::new("occupied")
+        )
+        .is_err());
+        assert!(rename_optional_regular_at(
+            &parent,
+            OsStr::new("source"),
+            &parent,
+            OsStr::new("occupied")
+        )
+        .is_err());
+        assert!(rename_entry_at(
+            &parent,
+            OsStr::new("source"),
+            (identity.0, identity.1.wrapping_add(1)),
+            false,
+            &parent,
+            OsStr::new("free")
+        )
+        .is_err());
+        std::fs::create_dir(temp.path().join("directory")).unwrap();
+        assert!(rename_optional_regular_at(
+            &parent,
+            OsStr::new("directory"),
+            &parent,
+            OsStr::new("free")
+        )
+        .is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("source", temp.path().join("link")).unwrap();
+            assert!(rename_optional_regular_at(
+                &parent,
+                OsStr::new("link"),
+                &parent,
+                OsStr::new("free")
+            )
+            .is_err());
+            assert!(rename_entry_at(
+                &parent,
+                OsStr::new("link"),
+                identity,
+                false,
+                &parent,
+                OsStr::new("free")
+            )
+            .is_err());
+        }
+        assert!(rename_optional_regular_at(
+            &parent,
+            OsStr::new("missing"),
+            &parent,
+            OsStr::new("free")
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read(temp.path().join("source")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("occupied")).unwrap(),
+            b"occupied"
+        );
+        assert!(!temp.path().join("free").exists());
     }
 
     #[cfg(unix)]
@@ -8103,7 +8314,8 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &nested).expect("swap link");
 
         rename_entry_at(&parent, &leaf, expected, false, &target_parent, &leaf)
-            .expect("rename through retained parent");
+            .expect("rename through retained parent")
+            .expect_durable();
         assert_eq!(
             std::fs::read(destination.join("game.pgn")).expect("moved"),
             b"trusted"

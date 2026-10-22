@@ -373,6 +373,46 @@ fn reconcile_workspace_collections(
     })
 }
 
+/// A committed uncertainty must finish dependent work. Keep its stage unless a
+/// later hard failure takes precedence, recording the other evidence natively.
+fn finish_committed_workspace_step(
+    result: Result<(), Error>,
+    finish: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let first = match result {
+        Ok(()) => None,
+        Err(Error::CommittedDurabilityUncertain(stage)) => Some(stage),
+        Err(error) => return Err(error),
+    };
+    match (first, finish()) {
+        (Some(stage), Ok(())) => Err(Error::CommittedDurabilityUncertain(stage)),
+        (Some(stage), Err(Error::CommittedDurabilityUncertain(later))) => {
+            log::warn!(
+                "workspace completion also has uncertain durability at {later}, keeping {stage}"
+            );
+            Err(Error::CommittedDurabilityUncertain(stage))
+        }
+        (Some(stage), Err(error)) => {
+            log::warn!(
+                "workspace completion failed after uncertainty at {stage}: {}",
+                error.diagnostic()
+            );
+            Err(error)
+        }
+        (None, result) => result,
+    }
+}
+
+fn finish_workspace_rename(
+    outcome: crate::infra::fs::AtomicFileOutcome,
+    finish: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    finish_committed_workspace_step(
+        crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::WorkspaceRename),
+        finish,
+    )
+}
+
 pub(crate) fn write_workspace_file_metadata_blocking(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
@@ -1149,11 +1189,11 @@ fn paired_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
     target_leaf: &std::ffi::OsStr,
-) -> Result<(), Error> {
-    use crate::infra::fs::{rename_entry_at, rename_optional_regular_at};
+) -> Result<crate::infra::fs::AtomicFileOutcome, Error> {
+    use crate::infra::fs::{rename_entry_at, rename_optional_regular_at, AtomicFileOutcome};
     let source_info = sidecar_leaf(&source.leaf)?;
     let target_info = sidecar_leaf(target_leaf)?;
-    rename_entry_at(
+    let primary = rename_entry_at(
         &source.parent,
         &source.leaf,
         source.identity,
@@ -1167,28 +1207,50 @@ fn paired_rename(
             hook();
         }
     });
-    if let Err(error) =
-        rename_optional_regular_at(&source.parent, &source_info, target_parent, &target_info)
-    {
-        // The same retained descriptors are used for rollback; never reopen a mutable pathname.
-        let rollback = crate::infra::fs::rename_entry_at(
-            target_parent,
-            target_leaf,
-            source.identity,
-            source.is_dir,
-            &source.parent,
-            &source.leaf,
-        );
-        if let Err(rollback) = &rollback {
-            log::error!(
-                "paired rename failed: {}; rollback failed: {}",
-                error.diagnostic(),
-                rollback.diagnostic()
-            );
+    let sidecar =
+        match rename_optional_regular_at(&source.parent, &source_info, target_parent, &target_info)
+        {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                if let AtomicFileOutcome::CommittedDurabilityUncertain(cause) = &primary {
+                    log::warn!("primary rename parent sync failed before sidecar refusal: {cause}");
+                }
+                // The same retained descriptors are used for rollback; never reopen a mutable pathname.
+                let rollback = crate::infra::fs::rename_entry_at(
+                    target_parent,
+                    target_leaf,
+                    source.identity,
+                    source.is_dir,
+                    &source.parent,
+                    &source.leaf,
+                )
+                .and_then(|outcome| {
+                    crate::infra::fs::require_durable(
+                        outcome,
+                        crate::error::DurabilityStage::WorkspaceRename,
+                    )
+                });
+                if let Err(rollback) = &rollback {
+                    log::error!(
+                        "paired rename failed: {}; rollback cleanup reported: {}",
+                        error.diagnostic(),
+                        rollback.diagnostic()
+                    );
+                }
+                return Err(Error::with_cleanup(error, rollback));
+            }
+        };
+    match (primary, sidecar) {
+        (
+            AtomicFileOutcome::CommittedDurabilityUncertain(first),
+            Some(AtomicFileOutcome::CommittedDurabilityUncertain(later)),
+        ) => {
+            log::warn!("additional workspace sidecar rename parent sync failed: {later}");
+            Ok(AtomicFileOutcome::CommittedDurabilityUncertain(first))
         }
-        return Err(Error::with_cleanup(error, rollback));
+        (AtomicFileOutcome::DurableCommit, Some(sidecar)) => Ok(sidecar),
+        (primary, _) => Ok(primary),
     }
-    Ok(())
 }
 
 fn rebind_after_move(
@@ -1613,16 +1675,17 @@ pub async fn move_workspace_entry(
     crate::infra::operations::run_native_operation(operation, "move_workspace_entry", async move {
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
-                move_workspace_entry_blocking(
+                let result = move_workspace_entry_blocking(
                     workspace.clone(),
                     entry,
                     target_directory,
                     &pgn_path_authority,
                     &workspace_mutation,
                     token,
-                )?;
-                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
-                Ok(())
+                );
+                finish_committed_workspace_step(result, || {
+                    reconcile_workspace_collections(&pgn_path_authority, &workspace)
+                })
             })
             .await
     })
@@ -1655,14 +1718,16 @@ fn move_workspace_entry_blocking(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    paired_rename(&source, destination.directory()?, &name)?;
-    rebind_after_move(
-        pgn_path_authority,
-        &entry,
-        &source,
-        &target,
-        destination.identity,
-    )
+    let outcome = paired_rename(&source, destination.directory()?, &name)?;
+    finish_workspace_rename(outcome, || {
+        rebind_after_move(
+            pgn_path_authority,
+            &entry,
+            &source,
+            &target,
+            destination.identity,
+        )
+    })
 }
 
 #[tauri::command]
@@ -1681,7 +1746,7 @@ pub async fn rename_workspace_file(
     crate::infra::operations::run_native_operation(operation, "rename_workspace_file", async move {
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
-                rename_workspace_file_blocking(
+                let result = rename_workspace_file_blocking(
                     workspace.clone(),
                     entry,
                     name,
@@ -1689,9 +1754,10 @@ pub async fn rename_workspace_file(
                     &pgn_path_authority,
                     &workspace_mutation,
                     token,
-                )?;
-                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
-                Ok(())
+                );
+                finish_committed_workspace_step(result, || {
+                    reconcile_workspace_collections(&pgn_path_authority, &workspace)
+                })
             })
             .await
     })
@@ -1743,31 +1809,29 @@ pub(crate) fn rename_workspace_file_blocking(
     }
     let target_parent_identity =
         crate::infra::path_authority::opened_file_identity(&source.parent)?;
-    paired_rename(&source, &source.parent, &target_leaf)?;
-    let sidecar_uncertainty = replace_workspace_file_metadata(
-        &source.parent,
-        &target_leaf,
-        source.identity,
-        &metadata_bytes,
-        cancellation,
-    )?;
-    // The PGN rename and the sidecar rename both landed; the registry must follow them even
-    // when the sidecar's parent sync is uncertain, so the rebind happens before reporting. The
-    // first uncertain stage is the one reported, as in `create_workspace_file_blocking`; a
-    // rebind failure that is not an uncertainty outranks it.
-    let rebind = rebind_after_move(
-        pgn_path_authority,
-        &entry,
-        &source,
-        &target,
-        target_parent_identity,
-    );
-    match (sidecar_uncertainty, rebind) {
-        (Some(stage), Ok(()) | Err(Error::CommittedDurabilityUncertain(_))) => {
-            Err(Error::CommittedDurabilityUncertain(stage))
-        }
-        (_, result) => result,
-    }
+    let outcome = paired_rename(&source, &source.parent, &target_leaf)?;
+    finish_workspace_rename(outcome, || {
+        let sidecar = replace_workspace_file_metadata(
+            &source.parent,
+            &target_leaf,
+            source.identity,
+            &metadata_bytes,
+            cancellation,
+        )
+        .and_then(|stage| match stage {
+            Some(stage) => Err(Error::CommittedDurabilityUncertain(stage)),
+            None => Ok(()),
+        });
+        finish_committed_workspace_step(sidecar, || {
+            rebind_after_move(
+                pgn_path_authority,
+                &entry,
+                &source,
+                &target,
+                target_parent_identity,
+            )
+        })
+    })
 }
 
 #[tauri::command]
@@ -1784,15 +1848,16 @@ pub async fn trash_workspace_entry(
     crate::infra::operations::run_native_operation(operation, "trash_workspace_entry", async move {
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
-                trash_entry(
+                let result = trash_entry(
                     &pgn_path_authority,
                     &workspace_mutation,
                     &workspace,
                     &entry,
                     token,
-                )?;
-                reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
-                Ok(())
+                );
+                finish_committed_workspace_step(result, || {
+                    reconcile_workspace_collections(&pgn_path_authority, &workspace)
+                })
             })
             .await
     })
@@ -1828,7 +1893,7 @@ fn trash_entry(
     let bucket_dir = crate::infra::fs::open_directory_at(&trash_dir, &bucket, true)?;
     let target = bucket_path.join(&source.leaf);
     let target_parent_identity = crate::infra::path_authority::opened_file_identity(&bucket_dir)?;
-    if source.is_dir {
+    let outcome = if source.is_dir {
         crate::infra::fs::rename_entry_at(
             &source.parent,
             &source.leaf,
@@ -1836,17 +1901,19 @@ fn trash_entry(
             true,
             &bucket_dir,
             &source.leaf,
-        )?;
+        )?
     } else {
-        paired_rename(&source, &bucket_dir, &source.leaf)?;
-    }
-    rebind_after_move(
-        pgn_path_authority,
-        entry,
-        &source,
-        &target,
-        target_parent_identity,
-    )
+        paired_rename(&source, &bucket_dir, &source.leaf)?
+    };
+    finish_workspace_rename(outcome, || {
+        rebind_after_move(
+            pgn_path_authority,
+            entry,
+            &source,
+            &target,
+            target_parent_identity,
+        )
+    })
 }
 
 #[tauri::command]
@@ -1866,15 +1933,16 @@ pub async fn restore_workspace_entry(
         async move {
             BLOCKING_GATEWAY
                 .spawn_cancellable(cancellation, move |token| {
-                    restore_entry(
+                    let result = restore_entry(
                         &pgn_path_authority,
                         &workspace_mutation,
                         &workspace,
                         &entry,
                         token,
-                    )?;
-                    reconcile_workspace_collections(&pgn_path_authority, &workspace)?;
-                    Ok(())
+                    );
+                    finish_committed_workspace_step(result, || {
+                        reconcile_workspace_collections(&pgn_path_authority, &workspace)
+                    })
                 })
                 .await
         },
@@ -1905,7 +1973,7 @@ fn restore_entry(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    if source.is_dir {
+    let outcome = if source.is_dir {
         crate::infra::fs::rename_entry_at(
             &source.parent,
             &source.leaf,
@@ -1913,11 +1981,13 @@ fn restore_entry(
             true,
             root.directory()?,
             &source.leaf,
-        )?;
+        )?
     } else {
-        paired_rename(&source, root.directory()?, &source.leaf)?;
-    }
-    rebind_after_move(pgn_path_authority, entry, &source, &target, root.identity)
+        paired_rename(&source, root.directory()?, &source.leaf)?
+    };
+    finish_workspace_rename(outcome, || {
+        rebind_after_move(pgn_path_authority, entry, &source, &target, root.identity)
+    })
 }
 
 #[tauri::command]
@@ -2844,8 +2914,9 @@ mod tests {
     /// `index` is the 0-based hit count of `point` only. On a workspace file create, Rename
     /// and ParentSync each hit 0 = PGN install, 1 = sidecar install, 2 = registry persist.
     /// On a directory create, Rename hit 0 = registry persist; ParentSync hits 0 = directory
-    /// create, 1 = registry persist. On a file rename, Rename and ParentSync each hit
-    /// 0 = sidecar rewrite, 1 = registry rebind; the paired moves emit neither fault point.
+    /// create, 1 = registry persist. On a same-parent file rename, Rename hits
+    /// 0 = sidecar rewrite, 1 = registry rebind. ParentSync hits 0 = primary rename,
+    /// 1 = sidecar rename, 2 = sidecar rewrite, 3 = registry rebind.
     /// A failed registry persistence attempt is retried, adding hits for the points it reaches.
     struct FailAtFaultPoint {
         point: AtomicFileFaultPoint,
@@ -5111,13 +5182,517 @@ mod tests {
         assert_rename_landed(&state, &root, &handle);
     }
 
+    #[test]
+    fn rename_workspace_file_completes_after_either_namespace_sync_is_uncertain() {
+        for sync in [0, 1] {
+            let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
+                FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
+            )));
+            let error = result.expect_err("committed rename uncertainty");
+            assert_workspace_rename_uncertainty(&error);
+            assert_rename_landed(&state, &root, &handle);
+        }
+    }
+
+    fn assert_workspace_rename_uncertainty(error: &Error) {
+        assert!(
+            matches!(
+                error,
+                Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::WorkspaceRename)
+            ),
+            "{error:?}"
+        );
+        let payload = serde_json::to_value(error).unwrap();
+        assert_eq!(payload["category"], "durability");
+        assert_eq!(
+            payload["message"],
+            "Committed but durability uncertain: workspace rename"
+        );
+        assert!(!payload.to_string().contains("injected"));
+    }
+
+    #[test]
+    fn rename_namespace_uncertainty_keeps_first_stage_and_later_hard_failure_precedence() {
+        let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
+            crate::infra::fs::ParentSyncFault("all parent syncs"),
+        )));
+        assert_workspace_rename_uncertainty(&result.unwrap_err());
+        assert_rename_landed(&state, &root, &handle);
+
+        // The sidecar rewrite and registry rebind remain the two atomic Rename points.
+        for rename in [0, 1] {
+            let capture = crate::error::LogCaptureScope::start();
+            let (_directory, _state, root, _handle, result) =
+                rename_under_injector(Some(Arc::new(
+                    FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0).and(
+                        FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, rename),
+                    ),
+                )));
+            assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+            assert!(root.join("after.pgn").is_file());
+            assert!(root.join("after.info").is_file());
+            assert!(capture.messages().iter().any(|line| line
+                .contains("workspace completion failed after uncertainty at workspace rename")));
+        }
+    }
+
+    #[test]
+    fn paired_rename_compensates_only_sidecar_precommit_failure() {
+        for uncertain_rollback in [false, true] {
+            let (_directory, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            fs::write(root.join("after.info"), b"occupied").unwrap();
+            let _reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                FailAtFaultPoint::fail_only(
+                    AtomicFileFaultPoint::ParentSync,
+                    if uncertain_rollback { 1 } else { 0 },
+                ),
+            ));
+            let error =
+                paired_rename(&source, &source.parent, OsStr::new("after.pgn")).unwrap_err();
+            if uncertain_rollback {
+                let Error::OperationAndCleanup { cleanup, .. } = &error else {
+                    panic!("{error:?}")
+                };
+                assert!(cleanup.contains("workspace rename"), "{cleanup}");
+                assert_eq!(
+                    serde_json::to_value(&error).unwrap()["category"],
+                    "operation-and-cleanup"
+                );
+            } else {
+                assert!(
+                    !matches!(
+                        error,
+                        Error::OperationAndCleanup { .. } | Error::CommittedDurabilityUncertain(_)
+                    ),
+                    "{error:?}"
+                );
+            }
+            assert_eq!(fs::read(root.join("before.pgn")).unwrap(), b"*");
+            assert!(!root.join("after.pgn").exists());
+            assert!(root.join("before.info").is_file());
+            assert_eq!(fs::read(root.join("after.info")).unwrap(), b"occupied");
+            let rebound = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            assert_eq!(rebound.path(), root.join("before.pgn"));
+            assert_eq!(rebound.identity, source.identity);
+        }
+    }
+
+    #[test]
+    fn paired_rename_absent_sidecar_preserves_primary_uncertainty() {
+        let (_directory, state, workspace) = workspace_state();
+        let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+        let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        fs::remove_file(root.join("before.info")).unwrap();
+        let _reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+            crate::infra::fs::ParentSyncFault("primary only"),
+        ));
+        let outcome = paired_rename(&source, &source.parent, OsStr::new("after.pgn")).unwrap();
+        assert!(matches!(
+            outcome,
+            crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(_)
+        ));
+        assert_eq!(fs::read(root.join("after.pgn")).unwrap(), b"*");
+        assert!(!root.join("before.pgn").exists());
+        assert!(!root.join("before.info").exists());
+        assert!(!root.join("after.info").exists());
+    }
+
+    #[test]
+    fn paired_rename_retains_first_native_sync_cause_and_logs_the_next() {
+        struct SyncCause(AtomicUsize);
+        impl AtomicWriterInjector for SyncCause {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    return Err(std::io::Error::other(format!(
+                        "pair sync {}",
+                        self.0.fetch_add(1, Ordering::SeqCst)
+                    )));
+                }
+                Ok(())
+            }
+        }
+        let (_directory, state, workspace) = workspace_state();
+        let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+        let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sidecar = fs::read(root.join("before.info")).unwrap();
+        let _reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(SyncCause(
+            AtomicUsize::new(0),
+        )));
+        let capture = crate::error::LogCaptureScope::start();
+        let outcome = paired_rename(&source, &source.parent, OsStr::new("after.pgn")).unwrap();
+        assert!(
+            matches!(outcome, crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(ref cause) if cause.to_string() == "pair sync 0")
+        );
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|line| line.contains("pair sync 1")));
+        assert_eq!(fs::read(root.join("after.pgn")).unwrap(), b"*");
+        assert_eq!(fs::read(root.join("after.info")).unwrap(), sidecar);
+        assert!(!root.join("before.pgn").exists());
+        assert!(!root.join("before.info").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn committed_rename_commands_finish_real_collection_reconciliation() {
+        use crate::db::linked_collections::tests::Fixture;
+        for command in [
+            QueuedWorkspaceCommand::Move,
+            QueuedWorkspaceCommand::Rename,
+            QueuedWorkspaceCommand::Trash,
+            QueuedWorkspaceCommand::Restore,
+        ] {
+            for directory in [false, true] {
+                if directory && matches!(command, QueuedWorkspaceCommand::Rename) {
+                    continue;
+                }
+                // A cross-parent file pair has two primary syncs before the sidecar.
+                let later_sync = if !directory && !matches!(command, QueuedWorkspaceCommand::Rename)
+                {
+                    2
+                } else {
+                    1
+                };
+                for sync in [0, later_sync] {
+                    let fixture = Fixture::new();
+                    let state = &fixture.state;
+                    let workspace = &fixture.workspace;
+                    let root = workspace_root(&state.pgn_path_authority, workspace).unwrap();
+                    let origin = create_named_directory(state, workspace, "origin").unwrap();
+                    let source_dir = create_workspace_directory_inner(
+                        workspace.clone(),
+                        origin.handle.clone(),
+                        "source".into(),
+                        &state.pgn_path_authority,
+                        &state.workspace_mutation,
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                    let parent = if directory {
+                        &source_dir.handle
+                    } else {
+                        &origin.handle
+                    };
+                    let created = create_workspace_file_blocking(
+                        workspace.clone(),
+                        parent.clone(),
+                        "before".into(),
+                        WorkspaceMetadata {
+                            file_type: WorkspaceFileType::Game,
+                            tags: vec!["preserved".into()],
+                        },
+                        WorkspaceFileContent::Text {
+                            pgn: "1. e4 *".into(),
+                        },
+                        &state.pgn_path_authority,
+                        &state.workspace_mutation,
+                        &state.pgn_repository,
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                    let entry = if directory {
+                        &source_dir.handle
+                    } else {
+                        &created.handle
+                    };
+                    let original =
+                        mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+                    let original_path = original.path().to_path_buf();
+                    let info_bytes = fs::read(original_path.with_extension("info")).unwrap();
+                    let collections = fixture.list();
+                    assert_eq!(collections.len(), 1);
+                    let collection_id = collections[0].id.clone();
+                    if matches!(command, QueuedWorkspaceCommand::Restore) {
+                        trash_entry(
+                            &state.pgn_path_authority,
+                            &state.workspace_mutation,
+                            workspace,
+                            entry,
+                            &CancellationToken::new(),
+                        )
+                        .unwrap();
+                    }
+                    let before = mutation_target(&state.pgn_path_authority, entry)
+                        .unwrap()
+                        .path()
+                        .to_path_buf();
+                    // An external collection appears after the initial discovery. Its durable
+                    // registration proves that the real command wrapper ran discovery.
+                    fs::write(root.join("probe.pgn"), b"1. d4 *").unwrap();
+                    fs::write(root.join("probe.info"), br#"{"type":"game","tags":[]}"#).unwrap();
+                    let app = fixture.app();
+                    // Trash creates its directory and bucket before the namespace rename.
+                    let sync = sync
+                        + if matches!(command, QueuedWorkspaceCommand::Trash) {
+                            2
+                        } else {
+                            0
+                        };
+                    let reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                        FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
+                    ));
+                    let result = match command {
+                        QueuedWorkspaceCommand::Move => {
+                            move_workspace_entry(
+                                workspace.clone(),
+                                entry.clone(),
+                                workspace.clone(),
+                                app.state::<AppState>(),
+                            )
+                            .await
+                        }
+                        QueuedWorkspaceCommand::Rename => {
+                            rename_workspace_file(
+                                workspace.clone(),
+                                entry.clone(),
+                                "after".into(),
+                                WorkspaceMetadata {
+                                    file_type: WorkspaceFileType::Game,
+                                    tags: vec!["updated".into()],
+                                },
+                                app.state::<AppState>(),
+                            )
+                            .await
+                        }
+                        QueuedWorkspaceCommand::Trash => {
+                            trash_workspace_entry(
+                                workspace.clone(),
+                                entry.clone(),
+                                app.state::<AppState>(),
+                            )
+                            .await
+                        }
+                        QueuedWorkspaceCommand::Restore => {
+                            restore_workspace_entry(
+                                workspace.clone(),
+                                entry.clone(),
+                                app.state::<AppState>(),
+                            )
+                            .await
+                        }
+                        _ => unreachable!(),
+                    };
+                    drop(reset);
+                    assert_workspace_rename_uncertainty(&result.unwrap_err());
+                    let rebound =
+                        mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+                    assert_eq!(rebound.identity, original.identity);
+                    assert!(
+                        !before.exists(),
+                        "{command:?} directory={directory} sync={sync}"
+                    );
+                    assert_eq!(fs::read(rebound.path()).unwrap(), b"1. e4 *");
+                    let expected = match command {
+                        QueuedWorkspaceCommand::Move | QueuedWorkspaceCommand::Restore => root
+                            .join(if directory {
+                                "source/before.pgn"
+                            } else {
+                                "before.pgn"
+                            }),
+                        QueuedWorkspaceCommand::Rename => root.join("origin/after.pgn"),
+                        QueuedWorkspaceCommand::Trash => {
+                            assert!(rebound.path().starts_with(root.join(TRASH_DIRECTORY)));
+                            rebound.path().to_path_buf()
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(rebound.path(), expected);
+                    if matches!(command, QueuedWorkspaceCommand::Rename) {
+                        let metadata: WorkspaceMetadata = serde_json::from_slice(
+                            &fs::read(expected.with_extension("info")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(metadata.tags, ["updated"]);
+                    } else {
+                        assert_eq!(
+                            fs::read(expected.with_extension("info")).unwrap(),
+                            info_bytes
+                        );
+                    }
+                    let registry: serde_json::Value = serde_json::from_slice(
+                        &fs::read(
+                            fixture
+                                .directory
+                                .path()
+                                .join("app/collections/registry.json"),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    let records = registry["records"].as_array().unwrap();
+                    assert_eq!(records.len(), 2, "committed rename must complete collection reconciliation: {command:?} directory={directory} sync={sync}");
+                    let record = records
+                        .iter()
+                        .find(|record| record["id"] == collection_id)
+                        .unwrap();
+                    let parts: Vec<crate::infra::path_authority::NativePath> =
+                        serde_json::from_value(record["locator"].clone()).unwrap();
+                    let locator = parts
+                        .iter()
+                        .map(|part| part.to_path().unwrap())
+                        .collect::<PathBuf>();
+                    let indexed_path = if matches!(command, QueuedWorkspaceCommand::Trash) {
+                        original_path
+                    } else {
+                        expected
+                    };
+                    assert_eq!(root.join(locator), indexed_path);
+                    assert_eq!(
+                        record["file"],
+                        serde_json::to_value(&created.handle).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn committed_workspace_moves_finish_file_and_directory_authority() {
+        for command in [
+            QueuedWorkspaceCommand::Move,
+            QueuedWorkspaceCommand::Trash,
+            QueuedWorkspaceCommand::Restore,
+        ] {
+            for directory in [false, true] {
+                for sync in [0, if directory { 1 } else { 2 }] {
+                    let (_directory, state, workspace) = workspace_state();
+                    let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+                    let parent = create_named_directory(&state, &workspace, "source").unwrap();
+                    let destination =
+                        create_named_directory(&state, &workspace, "destination").unwrap();
+                    let child = create_workspace_file_blocking(
+                        workspace.clone(),
+                        parent.handle.clone(),
+                        "game".into(),
+                        WorkspaceMetadata {
+                            file_type: WorkspaceFileType::Game,
+                            tags: vec!["preserved".into()],
+                        },
+                        WorkspaceFileContent::Text {
+                            pgn: "1. e4 *".into(),
+                        },
+                        &state.pgn_path_authority,
+                        &state.workspace_mutation,
+                        &state.pgn_repository,
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                    let entry = if directory {
+                        &parent.handle
+                    } else {
+                        &child.handle
+                    };
+                    let original =
+                        mutation_target(&state.pgn_path_authority, &child.handle).unwrap();
+                    let info = fs::read(original.path().with_extension("info")).unwrap();
+                    if matches!(command, QueuedWorkspaceCommand::Restore) {
+                        trash_entry(
+                            &state.pgn_path_authority,
+                            &state.workspace_mutation,
+                            &workspace,
+                            entry,
+                            &CancellationToken::new(),
+                        )
+                        .unwrap();
+                    }
+                    let before = mutation_target(&state.pgn_path_authority, entry)
+                        .unwrap()
+                        .path()
+                        .to_path_buf();
+                    // A fresh trash operation syncs its hidden directory and bucket first.
+                    let sync = sync
+                        + if matches!(command, QueuedWorkspaceCommand::Trash) {
+                            2
+                        } else {
+                            0
+                        };
+                    let reset = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                        FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, sync),
+                    ));
+                    let result = match command {
+                        QueuedWorkspaceCommand::Move => move_workspace_entry_blocking(
+                            workspace.clone(),
+                            entry.clone(),
+                            destination.handle,
+                            &state.pgn_path_authority,
+                            &state.workspace_mutation,
+                            &CancellationToken::new(),
+                        ),
+                        QueuedWorkspaceCommand::Trash => trash_entry(
+                            &state.pgn_path_authority,
+                            &state.workspace_mutation,
+                            &workspace,
+                            entry,
+                            &CancellationToken::new(),
+                        ),
+                        QueuedWorkspaceCommand::Restore => restore_entry(
+                            &state.pgn_path_authority,
+                            &state.workspace_mutation,
+                            &workspace,
+                            entry,
+                            &CancellationToken::new(),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    drop(reset);
+                    assert_workspace_rename_uncertainty(&result.unwrap_err());
+                    let rebound =
+                        mutation_target(&state.pgn_path_authority, &child.handle).unwrap();
+                    assert_eq!(rebound.identity, original.identity);
+                    assert!(!before.exists());
+                    assert_eq!(fs::read(rebound.path()).unwrap(), b"1. e4 *");
+                    assert_eq!(
+                        fs::read(rebound.path().with_extension("info")).unwrap(),
+                        info
+                    );
+                    let expected = match command {
+                        QueuedWorkspaceCommand::Move => root.join(if directory {
+                            "destination/source/game.pgn"
+                        } else {
+                            "destination/game.pgn"
+                        }),
+                        QueuedWorkspaceCommand::Restore => root.join(if directory {
+                            "source/game.pgn"
+                        } else {
+                            "game.pgn"
+                        }),
+                        QueuedWorkspaceCommand::Trash => {
+                            assert!(rebound.path().starts_with(root.join(TRASH_DIRECTORY)));
+                            rebound.path().to_path_buf()
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(rebound.path(), expected);
+                    let parent = crate::infra::fs::open_parent_no_follow(rebound.path()).unwrap();
+                    let identity =
+                        crate::infra::path_authority::opened_file_identity(&parent).unwrap();
+                    state
+                        .pgn_path_authority
+                        .with_mut(|authority| {
+                            assert_eq!(
+                                authority.parent_identity_for_test(child.handle.path_ref()),
+                                Some(identity)
+                            );
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn rename_workspace_file_reports_uncertain_sidecar_after_a_durable_rebind() {
-        // Fails only the first parent sync, which is the sidecar rewrite; the registry rebind
-        // that follows commits durably, so the `(Some(stage), Ok(()))` arm is the one exercised.
+        // The paired renames sync durably. Fail only the sidecar rewrite's parent sync,
+        // then allow the registry rebind to commit durably.
         let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
-            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0),
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 2),
         )));
         assert!(matches!(
             result,
@@ -5134,7 +5709,7 @@ mod tests {
         // The sidecar rewrite loses its parent sync; the registry rebind that follows fails
         // outright at its rename, so the hard error is the one reported, not the uncertainty.
         let (_directory, _state, root, _handle, result) = rename_under_injector(Some(Arc::new(
-            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0)
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 2)
                 .and(FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, 1)),
         )));
         assert!(
@@ -5148,10 +5723,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rename_workspace_file_reports_the_sidecar_stage_over_a_registry_uncertainty() {
-        // Every parent sync fails: the sidecar rewrite and the registry rebind are both
-        // uncertain, and the first stage is the one reported.
+        // The paired renames sync durably. The sidecar rewrite and registry rebind are
+        // both uncertain, and the first stage is the one reported.
         let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
-            crate::infra::fs::ParentSyncFault("uncertain"),
+            FailAtFaultPoint::fail_from(AtomicFileFaultPoint::ParentSync, 2),
         )));
         assert!(matches!(
             result,
