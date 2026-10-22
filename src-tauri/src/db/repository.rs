@@ -2701,11 +2701,14 @@ mod retirement_tests {
     #[test]
     fn ordinary_empty_mid_probe_tombstone_precedes_uninitialized() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("empty.db3");
+        let child = directory.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let path = child.join("..").join("empty.db3");
         let target = test_target(&path);
+        assert_ne!(path, target.path());
         let repository = Arc::new(DatabaseRepository::default());
         let callback_repository = Arc::clone(&repository);
-        let callback_path = path.clone();
+        let callback_path = target.path().to_path_buf();
         let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.after_probe_current = Some(Box::new(move |_| {
                 callback_repository
