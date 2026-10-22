@@ -14774,6 +14774,9 @@ Live unqualified pnpm ci:remote:check now queries felixabeck/en-croissant and re
   `d-20261007-05`) before review.
 <!-- ledger-meta {"command":"annotate","effect_lines":14,"effect_sha256":"6fd1e6b7227be908b635c7f7b6eb9015b24221049fc490dce53f4dc2bc5a5eff","input_sha256":"505117a88da6ae2e2b680ea28319032839fe2575752895d6d2a529beb8f72255","kind":"mutation-receipt","operation":"b7b0df82aa209d5961960def197e3a971dcf91e721258a60d196c0177ca6ce35","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-03"],"target":"f-20261006-03","v":1} -->
 
+* **Related-status correction (2026-10-22):** f-20261005-03 is now handled by c30dd515. The historical Related bullet's open status is superseded. Its committed namespace-sync uncertainty now completes sidecars, authority and wrapper collection reconciliation before reporting. This does not close f-20261006-03's independent ordinary post-pair hard-failure design, which remains open at build tier.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3e4e1d99e64a6d6a4b6ddb6608e38b9adb83ba4848d5010cabd93636684a274c","input_sha256":"f356bb06c296905b3b30f8f64398e7df50cebc6723e389fc93b82c48d1230642","kind":"mutation-receipt","operation":"9f425a671f7e2ed4c354a797765142ca82237b0fb0a366cf7f6fdf0a8d757239","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-03"],"target":"f-20261006-03","v":1} -->
+
 ---
 
 ## 2026-10-06 — filed through the inbox spool
