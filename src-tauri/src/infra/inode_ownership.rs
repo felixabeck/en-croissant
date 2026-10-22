@@ -464,6 +464,10 @@ pub(crate) struct OwnedFile {
 }
 
 impl OwnedFile {
+    pub(in crate::infra) fn identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
     /// Called only by opening adapters while holding admission arbitration.
     fn admitted(file: File, identity: (u64, u64), class: OwnerClass) -> Self {
         Self {
@@ -844,7 +848,16 @@ fn open_at_mode_class(
     {
         let expected = match rfs::statat(parent, name, rfs::AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => Some(crate::infra::fs::raw_stat_identity(&stat)),
-            Err(error) if error == rustix::io::Errno::NOENT && create => None,
+            Err(error) if error == rustix::io::Errno::NOENT && create => {
+                #[cfg(test)]
+                after_identify();
+                return match create_at_mode_class(parent, name, flags, mode, class) {
+                    Err(Error::Io(error)) if error.raw_os_error() == Some(libc::EEXIST) => {
+                        open_at_mode_class(parent, name, flags, false, mode, class)
+                    }
+                    result => result,
+                };
+            }
             Err(error) => return Err(io_error(error)),
         };
         #[cfg(test)]
@@ -860,15 +873,7 @@ fn open_at_mode_class(
             rfs::openat(
                 parent,
                 name,
-                flags
-                    | OFlags::NOFOLLOW
-                    | OFlags::CLOEXEC
-                    | OFlags::NONBLOCK
-                    | if create {
-                        OFlags::CREATE
-                    } else {
-                        OFlags::empty()
-                    },
+                flags | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
                 mode,
             )
             .map_err(io_error)?,
@@ -942,19 +947,117 @@ fn create_at_mode_class(
         )
         .map_err(|error| Error::from(io::Error::from(error)))?,
     );
-    let stat = match rfs::fstat(&opened) {
+    #[cfg(test)]
+    run_create_hook(false);
+    let stat = match inspect_created(&opened) {
         Ok(stat) => stat,
         Err(error) => {
-            registry.quarantine(opened, None);
-            return Err(Error::from(io::Error::from(error)));
+            let (error, identity) = compensate_created(parent, name, &opened, None, error);
+            registry.quarantine(opened, identity);
+            return Err(error);
         }
     };
     let identity = crate::infra::fs::raw_stat_identity(&stat);
-    if let Err(error) = registry.admit_class(identity, class) {
+    let validation = (|| {
+        if rfs::FileType::from_raw_mode(stat.st_mode) != rfs::FileType::RegularFile {
+            return Err(Error::InvalidInput(
+                "created file must be a regular file".into(),
+            ));
+        }
+        #[cfg(test)]
+        if CREATE_TEST_CONTROLS
+            .with(|slot| slot.borrow_mut().admission_failure.take())
+            .is_some()
+        {
+            return Err(Error::Conflict(
+                "injected created-file admission failure".into(),
+            ));
+        }
+        registry.admit_class(identity, class)
+    })();
+    if let Err(error) = validation {
+        let (error, _) = compensate_created(parent, name, &opened, Some(identity), error);
         registry.quarantine(opened, Some(identity));
         return Err(error);
     }
     Ok(OwnedFile::admitted(opened, identity, class))
+}
+
+#[cfg(all(test, unix))]
+#[derive(Default)]
+pub(crate) struct CreateTestControls {
+    pub(crate) identity_failures: usize,
+    pub(crate) admission_failure: Option<()>,
+    pub(crate) after_create: Option<Box<dyn FnOnce() + Send>>,
+    pub(crate) before_cleanup: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    pub(crate) static CREATE_TEST_CONTROLS: std::cell::RefCell<CreateTestControls> = std::cell::RefCell::new(CreateTestControls::default());
+}
+
+#[cfg(all(test, unix))]
+fn run_create_hook(cleanup: bool) {
+    let hook = CREATE_TEST_CONTROLS.with(|slot| {
+        let mut controls = slot.borrow_mut();
+        if cleanup {
+            controls.before_cleanup.take()
+        } else {
+            controls.after_create.take()
+        }
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(unix)]
+fn inspect_created(file: &File) -> Result<rustix::fs::Stat, Error> {
+    #[cfg(test)]
+    if CREATE_TEST_CONTROLS.with(|slot| {
+        let mut controls = slot.borrow_mut();
+        if controls.identity_failures == 0 {
+            false
+        } else {
+            controls.identity_failures -= 1;
+            true
+        }
+    }) {
+        return Err(Error::Io(Box::new(io::Error::other(
+            "injected created-file identity failure",
+        ))));
+    }
+    rustix::fs::fstat(file).map_err(|error| Error::from(io::Error::from(error)))
+}
+
+#[cfg(unix)]
+fn compensate_created(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    file: &File,
+    identity: Option<(u64, u64)>,
+    primary: Error,
+) -> (Error, Option<(u64, u64)>) {
+    // Descriptor provenance is mandatory. A pathname observation never establishes ownership.
+    let observed = identity.map_or_else(
+        || inspect_created(file).map(|stat| crate::infra::fs::raw_stat_identity(&stat)),
+        Ok,
+    );
+    let identity = observed.as_ref().ok().copied();
+    #[cfg(test)]
+    run_create_hook(true);
+    let removal = observed
+        .and_then(|identity| crate::infra::fs::remove_entry_at(parent, name, identity, false));
+    (
+        crate::infra::fs::created_leaf_error_after_cleanup(
+            primary,
+            removal,
+            "exclusive create",
+            name,
+        ),
+        identity,
+    )
 }
 
 #[cfg(all(test, windows))]
@@ -999,4 +1102,259 @@ pub(in crate::infra) fn own_windows(file: File) -> Result<OwnedFile, Error> {
     let identity = crate::infra::path_authority::opened_file_identity(&file)?;
     lock()?.admit(identity)?;
     Ok(OwnedFile::admitted(file, identity, OwnerClass::Capability))
+}
+
+#[cfg(windows)]
+pub(in crate::infra) fn own_windows_created(
+    file: File,
+    identity: (u64, u64),
+) -> Result<OwnedFile, (Error, File)> {
+    let result = lock().and_then(|mut registry| {
+        #[cfg(test)]
+        if WINDOWS_CREATED_ADMISSION_FAILURE.with(std::cell::Cell::take) {
+            return Err(Error::Conflict(
+                "injected created-file admission failure".into(),
+            ));
+        }
+        registry.admit(identity)
+    });
+    match result {
+        Ok(()) => Ok(OwnedFile::admitted(file, identity, OwnerClass::Capability)),
+        Err(error) => Err((error, file)),
+    }
+}
+
+#[cfg(all(test, windows))]
+thread_local! {
+    pub(crate) static WINDOWS_CREATED_ADMISSION_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, unix))]
+mod created_tests {
+    use super::*;
+    use crate::infra::fs::{create_regular_at, open_or_create_regular_at};
+    use std::ffi::OsStr;
+
+    fn controls(value: CreateTestControls) {
+        CREATE_TEST_CONTROLS.with(|slot| *slot.borrow_mut() = value);
+    }
+
+    #[test]
+    fn created_identity_failure_removes_leaf_and_allows_same_name_retry() {
+        for open_or_create in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let parent = File::open(root.path()).unwrap();
+            controls(CreateTestControls {
+                identity_failures: 1,
+                ..Default::default()
+            });
+            let result = if open_or_create {
+                open_or_create_regular_at(&parent, OsStr::new("retry"))
+            } else {
+                create_regular_at(&parent, OsStr::new("retry")).map(|(file, _)| file)
+            };
+            let error = result.unwrap_err();
+            assert!(error
+                .diagnostic()
+                .contains("injected created-file identity failure"));
+            assert!(
+                !root.path().join("retry").exists(),
+                "failed exclusive create left its leaf behind"
+            );
+            let (file, identity) = create_regular_at(&parent, OsStr::new("retry")).unwrap();
+            assert_eq!(file.identity(), identity);
+            assert_eq!(
+                identity,
+                crate::infra::path_authority::opened_file_identity(&file).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn created_persistent_identity_failure_preserves_leaf_and_quarantines_unknown_descriptor() {
+        crate::db::bound_sqlite::run_isolated_ownership_test(
+            "infra::inode_ownership::created_tests::created_persistent_identity_failure_preserves_leaf_and_quarantines_unknown_descriptor",
+            || {
+                use std::os::fd::AsRawFd;
+
+                let root = tempfile::tempdir().unwrap();
+                let primary = root.path().join("primary.db3");
+                File::create(&primary).unwrap();
+                let target = crate::infra::path_authority::DatabaseFileTarget::for_test_path(&primary).unwrap();
+                let bound = crate::db::bound_sqlite::BoundDatabase::acquire(&target).unwrap();
+                let parent = File::open(root.path()).unwrap();
+                let before = lock().unwrap().unclassified_descriptors.len();
+                controls(CreateTestControls {
+                    identity_failures: 2,
+                    ..Default::default()
+                });
+                let error = create_regular_at(&parent, OsStr::new("unknown")).unwrap_err();
+                assert!(root.path().join("unknown").exists());
+                assert!(matches!(error, Error::OperationAndCleanup { .. }));
+                let retained_fd = {
+                    let registry = lock().unwrap();
+                    assert_eq!(registry.unclassified_descriptors.len(), before + 1);
+                    registry.unclassified_descriptors[before].as_raw_fd()
+                };
+                assert_ne!(unsafe { libc::fcntl(retained_fd, libc::F_GETFD) }, -1, "unknown descriptor remains live while its binding is held");
+                drop(bound);
+                assert_eq!(lock().unwrap().unclassified_descriptors.len(), before);
+                assert_eq!(unsafe { libc::fcntl(retained_fd, libc::F_GETFD) }, -1, "final binding retirement closes the quarantined descriptor");
+                assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+            },
+        );
+    }
+
+    #[test]
+    fn created_admission_failure_removes_known_inode_and_closes_under_arbitration() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = File::open(root.path()).unwrap();
+        let identity_slot = std::sync::Arc::new(Mutex::new(None));
+        let recorded = identity_slot.clone();
+        let path = root.path().join("admission");
+        controls(CreateTestControls {
+            admission_failure: Some(()),
+            after_create: Some(Box::new(move || {
+                use std::os::unix::fs::MetadataExt;
+                let metadata = std::fs::metadata(path).unwrap();
+                *recorded.lock().unwrap() = Some((metadata.dev(), metadata.ino()));
+            })),
+            ..Default::default()
+        });
+        let error = create_regular_at(&parent, OsStr::new("admission")).unwrap_err();
+        assert!(error.diagnostic().contains("admission failure"));
+        assert!(!root.path().join("admission").exists());
+        let identity = identity_slot.lock().unwrap().unwrap();
+        assert!(open_descriptor_fds(identity).is_empty());
+        assert!(!lock().unwrap().ordinary.contains_key(&identity));
+    }
+
+    #[test]
+    fn created_cleanup_preserves_replacement_and_both_private_diagnostics() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = File::open(root.path()).unwrap();
+        let path = root.path().join("replacement");
+        let original = root.path().join("original");
+        controls(CreateTestControls {
+            identity_failures: 1,
+            before_cleanup: Some(Box::new(move || {
+                std::fs::rename(&path, original).unwrap();
+                std::fs::write(path, b"sentinel").unwrap();
+            })),
+            ..Default::default()
+        });
+        let error = create_regular_at(&parent, OsStr::new("replacement")).unwrap_err();
+        let Error::OperationAndCleanup { primary, cleanup } = &error else {
+            panic!("{error:?}")
+        };
+        assert!(primary.contains("injected created-file identity failure"));
+        assert!(cleanup.contains("changed"));
+        assert_eq!(
+            std::fs::read(root.path().join("replacement")).unwrap(),
+            b"sentinel"
+        );
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(wire["category"], "operation-and-cleanup");
+        assert_eq!(
+            wire["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(!wire.to_string().contains("injected"));
+    }
+
+    #[test]
+    fn created_cleanup_accepts_missing_leaf_and_retains_parent_through_rename() {
+        for remove in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let directory = root.path().join("parent");
+            let moved = root.path().join("moved");
+            std::fs::create_dir(&directory).unwrap();
+            let parent = File::open(&directory).unwrap();
+            let path = directory.join("leaf");
+            controls(CreateTestControls {
+                identity_failures: 1,
+                before_cleanup: Some(Box::new(move || {
+                    if remove {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                    std::fs::rename(&directory, moved).unwrap();
+                    std::fs::create_dir(&directory).unwrap();
+                    std::fs::write(directory.join("leaf"), b"sentinel").unwrap();
+                })),
+                ..Default::default()
+            });
+            let error = create_regular_at(&parent, OsStr::new("leaf")).unwrap_err();
+            assert!(!matches!(error, Error::OperationAndCleanup { .. }));
+            assert!(!root.path().join("moved/leaf").exists());
+            assert_eq!(
+                std::fs::read(root.path().join("parent/leaf")).unwrap(),
+                b"sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn created_open_or_create_preserves_existing_bytes_without_arming_rollback() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("existing");
+        std::fs::write(&path, b"sentinel").unwrap();
+        let parent = File::open(root.path()).unwrap();
+        controls(CreateTestControls {
+            identity_failures: 1,
+            ..Default::default()
+        });
+        let file = open_or_create_regular_at(&parent, OsStr::new("existing")).unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"sentinel");
+        assert_eq!(
+            file.identity(),
+            crate::infra::path_authority::opened_file_identity(&file).unwrap()
+        );
+        controls(Default::default());
+    }
+
+    #[test]
+    fn created_cleanup_parent_sync_uncertainty_keeps_primary_and_warns() {
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
+        let root = tempfile::tempdir().unwrap();
+        let parent = File::open(root.path()).unwrap();
+        let _guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
+            RemovalFaultPoint::ParentSync,
+        )));
+        let capture = crate::error::LogCaptureScope::start();
+        controls(CreateTestControls {
+            identity_failures: 1,
+            ..Default::default()
+        });
+        let error = create_regular_at(&parent, OsStr::new("sync")).unwrap_err();
+        assert!(!matches!(error, Error::OperationAndCleanup { .. }));
+        assert!(!root.path().join("sync").exists());
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|message| message.contains("exclusive create leaf")
+                && message.contains("parent sync is uncertain")));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn created_open_or_create_preserves_an_appearing_existing_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("appearing");
+        let parent = File::open(root.path()).unwrap();
+        OPEN_TEST_CONTROLS.with(|slot| {
+            slot.borrow_mut().after_identify = Some(Box::new(move || {
+                std::fs::write(path, b"sentinel").unwrap();
+            }))
+        });
+        controls(CreateTestControls {
+            identity_failures: 1,
+            ..Default::default()
+        });
+        drop(open_or_create_regular_at(&parent, OsStr::new("appearing")).unwrap());
+        assert_eq!(
+            std::fs::read(root.path().join("appearing")).unwrap(),
+            b"sentinel"
+        );
+        controls(Default::default());
+    }
 }

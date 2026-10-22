@@ -2843,17 +2843,7 @@ fn pgn_export_error_after_cleanup(
     removal: Result<(), Error>,
     leaf: &OsStr,
 ) -> Error {
-    match removal {
-        Ok(()) => primary,
-        Err(error) if error.is_missing_entry() => primary,
-        Err(Error::CommittedDurabilityUncertain(stage)) => {
-            log::warn!(
-                "PGN export leaf {leaf:?} was removed but parent sync is uncertain at {stage}"
-            );
-            primary
-        }
-        Err(removal) => Error::with_cleanup(primary, Err(removal)),
-    }
+    crate::infra::fs::created_leaf_error_after_cleanup(primary, removal, "PGN export", leaf)
 }
 
 /// Engine and opening-book registration has no renderer-visible list to recover

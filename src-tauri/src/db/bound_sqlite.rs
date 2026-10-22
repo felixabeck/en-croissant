@@ -793,6 +793,11 @@ pub(super) fn open_bound_leaf_for_test(bound: &BoundDatabase) -> Result<libc::c_
 }
 
 #[cfg(all(test, unix))]
+pub(crate) fn run_isolated_ownership_test(test_name: &str, child_body: impl FnOnce()) {
+    super::test_support::run_isolated(test_name, child_body);
+}
+
+#[cfg(all(test, unix))]
 pub(super) fn open_bound_sidecar_for_test(
     bound: &BoundDatabase,
     suffix: &str,
@@ -1374,6 +1379,14 @@ mod unix_hooks {
             Err(Error::Conflict(_)) => {
                 increment_refusal(&registration.binding);
                 syscall_failure(libc::ESTALE)
+            }
+            Err(error @ Error::OperationAndCleanup { .. }) => {
+                log::error!(
+                    "SQLite sidecar create failed for registration {}: {}",
+                    registration.token,
+                    error.diagnostic()
+                );
+                syscall_failure(libc::EINVAL)
             }
             Err(_) => syscall_failure(libc::EINVAL),
         }
@@ -2713,6 +2726,52 @@ mod windows_vfs {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_combined_create_failure_logs_both_causes_once_before_errno_conversion() {
+        use crate::infra::inode_ownership::{CreateTestControls, CREATE_TEST_CONTROLS};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("combined.db3");
+        File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let sidecar = root.path().join("combined.db3-journal");
+        let retained = root.path().join("retained");
+        CREATE_TEST_CONTROLS.with(|slot| {
+            *slot.borrow_mut() = CreateTestControls {
+                identity_failures: 1,
+                before_cleanup: Some(Box::new(move || {
+                    std::fs::rename(&sidecar, retained).unwrap();
+                    std::fs::write(sidecar, b"sentinel").unwrap();
+                })),
+                ..Default::default()
+            }
+        });
+        let capture = crate::error::LogCaptureScope::start();
+        assert_eq!(
+            open_bound_sidecar_for_test(
+                &bound,
+                "-journal",
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL
+            ),
+            Err(libc::EINVAL)
+        );
+        let records = capture.records();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].level, log::Level::Error);
+        assert!(records[0]
+            .message
+            .contains(&format!("registration {}", bound.token())));
+        assert!(records[0]
+            .message
+            .contains("injected created-file identity failure"));
+        assert!(records[0].message.contains("changed"));
+        assert_eq!(
+            std::fs::read(root.path().join("combined.db3-journal")).unwrap(),
+            b"sentinel"
+        );
+    }
+
     use super::*;
 
     #[cfg(unix)]

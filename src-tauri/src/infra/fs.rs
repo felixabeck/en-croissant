@@ -2566,6 +2566,7 @@ mod win {
     const DIRECTORY_ENUMERATION_MAX_BYTES: usize = 1024 * 1024;
     const DIRECTORY_ENUMERATION_OVERFLOW_RETRIES: u8 = 8;
     const PRIVATE_TEMP_RETRIES: u8 = 16;
+    pub(super) const OPEN_OR_CREATE_RETRIES: usize = 16;
 
     // Exposed through `type Target = Target` in the pub(super) AtomicReplaceAdapter impl below,
     // so it may not be more private than that impl (E0446 on the Windows target).
@@ -2970,7 +2971,7 @@ mod win {
             .find_map(|_| {
                 let candidate = temp_name();
                 match open_temp_child(dir, &candidate, &security_descriptor) {
-                    Ok(file) => Some(crate::infra::inode_ownership::own_windows(file).map(|file| (candidate, file))),
+                    Ok(file) => Some(admit_created(file, &candidate).map(|file| (candidate, file))),
                     Err(Error::Conflict(message)) if message == "Windows object name collision" => {
                         None
                     }
@@ -3079,7 +3080,14 @@ mod win {
         Ok(())
     }
 
-    fn delete_temp(temp: &OwnedFile) -> Result<(), Error> {
+    fn delete_temp(temp: &impl std::os::windows::io::AsRawHandle) -> Result<(), Error> {
+        #[cfg(test)]
+        if CREATED_TEST_CONTROLS.with(|slot| std::mem::take(&mut slot.borrow_mut().cleanup_failure))
+        {
+            return Err(Error::Io(Box::new(std::io::Error::other(
+                "injected created-file disposition failure",
+            ))));
+        }
         // FILE_DISPOSITION_INFORMATION is a single BOOLEAN DeleteFile; the struct says that,
         // where a bare [1_u8] left the reader to infer both the layout and the meaning.
         let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
@@ -3605,46 +3613,124 @@ mod win {
         Ok(opened)
     }
 
-    pub(super) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
-        const FILE_OPEN_IF: u32 = 0x0000_0003;
-        let opened = open_windows_child(
-            parent,
-            name,
-            FILE_OPEN_IF,
-            regular_file_access(RegularFileAccess::ReadWrite),
-            null(),
-            false,
-            true,
-        )?;
-        if !opened_is_disk(&opened) {
-            return Err(Error::InvalidInput(
-                "lock leaf must be a regular file".into(),
-            ));
+    pub(super) fn open_or_create_regular_at(
+        parent: &File,
+        name: &OsStr,
+    ) -> Result<OwnedFile, Error> {
+        for _ in 0..OPEN_OR_CREATE_RETRIES {
+            #[cfg(test)]
+            CREATED_TEST_CONTROLS.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().before_existing_open.as_mut() {
+                    hook();
+                }
+            });
+            match open_regular_at(parent, name, RegularFileAccess::ReadWrite) {
+                Ok(file) => return crate::infra::inode_ownership::own_windows(file),
+                Err(error) if error.is_missing_entry() => {}
+                Err(error) => return Err(error),
+            }
+            #[cfg(test)]
+            run_created_hook(true);
+            match create_regular_at(parent, name) {
+                Ok((file, _)) => return Ok(file),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
         }
-        Ok(opened)
+        Err(Error::Conflict("file kept changing while opening".into()))
     }
 
     pub(super) fn create_regular_at(
         parent: &File,
         name: &OsStr,
-    ) -> Result<(File, (u64, u64)), Error> {
+    ) -> Result<(OwnedFile, (u64, u64)), Error> {
         let created = open_windows_child(
             parent,
             name,
             FILE_CREATE,
-            regular_file_access(RegularFileAccess::ReadWrite),
+            regular_file_access(RegularFileAccess::ReadWrite) | DELETE,
             null(),
             false,
             true,
         )
         .map_err(map_create_collision)?;
-        if !opened_is_disk(&created) {
-            return Err(Error::InvalidInput(
-                "created file must be a regular file".into(),
-            ));
-        }
-        let identity = opened_file_identity(&created)?;
+        let created = admit_created(created, name)?;
+        let identity = created.identity();
         Ok((created, identity))
+    }
+
+    fn admit_created(created: File, name: &OsStr) -> Result<OwnedFile, Error> {
+        let validation = (|| {
+            #[cfg(test)]
+            run_created_hook(false);
+            if !opened_is_disk(&created) {
+                return Err(Error::InvalidInput(
+                    "created file must be a regular file".into(),
+                ));
+            }
+            #[cfg(test)]
+            created_identity_fault()?;
+            let identity = opened_file_identity(&created)?;
+            Ok(identity)
+        })();
+        let (primary, created) = match validation {
+            Ok(identity) => {
+                match crate::infra::inode_ownership::own_windows_created(created, identity) {
+                    Ok(owner) => return Ok(owner),
+                    Err(failure) => failure,
+                }
+            }
+            Err(error) => (error, created),
+        };
+        let removal = delete_temp(&created);
+        drop(created);
+        Err(super::created_leaf_error_after_cleanup(
+            primary,
+            removal,
+            "exclusive create",
+            name,
+        ))
+    }
+
+    #[cfg(test)]
+    #[derive(Default)]
+    pub(super) struct CreatedTestControls {
+        pub(super) identity_failure: bool,
+        pub(super) cleanup_failure: bool,
+        pub(super) after_create: Option<Box<dyn FnOnce()>>,
+        pub(super) before_create: Option<Box<dyn FnMut()>>,
+        pub(super) before_existing_open: Option<Box<dyn FnMut()>>,
+    }
+    #[cfg(test)]
+    thread_local! {
+        pub(super) static CREATED_TEST_CONTROLS: std::cell::RefCell<CreatedTestControls> = std::cell::RefCell::new(CreatedTestControls::default());
+    }
+    #[cfg(test)]
+    fn run_created_hook(before: bool) {
+        if before {
+            CREATED_TEST_CONTROLS.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().before_create.as_mut() {
+                    hook();
+                }
+            });
+            return;
+        }
+        let hook = CREATED_TEST_CONTROLS.with(|slot| slot.borrow_mut().after_create.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    #[cfg(test)]
+    fn created_identity_fault() -> Result<(), Error> {
+        let fail = CREATED_TEST_CONTROLS
+            .with(|slot| std::mem::take(&mut slot.borrow_mut().identity_failure));
+        if fail {
+            Err(Error::Conflict(
+                "injected created-file identity failure".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) fn open_verified_parent(
@@ -5226,7 +5312,7 @@ pub(crate) fn open_or_create_regular_at(
     parent: &File,
     name: &OsStr,
 ) -> Result<crate::infra::inode_ownership::OwnedFile, Error> {
-    crate::infra::inode_ownership::own_windows(win::open_or_create_regular_at(parent, name)?)
+    win::open_or_create_regular_at(parent, name)
 }
 
 /// Exclusive creates retain ownership even after the new leaf becomes reachable by SQLite.
@@ -5238,7 +5324,7 @@ pub(crate) fn create_regular_at(
     single_leaf(name)?;
     let created =
         crate::infra::inode_ownership::create_at(parent, name, rustix::fs::OFlags::WRONLY)?;
-    let identity = crate::infra::path_authority::opened_file_identity(&created)?;
+    let identity = created.identity();
     Ok((created, identity))
 }
 
@@ -5247,11 +5333,28 @@ pub(crate) fn create_regular_at(
     parent: &File,
     name: &OsStr,
 ) -> Result<(crate::infra::inode_ownership::OwnedFile, (u64, u64)), Error> {
-    let (created, identity) = win::create_regular_at(parent, name)?;
-    Ok((
-        crate::infra::inode_ownership::own_windows(created)?,
-        identity,
-    ))
+    win::create_regular_at(parent, name)
+}
+
+/// A committed unlink is complete even when its parent sync cannot be confirmed.
+/// Keep native context here while preserving the existing renderer-safe combined error.
+pub(crate) fn created_leaf_error_after_cleanup(
+    primary: Error,
+    removal: Result<(), Error>,
+    operation: &str,
+    leaf: &OsStr,
+) -> Error {
+    match removal {
+        Ok(()) => primary,
+        Err(error) if error.is_missing_entry() => primary,
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            log::warn!(
+                "{operation} leaf {leaf:?} was removed but parent sync is uncertain at {stage}"
+            );
+            primary
+        }
+        Err(removal) => Error::with_cleanup(primary, Err(removal)),
+    }
 }
 
 #[cfg(unix)]
@@ -6040,6 +6143,199 @@ pub(crate) fn install_staging_dir_at(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_created_failure_removes_leaf_and_allows_retry_through_public_wrappers() {
+        for admission in [false, true] {
+            for open_or_create in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let parent = windows_test_parent(root.path());
+                win::CREATED_TEST_CONTROLS.with(|slot| {
+                    *slot.borrow_mut() = win::CreatedTestControls {
+                        identity_failure: !admission,
+                        ..Default::default()
+                    }
+                });
+                crate::infra::inode_ownership::WINDOWS_CREATED_ADMISSION_FAILURE
+                    .with(|slot| slot.set(admission));
+                let result = if open_or_create {
+                    open_or_create_regular_at(&parent, OsStr::new("retry"))
+                } else {
+                    create_regular_at(&parent, OsStr::new("retry")).map(|(file, _)| file)
+                };
+                let expected = if admission {
+                    "injected created-file admission failure"
+                } else {
+                    "injected created-file identity failure"
+                };
+                assert!(result.unwrap_err().diagnostic().contains(expected));
+                assert!(
+                    !root.path().join("retry").exists(),
+                    "failed exclusive create left its leaf behind"
+                );
+                let (file, identity) = create_regular_at(&parent, OsStr::new("retry")).unwrap();
+                assert_eq!(file.identity(), identity);
+                assert_eq!(
+                    identity,
+                    crate::infra::path_authority::opened_file_identity(&file).unwrap()
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_created_cleanup_deletes_the_held_object_and_preserves_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = windows_test_parent(root.path());
+        let path = root.path().join("leaf");
+        let moved = root.path().join("moved");
+        win::CREATED_TEST_CONTROLS.with(|slot| {
+            *slot.borrow_mut() = win::CreatedTestControls {
+                identity_failure: true,
+                after_create: Some(Box::new(move || {
+                    std::fs::rename(&path, moved).unwrap();
+                    std::fs::write(path, b"sentinel").unwrap();
+                })),
+                ..Default::default()
+            }
+        });
+        assert!(create_regular_at(&parent, OsStr::new("leaf")).is_err());
+        assert!(!root.path().join("moved").exists());
+        assert_eq!(
+            std::fs::read(root.path().join("leaf")).unwrap(),
+            b"sentinel"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_open_or_create_bounds_competing_changes_without_deleting_the_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = windows_test_parent(root.path());
+        let path = root.path().join("racing");
+        let remove = path.clone();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let attempts = count.clone();
+        win::CREATED_TEST_CONTROLS.with(|slot| {
+            *slot.borrow_mut() = win::CreatedTestControls {
+                before_existing_open: Some(Box::new(move || {
+                    if remove.exists() {
+                        std::fs::remove_file(&remove).unwrap();
+                    }
+                })),
+                before_create: Some(Box::new(move || {
+                    attempts.set(attempts.get() + 1);
+                    std::fs::write(&path, b"sentinel").unwrap();
+                })),
+                ..Default::default()
+            }
+        });
+        let error = open_or_create_regular_at(&parent, OsStr::new("racing")).unwrap_err();
+        assert!(error.diagnostic().contains("kept changing"));
+        assert_eq!(count.get(), win::OPEN_OR_CREATE_RETRIES);
+        assert_eq!(
+            std::fs::read(root.path().join("racing")).unwrap(),
+            b"sentinel"
+        );
+        win::CREATED_TEST_CONTROLS.with(|slot| *slot.borrow_mut() = Default::default());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_temp_handoff_failure_compensates_before_return() {
+        for admission in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let parent = windows_test_parent(root.path());
+            win::CREATED_TEST_CONTROLS.with(|slot| {
+                *slot.borrow_mut() = win::CreatedTestControls {
+                    identity_failure: !admission,
+                    ..Default::default()
+                }
+            });
+            crate::infra::inode_ownership::WINDOWS_CREATED_ADMISSION_FAILURE
+                .with(|slot| slot.set(admission));
+            let expected = if admission {
+                "injected created-file admission failure"
+            } else {
+                "injected created-file identity failure"
+            };
+            assert!(win::create_temp(&parent, None)
+                .unwrap_err()
+                .diagnostic()
+                .contains(expected));
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+            let (_, file) = win::create_temp(&parent, None).unwrap();
+            drop(file);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_created_cleanup_failure_preserves_sentinel_and_safe_error() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = windows_test_parent(root.path());
+        let path = root.path().join("sentinel");
+        win::CREATED_TEST_CONTROLS.with(|slot| {
+            *slot.borrow_mut() = win::CreatedTestControls {
+                identity_failure: true,
+                cleanup_failure: true,
+                after_create: Some(Box::new(move || std::fs::write(path, b"sentinel").unwrap())),
+                ..Default::default()
+            }
+        });
+        let error = create_regular_at(&parent, OsStr::new("sentinel")).unwrap_err();
+        let Error::OperationAndCleanup { primary, cleanup } = &error else {
+            panic!("{error:?}")
+        };
+        assert!(primary.contains("identity failure"));
+        assert!(cleanup.contains("disposition failure"));
+        assert_eq!(
+            std::fs::read(root.path().join("sentinel")).unwrap(),
+            b"sentinel"
+        );
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(wire["category"], "operation-and-cleanup");
+        assert_eq!(
+            wire["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        assert!(!wire.to_string().contains("injected"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_open_or_create_preserves_existing_and_appearing_file_bytes() {
+        for appearing in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let parent = windows_test_parent(root.path());
+            let path = root.path().join("existing");
+            if !appearing {
+                std::fs::write(&path, b"sentinel").unwrap();
+            }
+            win::CREATED_TEST_CONTROLS.with(|slot| {
+                *slot.borrow_mut() = win::CreatedTestControls {
+                    identity_failure: true,
+                    before_create: appearing.then(|| {
+                        Box::new(move || std::fs::write(&path, b"sentinel").unwrap())
+                            as Box<dyn FnMut()>
+                    }),
+                    ..Default::default()
+                }
+            });
+            let file = open_or_create_regular_at(&parent, OsStr::new("existing")).unwrap();
+            assert_eq!(
+                file.identity(),
+                crate::infra::path_authority::opened_file_identity(&file).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("existing")).unwrap(),
+                b"sentinel"
+            );
+            win::CREATED_TEST_CONTROLS.with(|slot| *slot.borrow_mut() = Default::default());
+        }
+    }
+
     #[cfg(windows)]
     use super::windows_test_parent;
     use super::*;
