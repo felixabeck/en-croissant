@@ -17756,3 +17756,20 @@ The new retired-matrix regression passes after a completed successful Intel gene
 
 Additional direct visual evidence from the same notification readability surface: root inspected the three new 320px/200% PNGs and found the first word painted as "Chess..." while DOM text still says ChessFable. The height fix exposes all lines but Mantine's description/body overflow and ellipsis still lose an unbreakable word at this width. Existing generic clipping assertions intentionally permit ellipsis and therefore do not catch this sentence loss. This remains an in-scope current-diff repair under this finding, no new product wording is proposed. Reuse src/styles/global.css's existing wrap-anywhere class on the notification root, and add a notification-copy-specific rendered text-range bound check. Preserve existing desktop pixels and all prior height/scroll/dismissal assertions. Evidence is the three root-permission-*-320-200 PNGs under e2e/accounts-puzzles-engines.spec.ts-snapshots, inspected before any re-recording. Plan authorship and arbitration shared one context, detection ran on the code's model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4b56e191291745dcbc8ebbab8819f3669035a393c606bba2a2358230f6d731e8","input_sha256":"c7dda9ac02ac1434e471c0676d99ce33d9c4ea6c01bf1b246b7b7ea4785d9b35","kind":"mutation-receipt","operation":"643b5ed8df36c59ac2f21f32e4c653b8e978200b126a7d26aac5153852f9498c","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-01"],"target":"f-20261022-01","v":1} -->
+
+---
+
+## 2026-10-22 — filed through the inbox spool
+
+### Native verifier aborts linked archive restoration before root permission proof
+
+* **ID:** f-20261022-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 43307881-0e65-4348-98b2-3c4089f02858 · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-43307881-0e65-4348-98b2-3c4089f02858-1.jsonl
+* **Impact class:** tooling
+
+* **Defect:** The root's real release run of pnpm verify:app stopped in verifyLinkedCollections at scripts/verify-app.mjs:2132 with backend Conflict: archive restore requires an exclusively created empty database. It never reached the new selected-root permission checks at line 5130.
+* **Evidence:** Release build gate-native-build.WI6KBo passed. The exact unchanged full verifier command with --screenshot /tmp/build-43307881-0e65-4348-98b2-3c4089f02858/native-positive.png exited 1 in polled gate-native-positive.noVdKf at HEAD 8813c5d3 plus owned Phase 2 changes. Stack points to verifyLinkedCollections and its caller at line 4493. Full log is in /home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-43307881-0e65-4348-98b2-3c4089f02858/gate-native-positive.noVdKf/log.
+* **Impact:** Required actual-product verification for f-20261004-21 is blocked before its scenario. The verifier must retain its linked archive proof and satisfy the producer's real empty-target precondition.
+* **Related:** f-20261004-15 established the linked-collection behavior and this native scenario. Its handled record is precedent, not evidence of a shared root cause. Initial status records only the observed failure, source diagnosis is pending.
+* **Next:** Trace the existing restore producer and native fixture sequence, correct the same-area prerequisite without weakening assertions, then run the full verifier and relevant regression proof.
+* **Open question:** Which existing preparation path can preserve the restore producer's exclusive empty-destination precondition while the real renderer remains active, without weakening the linked archive assertions or changing product contracts?
