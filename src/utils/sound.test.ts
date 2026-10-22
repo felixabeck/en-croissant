@@ -95,6 +95,31 @@ describe("playSound", () => {
         },
     );
 
+    test("throttles playback until the exact boundary without extending it on a suppressed call", async () => {
+        mocks.getSoundServerPort.mockResolvedValue(43123);
+        const { playSound, THROTTLE_MS } = await loadSound();
+
+        playSound(false, false);
+        await settle();
+        expect(
+            audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
+        ).toBe(1);
+
+        vi.advanceTimersByTime(THROTTLE_MS - 1);
+        playSound(false, false);
+        await settle();
+        expect(
+            audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
+        ).toBe(1);
+
+        vi.advanceTimersByTime(1);
+        playSound(false, false);
+        await settle();
+        expect(
+            audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
+        ).toBe(2);
+    });
+
     test("stays silent when the server port is 0", async () => {
         mocks.getSoundServerPort.mockResolvedValue(0);
         const { playSound } = await loadSound();
@@ -380,6 +405,43 @@ describe("playSound", () => {
             expect(
                 audioInstances.reduce((total, player) => total + player.play.mock.calls.length, 0),
             ).toBe(31);
+        });
+
+        test.each([
+            [64, "a".repeat(64)],
+            [65, "[invalid collection]"],
+        ] as const)(
+            "reports the expected diagnostic identity for a %i-character collection identifier",
+            async (length, expectedCollection) => {
+                const collection = "a".repeat(length);
+                const { playSound } = await loadSound({ collection });
+                audioInstances[0].play.mockRejectedValue(new Error("decoder unavailable"));
+
+                playSound(false, false);
+                await settle();
+
+                expect(mocks.warn).toHaveBeenCalledOnce();
+                expect(playbackWarning()).toMatchObject({
+                    collection: expectedCollection,
+                    url: `http://127.0.0.1:43123/${expectedCollection}/Move.mp3`,
+                });
+                expect(audioInstances[0].src).toBe(`http://127.0.0.1:43123/${collection}/Move.mp3`);
+            },
+        );
+
+        test("reports a non-string persisted collection as invalid", async () => {
+            const { playSound } = await loadSound({ collection: null as unknown as string });
+            audioInstances[0].play.mockRejectedValue(new Error("decoder unavailable"));
+
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(playbackWarning()).toMatchObject({
+                collection: "[invalid collection]",
+                url: "http://127.0.0.1:43123/[invalid collection]/Move.mp3",
+            });
+            expect(audioInstances[0].src).toBe("http://127.0.0.1:43123/null/Move.mp3");
         });
 
         test.each([

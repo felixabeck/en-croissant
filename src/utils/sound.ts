@@ -17,14 +17,18 @@ let lastTime = 0;
 
 const MAX_PLAYBACK_REPORTS = 24;
 const MAX_FAILURE_MESSAGE_LENGTH = 256;
+const MAX_COLLECTION_NAME_LENGTH = 64;
 const reportedPlaybackFailures = new Set<string>();
 
 function reportPlaybackFailure(collection: string, kind: SoundKind, port: number, cause: unknown) {
     // Persisted collection values are untrusted. Accept bounded resource identifiers without
     // duplicating the collection catalogue, and collapse malformed values to a safe identity.
-    const safeCollection = /^[a-z][a-z0-9_-]{0,63}$/i.test(collection)
-        ? collection
-        : "[invalid collection]";
+    const safeCollection =
+        typeof collection === "string" &&
+        collection.length <= MAX_COLLECTION_NAME_LENGTH &&
+        /^[a-z][a-z0-9_-]*$/i.test(collection)
+            ? collection
+            : "[invalid collection]";
     const key = `${safeCollection}/${kind}`;
     // Never evict: eviction would let a repeated failure consume another warning.
     if (
