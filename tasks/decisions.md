@@ -9765,7 +9765,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Completion records live for the native process lifetime. Durable artifacts and the existing account-batch receipts stay the only records that survive process exit.
 * **Rejected:** A new durable job scheduler. The filed failure is a document reload while the native process is still alive, not an application restart.
 * **Reason:** A process-lifetime mailbox rejoins the replacement document to work the process already accepted. Restart recovery would be a different product. Reversal path: add restart recovery only under an evidenced mandate, reusing the existing domain receipts.
-* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
+* **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** d-20261023-11
 
 ### d-20261023-04 — Where does the account import that follows a provider download run?
 
@@ -9775,7 +9775,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Keeping conversion in the renderer and trying to resume that JavaScript continuation after reload. The import effects already have native cores and do not need renderer storage.
 * **Reason:** A native owner can finish the import after the document that started it is gone, and a second document cannot start a second transfer for the same operation. Reversal path: if a future import has a renderer-owned effect, preserve exactly-once receipts and the existing authority checks.
 * **Decided by:** Grok, drain session 2fdfb425-cded-41ed-a5e9-d10164d638ad (drain run c852c519-2eeb-4605-81f6-9624b482eb6a), full auto, reviewed plan tasks/plans/2026-10-23-reload-download-completion.md · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"181e70a77b92f3e0bf3f4c1e407921ddb7a29afe4b12c808d848ac49853c5c52","input_sha256":"5535a27cfcc8849f0b25fd59d37fc467e962465809fd2212e0eb43823964ede3","kind":"mutation-receipt","operation":"9c72397753dab7f442f9248f5546b5ed8a721a3dbd0f09c37cfc86f63def1069","options":{"section":null},"request_id_sha256":null,"results":["d-20261023-01","d-20261023-02","d-20261023-03","d-20261023-04"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"a23a376e9ae5afaefed616fd7bb31d521ae86c0e060aee9f4adb2172d1608885","input_sha256":"5535a27cfcc8849f0b25fd59d37fc467e962465809fd2212e0eb43823964ede3","kind":"mutation-receipt","operation":"9c72397753dab7f442f9248f5546b5ed8a721a3dbd0f09c37cfc86f63def1069","options":{"section":null},"request_id_sha256":null,"results":["d-20261023-01","d-20261023-02","d-20261023-03","d-20261023-04"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261023-06 — Who reports an engine completion failure when events, startup and a live caller observe it?
 
