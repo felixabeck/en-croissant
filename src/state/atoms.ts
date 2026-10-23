@@ -321,9 +321,12 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
             const run = updates.then(async () => {
                 const current = get(published) ?? (await storage.getItem(key, initialValue));
                 const application = engineOwnerApplication(key, current, update);
-                let next: Value = application
-                    ? application.value
-                    : await applyUpdate(current, update as Update);
+                let next: Value;
+                if (application) {
+                    next = application.value;
+                } else {
+                    next = await applyUpdate(current, update as Update);
+                }
                 if (options.normalize) next = options.normalize(current, next);
                 if (options.publishOnRefusal?.(update)) set(published, next);
                 const receipt = await saveEngineOwnerValue(
