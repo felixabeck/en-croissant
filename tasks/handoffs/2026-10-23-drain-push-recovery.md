@@ -1,5 +1,11 @@
 # Drain push recovery, 2026-10-23
 
+## Delivery checkpoint after complete repair proof
+
+The engine source and verifier corrections have passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. The exact-message correction and receipt-only header passed final repair pre-review Axp415 at completion 0. This supersedes the older runtime-pending checkpoints preserved below. Source closure review, final browser stage, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed at this checkpoint. Overall f-20261005-05 remains open for the unstarted account phase. The remaining open f-20261023-02 record will be closed after source closure confirms its repaired consumer and actual proof.
+
+Remote CI preflight returned no job conclusion on its first current attempt because gh run view timed out. This is an unread remote precondition rather than evidence of a red hosted job. Root is retrying it before delivery. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
 ## Ownership and delivery boundary
 
 Felix requested autonomous Codex recovery until the drain push lands. The original drain stopped at startup bundle 555155 gzip bytes against 555000. A schema replacement worsened it to 555195 and was reverted. The branch retained two unpushed records commits and 37 uncommitted engine-phase paths. Kit parity, destination identity and current remote CI were verified and were not the original blocker.
@@ -21,6 +27,812 @@ The phase production build measured entry 552845, largest lazy 480023, total 163
 Root independently reran the related renderer tests and six native tests, with canonical phase-root-proof completion 0 at launch b97dc019 plus the identical owned source. Removing only the production owner-envelope hydration hunk, keeping tests unchanged, failed three replacement-document upgrade cases at exit 1. Exact source restoration passed all four boundary cases at exit 0. An earlier offset-bearing extraction was excluded from proof. Evidence is indexed by /tmp/reload-phase1-proof/handoff.md and hydration.patch, replay-reverted.log/.exit and restored.log/.exit.
 
 A release build at clean 111d212d passed. It is preparatory browser evidence, not final gates. Browser, real running-download reload, integrated repair proof, final gates, push, hosted confirmation and installation remain pending at this checkpoint.
+
+## Verified public-workflow permission controls
+
+The corrected verifier passed actual ordinary permission-positive.Rco7vI at exit 0 after both real permission-fault children. This closes the observed runtime gap for the current public workflow. Four semantic assertions have actual bad-input failure receipts, with all modes restored between faults. Setup, identity/malformed-response, release, acknowledgement, notification and cleanup diagnostic branches were not separately staged. No complete defensive-guard matrix is claimed. Private registration and child-denial coverage remains the existing and added native tests, seven passed under Linux UID 1000. Overall f-20261005-05 remains open for account Phase 2. Final review, browser stage, full gates, push, hosted confirmation and installation are still required at this checkpoint.
+
+The first baseline pZ3bJY failed only because root specified a generic message. The existing native Display correctly returned Invalid input: invalid artifact SHA-256. The precise expectation was corrected without relaxing tag, category, identity, failed-state or root-label guards. That failed baseline remains red evidence. The subsequent runtime cases used the corrected working verifier before its comment-only receipt update. The update preserved every byte from imports to EOF, so it changes no assertion, helper, fixture or execution.
+
+The following source snapshots are data, not installed tools or executable workflow instructions. JSON strings preserve their exact bytes, including any whitespace. Original preparatory comments remain historical. The first EP negative was non-isolated due the independent old command-not-found RF0. Current EP assertions and codec are unchanged, and all six EP checks passed in both new permission negatives and the ordinary positive.
+
+### Shared disposable EP and permission staging source
+
+````json
+{
+  "file": "stage-ep-storage.mjs",
+  "sha256": "0c24389a319dd2b3cf1cd8e15d29166d3d29af7dc5366e426170bfa77434831d",
+  "source": "// RF modes are prepared only. Importing this file does not launch anything.\n// Parent exit 0 means a trusted negative receipt, never a product-green result.\nimport { spawn } from 'node:child_process'\nimport { createWriteStream, constants, openSync, closeSync, lstatSync, fstatSync, fchmodSync, realpathSync } from 'node:fs'\nimport { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'\nimport { createHash, randomUUID } from 'node:crypto'\nimport { join, resolve } from 'node:path'\nimport { fileURLToPath, pathToFileURL } from 'node:url'\nimport { serializeStorageValue, deserializeStorageValue } from '/home/felixb/Projekte/chessfable.worktrees/drain/src/state/store/debouncedStorage.ts'\nimport { decodeEngineOwnerValue } from '/home/felixb/Projekte/chessfable.worktrees/drain/src/state/engineOwnerEnvelope.ts'\nimport { Session } from '/home/felixb/Projekte/chessfable.worktrees/drain/scripts/app-driver.mjs'\n\nconst ROOT = '/home/felixb/Projekte/chessfable.worktrees/drain'\nconst OUTPUT = '/tmp/chessfable-drain-recovery-20261023/native-proof'\nconst VERIFY = join(ROOT, 'scripts/verify-app.mjs')\nconst SOURCES = [VERIFY, join(ROOT, 'src/state/store/debouncedStorage.ts'), join(ROOT, 'src/state/engineOwnerEnvelope.ts'),\n  join(ROOT, 'scripts/app-driver.mjs'), join(ROOT, 'src-tauri/src/fs.rs'), join(ROOT, 'src-tauri/target/release/chessfable'), fileURLToPath(import.meta.url)]\nconst EXPECTED = 'Fixture saved publication'\nconst WRONG = 'Scratch EP storage staging altered publication'\nconst MARKERS = [\n  'FAIL  EP1-storage successful Name edit persists the decoded engine name',\n  'FAIL  EP2-storage refused Name edit retains the decoded saved engine name',\n]\nconst INTACT = [\n  '  ok  EP1-card successful Name edit publishes the saved engine card',\n  '  ok  EP2-error refused engines storage write reports the save error',\n  '  ok  EP2-card refused Name edit retains the saved engine card',\n  '  ok  EP2-input refused Name draft settles to the saved name',\n]\nconst RF = {\n  RF0: 'RF0 selected puzzle and engine roots accept real IPC before access loss',\n  RF1: 'RF1 puzzle read denial preserves Permission and I/O failure with a permission root label',\n  RF2: 'RF2 engine destination read denial preserves Permission and I/O failure with a permission root label',\n  RF3: 'RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label',\n  RF5: 'RF5 puzzle permission guidance is visible through the actual renderer',\n  RF6: 'RF6 Add permission guidance is visible through the actual renderer',\n  RF7: 'RF7 permission failures retain saved engines and unrelated filesystem bytes',\n  RF8: 'RF8 restoring access recovers the same selected roots',\n}\nconst PLANS = {\n  rf0: [{ stage: 'RF0', from: 0o700, fault: 0o300 }],\n  'rf-matrix': [{ stage: 'RF2', from: 0o300, fault: 0o700 },\n    { stage: 'RF3', from: 0o400, fault: 0o700 }, { stage: 'RF8', from: 0o700, fault: 0o300 }],\n}\nconst delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms))\nconst sha = text => createHash('sha256').update(text).digest('hex')\n\nasync function bounded(promise, ms, label) {\n  let timer\n  try {\n    return await Promise.race([promise, new Promise((_, reject) => {\n      timer = setTimeout(() => reject(new Error(label)), ms)\n    })])\n  } finally { clearTimeout(timer) }\n}\n\n// Only debugger addressing, not a product source checker. Refuse ambiguous/missing addresses.\nfunction addresses(source, mode) {\n  const first = '  async function enginePublicationSnapshot() {\\n    return session.execute('\n  const second = '  } finally {\\n    await session.execute(\\n      \"window.__verifyRestoreEngineStorage(); delete window.__verifyRestoreEngineStorage; return true;\",\\n    );\\n  }'\n  const locate = text => {\n    const index = source.indexOf(text)\n    if (index < 0 || source.indexOf(text, index + 1) >= 0) throw new Error('breakpoint-address-unavailable')\n    return index\n  }\n  const line = index => source.slice(0, index).split('\\n').length\n  if (mode !== 'ep') {\n    const entry = locate('async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {\\n  const puzzle =')\n    const workflow = locate('  const workflowProbe = async (stage, catalog) => {\\n    const ticket =')\n    const response = locate('    const error = workflowFailure(response);\\n    if (error)')\n    return { entry: line(entry) + 1, before: line(workflow) + 1, response: line(response) }\n  }\n  const firstIndex = locate(first)\n  const secondIndex = locate(second)\n  return {\n    snapshot: line(firstIndex + first.indexOf('    return')),\n    restore: line(secondIndex + second.indexOf('    await')),\n    finallyEnd: line(secondIndex + second.lastIndexOf('  }')),\n  }\n}\n\n// A single owned Node-inspector connection. Never attach to a configured or discovered service.\nclass Inspector {\n  constructor(socket) {\n    this.socket = socket\n    this.sequence = 0\n    this.requests = new Map()\n    this.pauses = []\n    this.waiter = undefined\n    socket.addEventListener('message', event => {\n      let message\n      try { message = JSON.parse(String(event.data)) } catch { socket.close(); return }\n      if (message.id) {\n        const request = this.requests.get(message.id)\n        this.requests.delete(message.id)\n        if (message.error) request?.reject(new Error('inspector-command-failed'))\n        else request?.resolve(message.result)\n      } else if (message.method === 'Debugger.paused') {\n        if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter.resolve(message.params) }\n        else this.pauses.push(message.params)\n      }\n    })\n    socket.addEventListener('close', () => {\n      for (const request of this.requests.values()) request.reject(new Error('inspector-disconnected'))\n      this.requests.clear()\n      this.waiter?.reject(new Error('inspector-disconnected'))\n      this.waiter = undefined\n    })\n  }\n  async call(method, params = {}) {\n    if (this.socket.readyState !== WebSocket.OPEN) throw new Error('inspector-not-open')\n    const id = ++this.sequence\n    try {\n      return await bounded(new Promise((resolveCall, reject) => {\n        this.requests.set(id, { resolve: resolveCall, reject })\n        this.socket.send(JSON.stringify({ id, method, params }))\n      }), 10_000, 'inspector-command-timeout')\n    } finally { this.requests.delete(id) }\n  }\n  async paused(ms) {\n    if (this.pauses.length) return this.pauses.shift()\n    try {\n      return await bounded(new Promise((resolvePause, reject) => { this.waiter = { resolve: resolvePause, reject } }), ms, 'debugger-stop-unavailable')\n    } finally { this.waiter = undefined }\n  }\n}\n\n// Constructor wraps the exact owned session. Never open or quit another native session.\nfunction sessionFor(base) {\n  const owned = new URL(base)\n  if (owned.origin !== 'http://127.0.0.1:4444' || !/^\\/session\\/[A-Za-z0-9%._-]+$/.test(owned.pathname) ||\n    owned.search || owned.hash || owned.username || owned.password) throw new Error('owned-session-refused')\n  const session = new Session(decodeURIComponent(owned.pathname.slice('/session/'.length)))\n  if (session.base !== base) throw new Error('owned-session-refused')\n  return session\n}\nasync function execute(base, script, args = []) {\n  return sessionFor(base).execute(script, args)\n}\nasync function readString(inspector, frame, expression) {\n  if (!['session.base', 'engineRoot', 'stage'].includes(expression)) throw new Error('frame-read-refused')\n  const evaluated = await inspector.call('Debugger.evaluateOnCallFrame', {\n    callFrameId: frame.callFrameId, expression, returnByValue: true, silent: true,\n  })\n  if (evaluated.exceptionDetails || evaluated.result?.type !== 'string') throw new Error('owned-frame-value-unavailable')\n  return evaluated.result.value\n}\n\nconst modeText = mode => mode.toString(8).padStart(4, '0')\nfunction openPermissionRoot(state, root) {\n  const match = /^\\/tmp\\/(chessfable-verify-[A-Za-z0-9]+)\\/path-owner-fixture\\/permission-engines$/.exec(root)\n  if (!match || typeof process.getuid !== 'function' || process.getuid() === 0 || realpathSync(root) !== root) throw new Error('permission-root-unavailable')\n  for (const path of [join('/tmp', match[1]), join('/tmp', match[1], 'path-owner-fixture'), root]) {\n    const stat = lstatSync(path)\n    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()) throw new Error('permission-root-unavailable')\n  }\n  state.fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)\n  state.root = root\n  const stat = fstatSync(state.fd), pathStat = lstatSync(root)\n  if (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino || (stat.mode & 0o7777) !== 0o700) throw new Error('permission-root-unavailable')\n  state.dev = stat.dev\n  state.ino = stat.ino\n  state.originalMode = modeText(stat.mode & 0o7777)\n}\nfunction recordMode(state, event) {\n  state.transitions.push(event)\n  console.log(`MODE ${JSON.stringify(event)}`)\n}\nfunction restoreMode(state, point) {\n  if (!state.pending) return\n  const pending = state.pending\n  fchmodSync(state.fd, pending.original)\n  const actual = fstatSync(state.fd).mode & 0o7777\n  if (actual !== pending.original) throw new Error('permission-restoration-failed')\n  recordMode(state, { stage: pending.stage, point, restored: modeText(actual) })\n  state.pending = undefined\n  if (point === 'after-native-response') state.completed.push(pending.stage)\n}\nfunction changeMode(state, fault) {\n  if (state.pending || state.completed.includes(fault.stage)) throw new Error('permission-stage-order-unavailable')\n  const stat = fstatSync(state.fd), pathStat = lstatSync(state.root)\n  if (pathStat.isSymbolicLink() || !pathStat.isDirectory() || pathStat.dev !== state.dev || pathStat.ino !== state.ino ||\n    stat.dev !== state.dev || stat.ino !== state.ino || (stat.mode & 0o7777) !== fault.from) throw new Error('permission-mode-boundary-unavailable')\n  state.pending = { stage: fault.stage, original: stat.mode & 0o7777 }\n  fchmodSync(state.fd, fault.fault)\n  if ((fstatSync(state.fd).mode & 0o7777) !== fault.fault) throw new Error('permission-change-failed')\n  recordMode(state, { stage: fault.stage, point: 'before-native-call', original: modeText(state.pending.original), fault: modeText(fault.fault) })\n}\n\nconst restoreScript = `\n  const state = window[arguments[0]];\n  if (!state) return { restored: false };\n  state.active = false;\n  Object.defineProperty(Storage.prototype, 'setItem', state.descriptor);\n  state.descriptor.value.call(localStorage, 'engines', state.raw);\n  const actual = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem');\n  const restored = localStorage.getItem('engines') === state.raw &&\n    ['value', 'get', 'set', 'writable', 'enumerable', 'configurable'].every(key =>\n      actual[key] === state.descriptor[key]);\n  if (arguments[1] && restored) delete window[arguments[0]];\n  return { restored };\n`\n\nexport async function run(mode = 'ep') {\n  if (!['ep', 'rf0', 'rf-matrix'].includes(mode)) throw new Error('unsupported staging mode')\n  const wanted = mode === 'ep' ? MARKERS : PLANS[mode].map(fault => `FAIL  ${RF[fault.stage]}`)\n  const required = mode === 'ep' ? INTACT : [...INTACT, ...MARKERS.map(marker => marker.replace('FAIL  ', '  ok  ')),\n    ...(mode === 'rf-matrix' ? ['RF0', 'RF1', 'RF5', 'RF6', 'RF7'].map(key => `  ok  ${RF[key]}`) : [])]\n  await mkdir(OUTPUT, { recursive: true })\n  const directory = await mkdtemp(join(OUTPUT, mode === 'ep' ? 'ep-storage-' : `${mode}-`))\n  console.log(`${mode} staging artifacts: ${directory}`)\n  let child, inspector, socket, base, stdout, stderr\n  let childDone, sourceBefore, stops\n  let childFinished = false\n  let interrupted = false\n  let injected = false\n  let restoredBeforeFinally = false\n  let restoredAfterFinally = false\n  let choreographyComplete = false\n  let childReleased = false\n  let stage = 'prepare'\n  let unavailable\n  let runtimeFailureStage\n  const observedLines = {}\n  const permission = { fd: undefined, pending: undefined, transitions: [], completed: [], restorationFailure: false }\n  const token = `__epStorageStage_${randomUUID().replaceAll('-', '')}`\n  const hashes = async () => Object.fromEntries(await Promise.all(SOURCES.map(async path => [path, sha(await readFile(path))])))\n  const signal = () => {\n    interrupted = true\n    try { restoreMode(permission, 'signal-finally') } catch { permission.restorationFailure = true }\n    if (socket?.readyState === WebSocket.OPEN) socket.close()\n    // Only the exact child handle owned by this invocation. Its handler owns app cleanup.\n    if (child && !childFinished) child.kill('SIGTERM')\n  }\n  for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(name, signal)\n  try {\n    if (typeof WebSocket !== 'function') throw new Error('node24-websocket-required')\n    const source = await readFile(VERIFY, 'utf8')\n    stops = addresses(source, mode)\n    sourceBefore = await hashes()\n    await writeFile(join(directory, 'preparation.json'), JSON.stringify({ mode, sources: sourceBefore, requestedLines: stops }, null, 2) + '\\n', { mode: 0o600 })\n    stdout = createWriteStream(join(directory, 'stdout.log'), { mode: 0o600 })\n    stderr = createWriteStream(join(directory, 'stderr.log'), { mode: 0o600 })\n    stdout.on('error', signal)\n    stderr.on('error', signal)\n    stage = 'launch-owned-verifier'\n    let endpointResolve, endpointReject\n    const endpoint = new Promise((resolveEndpoint, reject) => { endpointResolve = resolveEndpoint; endpointReject = reject })\n    child = spawn(process.execPath, ['--inspect-brk=127.0.0.1:0', VERIFY], {\n      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],\n    })\n    child.stdout.pipe(stdout)\n    child.stderr.pipe(stderr)\n    let inspectorPreamble = ''\n    child.stderr.on('data', chunk => {\n      if (String(chunk).includes('Waiting for the debugger to disconnect')) socket?.close()\n      if (inspectorPreamble.length >= 16_384) return\n      inspectorPreamble += String(chunk)\n      const match = inspectorPreamble.match(/Debugger listening on (ws:\\/\\/127\\.0\\.0\\.1:\\d+\\/[a-f0-9-]+)/)\n      if (match) endpointResolve(match[1])\n    })\n    child.once('error', () => endpointReject(new Error('owned-verifier-spawn-failed')))\n    childDone = new Promise(resolveExit => child.once('close', (code, signalName) => {\n      childFinished = true\n      endpointReject(new Error('owned-verifier-exited'))\n      resolveExit({ code, signal: signalName })\n    }))\n    stage = 'attach-owned-inspector'\n    const endpointURL = new URL(await bounded(endpoint, 15_000, 'inspector-endpoint-unavailable'))\n    if (endpointURL.hostname !== '127.0.0.1' || endpointURL.protocol !== 'ws:' ||\n      endpointURL.username || endpointURL.password || endpointURL.search || endpointURL.hash) throw new Error('unowned-inspector-refused')\n    socket = new WebSocket(endpointURL)\n    await bounded(new Promise((resolveOpen, reject) => {\n      socket.addEventListener('open', resolveOpen, { once: true })\n      socket.addEventListener('error', () => reject(new Error('owned-inspector-connect-failed')), { once: true })\n    }), 10_000, 'inspector-connect-timeout')\n    inspector = new Inspector(socket)\n    await inspector.call('Debugger.enable')\n    const breakpoint = async line => (await inspector.call('Debugger.setBreakpointByUrl', {\n      url: pathToFileURL(VERIFY).href, lineNumber: line - 1,\n    })).breakpointId\n    const first = await breakpoint(mode === 'ep' ? stops.snapshot : stops.entry)\n    const second = mode === 'ep' ? await breakpoint(stops.restore) : undefined\n    const workflowBefore = mode !== 'ep' ? await breakpoint(stops.before) : undefined\n    const workflowAfter = mode !== 'ep' ? await breakpoint(stops.response) : undefined\n    await inspector.call('Runtime.runIfWaitingForDebugger')\n    childReleased = true\n    stage = mode === 'ep' ? 'first-publication-stop' : 'permission-root-entry'\n    let paused = await inspector.paused(20 * 60_000)\n    if (!paused.hitBreakpoints?.includes(first)) {\n      // The single initial --inspect-brk stop, before the verifier starts its own harness.\n      await inspector.call('Debugger.resume')\n      paused = await inspector.paused(20 * 60_000)\n    }\n    const frame = paused.callFrames[0]\n    if (mode !== 'ep') {\n      if (!paused.hitBreakpoints?.includes(first) || frame.functionName !== 'verifySelectedRootPermissions') throw new Error('permission-entry-unavailable')\n      await inspector.call('Debugger.removeBreakpoint', { breakpointId: first })\n      observedLines.entry = frame.location.lineNumber + 1\n      // Only these two argument-frame strings. Never inspect a probe, ticket or descriptor.\n      const engineRoot = await readString(inspector, frame, 'engineRoot')\n      base = await readString(inspector, frame, 'session.base')\n      sessionFor(base)\n      openPermissionRoot(permission, engineRoot)\n      console.log(`ROOT owned=${permission.root} initialMode=${permission.originalMode}`)\n      observedLines.workflow = []\n      const calls = mode === 'rf0' ? ['RF0'] : ['RF0', 'RF2', 'RF3', 'RF8']\n      let callIndex = 0, inFlight\n      for (let stop = 0; stop < calls.length * 2; stop++) {\n        stage = 'permission-workflow-stop'\n        await inspector.call('Debugger.resume')\n        paused = await inspector.paused(90_000)\n        const actual = paused.callFrames[0]\n        if (actual.functionName !== 'workflowProbe') throw new Error('permission-workflow-unavailable')\n        // Read only the actual stage argument at either workflow stop.\n        const label = await readString(inspector, actual, 'stage')\n        if (!calls.includes(label)) throw new Error('permission-stage-order-unavailable')\n        const before = paused.hitBreakpoints?.includes(workflowBefore)\n        const after = paused.hitBreakpoints?.includes(workflowAfter)\n        if (!before && !after) throw new Error('permission-workflow-unavailable')\n        observedLines.workflow.push({ stage: label, point: before ? 'entry' : 'response', line: actual.location.lineNumber + 1 })\n        if (before) {\n          if (inFlight || label !== calls[callIndex]) throw new Error('permission-stage-order-unavailable')\n          inFlight = label\n          const fault = PLANS[mode].find(item => item.stage === label)\n          if (fault) { changeMode(permission, fault); injected = true }\n        } else {\n          // Restore before the real verifier classifies the result or starts any UI action.\n          restoreMode(permission, 'after-native-response')\n          if (label !== inFlight) throw new Error('permission-stage-order-unavailable')\n          inFlight = undefined\n          callIndex++\n        }\n      }\n      if (permission.pending || callIndex !== calls.length || permission.completed.length !== PLANS[mode].length) throw new Error('permission-staging-incomplete')\n      await inspector.call('Debugger.removeBreakpoint', { breakpointId: workflowBefore })\n      await inspector.call('Debugger.removeBreakpoint', { breakpointId: workflowAfter })\n      choreographyComplete = true\n      console.log(`STAGE ${mode} exact input modes restored after every native response`)\n    } else {\n    if (!paused.hitBreakpoints?.includes(first) || frame.functionName !== 'enginePublicationSnapshot') throw new Error('publication-stop-unavailable')\n    await inspector.call('Debugger.removeBreakpoint', { breakpointId: first })\n    observedLines.snapshot = frame.location.lineNumber + 1\n    base = await readString(inspector, frame, 'session.base')\n    sessionFor(base)\n    stage = 'valid-envelope-boundary'\n    const deadline = Date.now() + 10_000\n    let originalRaw, corruptRaw\n    while (Date.now() < deadline && !interrupted) {\n      const input = await execute(base, `\n        const label = [...document.querySelectorAll('label')].find(node => node.textContent === 'Name');\n        const card = document.querySelector('button[aria-pressed=\"true\"]');\n        return { raw: localStorage.getItem('engines'),\n          input: label && document.getElementById(label.htmlFor)?.value,\n          card: card?.querySelector('p')?.firstChild?.textContent.trim() };\n      `)\n      const decoded = input.raw && deserializeStorageValue(input.raw)\n      const owner = decoded && decodeEngineOwnerValue(decoded)\n      const retained = Array.isArray(owner?.value) && owner.value.filter(engine => engine.id === 'retained')\n      if (decoded?.version === 1 && owner && retained?.length === 1 && retained[0].name === EXPECTED &&\n        input.input === EXPECTED && input.card === EXPECTED) {\n        originalRaw = input.raw\n        corruptRaw = serializeStorageValue({ ...decoded,\n          value: owner.value.map(engine => engine.id === 'retained' ? { ...engine, name: WRONG } : engine),\n        })\n        const corrupted = decodeEngineOwnerValue(deserializeStorageValue(corruptRaw))\n        if (!corrupted || corrupted.value.find(engine => engine.id === 'retained')?.name !== WRONG) throw new Error('valid-corruption-unavailable')\n        const result = await execute(base, `\n          if (localStorage.getItem('engines') !== arguments[1]) return { changed: false };\n          const descriptor = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem');\n          if (!descriptor?.configurable || typeof descriptor.value !== 'function') return { changed: false };\n          const state = { raw: arguments[1], corrupted: arguments[2], descriptor, active: true };\n          window[arguments[0]] = state;\n          Object.defineProperty(Storage.prototype, 'setItem', { ...descriptor, value: function(key, value) {\n            return descriptor.value.call(this, key,\n              state.active && this === localStorage && key === 'engines' ? state.corrupted : value);\n          } });\n          descriptor.value.call(localStorage, 'engines', state.corrupted);\n          return { changed: localStorage.getItem('engines') === state.corrupted };\n        `, [token, originalRaw, corruptRaw])\n        if (result.changed) { injected = true; break }\n      }\n      await delay(100)\n    }\n    if (!injected) throw new Error('valid-envelope-boundary-unavailable')\n    await writeFile(join(directory, 'storage-hashes.json'), JSON.stringify({ original: sha(originalRaw), corrupted: sha(corruptRaw) }, null, 2) + '\\n', { mode: 0o600 })\n    console.log('STAGE valid envelope persisted with only retained engine name changed')\n    stage = 'post-EP2-storage-stop'\n    await inspector.call('Debugger.resume')\n    paused = await inspector.paused(90_000)\n    if (!paused.hitBreakpoints?.includes(second)) throw new Error('post-EP2-stop-unavailable')\n    observedLines.restore = paused.callFrames[0].location.lineNumber + 1\n    await inspector.call('Debugger.removeBreakpoint', { breakpointId: second })\n    restoredBeforeFinally = (await execute(base, restoreScript, [token, false])).restored\n    if (!restoredBeforeFinally) throw new Error('pre-finally-restoration-failed')\n    // EP2's unchanged finally captured our writer. Step over it with the fault inactive, then\n    // restore the descriptor again so its ordinary assignment cannot leave our writer installed.\n    const scriptId = paused.callFrames[0].location.scriptId\n    stage = 'unchanged-EP2-finally'\n    let pastFinally = false\n    for (let step = 0; step < 8; step++) {\n      await inspector.call('Debugger.stepOver')\n      paused = await inspector.paused(15_000)\n      if (paused.callFrames[0].location.scriptId === scriptId &&\n        paused.callFrames[0].location.lineNumber >= stops.finallyEnd) { pastFinally = true; break }\n    }\n    if (!pastFinally) throw new Error('finally-step-unavailable')\n    restoredAfterFinally = (await execute(base, restoreScript, [token, true])).restored\n    if (!restoredAfterFinally) throw new Error('post-finally-restoration-failed')\n    choreographyComplete = true\n    console.log('STAGE exact storage bytes and descriptor restored before and after unchanged EP2 cleanup')\n    }\n  } catch (error) {\n    const availability = ['breakpoint-address-unavailable', 'publication-stop-unavailable',\n      'owned-session-unavailable', 'valid-envelope-boundary-unavailable', 'valid-corruption-unavailable',\n      'post-EP2-stop-unavailable', 'finally-step-unavailable', 'debugger-stop-unavailable',\n      'owned-frame-value-unavailable', 'permission-root-unavailable', 'permission-entry-unavailable',\n      'permission-workflow-unavailable', 'permission-mode-boundary-unavailable', 'permission-stage-order-unavailable']\n    if (availability.includes(error?.message)) unavailable = stage\n    else runtimeFailureStage = stage\n    console.error(`${unavailable ? 'STAGING UNAVAILABLE' : 'RUNTIME FAIL'} ${stage}: no trusted semantic receipt from this attempt`)\n  } finally {\n    if (mode === 'ep' && !restoredAfterFinally && base && !childFinished) {\n      try { await execute(base, restoreScript, [token, true]) } catch { /* Disposable verifier still owns final cleanup. */ }\n    }\n    try {\n      restoreMode(permission, 'cleanup-finally')\n      if (permission.fd !== undefined) permission.finalMode = modeText(fstatSync(permission.fd).mode & 0o7777)\n    } catch {\n      permission.restorationFailure = true\n      runtimeFailureStage = 'permission-finally-restoration'\n      console.error('RUNTIME FAIL permission-finally-restoration: negative receipt untrusted')\n    } finally {\n      if (permission.fd !== undefined) {\n        try { closeSync(permission.fd); permission.closed = true } catch {\n          permission.restorationFailure = true\n          runtimeFailureStage = 'permission-descriptor-close'\n          console.error('RUNTIME FAIL permission-descriptor-close: negative receipt untrusted')\n        }\n        permission.fd = undefined\n      }\n    }\n    // No debugger may hold the verifier at exit or prevent its own finally/shutdown.\n    if (inspector) {\n      try { await inspector.call('Runtime.runIfWaitingForDebugger'); childReleased = true } catch { /* May already be detached. */ }\n      try { await inspector.call('Debugger.resume') } catch { /* Already running or disconnected. */ }\n      try { await inspector.call('Debugger.disable') } catch { /* Connection may have closed. */ }\n    }\n    if (socket && socket.readyState !== WebSocket.CLOSED) socket.close()\n    if (child && !childFinished && !childReleased) child.kill('SIGTERM')\n  }\n\n  let actual = { code: null, signal: null }\n  let deadlineFailure = false\n  if (childDone) {\n    try { actual = await bounded(childDone, 45 * 60_000, 'owned-verifier-exit-timeout') }\n    catch {\n      deadlineFailure = true\n      console.error('RUNTIME FAIL owned-verifier-exit: cleanup deadline exceeded, negative receipt untrusted')\n      if (!childFinished) child.kill('SIGTERM')\n      try { actual = await bounded(childDone, 30_000, 'owned-verifier-cleanup-timeout') } catch { /* Report unresolved, never SIGKILL. */ }\n    }\n  }\n  for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.removeListener(name, signal)\n  await writeFile(join(directory, 'child.actual-exit'), actual.signal ? `signal:${actual.signal}\\n` : `${actual.code ?? 'unresolved'}\\n`, { mode: 0o600 })\n  if (stdout) await bounded(new Promise(resolveFinish => stdout.closed ? resolveFinish() : stdout.once('close', resolveFinish)), 5000, 'stdout-close-timeout')\n  if (stderr) await bounded(new Promise(resolveFinish => stderr.closed ? resolveFinish() : stderr.once('close', resolveFinish)), 5000, 'stderr-close-timeout')\n  const output = stdout ? await readFile(join(directory, 'stdout.log'), 'utf8') : ''\n  const errors = stderr ? await readFile(join(directory, 'stderr.log'), 'utf8') : ''\n  const failed = output.split(/\\r?\\n/).filter(line => line.startsWith('FAIL  '))\n  const lines = output.split(/\\r?\\n/)\n  const uiAndRefusalPassed = INTACT.every(marker => lines.includes(marker))\n  const requiredPasses = Object.fromEntries(required.map(marker => [marker, lines.includes(marker)]))\n  const markers = Object.fromEntries(wanted.map(marker => [marker, failed.includes(marker)]))\n  const unrelatedFailures = failed.filter(line => !wanted.includes(line))\n  const unexecutedRFChecks = mode === 'rf0' ? Object.keys(RF).filter(key => key !== 'RF0') : []\n  const expectedEarlyReturn = mode !== 'rf0' || unexecutedRFChecks.every(key =>\n    !lines.some(line => line.startsWith(`FAIL  ${key} `) || line.startsWith(`  ok  ${key} `)))\n  const verifierRuntimeFailure = /verify:app (?:could not run|cleanup failed|[^\\n]*permission cleanup failed)/.test(errors)\n  let sourceUnchanged = false\n  let sourceAfter\n  try { sourceAfter = await hashes(); sourceUnchanged = JSON.stringify(sourceBefore) === JSON.stringify(sourceAfter) } catch { /* Receipt stays untrusted. */ }\n  const restored = mode === 'ep' ? restoredBeforeFinally && restoredAfterFinally :\n    permission.closed && !permission.pending && !permission.restorationFailure && permission.finalMode === permission.originalMode &&\n    permission.completed.length === PLANS[mode].length\n  const trustedNegative = choreographyComplete && restored && sourceUnchanged && expectedEarlyReturn &&\n    actual.code === 1 && !actual.signal && wanted.every(marker => markers[marker]) && Object.values(requiredPasses).every(Boolean) &&\n    (mode === 'ep' || !verifierRuntimeFailure) && !runtimeFailureStage && !unavailable && !interrupted && !deadlineFailure\n  const receipt = {\n    purpose: `Negative ${mode} staging`, mode, trustedNegative, isolated: trustedNegative && !unrelatedFailures.length && !verifierRuntimeFailure,\n    actual, requestedLines: stops, observedLines, sourcesUnchanged: sourceUnchanged, injected, restoredBeforeFinally, restoredAfterFinally,\n    sourceHashesAfter: sourceAfter ?? null, markers, requiredPasses, uiAndRefusalPassed,\n    unexecutedRFChecks, expectedEarlyReturn, unrelatedFailures, verifierRuntimeFailure, interrupted, deadlineFailure,\n    permission: mode === 'ep' ? null : { root: permission.root, initialMode: permission.originalMode, finalMode: permission.finalMode,\n      transitions: permission.transitions, responseStagesRestored: permission.completed, closed: permission.closed ?? false,\n      restorationFailure: permission.restorationFailure, pendingFault: permission.pending?.stage ?? null },\n    unavailable: unavailable ?? null, runtimeFailureStage: runtimeFailureStage ?? null,\n    limitation: 'Negative evidence only. Root must run the unchanged verifier green against the restored same candidate.',\n  }\n  if (mode !== 'ep') await writeFile(join(directory, 'mode-transitions.json'), JSON.stringify(receipt.permission, null, 2) + '\\n', { mode: 0o600 })\n  await writeFile(join(directory, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\\n', { mode: 0o600 })\n  console.log(`NEGATIVE RECEIPT trusted=${trustedNegative} isolated=${receipt.isolated} childExit=${actual.code ?? 'unresolved'} otherFailures=${unrelatedFailures.length} runtimeFailure=${verifierRuntimeFailure}`)\n  for (const failure of unrelatedFailures) console.log(`UNRELATED ${failure}`)\n  return trustedNegative ? 0 : 1\n}\n\nif (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {\n  try { process.exitCode = await run(process.argv[2] ?? 'ep') }\n  catch { console.error('RUNTIME FAIL staging-receipt-or-output: no trusted negative receipt'); process.exitCode = 1 }\n}\n"
+}
+````
+
+### Observed original EP staging source
+
+````json
+{
+  "file": "observed-ep-storage-script.mjs",
+  "sha256": "f3622d6332675ff2413efa52d62be8b46c372379a76b7d217c6d209a94842f76",
+  "source": "// PREPARED ONLY. Importing this file does not launch anything.\n// Parent exit 0 means a trusted negative receipt, never a product-green result.\nimport { spawn } from 'node:child_process'\nimport { createWriteStream } from 'node:fs'\nimport { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'\nimport { createHash, randomUUID } from 'node:crypto'\nimport { join, resolve } from 'node:path'\nimport { fileURLToPath, pathToFileURL } from 'node:url'\nimport { serializeStorageValue, deserializeStorageValue } from '/home/felixb/Projekte/chessfable.worktrees/drain/src/state/store/debouncedStorage.ts'\nimport { decodeEngineOwnerValue } from '/home/felixb/Projekte/chessfable.worktrees/drain/src/state/engineOwnerEnvelope.ts'\n\nconst ROOT = '/home/felixb/Projekte/chessfable.worktrees/drain'\nconst OUTPUT = '/tmp/chessfable-drain-recovery-20261023/native-proof'\nconst VERIFY = join(ROOT, 'scripts/verify-app.mjs')\nconst SOURCES = [VERIFY, join(ROOT, 'src/state/store/debouncedStorage.ts'), join(ROOT, 'src/state/engineOwnerEnvelope.ts')]\nconst EXPECTED = 'Fixture saved publication'\nconst WRONG = 'Scratch EP storage staging altered publication'\nconst MARKERS = [\n  'FAIL  EP1-storage successful Name edit persists the decoded engine name',\n  'FAIL  EP2-storage refused Name edit retains the decoded saved engine name',\n]\nconst INTACT = [\n  '  ok  EP1-card successful Name edit publishes the saved engine card',\n  '  ok  EP2-error refused engines storage write reports the save error',\n  '  ok  EP2-card refused Name edit retains the saved engine card',\n  '  ok  EP2-input refused Name draft settles to the saved name',\n]\nconst delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms))\nconst sha = text => createHash('sha256').update(text).digest('hex')\n\nasync function bounded(promise, ms, label) {\n  let timer\n  try {\n    return await Promise.race([promise, new Promise((_, reject) => {\n      timer = setTimeout(() => reject(new Error(label)), ms)\n    })])\n  } finally { clearTimeout(timer) }\n}\n\n// Only debugger addressing, not a product source checker. Refuse ambiguous/missing addresses.\nfunction addresses(source) {\n  const first = '  async function enginePublicationSnapshot() {\\n    return session.execute('\n  const second = '  } finally {\\n    await session.execute(\\n      \"window.__verifyRestoreEngineStorage(); delete window.__verifyRestoreEngineStorage; return true;\",\\n    );\\n  }'\n  const locate = text => {\n    const index = source.indexOf(text)\n    if (index < 0 || source.indexOf(text, index + 1) >= 0) throw new Error('breakpoint-address-unavailable')\n    return index\n  }\n  const line = index => source.slice(0, index).split('\\n').length\n  const firstIndex = locate(first)\n  const secondIndex = locate(second)\n  return {\n    snapshot: line(firstIndex + first.indexOf('    return')),\n    restore: line(secondIndex + second.indexOf('    await')),\n    finallyEnd: line(secondIndex + second.lastIndexOf('  }')),\n  }\n}\n\n// A single owned Node-inspector connection. Never attach to a configured or discovered service.\nclass Inspector {\n  constructor(socket) {\n    this.socket = socket\n    this.sequence = 0\n    this.requests = new Map()\n    this.pauses = []\n    this.waiter = undefined\n    socket.addEventListener('message', event => {\n      let message\n      try { message = JSON.parse(String(event.data)) } catch { socket.close(); return }\n      if (message.id) {\n        const request = this.requests.get(message.id)\n        this.requests.delete(message.id)\n        if (message.error) request?.reject(new Error('inspector-command-failed'))\n        else request?.resolve(message.result)\n      } else if (message.method === 'Debugger.paused') {\n        if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter.resolve(message.params) }\n        else this.pauses.push(message.params)\n      }\n    })\n    socket.addEventListener('close', () => {\n      for (const request of this.requests.values()) request.reject(new Error('inspector-disconnected'))\n      this.requests.clear()\n      this.waiter?.reject(new Error('inspector-disconnected'))\n      this.waiter = undefined\n    })\n  }\n  async call(method, params = {}) {\n    if (this.socket.readyState !== WebSocket.OPEN) throw new Error('inspector-not-open')\n    const id = ++this.sequence\n    try {\n      return await bounded(new Promise((resolveCall, reject) => {\n        this.requests.set(id, { resolve: resolveCall, reject })\n        this.socket.send(JSON.stringify({ id, method, params }))\n      }), 10_000, 'inspector-command-timeout')\n    } finally { this.requests.delete(id) }\n  }\n  async paused(ms) {\n    if (this.pauses.length) return this.pauses.shift()\n    try {\n      return await bounded(new Promise((resolvePause, reject) => { this.waiter = { resolve: resolvePause, reject } }), ms, 'debugger-stop-unavailable')\n    } finally { this.waiter = undefined }\n  }\n}\n\n// Exact existing WebDriver session from the owned stopped frame, no new driver or session.\nasync function execute(base, script, args = []) {\n  const response = await fetch(base + '/execute/sync', {\n    method: 'POST', headers: { 'content-type': 'application/json' },\n    body: JSON.stringify({ script, args }), signal: AbortSignal.timeout(5000),\n  })\n  const body = await response.json()\n  if (!response.ok || !Object.hasOwn(body, 'value')) throw new Error('owned-webdriver-call-failed')\n  return body.value\n}\n\nconst restoreScript = `\n  const state = window[arguments[0]];\n  if (!state) return { restored: false };\n  state.active = false;\n  Object.defineProperty(Storage.prototype, 'setItem', state.descriptor);\n  state.descriptor.value.call(localStorage, 'engines', state.raw);\n  const actual = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem');\n  const restored = localStorage.getItem('engines') === state.raw &&\n    ['value', 'get', 'set', 'writable', 'enumerable', 'configurable'].every(key =>\n      actual[key] === state.descriptor[key]);\n  if (arguments[1] && restored) delete window[arguments[0]];\n  return { restored };\n`\n\nexport async function run() {\n  await mkdir(OUTPUT, { recursive: true })\n  const directory = await mkdtemp(join(OUTPUT, 'ep-storage-'))\n  console.log(`EP storage staging artifacts: ${directory}`)\n  let child, inspector, socket, base, stdout, stderr\n  let childDone, sourceBefore, stops\n  let childFinished = false\n  let interrupted = false\n  let injected = false\n  let restoredBeforeFinally = false\n  let restoredAfterFinally = false\n  let choreographyComplete = false\n  let childReleased = false\n  let stage = 'prepare'\n  let unavailable\n  let runtimeFailureStage\n  const observedLines = {}\n  const token = `__epStorageStage_${randomUUID().replaceAll('-', '')}`\n  const hashes = async () => Object.fromEntries(await Promise.all(SOURCES.map(async path => [path, sha(await readFile(path))])))\n  const signal = () => {\n    interrupted = true\n    if (socket?.readyState === WebSocket.OPEN) socket.close()\n    // Only the exact child handle owned by this invocation. Its handler owns app cleanup.\n    if (child && !childFinished) child.kill('SIGTERM')\n  }\n  for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(name, signal)\n  try {\n    if (typeof WebSocket !== 'function') throw new Error('node24-websocket-required')\n    const source = await readFile(VERIFY, 'utf8')\n    stops = addresses(source)\n    sourceBefore = await hashes()\n    await writeFile(join(directory, 'preparation.json'), JSON.stringify({ sources: sourceBefore, requestedLines: stops }, null, 2) + '\\n', { mode: 0o600 })\n    stdout = createWriteStream(join(directory, 'stdout.log'), { mode: 0o600 })\n    stderr = createWriteStream(join(directory, 'stderr.log'), { mode: 0o600 })\n    stdout.on('error', signal)\n    stderr.on('error', signal)\n    stage = 'launch-owned-verifier'\n    let endpointResolve, endpointReject\n    const endpoint = new Promise((resolveEndpoint, reject) => { endpointResolve = resolveEndpoint; endpointReject = reject })\n    child = spawn(process.execPath, ['--inspect-brk=127.0.0.1:0', VERIFY], {\n      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],\n    })\n    child.stdout.pipe(stdout)\n    child.stderr.pipe(stderr)\n    let inspectorPreamble = ''\n    child.stderr.on('data', chunk => {\n      if (String(chunk).includes('Waiting for the debugger to disconnect')) socket?.close()\n      if (inspectorPreamble.length >= 16_384) return\n      inspectorPreamble += String(chunk)\n      const match = inspectorPreamble.match(/Debugger listening on (ws:\\/\\/127\\.0\\.0\\.1:\\d+\\/[a-f0-9-]+)/)\n      if (match) endpointResolve(match[1])\n    })\n    child.once('error', () => endpointReject(new Error('owned-verifier-spawn-failed')))\n    childDone = new Promise(resolveExit => child.once('close', (code, signalName) => {\n      childFinished = true\n      endpointReject(new Error('owned-verifier-exited'))\n      resolveExit({ code, signal: signalName })\n    }))\n    stage = 'attach-owned-inspector'\n    const endpointURL = new URL(await bounded(endpoint, 15_000, 'inspector-endpoint-unavailable'))\n    if (endpointURL.hostname !== '127.0.0.1' || endpointURL.protocol !== 'ws:' ||\n      endpointURL.username || endpointURL.password || endpointURL.search || endpointURL.hash) throw new Error('unowned-inspector-refused')\n    socket = new WebSocket(endpointURL)\n    await bounded(new Promise((resolveOpen, reject) => {\n      socket.addEventListener('open', resolveOpen, { once: true })\n      socket.addEventListener('error', () => reject(new Error('owned-inspector-connect-failed')), { once: true })\n    }), 10_000, 'inspector-connect-timeout')\n    inspector = new Inspector(socket)\n    await inspector.call('Debugger.enable')\n    const breakpoint = async line => (await inspector.call('Debugger.setBreakpointByUrl', {\n      url: pathToFileURL(VERIFY).href, lineNumber: line - 1,\n    })).breakpointId\n    const first = await breakpoint(stops.snapshot)\n    const second = await breakpoint(stops.restore)\n    await inspector.call('Runtime.runIfWaitingForDebugger')\n    childReleased = true\n    stage = 'first-publication-stop'\n    let paused = await inspector.paused(20 * 60_000)\n    if (!paused.hitBreakpoints?.includes(first)) {\n      // The single initial --inspect-brk stop, before the verifier starts its own harness.\n      await inspector.call('Debugger.resume')\n      paused = await inspector.paused(20 * 60_000)\n    }\n    const frame = paused.callFrames[0]\n    if (!paused.hitBreakpoints?.includes(first) || frame.functionName !== 'enginePublicationSnapshot') throw new Error('publication-stop-unavailable')\n    await inspector.call('Debugger.removeBreakpoint', { breakpointId: first })\n    observedLines.snapshot = frame.location.lineNumber + 1\n    // This is the ONLY evaluateOnCallFrame expression. Do not inspect scopes or other locals.\n    const evaluated = await inspector.call('Debugger.evaluateOnCallFrame', {\n      callFrameId: frame.callFrameId, expression: 'session.base', returnByValue: true, silent: true,\n    })\n    if (evaluated.exceptionDetails || evaluated.result?.type !== 'string') throw new Error('owned-session-unavailable')\n    base = evaluated.result.value\n    const owned = new URL(base)\n    if (owned.origin !== 'http://127.0.0.1:4444' || !/^\\/session\\/[A-Za-z0-9%._-]+$/.test(owned.pathname) ||\n      owned.search || owned.hash || owned.username || owned.password) throw new Error('owned-session-refused')\n    stage = 'valid-envelope-boundary'\n    const deadline = Date.now() + 10_000\n    let originalRaw, corruptRaw\n    while (Date.now() < deadline && !interrupted) {\n      const input = await execute(base, `\n        const label = [...document.querySelectorAll('label')].find(node => node.textContent === 'Name');\n        const card = document.querySelector('button[aria-pressed=\"true\"]');\n        return { raw: localStorage.getItem('engines'),\n          input: label && document.getElementById(label.htmlFor)?.value,\n          card: card?.querySelector('p')?.firstChild?.textContent.trim() };\n      `)\n      const decoded = input.raw && deserializeStorageValue(input.raw)\n      const owner = decoded && decodeEngineOwnerValue(decoded)\n      const retained = Array.isArray(owner?.value) && owner.value.filter(engine => engine.id === 'retained')\n      if (decoded?.version === 1 && owner && retained?.length === 1 && retained[0].name === EXPECTED &&\n        input.input === EXPECTED && input.card === EXPECTED) {\n        originalRaw = input.raw\n        corruptRaw = serializeStorageValue({ ...decoded,\n          value: owner.value.map(engine => engine.id === 'retained' ? { ...engine, name: WRONG } : engine),\n        })\n        const corrupted = decodeEngineOwnerValue(deserializeStorageValue(corruptRaw))\n        if (!corrupted || corrupted.value.find(engine => engine.id === 'retained')?.name !== WRONG) throw new Error('valid-corruption-unavailable')\n        const result = await execute(base, `\n          if (localStorage.getItem('engines') !== arguments[1]) return { changed: false };\n          const descriptor = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem');\n          if (!descriptor?.configurable || typeof descriptor.value !== 'function') return { changed: false };\n          const state = { raw: arguments[1], corrupted: arguments[2], descriptor, active: true };\n          window[arguments[0]] = state;\n          Object.defineProperty(Storage.prototype, 'setItem', { ...descriptor, value: function(key, value) {\n            return descriptor.value.call(this, key,\n              state.active && this === localStorage && key === 'engines' ? state.corrupted : value);\n          } });\n          descriptor.value.call(localStorage, 'engines', state.corrupted);\n          return { changed: localStorage.getItem('engines') === state.corrupted };\n        `, [token, originalRaw, corruptRaw])\n        if (result.changed) { injected = true; break }\n      }\n      await delay(100)\n    }\n    if (!injected) throw new Error('valid-envelope-boundary-unavailable')\n    await writeFile(join(directory, 'storage-hashes.json'), JSON.stringify({ original: sha(originalRaw), corrupted: sha(corruptRaw) }, null, 2) + '\\n', { mode: 0o600 })\n    console.log('STAGE valid envelope persisted with only retained engine name changed')\n    stage = 'post-EP2-storage-stop'\n    await inspector.call('Debugger.resume')\n    paused = await inspector.paused(90_000)\n    if (!paused.hitBreakpoints?.includes(second)) throw new Error('post-EP2-stop-unavailable')\n    observedLines.restore = paused.callFrames[0].location.lineNumber + 1\n    await inspector.call('Debugger.removeBreakpoint', { breakpointId: second })\n    restoredBeforeFinally = (await execute(base, restoreScript, [token, false])).restored\n    if (!restoredBeforeFinally) throw new Error('pre-finally-restoration-failed')\n    // EP2's unchanged finally captured our writer. Step over it with the fault inactive, then\n    // restore the descriptor again so its ordinary assignment cannot leave our writer installed.\n    const scriptId = paused.callFrames[0].location.scriptId\n    stage = 'unchanged-EP2-finally'\n    let pastFinally = false\n    for (let step = 0; step < 8; step++) {\n      await inspector.call('Debugger.stepOver')\n      paused = await inspector.paused(15_000)\n      if (paused.callFrames[0].location.scriptId === scriptId &&\n        paused.callFrames[0].location.lineNumber >= stops.finallyEnd) { pastFinally = true; break }\n    }\n    if (!pastFinally) throw new Error('finally-step-unavailable')\n    restoredAfterFinally = (await execute(base, restoreScript, [token, true])).restored\n    if (!restoredAfterFinally) throw new Error('post-finally-restoration-failed')\n    choreographyComplete = true\n    console.log('STAGE exact storage bytes and descriptor restored before and after unchanged EP2 cleanup')\n  } catch (error) {\n    const availability = ['breakpoint-address-unavailable', 'publication-stop-unavailable',\n      'owned-session-unavailable', 'valid-envelope-boundary-unavailable', 'valid-corruption-unavailable',\n      'post-EP2-stop-unavailable', 'finally-step-unavailable', 'debugger-stop-unavailable']\n    if (availability.includes(error?.message)) unavailable = stage\n    else runtimeFailureStage = stage\n    console.error(`${unavailable ? 'STAGING UNAVAILABLE' : 'RUNTIME FAIL'} ${stage}: no trusted semantic receipt from this attempt`)\n  } finally {\n    if (!restoredAfterFinally && base && !childFinished) {\n      try { await execute(base, restoreScript, [token, true]) } catch { /* Disposable verifier still owns final cleanup. */ }\n    }\n    // No debugger may hold the verifier at exit or prevent its own finally/shutdown.\n    if (inspector) {\n      try { await inspector.call('Runtime.runIfWaitingForDebugger'); childReleased = true } catch { /* May already be detached. */ }\n      try { await inspector.call('Debugger.resume') } catch { /* Already running or disconnected. */ }\n      try { await inspector.call('Debugger.disable') } catch { /* Connection may have closed. */ }\n    }\n    if (socket && socket.readyState !== WebSocket.CLOSED) socket.close()\n    if (child && !childFinished && !childReleased) child.kill('SIGTERM')\n  }\n\n  let actual = { code: null, signal: null }\n  let deadlineFailure = false\n  if (childDone) {\n    try { actual = await bounded(childDone, 45 * 60_000, 'owned-verifier-exit-timeout') }\n    catch {\n      deadlineFailure = true\n      console.error('RUNTIME FAIL owned-verifier-exit: cleanup deadline exceeded, negative receipt untrusted')\n      if (!childFinished) child.kill('SIGTERM')\n      try { actual = await bounded(childDone, 30_000, 'owned-verifier-cleanup-timeout') } catch { /* Report unresolved, never SIGKILL. */ }\n    }\n  }\n  for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.removeListener(name, signal)\n  await writeFile(join(directory, 'child.actual-exit'), actual.signal ? `signal:${actual.signal}\\n` : `${actual.code ?? 'unresolved'}\\n`, { mode: 0o600 })\n  if (stdout) await bounded(new Promise(resolveFinish => stdout.closed ? resolveFinish() : stdout.once('close', resolveFinish)), 5000, 'stdout-close-timeout')\n  if (stderr) await bounded(new Promise(resolveFinish => stderr.closed ? resolveFinish() : stderr.once('close', resolveFinish)), 5000, 'stderr-close-timeout')\n  const output = stdout ? await readFile(join(directory, 'stdout.log'), 'utf8') : ''\n  const errors = stderr ? await readFile(join(directory, 'stderr.log'), 'utf8') : ''\n  const failed = output.split(/\\r?\\n/).filter(line => line.startsWith('FAIL  '))\n  const uiAndRefusalPassed = INTACT.every(marker => output.split(/\\r?\\n/).includes(marker))\n  const markers = Object.fromEntries(MARKERS.map(marker => [marker, failed.includes(marker)]))\n  const unrelatedFailures = failed.filter(line => !MARKERS.includes(line))\n  const verifierRuntimeFailure = /verify:app (?:could not run|cleanup failed|[^\\n]*permission cleanup failed)/.test(errors)\n  let sourceUnchanged = false\n  try { sourceUnchanged = JSON.stringify(sourceBefore) === JSON.stringify(await hashes()) } catch { /* Receipt stays untrusted. */ }\n  const trustedNegative = choreographyComplete && restoredBeforeFinally && restoredAfterFinally && sourceUnchanged &&\n    actual.code === 1 && !actual.signal && MARKERS.every(marker => markers[marker]) && uiAndRefusalPassed && !interrupted && !deadlineFailure\n  const receipt = {\n    purpose: 'Negative EP storage staging', trustedNegative, isolated: trustedNegative && !unrelatedFailures.length && !verifierRuntimeFailure,\n    actual, requestedLines: stops, observedLines, sourcesUnchanged: sourceUnchanged, injected, restoredBeforeFinally, restoredAfterFinally,\n    markers, uiAndRefusalPassed, unrelatedFailures, verifierRuntimeFailure, interrupted, deadlineFailure,\n    unavailable: unavailable ?? null, runtimeFailureStage: runtimeFailureStage ?? null,\n    limitation: 'Negative evidence only. Root must run the unchanged verifier green against the restored same candidate.',\n  }\n  await writeFile(join(directory, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\\n', { mode: 0o600 })\n  console.log(`NEGATIVE RECEIPT trusted=${trustedNegative} isolated=${receipt.isolated} childExit=${actual.code ?? 'unresolved'} otherFailures=${unrelatedFailures.length} runtimeFailure=${verifierRuntimeFailure}`)\n  for (const failure of unrelatedFailures) console.log(`UNRELATED ${failure}`)\n  return trustedNegative ? 0 : 1\n}\n\nif (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {\n  try { process.exitCode = await run() }\n  catch { console.error('RUNTIME FAIL staging-receipt-or-output: no trusted negative receipt'); process.exitCode = 1 }\n}\n"
+}
+````
+
+### Permission staging scope and limits
+
+````markdown
+# Prepared public-workflow root-permission stages
+
+Root executed both RF cases and the ordinary positive on 2026-10-23. The original preparation
+leaf ran only syntax/import checks. Actual rf0-64TR8D child exit 1 printed exactly RF0 FAIL,
+with all six EP checks green and the later RF checks intentionally unexecuted. Actual
+rf-matrix-WIWkG6 child exit 1 printed exactly RF2, updated RF3 and RF8 FAIL, with RF0, RF1,
+RF5, RF6, RF7 and all six EP checks green. Both parent canonical attempts completed 0,
+all modes were restored after their actual native responses, source/binary hashes matched,
+and both receipts have isolated=true, otherFailures=0 and runtimeFailure=false.
+The ordinary unchanged verifier then completed permission-positive.Rco7vI at exit 0 with
+all checks passed. These cover the four semantic result assertions only, not the diagnostic
+matrix listed below. Removal path: delete disposable choreography after raw receipts
+are archived. Failure costs one isolated unchanged real-app verifier run per case.
+
+The observed old EP producer and README were preserved byte-exact before editing, under
+`observed-ep-storage-script.mjs` and `observed-EP-STORAGE-STAGING.md`. See
+[EP-STORAGE-STAGING.md](EP-STORAGE-STAGING.md) for hashes and root's reported valid but
+non-isolated `ep-storage-sqZpX4` negative. No claim is made that its independent RF0 failure
+was green. Current RF mapping is d-20261023-07 and the removed-API repair is f-20261023-02.
+
+## Two commands for root
+
+Use the reviewed current source and matching existing release binary, with no other real-app
+verifier running. The script reuses one inspector implementation, subprocess lifecycle and
+receipt path. The modes are fixed to these two settled cases, not a configurable fault framework.
+
+```sh
+node /tmp/chessfable-drain-recovery-20261023/native-proof/stage-ep-storage.mjs rf0
+node /tmp/chessfable-drain-recovery-20261023/native-proof/stage-ep-storage.mjs rf-matrix
+```
+
+Run sequentially, waiting for the prior child and its original cleanup to finish. For a detached
+run with a separate actual parent status, use a unique label, changing only the fixed mode:
+
+```sh
+rf_stage_mode=rf0
+rf_stage_label=rf0-1
+rf_stage_base=/tmp/chessfable-drain-recovery-20261023/native-proof
+setsid nohup bash -s "$rf_stage_mode" "$rf_stage_label" > "$rf_stage_base/$rf_stage_label.parent.log" 2>&1 <<'SH' & disown
+node /tmp/chessfable-drain-recovery-20261023/native-proof/stage-ep-storage.mjs "$1"
+rf_parent_status=$?
+printf '%s\n' "$rf_parent_status" > "/tmp/chessfable-drain-recovery-20261023/native-proof/$2.parent.actual-exit"
+exit "$rf_parent_status"
+SH
+```
+
+Wait on named output artifacts, never process-name matching. The ordinary child command is
+the same in every mode: existing Node 24 with `--inspect-brk=127.0.0.1:0`, executing unchanged
+`scripts/verify-app.mjs` without extra arguments or source flags. The parent attaches only to
+the random loopback inspector URL printed by its own spawned child. There is no shared-inspector
+discovery, second browser, driver, compositor or native session. It wraps the exact stopped
+session with the existing app-driver `Session` constructor and never opens/quits another one.
+
+## Input boundary and source stops
+
+Current `verifySelectedRootPermissions` submits real `install_engine_workflow`, retaining its
+genuine selected workspace identities. Its deliberately nonhex 64-character SHA causes the
+healthy-root InvalidInput result before networking. Root mode 0300 or 0400 yields the real
+Permission result earlier. Parent code never changes this request, digest, ticket, probe state,
+fixture constant, typed response, expected message, library or verifier local.
+
+At the observed runs, requested source addresses were line 801 at `verifySelectedRootPermissions`
+entry, line 838 at `workflowProbe` entry and line 858 just after its real awaited native
+response. The script resolves these unique source anchors for each run and logs requested
+and actual paused line addresses. Missing/ambiguous addresses or unexpected frames are
+unavailable proof, not a semantic red.
+
+At the function's argument frame, the only reads are `engineRoot` and `session.base`. At either
+workflow stop, the only read is the actual `stage` argument. No scopes, `ownedProbe`, ticket,
+response object or other local descriptor is inspected or mutated. Native categories remain
+visible through the unchanged verifier's original output, never a rewritten inspector return.
+
+The argument must identify `/tmp/chessfable-verify-*/path-owner-fixture/permission-engines`.
+The frozen source constructs this argument under the exact newly spawned verifier's disposable
+profile. The parent also requires an exact canonical path, same-user nonsymlink directories
+for the profile/fixture/root, non-root UID and original root mode 0700. It opens the exact
+directory with `O_DIRECTORY | O_NOFOLLOW`, checks inode/device identity and holds that owned
+descriptor. Every change checks the current path still names that inode and the expected mode.
+There are no environment, credential, native authority-file or real-profile reads.
+
+Only the directory's permission bits change. Each fault records its exact current mode before
+changing it and restores that exact mode immediately after the matching native response,
+before the verifier classifies its result or starts a separate UI action. A pending restoration
+is attempted synchronously in the parent signal handler and again in `finally` before inspector
+detach. The descriptor is closed on every path. No page timer, DOM hiding or canned IPC is used.
+Workflow pauses contain only local inspector string reads and small filesystem operations.
+Source/binary hashing happens outside those notification-sensitive response pauses.
+
+## Fixed faults and required negatives
+
+| Mode | Real input change around only this native workflow | Restore before continuing |
+| --- | --- | --- |
+| `rf0` | RF0: 0700 → 0300 | 0700 |
+| `rf-matrix` | RF2: 0300 → 0700 | 0300, before subsequent Add/Install |
+| `rf-matrix` | RF3: 0400 → 0700 | 0400 |
+| `rf-matrix` | RF8: 0700 → 0300 | 0700 |
+
+RF0 remains untouched in `rf-matrix`. Its healthy typed InvalidInput must stay green. RF2 and
+RF3 are temporarily healthy for their direct workflow calls, so their real InvalidInput results
+cross the wrong expected Permission boundary. Their denied modes are restored before all
+separate UI work. RF8 receives the actual Permission result instead of its expected healthy
+InvalidInput. No real artifact is downloaded or executed by these nonhex-SHA workflow probes.
+Later private registration and exact child denial remain native-test obligations, not invented
+public API coverage. Browser RF4 was removed under the settled mapping.
+
+`rf0` requires this exact unchanged stdout line and actual child exit **1**:
+
+```text
+FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+```
+
+RF0 intentionally returns early after settling its real completion. RF1, RF2, RF3, RF5, RF6,
+RF7 and RF8 are unexecuted in that run and receive no staged credit. The receipt verifies their
+check lines are absent. All six unchanged EP checks must be green and no child runtime failure
+may occur.
+
+`rf-matrix` requires all three exact lines in the same unchanged child, with actual exit **1**:
+
+```text
+FAIL  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+FAIL  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label
+FAIL  RF8 restoring access recovers the same selected roots
+```
+
+RF0, RF1, RF5, RF6 and RF7 must print their existing green checks, as must all six EP checks.
+There must be no child runtime failure. Restoration must be verified after each fault. The
+selected root IDs, real renderer notifications and unrelated child bytes remain genuine.
+
+## Status contract and receipts
+
+Parent exit 0 means the expected negative receipt was validated, never product green. It
+requires the correct child's actual exit 1, every desired FAIL, required unchanged green checks,
+completed mode restoration, unchanged source/binary hashes and no interruption/deadline/runtime
+failure. Parent exit 1 or `STAGING UNAVAILABLE`/`RUNTIME FAIL` cannot replace the semantic child
+negative. A signal or killed/unresolved child does not satisfy actual exit 1.
+
+The parent prints a new `rf0-*/` or `rf-matrix-*/` directory under `native-proof/`, containing:
+
+- `stdout.log`, `stderr.log`: unchanged complete child output, mode 0600.
+- `child.actual-exit`: numeric child exit or explicit signal/unresolved outcome, separate from
+  the parent's status.
+- `preparation.json`: requested source addresses and hashes of the verifier, production codecs,
+  app-driver, native fs source, actual release binary and this choreography.
+- `mode-transitions.json`: owned directory, initial/final parent-observed mode, every fault and
+  restoration with stage label, descriptor closure and restoration status.
+- `receipt.json`: actual paused addresses, before/after hash equality, desired marker presence,
+  required green checks, unrelated FAIL lines, runtime flags and unexecuted RF0 checks.
+
+Actual receipts are in rf0-64TR8D and rf-matrix-WIWkG6 under this directory. Every extra `FAIL  `
+line is preserved and listed as unrelated. Such a run has `isolated: false` and cannot attribute
+exit solely to these controls. Fatal/cleanup diagnostics are separately flagged and disqualify
+RF receipt trust. Inspector protocol data and arbitrary frame state are not dumped.
+
+The final parent-observed mode is 0700 on complete cases. On an interrupted mid-RF2 or mid-RF3
+case, restoration first returns to the exact local prior 0300/0400 so unchanged later UI work
+cannot accidentally gain access. The verifier already saved the original 0700 before any fault
+and owns its full-function/exit restoration plus profile deletion. The parent never substitutes
+an arbitrary 0700 cleanup over a still-active denial scenario.
+
+## Source-derived nonzero and uncovered diagnostics
+
+No RF runtime or guard path was staged by the preparation leaf. Root's actual semantic credit
+is the four messages above, with actual marker/status/restoration receipts now captured. Native real
+permission tests and root's fresh ordinary positive supplement those controls. They do not
+establish a complete cleanup-failure or defensive-guard matrix.
+
+Current verifier nonzero/guard paths, all unchanged by the parent:
+
+- RF0 readiness also depends on genuine puzzle listing/selected root identities and a matching
+  failed workflow id with the exact InvalidInput payload. Its failed check intentionally returns
+  after settlement. The `rf0` control changes only the real root permission result.
+- RF1/RF2/RF3 test exact typed Permission/category/message/root label. RF5/RF6 can fail on actual
+  missing visible guidance. RF7 can fail on changed saved owner bytes or unrelated child bytes.
+  RF8 checks recovered roots/listing plus the healthy workflow payload. Only RF2/RF3/RF8's actual
+  mode-result boundaries are targeted by `rf-matrix`.
+- Catalog reading, workspace/listing/invocation failure, reservation preparation and malformed or
+  mismatched response identity are not independently staged. No ticket/descriptor mutation is used.
+- `settleProbe` can time out waiting for actual native acknowledgement, reject a non-null release
+  result, or fail to close/disappear a real native-result notification. These are runtime failures,
+  not desired negatives. Existing notification auto-close remains active, so pauses stay short.
+- Train, Add New, Install and Close dialog readiness waits can fail. RF6's capture can fail when
+  a screenshot path is supplied. No button, UI state or screenshot path is changed by these modes.
+- Original function, signal and process-exit cleanup can fail while restoring puzzle/engine/child
+  modes or settling a retained completion. Those existing cleanup retries remain owned by the
+  verifier. No direct cleanup-failure stage is supplied or claimed.
+
+New parent setup/guard failures remain unexecuted: invalid mode, missing unique source anchors,
+runtime/import/binary/hash access, owned child launch/inspector attachment, missing/unexpected
+stops or stage order, refused frame-read expression, invalid session URL, root path/UID/symlink/
+directory/inode/0700 validation, unexpected per-fault starting mode, chmod/stat/restoration or
+descriptor close failure, output/receipt failure, source drift, wrong/missing desired or green
+check lines, signal and unresolved child cleanup. They are unavailable/runtime evidence, not
+semantic proof. None is described as unstageable. No hypothetical diagnostic branch receives
+staged credit and no extra producer-fault framework is added.
+
+Existing bounds are reused: twenty minutes to the first source stop, ninety seconds per workflow
+stop, ten seconds per inspector command, forty-five minutes for the remaining unchanged child,
+then thirty seconds after SIGTERM for cleanup. Only the exact spawned Node child handle may be
+signalled. No shared process/group or existing inspector/browser is touched, and no SIGKILL is
+used. The parent resumes/disables/detaches so the original verifier owns all application,
+compositor and disposable profile cleanup.
+
+## Required ordinary positive
+
+After both negative children and their cleanup fully finish, root checks source/binary identity
+and runs the ordinary unchanged positive against that same repaired candidate:
+
+```sh
+pnpm verify:app
+```
+
+Archive its raw output and actual exit 0 with the negative receipts. Neither pending RF staging
+nor the earlier non-isolated EP negative establishes this positive, product release readiness
+or any additional browser/private-registration/cleanup behavior.
+````
+
+### rf0-64TR8D
+
+Child output excerpt retains every FAIL and every EP/RF check. Complete original output remained in this disposable case directory.
+
+````text
+0 rf0-negative 70da94b30a0466586475930436c796dc004ccbcf
+actual child exit: 1
+rf0 staging artifacts: /tmp/chessfable-drain-recovery-20261023/native-proof/rf0-64TR8D
+ROOT owned=/tmp/chessfable-verify-rtqr2m/path-owner-fixture/permission-engines initialMode=0700
+MODE {"stage":"RF0","point":"before-native-call","original":"0700","fault":"0300"}
+MODE {"stage":"RF0","point":"after-native-response","restored":"0700"}
+STAGE rf0 exact input modes restored after every native response
+NEGATIVE RECEIPT trusted=true isolated=true childExit=1 otherFailures=0 runtimeFailure=false
+  ok  EP1-card successful Name edit publishes the saved engine card
+  ok  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+  ok  EP2-storage refused Name edit retains the decoded saved engine name
+FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+````
+
+````json
+{
+  "purpose": "Negative rf0 staging",
+  "mode": "rf0",
+  "trustedNegative": true,
+  "isolated": true,
+  "actual": {
+    "code": 1,
+    "signal": null
+  },
+  "requestedLines": {
+    "entry": 801,
+    "before": 838,
+    "response": 858
+  },
+  "observedLines": {
+    "entry": 801,
+    "workflow": [
+      {
+        "stage": "RF0",
+        "point": "entry",
+        "line": 838
+      },
+      {
+        "stage": "RF0",
+        "point": "response",
+        "line": 858
+      }
+    ]
+  },
+  "sourcesUnchanged": true,
+  "injected": true,
+  "restoredBeforeFinally": false,
+  "restoredAfterFinally": false,
+  "sourceHashesAfter": {
+    "/home/felixb/Projekte/chessfable.worktrees/drain/scripts/verify-app.mjs": "7278896d110f5df4e1b0267d19ee66e5272bee52268f2c0b7548f0e8379c0765",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src/state/store/debouncedStorage.ts": "6ae2f52b661eb5a2d3a520fdbe8469a38326e387cb91b87aea014a9c87de7fe0",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src/state/engineOwnerEnvelope.ts": "5c1de1ddd8993f7b95b7d85f049f3c7cbb88a934a43d6a7b4a1d30adb0e3415b",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/scripts/app-driver.mjs": "0537b7208ed9add4b2825b85343d4d9dcf24425e8b97d87129037e1aef882437",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/fs.rs": "b2b69c5ac6ac87e92f81bb3464a5a12eb63a50276e46fb95f98249f29802465c",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/target/release/chessfable": "1a94956eb13061c28eab17a963388387c51394c1ce93afcb033034c6be75bf60",
+    "/tmp/chessfable-drain-recovery-20261023/native-proof/stage-ep-storage.mjs": "0c24389a319dd2b3cf1cd8e15d29166d3d29af7dc5366e426170bfa77434831d"
+  },
+  "markers": {
+    "FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss": true
+  },
+  "requiredPasses": {
+    "  ok  EP1-card successful Name edit publishes the saved engine card": true,
+    "  ok  EP2-error refused engines storage write reports the save error": true,
+    "  ok  EP2-card refused Name edit retains the saved engine card": true,
+    "  ok  EP2-input refused Name draft settles to the saved name": true,
+    "  ok  EP1-storage successful Name edit persists the decoded engine name": true,
+    "  ok  EP2-storage refused Name edit retains the decoded saved engine name": true
+  },
+  "uiAndRefusalPassed": true,
+  "unexecutedRFChecks": [
+    "RF1",
+    "RF2",
+    "RF3",
+    "RF5",
+    "RF6",
+    "RF7",
+    "RF8"
+  ],
+  "expectedEarlyReturn": true,
+  "unrelatedFailures": [],
+  "verifierRuntimeFailure": false,
+  "interrupted": false,
+  "deadlineFailure": false,
+  "permission": {
+    "root": "/tmp/chessfable-verify-rtqr2m/path-owner-fixture/permission-engines",
+    "initialMode": "0700",
+    "finalMode": "0700",
+    "transitions": [
+      {
+        "stage": "RF0",
+        "point": "before-native-call",
+        "original": "0700",
+        "fault": "0300"
+      },
+      {
+        "stage": "RF0",
+        "point": "after-native-response",
+        "restored": "0700"
+      }
+    ],
+    "responseStagesRestored": [
+      "RF0"
+    ],
+    "closed": true,
+    "restorationFailure": false,
+    "pendingFault": null
+  },
+  "unavailable": null,
+  "runtimeFailureStage": null,
+  "limitation": "Negative evidence only. Root must run the unchanged verifier green against the restored same candidate."
+}
+````
+
+### rf-matrix-WIWkG6
+
+Child output excerpt retains every FAIL and every EP/RF check. Complete original output remained in this disposable case directory.
+
+````text
+0 rf-matrix-negative 70da94b30a0466586475930436c796dc004ccbcf
+actual child exit: 1
+rf-matrix staging artifacts: /tmp/chessfable-drain-recovery-20261023/native-proof/rf-matrix-WIWkG6
+ROOT owned=/tmp/chessfable-verify-3sMKMv/path-owner-fixture/permission-engines initialMode=0700
+MODE {"stage":"RF2","point":"before-native-call","original":"0300","fault":"0700"}
+MODE {"stage":"RF2","point":"after-native-response","restored":"0300"}
+MODE {"stage":"RF3","point":"before-native-call","original":"0400","fault":"0700"}
+MODE {"stage":"RF3","point":"after-native-response","restored":"0400"}
+MODE {"stage":"RF8","point":"before-native-call","original":"0700","fault":"0300"}
+MODE {"stage":"RF8","point":"after-native-response","restored":"0700"}
+STAGE rf-matrix exact input modes restored after every native response
+NEGATIVE RECEIPT trusted=true isolated=true childExit=1 otherFailures=0 runtimeFailure=false
+  ok  EP1-card successful Name edit publishes the saved engine card
+  ok  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+  ok  EP2-storage refused Name edit retains the decoded saved engine name
+  ok  RF0 selected puzzle and engine roots accept real IPC before access loss
+  ok  RF1 puzzle read denial preserves Permission and I/O failure with a permission root label
+  ok  RF5 puzzle permission guidance is visible through the actual renderer
+FAIL  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+  ok  RF6 Add permission guidance is visible through the actual renderer
+FAIL  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label
+  ok  RF7 permission failures retain saved engines and unrelated filesystem bytes
+FAIL  RF8 restoring access recovers the same selected roots
+````
+
+````json
+{
+  "purpose": "Negative rf-matrix staging",
+  "mode": "rf-matrix",
+  "trustedNegative": true,
+  "isolated": true,
+  "actual": {
+    "code": 1,
+    "signal": null
+  },
+  "requestedLines": {
+    "entry": 801,
+    "before": 838,
+    "response": 858
+  },
+  "observedLines": {
+    "entry": 801,
+    "workflow": [
+      {
+        "stage": "RF0",
+        "point": "entry",
+        "line": 838
+      },
+      {
+        "stage": "RF0",
+        "point": "response",
+        "line": 858
+      },
+      {
+        "stage": "RF2",
+        "point": "entry",
+        "line": 838
+      },
+      {
+        "stage": "RF2",
+        "point": "response",
+        "line": 858
+      },
+      {
+        "stage": "RF3",
+        "point": "entry",
+        "line": 838
+      },
+      {
+        "stage": "RF3",
+        "point": "response",
+        "line": 858
+      },
+      {
+        "stage": "RF8",
+        "point": "entry",
+        "line": 838
+      },
+      {
+        "stage": "RF8",
+        "point": "response",
+        "line": 858
+      }
+    ]
+  },
+  "sourcesUnchanged": true,
+  "injected": true,
+  "restoredBeforeFinally": false,
+  "restoredAfterFinally": false,
+  "sourceHashesAfter": {
+    "/home/felixb/Projekte/chessfable.worktrees/drain/scripts/verify-app.mjs": "7278896d110f5df4e1b0267d19ee66e5272bee52268f2c0b7548f0e8379c0765",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src/state/store/debouncedStorage.ts": "6ae2f52b661eb5a2d3a520fdbe8469a38326e387cb91b87aea014a9c87de7fe0",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src/state/engineOwnerEnvelope.ts": "5c1de1ddd8993f7b95b7d85f049f3c7cbb88a934a43d6a7b4a1d30adb0e3415b",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/scripts/app-driver.mjs": "0537b7208ed9add4b2825b85343d4d9dcf24425e8b97d87129037e1aef882437",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/src/fs.rs": "b2b69c5ac6ac87e92f81bb3464a5a12eb63a50276e46fb95f98249f29802465c",
+    "/home/felixb/Projekte/chessfable.worktrees/drain/src-tauri/target/release/chessfable": "1a94956eb13061c28eab17a963388387c51394c1ce93afcb033034c6be75bf60",
+    "/tmp/chessfable-drain-recovery-20261023/native-proof/stage-ep-storage.mjs": "0c24389a319dd2b3cf1cd8e15d29166d3d29af7dc5366e426170bfa77434831d"
+  },
+  "markers": {
+    "FAIL  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label": true,
+    "FAIL  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label": true,
+    "FAIL  RF8 restoring access recovers the same selected roots": true
+  },
+  "requiredPasses": {
+    "  ok  EP1-card successful Name edit publishes the saved engine card": true,
+    "  ok  EP2-error refused engines storage write reports the save error": true,
+    "  ok  EP2-card refused Name edit retains the saved engine card": true,
+    "  ok  EP2-input refused Name draft settles to the saved name": true,
+    "  ok  EP1-storage successful Name edit persists the decoded engine name": true,
+    "  ok  EP2-storage refused Name edit retains the decoded saved engine name": true,
+    "  ok  RF0 selected puzzle and engine roots accept real IPC before access loss": true,
+    "  ok  RF1 puzzle read denial preserves Permission and I/O failure with a permission root label": true,
+    "  ok  RF5 puzzle permission guidance is visible through the actual renderer": true,
+    "  ok  RF6 Add permission guidance is visible through the actual renderer": true,
+    "  ok  RF7 permission failures retain saved engines and unrelated filesystem bytes": true
+  },
+  "uiAndRefusalPassed": true,
+  "unexecutedRFChecks": [],
+  "expectedEarlyReturn": true,
+  "unrelatedFailures": [],
+  "verifierRuntimeFailure": false,
+  "interrupted": false,
+  "deadlineFailure": false,
+  "permission": {
+    "root": "/tmp/chessfable-verify-3sMKMv/path-owner-fixture/permission-engines",
+    "initialMode": "0700",
+    "finalMode": "0700",
+    "transitions": [
+      {
+        "stage": "RF2",
+        "point": "before-native-call",
+        "original": "0300",
+        "fault": "0700"
+      },
+      {
+        "stage": "RF2",
+        "point": "after-native-response",
+        "restored": "0300"
+      },
+      {
+        "stage": "RF3",
+        "point": "before-native-call",
+        "original": "0400",
+        "fault": "0700"
+      },
+      {
+        "stage": "RF3",
+        "point": "after-native-response",
+        "restored": "0400"
+      },
+      {
+        "stage": "RF8",
+        "point": "before-native-call",
+        "original": "0700",
+        "fault": "0300"
+      },
+      {
+        "stage": "RF8",
+        "point": "after-native-response",
+        "restored": "0700"
+      }
+    ],
+    "responseStagesRestored": [
+      "RF2",
+      "RF3",
+      "RF8"
+    ],
+    "closed": true,
+    "restorationFailure": false,
+    "pendingFault": null
+  },
+  "unavailable": null,
+  "runtimeFailureStage": null,
+  "limitation": "Negative evidence only. Root must run the unchanged verifier green against the restored same candidate."
+}
+````
+
+### ep-storage-sqZpX4
+
+Child output excerpt retains every FAIL and every EP/RF check. Complete original output remained in this disposable case directory.
+
+````text
+0 ep-storage-stage ff4d7a1414627f1a48f97a813e376962c0e8d24e
+actual child exit: 1
+EP storage staging artifacts: /tmp/chessfable-drain-recovery-20261023/native-proof/ep-storage-sqZpX4
+STAGE valid envelope persisted with only retained engine name changed
+STAGE exact storage bytes and descriptor restored before and after unchanged EP2 cleanup
+NEGATIVE RECEIPT trusted=true isolated=false childExit=1 otherFailures=1 runtimeFailure=false
+UNRELATED FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+  ok  EP1-card successful Name edit publishes the saved engine card
+FAIL  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+FAIL  EP2-storage refused Name edit retains the decoded saved engine name
+FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+````
+
+````json
+{
+  "purpose": "Negative EP storage staging",
+  "trustedNegative": true,
+  "isolated": false,
+  "actual": {
+    "code": 1,
+    "signal": null
+  },
+  "requestedLines": {
+    "snapshot": 4159,
+    "restore": 4252,
+    "finallyEnd": 4255
+  },
+  "observedLines": {
+    "snapshot": 4159,
+    "restore": 4252
+  },
+  "sourcesUnchanged": true,
+  "injected": true,
+  "restoredBeforeFinally": true,
+  "restoredAfterFinally": true,
+  "markers": {
+    "FAIL  EP1-storage successful Name edit persists the decoded engine name": true,
+    "FAIL  EP2-storage refused Name edit retains the decoded saved engine name": true
+  },
+  "uiAndRefusalPassed": true,
+  "unrelatedFailures": [
+    "FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss"
+  ],
+  "verifierRuntimeFailure": false,
+  "interrupted": false,
+  "deadlineFailure": false,
+  "unavailable": null,
+  "runtimeFailureStage": null,
+  "limitation": "Negative evidence only. Root must run the unchanged verifier green against the restored same candidate."
+}
+````
+
+### Unchanged ordinary positive
+
+````text
+0 permission-positive 70da94b30a0466586475930436c796dc004ccbcf
+
+> chessfable@0.15.0 verify:app /home/felixb/Projekte/chessfable.worktrees/drain
+> node scripts/verify-app.mjs
+
+  .. opening seed WebDriver session
+  .. seed app and WebKit processes are gone; reusing WebDriver after session quit
+  .. conversion disposable inputs: /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-conversion-cancellation.pgn, /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-conversion-seed.pgn
+  .. game-opening disposable PGN input: /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-game-opening.pgn
+  .. opening assertion WebDriver session with the preserved profile
+  ok  production startup reclaims unowned authority and preserves native-owned authority
+  ok  startup authority reconciliation deletes no user files
+  ok  trusted production startup preserves owned images and cleans only the orphan
+  ok  the real Tauri IPC bridge is present (not a test mock)
+  ok  the real renderer exposes the ChessFable document title
+  ok  progress native event listener registers
+  ok  progress start lease has exact canonical string generation
+  ..  progress start wire: {"id":"verify-progress:8d4533da-2e93-4f72-b18d-a675b3b87dc0","generation":"1"}
+  ok  progress running event has exact canonical string generation
+  ok  progress state-update string lease reaches native with exact identity
+  ok  progress snapshot has exact canonical string generation
+  ok  progress terminal state update accepts the string lease
+  ok  progress terminal event has exact canonical string generation
+  ok  progress malformed lease rejects without changing the snapshot
+  ok  progress invalid clear rejects as a native IPC operation
+  ok  progress clear return has exact canonical string generation
+  ok  progress cleared event has exact canonical string generation
+  ok  progress clear removes the native snapshot
+  ok  progress native event listener is released
+  ok  the native practice read returns all 12,000 seeded positions
+  ok  native practice review paging returns every seeded entry and reaches the oldest review
+  ok  the legacy practice deck is migrated into the native store through real IPC
+  ok  migration retains the legacy deck capability in path-authority.json
+  ok  migration leaves the legacy practice localStorage key untouched
+  ok  fifty renderer ratings land in the native practice review store
+  ok  renderer ratings do not alter the large deck's 12,000 native positions
+  ok  the 50 new native reviews record the panel's Good rating
+  ok  renderer ratings create no new legacy key and do not grow the existing key
+  ok  list_practice_decks retains the legacy capability after its browser key is removed and fresh startup reconciliation
+  ok  the stale-file scenario rewrites the PGN in place
+  ok  the open file-backed tab reloads or withholds the changed PGN
+  ok  the file freshness transition includes a measured native read_game call
+  ok  the freshness transition applies within 1000 ms of the measured read
+  info  open file freshness: 2486.6 ms after rewrite (limit 2000 ms + read_game 29.0 ms + apply 636.0 ms; verified)
+  ok  the open file-backed tab refreshes within one poll interval plus measured read and apply
+  ok  the real sync path stores 500 further repertoire positions
+  ok  final restart preserves exact native position and review counts for both decks
+  ok  final practice inventory contains no additional native deck
+  ok  final migrated-deck counts still equal the legacy value's counts
+  ok  real IPC preserves the persisted offline download destination
+  ok  real IPC rejects a fresh download destination id
+  ok  real IPC rejects a database-root id
+  ok  the retained engine LocalImage rendered on the Engines page
+  ok  the retained engine LocalImage uses an image/png data URL
+  ok  the retained engine LocalImage data URL decodes in WebKitGTK
+  ok  EP1-card successful Name edit publishes the saved engine card
+  ok  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+  ok  EP2-storage refused Name edit retains the decoded saved engine name
+  ok  the production CSP rejects a detached blob image URL with an img-src violation
+  ok  the renderer cannot resolve a base directory (core:path grants are gone)
+  ok  the renderer reaches a live loopback sound-server port
+  ok  the loopback sound server serves the bundled standard move sound
+  ok  real attachment IPC prepares the exact next durable owner set
+  ok  real attachment IPC retires the selected managed image
+  ok  retirement preserves image bytes for the live session and records cleanup intent
+  ok  the custom title bar rendered its window controls
+  ok  the native backend mints an opaque read reservation
+  ok  the native backend acknowledges reservation cancellation
+  ok  a cancelled reservation cannot be claimed by a later native read
+  .. deletion disposable inputs: /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-deletion-outcome.pgn, /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-deletion-outcome.info, /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-sample.pgn
+  ok  WD0 deletion fixture acquires a real registered handle before sidecar refusal
+  ok  WD1 completed deletion rejects with a structured backend error
+  ok  WD2 ordinary post-commit sidecar failure reports partial-removal
+  ok  WD3 completed deletion reports exactly one removed primary target
+  ok  WD4 post-commit rejection leaves the primary file deleted
+  ok  WD5 post-commit deletion preserves the unrelated Files fixture
+  ok  WD6 subsequent native listing excludes the deleted handle
+  ok  WD7 serialized deletion rejection contains no private fixture path
+  ok  the seeded workspace file row renders on the Files page
+  ok  a real double-click on the unselected Files row navigates to /
+  ok  a real double-click on the unselected Files row shows its game
+  ok  GO1 game-opening fixtures contain two distinct native database and PGN games
+  ok  DS1 native database storage_size is the exact decimal string of its file length
+  ok  LU1 Library has one sidebar destination and one tree containing both native source kinds
+  ok  LU2 Library selection switches from file preview to database Explore and actions
+  .. game-opening source screenshot: /tmp/chessfable-game-opening-4022015.png.database-card.png
+  ok  GO2 the database card has a visible sibling Open database control before selection
+  ok  GO3 the labelled database control opens its handle route and synchronizes the database
+  ok  DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON
+  ok  GO4 database single-click selects a preview without admitting a tab
+  .. game-opening source screenshot: /tmp/chessfable-game-opening-4022015.png.database-game.png
+  ok  GO5 the labelled database game button opens the selected content and origin
+  ok  GO6 a fixed-coordinate double-click opens an initially unselected database game
+  ok  GO7 row-focused Enter opens the requested database game content and origin
+  .. game-opening source screenshot: /tmp/chessfable-game-opening-4022015.png.file-game.png
+  ok  GO8 the Files preview has a visible enabled Open game control
+  .. GO9 native geometry: {"originalRect":{"x":0,"y":0,"width":800,"height":647},"resizedRect":{"x":0,"y":0,"width":1300,"height":850}}
+  .. GO9 restored native geometry: {"x":0,"y":0,"width":800,"height":647}
+  ok  GO9 PGN single-click selects without opening and keeps row coordinates stationary
+  ok  GO10 the labelled Files game button opens the selected fresh game and explicit index
+  ok  GO11 a fixed-coordinate double-click opens an initially unselected non-first PGN game
+  ok  GO12 row-focused Enter opens the requested PGN game content and explicit index
+  ok  GO13 an empty PGN exposes no working Open game action
+  .. game-opening source screenshot: /tmp/chessfable-game-opening-4022015.png.info-panel-discard.png
+  .. GO14 owner 185ac66b-3cf9-4008-97e0-b59014c0bc1a, admitted IDs ["63415c09-a77c-4bb4-a846-6fb5b4386d50","5b01552e-a891-4415-87e0-22f53366a887","3f715584-46ba-4f7f-bc98-24b2da28fdcf","f1b2b609-7215-4322-9413-ff826e8b0ea5","8d6678fb-48fa-4715-8358-43d55215e59f","79fa6856-fb33-4206-8f5b-5c0c9d4f34de","185ac66b-3cf9-4008-97e0-b59014c0bc1a"], Event verify:opening-1 -> verify:GO14-unsaved-owner-discard -> verify:opening-0, dirty false -> true -> false, file gameNumber 1 -> 0, confirmation gone
+  ok  GO14 confirmed discard replaces the owning current game without admitting a tab
+  ok  LC1 accumulated source preserves custom headers, variations, NAGs and provider occurrences
+  ok  LC2 linked export is byte-identical to its authoritative PGN
+  ok  LC3 restoring the migration archive recovers the independent database version
+  ok  LC4 the current search cache indexes exactly the authoritative source generation
+  ok  LC5 Database-choice migration preserves the prior PGN bytes
+  ok  LC6 Database-choice migration exposes one active chosen version and an inactive preserved original
+  ok  LC7 Database-choice migration preserves the original metadata meaning
+  ok  LC8 Database-choice migration preserves the complete database version in source and archive
+  ok  LC9 Database-choice position search resolves the chosen source generation
+  ok  LC10 the preserved original index refuses the previous reference search
+  .. linked collection disposable artifacts: {"source":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-source.pgn","exported":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-exported.pgn","archived":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-restored-export.pgn","cache":"/tmp/chessfable-verify-Ol2lsM/.local/share/com.chessriddle.encroissant/collections/f5e8ab9a-9c6f-49b0-8dc6-b840a7e06ea2.db3","search":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-search.json","migrationOriginal":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-prior-original.pgn","migrationOriginalBefore":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-prior-before.pgn","migrationChosen":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-database-chosen.pgn","migrationExpectedDatabase":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-database-choice-expected.pgn","migrationArchiveExport":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-database-choice-archive.pgn","migrationDisposition":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-database-choice-disposition.json","migrationSearch":"/tmp/chessfable-verify-Ol2lsM/path-owner-fixture/files-workspace/verify-linked-dcfcda8c-6faf-41ea-80c0-9baa1ec5f535-database-choice-search.json"}
+  ok  CC0 conversion fixture seeds exactly one native game
+  ok  CC1 prepared conversion cancellation returns typed Cancellation before claim
+  ok  CC2 native progress triggers running and same-target queued ticket cancellation
+  ok  CC3 cancelled native imports preserve existing content and DataRevision
+  ok  CC4 a fresh conversion ticket retries successfully after cancellation
+  ok  CC5 settled native conversion tickets are retired
+  ok  the $8 board hint is rendered with a glyph path
+  ok  the $8 board hint SVG title is □
+  ok  the $8 board hint has a visible box and positive opacity through its board ancestors
+  ok  the unknown $220 renders no board annotation hint
+  ok  SAVE_FILE writes Nc3?! to the seeded NAG file
+  ok  the saved NAG game preserves $8
+  ok  the saved NAG game preserves $11
+  ok  the saved NAG game preserves d4! $2
+  ok  the saved NAG game preserves $220
+  ok  the Files metadata edit submits without a dialog error
+  ok  the Repertoire filter lists the metadata-edited workspace file
+  ok  the metadata-edited workspace sidecar records repertoire on disk
+  ok  the Files metadata edit preserves the PGN filename
+  ok  a second process on the same app-data directory is refused before initialization
+  ok  the refused launch leaves authority and credential registry bytes unchanged
+  ok  the primary still answers WebDriver after the refused launch
+  ok  a second process sharing only the configuration directory is refused
+  ok  a process on a different app-data directory initializes while the primary runs
+  ok  a real document reload cancels the previous document's retained reservation
+  ok  a real document reload preserves both exact seeded workspace tab identities
+  ok  a real document reload selects the second seeded workspace tab
+  .. root-permission disposable inputs: /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/permission-puzzles, /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/permission-engines, /tmp/chessfable-verify-Ol2lsM/path-owner-fixture/permission-engines/blocked-child
+  ok  RF0 selected puzzle and engine roots accept real IPC before access loss
+  ok  RF1 puzzle read denial preserves Permission and I/O failure with a permission root label
+  ok  RF5 puzzle permission guidance is visible through the actual renderer
+  ok  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+  ok  RF6 Add permission guidance is visible through the actual renderer
+  ok  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label
+  ok  RF7 permission failures retain saved engines and unrelated filesystem bytes
+  ok  RF8 restoring access recovers the same selected roots
+  ok  a native read reservation is retained until titlebar close
+  ok  the application process is running before the close
+  ok  application pid 4024556 and recorded WebKit service pids [4024603, 4024636] do not exist after the close
+  ok  the real destroyed-window event cancels the exact retained main-webview reservation
+  ok  the shutdown sequence started
+  ok  the shutdown cleanup ran to completion inside its budget
+  ok  the sound server shutdown was signalled
+  ok  titlebar shutdown removes retired image bytes and intent while retaining the owner
+
+shutdown log:
+  [2026-10-23][14:20:39][chessfable::sound::server][INFO] Sound server prepared on port 33107
+  [2026-10-23][14:23:33][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-23][14:23:33][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-23][14:23:33][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-23][14:23:34][chessfable::sound::server][INFO] Sound server prepared on port 46045
+  [2026-10-23][14:23:35][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-23][14:23:35][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-23][14:23:35][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-23][14:23:35][chessfable::sound::server][INFO] Sound server prepared on port 45667
+  [2026-10-23][14:23:44][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-23][14:23:44][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-23][14:23:44][chessfable][INFO] Shutdown cleanup finished
+  [2026-10-23][14:23:45][chessfable::sound::server][INFO] Sound server prepared on port 46247
+  [2026-10-23][14:25:23][chessfable][INFO] Shutdown requested: terminating engines and live games
+  [2026-10-23][14:25:23][chessfable][INFO] Sound server shutdown signalled
+  [2026-10-23][14:25:23][chessfable][INFO] Shutdown cleanup finished
+  ok  default-root-unusable: the Databases alert offers a visible folder chooser
+  ok  selected-root-missing: the Databases alert offers a visible folder chooser without recreating db
+
+all checks passed
+````
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code. Source-only comment provenance does not claim additional product behavior or new diagnostic failure coverage.
 
 ## Native runtime proof on ff4d7a14
 
