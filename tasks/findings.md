@@ -18089,3 +18089,19 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml --locked archive_staging_authority_four_stalled_streams_leave_gateway_available` and `cargo test --manifest-path src-tauri/Cargo.toml --locked production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop`. Both passed again in this recovery through agent-gate, canonical gate-ledger-witness-proof.8twH7u, exit 0. Earlier root-controlled producer regressions failed the unchanged repaired assertions at exit 101 and exact restoration returned them to green. Delayed healthy schedules also failed the old test bounds and passed the repair. Those source-control witnesses and seven closure approvals are retained in tasks/handoffs/2026-10-22-f-20261005-04-review.md under G3.
 * **Supersession:** The original release-blocking statement describes the pre-repair gate attempt. The two repaired witnesses no longer block release. A complete final gate remains independently required for the current engine change. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"db25c1747660cb89dea1f084fb63f6e802ef7ec6e1d964e7ef9e56d636f2a891","header_sha256":"6f385839095f5d29fb1c49b82c6e6a6de1528069e5839ea3531d3ca2ece85bc6","header_status":"handled","input_sha256":"b86f0488745a06342e1dc3be57e462f379fe566b467ba39cdfd5938d182feaed","kind":"mutation-receipt","operation":"ccf51a5cfffe37525138de30199008f234eb34a024426a8ace17132ddb59b8b2","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-08"],"target":"f-20261022-08","v":1} -->
+
+---
+
+## 2026-10-23 — filed through the inbox spool
+
+### The retirement race fixture waits for a tombstone while holding the registration barrier required to publish it
+
+* **ID:** f-20261023-01 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** src-tauri/src/engine/process.rs:13553, retire_binary_race_cancels_in_flight_admission_and_refuses_late_publication, and capture_binary_retirement near line 2810.
+* **Defect:** The existing race test holds supervisor.registration, starts retirement, and waits for is_retired_binary before releasing registration. The new completion-owned capture deliberately acquires registration before publishing the retired-binary transition. Both the broader retirement test run and an isolated rerun fail at the fixed two-second tombstone wait, exit 101. This ordering conflict is in the committed interrupted engine phase, before the current observation extraction, and blocks its full native gate.
+* **Failure scenario:** Running the ordinary native suite reaches this test, which prevents the producer from making the progress its own assertion waits for. This does not establish a production deadlock.
+* **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml --locked retire_binary_race_cancels_in_flight_admission_and_refuses_late_publication`. Preserve the registration barrier and all late-publication, termination, old-binary refusal and new-binary admission assertions while repairing the fixture ordering.
+* **Follow-up of:** f-20261005-05, introduced by its Phase 1 retirement capture change in 111d212d.
+* **Related:** f-20261001-14 preserves generation-owned failed cleanup. No shared Root is assigned without evidence.
+* **Found by:** Codex process repair worker during this drain-push recovery, confirmed by root source trace. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
