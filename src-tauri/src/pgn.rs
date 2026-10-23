@@ -4447,6 +4447,19 @@ mod tests {
     }
 
     #[test]
+    fn pgn_scanner_pickup_header_key_horizontal_separators() {
+        for separator in [" ", "  ", "\t", " \t ", "\t \t"] {
+            assert_pickup_header_ranges(
+                &[
+                    &format!("[Event{separator}\" A \"]\n\n1. e4 *\n"),
+                    &format!("[Event{separator}\"B\"]\n\n1. d4 *\n"),
+                ],
+                &[b" A ", b"B"],
+            );
+        }
+    }
+
+    #[test]
     fn pgn_scanner_pickup_c1_percent_after_blank_separator() {
         assert_pickup_header_ranges(
             &["[Event \"A\"]\n\n% comment\n", "[Event \"B\"]\n"],

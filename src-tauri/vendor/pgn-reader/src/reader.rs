@@ -170,11 +170,10 @@ trait ReadPgn {
                         continue;
                     };
 
-                    let space = if left_quote > 0 && self.buffer()[left_quote - 1] == b' ' {
-                        left_quote - 1
-                    } else {
-                        left_quote
-                    };
+                    let mut key_end = left_quote;
+                    while key_end > 0 && matches!(self.buffer()[key_end - 1], b' ' | b'\t') {
+                        key_end -= 1;
+                    }
 
                     let value_start = left_quote + 1;
                     let mut right_quote = value_start;
@@ -216,7 +215,7 @@ trait ReadPgn {
                     }
 
                     visitor.header(
-                        &self.buffer()[..space],
+                        &self.buffer()[..key_end],
                         RawHeader(&self.buffer()[value_start..right_quote]),
                     );
                     self.consume(consumed);
@@ -824,6 +823,60 @@ mod tests {
             }
             assert_eq!(events, expected, "skip={skip}, pgn={pgn:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_header_key_horizontal_separators() -> Result<(), io::Error> {
+        struct Headers {
+            headers: Vec<(Vec<u8>, Vec<u8>)>,
+            skip: bool,
+        }
+
+        impl Visitor for Headers {
+            type Result = Vec<(Vec<u8>, Vec<u8>)>;
+
+            fn header(&mut self, key: &[u8], value: RawHeader<'_>) {
+                self.headers.push((key.to_vec(), value.as_bytes().to_vec()));
+            }
+
+            fn end_headers(&mut self) -> Skip {
+                Skip(self.skip)
+            }
+
+            fn end_game(&mut self) -> Self::Result {
+                std::mem::take(&mut self.headers)
+            }
+        }
+
+        let mut failures = Vec::new();
+        for skip in [false, true] {
+            for separator in [" ", "  ", "   ", "\t", "\t\t", " \t ", "\t \t"] {
+                for (name, value) in [
+                    ("Event", " A\t\\\"é\\\\Z "),
+                    ("FEN", "8/8/8/8/8/8/4K3/7k w - - 0 1"),
+                    ("X Y\tZ\u{a0}", " raw "),
+                ] {
+                    let pgn = format!("[{name}{separator}\"{value}\"]\n\n*");
+                    let mut reader = BufferedReader::new_cursor(pgn.as_bytes());
+                    let mut visitor = Headers {
+                        headers: Vec::new(),
+                        skip,
+                    };
+                    let actual = reader.read_game(&mut visitor)?;
+                    let expected =
+                        Some(vec![(name.as_bytes().to_vec(), value.as_bytes().to_vec())]);
+                    eprintln!("skip={skip}, separator={separator:?}, callbacks={actual:?}");
+                    if actual != expected {
+                        failures.push(format!(
+                            "skip={skip}, separator={separator:?}, actual={actual:?}, expected={expected:?}"
+                        ));
+                    }
+                    assert!(reader.read_game(&mut visitor)?.is_none());
+                }
+            }
+        }
+        assert!(failures.is_empty(), "raw header callbacks: {failures:#?}");
         Ok(())
     }
 

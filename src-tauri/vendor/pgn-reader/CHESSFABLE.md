@@ -45,6 +45,14 @@ Skip(true) modes, game counts and exact scanner byte ranges across LF/CRLF,
 BOM/no BOM, horizontal indentation and blank/whitespace separators. Retain the
 application's leading-percent and semicolon preface range regression as well.
 
+Header callback keys exclude all trailing ASCII spaces and tabs immediately
+before the value quote, rather than only one literal space. This bounded
+backwards scan preserves interior name bytes, non-ASCII bytes, raw values,
+quote offsets, token caps and malformed-input recovery. Future upgrades must
+preserve this correction with the reader's raw Event/FEN callback separator
+regression and the application's pgn_scanner_pickup separator regression across
+both parser modes, LF/CRLF and BOM/no BOM variants.
+
 Gate scope: cargo fmt formats the app package only (no --all); backend LCOV
 exports only src-tauri/src/**/*.rs and ratchets that same scope; cargo-mutants
 selects explicit application source files; rust:surface:check scans only
