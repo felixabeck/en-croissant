@@ -785,7 +785,15 @@ fn scan_games_cancelled<R: Read + Seek>(
     let mut reader = BufReader::new(reader);
     reader.seek(SeekFrom::Start(0))?;
     let mut bom = [0; 3];
-    let initial = reader.read(&mut bom)?;
+    let mut initial = 0;
+    while initial < bom.len() {
+        match reader.read(&mut bom[initial..]) {
+            Ok(0) => break,
+            Ok(bytes) => initial += bytes,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
     let start = if initial == bom.len() && bom == [0xEF, 0xBB, 0xBF] {
         3
     } else {
@@ -795,7 +803,7 @@ fn scan_games_cancelled<R: Read + Seek>(
     let mut games: Vec<GameRange> = Vec::new();
     let mut line = Vec::new();
     let mut game_start = None;
-    let mut has_movetext = false;
+    let mut header_block_ended = false;
     let mut in_brace_comment = false;
     #[cfg(test)]
     let mut observed_attempt = false;
@@ -822,17 +830,18 @@ fn scan_games_cancelled<R: Read + Seek>(
         }
         let line = std::str::from_utf8(&line).map_err(|_| malformed("PGN is not valid UTF-8"))?;
         let header = is_tag_header(line, in_brace_comment);
-        let escaped_or_line_comment = !in_brace_comment
-            && (line.trim_start_matches([' ', '\t']).starts_with(';')
-                || line.trim_start_matches([' ', '\t']).starts_with('%'));
+        let escaped_line =
+            !in_brace_comment && line.trim_start_matches([' ', '\t']).starts_with('%');
+        let escaped_or_line_comment = escaped_line
+            || (!in_brace_comment && line.trim_start_matches([' ', '\t']).starts_with(';'));
         let non_whitespace = !escaped_or_line_comment && !line.trim().is_empty();
-        if header && has_movetext {
+        if header && header_block_ended {
             games
                 .last_mut()
                 .expect("game start implies a game range")
                 .end = line_start;
             game_start = Some(line_start);
-            has_movetext = false;
+            header_block_ended = false;
             games.push(GameRange {
                 start: line_start,
                 end: line_start,
@@ -844,8 +853,8 @@ fn scan_games_cancelled<R: Read + Seek>(
                 end: line_start.max(start),
             });
         }
-        if non_whitespace && !header {
-            has_movetext = true;
+        if !header && !escaped_line && game_start.is_some() {
+            header_block_ended = true;
         }
         if !header && !escaped_or_line_comment {
             update_brace_comment(line, &mut in_brace_comment);
@@ -4360,6 +4369,208 @@ mod tests {
             .is_empty());
         assert!(scan_games(Cursor::new(b"\xef\xbb".as_slice())).is_err());
         assert!(scan_games(Cursor::new(b"\xff".as_slice())).is_err());
+    }
+
+    fn pickup_parser_events(data: &[u8]) -> Vec<Vec<u8>> {
+        #[derive(Default)]
+        struct Events(Vec<u8>);
+
+        impl pgn_reader::Visitor for Events {
+            type Result = Vec<u8>;
+
+            fn header(&mut self, key: &[u8], value: pgn_reader::RawHeader<'_>) {
+                if key == b"Event" {
+                    self.0 = value.as_bytes().to_vec();
+                }
+            }
+
+            fn end_game(&mut self) -> Self::Result {
+                std::mem::take(&mut self.0)
+            }
+        }
+
+        let mut reader = pgn_reader::BufferedReader::new(Cursor::new(data));
+        let mut visitor = Events::default();
+        let mut events = Vec::new();
+        while let Some(event) = reader
+            .read_game(&mut visitor)
+            .expect("parse pickup fixture")
+        {
+            events.push(event);
+        }
+        events
+    }
+
+    fn assert_pickup_header_ranges(expected_games: &[&str], expected_events: &[&[u8]]) {
+        for_each_scan_variant(|line_ending, bom| {
+            let expected_games: Vec<Vec<u8>> = expected_games
+                .iter()
+                .map(|game| with_line_ending(game, line_ending))
+                .collect();
+            let mut data = bom.to_vec();
+            for game in &expected_games {
+                data.extend_from_slice(game);
+            }
+            let events = pickup_parser_events(&data);
+            println!(
+                "pickup parser: line_ending={line_ending:?}, bom={}, games={}, events={events:?}",
+                bom.len(),
+                events.len()
+            );
+            assert_eq!(events, expected_events, "real parser header events");
+            let ranges = scan_games(Cursor::new(&data)).expect("scan pickup fixture");
+            println!("pickup scanner: {ranges:?}");
+            assert_eq!(ranges.len(), events.len(), "scanner and parser game counts");
+            let mut start = bom.len() as u64;
+            for (range, expected) in ranges.iter().zip(&expected_games) {
+                let end = start + expected.len() as u64;
+                assert_eq!((range.start, range.end), (start, end));
+                let bytes = &data[range.start as usize..range.end as usize];
+                assert_eq!(bytes, expected);
+                assert_eq!(pickup_parser_events(bytes).len(), 1);
+                start = end;
+            }
+        });
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_header_only_before_movetext() {
+        assert_pickup_header_ranges(
+            &["[Event \"empty\"]\n\n", "[Event \"B\"]\n\n1. e4 *"],
+            &[b"empty", b"B"],
+        );
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_two_header_only_games() {
+        assert_pickup_header_ranges(&["[Event \"A\"]\n\n", "[Event \"B\"]\n"], &[b"A", b"B"]);
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_header_line_semicolon_ends_block() {
+        for first_game in ["[Event \"A\"]\n; comment\n", "[Event \"A\"]\n; { comment\n"] {
+            assert_pickup_header_ranges(&[first_game, "[Event \"B\"]\n\n1. e4 *"], &[b"A", b"B"]);
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_header_line_percent_keeps_block() {
+        for game in [
+            "[Event \"A\"]\n% comment\n[Site \"B\"]\n\n1. e4 *",
+            "[Event \"A\"]\n% { comment\n[Site \"B\"]\n\n1. e4 *",
+        ] {
+            assert_pickup_header_ranges(&[game], &[b"A"]);
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_adjacent_and_inline_headers_stay_together() {
+        assert_pickup_header_ranges(
+            &["[Event \"{literal\"] [Site \"X\\\"Y\"]\n[White \"W\"]\n\n"],
+            &[b"{literal"],
+        );
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_blank_lines_inside_brace_comments_do_not_split() {
+        assert_pickup_header_ranges(
+            &[
+                "[Event \"A\"]\n\n{\n\n[Event \"comment\"]\n\n}\n",
+                "[Event \"B\"]\n\n1. e4 *",
+            ],
+            &[b"A", b"B"],
+        );
+    }
+
+    struct PickupOneByteReader<R> {
+        inner: R,
+        reads: usize,
+        error_on_read: Option<(usize, io::ErrorKind)>,
+    }
+
+    impl<R: Read> Read for PickupOneByteReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            if let Some((read, kind)) = self.error_on_read {
+                if self.reads == read {
+                    return Err(io::Error::new(kind, "pickup injected read error"));
+                }
+            }
+            let len = buffer.len().min(1);
+            self.inner.read(&mut buffer[..len])
+        }
+    }
+
+    impl<R: Seek> Seek for PickupOneByteReader<R> {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_bom_probe_handles_short_reads_and_interruptions() {
+        for data in [
+            b"\xef\xbb\xbf[Event \"A\"]\r\n\r\n1. e4 *\r\n".as_slice(),
+            b"[Event \"A\"]\n\n1. e4 *\n".as_slice(),
+            b"*".as_slice(),
+            b"*\n".as_slice(),
+            b" ".as_slice(),
+            b"".as_slice(),
+            b"\xef\xbb\xbf".as_slice(),
+        ] {
+            let expected = scan_games(Cursor::new(data)).expect("scan contiguous fixture");
+            for error_on_read in [None, Some((2, io::ErrorKind::Interrupted))] {
+                let ranges = scan_games(PickupOneByteReader {
+                    inner: Cursor::new(data),
+                    reads: 0,
+                    error_on_read,
+                })
+                .expect("scan one-byte reads");
+                println!("pickup short reads: data={data:?}, error={error_on_read:?}, {ranges:?}");
+                assert_eq!(ranges.len(), expected.len());
+                for (range, expected) in ranges.iter().zip(&expected) {
+                    assert_eq!((range.start, range.end), (expected.start, expected.end));
+                }
+                if let Some(range) = ranges.first() {
+                    let start = if data.starts_with(b"\xef\xbb\xbf") {
+                        3
+                    } else {
+                        0
+                    };
+                    assert_eq!((range.start, range.end), (start, data.len() as u64));
+                } else {
+                    assert!(data.is_empty() || data == b" " || data == b"\xef\xbb\xbf");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_bom_probe_preserves_invalid_data_and_read_errors() {
+        for data in [b"\xef".as_slice(), b"\xef\xbb".as_slice()] {
+            for error_on_read in [None, Some((2, io::ErrorKind::Interrupted))] {
+                assert_eq!(
+                    scan_games(PickupOneByteReader {
+                        inner: Cursor::new(data),
+                        reads: 0,
+                        error_on_read,
+                    })
+                    .expect_err("partial BOM is invalid UTF-8")
+                    .kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+        }
+        assert_eq!(
+            scan_games(PickupOneByteReader {
+                inner: Cursor::new(b"\xef\xbb\xbf"),
+                reads: 0,
+                error_on_read: Some((2, io::ErrorKind::PermissionDenied)),
+            })
+            .expect_err("probe read error must propagate")
+            .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
