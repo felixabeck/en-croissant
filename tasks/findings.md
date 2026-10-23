@@ -9516,11 +9516,15 @@ Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in
 
 ### Threefold detection after `appendMove` walks the selected variation instead of the main line it appended to
 
-* **ID:** f-20260914-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-28 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/state/store/tree.ts:697 (`appendMove` appends to the main line), :769 (repetition walk follows `state.position`)
 * **Defect:** With main line `Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1`, a side variation selected at `[1]`, and `Ng8` appended to the main line, the initial position has occurred three times but the result stays `*`, because the repetition walk follows the selected side variation rather than the path the move was appended to.
 * **Why it matters:** A drawn game is not declared; `.claude/rules/chess-tree-semantics.md` (mainline-vs-variation assumptions).
 * **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 94, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669`), outside that run's area, so deferred; not reproduced in that run.
+* **Pickup closure (2026-10-23):** Already fixed by published commit `e91b191288baf9c9990ff0cc74d300ccc230a7c4` (`Correct tree navigation, repetition, and PGN semantics`). At pickup HEAD `c4da644fe6ae269457164b44dcd5fd44593fffb5`, `appendMove` calls the shared move mutation with `last: true`, which derives `position` from the mainline endpoint and passes that path to `isThreeFoldRepetition`. The repetition walk uses that argument rather than the selected `state.position`, so selecting a variation no longer changes which history is counted.
+* **Proof:** `pnpm exec vitest run src/state/store/tree.test.ts` passed all 124 tests, including `appendMove checks repetition along the mainline append path`. That regression appends the eighth knight move with the cursor at the root and asserts a draw. The selected-variation case is supported by the current source path, not claimed as a separately executed fixture. Retained command and completion evidence: `/tmp/chessfable-side-lane-astra-20261023/gate-repetition-proof.92R3SS/`.
+* **Scope and attribution:** This pickup changes only the finding record. No replacement implementation, new product decision or source edit is needed. Plan authorship and arbitration share the root context. Detection runs in separate Codex review sessions in the same OpenAI model family as the code. Push review and release proof follow this closure.
+<!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"2561f1c4fe899951a80a576446c5507926d56d3d57c7f31dd8a83f23e93c3fd7","header_sha256":"b4fc8da3c8a23cce0a1faae4a39a4da070298934adc4ec522f68c80a72ae4899","header_status":"handled","input_sha256":"1c71b7b304957adcafda8a6276e3ce280b1cfe5805b456df2c4639c0d9889f21","kind":"mutation-receipt","operation":"5a00ddda5efbc5906736fdfa7d46ead5974280acdbc042b057f30fd96906c944","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-28"],"target":"f-20260914-28","v":1} -->
 
 ### Windows PGN cache revision uses creation time as ctime, so a same-length in-place rewrite keeps stale offsets
 
