@@ -9836,7 +9836,11 @@ mod tests {
         };
         for boundary in ["publication", "application", "acknowledgement"] {
             let dir = tempdir().unwrap();
-            let (authority, _, engine_root, root) = engine_destination(&dir);
+            let authority =
+                crate::infra::path_authority::PathAuthority::open_for_engine_test(dir.path())
+                    .unwrap();
+            let (authority, _, engine_root, root) =
+                engine_destination_with_authority(engine_directory(&dir), authority);
             let probe_count = dir.path().join("probes");
             let script = format!("#!/bin/sh\nprintf 'probe\\n' >> '{}'\nwhile IFS= read -r line; do case \"$line\" in uci) echo 'id name Reload Engine'; echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n", probe_count.display());
             let payload = gzip_tar_payload(script.as_bytes());
