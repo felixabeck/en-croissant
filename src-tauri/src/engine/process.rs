@@ -7907,13 +7907,13 @@ mod tests {
         }));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn retained_cleanup_repeated_failed_shutdown_is_bounded_and_generation_exact() {
         let supervisor = EngineSupervisor::default();
         let key = EngineKey::new("retained-shutdown".into(), "engine".into()).unwrap();
         let actor = EngineActor::recoverable_cleanup_test_actor();
         let owner = actor.cleanup.as_ref().unwrap();
-        let (child, _, dropped) = child_control([FakeWait::Pending]);
+        let (child, kill_calls, dropped) = child_control([FakeWait::Pending]);
         owner.state.lock().unwrap().control = Some(Box::new(child));
         let current = supervisor
             .replace_handle(
@@ -7938,7 +7938,7 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(newer.generation, current.generation);
-        for _ in 0..2 {
+        for expected_kill_calls in 1..=2 {
             let result = timeout(Duration::from_secs(3), supervisor.terminate_tab(&key.tab))
                 .await
                 .expect("one drain visits a failed generation only once");
@@ -7946,12 +7946,17 @@ mod tests {
                 result.is_err(),
                 "unconfirmed reap cannot report successful shutdown"
             );
+            assert_eq!(kill_calls.load(Ordering::SeqCst), expected_kill_calls);
             assert!(supervisor.pending_actors.contains_key(&current.generation));
             assert!(!dropped.load(Ordering::SeqCst));
         }
         assert!(supervisor.get_exact(&key).is_none());
-        owner.state.lock().unwrap().control = Some(Box::new(child_control([FakeWait::Ready]).0));
+        let (recovered_child, _, recovered_dropped) = child_control([FakeWait::Ready]);
+        owner.state.lock().unwrap().control = Some(Box::new(recovered_child));
         supervisor.terminate_all().await.unwrap();
+        assert!(supervisor.pending_actors.is_empty());
+        assert!(!owner.unresolved());
+        assert!(recovered_dropped.load(Ordering::SeqCst));
     }
 
     #[cfg(unix)]
