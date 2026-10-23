@@ -1,8 +1,9 @@
 # ChessFable patch to pgn-reader
 
 Upstream: pgn-reader 0.26.0, from the Cargo registry. The complete crate is
-retained, including COPYING, Cargo.toml, Cargo.toml.orig, Cargo.lock, README.md,
-rustfmt.toml, src/, docs/, examples/, and upstream metadata.
+retained except for Cargo.lock, including COPYING, Cargo.toml, Cargo.toml.orig,
+README.md, rustfmt.toml, src/, docs/, examples/, and upstream metadata. Dependency
+resolution uses the application's lockfile, no lockfile is kept in this crate.
 
 The parser patch is in src/reader.rs. Comments and headers that
 outgrow the buffered window shift their retained bytes, double the buffer when
@@ -28,6 +29,21 @@ The unpatched upstream version uses a fixed 16 KiB buffer and rejects a real
 a stricter comment limit; that report is unverified and is not needed for this
 patch. A future upstream upgrade must re-apply or demonstrate replacement of
 this patch and pass the application's long_token_ regressions.
+
+Header continuation accepts horizontal whitespace before tags and percent escape
+lines, while leaving blank separators for movetext processing. Normal and skipped
+movetext share one newline boundary lookahead, which accepts indented next-game
+headers and leaves their opening bracket available to the next read_game. Percent
+escape lines retain their terminating newline so the following header boundary
+is recognized, including consecutive escape lines. These bounded transitions
+preserve the scanner's established accepted boundaries without changing token
+caps, long-token recovery, public APIs or the application's editing grammar.
+A future upgrade must preserve these transitions or demonstrate an equivalent
+replacement with the reader's header/boundary tests and the application's
+pgn_scanner_pickup regressions. Those tests check real Event values in normal and
+Skip(true) modes, game counts and exact scanner byte ranges across LF/CRLF,
+BOM/no BOM, horizontal indentation and blank/whitespace separators. Retain the
+application's leading-percent and semicolon preface range regression as well.
 
 Gate scope: cargo fmt formats the app package only (no --all); backend LCOV
 exports only src-tauri/src/**/*.rs and ratchets that same scope; cargo-mutants

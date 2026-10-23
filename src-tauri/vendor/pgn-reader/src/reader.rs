@@ -223,11 +223,33 @@ trait ReadPgn {
                     self.skip_ket()?;
                 }
                 b'%' => self.skip_line()?,
+                b' ' | b'\t' | b'\r' => {
+                    self.bump();
+                }
                 _ => return Ok(()),
             }
         }
 
         Ok(())
+    }
+
+    /// Inspect the line after a movetext newline in both visitor modes.
+    /// Keep the next header and percent line's terminal newline available.
+    fn movetext_line_boundary(&mut self) -> Result<bool, Self::Err> {
+        while let Some(ch) = self.fill_buffer_and_peek()? {
+            match ch {
+                b' ' | b'\t' | b'\r' => {
+                    self.bump();
+                }
+                b'%' => {
+                    self.skip_until(b'\n')?;
+                    return Ok(false);
+                }
+                b'[' | b'\n' => return Ok(true),
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     fn skip_movetext(&mut self) -> Result<(), Self::Err> {
@@ -242,17 +264,11 @@ trait ReadPgn {
                 b';' => {
                     self.skip_until(b'\n')?;
                 }
-                b'\n' => match self.peek() {
-                    Some(b'%') => self.skip_until(b'\n')?,
-                    Some(b'\n') | Some(b'[') => break,
-                    Some(b'\r') => {
-                        self.bump();
-                        if let Some(b'\n') = self.peek() {
-                            break;
-                        }
+                b'\n' => {
+                    if self.movetext_line_boundary()? {
+                        break;
                     }
-                    _ => continue,
-                },
+                }
                 _ => {
                     if let Some(consumed) = memchr::memchr3(b'\n', b'{', b';', self.buffer()) {
                         self.consume(consumed);
@@ -284,15 +300,16 @@ trait ReadPgn {
                 b'{' => {
                     self.bump();
 
-                    let right_brace = match self.find_bounded(|bytes| memchr::memchr(b'}', bytes))? {
-                        Some(pos) => pos,
-                        None => {
-                            self.consume_all();
-                            self.skip_until(b'}')?;
-                            self.bump();
-                            return Err(Self::invalid_data());
-                        }
-                    };
+                    let right_brace =
+                        match self.find_bounded(|bytes| memchr::memchr(b'}', bytes))? {
+                            Some(pos) => pos,
+                            None => {
+                                self.consume_all();
+                                self.skip_until(b'}')?;
+                                self.bump();
+                                return Err(Self::invalid_data());
+                            }
+                        };
 
                     visitor.comment(RawComment(&self.buffer()[..right_brace]));
                     self.consume(right_brace + 1);
@@ -300,21 +317,8 @@ trait ReadPgn {
                 b'\n' => {
                     self.bump();
 
-                    match self.peek() {
-                        Some(b'%') => {
-                            self.bump();
-                            self.skip_line()?;
-                        }
-                        Some(b'[') | Some(b'\n') => {
-                            break;
-                        }
-                        Some(b'\r') => {
-                            self.bump();
-                            if self.peek() == Some(b'\n') {
-                                break;
-                            }
-                        }
-                        _ => continue,
+                    if self.movetext_line_boundary()? {
+                        break;
                     }
                 }
                 b';' => {
@@ -782,6 +786,84 @@ mod tests {
         fn end_game(&mut self) {
             self.count += 1;
         }
+    }
+
+    fn assert_header_events(pgn: &str, expected: &[&[u8]]) -> Result<(), io::Error> {
+        struct Events {
+            event: Vec<u8>,
+            skip: bool,
+        }
+
+        impl Visitor for Events {
+            type Result = Vec<u8>;
+
+            fn header(&mut self, key: &[u8], value: RawHeader<'_>) {
+                if key == b"Event" {
+                    self.event = value.as_bytes().to_vec();
+                }
+            }
+
+            fn end_headers(&mut self) -> Skip {
+                Skip(self.skip)
+            }
+
+            fn end_game(&mut self) -> Self::Result {
+                std::mem::take(&mut self.event)
+            }
+        }
+
+        for skip in [false, true] {
+            let mut reader = BufferedReader::new(io::Cursor::new(pgn.as_bytes()));
+            let mut visitor = Events {
+                event: Vec::new(),
+                skip,
+            };
+            let mut events = Vec::new();
+            while let Some(event) = reader.read_game(&mut visitor)? {
+                events.push(event);
+            }
+            assert_eq!(events, expected, "skip={skip}, pgn={pgn:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_header_horizontal_continuation() -> Result<(), io::Error> {
+        for indent in [" ", "\t", " \t"] {
+            for continuation in ["[Site \"X\"]", "% comment", "% first\n\t% second"] {
+                assert_header_events(
+                    &format!("[Event \"A\"]\n{indent}{continuation}\n[Event \"B\"]\n"),
+                    &[b"B"],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_indented_game_boundary() -> Result<(), io::Error> {
+        for indent in [" ", "\t", " \t"] {
+            for separator in ["\n", " \t\n", "\r\n", " \t\r\n"] {
+                assert_header_events(
+                    &format!("[Event \"A\"]\n{separator}{indent}[Event \"B\"]\n"),
+                    &[b"A", b"B"],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_percent_game_boundary() -> Result<(), io::Error> {
+        for moves in ["", "1. e4 *\n"] {
+            for escapes in ["% comment\n", "% first\n\t% second\n"] {
+                assert_header_events(
+                    &format!("[Event \"A\"]\n\n{moves}{escapes}[Event \"B\"]\n"),
+                    &[b"A", b"B"],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     #[test]

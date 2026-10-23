@@ -2453,6 +2453,14 @@ mod tests {
     }
 
     fn assert_scan_variants(leading: &str, expected_games: &[&str]) {
+        assert_scan_fixture_variants(leading, expected_games, |_, _| {});
+    }
+
+    fn assert_scan_fixture_variants(
+        leading: &str,
+        expected_games: &[&str],
+        mut assertion: impl FnMut(&[u8], &[GameRange]),
+    ) {
         for_each_scan_variant(|line_ending, bom| {
             let leading = with_line_ending(leading, line_ending);
             let expected_games: Vec<Vec<u8>> = expected_games
@@ -2478,6 +2486,7 @@ mod tests {
                 );
                 expected_start = expected_end;
             }
+            assertion(&data, &ranges);
         });
     }
 
@@ -4371,26 +4380,35 @@ mod tests {
         assert!(scan_games(Cursor::new(b"\xff".as_slice())).is_err());
     }
 
-    fn pickup_parser_events(data: &[u8]) -> Vec<Vec<u8>> {
-        #[derive(Default)]
-        struct Events(Vec<u8>);
+    fn pickup_parser_events(data: &[u8], skip: bool) -> Vec<Vec<u8>> {
+        struct Events {
+            event: Vec<u8>,
+            skip: bool,
+        }
 
         impl pgn_reader::Visitor for Events {
             type Result = Vec<u8>;
 
             fn header(&mut self, key: &[u8], value: pgn_reader::RawHeader<'_>) {
                 if key == b"Event" {
-                    self.0 = value.as_bytes().to_vec();
+                    self.event = value.as_bytes().to_vec();
                 }
             }
 
+            fn end_headers(&mut self) -> pgn_reader::Skip {
+                pgn_reader::Skip(self.skip)
+            }
+
             fn end_game(&mut self) -> Self::Result {
-                std::mem::take(&mut self.0)
+                std::mem::take(&mut self.event)
             }
         }
 
         let mut reader = pgn_reader::BufferedReader::new(Cursor::new(data));
-        let mut visitor = Events::default();
+        let mut visitor = Events {
+            event: Vec::new(),
+            skip,
+        };
         let mut events = Vec::new();
         while let Some(event) = reader
             .read_game(&mut visitor)
@@ -4402,35 +4420,91 @@ mod tests {
     }
 
     fn assert_pickup_header_ranges(expected_games: &[&str], expected_events: &[&[u8]]) {
-        for_each_scan_variant(|line_ending, bom| {
-            let expected_games: Vec<Vec<u8>> = expected_games
-                .iter()
-                .map(|game| with_line_ending(game, line_ending))
-                .collect();
-            let mut data = bom.to_vec();
-            for game in &expected_games {
-                data.extend_from_slice(game);
-            }
-            let events = pickup_parser_events(&data);
-            println!(
-                "pickup parser: line_ending={line_ending:?}, bom={}, games={}, events={events:?}",
-                bom.len(),
-                events.len()
-            );
-            assert_eq!(events, expected_events, "real parser header events");
-            let ranges = scan_games(Cursor::new(&data)).expect("scan pickup fixture");
-            println!("pickup scanner: {ranges:?}");
-            assert_eq!(ranges.len(), events.len(), "scanner and parser game counts");
-            let mut start = bom.len() as u64;
-            for (range, expected) in ranges.iter().zip(&expected_games) {
-                let end = start + expected.len() as u64;
-                assert_eq!((range.start, range.end), (start, end));
-                let bytes = &data[range.start as usize..range.end as usize];
-                assert_eq!(bytes, expected);
-                assert_eq!(pickup_parser_events(bytes).len(), 1);
-                start = end;
+        assert_eq!(expected_games.len(), expected_events.len());
+        let mut failures = Vec::new();
+        assert_scan_fixture_variants("", expected_games, |data, ranges| {
+            for skip in [false, true] {
+                let events = pickup_parser_events(data, skip);
+                println!(
+                    "pickup: skip={skip}, data={data:?}, ranges={ranges:?}, events={events:?}"
+                );
+                if events != expected_events || events.len() != ranges.len() {
+                    failures.push(format!("skip={skip}, data={data:?}, events={events:?}"));
+                }
+                for (range, expected_event) in ranges.iter().zip(expected_events) {
+                    let bytes = &data[range.start as usize..range.end as usize];
+                    let events = pickup_parser_events(bytes, skip);
+                    if events != [*expected_event] {
+                        failures.push(format!("skip={skip}, range={range:?}, events={events:?}"));
+                    }
+                }
             }
         });
+        assert!(
+            failures.is_empty(),
+            "real parser header events: {failures:#?}"
+        );
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_c1_percent_after_blank_separator() {
+        assert_pickup_header_ranges(
+            &["[Event \"A\"]\n\n% comment\n", "[Event \"B\"]\n"],
+            &[b"A", b"B"],
+        );
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_c2_indented_percent_continues_headers() {
+        for indent in [" ", "\t", " \t"] {
+            assert_pickup_header_ranges(
+                &[&format!(
+                    "[Event \"A\"]\n{indent}% comment\n[Event \"B\"]\n"
+                )],
+                &[b"B"],
+            );
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_p1_indented_tag_continues_headers() {
+        for indent in [" ", "\t", " \t"] {
+            assert_pickup_header_ranges(
+                &[&format!(
+                    "[Event \"A\"]\n{indent}[Site \"X\"]\n[Event \"B\"]\n"
+                )],
+                &[b"B"],
+            );
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_pl1_indented_next_game_header() {
+        for indent in [" ", "\t", " \t"] {
+            assert_pickup_header_ranges(
+                &["[Event \"A\"]\n\n", &format!("{indent}[Event \"B\"]\n")],
+                &[b"A", b"B"],
+            );
+        }
+    }
+
+    #[test]
+    fn pgn_scanner_pickup_escape_and_whitespace_boundary_matrix() {
+        for indent in ["", " ", "\t", " \t"] {
+            for separator in ["\n", " \t\n"] {
+                for escapes in ["% { ignored\n", "% { ignored\n\t% } ignored\n"] {
+                    for moves in ["", "1. e4 *\n"] {
+                        assert_pickup_header_ranges(
+                            &[
+                                &format!("[Event \"A\"]\n{separator}{moves}{escapes}"),
+                                &format!("{indent}[Event \"B\"]\n"),
+                            ],
+                            &[b"A", b"B"],
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

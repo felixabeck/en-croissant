@@ -1,6 +1,7 @@
 ---
 paths:
   - "src-tauri/src/pgn.rs"
+  - "src-tauri/vendor/pgn-reader/src/reader.rs"
   - "src-tauri/src/lexer.rs"
   - "src-tauri/src/db/**"
   - "src-tauri/src/opening.rs"
