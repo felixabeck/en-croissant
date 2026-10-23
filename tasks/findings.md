@@ -18010,3 +18010,21 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Review provenance:** Plan authorship and arbitration shared one root context. Detection and code used the same OpenAI model family in separate sessions. Full release verification, publication, required CI and installation remain separate obligations.
 * **Closure review:** Correctness, root-cause, error-handling, tests and code-quality reviewers all approved `589f83ee` with no findings. They inspected the real refused-flush path and the mock-only reversal/restoration evidence. No review repair remains open.
 <!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"59f9524d054cdec1fcd783b70b5a827bb6c7f4c34f464f24b1fe7aabc02a2772","header_sha256":"babaaf23ba3f8235c98a2aeb846be8487d161f71059f40f73b725f798f507e00","header_status":"handled","input_sha256":"a7c7d97c13c63c6209151667b74c2a5a6d36363b37d806916a20587a764942b4","kind":"mutation-receipt","operation":"1b29a3bf9835f7cfc95e478596788e95c1a686cccbf47dd9664b8404ad016a5b","options":{"section":null},"request_id_sha256":null,"results":["f-20261022-06"],"target":"f-20261022-06","v":1} -->
+
+---
+
+## 2026-10-23 — filed through the inbox spool
+
+### Native push gate fails five puzzle fixture pool initializations with R2d2(Error(None))
+
+* **ID:** f-20261023-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** a35f7c29-0f70-43b8-9961-a6b5edb4b7f6 · output /home/felixb/.claude/drain-state/side-lane-codex-20261023-3e62cdb6.d/attempt-a35f7c29-0f70-43b8-9961-a6b5edb4b7f6-1.jsonl
+* **Impact class:** tooling
+* **Where:** src-tauri/src/puzzle.rs:887 and :2327, observed in artifacts/gates/20261023T162539647Z-191473/rust-test.log:2857-2894.
+* **Defect:** The full native Rust gate on clean 01af3f02 failed five puzzle tests before their intended assertions. Four fixture callers fail at the same pool unwrap at line 887, and invalid_puzzle_schema_is_reported_as_an_error fails another pool unwrap at line 2327. All report R2d2(Error(None)). The native result is 2699 passed, five failed and two ignored, exit 101. No production cause or host-pressure diagnosis is asserted.
+* **Spotted outside diff:** This was observed in the final full Rust gate for f-20260914-25, whose source changes do not touch puzzle.rs.
+* **Failure scenario:** Running pnpm gates:push -- --rust on the final reviewed tree fails get_themes_for_puzzle_production_core_cancels_during_snapshot_copy, invalid_puzzle_schema_is_reported_as_an_error, database_invalidation_removes_only_that_database_cache_entry, get_puzzle_production_query_cancels_during_authority_snapshot_copy and joiner_puzzle_retained_parent_keeps_repository_deletion_exclusion while constructing puzzle pools, blocking release without exercising those tests' intended behavior.
+* **Proof:** The failing complete canonical push-gate is gate-push-gate.W16xiO under the current drain gate directory, completion 101 bound to 01af3f02ec77cc3bb0e7b1f6e9e1c0219bd80697. Reproduce its fixture initialization with the production pool path, preserve production timeout and error classification contracts, and require a source-derived failing-before/passing-after witness for the repair plus complete final gates.
+* **Related:** f-20261008-06 is an open report of a Windows puzzle fixture failing pool startup with the same R2d2 error. Its Root is -, so no shared cause is claimed without further source/runtime evidence. The current Linux gate is an independent observed witness.
+* **Review lens:** review-pgn-index, review-tests.
+* **Found by:** Codex final push gate, 2026-10-23, in the full-auto f-20260914-25 drain session. The gate is retained red and nothing was pushed.
