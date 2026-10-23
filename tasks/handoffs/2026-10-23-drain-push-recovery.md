@@ -1,8 +1,8 @@
 # Drain push recovery, 2026-10-23
 
-## Delivery checkpoint after source closure
+## Delivery checkpoint before final gates
 
-The engine source and verifier corrections passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. Source closure is approved through 135b9d65. R2 adopted three naming/comment corrections, and all six R3 lenses closed them without new findings after pre-review vhNjoK completed 0. The raw source reports and execution corrections below supersede the older runtime-pending and review-pending checkpoints. Final browser verification, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed here. Overall f-20261005-05 remains open for the unstarted account phase. The repaired verifier finding f-20261023-02 is handled in bd822d6c after source closure and actual proof.
+The engine source and verifier corrections passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. Source closure is approved through 135b9d65. R2 adopted three naming/comment corrections, and all six R3 lenses closed them without new findings after pre-review vhNjoK completed 0. Final browser verification also passed in browser-final.sffa2n: all real-app checks and all 211 container cases, with five screenshots inspected and no baseline changes. The raw source reports, browser evidence and execution corrections below supersede the older runtime-pending, review-pending and browser-pending checkpoints. Final records review, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed here. Overall f-20261005-05 remains open for the unstarted account phase. The repaired verifier finding f-20261023-02 is handled in bd822d6c after source closure and actual proof.
 
 The first remote CI preflight could not read a job conclusion because gh run view timed out. Its second invocation completed 0 and reported all newest completed Test jobs succeeded on master. A fresh check remains required before push. The overlapping resumed Grok controller is stopped, and this Codex root retains its original build lock and sole release ownership. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 
@@ -2088,3 +2088,38 @@ Same-family review. Plan authorship and arbitration share the root context.
 VERDICT: REVISE
 ```
 
+
+## Final browser verification
+
+Canonical browser-final.sffa2n completed 0 at clean HEAD 5df912469cbb37504f335b47479665ebe505f48b. Its script ran pnpm gate:ensure tauri-build, agent-gate pnpm verify:app --screenshot /tmp/chessfable-drain-recovery-20261023/verify-ui/final.png, then agent-gate pnpm test:e2e:container with immediate failure propagation. The fresh release build passed, with tauri-build receipt b2e82281e577. The ordinary real WebKitGTK verifier printed 144 successful checks and all checks passed. The container suite passed all 211 cases in 1.4 minutes. No screenshot baseline changed, and no diff PNG was produced under artifacts/frontend-audit/test-results.
+
+Root read the complete native result and inspected all five native screenshots listed below. The captures include deliberately induced storage-quota and root-permission errors. The info-panel discard capture is a transition frame, while the following GO14 assertions confirm the discard, owner identity and disappearance of its confirmation. These captures establish the stated real-product behavior. Stable pixel comparison is supplied by the container suite. No native GTK menu, picker or window-decoration change was introduced, and none is claimed verified through WebDriver. The run closed the real application and recorded its native and WebKit processes gone.
+
+- final.png, SHA-256 0d74243ae9691e57f6ef5d7eb3cc5d607669a6394524cc1049341485e1f5a62c.
+- final.png.database-card.png, SHA-256 a9f3dd6bf059da516f4d1adcf09345d0d8fa779f6c240c83b025551c5ee6a1d8.
+- final.png.database-game.png, SHA-256 b09de79f31d3844129d1467a0a6eb9d7666fb2ec1dee93bff0a633fd2267f0e1.
+- final.png.file-game.png, SHA-256 7769bf7191990b7c1a09f3aa22b041d604711d584f60ff26134e845dde5333d5.
+- final.png.info-panel-discard.png, SHA-256 405e301b67dc5d744bdec370d4e15c1646715214179e16f10ad42bfe1d984d6e.
+
+The current six EP persistence checks and eight RF permission checks all passed. Their earlier staged-failure evidence and diagnostic limitations remain as recorded above. The broader account phase remains untouched. Full clean push gates, fresh remote-CI preflight, ordinary master publication, required pushed-SHA hosted jobs and installation are still pending. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+Actual selected native result lines:
+
+````text
+  ok  EP1-card successful Name edit publishes the saved engine card
+  ok  EP1-storage successful Name edit persists the decoded engine name
+  ok  EP2-error refused engines storage write reports the save error
+  ok  EP2-card refused Name edit retains the saved engine card
+  ok  EP2-input refused Name draft settles to the saved name
+  ok  EP2-storage refused Name edit retains the decoded saved engine name
+  ok  RF0 selected puzzle and engine roots accept real IPC before access loss
+  ok  RF1 puzzle read denial preserves Permission and I/O failure with a permission root label
+  ok  RF5 puzzle permission guidance is visible through the actual renderer
+  ok  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+  ok  RF6 Add permission guidance is visible through the actual renderer
+  ok  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label
+  ok  RF7 permission failures retain saved engines and unrelated filesystem bytes
+  ok  RF8 restoring access recovers the same selected roots
+all checks passed
+  211 passed (1.4m)
+````
