@@ -121,8 +121,38 @@
 // child denial belongs to root_failure_engine_healthy_root_child_permission_denial_is_unlabelled,
 // using actual private registration. Historical receipts above describe their original APIs only.
 // Each owned completion must be acknowledged by the production coordinator and its visible
-// notification closed through the DOM before continuing. Changed assertions and settlement
-// timeout paths require fresh input-only staging. No new native-run receipt is claimed here.
+// notification closed through the DOM before continuing.
+// Current native receipts, 2026-10-23. Failed checks have documented verifier exit status 1.
+// Evidence base: /tmp/chessfable-drain-recovery-20261023/.
+// native-proof/rf0-64TR8D, gate-rf0-negative.GHFuSb: parent exit 0, actual unchanged child exit 1.
+// Only this exact check failed, with no other failures or runtime error. All six EP checks passed:
+// FAIL  RF0 selected puzzle and engine roots accept real IPC before access loss
+// Owned engine-root mode 0700 -> 0300 only during the actual workflow, restored to 0700
+// immediately after the native response. RF0's early return leaves RF1/RF2/RF3/RF5/RF6/RF7/RF8
+// unexecuted in this case, with no coverage credit for those assertions.
+// native-proof/rf-matrix-WIWkG6, gate-rf-matrix-negative.WrkH3U: parent exit 0, actual unchanged
+// child exit 1. Exactly these three checks failed, with no other failures or runtime error:
+// FAIL  RF2 engine destination read denial preserves Permission and I/O failure with a permission root label
+// FAIL  RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label
+// FAIL  RF8 restoring access recovers the same selected roots
+// RF0/RF1/RF5/RF6/RF7 and all six EP checks passed. Owned engine-root modes during actual calls:
+// RF2 0300 -> 0700 -> 0300, RF3 0400 -> 0700 -> 0400, RF8 0700 -> 0300 -> 0700.
+// Each restoration preceded classification and UI actions. Both cases retained unchanged source,
+// binary and probe hashes, closed their descriptors, confirmed restoration and finished at 0700.
+// No local ticket, descriptor or response mutation, fake IPC, artifact/catalog download or engine execution.
+// Root inspected raw child statuses and exact FAIL lines, beyond the parent receipt booleans.
+// Following both staged children and complete cleanup, gate-permission-positive.Rco7vI completed
+// at exit 0 on HEAD 70da94b3 plus the owned exact-message correction. Ordinary pnpm verify:app
+// used no inspector or fault. All checks passed, including RF0/RF1/RF2/RF3/RF5/RF6/RF7/RF8 and
+// all EP publication checks. Native production code was the unchanged a4bda5d2 release.
+// Earlier gate-permission-baseline.pZ3bJY exited 1 because the verifier expected generic
+// "invalid input" instead of the actual safe "Invalid input: invalid artifact SHA-256".
+// The later positive supersedes only that baseline proof, which is never claimed green.
+// Limits: these stages cover four changed permission-result assertions, not a full matrix.
+// Admission identity/malformed responses, reservation release failure, acknowledgement,
+// notification close/disappearance, source/catalog/inspector and cleanup diagnostics were not
+// individually staged. Existing seven-test native proof covers actual private-child
+// PermissionDenied and root-label semantics on Linux UID 1000 only.
 import { chmodSync, existsSync, statSync } from "node:fs";
 import {
   appendFile,
@@ -830,7 +860,7 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
     return (
       error?.tag === "backend-error" &&
       error.category === "invalid-input" &&
-      error.message === "invalid input" &&
+      error.message === "Invalid input: invalid artifact SHA-256" &&
       error.rootFailure === undefined
     );
   };
