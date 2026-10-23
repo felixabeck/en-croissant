@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use futures_util::FutureExt;
 
-#[path = "completions.rs"]
 pub mod completions;
 
 use self::completions::{
