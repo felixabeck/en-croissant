@@ -18,12 +18,72 @@ export const ENGINE_OWNER_KEYS = [
 ] as const;
 export type EngineOwnerKey = (typeof ENGINE_OWNER_KEYS)[number];
 
+export type CompletionDisposition = "applied" | "skipped";
+export type EngineOwnerCompletionUpdate<Value> = {
+    completionId: string;
+    apply: (current: Value) => { value: Value; disposition: CompletionDisposition };
+};
+const completionReceiptsSchema = z
+    .record(z.string().uuid(), z.enum(["applied", "skipped"]))
+    .refine((receipts) => Object.keys(receipts).length <= 128);
+const ownerEnvelopeSchema = z
+    .object({
+        version: z.literal(1),
+        value: z.unknown(),
+        receipts: completionReceiptsSchema,
+    })
+    .strict();
+
+/** The one decoder for hydration, migrations, startup authority and durable owner writes. */
+export function decodeEngineOwnerValue(
+    decoded: unknown,
+): { value: unknown; receipts: Record<string, CompletionDisposition> } | null {
+    if (
+        isRecord(decoded) &&
+        ("version" in decoded || "receipts" in decoded || "value" in decoded)
+    ) {
+        const envelope = ownerEnvelopeSchema.safeParse(decoded);
+        return envelope.success
+            ? { value: envelope.data.value, receipts: envelope.data.receipts }
+            : null;
+    }
+    return { value: decoded, receipts: {} };
+}
+
+export function engineOwnerCompletionReceipt(
+    key: EngineOwnerKey,
+    id: string,
+): CompletionDisposition | undefined {
+    try {
+        return readPersistedEngineOwner(key)?.receipts[id];
+    } catch (cause) {
+        throw ownerStorageError(cause);
+    }
+}
+
+function readPersistedEngineOwner(key: EngineOwnerKey) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    const decoded = decodeCompressedOrJson(raw);
+    const owner = decoded === null ? null : decodeEngineOwnerValue(decoded);
+    if (!owner || !parseHydratableOwner(key, owner.value)) throw new Error("invalid owner");
+    return owner;
+}
+
+function encodeEngineOwnerValue(
+    value: unknown,
+    receipts: Record<string, CompletionDisposition>,
+): string {
+    return serializeStorageValue({ version: 1, value, receipts });
+}
+
 export interface EngineOwnerSaveReceipt {
     operationId: string;
     key: EngineOwnerKey;
     saved: boolean;
     synchronized: boolean;
     error?: unknown;
+    completionDisposition?: CompletionDisposition;
 }
 
 const schemas: Record<EngineOwnerKey, z.ZodTypeAny> = {
@@ -98,8 +158,10 @@ export function inspectEngineOwnerValue(
     key: EngineOwnerKey,
     value: unknown,
 ): EngineOwnerInspection | null {
-    const parsed = schemas[key].safeParse(value);
-    if (!parsed.success || !equal(value, parsed.data)) return null;
+    const owner = decodeEngineOwnerValue(value);
+    if (!owner) return null;
+    const parsed = schemas[key].safeParse(owner.value);
+    if (!parsed.success || !equal(owner.value, parsed.data)) return null;
     return inspectParsedEngineOwner(key, parsed.data);
 }
 
@@ -114,16 +176,7 @@ export function collectOriginalEngineOwnerSnapshot(local: Storage): EngineOwnerS
     let trusted = true;
 
     for (const key of ENGINE_OWNER_KEYS) {
-        let raw: string | null;
-        try {
-            raw = local.getItem(key);
-        } catch {
-            trusted = false;
-            continue;
-        }
-        if (raw === null) continue;
-        const decoded = decodeCompressedOrJson(raw);
-        const inspected = decoded === null ? null : inspectEngineOwnerValue(key, decoded);
+        const inspected = readOwner(key, local);
         if (inspected === null) {
             trusted = false;
             continue;
@@ -139,20 +192,15 @@ export function collectOriginalEngineOwnerSnapshot(local: Storage): EngineOwnerS
     };
 }
 
-function readOwner(key: EngineOwnerKey): { trusted: boolean; ids: string[] } {
-    let raw: string | null;
+function readOwner(key: EngineOwnerKey, local?: Storage): EngineOwnerInspection | null {
     try {
-        raw = localStorage.getItem(key);
+        const raw = (local ?? localStorage).getItem(key);
+        if (raw === null) return { capabilityIds: [], attachmentIds: [] };
+        const decoded = decodeCompressedOrJson(raw);
+        return decoded === null ? null : inspectEngineOwnerValue(key, decoded);
     } catch {
-        return { trusted: false, ids: [] };
+        return null;
     }
-    if (raw === null) return { trusted: true, ids: [] };
-    const decoded = decodeCompressedOrJson(raw);
-    if (decoded === null) return { trusted: false, ids: [] };
-    const inspected = inspectEngineOwnerValue(key, decoded);
-    return inspected === null
-        ? { trusted: false, ids: [] }
-        : { trusted: true, ids: inspected.attachmentIds };
 }
 
 let sequence = Promise.resolve();
@@ -167,24 +215,54 @@ function enqueueEngineOwnerSave(
     key: EngineOwnerKey,
     encodedValue: string,
     expectedRaw?: string,
+    completion?: { id: string; disposition: CompletionDisposition },
 ): Promise<EngineOwnerSaveReceipt> {
     const operationId = crypto.randomUUID();
     const run = sequence.then(async (): Promise<EngineOwnerSaveReceipt> => {
         const decoded = decodeCompressedOrJson(encodedValue);
-        const changedIds = decoded === null ? null : collectAttachmentIds(key, decoded);
+        const incoming = decoded === null ? null : decodeEngineOwnerValue(decoded);
+        const changedIds = incoming === null ? null : collectAttachmentIds(key, incoming.value);
         if (changedIds === null) {
             const error = new Error("refusing to persist an invalid engine owner record");
             reportPersistError(error);
             return { operationId, key, saved: false, synchronized: false, error };
         }
 
+        let previous: ReturnType<typeof decodeEngineOwnerValue>;
+        try {
+            previous = readPersistedEngineOwner(key);
+        } catch (cause) {
+            const error = ownerStorageError(cause);
+            reportPersistError(error);
+            return { operationId, key, saved: false, synchronized: false, error };
+        }
+        const receipts = { ...previous?.receipts };
+        if (completion) {
+            if (receipts[completion.id]) {
+                return {
+                    operationId,
+                    key,
+                    saved: true,
+                    synchronized: true,
+                    completionDisposition: receipts[completion.id],
+                };
+            }
+            receipts[completion.id] = completion.disposition;
+        }
+        if (!completionReceiptsSchema.safeParse(receipts).success) {
+            const error = ownerStorageError("completion receipt limit");
+            reportPersistError(error);
+            return { operationId, key, saved: false, synchronized: false, error };
+        }
+        const encodedOwner = encodeEngineOwnerValue(incoming?.value, receipts);
+
         const union = new Set(changedIds);
         let allTrusted = true;
         for (const ownerKey of ENGINE_OWNER_KEYS) {
             if (ownerKey === key) continue;
             const owner = readOwner(ownerKey);
-            allTrusted &&= owner.trusted;
-            owner.ids.forEach((id) => union.add(id));
+            allTrusted &&= owner !== null;
+            owner?.attachmentIds.forEach((id) => union.add(id));
         }
         const retainedIds = [...union].sort().map((id) => ({ id }));
         try {
@@ -206,7 +284,7 @@ function enqueueEngineOwnerSave(
                     error: new Error(LEGACY_OWNER_CONFLICT),
                 };
             }
-            localStorage.setItem(key, encodedValue);
+            localStorage.setItem(key, encodedOwner);
         } catch (cause) {
             const error = ownerStorageError(cause);
             reportPersistError(error);
@@ -220,7 +298,13 @@ function enqueueEngineOwnerSave(
                 abandoned_ids: [],
                 startup: false,
             });
-            return { operationId, key, saved: true, synchronized: true };
+            return {
+                operationId,
+                key,
+                saved: true,
+                synchronized: true,
+                completionDisposition: completion?.disposition,
+            };
         } catch (error) {
             reportPersistError(error instanceof Error ? error : new Error(String(error)));
             return { operationId, key, saved: true, synchronized: false, error };
@@ -236,8 +320,34 @@ function enqueueEngineOwnerSave(
 export function saveEngineOwnerValue(
     key: EngineOwnerKey,
     encodedValue: string,
+    completion?: { id: string; disposition: CompletionDisposition },
 ): Promise<EngineOwnerSaveReceipt> {
-    return enqueueEngineOwnerSave(key, encodedValue);
+    return enqueueEngineOwnerSave(key, encodedValue, undefined, completion);
+}
+
+/** Only a successful native snapshot can authorize pruning. An uncertain acknowledgement keeps
+ * evidence until a later snapshot proves the operation is absent. Ordinary writes retain it. */
+export function pruneEngineCompletionReceipts(pendingIds: ReadonlySet<string>): Promise<void> {
+    const run = sequence
+        .then(() => {
+            for (const key of ENGINE_OWNER_KEYS) {
+                const owner = readPersistedEngineOwner(key);
+                if (!owner) continue;
+                const retained = Object.fromEntries(
+                    Object.entries(owner.receipts).filter(([id]) => pendingIds.has(id)),
+                );
+                if (Object.keys(retained).length !== Object.keys(owner.receipts).length) {
+                    localStorage.setItem(key, encodeEngineOwnerValue(owner.value, retained));
+                }
+            }
+        })
+        .catch((cause) => {
+            const error = ownerStorageError(cause);
+            reportPersistError(error);
+            throw error;
+        });
+    sequence = run.catch(() => undefined);
+    return run;
 }
 
 function migrateEngineOwnerValue(
@@ -496,6 +606,9 @@ function parseHydratableOwner(
     decoded: unknown,
     schema: z.ZodTypeAny = schemas[key],
 ) {
+    const owner = decodeEngineOwnerValue(decoded);
+    if (!owner) return null;
+    decoded = owner.value;
     let input = key === "engines" ? assignLegacyIds(decoded) : decoded;
     let trustedEngines = true;
     if (
@@ -539,7 +652,7 @@ function readHydratableEngines(): Engine[] | null {
         const hydrated = parseHydratableOwner("engines", decoded, enginesSchema);
         if (!hydrated) return null;
         const engines = hydrated.value as Engine[];
-        const rawList = decoded as Record<string, unknown>[];
+        const rawList = decodeEngineOwnerValue(decoded)?.value as Record<string, unknown>[];
         if (
             !rawList.some(
                 (engine) => engine.type === "local" && Object.hasOwn(engine, "legacyAssessment"),

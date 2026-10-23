@@ -611,6 +611,7 @@ pub async fn retire_engine(engine: String, state: tauri::State<'_, AppState>) ->
 
 #[tauri::command]
 #[specta::specta]
+#[cfg(test)]
 pub async fn retire_engine_binary(
     engine: String,
     retired: EngineHandle,
@@ -5298,7 +5299,7 @@ done
     }
 }
 
-#[derive(Type, Default, Serialize, Debug)]
+#[derive(Clone, Type, Default, Serialize, Debug)]
 pub struct EngineConfig {
     pub name: String,
     pub options: Vec<UciOptionConfig>,

@@ -61,8 +61,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
     analyze_game, cancel_analysis, get_engine_config, get_engine_logs, kill_engine, kill_engines,
-    prepare_analysis, prepare_engine_search, release_engine_search, retire_engine,
-    retire_engine_binary, stop_engine,
+    prepare_analysis, prepare_engine_search, release_engine_search, retire_engine, stop_engine,
 };
 use crate::chesscom::{download_chess_com_games, get_public_chess_com_json};
 use crate::db::{
@@ -113,9 +112,8 @@ use crate::{
         get_players, merge_players, write_db_game,
     },
     fs::{
-        cancel_download, cancel_download_for_progress, download_engine_archive, download_file,
-        download_lichess_games, file_exists, prepare_download, release_download,
-        verify_signed_bytes,
+        cancel_download, cancel_download_for_progress, download_file, download_lichess_games,
+        file_exists, prepare_download, release_download, verify_signed_bytes,
     },
     opening::{get_opening_from_fens, get_opening_from_name, search_opening_name},
 };
@@ -1651,21 +1649,6 @@ fn issue_opening_book_blocking(
     authority.with_mut(|authority| authority.register_opening_book(&path, label))?
 }
 
-#[tauri::command]
-#[specta::specta]
-async fn engine_archive_destination(
-    root: crate::infra::path_authority::EngineRootHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let authority = state.pgn_path_authority.clone();
-    crate::infra::operations::run_accepted_blocking(
-        &state.operations,
-        "engine_archive_destination",
-        move || engine_archive_destination_blocking(&authority, root),
-    )
-    .await
-}
-
 fn engine_archive_destination_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::EngineRootHandle,
@@ -1679,34 +1662,33 @@ fn engine_archive_destination_blocking(
     )
 }
 
-#[tauri::command]
-#[specta::specta]
-async fn register_installed_engine(
-    root: crate::infra::path_authority::EngineRootHandle,
-    relative_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    let authority = state.pgn_path_authority.clone();
-    crate::infra::operations::run_accepted_blocking(
-        &state.operations,
-        "register_installed_engine",
-        move || register_installed_engine_blocking(&authority, root, relative_path),
-    )
-    .await
-}
-
 fn register_installed_engine_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::EngineRootHandle,
     relative_path: String,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    crate::infra::path_authority::with_engine_root_probe(
-        authority,
-        root.path_ref(),
-        crate::infra::path_authority::PathOperation::EngineInstall,
-        &tokio_util::sync::CancellationToken::new(),
-        |authority, probe| authority.register_installed_engine(&root, &relative_path, probe),
-    )
+    let register = || {
+        crate::infra::path_authority::with_engine_root_probe(
+            authority,
+            root.path_ref(),
+            crate::infra::path_authority::PathOperation::EngineInstall,
+            &tokio_util::sync::CancellationToken::new(),
+            |authority, probe| authority.register_installed_engine(&root, &relative_path, probe),
+        )
+    };
+    match register() {
+        Err(original)
+            if matches!(
+                original.unlabelled(),
+                Error::CommittedDurabilityUncertain(_)
+            ) =>
+        {
+            // Registration is get-or-create on the adopted inode. Recover a committed handle
+            // after a durability warning, preserving the original failure if lookup also fails.
+            register().or(Err(original))
+        }
+        result => result,
+    }
 }
 
 #[tauri::command]
@@ -2109,8 +2091,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             issue_engine_image,
             read_engine_image,
             issue_opening_book,
-            engine_archive_destination,
-            register_installed_engine,
             open_engine_workspace,
             issue_file_workspace,
             list_file_workspace,
@@ -2131,7 +2111,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             kill_engine,
             kill_engines,
             retire_engine,
-            retire_engine_binary,
             get_engine_logs,
             memory_size,
             get_puzzle,
@@ -2199,7 +2178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_public_lichess_json,
             write_game,
             download_file,
-            download_engine_archive,
+            fs::install_engine_workflow,
+            fs::pending_engine_completions,
+            fs::retire_engine_completion,
+            fs::acknowledge_engine_completion,
             download_lichess_games,
             cancel_download,
             cancel_download_for_progress,
@@ -2235,6 +2217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ConvertProgress,
             DatabaseContentFailure,
             ProgressEvent,
+            infra::operations::completions::CompletionChanged,
             GameMoveEvent,
             ClockUpdateEvent,
             GameOverEvent
@@ -4110,15 +4093,6 @@ mod blocking_offload_scans {
             ),
             (
                 fs,
-                "pub async fn download_engine_archive(",
-                "window.label()",
-                "download_engine_archive",
-                "id",
-                "id",
-                false,
-            ),
-            (
-                fs,
                 "async fn download_lichess_games_runtime<",
                 "owner",
                 "download_lichess_games",
@@ -4289,7 +4263,6 @@ mod blocking_offload_scans {
                 include_str!("puzzle.rs"),
                 "delete_puzzle_database",
             ),
-            ("fs.rs", include_str!("fs.rs"), "download_engine_archive"),
             (
                 "chesscom.rs",
                 include_str!("chesscom.rs"),
@@ -4634,14 +4607,6 @@ mod blocking_offload_scans {
                 "get_engine_workspace_blocking",
             ),
             ("async fn read_engine_image(", "read_engine_image_blocking"),
-            (
-                "async fn engine_archive_destination(",
-                "engine_archive_destination_blocking",
-            ),
-            (
-                "async fn register_installed_engine(",
-                "register_installed_engine_blocking",
-            ),
             (
                 "async fn open_engine_workspace(",
                 "open_engine_workspace_blocking",

@@ -1,4 +1,4 @@
-import { Box, Group, Image, Paper, Text } from "@mantine/core";
+import { Box, Button, Group, Image, Paper, Text } from "@mantine/core";
 import { IconDatabase, IconTrophy } from "@tabler/icons-react";
 import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
@@ -13,9 +13,16 @@ type Props = Omit<
   engine: DefaultEngine;
   progressId: string | null;
   layout: "add" | "upgrade";
+  recovery?: { busy: boolean; retry: () => void };
 };
 
-export default function CatalogEngineCard({ engine, progressId, layout, ...progressProps }: Props) {
+export default function CatalogEngineCard({
+  engine,
+  progressId,
+  layout,
+  recovery,
+  ...progressProps
+}: Props) {
   const { t } = useTranslation();
   const adding = layout === "add";
 
@@ -46,13 +53,19 @@ export default function CatalogEngineCard({ engine, progressId, layout, ...progr
             <IconDatabase size="1rem" />
             <Text size="xs">{formatBytes(engine.downloadSize ?? 0)}</Text>
           </Group>
-          {progressId && (
-            <ProgressButton
-              {...progressProps}
-              id={progressId}
-              completeOnProgressSuccess={false}
-              clearOnCancel={false}
-            />
+          {recovery ? (
+            <Button fullWidth disabled={recovery.busy} onClick={recovery.retry}>
+              {t(recovery.busy ? "Common.Extracting" : "Common.Install")}
+            </Button>
+          ) : (
+            progressId && (
+              <ProgressButton
+                {...progressProps}
+                id={progressId}
+                completeOnProgressSuccess={false}
+                clearOnCancel={false}
+              />
+            )
           )}
         </Box>
       </Group>

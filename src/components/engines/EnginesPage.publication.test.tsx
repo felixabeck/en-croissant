@@ -1,3 +1,4 @@
+import { decodeEngineOwnerValue } from "@/state/engineOwnerStorage";
 import { MantineProvider } from "@mantine/core";
 import {
   createMemoryHistory,
@@ -20,8 +21,10 @@ import { installResizeObserverStub } from "@/tests/resizeObserver";
 import type { Engine, LocalEngine } from "@/utils/engines";
 import EnginesPage from "./EnginesPage";
 import { MissingLocalEngineError, toPlayerConfig } from "@/components/boards/playerConfig";
-import { serializeStorageValue } from "@/state/store/debouncedStorage";
 import { capabilityKey } from "@/utils/pathCapabilities";
+
+const decodeOwnerValue = (raw: string) =>
+  decodeEngineOwnerValue(decodeCompressedOrJson(raw))?.value;
 
 const mocks = vi.hoisted(() => ({
   reconcile: vi.fn(),
@@ -252,7 +255,7 @@ test("actual local Add creates one registration and immutable id from repeated s
   expect(mocks.reconcile).toHaveBeenCalledTimes(2);
   const saved = store.get(enginesAtom)![0];
   expect(saved.id).toBeTruthy();
-  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+  expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([saved]);
 });
 
 test("actual local Add admits one repeated form submission and permits deliberate retry after refusal", async () => {
@@ -301,7 +304,7 @@ test("actual local Add admits one repeated form submission and permits deliberat
   await vi.waitFor(() => expect(store.get(enginesAtom)).toHaveLength(1));
   const saved = store.get(enginesAtom)![0];
   expect(saved.id).toBeTruthy();
-  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+  expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([saved]);
   expect(
     mocks.reconcile.mock.calls.filter(([request]) => request.action === "prepare"),
   ).toHaveLength(2);
@@ -330,7 +333,7 @@ test("successful routed removal persists before pending retirement and prevents 
   expect(mocks.retire).toHaveBeenCalledWith(engine.id);
   expect(retirementFinished).toBe(false);
   expect(store.get(enginesAtom)).toEqual([]);
-  expect(localStorage.getItem("engines")).toBe(serializeStorageValue([]));
+  expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([]);
   expect(mocks.reconcile).toHaveBeenNthCalledWith(1, { action: "prepare", retained_ids: [] });
   expect(mocks.reconcile).toHaveBeenNthCalledWith(2, {
     action: "reconcile",
@@ -514,7 +517,7 @@ test("routed rapid drafts stay responsive, failed name does not contaminate vers
   });
   await vi.waitFor(() => expect(store.get(enginesAtom)?.[0].name).toBe("Newest"));
   expect(input("Name").value).toBe("Newest");
-  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(store.get(enginesAtom));
+  expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual(store.get(enginesAtom));
   const { createEngineOwnerStorage } = await import("@/state/engineOwnerStorage");
   const { enginesSchema } = await import("@/state/engineOwnerStorage");
   expect(

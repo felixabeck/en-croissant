@@ -2791,27 +2791,112 @@ impl EngineSupervisor {
         .await
     }
 
+    #[cfg(test)]
     pub async fn retire_engine_binary(
         &self,
         engine_id: String,
         retired: PathRef,
         current: PathRef,
     ) -> Result<(), Error> {
+        let retirement = self
+            .capture_binary_retirement(engine_id, retired, current, true)
+            .await?;
+        self.resume_binary_retirement(&retirement).await
+    }
+
+    /// Capture the original transition once. A workflow retains these exact generations so a
+    /// later document can observe cleanup without changing the user's newer admission state.
+    pub(crate) async fn capture_binary_retirement(
+        &self,
+        engine_id: String,
+        retired: PathRef,
+        current: PathRef,
+        transition: bool,
+    ) -> Result<EngineBinaryRetirement, Error> {
         validate_uci_text("engine", &engine_id)?;
-        if retired == current {
-            return Ok(());
+        if retired == current || !transition {
+            return Ok(EngineBinaryRetirement {
+                targets: Vec::new(),
+                observed: AtomicBool::new(false),
+                observation: Mutex::new(()),
+            });
         }
+        let _registration = self.registration.lock().await;
+        let _coordination = self
+            .admission_coordination
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.with_retired_binaries(|binaries| {
             binaries.remove(&(engine_id.clone(), current));
             binaries.insert((engine_id.clone(), retired.clone()));
         });
-        self.retire_matching(AdmissionCancellation::Cancelled, |key, owner, path| {
-            !is_game_engine_key(key)
-                && owner == engine_id
-                && path == &retired
-                && self.is_retired_binary(owner, path)
+        let matches = |key: &EngineKey, owner: &str, path: &PathRef| {
+            !is_game_engine_key(key) && owner == engine_id && path == &retired
+        };
+        self.cancel_admissions_matching(AdmissionCancellation::Cancelled, |key, admission| {
+            matches(key, &admission.engine_id, &admission.executable)
+        });
+        let published: Vec<_> = self
+            .actors
+            .iter()
+            .filter(|entry| matches(entry.key(), &entry.engine_id, &entry.executable))
+            .map(|entry| (entry.key().clone(), entry.generation))
+            .collect();
+        let mut targets: Vec<_> = self
+            .pending_actors
+            .iter()
+            .filter(|entry| matches(&entry.key, &entry.engine_id, &entry.executable))
+            .map(|entry| entry.value().clone())
+            .collect();
+        for (key, generation) in published {
+            if let Some(entry) = self.handoff_published_locked(&key, generation) {
+                if !targets.iter().any(|target| target.generation == generation) {
+                    targets.push(entry);
+                }
+            }
+        }
+        // Bind cleanup before releasing the barrier, including spawning children.
+        let targets = targets
+            .into_iter()
+            .map(|entry| {
+                let attempt = entry.start_termination(self.pending_actors.clone());
+                (entry, attempt)
+            })
+            .collect();
+        Ok(EngineBinaryRetirement {
+            targets,
+            observed: AtomicBool::new(false),
+            observation: Mutex::new(()),
         })
-        .await
+    }
+
+    pub(crate) async fn resume_binary_retirement(
+        &self,
+        retirement: &EngineBinaryRetirement,
+    ) -> Result<(), Error> {
+        let _observation = retirement.observation.lock().await;
+        let first = !retirement.observed.swap(true, Ordering::SeqCst);
+        let results =
+            futures_util::future::join_all(retirement.targets.iter().map(|(entry, original)| {
+                let attempt = if first {
+                    original.clone()
+                } else {
+                    entry.start_termination(self.pending_actors.clone())
+                };
+                async move {
+                    attempt
+                        .wait()
+                        .await
+                        .err()
+                        .map(|error| ActorShutdownFailure {
+                            key: entry.key.clone(),
+                            generation: entry.generation,
+                            error,
+                        })
+                }
+            }))
+            .await;
+        aggregate_shutdown_failures(results.into_iter().flatten().collect())
     }
 
     pub async fn retire_executables(&self, executables: Vec<PathRef>) -> Result<(), Error> {
@@ -3114,6 +3199,12 @@ struct PendingActor {
     engine_id: String,
     executable: PathRef,
     termination: StdMutex<Option<Arc<PendingTermination>>>,
+}
+
+pub(crate) struct EngineBinaryRetirement {
+    targets: Vec<(Arc<PendingActor>, Arc<PendingTermination>)>,
+    observed: AtomicBool,
+    observation: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -13152,6 +13243,95 @@ mod tests {
         assert!(registered.actor.logs().await.is_ok());
         supervisor.terminate_all().await.unwrap();
         assert_eq!(new_terminated.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn reload_completion_retirement_replay_preserves_later_a_actor_and_admission() {
+        for failed in [false, true] {
+            let supervisor = EngineSupervisor::default();
+            let a = path_ref("completion-a");
+            let b = path_ref("completion-b");
+            let old_key = EngineKey::new("original".into(), "owner".into()).unwrap();
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.termination_error = failed
+                .then(|| Arc::new(Error::Conflict("retained original cleanup failure".into())));
+            let old_terminated = io.terminate_calls.clone();
+            let old_actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+            let old = supervisor
+                .replace_handle(
+                    old_key.clone(),
+                    Arc::new(old_actor),
+                    "owner".into(),
+                    a.clone(),
+                )
+                .await
+                .unwrap();
+            let captured = supervisor
+                .capture_binary_retirement("owner".into(), a.clone(), b.clone(), true)
+                .await
+                .unwrap();
+            assert_eq!(captured.targets.len(), 1);
+            assert_eq!(captured.targets[0].0.generation, old.generation);
+            assert_eq!(
+                supervisor
+                    .resume_binary_retirement(&captured)
+                    .await
+                    .is_err(),
+                failed
+            );
+            assert_eq!(old_terminated.load(AtomicOrdering::SeqCst), 1);
+            // A later user selection reverses admission. Recovery of the earlier workflow must only
+            // observe its original generation, even after its command acknowledgement was lost.
+            supervisor
+                .retire_engine_binary("owner".into(), b.clone(), a.clone())
+                .await
+                .unwrap();
+            let new_key = EngineKey::new("later-selection".into(), "owner".into()).unwrap();
+            let ((new_actor, _), new_terminated) = actor_with(&[], false, None);
+            let current = supervisor
+                .replace_handle(
+                    new_key.clone(),
+                    Arc::new(new_actor),
+                    "owner".into(),
+                    a.clone(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                supervisor
+                    .resume_binary_retirement(&captured)
+                    .await
+                    .is_err(),
+                failed
+            );
+            assert_eq!(
+                supervisor
+                    .resume_binary_retirement(&captured)
+                    .await
+                    .is_err(),
+                failed
+            );
+            assert_eq!(old_terminated.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(new_terminated.load(AtomicOrdering::SeqCst), 0);
+            assert_eq!(
+                supervisor.get_exact(&new_key).unwrap().generation,
+                current.generation
+            );
+            assert!(current.actor.logs().await.is_ok());
+            let admitted = supervisor
+                .admit(
+                    EngineKey::new("further-search".into(), "owner".into()).unwrap(),
+                    "owner".into(),
+                    a.clone(),
+                    false,
+                )
+                .await
+                .unwrap();
+            assert!(admitted.cancel_error().is_none());
+            assert!(!supervisor.is_retired_binary("owner", &a));
+            assert!(supervisor.is_retired_binary("owner", &b));
+            supervisor.terminate_all().await.unwrap();
+        }
     }
 
     #[tokio::test]

@@ -63,6 +63,9 @@ import {
     stampLegacyAssessments,
     saveEngineOwnerValue,
     type EngineOwnerSaveReceipt,
+    type EngineOwnerCompletionUpdate,
+    type EngineOwnerKey,
+    engineOwnerCompletionReceipt,
 } from "./engineOwnerStorage";
 import { serializeStorageValue } from "./store/debouncedStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
@@ -275,49 +278,92 @@ export const fileWorkspaceDisplayNameAtom = atomWithStorage<string>(
     createZodStorage(z.string().max(256), localStorage),
 );
 
-const asyncStoredEnginesAtom = atomWithStorage<Engine[]>(
-    "engines",
-    [],
-    createEngineOwnerStorage("engines", enginesSchema, []),
-);
-const storedEnginesAtom = unwrap(asyncStoredEnginesAtom);
-
 type EngineUpdate =
     | { removeLocalId: string }
     | Engine[]
     | Promise<Engine[]>
     | ((current: Engine[]) => Engine[] | Promise<Engine[]>);
-let engineOwnerUpdateSequence = Promise.resolve();
-// Once a write publishes, its value takes precedence over asynchronous storage hydration.
-const publishedEnginesAtom = atom<Engine[] | undefined>(undefined);
+
+function engineOwnerApplication<Value>(key: EngineOwnerKey, current: Value, update: unknown) {
+    if (typeof update !== "object" || update === null || !("completionId" in update)) return;
+    const completion = update as EngineOwnerCompletionUpdate<Value>;
+    const previous = engineOwnerCompletionReceipt(key, completion.completionId);
+    const { value, disposition } = previous
+        ? { value: current, disposition: previous }
+        : completion.apply(current);
+    return { value, receipt: { id: completion.completionId, disposition } };
+}
 
 /** Serializes functional calculation, renderer persistence and native synchronization together. */
-export const enginesAtom = atom(
-    (get) => get(publishedEnginesAtom) ?? get(storedEnginesAtom),
-    (get, set, update: EngineUpdate): Promise<EngineOwnerSaveReceipt> => {
-        const run = engineOwnerUpdateSequence.then(async () => {
-            const current = get(publishedEnginesAtom) ?? (await get(asyncStoredEnginesAtom));
-            const removal =
-                typeof update === "object" && update !== null && "removeLocalId" in update;
-            const next = stampLegacyAssessments(
-                current,
-                removal
-                    ? current.filter(
-                          (engine) => engine.type !== "local" || engine.id !== update.removeLocalId,
-                      )
-                    : await (typeof update === "function" ? update(current) : update),
+function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined>(
+    key: EngineOwnerKey,
+    schema: z.ZodType<Value, z.ZodTypeDef, unknown>,
+    initialValue: Value,
+    fallback: Fallback,
+    applyUpdate: (current: Value, update: Update) => Value | Promise<Value>,
+    options: {
+        normalize?: (current: Value, next: Value) => Value;
+        publishOnRefusal?: (update: Update | EngineOwnerCompletionUpdate<Value>) => boolean;
+    } = {},
+) {
+    const storage = createEngineOwnerStorage(key, schema, initialValue);
+    const stored = unwrap(atomWithStorage(key, initialValue, storage), () => fallback);
+    // Once a write publishes, it takes precedence over asynchronous storage hydration.
+    const published = atom<Value | undefined>(undefined);
+    let updates = Promise.resolve();
+    return atom(
+        (get) => get(published) ?? get(stored),
+        (
+            get,
+            set,
+            update: Update | EngineOwnerCompletionUpdate<Value>,
+        ): Promise<EngineOwnerSaveReceipt> => {
+            const run = updates.then(async () => {
+                const current = get(published) ?? (await storage.getItem(key, initialValue));
+                const application = engineOwnerApplication(key, current, update);
+                let next: Value = application
+                    ? application.value
+                    : await applyUpdate(current, update as Update);
+                if (options.normalize) next = options.normalize(current, next);
+                if (options.publishOnRefusal?.(update)) set(published, next);
+                const receipt = await saveEngineOwnerValue(
+                    key,
+                    serializeStorageValue(next),
+                    application?.receipt,
+                );
+                if (receipt.saved) set(published, next);
+                return receipt;
+            });
+            updates = run.then(
+                () => undefined,
+                () => undefined,
             );
-            // Permanent local retirement keeps its session-only omission even on refusal.
-            if (removal) set(publishedEnginesAtom, next);
-            const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));
-            if (receipt.saved) set(publishedEnginesAtom, next);
-            return receipt;
-        });
-        engineOwnerUpdateSequence = run.then(
-            () => undefined,
-            () => undefined,
-        );
-        return run;
+            return run;
+        },
+    );
+}
+
+function isEngineRemoval(update: unknown): update is { removeLocalId: string } {
+    return typeof update === "object" && update !== null && "removeLocalId" in update;
+}
+
+export const enginesAtom = createEngineOwnerAtom(
+    "engines",
+    enginesSchema,
+    [],
+    undefined,
+    (current, update: EngineUpdate) =>
+        isEngineRemoval(update)
+            ? current.filter(
+                  (engine) => engine.type !== "local" || engine.id !== update.removeLocalId,
+              )
+            : typeof update === "function"
+              ? update(current)
+              : update,
+    {
+        normalize: stampLegacyAssessments,
+        // Permanent retirement keeps its session-only omission even on refusal.
+        publishOnRefusal: isEngineRemoval,
     },
 );
 
@@ -672,21 +718,13 @@ export const gameInputColorAtom = atomWithStorage<GameInputColor>(
 );
 
 function createPlayerSettingsAtom(key: "game-player1-settings" | "game-player2-settings") {
-    const stored = unwrap(
-        atomWithStorage<OpponentSettings>(
-            key,
-            defaultPlayerSettings,
-            createEngineOwnerStorage(key, opponentSettingsSchema, defaultPlayerSettings),
-        ),
-        () => defaultPlayerSettings,
-    );
-    return atom(
-        (get) => get(stored),
-        async (get, set, update: SetStateAction<OpponentSettings>) => {
-            const current = get(stored);
-            const next = typeof update === "function" ? update(current) : update;
-            return (await set(stored, next)) as unknown as EngineOwnerSaveReceipt;
-        },
+    return createEngineOwnerAtom(
+        key,
+        opponentSettingsSchema,
+        defaultPlayerSettings,
+        defaultPlayerSettings,
+        (current, update: SetStateAction<OpponentSettings>) =>
+            typeof update === "function" ? update(current) : update,
     );
 }
 

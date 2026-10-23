@@ -1449,53 +1449,8 @@ fn create_engine_archive_staging(
 /// Downloads and atomically installs an engine archive into an authority-managed directory.
 /// Archive extraction occurs entirely in a private staging directory; the sealed authority API
 /// commits the completed tree only after all archive validation succeeds.
-#[tauri::command]
-#[specta::specta]
-#[allow(clippy::too_many_arguments)] // IPC contract is generated and intentionally stable.
-pub async fn download_engine_archive(
-    id: String,
-    url: String,
-    destination: crate::infra::path_authority::PathRef,
-    directory_name: String,
-    job_id: String,
-    integrity: ArtifactIntegrity,
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), Error> {
-    let lease = state.operations.claim_download(
-        &job_id,
-        window.label(),
-        "download_engine_archive",
-        &id,
-        &id,
-        false,
-        MAX_ACTIVE_DOWNLOADS,
-    )?;
-    let cancellation = lease.token();
-    let commit_gate = lease.commit_gate();
-    let state = state.inner().clone();
-    crate::infra::operations::run_native_operation(lease, "download_engine_archive", async move {
-        download_engine_archive_core(
-            id,
-            url,
-            destination,
-            directory_name,
-            job_id,
-            integrity,
-            app,
-            state,
-            cancellation,
-            commit_gate,
-            Box::new(|op, url, integrity| validate_artifact_integrity(op, url, Some(integrity))),
-        )
-        .await
-        .map_err(sanitize_download_error)
-    })
-    .await
-}
-
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn download_engine_archive_core<R: tauri::Runtime>(
     id: String,
     url: String,
@@ -1508,6 +1463,38 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
     cancellation: CancellationToken,
     commit_gate: crate::infra::operations::OperationCommitGate,
     validate_integrity: ArtifactIntegrityValidator,
+) -> Result<(), Error> {
+    download_engine_archive_with_progress(
+        id,
+        url,
+        destination,
+        directory_name,
+        job_id,
+        integrity,
+        app,
+        state,
+        cancellation,
+        commit_gate,
+        validate_integrity,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_engine_archive_with_progress<R: tauri::Runtime>(
+    id: String,
+    url: String,
+    destination: crate::infra::path_authority::PathRef,
+    directory_name: String,
+    job_id: String,
+    integrity: ArtifactIntegrity,
+    app: tauri::AppHandle<R>,
+    state: AppState,
+    cancellation: CancellationToken,
+    commit_gate: crate::infra::operations::OperationCommitGate,
+    validate_integrity: ArtifactIntegrityValidator,
+    completion_progress: Option<ProgressLease>,
 ) -> Result<(), Error> {
     let result = async {
         let directory_name = std::ffi::OsString::from(directory_name);
@@ -1553,8 +1540,13 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
             .await?;
         if adopted {
             commit_gate.begin_commit()?;
-            let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-            report_download_success(&state, &app, &progress_lease, &job_id);
+            let progress_lease = match &completion_progress {
+                Some(lease) => lease.clone(),
+                None => begin_progress(&state.progress_state, &app, id.clone())?,
+            };
+            if completion_progress.is_none() {
+                report_download_success(&state, &app, &progress_lease, &job_id);
+            }
             return Ok(());
         }
         let archive_target = resolved
@@ -1568,7 +1560,10 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
         let staging_registry = state.pgn_path_authority.clone();
         let staging_destination = destination.clone();
         let staging_cancellation = cancellation.clone();
-        let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+        let progress_lease = match &completion_progress {
+            Some(lease) => lease.clone(),
+            None => begin_progress(&state.progress_state, &app, id.clone())?,
+        };
         let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
         let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
         let publication_authority = state.pgn_path_authority.clone();
@@ -1596,7 +1591,11 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                     &state.progress_state,
                     &app,
                     &progress_lease,
-                    progress,
+                    if completion_progress.is_some() {
+                        progress * 0.9
+                    } else {
+                        progress
+                    },
                     ProgressState::Running,
                 )
             },
@@ -1637,11 +1636,365 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
             report_download_error(&state, &app, &progress_lease, &job_id, &error);
             return Err(error);
         }
-        report_download_success(&state, &app, &progress_lease, &job_id);
+        if completion_progress.is_none() {
+            report_download_success(&state, &app, &progress_lease, &job_id);
+        }
         Ok(())
     }
     .await;
     result.map_err(sanitize_download_error)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn install_engine_workflow(
+    id: String,
+    request: crate::infra::operations::completions::EngineInstallRequest,
+    job_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::infra::operations::completions::EngineCompletion, Error> {
+    let owner = window.label().to_owned();
+    let (snapshot, lease) = state.operations.admit_engine_completion(
+        &id,
+        &owner,
+        &job_id,
+        request.clone(),
+        MAX_ACTIVE_DOWNLOADS,
+    )?;
+    let Some(lease) = lease else {
+        return Ok(snapshot);
+    };
+    run_engine_install_completion(
+        id.clone(),
+        request,
+        lease,
+        app,
+        state.inner().clone(),
+        Box::new(|op, url, integrity| validate_artifact_integrity(op, url, Some(integrity))),
+        owner.clone(),
+    )
+    .await?;
+    state.operations.engine_completion(&id, &owner)
+}
+
+/// The command receiver owns no continuation. Both result retention and all native tails run
+/// inside the accepted operation, including when that receiver disappears after publication.
+async fn run_engine_install_completion<R: tauri::Runtime>(
+    id: String,
+    request: crate::infra::operations::completions::EngineInstallRequest,
+    lease: crate::infra::operations::OperationLease,
+    app: tauri::AppHandle<R>,
+    state: AppState,
+    validate_integrity: ArtifactIntegrityValidator,
+    owner: String,
+) -> Result<(), Error> {
+    use futures_util::FutureExt as _;
+    use tauri_specta::Event as _;
+    let cancellation = lease.token();
+    let commit_gate = lease.commit_gate();
+    crate::infra::operations::run_native_operation(lease, "install_engine_workflow", async move {
+        let progress = begin_progress(&state.progress_state, &app, request.progress_id.clone());
+        let result = match &progress {
+            Ok(progress) => {
+                state
+                    .operations
+                    .set_engine_completion_progress(&id, progress.clone())?;
+                match std::panic::AssertUnwindSafe(engine_install_workflow_core(
+                    &id,
+                    &request,
+                    &app,
+                    &state,
+                    cancellation,
+                    commit_gate,
+                    progress.clone(),
+                    validate_integrity,
+                ))
+                .catch_unwind()
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(Error::Conflict("engine completion worker panicked".into())),
+                }
+            }
+            Err(_) => Err(Error::Conflict(
+                "engine completion progress unavailable".into(),
+            )),
+        };
+        state.operations.finish_engine_completion(&id, &result)?;
+        if let (Err(error), Ok(progress)) = (&result, &progress) {
+            report_download_error(&state, &app, progress, &id, error);
+        }
+        if let Err(error) =
+            (crate::infra::operations::completions::CompletionChanged { id: id.clone() })
+                .emit_to(&app, owner)
+        {
+            log::warn!("completion {id} notification failed: {error}");
+        }
+        // Errors are retained as safe categories for recovery, and fully logged natively.
+        if let Err(error) = result {
+            log::error!("engine completion {id} failed: {}", error.diagnostic());
+        }
+        Ok(())
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn engine_install_workflow_core<R: tauri::Runtime>(
+    id: &str,
+    request: &crate::infra::operations::completions::EngineInstallRequest,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    cancellation: CancellationToken,
+    commit_gate: crate::infra::operations::OperationCommitGate,
+    progress: ProgressLease,
+    validate_integrity: ArtifactIntegrityValidator,
+) -> Result<crate::infra::operations::completions::InstalledEngineResult, Error> {
+    use crate::infra::operations::completions::EngineInstallIntent;
+    let root = request.root.clone();
+    let old = match &request.intent {
+        EngineInstallIntent::Upgrade { expected, .. } => Some(expected.id.clone()),
+        _ => None,
+    };
+    let authority = state.pgn_path_authority.clone();
+    let workflow_id = id.to_owned();
+    let destination = crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || {
+            let mut resources = vec![root.id.clone()];
+            resources.extend(old);
+            authority.with_mut(|authority| {
+                authority.retain_completion_resources(&workflow_id, resources)
+            })??;
+            crate::engine_archive_destination_blocking(&authority, root)
+        })
+        .await?;
+    let archive = request
+        .url
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| Error::InvalidInput("engine archive URL unavailable".into()))?;
+    let directory = format!("{archive}-{}", request.sha256.to_ascii_lowercase());
+    download_engine_archive_with_progress(
+        request.progress_id.clone(),
+        request.url.clone(),
+        destination,
+        directory.clone(),
+        id.to_owned(),
+        ArtifactIntegrity {
+            sha256: request.sha256.clone(),
+            signature: request.signature.clone(),
+        },
+        app.clone(),
+        state.clone(),
+        cancellation,
+        commit_gate,
+        validate_integrity,
+        Some(progress.clone()),
+    )
+    .await?;
+    // Publication is the irreversible commit gate. Registration and probing are its accepted tail.
+    let authority = state.pgn_path_authority.clone();
+    let root = request.root.clone();
+    let relative = format!("{directory}/{}", request.relative_path);
+    let workflow_id = id.to_owned();
+    let old = match &request.intent {
+        EngineInstallIntent::Upgrade { expected, .. } => Some(expected.id.clone()),
+        _ => None,
+    };
+    let handle = crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || {
+            let handle =
+                crate::register_installed_engine_blocking(&authority, root.clone(), relative)?;
+            let mut resources = vec![root.id, handle.id.clone()];
+            resources.extend(old);
+            authority.with_mut(|authority| {
+                authority.retain_completion_resources(&workflow_id, resources)
+            })??;
+            Ok(handle)
+        })
+        .await?;
+    let config = crate::chess::get_engine_config_core(handle.clone(), state).await?;
+    if serde_json::to_vec(&config)
+        .map_err(|_| {
+            Error::Conflict("engine completion configuration could not be encoded".into())
+        })?
+        .len()
+        > 256 * 1024
+    {
+        return Err(Error::ResourceLimit(
+            "engine completion configuration exceeds its limit".into(),
+        ));
+    }
+    if let Err(error) = update_progress_with_state(
+        &state.progress_state,
+        app,
+        &progress,
+        95.0,
+        ProgressState::Running,
+    ) {
+        log::warn!(
+            "engine completion {id} progress notification failed: {}",
+            error.diagnostic()
+        );
+    }
+    Ok(
+        crate::infra::operations::completions::InstalledEngineResult {
+            handle,
+            config,
+            filename: request
+                .relative_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&request.name)
+                .to_owned(),
+        },
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn pending_engine_completions(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::infra::operations::completions::EngineCompletion>, Error> {
+    state.operations.engine_completions(window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn retire_engine_completion(
+    id: String,
+    current: Option<crate::infra::path_authority::EngineHandle>,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    retire_engine_completion_runtime(
+        id,
+        current,
+        window.label().to_owned(),
+        state.inner().clone(),
+    )
+    .await
+}
+
+pub(crate) async fn retire_engine_completion_runtime(
+    id: String,
+    current: Option<crate::infra::path_authority::EngineHandle>,
+    owner: String,
+    state: AppState,
+) -> Result<(), Error> {
+    use crate::infra::operations::completions::{
+        CompletionOutcome, EngineApplicationStep, EngineInstallIntent,
+    };
+    let (application, start) = state.operations.begin_engine_application(
+        &id,
+        &owner,
+        EngineApplicationStep::Retirement,
+    )?;
+    if let Some(start) = start {
+        crate::infra::operations::run_completion_application(
+            start.lease,
+            start.result,
+            "retire_engine_completion",
+            async move {
+                let (
+                    EngineInstallIntent::Upgrade {
+                        engine_id,
+                        expected,
+                    },
+                    CompletionOutcome::Succeeded(installed),
+                ) = (start.snapshot.request.intent, start.snapshot.outcome)
+                else {
+                    return Err(Error::Conflict(
+                        "completion is not an installed upgrade".into(),
+                    ));
+                };
+                let transition = current.as_ref() == Some(&installed.handle);
+                let captured = start
+                    .retirement
+                    .get_or_try_init(|| {
+                        state.engine_supervisor.capture_binary_retirement(
+                            engine_id,
+                            expected.id,
+                            installed.handle.id,
+                            transition,
+                        )
+                    })
+                    .await?;
+                state
+                    .engine_supervisor
+                    .resume_binary_retirement(captured)
+                    .await?;
+                state.operations.finish_engine_retirement(&id, &owner)
+            },
+        );
+    }
+    application.await.map_err(Error::Shared)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn acknowledge_engine_completion(
+    id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    acknowledge_engine_completion_runtime(id, app, window.label().to_owned(), state.inner().clone())
+        .await
+}
+
+pub(crate) async fn acknowledge_engine_completion_runtime<R: tauri::Runtime>(
+    id: String,
+    app: tauri::AppHandle<R>,
+    owner: String,
+    state: AppState,
+) -> Result<(), Error> {
+    use crate::infra::operations::completions::EngineApplicationStep;
+    let (application, start) = state.operations.begin_engine_application(
+        &id,
+        &owner,
+        EngineApplicationStep::Acknowledgement,
+    )?;
+    if let Some(start) = start {
+        crate::infra::operations::run_completion_application(
+            start.lease,
+            start.result,
+            "acknowledge_engine_completion",
+            async move {
+                crate::infra::blocking::BLOCKING_GATEWAY
+                    .spawn(move || {
+                        let progress = state.pgn_path_authority.with_mut(|authority| {
+                            let progress = state
+                                .operations
+                                .acknowledge_engine_completion(&id, &owner)?;
+                            authority.release_completion_resources(&id);
+                            Ok::<_, Error>(progress)
+                        })??;
+                        if let Some(progress) = progress {
+                            // Failed/cancelled progress is terminal-sticky and cannot become success here.
+                            if let Err(error) = update_progress_with_state(
+                                &state.progress_state,
+                                &app,
+                                &progress,
+                                100.0,
+                                ProgressState::Succeeded,
+                            ) {
+                                log::warn!(
+                                    "completion {id} final progress failed: {}",
+                                    error.diagnostic()
+                                );
+                            }
+                        }
+                        Ok(())
+                    })
+                    .await
+            },
+        );
+    }
+    application.await.map_err(Error::Shared)
 }
 
 /// Publishes a fully extracted engine archive onto its authority-resolved destination. Split out
@@ -8250,7 +8603,8 @@ mod tests {
         let app = tauri::test::mock_app();
         tauri_specta::Builder::<tauri::test::MockRuntime>::new()
             .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
+                crate::progress::ProgressEvent,
+                crate::infra::operations::completions::CompletionChanged
             ))
             .mount_events(&app);
         app
@@ -9380,6 +9734,196 @@ mod tests {
                     b"caller-drop-tail"
                 );
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reload_completion_actual_engine_workflow_retains_registered_configuration_after_receiver_drop(
+    ) {
+        use crate::infra::operations::completions::{
+            CompletionOutcome, EngineInstallIntent, EngineInstallRequest,
+        };
+        for boundary in ["publication", "application"] {
+            let dir = tempdir().unwrap();
+            let (authority, _, engine_root, root) = engine_destination(&dir);
+            let probe_count = dir.path().join("probes");
+            let script = format!("#!/bin/sh\nprintf 'probe\\n' >> '{}'\nwhile IFS= read -r line; do case \"$line\" in uci) echo 'id name Reload Engine'; echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n", probe_count.display());
+            let payload = gzip_tar_payload(script.as_bytes());
+            let integrity = unsigned_test_integrity(&payload);
+            let transport = Arc::new(zip_response(payload));
+            let state = AppState {
+                http_transport: transport.clone(),
+                ..AppState::default()
+            };
+            state.pgn_path_authority.install(authority).unwrap();
+            let app = test_progress_app();
+            let request = EngineInstallRequest {
+                intent: EngineInstallIntent::Add {
+                    engine_id: uuid::Uuid::new_v4().to_string(),
+                },
+                root,
+                progress_id: uuid::Uuid::new_v4().to_string(),
+                url: "https://example.com/engine.tar.gz".into(),
+                sha256: integrity.sha256.clone(),
+                signature: integrity.signature.clone(),
+                relative_path: "stockfish/engine".into(),
+                name: "Engine".into(),
+                version: "1".into(),
+                elo: None,
+                download_size: None,
+            };
+            let id = uuid::Uuid::new_v4().to_string();
+            let ticket = state.operations.prepare_download("main").unwrap();
+            let (_, lease) = state
+                .operations
+                .admit_engine_completion(
+                    &id,
+                    "main",
+                    &ticket,
+                    request.clone(),
+                    MAX_ACTIVE_DOWNLOADS,
+                )
+                .unwrap();
+            let (at_commit_tx, at_commit_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            if boundary == "publication" {
+                crate::infra::operations::arm_commit_after_hook(
+                    ticket,
+                    Box::new(move || {
+                        let _ = at_commit_tx.send(());
+                        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                    }),
+                );
+            }
+            let mut command_receiver = Box::pin(run_engine_install_completion(
+                id.clone(),
+                request.clone(),
+                lease.unwrap(),
+                app.handle().clone(),
+                state.clone(),
+                Box::new(accept_any_integrity),
+                "main".into(),
+            ));
+            assert!(futures_util::poll!(&mut command_receiver).is_pending());
+            if boundary == "publication" {
+                tokio::time::timeout(Duration::from_secs(5), at_commit_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(
+                    state
+                        .operations
+                        .engine_completion(&id, "main")
+                        .unwrap()
+                        .outcome,
+                    CompletionOutcome::Running
+                ));
+                drop(command_receiver);
+                state.operations.cancel_owner_reservations("main").unwrap();
+                assert!(
+                    !state
+                        .operations
+                        .cancel_download_for_progress(&request.progress_id, "main")
+                        .unwrap(),
+                    "publication already committed cancellation authority"
+                );
+                release_tx.send(()).unwrap();
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while matches!(
+                        state
+                            .operations
+                            .engine_completion(&id, "main")
+                            .unwrap()
+                            .outcome,
+                        CompletionOutcome::Running
+                    ) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                drop(command_receiver);
+            }
+            let operations = state.operations.clone();
+            assert!(tokio::task::spawn_blocking(
+                move || operations.wait_for_drain(Duration::from_secs(5))
+            )
+            .await
+            .unwrap()
+            .unwrap());
+            let snapshot = state.operations.engine_completion(&id, "main").unwrap();
+            let CompletionOutcome::Succeeded(installed) = snapshot.outcome else {
+                panic!("native engine workflow did not retain success: {snapshot:?}")
+            };
+            assert_eq!(installed.config.name, "Reload Engine");
+            assert_eq!(installed.filename, "engine");
+            assert_eq!(std::fs::read_to_string(&probe_count).unwrap(), "probe\n");
+            assert_eq!(transport.requests_seen.lock().unwrap().len(), 1);
+            let (rejoined, repeat) = state
+                .operations
+                .admit_engine_completion(
+                    &id,
+                    "main",
+                    "no-ticket",
+                    request.clone(),
+                    MAX_ACTIVE_DOWNLOADS,
+                )
+                .unwrap();
+            assert!(repeat.is_none());
+            assert!(matches!(rejoined.outcome, CompletionOutcome::Succeeded(_)));
+            assert!(state
+                .operations
+                .engine_completions("foreign")
+                .unwrap()
+                .is_empty());
+            let authority = state.pgn_path_authority.clone();
+            crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn(move || {
+                    authority.with_mut(|authority| {
+                        crate::infra::path_authority::require_durable(
+                            authority.reconcile_startup_owners(
+                                crate::infra::path_authority::StartupPathOwners {
+                                    retained_ids: vec![],
+                                    trusted_families: vec![
+                                        crate::infra::path_authority::PathOwnerFamily::Engines,
+                                    ],
+                                },
+                            )?,
+                        )?;
+                        authority.collect_catalog_installs()
+                    })?
+                })
+                .await
+                .unwrap();
+            assert!(engine_root
+                .join(format!("engine.tar.gz-{}/stockfish/engine", request.sha256))
+                .exists());
+            assert_eq!(
+                state
+                    .progress_state
+                    .get(&request.progress_id)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                ProgressState::Running,
+                "success covers renderer application too"
+            );
+            state
+                .operations
+                .acknowledge_engine_completion(&id, "main")
+                .unwrap();
+            state
+                .pgn_path_authority
+                .with_mut(|authority| authority.release_completion_resources(&id))
+                .unwrap();
+            assert!(state
+                .operations
+                .engine_completions("main")
+                .unwrap()
+                .is_empty());
+            state.engine_supervisor.terminate_all().await.unwrap();
         }
     }
 

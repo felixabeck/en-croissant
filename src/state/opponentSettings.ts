@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GoMode } from "@/bindings";
+import type { GoMode, InstalledEngineResult } from "@/bindings";
 import type { TimeType } from "@/components/common/TimeInput";
 import type { TimeControlField } from "@/utils/clock";
 import {
@@ -10,8 +10,7 @@ import {
     type LocalEngine,
     upgradeEngineFromCatalog,
     upgradeEngineSettings,
-    type DefaultEngine,
-    type installCatalogEngine,
+    type EngineCatalogMetadata,
 } from "@/utils/engines";
 
 const timeControlSchema: z.ZodType<TimeControlField> = z.object({
@@ -75,8 +74,8 @@ const DEFAULT_ENGINE_GO: GoMode = { t: "Depth", c: 24 };
 export function upgradeOpponentEngine(
     opponent: OpponentSettings,
     engineId: string,
-    catalog: DefaultEngine,
-    installed: Awaited<ReturnType<typeof installCatalogEngine>>,
+    catalog: EngineCatalogMetadata,
+    installed: InstalledEngineResult,
 ): OpponentSettings {
     if (opponent.type !== "engine" || opponent.engine?.id !== engineId) return opponent;
     return {

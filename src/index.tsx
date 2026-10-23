@@ -11,6 +11,8 @@ import { sanitizeRevocationReasons } from "./utils/lichess/revocation";
 import { logFailureSafely, safeFailureContext } from "./platform/errors";
 import { tauri } from "./platform/tauri";
 import { initializeWorkspace } from "./state/atoms";
+import { initializePathOwners } from "./state/pathOwners";
+import { initializeEngineCompletions } from "./state/engineCompletions";
 
 initializeWorkspace();
 
@@ -95,6 +97,20 @@ export const applicationStartup = (async () => {
       "Session sanitization failed",
     );
     return;
+  }
+
+  try {
+    await initializePathOwners();
+    await initializeEngineCompletions();
+  } catch (error) {
+    await logFailureSafely(
+      "StartupEngineCompletionError",
+      {
+        operation: "initializeEngineCompletions",
+        primaryFailure: safeFailureContext(error),
+      },
+      "Engine completion recovery failed",
+    );
   }
 
   root.render(

@@ -276,22 +276,6 @@ async issueOpeningBook() : Promise<Result<OpeningBookHandle, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async engineArchiveDestination(root: EngineRootHandle) : Promise<Result<PathRef, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("engine_archive_destination", { root }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async registerInstalledEngine(root: EngineRootHandle, relativePath: string) : Promise<Result<EngineHandle, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("register_installed_engine", { root, relativePath }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async openEngineWorkspace(root: EngineRootHandle) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("open_engine_workspace", { root }) };
@@ -447,14 +431,6 @@ async killEngines(tab: string) : Promise<Result<null, ErrorPayload>> {
 async retireEngine(engine: string) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("retire_engine", { engine }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async retireEngineBinary(engine: string, retired: EngineHandle, current: EngineHandle) : Promise<Result<null, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("retire_engine_binary", { engine, retired, current }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -988,14 +964,33 @@ async downloadFile(id: string, url: string, destination: PathRef, filename: stri
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Downloads and atomically installs an engine archive into an authority-managed directory.
- * Archive extraction occurs entirely in a private staging directory; the sealed authority API
- * commits the completed tree only after all archive validation succeeds.
- */
-async downloadEngineArchive(id: string, url: string, destination: PathRef, directoryName: string, jobId: string, integrity: ArtifactIntegrity) : Promise<Result<null, ErrorPayload>> {
+async installEngineWorkflow(id: string, request: EngineInstallRequest, jobId: string) : Promise<Result<EngineCompletion, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_engine_archive", { id, url, destination, directoryName, jobId, integrity }) };
+    return { status: "ok", data: await TAURI_INVOKE("install_engine_workflow", { id, request, jobId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async pendingEngineCompletions() : Promise<Result<EngineCompletion[], ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pending_engine_completions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async retireEngineCompletion(id: string, current: EngineHandle | null) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retire_engine_completion", { id, current }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async acknowledgeEngineCompletion(id: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("acknowledge_engine_completion", { id }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1245,6 +1240,7 @@ async getPublicChessComJson(request: PublicChessComRequest) : Promise<Result<str
 export const events = __makeEvents__<{
 bestMovesPayload: BestMovesPayload,
 clockUpdateEvent: ClockUpdateEvent,
+completionChanged: CompletionChanged,
 convertProgress: ConvertProgress,
 databaseContentFailure: DatabaseContentFailure,
 gameMoveEvent: GameMoveEvent,
@@ -1253,6 +1249,7 @@ progressEvent: ProgressEvent
 }>({
 bestMovesPayload: "best-moves-payload",
 clockUpdateEvent: "clock-update-event",
+completionChanged: "completion-changed",
 convertProgress: "convert-progress",
 databaseContentFailure: "database-content-failure",
 gameMoveEvent: "game-move-event",
@@ -1292,6 +1289,12 @@ export type CollectionStatus = "ready" | "stale" | "missing" | "retired" | "pres
  * replacement happened but syncing its parent directory failed; callers must not retry.
  */
 export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStage }
+export type CompletionChanged = { id: string }
+export type CompletionFailure = { category: ErrorCategory; rootFailure: RootFailure | null }
+/**
+ * Shared outcome shape, also usable by the account workflow without another mailbox contract.
+ */
+export type CompletionOutcome<T> = { state: "running" } | { state: "succeeded"; result: T } | { state: "failed"; result: CompletionFailure }
 /**
  * Import progress for a PGN-to-database conversion. A conversion has no total
  * to divide by until it finishes, so this reports the counters the UI shows
@@ -1327,6 +1330,7 @@ export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveReservationJournal
  * omitted IDs. `None` is abandon-only: only explicitly abandoned provisional IDs are retired.
  */
 export type EngineAttachmentAction = { action: "prepare"; retained_ids: PathRef[] } | { action: "reconcile"; retained_ids: PathRef[] | null; abandoned_ids: PathRef[]; startup: boolean }
+export type EngineCompletion = { id: string; request: EngineInstallRequest; outcome: CompletionOutcome<InstalledEngineResult>; retired: boolean }
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**
  * Observed process status. Signals stay absent on platforms without Unix exit signals.
@@ -1345,6 +1349,8 @@ export type EngineImageData = { bytes: number[]; mimeType: string }
  */
 export type EngineImageHandle = { id: PathRef; kind: EngineImageHandleKind }
 export type EngineImageHandleKind = "engineImage"
+export type EngineInstallIntent = { kind: "add"; engine_id: string } | { kind: "upgrade"; engine_id: string; expected: EngineHandle }
+export type EngineInstallRequest = { intent: EngineInstallIntent; root: EngineRootHandle; progressId: string; url: string; sha256: string; signature: string; relativePath: string; name: string; version: string; elo: number | null; downloadSize: number | null }
 /**
  * Engine transcript entries include explicit truncation metadata when bounded
  * retention has discarded older output.
@@ -1399,6 +1405,7 @@ export type GameSort = "id" | "date" | "whiteElo" | "blackElo" | "ply_count"
 export type GameState = { gameId: string; session: bigint; revision: bigint; status: GameStatus; initialFen: string; moves: GameMove[]; currentFen: string; ply: number; turn: string; whiteTime: bigint | null; blackTime: bigint | null; whitePlayer: string; blackPlayer: string }
 export type GameStatus = "playing" | { finished: { result: GameResult } }
 export type GoMode = { t: "PlayersTime"; c: PlayersTime } | { t: "Depth"; c: number } | { t: "Time"; c: number } | { t: "Nodes"; c: number } | { t: "Infinite" }
+export type InstalledEngineResult = { handle: EngineHandle; config: EngineConfig; filename: string }
 export type LichessAccountHandle = string
 export type LichessAccountMetadata = { handle: LichessAccountHandle; username: string }
 export type LichessAccountRemoval = { state: "not_found" } | { state: "removed"; revocation_pending: boolean; revocation_outcome: LichessRevocationOutcome | null; durability_uncertain: boolean }

@@ -7,6 +7,7 @@ const installMocks = vi.hoisted(() => ({
     getEngineConfig: vi.fn(),
     getEngineWorkspace: vi.fn(),
     registerInstalledEngine: vi.fn(),
+    installEngineWorkflow: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -15,6 +16,7 @@ vi.mock("@/platform/tauri", async () => {
         ...actual,
         tauri: {
             ...actual.tauri,
+            installEngineWorkflow: installMocks.installEngineWorkflow,
             downloadEngineArchive: installMocks.downloadEngineArchive,
             engineArchiveDestination: installMocks.engineArchiveDestination,
             getEngineConfig: installMocks.getEngineConfig,
@@ -32,6 +34,7 @@ import {
     isManifestEngineInstalled,
     installDefaultEngine,
     installCatalogEngine,
+    installedEngineFromCompletion,
     requiredEngineSettingsDefaults,
     manifestEngineInstallCard,
     parsePersistedEngineJson,
@@ -195,81 +198,63 @@ describe("default-engine installed identity", () => {
     });
 });
 
-describe("default-engine download cancellation", () => {
-    it("passes the ticket and stops before engine registration after cancellation", async () => {
-        installMocks.downloadEngineArchive.mockReset().mockRejectedValue(new Error("Cancellation"));
-        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
-        installMocks.engineArchiveDestination
+describe("engine persistence", () => {
+    it("admits one immutable native workflow with the preallocated Add UUID and ticket", async () => {
+        const root = { id: { id: "root" }, kind: "engineRoot" };
+        installMocks.getEngineWorkspace.mockReset().mockResolvedValue(root);
+        installMocks.installEngineWorkflow
             .mockReset()
-            .mockResolvedValue({ id: { id: "destination" } });
-        installMocks.registerInstalledEngine.mockReset();
-        installMocks.getEngineConfig.mockReset();
-
-        const engine = {
-            ...manifestEntry,
-            path: "stockfish",
-        } as never;
-        await expect(
-            installDefaultEngine(engine, "progress-id", "ticket-id"),
-        ).rejects.toMatchObject({ message: "Cancellation" });
-
-        expect(installMocks.downloadEngineArchive).toHaveBeenCalledWith(
-            "progress-id",
-            manifestEntry.downloadLink,
-            { id: { id: "destination" } },
-            `stockfish.zip-${manifestEntry.sha256}`,
-            "ticket-id",
-            { sha256: manifestEntry.sha256, signature: manifestEntry.signature },
+            .mockResolvedValue({ state: "native-result" });
+        const intent = { kind: "add" as const, engine_id: "logical-engine-id" };
+        const result = await installCatalogEngine(
+            { ...manifestEntry, path: "stockfish/engine" } as never,
+            "progress",
+            "ticket",
+            intent,
+            "operation-id",
         );
+        expect(result).toEqual({ state: "native-result" });
+        expect(installMocks.installEngineWorkflow).toHaveBeenCalledExactlyOnceWith(
+            "operation-id",
+            {
+                root,
+                intent,
+                progressId: "progress",
+                url: manifestEntry.downloadLink,
+                relativePath: "stockfish/engine",
+                sha256: manifestEntry.sha256,
+                signature: manifestEntry.signature,
+                name: "Stockfish",
+                version: "17",
+                elo: null,
+                downloadSize: null,
+            },
+            "ticket",
+        );
+        expect(installMocks.downloadEngineArchive).not.toHaveBeenCalled();
         expect(installMocks.registerInstalledEngine).not.toHaveBeenCalled();
         expect(installMocks.getEngineConfig).not.toHaveBeenCalled();
     });
-});
 
-describe("engine persistence", () => {
-    it.each([
-        "engineArchiveDestination",
-        "downloadEngineArchive",
-        "registerInstalledEngine",
-    ] as const)(
-        "%s preserves the exact root, child and cancellation rejection",
-        async (boundary) => {
-            for (const outcome of ["permission", "child", "cancellation"] as const) {
-                installMocks.getEngineWorkspace
-                    .mockReset()
-                    .mockResolvedValue({ id: { id: "root" } });
-                installMocks.engineArchiveDestination
-                    .mockReset()
-                    .mockResolvedValue({ id: "destination" });
-                installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
-                installMocks.registerInstalledEngine
-                    .mockReset()
-                    .mockResolvedValue({ id: { id: "binary" }, kind: "engine" });
-                installMocks.getEngineConfig.mockReset();
-                const failure = {
-                    tag: "backend-error",
-                    category: outcome === "cancellation" ? "cancellation" : "permission",
-                    message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
-                    ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
-                };
-                installMocks[boundary].mockRejectedValueOnce(failure);
-                await expect(
-                    installDefaultEngine(
-                        { ...manifestEntry, path: "stockfish" } as never,
-                        "progress",
-                        "ticket",
-                    ),
-                ).rejects.toBe(failure);
-                expect(installMocks.getEngineConfig).not.toHaveBeenCalled();
-                expect(installMocks.downloadEngineArchive).toHaveBeenCalledTimes(
-                    boundary === "engineArchiveDestination" ? 0 : 1,
-                );
-                expect(installMocks.registerInstalledEngine).toHaveBeenCalledTimes(
-                    boundary === "registerInstalledEngine" ? 1 : 0,
-                );
-            }
-        },
-    );
+    it("propagates admission errors and captures an Add identity before the transfer", async () => {
+        installMocks.getEngineWorkspace.mockResolvedValue({
+            id: { id: "root" },
+            kind: "engineRoot",
+        });
+        const error = new Error("Cancellation");
+        installMocks.installEngineWorkflow.mockReset().mockRejectedValue(error);
+        await expect(
+            installDefaultEngine(
+                { ...manifestEntry, path: "stockfish" } as never,
+                "progress",
+                "ticket",
+            ),
+        ).rejects.toBe(error);
+        expect(installMocks.installEngineWorkflow.mock.calls[0][1].intent).toMatchObject({
+            kind: "add",
+            engine_id: expect.any(String),
+        });
+    });
 
     it("shares required defaults and excludes button and non-required options", () => {
         expect(
@@ -288,60 +273,23 @@ describe("engine persistence", () => {
         ]);
     });
 
-    it("the shared installer returns config and uses the full digest in extraction and registration", async () => {
-        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
-        installMocks.engineArchiveDestination.mockReset().mockResolvedValue({ id: "destination" });
-        installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
-        const handle = { id: { id: "installed" }, kind: "engine" };
-        const config = { name: "Stockfish 19", options: [] };
-        installMocks.registerInstalledEngine.mockReset().mockResolvedValue(handle);
-        installMocks.getEngineConfig.mockReset().mockResolvedValue(config);
-        for (const sha256 of ["A".repeat(64), `${"a".repeat(63)}b`]) {
-            const installed = await installCatalogEngine(
-                { ...manifestEntry, path: "stockfish/engine", sha256 } as never,
-                "progress",
-                "ticket",
-            );
-            const directory = `stockfish.zip-${sha256.toLowerCase()}`;
-            expect(installMocks.downloadEngineArchive).toHaveBeenLastCalledWith(
-                "progress",
-                manifestEntry.downloadLink,
-                { id: "destination" },
-                directory,
-                "ticket",
-                { sha256, signature: manifestEntry.signature },
-            );
-            expect(installMocks.registerInstalledEngine).toHaveBeenLastCalledWith(
-                { id: { id: "root" } },
-                `${directory}/stockfish/engine`,
-            );
-            expect(installed).toEqual({ handle, config, filename: "engine" });
-        }
-    });
-
-    it("installDefaultEngine produces a record accepted by real owner inspection", async () => {
-        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
-        installMocks.engineArchiveDestination.mockReset().mockResolvedValue({ id: "destination" });
-        installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
-        installMocks.registerInstalledEngine.mockReset().mockResolvedValue({
-            id: { id: "installed" },
-            kind: "engine",
-        });
-        installMocks.getEngineConfig
-            .mockReset()
-            .mockResolvedValue({ name: "Stockfish 19", options: [] });
-        const installed = await installDefaultEngine(
+    it("builds an owner-valid engine from retained public metadata without another UUID", () => {
+        const installed = installedEngineFromCompletion(
+            "logical-id",
             {
-                ...manifestEntry,
-                path: "stockfish/stockfish",
-                image: "/engines/stockfish.png",
-                imageUrl: "/engines/stockfish.png",
+                name: "Stockfish",
+                version: "19",
                 elo: 3635,
                 downloadSize: 100,
-            } as never,
-            "progress",
-            "ticket",
+                downloadLink: manifestEntry.downloadLink,
+            },
+            {
+                handle: { id: { id: "installed" }, kind: "engine" },
+                filename: "stockfish",
+                config: { name: "Stockfish 19", options: [] },
+            },
         );
+        expect(installed.id).toBe("logical-id");
         expect(inspectEngineOwnerValue("engines", [installed])).toEqual({
             capabilityIds: ["installed"],
             attachmentIds: [],

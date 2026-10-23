@@ -165,8 +165,6 @@ type TauriCommands = Omit<
         progress: number,
         progressState: ProgressState,
     ) => ReturnType<GeneratedCommands["setProgressState"]>;
-    /** Pair retirement preserves the engine id and readmits its current binary. */
-    retireEngineBinary: GeneratedCommands["retireEngineBinary"];
     startGame: (
         gameId: string,
         config: GameConfigInput,
@@ -466,6 +464,8 @@ export const tauri: TauriCommands = new Proxy(commands, {
 
 /** Typed event subscriptions owned by the same generated-binding boundary. */
 export const tauriSubscriptions = {
+    completionChanged: (callback: Parameters<typeof events.completionChanged.listen>[0]) =>
+        events.completionChanged.listen(callback),
     windowFocus: (callback: () => void) => getCurrentWindow().listen("tauri://focus", callback),
     bestMoves: (callback: Parameters<typeof events.bestMovesPayload.listen>[0]) =>
         events.bestMovesPayload.listen(callback),

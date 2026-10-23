@@ -49,6 +49,10 @@ const mocks = await vi.hoisted(async () => {
   });
 });
 
+vi.mock("@/state/catalogEngineCompletion", () => ({
+  completeCatalogEngine: mocks.installDefaultEngine,
+  usePendingEngineCompletion: () => undefined,
+}));
 vi.mock("@/state/atoms", () => ({
   enginesAtom: Symbol("enginesAtom"),
 }));
@@ -211,72 +215,6 @@ afterEach(async () => {
   host.remove();
 });
 
-test.each([true, false])(
-  "catalog root acquisition displays engine errors with rootFailure=%s",
-  async (labelled) => {
-    const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
-    mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
-    mocks.getEngineWorkspace.mockRejectedValue({
-      tag: "backend-error",
-      category: "io",
-      message: "native failure",
-      ...(labelled ? { rootFailure: "missing" } : {}),
-    });
-    await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
-    await act(async () => mocks.progressButtonProps!.onClick());
-    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: labelled
-        ? "This engine folder is no longer available. Choose another in Settings."
-        : "native failure",
-    });
-    expect(mocks.downloadEngineArchive).not.toHaveBeenCalled();
-    expect(mocks.saveEngines).not.toHaveBeenCalled();
-  },
-);
-
-test.each([
-  "engineArchiveDestination",
-  "downloadEngineArchive",
-  "registerInstalledEngine",
-] as const)("%s preserves saved engines and presents use-time failures", async (boundary) => {
-  const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
-  mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
-  const prior = [{ id: "prior", type: "local" as const, name: "Prior engine" }];
-  mocks.engines = prior;
-  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
-  for (const outcome of ["permission", "child", "cancellation"] as const) {
-    mocks.notificationShow.mockClear();
-    mocks[boundary].mockRejectedValueOnce({
-      tag: "backend-error",
-      category: outcome === "cancellation" ? "cancellation" : "permission",
-      message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
-      ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
-    });
-    await act(async () => mocks.progressButtonProps!.onClick());
-    expect(mocks.notificationShow.mock.calls).toEqual(
-      outcome === "cancellation"
-        ? []
-        : [
-            [
-              {
-                color: "red",
-                title: "Common.Error",
-                message:
-                  outcome === "permission"
-                    ? "ChessFable is not allowed to read this engine folder. Choose another in Settings."
-                    : "I/O failure",
-              },
-            ],
-          ],
-    );
-    expect(mocks.engines).toEqual(prior);
-    expect(mocks.saveEngines).not.toHaveBeenCalled();
-    expect(mocks.getEngineConfig).not.toHaveBeenCalled();
-  }
-});
-
 test("wires installed state and progress id from the download URL", async () => {
   mocks.engines = [
     {
@@ -360,12 +298,11 @@ test("a succeeded download that fails to register is not treated as installed", 
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
 });
 
-test("a refused catalog save shows an error and returns the card to its action", async () => {
-  mocks.installDefaultEngine.mockResolvedValue({ id: "installed" });
-  mocks.saveEngines.mockResolvedValue({ saved: false, synchronized: false });
+test("an application failure shows an error and returns the card to its action", async () => {
+  mocks.installDefaultEngine.mockRejectedValue(new Error("Engines.SaveError"));
   await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
   await act(async () => mocks.progressButtonProps!.onClick());
-  expect(mocks.saveEngines).toHaveBeenCalledWith(expect.any(Function));
+  expect(mocks.saveEngines).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
     "Common.Error",
     expect.any(Error),
@@ -376,10 +313,10 @@ test("a refused catalog save shows an error and returns the card to its action",
   expect(mocks.engines).toEqual([]);
 });
 
-test("the catalog card becomes installed only after its successful save receipt", async () => {
+test("the catalog card becomes installed only after its completion is acknowledged", async () => {
   mocks.installDefaultEngine.mockResolvedValue({ id: "installed" });
   let finishSave!: (receipt: { saved: boolean; synchronized: boolean }) => void;
-  mocks.saveEngines.mockImplementation(
+  mocks.installDefaultEngine.mockImplementation(
     () =>
       new Promise((resolve) => {
         finishSave = resolve;
@@ -387,7 +324,7 @@ test("the catalog card becomes installed only after its successful save receipt"
   );
   await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
   await act(async () => mocks.progressButtonProps!.onClick());
-  expect(mocks.saveEngines).toHaveBeenCalledOnce();
+  expect(mocks.saveEngines).not.toHaveBeenCalled();
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
   expect(mocks.progressButtonProps?.inProgress).toBe(true);
   await act(async () => finishSave({ saved: true, synchronized: true }));
@@ -395,70 +332,6 @@ test("the catalog card becomes installed only after its successful save receipt"
   expect(mocks.progressButtonProps?.inProgress).toBe(false);
   expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
 });
-
-test.each(["registerInstalledEngine", "getEngineConfig"] as const)(
-  "%s failure after download stays idle after rejected clear and remount through the real button and installer",
-  async (step) => {
-    const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
-    mocks.realProgressButton = true;
-    mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
-    const id = defaultEngineProgressId(mocks.defaultEngines[0].downloadLink);
-    const succeeded = {
-      id,
-      generation: 7n,
-      progress: 100,
-      finished: true,
-      state: "succeeded" as const,
-    };
-    mocks.downloadEngineArchive.mockImplementation(async () => {
-      mocks.getProgress.mockResolvedValue(succeeded);
-      mocks.progressListener!({ payload: { ...succeeded, cleared: false } });
-    });
-    mocks.clearProgress.mockRejectedValue(new Error("clear failed"));
-    let failSetup!: (error: Error) => void;
-    mocks[step].mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          failSetup = reject;
-        }),
-    );
-    await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
-    await act(async () => mocks.progressButtonProps!.onClick());
-    expect(host.querySelector("[data-progress]")?.textContent).toBe("100");
-    const finalizing = [...host.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Common.Extracting"),
-    );
-    expect(finalizing?.disabled).toBe(true);
-    await act(async () => failSetup(new Error(`${step} failed`)));
-    expect(mocks.downloadEngineArchive).toHaveBeenCalledOnce();
-    expect(mocks.registerInstalledEngine).toHaveBeenCalledOnce();
-    expect(mocks.getEngineConfig).toHaveBeenCalledTimes(step === "getEngineConfig" ? 1 : 0);
-    expect(mocks.saveEngines).not.toHaveBeenCalled();
-    expect(mocks.engines).toEqual([]);
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
-      "Common.Error",
-      expect.any(Error),
-      "engine",
-    );
-    expect(mocks.progressButtonProps?.initInstalled).toBe(false);
-    expect(mocks.progressButtonProps?.inProgress).toBe(false);
-    expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith(id);
-    expect(host.querySelector("[data-progress]")).toBeNull();
-    expect(
-      [...host.querySelectorAll("button")].find((button) => button.textContent === "Common.Install")
-        ?.disabled,
-    ).toBe(false);
-    await act(async () => root.unmount());
-    root = createRoot(host);
-    await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
-    expect(mocks.getProgress).toHaveBeenCalledTimes(2);
-    expect(host.querySelector("[data-progress]")).toBeNull();
-    expect(
-      [...host.querySelectorAll("button")].find((button) => button.textContent === "Common.Install")
-        ?.disabled,
-    ).toBe(false);
-  },
-);
 
 test("cancelling while engine setup is pending loses the race without clearing or notifying", async () => {
   let finishInstall!: (engine: unknown) => void;
@@ -484,8 +357,10 @@ test("cancelling while engine setup is pending loses the race without clearing o
     mocks.defaultEngines[0],
     defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
     "prepared-ticket",
+    undefined,
+    expect.anything(),
   );
-  expect(mocks.saveEngines).toHaveBeenCalledOnce();
+  expect(mocks.saveEngines).not.toHaveBeenCalled();
   expect(mocks.clearProgress).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
 });

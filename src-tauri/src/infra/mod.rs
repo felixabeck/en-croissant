@@ -10,6 +10,8 @@ pub mod net;
 pub mod operations;
 pub mod path_authority;
 pub(crate) mod platform_support;
+#[cfg(test)]
+mod reload_completion_tests;
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod test_hooks;

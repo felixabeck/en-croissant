@@ -13,7 +13,7 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -25,7 +25,6 @@ import {
   type DefaultEngine,
   type RemoteEngine,
   EngineCatalogVerificationError,
-  installDefaultEngine,
   manifestEngineInstallCard,
   useDefaultEngines,
 } from "@/utils/engines";
@@ -33,6 +32,7 @@ import { usePlatform } from "@/utils/files";
 import CatalogEngineCard from "./CatalogEngineCard";
 import EngineForm from "./EngineForm";
 import { createEngineFormValidation } from "./engineFormValidation";
+import { completeCatalogEngine, usePendingEngineCompletion } from "@/state/catalogEngineCompletion";
 
 function AddEngine({
   opened,
@@ -239,23 +239,22 @@ function EngineCard({
   const [inProgress, setInProgress] = useState<boolean>(false);
   const hasJob = useDownloadJob(progressId ?? "");
   const [installedThisSession, setInstalledThisSession] = useState(false);
-  const [, setEngines] = useAtom(enginesAtom);
+  const store = useStore();
+  const pending = usePendingEngineCompletion(progressId);
   const downloadEngine = useCallback(async () => {
     if (!progressId) return;
     setInProgress(true);
     try {
-      const installed = await runDownloadJob(progressId, (ticket) =>
-        installDefaultEngine(engine, progressId, ticket),
+      await runDownloadJob(progressId, (ticket) =>
+        completeCatalogEngine(engine, progressId, ticket, undefined, store),
       );
-      const receipt = await setEngines((prev) => [...prev, installed]);
-      if (!receipt.saved) throw new Error(t("Engines.SaveError"));
       setInstalledThisSession(true);
     } catch (error) {
       notifyUnlessCancelled(t("Common.Error"), error, "engine");
     } finally {
       setInProgress(false);
     }
-  }, [engine, progressId, setEngines, t]);
+  }, [engine, progressId, store, t]);
 
   return (
     <CatalogEngineCard
@@ -263,6 +262,11 @@ function EngineCard({
       layout="add"
       progressId={progressId}
       initInstalled={initInstalled || installedThisSession}
+      recovery={
+        pending?.completion.outcome.state === "succeeded"
+          ? { busy: pending.applying || inProgress, retry: () => void downloadEngine() }
+          : undefined
+      }
       labels={{
         completed: t("Common.Installed"),
         action: t("Common.Install"),

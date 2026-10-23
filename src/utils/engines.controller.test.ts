@@ -29,7 +29,6 @@ import { createElement } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SWRConfig } from "swr";
-import { TauriCommandError } from "@/platform/tauri";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import engineCatalogDocument from "@/catalogs/engines.json?raw";
 import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
@@ -41,12 +40,9 @@ import {
     getBestMoves,
     prepareEngineSearch,
     releaseEngineSearch,
-    installDefaultEngine,
     killEngine,
-    registerInstalledEngineHandle,
     retireEngine,
     stopEngine,
-    type DefaultEngine,
 } from "./engines";
 
 const bundledPortraitUrls = new Set(
@@ -133,103 +129,6 @@ describe("engine IPC controllers", () => {
 
         await expect(prepareEngineSearch(engine, "tab-2")).resolves.toBe("9007199254740993");
         expect(native.prepareEngineSearch).toHaveBeenCalledWith("engine-1", engine.handle, "tab-2");
-    });
-});
-
-describe("engine registration recovery", () => {
-    const root = { id: { id: "engine-root" }, kind: "engineRoot" as const };
-    const handle = { id: { id: "adopted-engine" }, kind: "engine" as const };
-
-    beforeEach(() => {
-        vi.clearAllMocks();
-    });
-
-    it("recovers the adopted handle after an uncertain registry commit", async () => {
-        native.registerInstalledEngine
-            .mockRejectedValueOnce(
-                new TauriCommandError({
-                    tag: "backend-error",
-                    category: "durability",
-                    message: "Committed but durability uncertain: registry replacement",
-                }),
-            )
-            .mockResolvedValueOnce(handle);
-
-        await expect(registerInstalledEngineHandle(root, "stockfish/stockfish")).resolves.toBe(
-            handle,
-        );
-        expect(native.registerInstalledEngine).toHaveBeenCalledTimes(2);
-        expect(native.registerInstalledEngine).toHaveBeenNthCalledWith(
-            2,
-            root,
-            "stockfish/stockfish",
-        );
-    });
-
-    it("does not retry an ordinary registration failure", async () => {
-        const failure = new Error("native failed");
-        native.registerInstalledEngine.mockRejectedValueOnce(failure);
-
-        await expect(registerInstalledEngineHandle(root, "stockfish")).rejects.toBe(failure);
-        expect(native.registerInstalledEngine).toHaveBeenCalledTimes(1);
-    });
-
-    it("does not run registration recovery for cleanup failure", async () => {
-        const failure = new TauriCommandError({
-            tag: "backend-error",
-            category: "operation-and-cleanup",
-            message: "native failure",
-        });
-        native.registerInstalledEngine.mockRejectedValueOnce(failure);
-        await expect(registerInstalledEngineHandle(root, "stockfish")).rejects.toBe(failure);
-        expect(native.registerInstalledEngine).toHaveBeenCalledOnce();
-    });
-
-    it("keeps the recovered handle when installing a default engine", async () => {
-        const manifest: DefaultEngine = {
-            type: "local",
-            id: "manifest-1",
-            name: "Stockfish",
-            version: "17",
-            path: "stockfish-17/stockfish",
-            sha256: "a".repeat(64),
-            signature: "sig",
-            downloadLink: "https://example.com/engines/stockfish.zip",
-            os: "linux",
-            bmi2: true,
-        };
-        native.getEngineWorkspace.mockResolvedValue(root);
-        native.engineArchiveDestination.mockResolvedValue({ id: "dest" });
-        native.downloadEngineArchive.mockResolvedValue(undefined);
-        native.registerInstalledEngine
-            .mockRejectedValueOnce(
-                // Fallback-path coverage: classify() still matches this owned Display literal.
-                new Error("Committed but durability uncertain: registry replacement"),
-            )
-            .mockResolvedValueOnce(handle);
-        native.getEngineConfig.mockResolvedValue({
-            name: "Stockfish 17",
-            options: [
-                { type: "spin", value: { name: "MultiPV", default: 1 } },
-                { type: "spin", value: { name: "Threads", default: 1 } },
-                { type: "spin", value: { name: "Hash", default: 16 } },
-            ],
-        });
-        const uuid = vi
-            .spyOn(crypto, "randomUUID")
-            .mockReturnValueOnce("00000000-0000-4000-8000-00000000000a")
-            .mockReturnValueOnce("00000000-0000-4000-8000-00000000000b");
-
-        try {
-            const installed = await installDefaultEngine(manifest, "engine_0", "download-ticket");
-            expect(installed.handle).toStrictEqual(handle);
-            expect(installed.id).toBe("00000000-0000-4000-8000-00000000000a");
-            expect(installed.filename).toBe("stockfish");
-            expect(installed.downloadLink).toBe(manifest.downloadLink);
-            expect(native.getEngineConfig).toHaveBeenCalledWith(handle);
-        } finally {
-            uuid.mockRestore();
-        }
     });
 });
 

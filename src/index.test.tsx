@@ -27,6 +27,12 @@ const {
 
 vi.mock("react-dom/client", () => ({ createRoot }));
 vi.mock("./App", () => ({ default: () => null }));
+vi.mock("./state/pathOwners", () => ({
+  initializePathOwners: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("./state/engineCompletions", () => ({
+  initializeEngineCompletions: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("./state/atoms", () => ({ initializeWorkspace }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
 vi.mock("./platform/errors", async (importOriginal) => ({

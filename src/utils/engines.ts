@@ -1,7 +1,4 @@
 import { tauri } from "@/platform/tauri";
-import engineCatalogDocument from "@/catalogs/engines.json?raw";
-import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
-import { runWithAppliedRecovery } from "@/platform/errors";
 import { type Platform } from "@/platform/native";
 import { CatalogVerificationError, loadSignedCatalog } from "@/utils/signedCatalog";
 import useSWR from "swr";
@@ -14,8 +11,8 @@ import {
     type EngineOption,
     type EngineConfig,
     type EngineOptions,
-    type EngineRootHandle,
     type GoMode,
+    type InstalledEngineResult,
 } from "@/bindings";
 
 export const requiredEngineSettings = ["MultiPV", "Threads", "Hash"];
@@ -155,18 +152,6 @@ export function manifestEngineInstallCard(
         progressId: defaultEngineProgressId(link),
         initInstalled: isManifestEngineInstalled(installed, { downloadLink: link }),
     };
-}
-
-export async function registerInstalledEngineHandle(
-    root: EngineRootHandle,
-    relativePath: string,
-): Promise<EngineHandle> {
-    // A second register is get_or_create on the adopted path (a lookup), not a
-    // retry of the registry write. Picker commands cannot recover this way.
-    return runWithAppliedRecovery(
-        () => tauri.registerInstalledEngine(root, relativePath),
-        () => tauri.registerInstalledEngine(root, relativePath),
-    );
 }
 
 export const bundledEngineImagePath = z
@@ -314,12 +299,22 @@ export class EngineCapabilityQueryError extends Error {
 }
 
 export async function loadDefaultEngineCatalog(
-    document: string = engineCatalogDocument,
-    signature: string = engineCatalogSignature,
+    document?: string,
+    signature?: string,
 ): Promise<DefaultEngine[]> {
+    // Startup recovery needs engine schemas and application helpers, but no catalog lookup.
+    // Load the signed catalog bytes only when an install or upgrade requests the catalog.
+    const [catalogDocument, catalogSignature] = await Promise.all([
+        document ?? import("@/catalogs/engines.json?raw").then((module) => module.default),
+        signature ?? import("@/catalogs/engines.json.minisig?raw").then((module) => module.default),
+    ]);
     let parsed: z.infer<typeof defaultEngineManifestSchema>[];
     try {
-        parsed = await loadSignedCatalog(document, signature, z.array(defaultEngineManifestSchema));
+        parsed = await loadSignedCatalog(
+            catalogDocument,
+            catalogSignature,
+            z.array(defaultEngineManifestSchema),
+        );
     } catch (error) {
         // Keep the engine-specific type so AddEngine maps it to its catalog error.
         if (error instanceof CatalogVerificationError) {
@@ -351,37 +346,24 @@ export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     };
 }
 
-/** Installs or adopts a verified catalog artefact; shared with catalog upgrades. */
-export async function installCatalogEngine(
-    engine: DefaultEngine,
-    progressId: string,
-    ticket: string,
-): Promise<{ handle: EngineHandle; config: EngineConfig; filename: string }> {
-    const url = engine.downloadLink;
-    if (!url) {
-        throw new Error("engine download link is required");
-    }
-    const root = await tauri.getEngineWorkspace();
-    const destination = await tauri.engineArchiveDestination(root);
-    const archiveName = url.slice(url.lastIndexOf("/") + 1);
-    const directoryName = `${archiveName}-${engine.sha256.toLowerCase()}`;
-    await tauri.downloadEngineArchive(progressId, url, destination, directoryName, ticket, {
-        sha256: engine.sha256,
-        signature: engine.signature,
-    });
-    const handle = await registerInstalledEngineHandle(root, `${directoryName}/${engine.path}`);
-    const config = await tauri.getEngineConfig(handle);
-    return { handle, config, filename: engine.path.split("/").at(-1) || engine.name };
-}
+export {
+    installCatalogEngine,
+    installCatalogEngine as installDefaultEngine,
+} from "./engineInstall";
 
-export async function installDefaultEngine(
-    engine: DefaultEngine,
-    progressId: string,
-    ticket: string,
-): Promise<LocalEngine> {
-    const { handle, config, filename } = await installCatalogEngine(engine, progressId, ticket);
+export type EngineCatalogMetadata = Pick<
+    DefaultEngine,
+    "name" | "version" | "elo" | "downloadSize" | "downloadLink"
+>;
+
+export function installedEngineFromCompletion(
+    id: string,
+    engine: EngineCatalogMetadata,
+    installed: InstalledEngineResult,
+): LocalEngine {
+    const { handle, config, filename } = installed;
     return localEngineSchema.parse({
-        id: crypto.randomUUID(),
+        id,
         type: "local",
         name: engine.name,
         version: engine.version,
@@ -413,8 +395,8 @@ export function upgradeEngineSettings(
 /** Swaps binary metadata while retaining this entry's identity and user preferences. */
 export function upgradeEngineFromCatalog(
     engine: LocalEngine,
-    catalogEntry: DefaultEngine,
-    installed: Awaited<ReturnType<typeof installCatalogEngine>>,
+    catalogEntry: EngineCatalogMetadata,
+    installed: InstalledEngineResult,
 ): LocalEngine {
     return localEngineSchema.parse({
         ...engine,

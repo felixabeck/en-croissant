@@ -12,6 +12,7 @@ import {
   engineProgressFamily,
 } from "@/state/atoms";
 import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
+import { decodeEngineOwnerValue } from "@/state/engineOwnerStorage";
 import { useAtomValue } from "jotai";
 import type { Settings } from "./EngineSettingsForm";
 import { analysisSearch } from "./analysisSearch";
@@ -132,7 +133,9 @@ test.each([false, true])(
     const saved = h.store.get(enginesAtom)![0];
     expect(saved.go).toEqual(refused ? undefined : local.go);
     expect(saved.settings).toEqual(refused ? undefined : local.settings);
-    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([saved]);
+    expect(
+      decodeEngineOwnerValue(decodeCompressedOrJson(localStorage.getItem("engines")!))?.value,
+    ).toEqual([saved]);
     expect(pending?.go).toEqual(local.go);
     expect(pending?.settings).toEqual(local.settings);
     expect(committed).toEqual({ ...local, synced: true, go: { t: "Infinite" }, settings: [] });
@@ -196,7 +199,9 @@ test.each(["sync", "options"] as const)(
       await h.store.set(enginesAtom, (current) => current);
     });
     const settled = h.store.get(enginesAtom)![0];
-    const settledBytes = decodeCompressedOrJson(localStorage.getItem("engines")!);
+    const settledBytes = decodeEngineOwnerValue(
+      decodeCompressedOrJson(localStorage.getItem("engines")!),
+    )?.value;
     await act(async () =>
       publication.setSettings!((current) => ({ ...current, go: { t: "Depth", c: 30 } })),
     );

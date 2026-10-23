@@ -1,62 +1,28 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createStore, Provider } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { enginesAtom } from "@/state/atoms";
-import { resetEngineOwnerCoordinatorForTests } from "@/state/engineOwnerStorage";
-import { serializeStorageValue, decodeCompressedOrJson } from "@/state/store/debouncedStorage";
-import {
-  EngineCapabilityQueryError,
-  EngineCatalogVerificationError,
-  type DefaultEngine,
-  type LocalEngine,
-} from "@/utils/engines";
-import type { EngineConfig } from "@/bindings";
+import type { EngineCompletion } from "@/bindings";
+import type { DefaultEngine, LocalEngine } from "@/utils/engines";
 import UpgradeEngineModal from "./UpgradeEngineModal";
-import {
-  resetProgressButtonTestHarness,
-  reportRunningProgress,
-} from "@/tests/progressButtonTestHarness";
 
-const mocks = await vi.hoisted(async () => {
-  const { createProgressButtonTestHarness } = await import("@/tests/progressButtonTestHarness");
-  const harness = createProgressButtonTestHarness();
-  return Object.assign(harness, {
-    download: vi.fn(),
-    register: vi.fn(),
-    config: vi.fn(),
-    retire: vi.fn(),
-    reconcile: vi.fn(),
-    cancel: harness.cancelDownload,
-    clear: harness.clearProgress,
-    report: vi.fn(),
-    notify: vi.fn(),
-    notificationShow: vi.fn(),
-    getEngineWorkspace: vi.fn(),
-    destination: vi.fn(),
-    close: undefined as (() => void) | undefined,
-    catalogError: undefined as unknown,
-    progress: new Map<string, number>(),
-  });
-});
-vi.mock("@/platform/tauri", async (original) => ({
-  ...(await original<typeof import("@/platform/tauri")>()),
-  withDownloadTicket: (run: (ticket: string) => Promise<unknown>) => run("ticket"),
-  tauri: {
-    getEngineWorkspace: mocks.getEngineWorkspace,
-    engineArchiveDestination: mocks.destination,
-    downloadEngineArchive: mocks.download,
-    registerInstalledEngine: mocks.register,
-    getEngineConfig: mocks.config,
-    retireEngineBinary: mocks.retire,
-    reconcileEngineAttachments: mocks.reconcile,
-    cancelDownload: mocks.cancel,
-    cancelDownloadForProgress: mocks.cancelDownloadForProgress,
-    clearProgress: mocks.clear,
-    getProgress: mocks.getProgress,
-  },
-  tauriSubscriptions: { progress: mocks.subscribeProgress },
+const mocks = vi.hoisted(() => ({
+  complete: vi.fn(),
+  cancel: vi.fn(),
+  notify: vi.fn(),
+  pending: undefined as { completion: EngineCompletion; applying: boolean } | undefined,
+  catalogError: undefined as unknown,
 }));
+vi.mock("@/state/catalogEngineCompletion", () => ({
+  completeCatalogEngine: mocks.complete,
+  usePendingEngineCompletion: () => mocks.pending,
+}));
+vi.mock("@/hooks/downloadJobs", () => ({
+  runDownloadJob: (_id: string, run: (ticket: string) => Promise<void>) => run("ticket"),
+  useDownloadJob: () => false,
+  cancelDownloadJob: mocks.cancel,
+}));
+vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: mocks.notify }));
+vi.mock("@/utils/files", () => ({ usePlatform: () => ({ os: "linux" }) }));
 vi.mock("@/utils/engines", async (original) => ({
   ...(await original<typeof import("@/utils/engines")>()),
   useDefaultEngines: () => ({
@@ -65,176 +31,79 @@ vi.mock("@/utils/engines", async (original) => ({
     isLoading: false,
   }),
 }));
-vi.mock("@/utils/files", () => ({ usePlatform: () => ({ os: "linux" }) }));
-vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.report }));
-vi.mock("@/platform/native", () => ({
-  warn: vi.fn().mockResolvedValue(undefined),
-  error: vi.fn().mockResolvedValue(undefined),
-}));
-vi.mock("@/components/files/notifyError", async (original) => {
-  const actual = await original<typeof import("@/components/files/notifyError")>();
-  const { errorUnlessCancelled } = await import("@/platform/errors");
-  return {
-    ...actual,
-    notifyUnlessCancelled: (
-      title: string,
-      cause: unknown,
-      domain?: import("@/components/files/listingFailure").RootFailureDomain,
-    ) => {
-      if (errorUnlessCancelled(cause) !== null) mocks.notify(title, cause);
-      actual.notifyUnlessCancelled(title, cause, domain);
-    },
-  };
-});
-vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notificationShow } }));
-vi.mock("@/i18n", async (original) => ({
-  ...(await original<typeof import("@/i18n")>()),
-  default: {
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  },
-}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@/hooks/useProgress", async (original) => {
-  const actual = await original<typeof import("@/hooks/useProgress")>();
-  return {
-    useProgress: (id: string) =>
-      mocks.realProgressButton
-        ? actual.useProgress(id)
-        : {
-            progress: mocks.progress.get(id) ?? 0,
-            finished: mocks.progress.get(id) === 100,
-            isActive: mocks.progress.has(id) && mocks.progress.get(id) !== 100,
-            item: mocks.progress.has(id)
-              ? { generation: 1n, state: mocks.progress.get(id) === 100 ? "succeeded" : "running" }
-              : null,
-            clear: () => mocks.clear(id),
-            fence: vi.fn(),
-          },
-  };
-});
 vi.mock("../common/AppModal", () => ({
-  default: ({ children, onClose }: { children: React.ReactNode; onClose: () => void }) => {
-    mocks.close = onClose;
-    return <div>{children}</div>;
-  },
-}));
-vi.mock("../common/IconAction", () => ({
-  default: ({ label, onClick }: { label: string; onClick: () => void }) => (
-    <button onClick={onClick}>{label}</button>
-  ),
+  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("@mantine/core", () => {
   const Container = ({ children }: { children: React.ReactNode }) => <div>{children}</div>;
   return {
     Alert: Container,
-    Box: Container,
     Center: Container,
-    Group: Container,
-    Image: () => null,
-    Loader: () => null,
-    Paper: Container,
+    Loader: Container,
     SimpleGrid: Container,
-    Text: Container,
     ScrollArea: { Autosize: Container },
-    Button: ({
-      children,
-      onClick,
-      disabled,
-    }: {
-      children: React.ReactNode;
-      onClick: () => void;
-      disabled?: boolean;
-    }) => (
-      <button onClick={onClick} disabled={disabled}>
-        {children}
-      </button>
-    ),
-    Progress: ({ value }: { value: number }) => <output data-progress>{value}</output>,
   };
 });
+vi.mock("./CatalogEngineCard", () => ({
+  default: ({
+    initInstalled,
+    recovery,
+    disabled,
+    onClick,
+    labels,
+  }: {
+    initInstalled: boolean;
+    recovery?: { busy: boolean; retry: () => void };
+    disabled?: boolean;
+    onClick: () => void;
+    labels: { completed: string; action: string };
+  }) => (
+    <button
+      disabled={recovery ? recovery.busy : disabled || initInstalled}
+      onClick={recovery ? recovery.retry : onClick}
+    >
+      {recovery
+        ? recovery.busy
+          ? "Common.Extracting"
+          : "Common.Install"
+        : initInstalled
+          ? labels.completed
+          : labels.action}
+    </button>
+  ),
+}));
 
 const old: LocalEngine = {
-  id: "same-id",
-  legacyAssessment: null,
+  id: "engine-id",
   type: "local",
-  name: "Stockfish 18",
-  version: "18",
+  name: "Old",
+  version: "1",
   filename: "old",
   handle: { id: { id: "old" }, kind: "engine" },
-  go: { t: "Infinite" },
-  settings: [
-    { type: "string", name: "Threads", value: "20" },
-    { type: "string", name: "Hash", value: "8192" },
-    { type: "string", name: "MultiPV", value: "4" },
-    {
-      type: "resource",
-      name: "EvalFileSmall",
-      resources: [{ id: { id: "small" }, kind: "file", displayName: "small.nnue" }],
-    },
-  ],
+  downloadLink: "https://example.com/old.zip",
 };
 const catalog: DefaultEngine = {
+  id: "catalog-id",
   type: "local",
-  id: "catalog",
-  name: "Stockfish",
-  version: "19",
-  path: "stockfish/sf19",
+  name: "New",
+  version: "2",
+  path: "engine",
   os: "linux",
   bmi2: false,
   sha256: "a".repeat(64),
-  signature: "sig",
-  downloadLink: "https://example.com/sf19.tar.gz",
+  signature: "signature",
+  downloadLink: "https://example.com/new.zip",
 };
-const config: EngineConfig = {
-  name: "Stockfish 19",
-  options: ["Threads", "Hash", "MultiPV"].map((name) => ({
-    type: "spin",
-    value: { name, default: 1n, min: 1n, max: 10000n },
-  })),
-};
-let host: HTMLDivElement;
+const progressId = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
 let root: Root;
-let store: ReturnType<typeof createStore>;
-const click = async (label: string) => {
-  const button = [...host.querySelectorAll("button")].find((item) => item.textContent === label);
-  expect(button).toBeDefined();
-  await act(async () => button!.click());
-};
-const render = async (engine = old) => {
-  await act(async () =>
-    root.render(
-      <Provider store={store}>
-        <UpgradeEngineModal engine={engine} opened setOpened={() => undefined} />
-      </Provider>,
-    ),
-  );
-};
-beforeEach(async () => {
-  localStorage.clear();
-  resetEngineOwnerCoordinatorForTests();
-  vi.clearAllMocks();
-  resetProgressButtonTestHarness(mocks);
+let host: HTMLDivElement;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+beforeEach(() => {
+  mocks.complete.mockReset().mockResolvedValue(undefined);
+  mocks.notify.mockReset();
+  mocks.pending = undefined;
   mocks.catalogError = undefined;
-  mocks.getEngineWorkspace
-    .mockReset()
-    .mockResolvedValue({ id: { id: "root" }, kind: "engineRoot" });
-  mocks.close = undefined;
-  mocks.destination.mockReset().mockResolvedValue({ id: "destination" });
-  mocks.progress.clear();
-  mocks.reconcile.mockReset().mockResolvedValue(undefined);
-  mocks.download.mockReset().mockResolvedValue(undefined);
-  mocks.register.mockReset().mockResolvedValue({ id: { id: "new" }, kind: "engine" });
-  mocks.config.mockReset().mockResolvedValue(config);
-  mocks.retire.mockReset().mockResolvedValue(undefined);
-  mocks.cancel.mockReset().mockResolvedValue(true);
-  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
-  mocks.clear.mockReset().mockImplementation(async (id: string) => {
-    mocks.progress.delete(id);
-    return 1n;
-  });
-  store = createStore();
-  await store.set(enginesAtom, [old]);
-  vi.clearAllMocks();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -242,448 +111,82 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
-  vi.restoreAllMocks();
 });
-
-test("success saves once before retiring the old pair and keeps the same list position", async () => {
-  const first: LocalEngine = { ...old, id: "first", name: "First engine" };
-  const last: LocalEngine = { ...old, id: "last", name: "Last engine" };
-  await store.set(enginesAtom, [first, old, last]);
-  const events: string[] = [];
-  const write = Storage.prototype.setItem;
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
-    if (key === "engines") events.push("saved");
-    write.call(this, key, value);
-  });
-  mocks.retire.mockImplementation(async () => {
-    events.push("retired");
-    expect(store.get(enginesAtom)?.[1]).toMatchObject({ handle: { id: { id: "new" } } });
-  });
-  await render();
-  await click("Common.Install");
-  expect(events).toEqual(["saved", "retired"]);
-  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle, {
-    id: { id: "new" },
-    kind: "engine",
-  });
-  const engines = store.get(enginesAtom)!;
-  expect(engines).toHaveLength(3);
-  expect(engines[0]).toEqual(first);
-  expect(engines[1]).toMatchObject({ id: old.id, name: "Stockfish 19" });
-  expect(engines[2]).toEqual(last);
-  expect(mocks.notify).not.toHaveBeenCalled();
-});
-
-test("a running upgrade with no local job renders Cancel and calls native lookup", async () => {
-  const id = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
-  await render();
-  expect(host.textContent).not.toContain("Common.Cancel");
-  mocks.progress.set(id, 45);
-  await render();
-  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
-  await click("Common.Cancel");
-  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(id);
-  expect(mocks.cancel).not.toHaveBeenCalled();
-  expect(mocks.clear).not.toHaveBeenCalled();
-  expect(mocks.download).not.toHaveBeenCalled();
-  expect(store.get(enginesAtom)).toEqual([old]);
-});
-
-test.each([true, false])(
-  "upgrade root acquisition displays engine errors with rootFailure=%s",
-  async (labelled) => {
-    mocks.getEngineWorkspace.mockRejectedValue({
-      tag: "backend-error",
-      category: "io",
-      message: "native failure",
-      ...(labelled ? { rootFailure: "missing" } : {}),
-    });
-    await render();
-    await click("Common.Install");
-    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: labelled
-        ? "This engine folder is no longer available. Choose another in Settings."
-        : "native failure",
-    });
-    expect(mocks.download).not.toHaveBeenCalled();
-    expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: old.handle });
-  },
-);
-
-test.each(["destination", "download", "register"] as const)(
-  "%s preserves the old engine and saved bytes on use-time failure",
-  async (boundary) => {
-    await render();
-    const bytes = localStorage.getItem("engines");
-    for (const outcome of ["permission", "child", "cancellation"] as const) {
-      mocks.notificationShow.mockClear();
-      mocks[boundary].mockRejectedValueOnce({
-        tag: "backend-error",
-        category: outcome === "cancellation" ? "cancellation" : "permission",
-        message: outcome === "cancellation" ? "Cancellation" : "I/O failure",
-        ...(outcome === "permission" ? { rootFailure: "permission" } : {}),
-      });
-      await click("Common.Install");
-      expect(mocks.notificationShow.mock.calls).toEqual(
-        outcome === "cancellation"
-          ? []
-          : [
-              [
-                {
-                  color: "red",
-                  title: "Common.Error",
-                  message:
-                    outcome === "permission"
-                      ? "ChessFable is not allowed to read this engine folder. Choose another in Settings."
-                      : "I/O failure",
-                },
-              ],
-            ],
-      );
-      expect(store.get(enginesAtom)).toEqual([old]);
-      expect(localStorage.getItem("engines")).toBe(bytes);
-      expect(mocks.retire).not.toHaveBeenCalled();
-      expect(mocks.reconcile).not.toHaveBeenCalled();
-      expect(mocks.config).not.toHaveBeenCalled();
-    }
-  },
-);
-
-test("committing withdraws cancel and ignores cancellation while save, retirement and snapshot save are pending", async () => {
-  const snapshotKey = "game-player1-settings";
-  localStorage.setItem(
-    snapshotKey,
-    serializeStorageValue({ type: "engine", engine: old, go: { t: "Infinite" } }),
+const render = async (engine = old) =>
+  act(async () =>
+    root.render(<UpgradeEngineModal engine={engine} opened setOpened={() => undefined} />),
   );
-  const oldSnapshot = localStorage.getItem(snapshotKey);
-  let finishSave!: () => void;
-  let finishRetirement!: () => void;
-  let finishSnapshotSave!: () => void;
-  mocks.reconcile
-    .mockImplementationOnce(() => {
-      // Invoke cancel in the save's first tick, before React can render the committing state.
-      mocks.close!();
-      return new Promise<void>((resolve) => {
-        finishSave = resolve;
-      });
-    })
-    .mockResolvedValueOnce(undefined)
-    .mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishSnapshotSave = resolve;
-        }),
-    );
-  mocks.retire.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        finishRetirement = resolve;
-      }),
-  );
+const click = async () => act(async () => host.querySelector("button")!.click());
+
+test("submits the immutable engine target and becomes current after full application", async () => {
   await render();
-  await click("Common.Install");
-  expect(finishSave).toEqual(expect.any(Function));
-  expect(host.textContent).not.toContain("Common.Cancel");
-  expect(host.textContent).toContain("Common.Extracting");
-  expect(store.get(enginesAtom)).toEqual([old]);
-  expect(mocks.retire).not.toHaveBeenCalled();
-  await act(async () => mocks.close!());
-  expect(mocks.cancel).not.toHaveBeenCalled();
-  expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
-  expect(mocks.clear).not.toHaveBeenCalled();
-
-  await act(async () => finishSave());
-  expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: { id: { id: "new" } } });
-  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
-    { id: old.id, handle: { id: { id: "new" } } },
-  ]);
-  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle, {
-    id: { id: "new" },
-    kind: "engine",
-  });
-  expect(host.textContent).not.toContain("Common.Cancel");
-  expect(host.textContent).not.toContain("Engines.Upgrade.Current");
-  expect(host.textContent).toContain("Common.Extracting");
-  await act(async () => mocks.close!());
-  expect(mocks.cancel).not.toHaveBeenCalled();
-
-  await act(async () => finishRetirement());
-  expect(finishSnapshotSave).toEqual(expect.any(Function));
-  expect(mocks.reconcile).toHaveBeenNthCalledWith(
-    3,
-    expect.objectContaining({ action: "prepare" }),
+  await click();
+  expect(mocks.complete).toHaveBeenCalledWith(
+    catalog,
+    progressId,
+    "ticket",
+    old,
+    expect.anything(),
   );
-  expect(localStorage.getItem(snapshotKey)).toBe(oldSnapshot);
-  expect(host.textContent).not.toContain("Common.Cancel");
-  expect(host.textContent).not.toContain("Engines.Upgrade.Current");
-  expect(host.textContent).toContain("Common.Extracting");
-  await act(async () => mocks.close!());
-  expect(mocks.cancel).not.toHaveBeenCalled();
-  expect(mocks.clear).not.toHaveBeenCalled();
-
-  await act(async () => finishSnapshotSave());
-  expect(decodeCompressedOrJson(localStorage.getItem(snapshotKey)!)).toMatchObject({
-    engine: { id: old.id, handle: { id: { id: "new" } } },
-  });
   expect(host.textContent).toContain("Engines.Upgrade.Current");
-  expect(host.textContent).not.toContain("Common.Extracting");
-  expect(mocks.clear).not.toHaveBeenCalled();
-  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(host.querySelector("button")!.disabled).toBe(true);
 });
 
-test("refused save leaves the real atom and durable handle old and never retires", async () => {
-  const bytes = localStorage.getItem("engines");
-  mocks.reconcile.mockRejectedValueOnce(new Error("prepare refused"));
+test("application failure keeps Install available and uses the localized error path", async () => {
+  const failure = new Error("Engines.Upgrade.SnapshotSaveError");
+  mocks.complete.mockRejectedValue(failure);
   await render();
-  await click("Common.Install");
-  expect(store.get(enginesAtom)).toEqual([old]);
-  expect(localStorage.getItem("engines")).toBe(bytes);
-  expect(mocks.retire).not.toHaveBeenCalled();
-  expect(mocks.notify).toHaveBeenCalled();
-  expect(mocks.clear).toHaveBeenCalled();
+  await click();
+  expect(mocks.notify).toHaveBeenCalledWith("Common.Error", failure, "engine");
   expect(host.textContent).toContain("Common.Install");
+  expect(host.querySelector("button")!.disabled).toBe(false);
 });
 
-test.each(["download", "register", "config"] as const)(
-  "%s failure shows an error and saves no upgrade",
-  async (step) => {
-    mocks[step].mockRejectedValueOnce(new Error(`${step} failed`));
-    await render();
-    await click("Common.Install");
-    expect(store.get(enginesAtom)).toEqual([old]);
-    expect(mocks.retire).not.toHaveBeenCalled();
-    expect(mocks.notify).toHaveBeenCalled();
-    expect(mocks.clear).toHaveBeenCalled();
-  },
-);
-
-test("retirement failure reports an error and leaves the saved upgrade applied", async () => {
-  mocks.retire.mockRejectedValueOnce(new Error("retirement failed"));
-  await render();
-  await click("Common.Install");
-  expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: { id: { id: "new" } } });
-  expect(mocks.notify).toHaveBeenCalled();
-});
-
-test.each([
-  [() => new EngineCatalogVerificationError("signature"), "Engines.Upgrade.ErrorCatalog"],
-  [() => new EngineCapabilityQueryError("IPC"), "Engines.Upgrade.ErrorCapabilities"],
-  [() => new Error("other"), "Engines.Upgrade.ErrorLoad"],
-] as const)(
-  "catalog failures fail closed with a truthful per-cause message (%s)",
-  async (error, message) => {
-    mocks.catalogError = error();
-    await render();
-    expect(host.textContent).toContain(message);
-    expect(host.querySelectorAll("button")).toHaveLength(0);
-  },
-);
-
-test("current downloadLink is marked current and cannot install", async () => {
+test("a partially applied current binary still exposes Install to rejoin its original completion", async () => {
+  mocks.pending = {
+    applying: false,
+    completion: {
+      id: crypto.randomUUID(),
+      retired: false,
+      request: {
+        intent: { kind: "upgrade", engine_id: old.id, expected: old.handle },
+        root: { id: { id: "root" }, kind: "engineRoot" },
+        progressId,
+        url: catalog.downloadLink!,
+        sha256: catalog.sha256,
+        signature: catalog.signature,
+        relativePath: catalog.path,
+        name: catalog.name,
+        version: catalog.version,
+        elo: null,
+        downloadSize: null,
+      },
+      outcome: {
+        state: "succeeded",
+        result: {
+          handle: { id: { id: "new" }, kind: "engine" },
+          filename: "new",
+          config: { name: "New", options: [] },
+        },
+      },
+    },
+  };
   await render({ ...old, downloadLink: catalog.downloadLink });
-  const button = host.querySelector("button")!;
-  expect(button.textContent).toBe("Engines.Upgrade.Current");
-  expect(button.disabled).toBe(true);
+  expect(host.textContent).toContain("Common.Install");
+  expect(host.querySelector("button")!.disabled).toBe(false);
+  await click();
+  expect(mocks.complete).toHaveBeenCalledOnce();
 });
 
-test("rewrites both same-id durable player snapshots and filters their own settings", async () => {
-  for (const key of ["game-player1-settings", "game-player2-settings"])
-    localStorage.setItem(
-      key,
-      serializeStorageValue({
-        type: "engine",
-        engine: old,
-        go: { t: "Depth", c: 12 },
-        engineSettings: old.settings!.filter((item) => item.name !== "Hash"),
-      }),
-    );
+test("the current catalog choice remains disabled with no pending completion", async () => {
+  await render({ ...old, downloadLink: catalog.downloadLink });
+  expect(host.textContent).toContain("Engines.Upgrade.Current");
+  expect(host.querySelector("button")!.disabled).toBe(true);
+});
+
+test("catalog failures use the existing localized load error", async () => {
+  mocks.catalogError = new Error("catalog unavailable");
   await render();
-  await click("Common.Install");
-  for (const key of ["game-player1-settings", "game-player2-settings"]) {
-    const snapshot = decodeCompressedOrJson(localStorage.getItem(key)!);
-    expect(snapshot).toMatchObject({
-      engine: { id: old.id, handle: { id: { id: "new" } } },
-      go: { t: "Depth", c: 12 },
-      engineSettings: [
-        { name: "Threads", value: "20" },
-        { name: "MultiPV", value: "4" },
-        { name: "Hash", value: "1" },
-      ],
-    });
-  }
-  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(host.textContent).toContain("Engines.Upgrade.ErrorLoad");
+  expect(host.querySelector("button")).toBeNull();
 });
-
-test.each(["pre-id", "random-era"])(
-  "upgrade resolves a never-hydrated pre-id player after changing the %s engine's identity fields",
-  async (era) => {
-    const { id: _id, legacyAssessment: _assessment, ...snapshot } = old;
-    localStorage.setItem(
-      "engines",
-      serializeStorageValue([era === "pre-id" ? snapshot : { ...snapshot, id: old.id }]),
-    );
-    for (const key of ["game-player1-settings", "game-player2-settings"]) {
-      localStorage.setItem(
-        key,
-        serializeStorageValue({
-          type: "engine",
-          engine: snapshot,
-          go: { t: "Depth", c: 12 },
-          engineSettings: snapshot.settings,
-        }),
-      );
-    }
-    const untouched = localStorage.getItem("game-player1-settings");
-    store = createStore();
-    const unsubscribe = store.sub(enginesAtom, () => undefined);
-    try {
-      await vi.waitFor(() => expect(store.get(enginesAtom)).toHaveLength(1));
-      const current = store.get(enginesAtom)![0] as LocalEngine;
-      expect(localStorage.getItem("game-player1-settings")).toBe(untouched);
-      await render(current);
-      await click("Common.Install");
-      for (const key of ["game-player1-settings", "game-player2-settings"]) {
-        expect(decodeCompressedOrJson(localStorage.getItem(key)!)).toMatchObject({
-          engine: { id: current.id, name: "Stockfish 19", handle: { id: { id: "new" } } },
-          go: { t: "Depth", c: 12 },
-          engineSettings: [
-            { name: "Threads", value: "20" },
-            { name: "Hash", value: "8192" },
-            { name: "MultiPV", value: "4" },
-          ],
-        });
-      }
-      expect(store.get(enginesAtom)![0]).toMatchObject({
-        id: current.id,
-        handle: { id: { id: "new" } },
-      });
-      expect(mocks.retire).toHaveBeenCalledWith(current.id, current.handle, {
-        id: { id: "new" },
-        kind: "engine",
-      });
-      expect(mocks.notify).not.toHaveBeenCalled();
-    } finally {
-      unsubscribe();
-    }
-  },
-);
-
-test("a refused player receipt reports an error without undoing the entry", async () => {
-  const key = "game-player1-settings";
-  localStorage.setItem(
-    key,
-    serializeStorageValue({ type: "engine", engine: old, go: { t: "Infinite" } }),
-  );
-  const write = Storage.prototype.setItem;
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
-    if (name === key) throw new Error("quota");
-    write.call(this, name, value);
-  });
-  await render();
-  await click("Common.Install");
-  expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: { id: { id: "new" } } });
-  expect(mocks.notify).toHaveBeenCalledWith(
-    "Common.Error",
-    expect.objectContaining({ message: "Engines.Upgrade.SnapshotSaveError" }),
-  );
-});
-
-test.each([false, true])(
-  "cancel intent keeps the old entry when request fails=%s; discarded completion clears progress to idle",
-  async (fails) => {
-    const progressId = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
-    const otherProgressId = "another-download";
-    mocks.progress.set(otherProgressId, 73);
-    let complete!: () => void;
-    mocks.download.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          complete = resolve;
-        }),
-    );
-    if (fails) mocks.cancel.mockRejectedValueOnce(new Error("cancel IPC failed"));
-    else
-      mocks.cancel.mockImplementation(async () => {
-        complete();
-        return true;
-      });
-    await render();
-    await click("Common.Install");
-    await vi.waitFor(() => expect(complete).toEqual(expect.any(Function)));
-    await click("Common.Cancel");
-    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("ticket");
-    expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
-    expect(mocks.notify).toHaveBeenCalledTimes(fails ? 1 : 0);
-    if (fails) {
-      mocks.progress.set(progressId, 100);
-      await act(async () => complete());
-    }
-    await vi.waitFor(() => expect(mocks.clear).toHaveBeenCalledWith(progressId));
-    expect(mocks.clear).toHaveBeenCalledTimes(1);
-    expect(mocks.progress.has(progressId)).toBe(false);
-    expect(mocks.progress.get(otherProgressId)).toBe(73);
-    expect(store.get(enginesAtom)).toEqual([old]);
-    expect(mocks.retire).not.toHaveBeenCalled();
-    expect(mocks.reconcile).not.toHaveBeenCalled();
-    const button = host.querySelector("button")!;
-    expect(button.textContent).toBe("Common.Install");
-    expect(button.disabled).toBe(false);
-    expect(host.querySelector("[data-progress]")).toBeNull();
-    expect(host.textContent).not.toContain("Common.Downloading");
-    expect(host.textContent).not.toContain("Common.Extracting");
-  },
-);
-
-test.each([false, true])(
-  "discarded transfer stays idle after rejected clear and remount when cancel request fails=%s",
-  async (fails) => {
-    mocks.realProgressButton = true;
-    const id = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
-    const succeeded = {
-      id,
-      generation: 7n,
-      progress: 100,
-      finished: true,
-      state: "succeeded" as const,
-    };
-    mocks.clear.mockRejectedValue(new Error("clear failed"));
-    let complete!: () => void;
-    mocks.download.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          complete = resolve;
-        }),
-    );
-    if (fails) mocks.cancel.mockRejectedValueOnce(new Error("cancel IPC failed"));
-    else mocks.cancel.mockResolvedValueOnce(false);
-    await render();
-    await click("Common.Install");
-    await reportRunningProgress(mocks, id);
-    await click("Common.Cancel");
-    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("ticket");
-    expect(mocks.notify).toHaveBeenCalledTimes(fails ? 1 : 0);
-    expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
-    expect(host.querySelector("button")?.disabled).toBe(true);
-    await act(async () => {
-      mocks.getProgress.mockResolvedValue(succeeded);
-      mocks.progressListener!({ payload: { ...succeeded, cleared: false } });
-      complete();
-    });
-    expect(mocks.clear).toHaveBeenCalledExactlyOnceWith(id);
-    expect(store.get(enginesAtom)).toEqual([old]);
-    expect(mocks.retire).not.toHaveBeenCalled();
-    expect(mocks.reconcile).not.toHaveBeenCalled();
-    expect(host.querySelector("[data-progress]")).toBeNull();
-    expect(host.querySelector("button")?.textContent).toBe("Common.Install");
-    expect(host.querySelector("button")?.disabled).toBe(false);
-    await act(async () => root.unmount());
-    root = createRoot(host);
-    await render();
-    expect(mocks.getProgress).toHaveBeenCalledTimes(2);
-    expect(host.querySelector("[data-progress]")).toBeNull();
-    expect(host.querySelector("button")?.textContent).toBe("Common.Install");
-    expect(host.querySelector("button")?.disabled).toBe(false);
-  },
-);

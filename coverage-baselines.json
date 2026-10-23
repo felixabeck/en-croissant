@@ -104,6 +104,7 @@
           "src/components/engines/**",
           "src/components/puzzles/**",
           "src/utils/chessdb/**",
+          "src/utils/engineInstall.ts",
           "src/utils/engines.ts",
           "src/utils/puzzles.ts",
           "src/utils/signedCatalog.ts"

@@ -26,11 +26,15 @@ vi.mock("@/i18n", () => ({
 
 import {
     collectAttachmentIds,
+    decodeEngineOwnerValue,
     createEngineOwnerStorage,
     reconcileStartupEngineAttachments,
     resetEngineOwnerCoordinatorForTests,
     saveEngineOwnerValue,
 } from "./engineOwnerStorage";
+
+const decodeOwnerValue = (raw: string) =>
+    decodeEngineOwnerValue(decodeCompressedOrJson(raw))?.value;
 
 const resource = { id: { id: "resource-a" }, kind: "file" as const, displayName: "table" };
 const engine = {
@@ -218,10 +222,7 @@ test("real atom append waits for pending storage hydration", async () => {
         expect(hydrated).toHaveLength(2);
         expect(hydrated.map(({ name }) => name)).toEqual(["Stockfish", "Twin"]);
         expect(hydrated[1].id).not.toBe(engine.id);
-        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([
-            ...hydrated,
-            added,
-        ]);
+        expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([...hydrated, added]);
         expect(store.get(enginesAtom)).toEqual([...hydrated, added]);
     } finally {
         unsubscribe();
@@ -284,9 +285,7 @@ test("ordinary real-store saves publish only durable values and recover after re
     );
     expect(receipt).toMatchObject({ saved: true, synchronized: false });
     expect(store.get(enginesAtom)?.[0].name).toBe("Durable");
-    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(
-        store.get(enginesAtom),
-    );
+    expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual(store.get(enginesAtom));
 });
 
 test("restricted local removal stays omitted through refused persistence and late field edits", async () => {
@@ -707,7 +706,7 @@ test("post-storage reconciliation failure is truthful and a later save retries s
     expect(first).toEqual(
         expect.objectContaining({ saved: true, synchronized: false, error: failure }),
     );
-    expect(localStorage.getItem("engines")).toBe(encoded);
+    expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([engine]);
 
     const retry = await saveEngineOwnerValue("engines", encoded);
     expect(retry).toEqual(expect.objectContaining({ saved: true, synchronized: true }));
@@ -809,7 +808,7 @@ test.each(["players-first", "engines-first"])(
         for (const second of [false, true])
             expect((await hydratePlayer(run, second)).id).toBe(list[0].id);
         expect(list[0]).toMatchObject({ loaded: true, settings: [], legacyAssessment: null });
-        const durable = decodeCompressedOrJson(localStorage.getItem("engines")!);
+        const durable = decodeOwnerValue(localStorage.getItem("engines")!);
         expect(durable).toEqual(list);
         const restarted = await runtime(true);
         expect(await hydrateList(restarted, 1)).toEqual(list);
@@ -937,7 +936,7 @@ test.each([
             handle: { id: { id: "new-binary" }, kind: "engine" as const },
         };
         expect((await run.store.set(run.atoms.enginesAtom, [edited])).saved).toBe(true);
-        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
+        expect(decodeOwnerValue(localStorage.getItem("engines")!)).toMatchObject([
             { legacyAssessment: assessment },
         ]);
         const restarted = await runtime(true);
@@ -1092,7 +1091,7 @@ test.each(["engines-write", "player-read"])(
         ]);
         vi.restoreAllMocks();
         expect((await run.store.set(run.atoms.enginesAtom, list.slice(1))).saved).toBe(true);
-        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
+        expect(decodeOwnerValue(localStorage.getItem("engines")!)).toMatchObject([
             { legacyAssessment: { ambiguous: true } },
         ]);
         const restarted = await runtime(true);
@@ -1159,5 +1158,5 @@ test("assessment is engines-owned for edits, JSON replacements, additions and re
         { legacyAssessment: null },
     ]);
     expect(saved[7]).not.toHaveProperty("legacyAssessment");
-    expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(saved);
+    expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual(saved);
 });

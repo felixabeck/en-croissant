@@ -1,4 +1,5 @@
 mod process;
+pub(crate) use process::EngineBinaryRetirement;
 mod types;
 mod uci;
 

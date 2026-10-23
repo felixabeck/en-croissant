@@ -6,11 +6,16 @@ import type {
     ErrorPayload,
     NormalizedGame,
     StampedGame,
+    EngineCompletion,
+    EngineInstallRequest,
+    InstalledEngineResult,
 } from "../src/bindings/generated";
 import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
 import type { Tab } from "../src/state/workspaceTypes";
 
 type MockCommand = {
+    /** Builds and retains an engine workflow result from its real submitted intent. */
+    engineInstall?: boolean;
     /** Game replies echo the submitted exact identity through the real transport facade. */
     gameState?: Record<string, unknown>;
     /** Multi-game fixtures retain the requested native index and PGN identity. */
@@ -659,6 +664,9 @@ const tauriBootstrap = () => {
         cancel_native_read: { result: null },
         reconcile_startup_path_owners: { result: null },
         reconcile_engine_attachments: { result: null },
+        pending_engine_completions: { result: [] },
+        acknowledge_engine_completion: { result: null },
+        retire_engine_completion: { result: null },
         list_lichess_accounts: { result: [] },
         get_puzzle_workspace: {
             result: {
@@ -723,6 +731,14 @@ const tauriBootstrap = () => {
             callbacks.get(listener.callback)?.({ event, id: 1, payload });
         }
     };
+
+    // This is fixture-native state, kept apart from all three product owner values. A page
+    // reload exercises real renderer startup and receipt application without reseeding it.
+    const completionKey = "__E2E_ENGINE_COMPLETIONS__";
+    const readCompletions = (): EngineCompletion[] =>
+        JSON.parse(sessionStorage.getItem(completionKey) ?? "[]");
+    const writeCompletions = (records: EngineCompletion[]) =>
+        sessionStorage.setItem(completionKey, JSON.stringify(records));
 
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
@@ -817,6 +833,29 @@ const tauriBootstrap = () => {
                 : response.results?.length
                   ? response.results.shift()
                   : response.result;
+        if (command === "pending_engine_completions" && !state.commands[command])
+            return readCompletions();
+        if (command === "install_engine_workflow" && response.engineInstall) {
+            const records = readCompletions();
+            const existing = records.find((record) => record.id === args.id);
+            if (existing) return existing;
+            const completion: EngineCompletion = {
+                id: String(args.id),
+                request: args.request as EngineInstallRequest,
+                outcome: { state: "succeeded", result: result as InstalledEngineResult },
+                retired: false,
+            };
+            writeCompletions([...records, completion]);
+            return completion;
+        }
+        if (command === "acknowledge_engine_completion")
+            writeCompletions(readCompletions().filter((record) => record.id !== args.id));
+        if (command === "retire_engine_completion")
+            writeCompletions(
+                readCompletions().map((record) =>
+                    record.id === args.id ? { ...record, retired: true } : record,
+                ),
+            );
         if (command === "stop_engine") {
             state.stops.push({
                 engine: args.engine,

@@ -10,6 +10,13 @@ use uuid::Uuid;
 
 use futures_util::FutureExt;
 
+#[path = "completions.rs"]
+pub mod completions;
+
+use self::completions::{
+    CompletionOutcome, EngineCompletion, EngineCompletionEntry, EngineInstallIntent,
+    EngineInstallRequest, InstalledEngineResult,
+};
 use crate::error::Error;
 
 pub const READ_RESERVATION_TTL: Duration = Duration::from_secs(60);
@@ -154,6 +161,7 @@ impl<'a> ReservationKind<'a> {
 struct RegistryState {
     reads: HashMap<String, ReadEntry>,
     accepted: HashMap<String, AcceptedEntry>,
+    completions: HashMap<String, EngineCompletionEntry>,
     sealed: bool,
 }
 
@@ -199,6 +207,314 @@ impl Default for OperationRegistry {
 }
 
 impl OperationRegistry {
+    fn occupied(state: &RegistryState) -> usize {
+        state.accepted.len()
+            + state
+                .completions
+                .iter()
+                .filter(|(id, entry)| {
+                    !state.accepted.contains_key(*id)
+                        && !state.accepted.contains_key(&entry.operation_id)
+                })
+                .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accept_completion_tail(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<OperationLease, Error> {
+        let mut state = self.state()?;
+        self.accept_completion_tail_in_state(&mut state, id, owner)
+    }
+
+    fn accept_completion_tail_in_state(
+        &self,
+        state: &mut RegistryState,
+        id: &str,
+        owner: &str,
+    ) -> Result<OperationLease, Error> {
+        if state.sealed
+            || state.accepted.contains_key(id)
+            || !state
+                .completions
+                .get(id)
+                .is_some_and(|entry| entry.owner == owner)
+        {
+            return Err(Error::Conflict("completion tail is unavailable".into()));
+        }
+        let cancellation = CancellationToken::new();
+        state.accepted.insert(
+            id.to_owned(),
+            AcceptedEntry {
+                owner: owner.to_owned(),
+                label: "engine completion application".into(),
+                cancellation: cancellation.clone(),
+                kind: None,
+                progress_id: None,
+                admission_key: None,
+                committing: true,
+            },
+        );
+        Ok(OperationLease {
+            registry: self.inner.clone(),
+            id: id.to_owned(),
+            cancellation,
+            kind: LeaseKind::Accepted,
+        })
+    }
+
+    /// Admission and the immutable request share the accepted-operation lock. Reusing an ID
+    /// joins exactly that request. An unfinished upgrade excludes every later upgrade of its UUID.
+    pub(crate) fn admit_engine_completion(
+        &self,
+        id: &str,
+        owner: &str,
+        ticket: &str,
+        request: EngineInstallRequest,
+        download_cap: usize,
+    ) -> Result<(EngineCompletion, Option<OperationLease>), Error> {
+        request.validate(id)?;
+        let mut state = self.state()?;
+        if let Some(existing) = state.completions.get(id) {
+            if existing.owner != owner || existing.snapshot.request != request {
+                return Err(Error::Conflict(
+                    "completion identity belongs to another request".into(),
+                ));
+            }
+            return Ok((existing.snapshot.clone(), None));
+        }
+        if state.completions.len() >= MAX_ACCEPTED_OPERATIONS {
+            return Err(Error::ResourceLimit(
+                "too many unacknowledged completions".into(),
+            ));
+        }
+        if state.completions.values().any(|entry| {
+            matches!(
+                entry.snapshot.request.intent,
+                EngineInstallIntent::Upgrade { .. }
+            ) && entry.snapshot.request.intent.engine_id() == request.intent.engine_id()
+        }) {
+            return Err(Error::Conflict(
+                "engine upgrade application is pending".into(),
+            ));
+        }
+        let lease = self.claim_prepared_in_state(
+            &mut state,
+            ticket,
+            owner,
+            "install_engine_workflow",
+            ReservationKind::Download,
+            Some((
+                &request.progress_id,
+                &request.progress_id,
+                false,
+                download_cap,
+            )),
+        )?;
+        let snapshot = EngineCompletion {
+            id: id.to_owned(),
+            request,
+            outcome: CompletionOutcome::Running,
+            retired: false,
+        };
+        state.completions.insert(
+            id.to_owned(),
+            EngineCompletionEntry {
+                owner: owner.to_owned(),
+                operation_id: ticket.to_owned(),
+                snapshot: snapshot.clone(),
+                progress: None,
+                retirement: Arc::default(),
+                retirement_job: None,
+                acknowledgement_job: None,
+            },
+        );
+        Ok((snapshot, Some(lease)))
+    }
+
+    pub(crate) fn engine_completions(&self, owner: &str) -> Result<Vec<EngineCompletion>, Error> {
+        let state = self.state()?;
+        Ok(state
+            .completions
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .map(|entry| entry.snapshot.clone())
+            .collect())
+    }
+
+    pub(crate) fn engine_completion(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<EngineCompletion, Error> {
+        let state = self.state()?;
+        let entry = state
+            .completions
+            .get(id)
+            .filter(|entry| entry.owner == owner)
+            .ok_or_else(|| Error::Conflict("completion is unavailable".into()))?;
+        Ok(entry.snapshot.clone())
+    }
+
+    pub(crate) fn set_engine_completion_progress(
+        &self,
+        id: &str,
+        progress: crate::progress::ProgressLease,
+    ) -> Result<(), Error> {
+        let mut state = self.state()?;
+        let entry = state
+            .completions
+            .get_mut(id)
+            .ok_or_else(|| Error::Conflict("completion is unavailable".into()))?;
+        entry.progress = Some(progress);
+        Ok(())
+    }
+
+    pub(crate) fn finish_engine_completion(
+        &self,
+        id: &str,
+        result: &Result<InstalledEngineResult, Error>,
+    ) -> Result<(), Error> {
+        let mut state = self.state()?;
+        let entry = state
+            .completions
+            .get_mut(id)
+            .ok_or_else(|| Error::Conflict("completion is unavailable".into()))?;
+        entry.snapshot.outcome = match result {
+            Ok(result) => CompletionOutcome::Succeeded(result.clone()),
+            Err(error) => CompletionOutcome::Failed(self::completions::CompletionFailure {
+                category: error.category(),
+                root_failure: error.root_failure(),
+            }),
+        };
+        Ok(())
+    }
+
+    pub(crate) fn begin_engine_application(
+        &self,
+        id: &str,
+        owner: &str,
+        step: completions::EngineApplicationStep,
+    ) -> Result<completions::CompletionAdmission, Error> {
+        use completions::EngineApplicationStep;
+        let mut state = self.state()?;
+        let Some(entry) = state.completions.get(id) else {
+            return Ok((futures_util::future::ready(Ok(())).boxed().shared(), None));
+        };
+        if entry.owner != owner {
+            return Err(Error::Conflict(
+                "completion belongs to another webview".into(),
+            ));
+        }
+        if matches!(step, EngineApplicationStep::Retirement)
+            && !matches!(entry.snapshot.outcome, CompletionOutcome::Succeeded(_))
+        {
+            return Err(Error::Conflict(
+                "completion is not ready for application".into(),
+            ));
+        }
+        if matches!(step, EngineApplicationStep::Acknowledgement)
+            && (matches!(entry.snapshot.outcome, CompletionOutcome::Running)
+                || (matches!(entry.snapshot.outcome, CompletionOutcome::Succeeded(_))
+                    && matches!(
+                        entry.snapshot.request.intent,
+                        EngineInstallIntent::Upgrade { .. }
+                    )
+                    && !entry.snapshot.retired))
+        {
+            return Err(Error::Conflict(
+                "completion application is unfinished".into(),
+            ));
+        }
+        let existing = match step {
+            EngineApplicationStep::Retirement => &entry.retirement_job,
+            EngineApplicationStep::Acknowledgement => &entry.acknowledgement_job,
+        };
+        if let Some(job) = existing {
+            if job.peek().is_none() || state.accepted.contains_key(id) {
+                return Ok((job.clone(), None));
+            }
+        }
+        if matches!(step, EngineApplicationStep::Retirement) && entry.snapshot.retired {
+            return Ok((futures_util::future::ready(Ok(())).boxed().shared(), None));
+        }
+        let snapshot = entry.snapshot.clone();
+        let retirement = entry.retirement.clone();
+        let lease = self.accept_completion_tail_in_state(&mut state, id, owner)?;
+        let (result, receiver) = tokio::sync::oneshot::channel();
+        let job = async move {
+            receiver.await.unwrap_or_else(|_| {
+                Err(Arc::new(Error::Conflict(
+                    "completion application result unavailable".into(),
+                )))
+            })
+        }
+        .boxed()
+        .shared();
+        if let Some(entry) = state.completions.get_mut(id) {
+            match step {
+                EngineApplicationStep::Retirement => entry.retirement_job = Some(job.clone()),
+                EngineApplicationStep::Acknowledgement => {
+                    entry.acknowledgement_job = Some(job.clone())
+                }
+            }
+        }
+        Ok((
+            job,
+            Some(completions::CompletionApplicationStart {
+                snapshot,
+                retirement,
+                lease,
+                result,
+            }),
+        ))
+    }
+
+    pub(crate) fn finish_engine_retirement(&self, id: &str, owner: &str) -> Result<(), Error> {
+        let mut state = self.state()?;
+        let entry = state
+            .completions
+            .get_mut(id)
+            .filter(|entry| entry.owner == owner)
+            .ok_or_else(|| Error::Conflict("completion is unavailable".into()))?;
+        entry.snapshot.retired = true;
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_engine_completion(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<Option<crate::progress::ProgressLease>, Error> {
+        let mut state = self.state()?;
+        let Some(entry) = state.completions.get(id) else {
+            return Ok(None);
+        };
+        if entry.owner != owner {
+            return Err(Error::Conflict(
+                "completion belongs to another webview".into(),
+            ));
+        }
+        if matches!(entry.snapshot.outcome, CompletionOutcome::Running)
+            || (matches!(entry.snapshot.outcome, CompletionOutcome::Succeeded(_))
+                && matches!(
+                    entry.snapshot.request.intent,
+                    EngineInstallIntent::Upgrade { .. }
+                )
+                && !entry.snapshot.retired)
+        {
+            return Err(Error::Conflict(
+                "completion application is unfinished".into(),
+            ));
+        }
+        Ok(state
+            .completions
+            .remove(id)
+            .and_then(|entry| entry.progress))
+    }
+
     #[cfg(test)]
     pub(crate) fn with_reservation_ttl(reservation_ttl: Duration) -> Self {
         Self {
@@ -368,7 +684,7 @@ impl OperationRegistry {
                 "native operation admission is sealed".into(),
             ));
         }
-        if state.accepted.len() >= MAX_ACCEPTED_OPERATIONS {
+        if Self::occupied(&state) >= MAX_ACCEPTED_OPERATIONS {
             return Err(Error::ResourceLimit(
                 "too many accepted native operations".into(),
             ));
@@ -444,7 +760,20 @@ impl OperationRegistry {
         download_policy: Option<(&str, &str, bool, usize)>,
     ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
-        Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
+        self.claim_prepared_in_state(&mut state, ticket, owner, label, kind, download_policy)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn claim_prepared_in_state(
+        &self,
+        state: &mut RegistryState,
+        ticket: &str,
+        owner: &str,
+        label: &str,
+        kind: ReservationKind<'_>,
+        download_policy: Option<(&str, &str, bool, usize)>,
+    ) -> Result<OperationLease, Error> {
+        Self::purge_expired(state, Instant::now(), self.reservation_ttl);
         if state.sealed {
             return Err(Error::Conflict(
                 "native operation admission is sealed".into(),
@@ -488,7 +817,7 @@ impl OperationRegistry {
                 return Err(Error::ResourceLimit("too many active downloads".into()));
             }
         }
-        if state.accepted.len() >= MAX_ACCEPTED_OPERATIONS {
+        if Self::occupied(state) >= MAX_ACCEPTED_OPERATIONS {
             return Err(Error::ResourceLimit(
                 "too many accepted native operations".into(),
             ));
@@ -988,6 +1317,24 @@ where
         let _ = awaiter_guard.disarm();
     }
     result
+}
+
+/// Starts one application attempt whose result every replacement document can join. Publish its
+/// immutable outcome only after native drain ownership ends, before acknowledgement may begin.
+pub(crate) fn run_completion_application<F>(
+    lease: OperationLease,
+    result: tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>,
+    label: &'static str,
+    workflow: F,
+) where
+    F: Future<Output = Result<(), Error>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let outcome = run_native_operation(lease, label, workflow)
+            .await
+            .map_err(Arc::new);
+        let _ = result.send(outcome);
+    });
 }
 
 /// Completion-owns one admitted blocking workflow. Call this only at an outer command boundary;

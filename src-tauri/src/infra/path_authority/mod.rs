@@ -4954,6 +4954,7 @@ pub struct PathAuthority {
     pending_unpersisted_removals: BTreeSet<String>,
     loaded_candidate_ids: BTreeSet<String>,
     session_protected_ids: BTreeSet<String>,
+    completion_resources: BTreeMap<String, Vec<PathRef>>,
     completed_owner_families: BTreeSet<PathOwnerFamily>,
     startup_retained_ids: BTreeSet<String>,
     startup_unowned_roots_reconciled: bool,
@@ -5771,6 +5772,7 @@ impl PathAuthority {
             pending_unpersisted_removals: BTreeSet::new(),
             loaded_candidate_ids,
             session_protected_ids: BTreeSet::new(),
+            completion_resources: BTreeMap::new(),
             completed_owner_families: BTreeSet::new(),
             startup_retained_ids: BTreeSet::new(),
             startup_unowned_roots_reconciled: false,
@@ -8130,6 +8132,11 @@ impl PathAuthority {
         candidate.retain(|id, entry| {
             if !self.loaded_candidate_ids.contains(id)
                 || self.session_protected_ids.contains(id)
+                || self
+                    .completion_resources
+                    .values()
+                    .flatten()
+                    .any(|resource| &resource.id == id)
                 || retained.contains(id)
                 || self.startup_retained_ids.contains(id)
                 || active_roots.contains(id.as_str())

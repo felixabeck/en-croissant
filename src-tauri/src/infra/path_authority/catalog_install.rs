@@ -543,6 +543,36 @@ fn walk(
 }
 
 impl PathAuthority {
+    /// Native completion ownership outlives every renderer document. Retain the root before
+    /// publication, then the installed and previous executable until application is acknowledged.
+    pub(crate) fn retain_completion_resources(
+        &mut self,
+        id: &str,
+        resources: Vec<PathRef>,
+    ) -> Result<(), Error> {
+        if resources.len() > 3
+            || (!self.completion_resources.contains_key(id)
+                && self.completion_resources.len()
+                    >= crate::infra::operations::MAX_ACCEPTED_OPERATIONS)
+        {
+            return Err(Error::ResourceLimit(
+                "too many pending completion resources".into(),
+            ));
+        }
+        if resources
+            .iter()
+            .any(|resource| !self.persistent.contains_key(&resource.id))
+        {
+            return Err(Error::Conflict("completion resource is unavailable".into()));
+        }
+        self.completion_resources.insert(id.to_owned(), resources);
+        Ok(())
+    }
+
+    pub(crate) fn release_completion_resources(&mut self, id: &str) {
+        self.completion_resources.remove(id);
+    }
+
     fn catalog_destination_root(
         &self,
         destination: &PathRef,
@@ -1077,6 +1107,18 @@ impl PathAuthority {
         let mut failures = Vec::new();
         for id in self.catalog_installs.keys().cloned().collect::<Vec<_>>() {
             let record = self.catalog_installs[&id].clone();
+            if self
+                .completion_resources
+                .values()
+                .flatten()
+                .any(|resource| {
+                    self.persistent
+                        .get(&resource.id)
+                        .is_some_and(|entry| entry.stored == record.root)
+                })
+            {
+                continue;
+            }
             if !record.users.is_empty() {
                 log::warn!(
                     "catalog install {id} retained for unresolved session use: {:?}",

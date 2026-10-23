@@ -30,8 +30,6 @@ const rootPermissionCommands = {
     get_progress: { result: null },
     prepare_download: { result: "permission-ticket" },
     get_engine_workspace: { result: { id: { id: "selected-engine-root" }, kind: "engineRoot" } },
-    engine_archive_destination: { result: { id: "destination" } },
-    download_engine_archive: { result: null },
     get_engine_config: { result: { name: "Stockfish 18", options: [] } },
 };
 
@@ -70,11 +68,7 @@ for (const layout of ["desktop", "320-200"] as const) {
                 },
             );
             const boundary =
-                surface === "puzzle"
-                    ? "list_puzzle_databases"
-                    : surface === "add"
-                      ? "engine_archive_destination"
-                      : "register_installed_engine";
+                surface === "puzzle" ? "list_puzzle_databases" : "install_engine_workflow";
             await mockScenario({
                 commands: {
                     ...rootPermissionCommands,
@@ -153,7 +147,7 @@ async function showPermissionNotifications(
     await mockScenario({
         commands: {
             ...rootPermissionCommands,
-            engine_archive_destination: { error: rootPermissionError },
+            install_engine_workflow: { error: rootPermissionError },
         },
     });
     await page.goto("/engines");
@@ -1521,12 +1515,7 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
         prepare_download: { result: "engine-download-ticket" },
         release_download: { result: null },
         get_engine_workspace: { result: { id: { id: "engine-root" }, kind: "engineRoot" } },
-        engine_archive_destination: { result: { id: "engine-destination" } },
-        download_engine_archive: { result: null },
-        register_installed_engine: {
-            result: { id: { id: "engine-binary" }, kind: "engine" },
-        },
-        get_engine_config: {
+        install_engine_workflow: {
             delay: 5000,
             error: {
                 tag: "backend-error",
@@ -1552,15 +1541,15 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
             page.evaluate(() =>
                 window.__E2E_TAURI__
                     .invocations()
-                    .some(({ command }) => command === "get_engine_config"),
+                    .some(({ command }) => command === "install_engine_workflow"),
             ),
         )
         .toBe(true);
     const progressId = await page.evaluate((commands) => {
         const call = window.__E2E_TAURI__
             .invocations()
-            .find(({ command }) => command === "download_engine_archive")!;
-        const { id } = call.args as { id: string };
+            .find(({ command }) => command === "install_engine_workflow")!;
+        const { progressId: id } = (call.args as { request: { progressId: string } }).request;
         const succeeded = {
             id,
             generation: "7",
@@ -1630,6 +1619,140 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
     await expect(dialog.getByRole("progressbar")).toHaveCount(0);
     await capture("engine-add-reopened-idle");
 });
+
+for (const kind of ["add", "upgrade"] as const) {
+    test(`accounts-puzzles-engines: ${kind} completion recovers after a real page reload without reseeding`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        const old = {
+            type: "local",
+            id: "reload-target",
+            legacyAssessment: null,
+            name: "Original Engine",
+            version: "1",
+            handle: { id: { id: "original-binary" }, kind: "engine" },
+            filename: "old",
+            settings: [],
+        };
+        const seed = {
+            engines: serializeStorageValue(kind === "upgrade" ? [old] : []),
+            player: serializeStorageValue({
+                type: "engine",
+                engine: old,
+                go: { t: "Depth", c: 12 },
+            }),
+        };
+        await page.addInitScript(
+            ({ kind, seed }) => {
+                if (sessionStorage.getItem("__E2E_RELOAD_ENGINE_SEEDED__")) return;
+                sessionStorage.setItem("__E2E_RELOAD_ENGINE_SEEDED__", "1");
+                localStorage.setItem("engines", seed.engines);
+                localStorage.setItem("font-size", "100");
+                if (kind === "upgrade")
+                    for (const key of ["game-player1-settings", "game-player2-settings"])
+                        localStorage.setItem(key, seed.player);
+            },
+            { kind, seed },
+        );
+        await mockScenario({
+            commands: {
+                is_bmi2_compatible: { result: false },
+                verify_signed_bytes: { result: null },
+                get_progress: { result: null },
+                clear_progress: { result: "1" },
+                file_exists: { result: true },
+                prepare_download: { result: "reload-engine-ticket" },
+                release_download: { result: null },
+                get_engine_workspace: { result: { id: { id: "engine-root" }, kind: "engineRoot" } },
+                install_engine_workflow: {
+                    engineInstall: true,
+                    result: {
+                        handle: { id: { id: "recovered-binary" }, kind: "engine" },
+                        filename: "new",
+                        config: { name: "Recovered Engine", options: [] },
+                    },
+                },
+            },
+        });
+        await page.goto(kind === "upgrade" ? "/engines?selected=0" : "/engines");
+        await page
+            .getByRole("button", {
+                name: kind === "upgrade" ? "Upgrade from catalog" : "Add New",
+                exact: true,
+            })
+            .click();
+        const dialog = page.getByRole("dialog", {
+            name: kind === "upgrade" ? "Upgrade from catalog" : "Add Engine",
+            exact: true,
+        });
+        await expect(
+            dialog.getByRole("button", { name: "Install", exact: true }).first(),
+        ).toBeVisible();
+        await page.evaluate(
+            (key) => {
+                const original = Storage.prototype.setItem;
+                Storage.prototype.setItem = function (name, value) {
+                    if (name === key)
+                        throw new DOMException("completion owner refused", "QuotaExceededError");
+                    original.call(this, name, value);
+                };
+            },
+            kind === "upgrade" ? "game-player2-settings" : "engines",
+        );
+        await dialog.getByRole("button", { name: "Install", exact: true }).first().click();
+        await expect(page.locator(".mantine-Notification-root").first()).toBeVisible();
+        await expect(
+            dialog.getByRole("button", { name: "Install", exact: true }).first(),
+        ).toBeEnabled();
+        const retained = await page.evaluate(
+            () =>
+                JSON.parse(sessionStorage.getItem("__E2E_ENGINE_COMPLETIONS__") ?? "[]") as {
+                    id: string;
+                    request: { intent: { engine_id: string } };
+                }[],
+        );
+        expect(retained).toHaveLength(1);
+        await expectNotificationSettled(page.locator(".mantine-Notification-root").last());
+        await capture(`engine-${kind}-reload-error-retry`);
+        await preserveStorageForReload(page);
+        await expect
+            .poll(async () => {
+                const raw = await page.evaluate(() => localStorage.getItem("engines"));
+                return raw && (decodeCompressedOrJson(raw) as { value: unknown }).value;
+            })
+            .toMatchObject([
+                {
+                    id: retained[0].request.intent.engine_id,
+                    handle: { id: { id: "recovered-binary" } },
+                },
+            ]);
+        await expect
+            .poll(() => page.evaluate(() => sessionStorage.getItem("__E2E_ENGINE_COMPLETIONS__")))
+            .toBe("[]");
+        const name = page.getByRole("textbox", { name: "Name", exact: true });
+        if (kind === "add") await page.getByRole("button", { name: /new ELO/ }).click();
+        await expect(name).toBeVisible();
+        if (kind === "upgrade") {
+            await expect(name).toHaveValue("Recovered Engine");
+            for (const key of ["game-player1-settings", "game-player2-settings"]) {
+                const raw = await page.evaluate((key) => localStorage.getItem(key), key);
+                expect((decodeCompressedOrJson(raw!) as { value: unknown }).value).toMatchObject({
+                    engine: { id: old.id, handle: { id: { id: "recovered-binary" } } },
+                });
+            }
+        }
+        expect(
+            await page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .filter(({ command }) => command === "install_engine_workflow"),
+            ),
+        ).toEqual([]);
+        await capture(`engine-${kind}-reload-recovered`);
+    });
+}
 
 test("accounts-puzzles-engines: local engine validation is visible before any native issuance", async ({
     page,
