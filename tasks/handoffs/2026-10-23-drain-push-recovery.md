@@ -1,10 +1,10 @@
 # Drain push recovery, 2026-10-23
 
-## Delivery checkpoint after complete repair proof
+## Delivery checkpoint after source closure
 
-The engine source and verifier corrections have passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. The exact-message correction and receipt-only header passed final repair pre-review Axp415 at completion 0. This supersedes the older runtime-pending checkpoints preserved below. Source closure review, final browser stage, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed at this checkpoint. Overall f-20261005-05 remains open for the unstarted account phase. The remaining open f-20261023-02 record will be closed after source closure confirms its repaired consumer and actual proof.
+The engine source and verifier corrections passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. Source closure is approved through 135b9d65. R2 adopted three naming/comment corrections, and all six R3 lenses closed them without new findings after pre-review vhNjoK completed 0. The raw source reports and execution corrections below supersede the older runtime-pending and review-pending checkpoints. Final browser verification, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed here. Overall f-20261005-05 remains open for the unstarted account phase. The repaired verifier finding f-20261023-02 is handled in bd822d6c after source closure and actual proof.
 
-Remote CI preflight returned no job conclusion on its first current attempt because gh run view timed out. This is an unread remote precondition rather than evidence of a red hosted job. Root is retrying it before delivery. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+The first remote CI preflight could not read a job conclusion because gh run view timed out. Its second invocation completed 0 and reported all newest completed Test jobs succeeded on master. A fresh check remains required before push. The overlapping resumed Grok controller is stopped, and this Codex root retains its original build lock and sole release ownership. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
 
 ## Ownership and delivery boundary
 
@@ -1592,6 +1592,358 @@ Review was read-only. Detection and implementation share the OpenAI model family
 VERDICT: REVISE
 ```
 
+## Source closure round 2 arbitration
+
+Reviewed through c799f1ed8baff466028b417496b0e3933a94da12, delta 111d212d..c799f1ed with full c4da644f..c799f1ed context. All eleven source sessions completed and every report was read. Ten approved, code-quality requested revision. All prior source adoptions closed. Three further code-quality findings from original commit 111d212d were adopted as Fix, with no Skip or Defer. R2 stage wall was 569 seconds including arbitration, active wall is unknown. The preserved source reports below are the actual raw results.
+
+- Q4, src-tauri/src/infra/completions.rs:54, blocker. Fix by naming existing admission byte limits 256, 4096 and 1024, preserving their field grouping and the SHA-256 length.
+- Q5, src-tauri/src/fs.rs:1550, blocker. Fix by naming existing progress values 0.9 and 95.0 and explaining their allocation.
+- Q6, src/state/engineCompletions.ts:93, nit. Fix the process-lifetime mailbox comment from durable to retained.
+
+The bounded Codex source worker changed only those three paths. Rust formatting and cargo check --locked --tests passed. The diff preserves every value, comparison, caller, assertion and runtime branch. The root owns source closure and final gates. Plan authorship and arbitration shared one context. Detection ran on the same model family as code, with fresh-context separation only.
+
+### Source round 2: correctness
+
+````text
+C1 CLOSED — Retained failures preserve the ordinary safe payload, including exact `"Cancellation"` handling.
+
+C2 CLOSED — A captured failed response still rejects when another observer has already acknowledged its native record.
+
+I1 CLOSED — Native code captures the terminal snapshot before emission and returns it directly, eliminating the removable-mailbox lookup race.
+
+No further correctness defects found in the repair delta or traced caller paths. The shared decoder and termination observer preserve their preceding behavior.
+
+Limitations (confidence: 100): read-only source and recorded-evidence review. No runtime, browser or gates executed here. Windows/macOS runtime branches remain unverified locally. Pre-review Axp415 records completion `0`. No files changed.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh-context Codex gpt-6.1-sol/medium, the same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: root-cause
+
+````text
+No root-cause or prior-fix regression findings.
+
+- C1/E1 CLOSED — retained failures use the ordinary renderer-safe payload, preserving `Cancellation`, HTTP guidance and engine failure details.
+- C2/I1 CLOSED — native code captures the terminal response before event emission. Renderer application preserves its rejection after acknowledgement removes the mailbox entry. Counterfactuals fail before restoration and pass afterward.
+- Prior root-cause proof limitation CLOSED for the measured real Add workflow — WebKitGTK replacement preserves native operation identity and automatically registers, persists and acknowledges the result. Event-off and startup-off controls fail distinctly, then restored runs pass.
+
+The original cause was a renderer-owned continuation disappearing while accepted native work survived. Native completion ownership, atomic owner receipts and shared replay application address that mechanism across Add and Upgrade. History inspection found no reintroduction of typed-retirement, safe-error or persistence defects.
+
+Confirmed clean worktree and Axp415 completion 0. Read-only inspection covered native workflow, renderer coordinator, owner storage, callers, tests, verifier evidence and relevant history. No files changed or gates run.
+
+Limitations (confidence: 100): the compact runtime proof covers Add’s five semantic assertions. Final browser/pixel/full gates and hosted platform runtime checks remain delivery obligations. Account Phase2 remains untouched and the overall finding stays open.
+
+Implementation used Codex gpt-6.1-sol/high. Fresh detection used Codex gpt-6.1-sol/medium, within the same OpenAI family. This review provides no independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: tests
+
+````text
+T1 CLOSED — The real WebKitGTK probe observes the same running operation across document replacement and asserts matching event delivery, one persisted UUID, one visible card, acknowledgement and usable native handle. Event-disabled and startup-disabled controls produce distinct semantic failures at exit 1. Exact restorations pass at exit 0.
+
+T2 CLOSED — The replacement tests remove independent publication/session protection, assert retained capability usability and catalog bytes, then assert collection after exact release. Reversing each production retention guard produces its corresponding assertion failure at exit 101, restored at 0.
+
+T3 CLOSED — The new test completes native work during asynchronous subscription setup and asserts application and acknowledgement. Reversing subscription/snapshot ordering fails the persisted-engine assertion at exit 1, restored at 0.
+
+The repair assertions also distinguish lost caller rejections, altered cancellation/payload guidance, duplicate notifications and acknowledgement-before-report ordering. Test selectors include these tests in the normal frontend/backend gates. Axp415 records actual completion 0.
+
+Limitations (confidence: 100): I inspected source and recorded evidence without executing tests. The compact probe and permission stages establish their stated semantic checks, not complete defensive failure matrices. Final browser/pixel/full gates and hosted Windows/macOS runtime proof remain outstanding delivery obligations.
+
+Implementation used Codex gpt-6.1-sol/high. Detection used fresh read-only Codex gpt-6.1-sol/medium, providing session separation within the same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: error-handling
+
+````text
+E1 CLOSED — Retained failures reuse `Error.renderer_payload`, preserving cancellation, HTTP guidance, root labels and engine diagnostics through notification and caller rejection.
+
+Related error-path repairs CLOSED:
+- C1: Cancellation retains its exact existing contract.
+- C2: An acknowledged failure still rejects later callers.
+- IPC I1: The native command returns its captured terminal snapshot without rereading the acknowledged mailbox.
+
+Inspected native completion production, retention, retirement and acknowledgement, renderer application, owner storage, notification handling, and their regression assertions. No new error-handling defects found.
+
+Confirmed clean worktree and `gate-permission-final-pre-review.Axp415/completion.record` exit 0. No files changed, gates run or runtime probes executed.
+
+Limitation (confidence: 100): this closure does not establish final browser, full-gate or Windows/macOS runtime completion. Account Phase2 and the overall finding remain open.
+
+Implementation used Codex gpt-6.1-sol/high. Detection used a fresh Codex gpt-6.1-sol/medium context from the same model family, without family separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: ipc-contract
+
+````text
+I1 CLOSED — `fs.rs:1690` captures the terminal snapshot before emitting `CompletionChanged` and returns it directly. Renderer acknowledgement in `engineCompletions.ts` can remove the mailbox entry without breaking the command response. The regression test at `fs.rs:9911` exercises that ordering.
+
+No further IPC defects found. Both ends agree on command keys, retained error payloads and progress units. The new event and commands are Specta-registered, subscriptions have cleanup, and capability scopes are unchanged.
+
+Read-only review. No files changed or gates run. Axp415 records completion code 0. Final delivery gates remain outside this review.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh Codex gpt-6.1-sol/medium, the same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: persisted-state
+
+````text
+No in-scope defects found. R1 had no persistence adoptions requiring closure.
+
+Traced all three owner keys through writes, legacy hydration, startup inspection and replay. Values and receipts remain atomic, compressed and bounded. Replay guards preserve later deletions and player choices. The shared decoder also serves the real verifier.
+
+Confirmed `gate-permission-final-pre-review.Axp415/completion.record` reports exit 0. Read-only source review only. No files changed, gates run or runtime verification performed.
+
+Implementation and detection use the same model family, providing fresh-context separation only. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: minimalism
+
+````text
+M1 CLOSED — `src-tauri/src/engine/process.rs:3161` now owns pending-termination observation for both retirement recovery and drain. Capture and retry policies remain with their callers.
+
+M2 CLOSED — `src-tauri/src/fs.rs:1453` requires `ProgressLease`. The unused optional-progress fallback and standalone-success branches are removed, and archive tests use the workflow contract.
+
+No new bloat or duplication findings meet the reporting threshold.
+
+Added-file minimum-diff counterfactuals:
+
+- `engineOwnerEnvelope.ts`: retain one pure decoder shared by storage, hydration and the real verifier.
+- `infra/completions.rs`: retain the concrete request, result and application types.
+- `infra/reload_completion_tests.rs`: retain receiver-loss, mailbox and retirement boundary coverage.
+- `catalogEngineCompletion.ts`: retain the shared Add/Upgrade adapter.
+- `engineCompletions.ts`: retain the shared replay/application coordinator.
+- `engineCompletions.test.ts`: retain the distinct persistence and observation-order cases.
+- `engineInstall.ts`: retain native request construction.
+
+No further substantive deletion is established for those files. The new reservation-claim type has two callers, and ordinary and retained native failures share `Error.renderer_payload`.
+
+Axp415’s completion record reports exit 0. The current worktree is clean. This review changed nothing and ran no gates. Final browser, full-gate and hosted native delivery obligations remain outside this approval.
+
+Implementation used Codex gpt-6.1-sol/high. Fresh detection used Codex gpt-6.1-sol/medium, providing session separation without model-family separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: code-quality
+
+````text
+Q1 CLOSED — Configuration retention uses `MAX_RETAINED_ENGINE_CONFIGURATION_BYTES`.
+
+Q2 CLOSED — `MAX_ENGINE_COMPLETION_RECEIPTS` names the renderer bound and documents its relationship to native capacity.
+
+Q3 CLOSED — Both newly introduced helper suppressions were removed through concrete inputs. The archive-core suppression predates this implementation.
+
+Additional cumulative-context findings from `111d212d`:
+
+[blocker] src-tauri/src/infra/completions.rs:54 — Request admission uses unnamed byte budgets `256`, `4096` and `1024` across identity and metadata fields. These determine whether installation is accepted. Name the budgets and make intentional sharing explicit, following `MAX_ACCEPTED_OPERATIONS` in sibling `operations.rs` and `MAX_ARCHIVE_PATH_BYTES` in `fs.rs`. (confidence: 99)
+
+[blocker] src-tauri/src/fs.rs:1550 — `0.9` allocates download progress, while `95.0` at line 1800 marks configuration completion. Neither milestone is named or explains the remaining application allocation. Name these workflow progress milestones so their relationship is clear. (confidence: 95)
+
+[nit] src/state/engineCompletions.ts:93 — “last durable copy” describes a process-lifetime native mailbox. That contradicts `infra/completions.rs` and d-20261023-03, which provide no persistence across process exit. Use “last retained copy.” (confidence: 99)
+
+Reviewed repair source, cumulative caller paths and neighboring implementations. No files changed or gates run. `Axp415/completion.record` reports exit 0.
+
+Implementation used Codex gpt-6.1-sol/high. This fresh read-only detection used Codex gpt-6.1-sol/medium, the same model family, without independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: REVISE
+````
+
+### Source round 2: engine-protocol
+
+````text
+No in-scope defects found.
+
+- I2 remains closed. Retirement captures original generations once under the publication barrier. Recovery observes those targets without recapturing newer actors or replaying tombstone transitions.
+- M1’s shared termination observer preserves actor key, generation and cleanup failures for both callers.
+- Traced analysis, game, report and configuration-probe paths retain process ownership and result guards. No new ownership gap or stale-result attribution found.
+
+The original engine-protocol R1 report adopted no findings. Inspected the supervisor, native completion/application callers, renderer coordinator and evaluation listener. Worktree remained clean. Axp415 records completion status 0. No files changed, processes launched or gates run. Final delivery verification remains outstanding.
+
+Implementation provenance: Codex gpt-6.1-sol/high. Detection: fresh Codex gpt-6.1-sol/medium, the same model family, with no independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: tauri-security
+
+````text
+No in-scope security defects found in `111d212d..HEAD`, reviewed against cumulative `c4da644f..HEAD` context.
+
+R1 adopted security findings: none. Inspected install callers, retained completion/error payloads, authority registration and retention, archive extraction/publication, recursive cleanup, and signature/digest enforcement. No bearer-token return, raw diagnostic exposure, authority escape or unsigned-install bypass was identified.
+
+Confirmed `gate-permission-final-pre-review.Axp415/completion.record` records exit 0. This was static, read-only review. No files changed, gates run or applications launched. Credential/session persistence is unchanged, and no refresh flow was introduced. Account Phase2 and hosted platform runtime verification remain outside this review’s completion claim.
+
+Implementation used Codex gpt-6.1-sol/high and detection used Codex gpt-6.1-sol/medium. They share the OpenAI model family, so independent-family assurance is absent. Plan authorship and arbitration also shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 2: platform-semantics
+
+````text
+No concrete platform-semantics defects found in `111d212d..HEAD`, with cumulative context from `c4da644f..HEAD`. R1 adopted no findings in this class, so no platform adoption remains open.
+
+Inspected native completion, retirement, authority retention, filesystem fixtures, renderer recovery and verifier changes. New permission-test guards match their Unix-only dependencies. Retention tests use authority-issued handles and canonical fixture paths.
+
+Evidence limits:
+
+- Axp415’s completion record reports exit 0, including `windows-clippy`.
+- Recorded `pnpm rust:windows:check` passed. This establishes GNU compilation and linting only.
+- No non-Linux Unix source-probe result was found in the supplied evidence. None ran here.
+- Windows/macOS runtime proof remains required from `rust-windows-test` and `rust-macos-test`. The `rust-platform` matrix supplies compilation and linting.
+- The actual install-to-UCI native regression remains Unix-only.
+
+Read-only review. No files changed, gates run or applications launched. Final delivery verification remains outstanding.
+
+Implementation used Codex gpt-6.1-sol/high. Detection used a fresh Codex gpt-6.1-sol/medium context, providing session separation without independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+## Recovery execution corrections
+
+The original Grok controller was resumed at 15:02:57 UTC during this interactive Codex recovery. The existing build lock still belonged to Codex PID 3807526, acquired at 10:57:45 UTC. The resumed supervisor PID 4049451 and Grok PID 4050122 proceeded through the second source review and the bounded Codex naming repair. They also replaced five prepared third-round prompt files while this root was preparing its own closure packet. No third-round lens had launched, and the three source changes matched the authorized naming repair.
+
+Root detected the overlap by comparing source status, prompt modification times, the build-lock owner and exact process identities. It requested the official checkout-specific stop and then used the documented first interrupt on the identified original supervisor. Both the supervisor and Grok process exited. The build lock remained with this Codex session, all source and reports were preserved, and the separately running side-lane drain was untouched. The unexecuted Grok prompt drafts were preserved in the run scratch directory before this root rebuilt the closure packet. The old controller's stage history is preserved. Subsequent root stages use the separate codex-steps file under the recovery scratch directory. There was no new Grok resume.
+
+Canonical named-bounds-pre-review.Tkg5VA is a stopped red attempt, with synthetic death status 125. The ordinary dry run passed all 3167 tests, but the kernel killed two Stryker workers inside the exact 11596410880-byte gate scope. This recurrence was annotated onto existing open f-20261022-05 in c0ddc6b6. The owned wrapper group, runner and child were proven gone, its scope became inactive and its mutation fence was cleaned up before retry. Raw worker and kernel evidence remain in that attempt directory.
+
+The retry uses the existing GATE_MEMORY_BYTES=6442450944 shell setting. The unchanged sizing functions resolve that budget to one mutation package and four test runners. It does not change the actual cgroup limit, test selection, mutation thresholds or timeouts. It is a recovery-only scheduling setting, removed when this run ends, with the general accounting investigation still open. The retry's final result is recorded separately after completion, never inferred from interim progress.
+
+The first remote-CI preflight returned exit 2 because gh run view timed out. Its second invocation completed exit 0 and reported that all newest completed Test jobs succeeded on master. That successful retry supersedes the earlier unread-precondition checkpoint. A fresh preflight remains required immediately before push.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as code. The original planning and resumed overlapping controller were Grok, with Codex source workers and lenses. This interactive Codex root retained build ownership, inspected all returned changes and reports, and owns the remaining verification and release. No independent-family detection is claimed.
+
+## Source closure round 3 arbitration
+
+Reviewed through 135b9d65048f994ee0613c5ffcfbd082a930b0bf, delta c799f1ed..135b9d65 with cumulative c4da644f..135b9d65 context. All six canonical read-only sessions completed and every report was read. Correctness, root-cause, tests, code-quality, IPC and Tauri security approved. Q4, Q5 and Q6 are closed with their original values, types, field groupings and behavior preserved. No new finding, Skip or Defer was adopted. The cumulative adoption counts are r1=15 r2=3 r3=0. R3 stage wall was 209 seconds including arbitration, active wall is unknown. Prior R1 source issues remain closed by R2 and R3. Records are reviewed separately.
+
+Canonical named-bounds-budget-pre-review.vhNjoK completed 0 before the source commit. All selected lanes passed. Mutation took 1168.2 seconds. Workspace-storage scored 100% with 1233 killed, zero timeouts and zero survivors. Tree-path also scored 100% with zero survivors. This bounded retry is distinct from the stopped Tkg5VA attempt. Interim cgroup counters were all zero, and the kernel journal had no OOM kill for the exact retry scope during its run.
+
+Final browser verification, full clean gates, push, required hosted jobs and installation remain pending at this review checkpoint. Overall f-20261005-05 remains open for account Phase2. Plan authorship and arbitration shared one context. Detection ran on the same model family as code.
+
+### Source round 3: correctness
+
+````text
+Q4 CLOSED — All admission limits retain their original byte values, field grouping and inclusive boundaries. SHA length remains 64.
+
+Q5 CLOSED — Both constants are `f32`, preserving download scaling to 90 and configuration progress at 95.
+
+Q6 CLOSED — “Retained copy” matches the process-lifetime mailbox contract.
+
+C1/C2/I1 remain CLOSED. No correctness regressions found in the three changed source files or traced dependencies. Actual `vhNjoK/completion.record` reports exit 0.
+
+Limitations (confidence: 100): read-only source review. No tests, gates or apps run. Final browser and Windows/macOS runtime verification remain pending. No files changed.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh-context Codex gpt-6.1-sol/medium, the same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 3: root-cause
+
+````text
+Q4 CLOSED — Admission budgets remain 256/4096/1024 bytes with identical field grouping. SHA-256 length remains 64.
+
+Q5 CLOSED — Both progress milestones are named `f32` constants retaining 0.9/95.0. The comment explains the allocation through renderer application.
+
+Q6 CLOSED — “Last retained copy” accurately describes the process-lifetime mailbox.
+
+Prior C1/E1 and C2/I1 closures remain intact. The original failure chain was native work surviving document loss while its renderer continuation disappeared. Native completion ownership and replay application address that cause. This delta preserves terminal capture before event emission, safe failure payloads and reporting before acknowledgement.
+
+No symptom-patching or prior-fix regression found. Enclosing paths, sibling uses, blame and line history show unchanged admission predicates, progress arithmetic and completion behavior.
+
+Verified `gate-named-bounds-budget-pre-review.vhNjoK/completion.record` reports exit 0. Inspected the three source files, operation-registry dependencies, named rules, prior reports and evidence records. No files changed or gates run.
+
+Limitation (confidence: 100): historical runtime controls cover five compact semantic assertions and four RF assertions, not complete diagnostic matrices. Final browser verification, full gates, hosted platform jobs, push and install remain pending. Account Phase2 remains untouched.
+
+Implementation used Codex gpt-6.1-sol/high. Fresh read-only detection used Codex gpt-6.1-sol/medium, the same model family, without independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 3: tests
+
+````text
+Q4 CLOSED — Named admission budgets preserve every field grouping, threshold and SHA length check.
+
+Q5 CLOSED — Both f32 progress constants preserve existing values and explain the allocation.
+
+Q6 CLOSED — “Retained” accurately describes the process-lifetime mailbox.
+
+T1/T2/T3 remain CLOSED. The inspected assertions distinguish missing native recovery, premature resource collection and subscription-gap loss. Their recorded production reversals fail. Normal test selectors include the regression tests.
+
+No new verification defect found. Reverting this naming/comment-only delta preserves behavior, so no additional behavioral assertion is warranted.
+
+Limitations (confidence: 100): No tests executed during this review. Pre-review completion records exit 0. Historical probes establish bounded semantic assertions, not complete diagnostic matrices. Final browser verification, full gates and hosted platform proof remain pending.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh read-only Codex gpt-6.1-sol/medium, same model family with session separation only. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 3: code-quality
+
+````text
+Q4 CLOSED — Admission limits 256/4096/1024 now have named byte constants and explicitly intentional sharing. Field grouping and SHA-256 length remain unchanged.
+
+Q5 CLOSED — Both progress values have `f32` constants. The comment explains download allocation, configuration readiness and the remaining renderer application slice.
+
+Q6 CLOSED — “Last retained copy” matches the process-lifetime mailbox and d-20261023-03.
+
+No new readability or local-consistency defects found in the repair and affected paths. The actual `vhNjoK/completion.record` reports exit 0. No files changed or gates run.
+
+Implementation: Codex gpt-6.1-sol/high. Fresh read-only detection: Codex gpt-6.1-sol/medium, the same model family, without family-level independence. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 3: ipc-contract
+
+````text
+I1 CLOSED — Rust captures the terminal response before emitting `CompletionChanged`. Renderer acknowledgement cannot invalidate that response.
+
+Q4 CLOSED — Named admission limits preserve field grouping and the 64-byte SHA requirement.
+Q5 CLOSED — Named `f32` milestones preserve percentage units and explain the renderer allocation.
+Q6 CLOSED — “Retained” correctly describes the process-lifetime mailbox.
+
+No IPC defects found. Commands and events remain Specta-registered, caller keys and payloads agree, listener cleanup remains intact, and capability scopes are unchanged.
+
+Pre-review `vhNjoK/completion.record` reports exit 0. Read-only review, no files changed or gates run. Final delivery verification remains pending.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh Codex gpt-6.1-sol/medium, same model family with session-level separation only. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Source round 3: tauri-security
+
+````text
+No in-scope security defects found in `c799f1ed..HEAD`, with cumulative context inspected.
+
+Q4 CLOSED — Admission budgets retain values 256/4096/1024, identical field grouping and SHA length 64.
+Q5 CLOSED — Named `f32` progress constants preserve 0.9/95.0 and explain the remaining allocation.
+Q6 CLOSED — “Retained” accurately describes the process-lifetime mailbox.
+
+No security adoptions remained from R2. Signature verification, digest-gated extraction, authority-checked registration and safe retained-error conversion remain enforced. Credential/session persistence is unchanged. No refresh flow was introduced.
+
+Confirmed `gate-named-bounds-budget-pre-review.vhNjoK/completion.record` records exit 0. Review was read-only. No files changed or gates run. Final runtime/platform verification remains pending.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: fresh read-only Codex gpt-6.1-sol/medium, the same model family, without independent-family assurance. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
 ## Recovery cumulative diff round 1: lens-correctness-r1
 
 ```text
