@@ -39,7 +39,8 @@ vi.mock("@/utils/puzzles", () => ({
   choosePuzzleDatabase: mocks.choosePuzzleDatabase,
   getPuzzleDatabases: mocks.getPuzzleDatabases,
 }));
-vi.mock("@/platform/errors", () => ({
+vi.mock("@/platform/errors", async (original) => ({
+  ...(await original<typeof import("@/platform/errors")>()),
   normalizeError: () => ({ category: "unexpected", message: "Safe error" }),
   errorUnlessCancelled: (error: unknown) =>
     error instanceof Error && error.message === "Cancellation"

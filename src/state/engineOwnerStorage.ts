@@ -4,12 +4,24 @@ import { z } from "zod";
 import i18n from "@/i18n";
 import { tauri } from "@/platform/tauri";
 import { warn } from "@/platform/native";
+import { isErrorReported, markErrorReported } from "@/platform/errors";
 import { engineSchema, type Engine } from "@/utils/engines";
 import { opponentSettingsSchema, type OpponentSettings } from "@/state/opponentSettings";
 import { pathRefKey } from "@/utils/pathCapabilities";
 import { reportPersistError } from "./persistError";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 import { storageErrorCause } from "./storageError";
+import {
+    completionReceiptsSchema,
+    decodeEngineOwnerValue,
+    type CompletionDisposition,
+} from "./engineOwnerEnvelope";
+
+export {
+    decodeEngineOwnerValue,
+    MAX_ENGINE_COMPLETION_RECEIPTS,
+    type CompletionDisposition,
+} from "./engineOwnerEnvelope";
 
 export const ENGINE_OWNER_KEYS = [
     "engines",
@@ -18,37 +30,10 @@ export const ENGINE_OWNER_KEYS = [
 ] as const;
 export type EngineOwnerKey = (typeof ENGINE_OWNER_KEYS)[number];
 
-export type CompletionDisposition = "applied" | "skipped";
 export type EngineOwnerCompletionUpdate<Value> = {
     completionId: string;
     apply: (current: Value) => { value: Value; disposition: CompletionDisposition };
 };
-const completionReceiptsSchema = z
-    .record(z.string().uuid(), z.enum(["applied", "skipped"]))
-    .refine((receipts) => Object.keys(receipts).length <= 128);
-const ownerEnvelopeSchema = z
-    .object({
-        version: z.literal(1),
-        value: z.unknown(),
-        receipts: completionReceiptsSchema,
-    })
-    .strict();
-
-/** The one decoder for hydration, migrations, startup authority and durable owner writes. */
-export function decodeEngineOwnerValue(
-    decoded: unknown,
-): { value: unknown; receipts: Record<string, CompletionDisposition> } | null {
-    if (
-        isRecord(decoded) &&
-        ("version" in decoded || "receipts" in decoded || "value" in decoded)
-    ) {
-        const envelope = ownerEnvelopeSchema.safeParse(decoded);
-        return envelope.success
-            ? { value: envelope.data.value, receipts: envelope.data.receipts }
-            : null;
-    }
-    return { value: decoded, receipts: {} };
-}
 
 export function engineOwnerCompletionReceipt(
     key: EngineOwnerKey,
@@ -211,6 +196,15 @@ function ownerStorageError(cause: unknown) {
     return new Error(`${i18n.t("Engines.SaveError")} ${storageErrorCause(cause)}`, { cause });
 }
 
+function reportOwnerStorageError(cause: unknown) {
+    const error = typeof cause === "object" && cause !== null ? cause : new Error(String(cause));
+    if (!isErrorReported(error)) {
+        reportPersistError(error);
+        markErrorReported(error);
+    }
+    return error;
+}
+
 function enqueueEngineOwnerSave(
     key: EngineOwnerKey,
     encodedValue: string,
@@ -224,7 +218,7 @@ function enqueueEngineOwnerSave(
         const changedIds = incoming === null ? null : collectAttachmentIds(key, incoming.value);
         if (changedIds === null) {
             const error = new Error("refusing to persist an invalid engine owner record");
-            reportPersistError(error);
+            reportOwnerStorageError(error);
             return { operationId, key, saved: false, synchronized: false, error };
         }
 
@@ -233,7 +227,7 @@ function enqueueEngineOwnerSave(
             previous = readPersistedEngineOwner(key);
         } catch (cause) {
             const error = ownerStorageError(cause);
-            reportPersistError(error);
+            reportOwnerStorageError(error);
             return { operationId, key, saved: false, synchronized: false, error };
         }
         const receipts = { ...previous?.receipts };
@@ -251,7 +245,7 @@ function enqueueEngineOwnerSave(
         }
         if (!completionReceiptsSchema.safeParse(receipts).success) {
             const error = ownerStorageError("completion receipt limit");
-            reportPersistError(error);
+            reportOwnerStorageError(error);
             return { operationId, key, saved: false, synchronized: false, error };
         }
         const encodedOwner = encodeEngineOwnerValue(incoming?.value, receipts);
@@ -270,8 +264,8 @@ function enqueueEngineOwnerSave(
                 action: "prepare",
                 retained_ids: retainedIds,
             });
-        } catch (error) {
-            reportPersistError(error instanceof Error ? error : new Error(String(error)));
+        } catch (cause) {
+            const error = reportOwnerStorageError(cause);
             return { operationId, key, saved: false, synchronized: false, error };
         }
         try {
@@ -287,7 +281,7 @@ function enqueueEngineOwnerSave(
             localStorage.setItem(key, encodedOwner);
         } catch (cause) {
             const error = ownerStorageError(cause);
-            reportPersistError(error);
+            reportOwnerStorageError(error);
             return { operationId, key, saved: false, synchronized: false, error };
         }
         if (!allTrusted) return { operationId, key, saved: true, synchronized: false };
@@ -305,8 +299,8 @@ function enqueueEngineOwnerSave(
                 synchronized: true,
                 completionDisposition: completion?.disposition,
             };
-        } catch (error) {
-            reportPersistError(error instanceof Error ? error : new Error(String(error)));
+        } catch (cause) {
+            const error = reportOwnerStorageError(cause);
             return { operationId, key, saved: true, synchronized: false, error };
         }
     });
@@ -343,7 +337,7 @@ export function pruneEngineCompletionReceipts(pendingIds: ReadonlySet<string>): 
         })
         .catch((cause) => {
             const error = ownerStorageError(cause);
-            reportPersistError(error);
+            reportOwnerStorageError(error);
             throw error;
         });
     sequence = run.catch(() => undefined);

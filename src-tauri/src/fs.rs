@@ -1450,9 +1450,8 @@ fn create_engine_archive_staging(
 /// Archive extraction occurs entirely in a private staging directory; the sealed authority API
 /// commits the completed tree only after all archive validation succeeds.
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 async fn download_engine_archive_core<R: tauri::Runtime>(
-    id: String,
+    progress_lease: ProgressLease,
     url: String,
     destination: crate::infra::path_authority::PathRef,
     directory_name: String,
@@ -1463,38 +1462,6 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
     cancellation: CancellationToken,
     commit_gate: crate::infra::operations::OperationCommitGate,
     validate_integrity: ArtifactIntegrityValidator,
-) -> Result<(), Error> {
-    download_engine_archive_with_progress(
-        id,
-        url,
-        destination,
-        directory_name,
-        job_id,
-        integrity,
-        app,
-        state,
-        cancellation,
-        commit_gate,
-        validate_integrity,
-        None,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn download_engine_archive_with_progress<R: tauri::Runtime>(
-    id: String,
-    url: String,
-    destination: crate::infra::path_authority::PathRef,
-    directory_name: String,
-    job_id: String,
-    integrity: ArtifactIntegrity,
-    app: tauri::AppHandle<R>,
-    state: AppState,
-    cancellation: CancellationToken,
-    commit_gate: crate::infra::operations::OperationCommitGate,
-    validate_integrity: ArtifactIntegrityValidator,
-    completion_progress: Option<ProgressLease>,
 ) -> Result<(), Error> {
     let result = async {
         let directory_name = std::ffi::OsString::from(directory_name);
@@ -1540,13 +1507,6 @@ async fn download_engine_archive_with_progress<R: tauri::Runtime>(
             .await?;
         if adopted {
             commit_gate.begin_commit()?;
-            let progress_lease = match &completion_progress {
-                Some(lease) => lease.clone(),
-                None => begin_progress(&state.progress_state, &app, id.clone())?,
-            };
-            if completion_progress.is_none() {
-                report_download_success(&state, &app, &progress_lease, &job_id);
-            }
             return Ok(());
         }
         let archive_target = resolved
@@ -1560,10 +1520,6 @@ async fn download_engine_archive_with_progress<R: tauri::Runtime>(
         let staging_registry = state.pgn_path_authority.clone();
         let staging_destination = destination.clone();
         let staging_cancellation = cancellation.clone();
-        let progress_lease = match &completion_progress {
-            Some(lease) => lease.clone(),
-            None => begin_progress(&state.progress_state, &app, id.clone())?,
-        };
         let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
         let (publish_tx, publish_rx) = tokio::sync::oneshot::channel();
         let publication_authority = state.pgn_path_authority.clone();
@@ -1591,11 +1547,7 @@ async fn download_engine_archive_with_progress<R: tauri::Runtime>(
                     &state.progress_state,
                     &app,
                     &progress_lease,
-                    if completion_progress.is_some() {
-                        progress * 0.9
-                    } else {
-                        progress
-                    },
+                    progress * 0.9,
                     ProgressState::Running,
                 )
             },
@@ -1636,9 +1588,6 @@ async fn download_engine_archive_with_progress<R: tauri::Runtime>(
             report_download_error(&state, &app, &progress_lease, &job_id, &error);
             return Err(error);
         }
-        if completion_progress.is_none() {
-            report_download_success(&state, &app, &progress_lease, &job_id);
-        }
         Ok(())
     }
     .await;
@@ -1655,55 +1604,71 @@ pub async fn install_engine_workflow(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::operations::completions::EngineCompletion, Error> {
-    let owner = window.label().to_owned();
+    install_engine_workflow_runtime(
+        id,
+        request,
+        job_id,
+        app,
+        window.label().to_owned(),
+        state.inner().clone(),
+    )
+    .await
+}
+
+pub(crate) async fn install_engine_workflow_runtime<R: tauri::Runtime>(
+    id: String,
+    request: crate::infra::operations::completions::EngineInstallRequest,
+    job_id: String,
+    app: tauri::AppHandle<R>,
+    owner: String,
+    state: AppState,
+) -> Result<crate::infra::operations::completions::EngineCompletion, Error> {
     let (snapshot, lease) = state.operations.admit_engine_completion(
         &id,
         &owner,
         &job_id,
-        request.clone(),
+        request,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     let Some(lease) = lease else {
         return Ok(snapshot);
     };
     run_engine_install_completion(
-        id.clone(),
-        request,
+        snapshot,
         lease,
         app,
-        state.inner().clone(),
+        state.clone(),
         Box::new(|op, url, integrity| validate_artifact_integrity(op, url, Some(integrity))),
         owner.clone(),
     )
-    .await?;
-    state.operations.engine_completion(&id, &owner)
+    .await
 }
 
 /// The command receiver owns no continuation. Both result retention and all native tails run
 /// inside the accepted operation, including when that receiver disappears after publication.
 async fn run_engine_install_completion<R: tauri::Runtime>(
-    id: String,
-    request: crate::infra::operations::completions::EngineInstallRequest,
+    snapshot: crate::infra::operations::completions::EngineCompletion,
     lease: crate::infra::operations::OperationLease,
     app: tauri::AppHandle<R>,
     state: AppState,
     validate_integrity: ArtifactIntegrityValidator,
     owner: String,
-) -> Result<(), Error> {
+) -> Result<crate::infra::operations::completions::EngineCompletion, Error> {
     use futures_util::FutureExt as _;
     use tauri_specta::Event as _;
     let cancellation = lease.token();
     let commit_gate = lease.commit_gate();
     crate::infra::operations::run_native_operation(lease, "install_engine_workflow", async move {
+        let id = &snapshot.id;
+        let request = &snapshot.request;
         let progress = begin_progress(&state.progress_state, &app, request.progress_id.clone());
         let result = match &progress {
             Ok(progress) => {
                 state
                     .operations
-                    .set_engine_completion_progress(&id, progress.clone())?;
+                    .set_engine_completion_progress(id, progress.clone())?;
                 match std::panic::AssertUnwindSafe(engine_install_workflow_core(
-                    &id,
-                    &request,
+                    &snapshot,
                     &app,
                     &state,
                     cancellation,
@@ -1722,9 +1687,9 @@ async fn run_engine_install_completion<R: tauri::Runtime>(
                 "engine completion progress unavailable".into(),
             )),
         };
-        state.operations.finish_engine_completion(&id, &result)?;
+        let terminal = state.operations.finish_engine_completion(id, &result)?;
         if let (Err(error), Ok(progress)) = (&result, &progress) {
-            report_download_error(&state, &app, progress, &id, error);
+            report_download_error(&state, &app, progress, id, error);
         }
         if let Err(error) =
             (crate::infra::operations::completions::CompletionChanged { id: id.clone() })
@@ -1732,19 +1697,19 @@ async fn run_engine_install_completion<R: tauri::Runtime>(
         {
             log::warn!("completion {id} notification failed: {error}");
         }
-        // Errors are retained as safe categories for recovery, and fully logged natively.
+        // Errors retain the renderer-safe payload for recovery, and are fully logged natively.
         if let Err(error) = result {
             log::error!("engine completion {id} failed: {}", error.diagnostic());
         }
-        Ok(())
+        Ok(terminal)
     })
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+const MAX_RETAINED_ENGINE_CONFIGURATION_BYTES: usize = 256 * 1024;
+
 async fn engine_install_workflow_core<R: tauri::Runtime>(
-    id: &str,
-    request: &crate::infra::operations::completions::EngineInstallRequest,
+    snapshot: &crate::infra::operations::completions::EngineCompletion,
     app: &tauri::AppHandle<R>,
     state: &AppState,
     cancellation: CancellationToken,
@@ -1753,6 +1718,8 @@ async fn engine_install_workflow_core<R: tauri::Runtime>(
     validate_integrity: ArtifactIntegrityValidator,
 ) -> Result<crate::infra::operations::completions::InstalledEngineResult, Error> {
     use crate::infra::operations::completions::EngineInstallIntent;
+    let id = &snapshot.id;
+    let request = &snapshot.request;
     let root = request.root.clone();
     let old = match &request.intent {
         EngineInstallIntent::Upgrade { expected, .. } => Some(expected.id.clone()),
@@ -1776,8 +1743,8 @@ async fn engine_install_workflow_core<R: tauri::Runtime>(
         .next()
         .ok_or_else(|| Error::InvalidInput("engine archive URL unavailable".into()))?;
     let directory = format!("{archive}-{}", request.sha256.to_ascii_lowercase());
-    download_engine_archive_with_progress(
-        request.progress_id.clone(),
+    download_engine_archive_core(
+        progress.clone(),
         request.url.clone(),
         destination,
         directory.clone(),
@@ -1791,7 +1758,6 @@ async fn engine_install_workflow_core<R: tauri::Runtime>(
         cancellation,
         commit_gate,
         validate_integrity,
-        Some(progress.clone()),
     )
     .await?;
     // Publication is the irreversible commit gate. Registration and probing are its accepted tail.
@@ -1821,7 +1787,7 @@ async fn engine_install_workflow_core<R: tauri::Runtime>(
             Error::Conflict("engine completion configuration could not be encoded".into())
         })?
         .len()
-        > 256 * 1024
+        > MAX_RETAINED_ENGINE_CONFIGURATION_BYTES
     {
         return Err(Error::ResourceLimit(
             "engine completion configuration exceeds its limit".into(),
@@ -3119,7 +3085,8 @@ mod tests {
                     lease,
                     "real catalog verification",
                     download_engine_archive_core(
-                        job.clone(),
+                        begin_progress(&state.progress_state, &app.handle().clone(), job.clone())
+                            .unwrap(),
                         entry.download_link.clone(),
                         destination,
                         directory.clone(),
@@ -6244,7 +6211,12 @@ mod tests {
         for attempt in 0..3 {
             let (job, lease) = test_download_lease(&state);
             let result = download_engine_archive_core(
-                format!("confirmation-{attempt}"),
+                begin_progress(
+                    &state.progress_state,
+                    &app.handle().clone(),
+                    format!("confirmation-{attempt}"),
+                )
+                .unwrap(),
                 "https://example.com/engine.zip".into(),
                 destination.clone(),
                 "managed".into(),
@@ -6372,7 +6344,7 @@ mod tests {
         let cancellation = lease.token();
         let commit_gate = lease.commit_gate();
         let workflow = download_engine_archive_core(
-            progress.into(),
+            begin_progress(&state.progress_state, &app, progress.into()).unwrap(),
             "https://example.com/engine.zip".into(),
             destination,
             name.into(),
@@ -6465,7 +6437,7 @@ mod tests {
             );
             assert_eq!(
                 state.progress_state.get(&name).unwrap().unwrap().state,
-                ProgressState::Succeeded
+                ProgressState::Running
             );
         }
     }
@@ -6534,15 +6506,19 @@ mod tests {
                 .get("archive-caller-drop")
                 .unwrap()
                 .unwrap();
-            assert!(item.finished);
             if failure == "none" {
-                assert_eq!(item.state, ProgressState::Succeeded);
+                assert!(
+                    !item.finished,
+                    "archive success still awaits workflow application"
+                );
+                assert_eq!(item.state, ProgressState::Running);
                 assert_eq!(
                     std::fs::read(engine_root.join("installed/engine.bin")).unwrap(),
                     b"engine"
                 );
                 assert_eq!(leaves(&engine_root), vec!["installed"]);
             } else {
+                assert!(item.finished);
                 assert_eq!(item.state, ProgressState::Failed);
                 assert!(leaves(&engine_root).is_empty());
             }
@@ -7356,7 +7332,12 @@ mod tests {
             let app = test_progress_app();
             let (job, lease) = test_download_lease(&state);
             let result = download_engine_archive_core(
-                "authority-parent-swap".into(),
+                begin_progress(
+                    &state.progress_state,
+                    &app.handle().clone(),
+                    "authority-parent-swap".into(),
+                )
+                .unwrap(),
                 "https://example.com/engine.archive".into(),
                 destination,
                 "installed".into(),
@@ -7516,7 +7497,7 @@ mod tests {
             let app = test_progress_app();
             let (job, lease) = test_download_lease(&state);
             let result = download_engine_archive_core(
-                "authority-worker-switch".into(),
+                begin_progress(&state.progress_state, &app.handle().clone(), "authority-worker-switch".into()).unwrap(),
                 "https://example.com/engine.zip".into(),
                 destination,
                 "installed".into(),
@@ -7558,7 +7539,12 @@ mod tests {
             let app = test_progress_app();
             let (job, lease) = test_download_lease(&state);
             let result = download_engine_archive_core(
-                "joiner-format".into(),
+                begin_progress(
+                    &state.progress_state,
+                    &app.handle().clone(),
+                    "joiner-format".into(),
+                )
+                .unwrap(),
                 "https://example.com/engine.zip".into(),
                 destination,
                 "installed".into(),
@@ -7625,7 +7611,12 @@ mod tests {
         let app = test_progress_app();
         let (job, lease) = test_download_lease(&state);
         let result = download_engine_archive_core(
-            "authority-leaf-swap".into(),
+            begin_progress(
+                &state.progress_state,
+                &app.handle().clone(),
+                "authority-leaf-swap".into(),
+            )
+            .unwrap(),
             "https://example.com/engine.zip".into(),
             destination,
             "installed".into(),
@@ -7686,7 +7677,12 @@ mod tests {
                 lease,
                 "joiner owned preparation",
                 download_engine_archive_core(
-                    "joiner-held".into(),
+                    begin_progress(
+                        &task_state.progress_state,
+                        &app.handle().clone(),
+                        "joiner-held".into(),
+                    )
+                    .unwrap(),
                     "https://example.com/engine.zip".into(),
                     destination,
                     "installed".into(),
@@ -7753,7 +7749,12 @@ mod tests {
         app.manage(state.clone());
         let (job, lease) = test_download_lease(&state);
         download_engine_archive_core(
-            directory.clone(),
+            begin_progress(
+                &state.progress_state,
+                &app.handle().clone(),
+                directory.clone(),
+            )
+            .unwrap(),
             "https://example.com/engine.tar.gz".into(),
             destination,
             directory.clone(),
@@ -7837,7 +7838,12 @@ mod tests {
                 lease,
                 "catalog discard proof",
                 download_engine_archive_core(
-                    directory.clone(),
+                    begin_progress(
+                        &state.progress_state,
+                        &app.handle().clone(),
+                        directory.clone(),
+                    )
+                    .unwrap(),
                     "https://example.com/engine.tar.gz".into(),
                     destination,
                     directory.clone(),
@@ -7911,7 +7917,12 @@ mod tests {
             };
             let (job, lease) = test_download_lease(&state);
             download_engine_archive_core(
-                directory.clone(),
+                begin_progress(
+                    &state.progress_state,
+                    &app.handle().clone(),
+                    directory.clone(),
+                )
+                .unwrap(),
                 "https://example.com/engine.tar.gz".into(),
                 destination.clone(),
                 directory.clone(),
@@ -7954,7 +7965,12 @@ mod tests {
             let verified = Arc::new(AtomicBool::new(false));
             let verify = Arc::clone(&verified);
             download_engine_archive_core(
-                directory.clone(),
+                begin_progress(
+                    &adoption.progress_state,
+                    &app.handle().clone(),
+                    directory.clone(),
+                )
+                .unwrap(),
                 "https://example.com/engine.tar.gz".into(),
                 destination.clone(),
                 directory.clone(),
@@ -8188,7 +8204,12 @@ mod tests {
             lease,
             "download_engine_archive",
             download_engine_archive_core(
-                "external-cancel-engine".into(),
+                begin_progress(
+                    &task_state.progress_state,
+                    &task_app,
+                    "external-cancel-engine".into(),
+                )
+                .unwrap(),
                 "https://example.com/engine.zip".into(),
                 destination,
                 "engine".into(),
@@ -8341,7 +8362,12 @@ mod tests {
                 lease,
                 "download_engine_archive",
                 download_engine_archive_core(
-                    "engine-commit-after".into(),
+                    begin_progress(
+                        &state.progress_state,
+                        &app.handle().clone(),
+                        "engine-commit-after".into(),
+                    )
+                    .unwrap(),
                     "https://example.com/engine.zip".into(),
                     destination,
                     "engine".into(),
@@ -8387,7 +8413,12 @@ mod tests {
                 lease,
                 "download_engine_archive",
                 download_engine_archive_core(
-                    "engine-commit-before".into(),
+                    begin_progress(
+                        &state.progress_state,
+                        &app.handle().clone(),
+                        "engine-commit-before".into(),
+                    )
+                    .unwrap(),
                     "https://example.com/engine.zip".into(),
                     destination,
                     "engine".into(),
@@ -9744,7 +9775,7 @@ mod tests {
         use crate::infra::operations::completions::{
             CompletionOutcome, EngineInstallIntent, EngineInstallRequest,
         };
-        for boundary in ["publication", "application"] {
+        for boundary in ["publication", "application", "acknowledgement"] {
             let dir = tempdir().unwrap();
             let (authority, _, engine_root, root) = engine_destination(&dir);
             let probe_count = dir.path().join("probes");
@@ -9775,7 +9806,7 @@ mod tests {
             };
             let id = uuid::Uuid::new_v4().to_string();
             let ticket = state.operations.prepare_download("main").unwrap();
-            let (_, lease) = state
+            let (admitted, lease) = state
                 .operations
                 .admit_engine_completion(
                     &id,
@@ -9796,9 +9827,25 @@ mod tests {
                     }),
                 );
             }
+            use tauri::Listener as _;
+            use tauri_specta::Event as _;
+            let acknowledged = Arc::new(AtomicBool::new(false));
+            let observed = acknowledged.clone();
+            let operations = state.operations.clone();
+            let acknowledged_id = id.clone();
+            let listener = app.listen_any(
+                crate::infra::operations::completions::CompletionChanged::NAME,
+                move |_| {
+                    if boundary == "acknowledgement" {
+                        operations
+                            .acknowledge_engine_completion(&acknowledged_id, "main")
+                            .unwrap();
+                        observed.store(true, Ordering::SeqCst);
+                    }
+                },
+            );
             let mut command_receiver = Box::pin(run_engine_install_completion(
-                id.clone(),
-                request.clone(),
+                admitted,
                 lease.unwrap(),
                 app.handle().clone(),
                 state.clone(),
@@ -9806,6 +9853,15 @@ mod tests {
                 "main".into(),
             ));
             assert!(futures_util::poll!(&mut command_receiver).is_pending());
+            if boundary == "acknowledgement" {
+                let terminal = command_receiver.await.unwrap();
+                app.unlisten(listener);
+                assert!(acknowledged.load(Ordering::SeqCst));
+                assert!(state.operations.engine_completion(&id, "main").is_err());
+                assert!(matches!(terminal.outcome, CompletionOutcome::Succeeded(_)));
+                state.engine_supervisor.terminate_all().await.unwrap();
+                continue;
+            }
             if boundary == "publication" {
                 tokio::time::timeout(Duration::from_secs(5), at_commit_rx)
                     .await
@@ -9924,6 +9980,7 @@ mod tests {
                 .unwrap()
                 .is_empty());
             state.engine_supervisor.terminate_all().await.unwrap();
+            app.unlisten(listener);
         }
     }
 

@@ -137,6 +137,7 @@ import {
   deserializeStorageValue,
   serializeStorageValue,
 } from "../src/state/store/debouncedStorage.ts";
+import { decodeEngineOwnerValue } from "../src/state/engineOwnerEnvelope.ts";
 import {
   APP_BINARY,
   Session,
@@ -4170,7 +4171,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     );
   }
   const publicationStoredName = (snapshot) => {
-    const records = snapshot.raw && deserializeStorageValue(snapshot.raw);
+    const records =
+      snapshot.raw && decodeEngineOwnerValue(deserializeStorageValue(snapshot.raw))?.value;
     return Array.isArray(records)
       ? records.find((record) => record.id === "retained")?.name
       : undefined;

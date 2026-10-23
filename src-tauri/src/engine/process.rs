@@ -2876,27 +2876,17 @@ impl EngineSupervisor {
     ) -> Result<(), Error> {
         let _observation = retirement.observation.lock().await;
         let first = !retirement.observed.swap(true, Ordering::SeqCst);
-        let results =
-            futures_util::future::join_all(retirement.targets.iter().map(|(entry, original)| {
+        let failures =
+            observe_pending_terminations(retirement.targets.iter().map(|(entry, original)| {
                 let attempt = if first {
                     original.clone()
                 } else {
                     entry.start_termination(self.pending_actors.clone())
                 };
-                async move {
-                    attempt
-                        .wait()
-                        .await
-                        .err()
-                        .map(|error| ActorShutdownFailure {
-                            key: entry.key.clone(),
-                            generation: entry.generation,
-                            error,
-                        })
-                }
+                (entry.clone(), attempt)
             }))
             .await;
-        aggregate_shutdown_failures(results.into_iter().flatten().collect())
+        aggregate_shutdown_failures(failures)
     }
 
     pub async fn retire_executables(&self, executables: Vec<PathRef>) -> Result<(), Error> {
@@ -3029,22 +3019,10 @@ impl EngineSupervisor {
                     gate.park().await;
                 }
             }
-            let pending = futures_util::future::join_all(pending.into_iter().map(
-                |(entry, attempt)| async move {
-                    attempt
-                        .wait()
-                        .await
-                        .err()
-                        .map(|error| ActorShutdownFailure {
-                            key: entry.key.clone(),
-                            generation: entry.generation,
-                            error,
-                        })
-                },
-            ));
+            let pending = observe_pending_terminations(pending);
             let (registered, pending) = tokio::join!(self.terminate_targets(targets), pending);
             failures.extend(registered);
-            failures.extend(pending.into_iter().flatten());
+            failures.extend(pending);
         }
         aggregate_shutdown_failures(failures)
     }
@@ -3178,6 +3156,25 @@ struct ActorShutdownFailure {
     key: EngineKey,
     generation: u64,
     error: Error,
+}
+
+async fn observe_pending_terminations(
+    targets: impl IntoIterator<Item = (Arc<PendingActor>, Arc<PendingTermination>)>,
+) -> Vec<ActorShutdownFailure> {
+    let results =
+        futures_util::future::join_all(targets.into_iter().map(|(entry, attempt)| async move {
+            attempt
+                .wait()
+                .await
+                .err()
+                .map(|error| ActorShutdownFailure {
+                    key: entry.key.clone(),
+                    generation: entry.generation,
+                    error,
+                })
+        }))
+        .await;
+    results.into_iter().flatten().collect()
 }
 
 pub(crate) struct RegistrationGuard {
@@ -13563,6 +13560,12 @@ mod tests {
         let key = EngineKey::new("tab".into(), "owner".into()).unwrap();
         let old = path_ref("old-binary");
         let registration = supervisor.registration.lock().await;
+        let retirement =
+            supervisor.retire_engine_binary("owner".into(), old.clone(), path_ref("new-binary"));
+        tokio::pin!(retirement);
+        // Queue retirement first so FIFO registration captures the later admission before
+        // replacement can publish, without waiting for a tombstone behind our own guard.
+        assert!(futures_util::poll!(retirement.as_mut()).is_pending());
         let ((actor, _), terminated) = actor_with(&[], false, None);
         let replacement = tokio::spawn({
             let supervisor = supervisor.clone();
@@ -13581,24 +13584,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let retirement = tokio::spawn({
-            let supervisor = supervisor.clone();
-            let old = old.clone();
-            async move {
-                supervisor
-                    .retire_engine_binary("owner".into(), old, path_ref("new-binary"))
-                    .await
-            }
-        });
-        timeout(Duration::from_secs(2), async {
-            while !supervisor.is_retired_binary("owner", &old) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
         drop(registration);
-        retirement.await.unwrap().unwrap();
+        retirement.await.unwrap();
+        assert!(supervisor.is_retired_binary("owner", &old));
         assert!(replacement.await.unwrap().is_err());
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
         assert!(supervisor.get_exact(&key).is_none());

@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { EngineCompletion, EngineInstallRequest, ErrorPayload } from "@/bindings";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
 import AddEngine from "./AddEngine";
 import {
@@ -46,6 +47,11 @@ const mocks = await vi.hoisted(async () => {
     downloadEngineArchive: vi.fn(),
     registerInstalledEngine: vi.fn(),
     getEngineConfig: vi.fn(),
+    completionRecords: new Map<string, EngineCompletion>(),
+    pendingEngineCompletions: vi.fn(),
+    acknowledgeEngineCompletion: vi.fn(),
+    installEngineWorkflow: vi.fn(),
+    completionChanged: undefined as (() => void) | undefined,
   });
 });
 
@@ -86,9 +92,18 @@ vi.mock("@/platform/tauri", () => ({
     downloadEngineArchive: mocks.downloadEngineArchive,
     registerInstalledEngine: mocks.registerInstalledEngine,
     getEngineConfig: mocks.getEngineConfig,
+    pendingEngineCompletions: mocks.pendingEngineCompletions,
+    acknowledgeEngineCompletion: mocks.acknowledgeEngineCompletion,
+    installEngineWorkflow: mocks.installEngineWorkflow,
   },
   tauriSubscriptions: {
     progress: mocks.subscribeProgress,
+    completionChanged: async (callback: () => void) => {
+      mocks.completionChanged = callback;
+      return () => {
+        mocks.completionChanged = undefined;
+      };
+    },
   },
   withDownloadTicket: mocks.withDownloadTicket,
   cancellationError: () => new Error("Cancellation"),
@@ -205,6 +220,15 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ id: { id: "binary" }, kind: "engine" });
   mocks.getEngineConfig.mockReset().mockResolvedValue({ name: "Stockfish", options: [] });
+  mocks.completionRecords.clear();
+  mocks.completionChanged = undefined;
+  mocks.pendingEngineCompletions
+    .mockReset()
+    .mockImplementation(async () => structuredClone([...mocks.completionRecords.values()]));
+  mocks.acknowledgeEngineCompletion.mockReset().mockImplementation(async (id: string) => {
+    mocks.completionRecords.delete(id);
+  });
+  mocks.installEngineWorkflow.mockReset();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -312,6 +336,117 @@ test("an application failure shows an error and returns the card to its action",
   expect(mocks.progressButtonProps?.inProgress).toBe(false);
   expect(mocks.engines).toEqual([]);
 });
+
+async function startFailedCatalogResponse(
+  category: "network" | "cancellation",
+  order: "event-first" | "command-first",
+) {
+  const completions = await import("@/state/engineCompletions");
+  completions.resetEngineCompletionsForTests();
+  const { completeCatalogEngine } = await vi.importActual<
+    typeof import("@/state/catalogEngineCompletion")
+  >("@/state/catalogEngineCompletion");
+  mocks.installDefaultEngine.mockImplementation(completeCatalogEngine);
+  const failure: ErrorPayload = {
+    tag: "backend-error",
+    category,
+    message: category === "cancellation" ? "Cancellation" : "Remote server rejected the download",
+    ...(category === "network"
+      ? { remoteHttpRejection: { status: 403, authorizationSent: false } }
+      : {}),
+  };
+  let response!: () => void;
+  mocks.installEngineWorkflow.mockImplementation((id: string, request: EngineInstallRequest) => {
+    const completion: EngineCompletion = {
+      id,
+      request,
+      retired: false,
+      outcome: { state: "failed", result: failure },
+    };
+    mocks.completionRecords.set(id, completion);
+    return new Promise<EngineCompletion>((resolve) => {
+      response = () => resolve(completion);
+    });
+  });
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.installEngineWorkflow).toHaveBeenCalledOnce());
+  if (order === "event-first") {
+    await act(async () => mocks.completionChanged!());
+    await vi.waitUntil(() => mocks.acknowledgeEngineCompletion.mock.calls.length > 0);
+    await act(async () => {
+      await completions.observeEngineCompletions();
+    });
+  }
+  expect(mocks.acknowledgeEngineCompletion).toHaveBeenCalledTimes(order === "event-first" ? 1 : 0);
+  expect(mocks.completionRecords.size).toBe(order === "event-first" ? 0 : 1);
+  expect(mocks.progressButtonProps?.initInstalled).toBe(false);
+  return { completions, failure, response, order };
+}
+
+async function finishFailedCatalogResponse(
+  run: Awaited<ReturnType<typeof startFailedCatalogResponse>>,
+) {
+  await act(async () => run.response());
+  if (run.order === "command-first") {
+    await act(async () => mocks.completionChanged!());
+    await act(async () => {
+      await run.completions.observeEngineCompletions();
+    });
+  }
+}
+
+function expectUninstalledCatalogCard() {
+  expect(mocks.acknowledgeEngineCompletion).toHaveBeenCalledOnce();
+  expect(mocks.completionRecords.size).toBe(0);
+  expect(mocks.progressButtonProps?.initInstalled).toBe(false);
+  expect(mocks.progressButtonProps?.inProgress).toBe(false);
+  expect(mocks.engines).toEqual([]);
+  expect(mocks.saveEngines).not.toHaveBeenCalled();
+}
+
+test.each(["event-first", "command-first"] as const)(
+  "a network command response with %s ordering never marks the catalog card installed",
+  async (order) => {
+    const run = await startFailedCatalogResponse("network", order);
+    try {
+      await finishFailedCatalogResponse(run);
+      expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
+        "Common.Error",
+        run.failure,
+        "engine",
+      );
+      expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          color: "red",
+          title: "Common.Error",
+          message: "The service denied access to this request.",
+        }),
+      );
+      expectUninstalledCatalogCard();
+    } finally {
+      run.completions.resetEngineCompletionsForTests();
+    }
+  },
+);
+
+test.each(["event-first", "command-first"] as const)(
+  "a cancellation command response with %s ordering never marks the catalog card installed",
+  async (order) => {
+    const run = await startFailedCatalogResponse("cancellation", order);
+    try {
+      const cancellation = Promise.resolve(mocks.progressButtonProps!.onCancel!());
+      // Observe the same promise below after delivering the held command response.
+      void cancellation.catch(() => undefined);
+      await finishFailedCatalogResponse(run);
+      await expect(cancellation).resolves.toEqual({ clearedGeneration: 1n });
+      expect(mocks.notificationShow).not.toHaveBeenCalled();
+      expectUninstalledCatalogCard();
+    } finally {
+      run.completions.resetEngineCompletionsForTests();
+    }
+  },
+);
 
 test("the catalog card becomes installed only after its completion is acknowledged", async () => {
   mocks.installDefaultEngine.mockResolvedValue({ id: "installed" });

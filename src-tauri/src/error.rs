@@ -145,7 +145,7 @@ impl std::fmt::Display for RemoteHttpRejection {
     }
 }
 
-#[derive(Serialize, Type)]
+#[derive(Clone, Debug, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
     pub tag: ErrorPayloadTag,
@@ -1035,11 +1035,8 @@ impl From<std::time::SystemTimeError> for Error {
     }
 }
 
-impl serde::Serialize for Error {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
+impl Error {
+    pub(crate) fn renderer_payload(&self) -> ErrorPayload {
         // Backend log records do not reach the renderer; the payload stays on the fixed Display.
         ErrorPayload {
             tag: if self.is_engine_failure() {
@@ -1056,7 +1053,15 @@ impl serde::Serialize for Error {
                 matches!(self, Self::Conflict(message) if message == WORKSPACE_FILE_NAME_TAKEN)
                     .then_some(true),
         }
-        .serialize(serializer)
+    }
+}
+
+impl serde::Serialize for Error {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        self.renderer_payload().serialize(serializer)
     }
 }
 

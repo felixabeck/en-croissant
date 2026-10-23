@@ -28,6 +28,17 @@ export type AppError = {
     nameTaken?: true;
 };
 
+const reportedErrors = new WeakSet<object>();
+
+/** Transfers reporting ownership without altering or retaining the rejected error. */
+export function markErrorReported(error: unknown): void {
+    if (typeof error === "object" && error !== null) reportedErrors.add(error);
+}
+
+export function isErrorReported(error: unknown): boolean {
+    return typeof error === "object" && error !== null && reportedErrors.has(error);
+}
+
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
     "cancelled",
     "network",

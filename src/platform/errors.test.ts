@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TauriCommandError } from "./tauri";
+import type { ErrorPayload } from "@/bindings";
 import {
     errorUnlessCancelled,
+    isErrorReported,
+    markErrorReported,
     normalizeError,
     safeFailureContext,
     runAppliedMutationWithRefresh,
@@ -15,6 +18,49 @@ vi.mock("./native", async (importOriginal) => ({
     ...(await importOriginal<typeof import("./native")>()),
     warn: native.warn,
 }));
+
+describe("explicit error reporting ownership", () => {
+    test("marks a frozen safe payload by identity without changing its fields or normalization", () => {
+        const payload = Object.freeze<ErrorPayload>({
+            tag: "engine-failure",
+            category: "engine-timeout",
+            message: "Engine timeout: waiting for uciok",
+            rootFailure: "permission",
+            engineFailure: {
+                kind: "protocol-failure",
+                exitStatus: null,
+                reason: "uciok",
+                entries: [],
+            },
+            remoteHttpRejection: { status: 403, authorizationSent: false },
+        });
+        const copy = structuredClone(payload);
+        const normalized = normalizeError(payload);
+        expect(isErrorReported(payload)).toBe(false);
+        markErrorReported(payload);
+        markErrorReported(payload);
+        expect(isErrorReported(payload)).toBe(true);
+        expect(isErrorReported(copy)).toBe(false);
+        expect(payload).toEqual(copy);
+        expect(normalizeError(payload)).toEqual(normalized);
+    });
+
+    test("marked Cancellation keeps the pinned cancellation outcome", () => {
+        const cancellation = new Error("Cancellation");
+        markErrorReported(cancellation);
+        expect(isErrorReported(cancellation)).toBe(true);
+        expect(cancellation.message).toBe("Cancellation");
+        expect(errorUnlessCancelled(cancellation)).toBeNull();
+    });
+
+    test.each([undefined, null, "network failed", 42, false])(
+        "leaves primitive errors outside object reporting ownership: %j",
+        (error) => {
+            markErrorReported(error);
+            expect(isErrorReported(error)).toBe(false);
+        },
+    );
+});
 
 describe("warnSafely", () => {
     beforeEach(() => {

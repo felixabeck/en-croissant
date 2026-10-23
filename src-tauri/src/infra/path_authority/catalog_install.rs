@@ -1244,6 +1244,112 @@ mod tests {
         authority: PathAuthority,
     }
 
+    #[test]
+    fn reload_completion_retains_loaded_startup_capabilities_until_exact_release() {
+        let mut f = Fixture::new();
+        fs::write(f.root.join("old"), b"old engine").unwrap();
+        fs::write(f.root.join("new"), b"new engine").unwrap();
+        let old = f
+            .authority
+            .register_installed_engine_for_test(&f.handle, "old")
+            .unwrap();
+        let new = f
+            .authority
+            .register_installed_engine_for_test(&f.handle, "new")
+            .unwrap();
+        // A different selected root removes the independent active-root protection.
+        select_unrelated_workspace_for_cleanup(&mut f);
+        f.reopen();
+        let resources = vec![old.id.clone(), new.id.clone()];
+        for resource in &resources {
+            assert!(f.authority.loaded_candidate_ids.contains(&resource.id));
+            assert!(!f.authority.session_protected_ids.contains(&resource.id));
+        }
+        f.authority
+            .retain_completion_resources("pending", resources.clone())
+            .unwrap();
+        f.reconcile(vec![], true).unwrap();
+        // Use the same authority lookup and native target acquisition as execution, without
+        // handing off a child or creating a second, session-owned resource lease.
+        for (resource, expected) in [
+            (&old.id, b"old engine".as_slice()),
+            (&new.id, b"new engine".as_slice()),
+        ] {
+            let operation = PathOperation::EngineExecute;
+            let entry = f.authority.persistent_entry_for(
+                &FileWorkspaceHandle::new(resource.clone()), operation,
+            ).expect("COMPLETION_RETAINS_LOADED_CAPABILITY: startup must keep each pending handle usable");
+            let parent_access = parent_access_for_operations(&[operation]);
+            let acquired = acquire_stored_target(
+                &entry.stored,
+                AcquireShape::File { parent_access },
+                "retained completion target changed",
+            )
+            .unwrap();
+            assert_eq!(fs::read(acquired.path).unwrap(), expected);
+        }
+        f.authority
+            .release_completion_resources("another-operation");
+        f.reconcile(vec![], true).unwrap();
+        assert!(resources
+            .iter()
+            .all(|id| f.authority.persistent.contains_key(&id.id)));
+        f.authority.release_completion_resources("pending");
+        f.reconcile(vec![], true).unwrap();
+        for resource in resources {
+            assert!(
+                f.authority
+                    .persistent_entry_for(
+                        &FileWorkspaceHandle::new(resource),
+                        PathOperation::EngineExecute,
+                    )
+                    .is_err(),
+                "released startup candidates must be collectible"
+            );
+        }
+        assert!(!f.authority.persistent.contains_key(&old.id.id));
+        assert!(!f.authority.persistent.contains_key(&new.id.id));
+    }
+
+    #[test]
+    fn reload_completion_retains_otherwise_collectible_catalog_until_exact_release() {
+        let mut f = Fixture::new();
+        f.install("managed");
+        // Reopen normally ends publication protection. Do not weaken catalog ownership.
+        f.reopen();
+        assert!(f.authority.catalog_protected.is_empty());
+        assert!(f.authority.catalog_uses.is_empty());
+        assert!(f
+            .authority
+            .catalog_installs
+            .values()
+            .all(|record| record.users.is_empty()));
+        f.authority
+            .retain_completion_resources("pending", vec![f.handle.id.clone()])
+            .unwrap();
+        f.reconcile(vec![], true).unwrap();
+        assert_eq!(fs::read(f.root.join("managed/engine")).expect(
+            "COMPLETION_RETAINS_CATALOG: pending completion must keep the managed executable usable",
+        ), b"managed engine");
+        assert_eq!(
+            fs::read(f.root.join("managed/data/network")).unwrap(),
+            b"managed network"
+        );
+        assert_eq!(f.authority.catalog_installs.len(), 1);
+        f.authority
+            .release_completion_resources("another-operation");
+        f.reconcile(vec![], true).unwrap();
+        assert!(f.root.join("managed/engine").exists());
+        f.authority.release_completion_resources("pending");
+        f.reconcile(vec![], true).unwrap();
+        assert!(!f.root.join("managed").exists());
+        assert!(f.authority.catalog_installs.is_empty());
+        assert!(
+            f.authority.persistent.contains_key(&f.handle.id.id),
+            "the selected root remains owned"
+        );
+    }
+
     struct StageFixture {
         path: PathBuf,
         owner: crate::infra::fs::OwnedStagingDir,

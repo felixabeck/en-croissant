@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
+import type { ErrorPayload } from "@/bindings";
+import { isErrorReported } from "@/platform/errors";
 import { engineSchema, type Engine } from "@/utils/engines";
 import {
     opponentSettingsSchema,
@@ -31,6 +33,8 @@ import {
     reconcileStartupEngineAttachments,
     resetEngineOwnerCoordinatorForTests,
     saveEngineOwnerValue,
+    MAX_ENGINE_COMPLETION_RECEIPTS,
+    pruneEngineCompletionReceipts,
 } from "./engineOwnerStorage";
 
 const decodeOwnerValue = (raw: string) =>
@@ -58,6 +62,76 @@ afterEach(() => vi.restoreAllMocks());
 
 test("collects image and resource attachments without executable capabilities", () => {
     expect(collectAttachmentIds("engines", [engine])).toEqual(["image-a", "resource-a"]);
+});
+
+test("owner decoding preserves legacy values and version-one completion envelopes", () => {
+    const value = [engine];
+    const receipts = { [crypto.randomUUID()]: "applied" };
+    expect(decodeEngineOwnerValue(value)).toEqual({ value, receipts: {} });
+    expect(decodeEngineOwnerValue({ version: 1, value, receipts })).toEqual({ value, receipts });
+});
+
+test.each([
+    { version: 2, value: [], receipts: {} },
+    { version: 1, value: [], receipts: {}, future: true },
+    { version: 1, value: [], receipts: { invalid: "applied" } },
+    { version: 1, value: [], receipts: { [crypto.randomUUID()]: "unknown" } },
+    { version: 1, value: [] },
+])("owner decoding refuses an incompatible or malformed envelope: %j", (envelope) => {
+    expect(decodeEngineOwnerValue(envelope)).toBeNull();
+});
+
+test("completion receipts accept the native capacity, refuse overflow and resume after snapshot pruning", async () => {
+    const receipts = Object.fromEntries(
+        Array.from({ length: MAX_ENGINE_COMPLETION_RECEIPTS - 1 }, () => [
+            crypto.randomUUID(),
+            "applied",
+        ]),
+    );
+    localStorage.setItem("engines", serializeStorageValue({ version: 1, value: [], receipts }));
+    const last = crypto.randomUUID();
+    expect(
+        (
+            await saveEngineOwnerValue("engines", serializeStorageValue([]), {
+                id: last,
+                disposition: "skipped",
+            })
+        ).saved,
+    ).toBe(true);
+    const raw = localStorage.getItem("engines")!;
+    const full = decodeCompressedOrJson(raw);
+    expect(decodeEngineOwnerValue(full)?.receipts).toEqual({ ...receipts, [last]: "skipped" });
+    const overflow = crypto.randomUUID();
+    expect(
+        decodeEngineOwnerValue({
+            version: 1,
+            value: [],
+            receipts: { ...receipts, [last]: "skipped", [overflow]: "applied" },
+        }),
+    ).toBeNull();
+    expect(
+        (
+            await saveEngineOwnerValue("engines", serializeStorageValue([]), {
+                id: overflow,
+                disposition: "applied",
+            })
+        ).saved,
+    ).toBe(false);
+    expect(localStorage.getItem("engines")).toBe(raw);
+    expect(mocks.report).toHaveBeenCalledOnce();
+
+    await pruneEngineCompletionReceipts(new Set([last]));
+    expect(
+        (
+            await saveEngineOwnerValue("engines", serializeStorageValue([]), {
+                id: overflow,
+                disposition: "applied",
+            })
+        ).saved,
+    ).toBe(true);
+    expect(
+        decodeEngineOwnerValue(decodeCompressedOrJson(localStorage.getItem("engines")!))?.receipts,
+    ).toEqual({ [last]: "skipped", [overflow]: "applied" });
 });
 
 test("prepares before storage and reconciles the shared owner union afterwards", async () => {
@@ -104,6 +178,8 @@ test("quota failure resolves unsuccessful and never retires", async () => {
     expect(localStorage.getItem("engines")).toBeNull();
     expect(mocks.reconcile).toHaveBeenCalledTimes(1);
     expect(mocks.report).toHaveBeenCalledOnce();
+    expect(receipt.error).toBe(mocks.report.mock.calls[0][0]);
+    expect(isErrorReported(receipt.error)).toBe(true);
     expect((mocks.report.mock.calls[0][0] as Error).message).toContain("translated quota");
     expect((mocks.report.mock.calls[0][0] as Error).message).not.toContain(
         "/home/felix/secret.pgn",
@@ -123,7 +199,44 @@ test("native prepare failure preserves typed error and leaves storage unchanged"
     );
     expect(localStorage.getItem("engines")).toBeNull();
     expect(mocks.report).toHaveBeenCalledWith(typed);
+    expect(receipt.error).toBe(typed);
+    expect(isErrorReported(receipt.error)).toBe(true);
 });
+
+test.each(["prepare", "reconcile"] as const)(
+    "native %s preserves a safe payload's identity through reporting and the save receipt",
+    async (phase) => {
+        const failure = Object.freeze<ErrorPayload>({
+            tag: "backend-error",
+            category: "permission",
+            message: "Permission denied",
+            rootFailure: "permission",
+            remoteHttpRejection: { status: 403, authorizationSent: false },
+        });
+        if (phase === "reconcile") mocks.reconcile.mockResolvedValueOnce(undefined);
+        mocks.reconcile.mockRejectedValueOnce(failure);
+        const receipt = await saveEngineOwnerValue("engines", serializeStorageValue([engine]));
+        expect(receipt.saved).toBe(phase === "reconcile");
+        expect(receipt.synchronized).toBe(false);
+        expect(receipt.error).toBe(failure);
+        expect(mocks.report).toHaveBeenCalledExactlyOnceWith(failure);
+        expect(isErrorReported(receipt.error)).toBe(true);
+    },
+);
+
+test.each(["prepare", "reconcile"] as const)(
+    "native %s converts a primitive once for both reporting and the save receipt",
+    async (phase) => {
+        if (phase === "reconcile") mocks.reconcile.mockResolvedValueOnce(undefined);
+        mocks.reconcile.mockRejectedValueOnce("native unavailable");
+        const receipt = await saveEngineOwnerValue("engines", serializeStorageValue([engine]));
+        expect(receipt.saved).toBe(phase === "reconcile");
+        expect(receipt.error).toBeInstanceOf(Error);
+        expect(receipt.error).toMatchObject({ message: "native unavailable" });
+        expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+        expect(isErrorReported(receipt.error)).toBe(true);
+    },
+);
 
 test("untrusted sibling permits prepare and save but withholds removal", async () => {
     localStorage.setItem("game-player2-settings", "corrupt");

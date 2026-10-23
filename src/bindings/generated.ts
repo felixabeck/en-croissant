@@ -1290,11 +1290,10 @@ export type CollectionStatus = "ready" | "stale" | "missing" | "retired" | "pres
  */
 export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStage }
 export type CompletionChanged = { id: string }
-export type CompletionFailure = { category: ErrorCategory; rootFailure: RootFailure | null }
 /**
  * Shared outcome shape, also usable by the account workflow without another mailbox contract.
  */
-export type CompletionOutcome<T> = { state: "running" } | { state: "succeeded"; result: T } | { state: "failed"; result: CompletionFailure }
+export type CompletionOutcome<T> = { state: "running" } | { state: "succeeded"; result: T } | { state: "failed"; result: ErrorPayload }
 /**
  * Import progress for a PGN-to-database conversion. A conversion has no total
  * to divide by until it finishes, so this reports the counters the UI shows

@@ -6,7 +6,7 @@ use specta::Type;
 
 use crate::{
     chess::EngineConfig,
-    error::{Error, ErrorCategory, RootFailure},
+    error::{Error, ErrorPayload},
     infra::path_authority::{EngineHandle, EngineRootHandle},
 };
 
@@ -89,14 +89,7 @@ pub struct InstalledEngineResult {
 pub enum CompletionOutcome<T> {
     Running,
     Succeeded(T),
-    Failed(CompletionFailure),
-}
-
-#[derive(Clone, Debug, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct CompletionFailure {
-    pub category: ErrorCategory,
-    pub root_failure: Option<RootFailure>,
+    Failed(ErrorPayload),
 }
 
 #[derive(Clone, Debug, Serialize, Type)]

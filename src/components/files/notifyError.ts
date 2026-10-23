@@ -1,6 +1,6 @@
 import { notifications } from "@mantine/notifications";
 import i18n from "@/i18n";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { errorUnlessCancelled, isErrorReported } from "@/platform/errors";
 import { rootFailureMessage, type RootFailureDomain } from "./listingFailure";
 import { workspaceErrorMessage } from "./workspaceError";
 import { remoteHttpGuidance } from "./remoteHttpGuidance";
@@ -10,6 +10,7 @@ export function notifyUnlessCancelled(
     error: unknown,
     domain?: RootFailureDomain,
 ): void {
+    if (isErrorReported(error)) return;
     const visible = errorUnlessCancelled(error);
     if (visible) {
         const fallback =

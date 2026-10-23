@@ -2,6 +2,7 @@ import { notifications } from "@mantine/notifications";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
 import { catalogueI18n } from "@/tests/catalogues";
+import { markErrorReported } from "@/platform/errors";
 import { notifyListenerError, notifyUnlessCancelled, runUnlessCancelled } from "./notifyError";
 
 const fallbackTranslation = vi.mocked(i18n.t).getMockImplementation()!;
@@ -157,6 +158,38 @@ test("notifies a real failure", () => {
         title: "Common.Error",
         message: "permission denied",
     });
+});
+
+test("only explicitly marked errors skip notification, without changing equivalent ordinary errors", () => {
+    const failure = {
+        tag: "backend-error",
+        category: "network",
+        message: "Network request failed",
+    };
+    const otherFailure = { ...failure };
+    markErrorReported(failure);
+    notifyUnlessCancelled("Common.Error", failure, "engine");
+    expect(notifications.show).not.toHaveBeenCalled();
+    notifyUnlessCancelled("Common.Error", otherFailure, "engine");
+    expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: otherFailure.message,
+    });
+    notifyUnlessCancelled("Common.Error", otherFailure, "engine");
+    expect(notifications.show).toHaveBeenCalledTimes(2);
+});
+
+test("listener and async notification catches respect explicit reporting ownership", async () => {
+    const failure = new Error("Network request failed");
+    markErrorReported(failure);
+    notifyListenerError(failure);
+    await expect(
+        runUnlessCancelled("Common.Error", async () => {
+            throw failure;
+        }),
+    ).resolves.toBeUndefined();
+    expect(notifications.show).not.toHaveBeenCalled();
 });
 
 test("files cleanup notifications select localized copy without changing other domains", () => {

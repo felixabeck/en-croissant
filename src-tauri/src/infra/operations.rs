@@ -79,6 +79,14 @@ enum ReservationKind<'a> {
     Conversion,
 }
 
+struct PreparedReservationClaim<'a> {
+    ticket: &'a str,
+    owner: &'a str,
+    label: &'a str,
+    kind: ReservationKind<'a>,
+    download_policy: Option<(&'a str, &'a str, bool, usize)>,
+}
+
 impl<'a> ReservationKind<'a> {
     fn owned(self) -> ReservationKindOwned {
         match self {
@@ -302,16 +310,18 @@ impl OperationRegistry {
         }
         let lease = self.claim_prepared_in_state(
             &mut state,
-            ticket,
-            owner,
-            "install_engine_workflow",
-            ReservationKind::Download,
-            Some((
-                &request.progress_id,
-                &request.progress_id,
-                false,
-                download_cap,
-            )),
+            PreparedReservationClaim {
+                ticket,
+                owner,
+                label: "install_engine_workflow",
+                kind: ReservationKind::Download,
+                download_policy: Some((
+                    &request.progress_id,
+                    &request.progress_id,
+                    false,
+                    download_cap,
+                )),
+            },
         )?;
         let snapshot = EngineCompletion {
             id: id.to_owned(),
@@ -344,6 +354,7 @@ impl OperationRegistry {
             .collect())
     }
 
+    #[cfg(test)]
     pub(crate) fn engine_completion(
         &self,
         id: &str,
@@ -376,7 +387,7 @@ impl OperationRegistry {
         &self,
         id: &str,
         result: &Result<InstalledEngineResult, Error>,
-    ) -> Result<(), Error> {
+    ) -> Result<EngineCompletion, Error> {
         let mut state = self.state()?;
         let entry = state
             .completions
@@ -384,12 +395,9 @@ impl OperationRegistry {
             .ok_or_else(|| Error::Conflict("completion is unavailable".into()))?;
         entry.snapshot.outcome = match result {
             Ok(result) => CompletionOutcome::Succeeded(result.clone()),
-            Err(error) => CompletionOutcome::Failed(self::completions::CompletionFailure {
-                category: error.category(),
-                root_failure: error.root_failure(),
-            }),
+            Err(error) => CompletionOutcome::Failed(error.renderer_payload()),
         };
-        Ok(())
+        Ok(entry.snapshot.clone())
     }
 
     pub(crate) fn begin_engine_application(
@@ -760,19 +768,30 @@ impl OperationRegistry {
         download_policy: Option<(&str, &str, bool, usize)>,
     ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
-        self.claim_prepared_in_state(&mut state, ticket, owner, label, kind, download_policy)
+        self.claim_prepared_in_state(
+            &mut state,
+            PreparedReservationClaim {
+                ticket,
+                owner,
+                label,
+                kind,
+                download_policy,
+            },
+        )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn claim_prepared_in_state(
         &self,
         state: &mut RegistryState,
-        ticket: &str,
-        owner: &str,
-        label: &str,
-        kind: ReservationKind<'_>,
-        download_policy: Option<(&str, &str, bool, usize)>,
+        claim: PreparedReservationClaim<'_>,
     ) -> Result<OperationLease, Error> {
+        let PreparedReservationClaim {
+            ticket,
+            owner,
+            label,
+            kind,
+            download_policy,
+        } = claim;
         Self::purge_expired(state, Instant::now(), self.reservation_ttl);
         if state.sealed {
             return Err(Error::Conflict(

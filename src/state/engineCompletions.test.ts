@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { EngineCompletion } from "@/bindings";
+import type { EngineCompletion, ErrorPayload } from "@/bindings";
 import type { LocalEngine } from "@/utils/engines";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 
@@ -11,8 +11,9 @@ const native = vi.hoisted(() => ({
     install: vi.fn(),
     reconcile: vi.fn(),
     clear: vi.fn(),
-    notify: vi.fn(),
+    show: vi.fn(),
     dispose: vi.fn(),
+    subscribe: vi.fn(),
     changed: undefined as (() => void) | undefined,
 }));
 vi.mock("@/platform/tauri", () => ({
@@ -25,15 +26,11 @@ vi.mock("@/platform/tauri", () => ({
         clearProgress: native.clear,
     },
     tauriSubscriptions: {
-        completionChanged: async (callback: () => void) => {
-            native.changed = callback;
-            return native.dispose;
-        },
+        completionChanged: native.subscribe,
     },
 }));
-vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: native.notify }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: native.show } }));
 vi.mock("@/platform/native", () => ({ warn: vi.fn(), error: vi.fn() }));
-vi.mock("./persistError", () => ({ reportPersistError: vi.fn() }));
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 
 const a: LocalEngine = {
@@ -91,6 +88,18 @@ function workflow(upgrade = false, expected = a, binary = "binary-b"): EngineCom
     };
 }
 
+function failedWorkflow(result: ErrorPayload): EngineCompletion {
+    const completion = workflow();
+    completion.outcome = { state: "failed", result };
+    return completion;
+}
+
+function deferred<Value>() {
+    let resolve!: (value: Value) => void;
+    const promise = new Promise<Value>((done) => (resolve = done));
+    return { promise, resolve };
+}
+
 async function documentRuntime() {
     vi.resetModules();
     const [{ createStore }, atoms, completions, owners, catalog] = await Promise.all([
@@ -131,8 +140,12 @@ beforeEach(() => {
         native.records.get(id)!.retired = true;
     });
     native.install.mockReset();
-    native.notify.mockReset();
+    native.show.mockReset();
     native.dispose.mockReset();
+    native.subscribe.mockReset().mockImplementation(async (callback: () => void) => {
+        native.changed = callback;
+        return native.dispose;
+    });
     native.reconcile.mockReset().mockResolvedValue(undefined);
     native.clear.mockReset().mockResolvedValue(1n);
     native.changed = undefined;
@@ -226,7 +239,7 @@ test("reload completion partial A to B application cannot be overtaken and expli
     });
     const first = await runtime();
     await expect(first.completions.applyEngineCompletion(ab, first.store)).rejects.toThrow(
-        "Engines.Upgrade.SnapshotSaveError",
+        "Engines.SaveError refused second player",
     );
     expect(durable("game-player1-settings").value).toMatchObject({
         engine: { handle: { id: { id: "binary-b" } } },
@@ -240,7 +253,7 @@ test("reload completion partial A to B application cannot be overtaken and expli
             b,
             first.store,
         ),
-    ).rejects.toThrow("Engines.Upgrade.SnapshotSaveError");
+    ).rejects.toThrow("Engines.SaveError refused second player");
     expect(native.install).not.toHaveBeenCalled();
     vi.restoreAllMocks();
     first.completions.disposeEngineCompletions();
@@ -343,7 +356,7 @@ test.each(["malformed", "unreadable"])(
     },
 );
 
-test("reload completion snapshots after subscribing, observes running work without delaying startup and disposes stale callbacks", async () => {
+test("reload completion observes running work without delaying startup and disposes stale callbacks", async () => {
     const completion = workflow();
     completion.outcome = { state: "running" };
     retain(completion);
@@ -362,6 +375,31 @@ test("reload completion snapshots after subscribing, observes running work witho
     native.changed!();
     await Promise.resolve();
     expect(native.records.has(next.id)).toBe(true);
+});
+
+test("reload completion snapshots a terminal result produced during asynchronous subscription setup", async () => {
+    const completion = workflow();
+    completion.outcome = { state: "running" };
+    retain(completion);
+    const subscribing = deferred<void>();
+    const subscribed = deferred<void>();
+    native.subscribe.mockImplementationOnce(async (callback: () => void) => {
+        subscribing.resolve();
+        await subscribed.promise;
+        native.changed = callback;
+        return native.dispose;
+    });
+    const run = await runtime();
+    const initialization = run.completions.initializeEngineCompletions(run.store);
+    await subscribing.promise;
+    // Native finishes while listen() is still pending, before this document can receive events.
+    completion.outcome = workflow().outcome;
+    subscribed.resolve();
+    await initialization;
+
+    expect(run.store.get(run.atoms.enginesAtom)).toMatchObject([{ id: "add-engine" }]);
+    expect(native.ack).toHaveBeenCalledExactlyOnceWith(completion.id);
+    expect(native.records.size).toBe(0);
 });
 
 test("reload completion pruning requires a native pending snapshot and retains receipts through ordinary edits", async () => {
@@ -386,37 +424,128 @@ test("reload completion pruning requires a native pending snapshot and retains r
 });
 
 test("reload completion reads a retained failure through the localized error path and acknowledges no native effect", async () => {
-    const completion = workflow();
-    completion.outcome = { state: "failed", result: { category: "network", rootFailure: null } };
+    const failure: ErrorPayload = {
+        tag: "backend-error",
+        category: "network",
+        message: "Remote server rejected the download",
+        remoteHttpRejection: { status: 403, authorizationSent: false },
+    };
+    const completion = failedWorkflow(failure);
     retain(completion);
     const run = await runtime();
     await run.completions.initializeEngineCompletions(run.store);
-    expect(native.notify).toHaveBeenCalledWith(
-        "Common.Error",
-        expect.objectContaining({ category: "network" }),
-        "engine",
+    expect(native.show).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+            title: "Common.Error",
+            message: "Common.RemoteRequest.AccessDenied",
+        }),
     );
+    await expect(run.completions.applyEngineCompletion(completion, run.store)).rejects.toBe(
+        failure,
+    );
+    expect(native.show).toHaveBeenCalledOnce();
     expect(native.records.size).toBe(0);
     expect(native.retire).not.toHaveBeenCalled();
     expect(localStorage.getItem("engines")).toBeNull();
 });
 
 test("reload completion keeps safe root failure guidance across document loss", async () => {
-    const completion = workflow();
-    completion.outcome = {
-        state: "failed",
-        result: { category: "permission", rootFailure: "permission" },
+    const failure: ErrorPayload = {
+        tag: "backend-error",
+        category: "permission",
+        message: "Permission denied",
+        rootFailure: "permission",
     };
+    const completion = failedWorkflow(failure);
     retain(completion);
     const run = await runtime();
     await run.completions.initializeEngineCompletions(run.store);
-    expect(native.notify).toHaveBeenCalledWith(
-        "Common.Error",
-        expect.objectContaining({ category: "permission", rootFailure: "permission" }),
-        "engine",
+    expect(native.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: "Engines.LoadError.RootPermission",
+    });
+    await expect(run.completions.applyEngineCompletion(completion, run.store)).rejects.toBe(
+        failure,
     );
+    expect(native.show).toHaveBeenCalledOnce();
     expect(native.records.size).toBe(0);
 });
+
+test("reload completion preserves the safe engine failure snapshot and message", async () => {
+    const failure: ErrorPayload = {
+        tag: "engine-failure",
+        category: "engine-timeout",
+        message: "Engine timeout: waiting for uciok",
+        engineFailure: { kind: "protocol-failure", exitStatus: null, reason: "uciok", entries: [] },
+    };
+    const completion = failedWorkflow(failure);
+    retain(completion);
+    const run = await runtime();
+    await run.completions.initializeEngineCompletions(run.store);
+    expect(native.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: failure.message,
+    });
+    await expect(run.completions.applyEngineCompletion(completion, run.store)).rejects.toBe(
+        failure,
+    );
+    expect(native.show).toHaveBeenCalledOnce();
+    expect(native.ack).toHaveBeenCalledExactlyOnceWith(completion.id);
+});
+
+test.each(["command-first", "event-first"])(
+    "reload completion preserves a failed terminal result for concurrent callers: %s",
+    async (order) => {
+        const failure: ErrorPayload = {
+            tag: "backend-error",
+            category: "network",
+            message: "Remote server rejected the download",
+            remoteHttpRejection: { status: 403, authorizationSent: false },
+        };
+        const completion = failedWorkflow(failure);
+        const run = await runtime();
+        await run.completions.initializeEngineCompletions(run.store);
+        retain(completion);
+        const acknowledged = deferred<void>();
+        const releaseAck = deferred<void>();
+        native.ack.mockImplementationOnce(async (id: string) => {
+            native.records.delete(id);
+            acknowledged.resolve();
+            await releaseAck.promise;
+        });
+        let command: Promise<void>;
+        if (order === "command-first") {
+            command = run.completions.applyEngineCompletion(completion, run.store);
+            void command.catch(() => undefined);
+            await acknowledged.promise;
+            native.changed!();
+            releaseAck.resolve();
+        } else {
+            native.changed!();
+            await acknowledged.promise;
+            releaseAck.resolve();
+            // Wait for the observer's application to leave the in-flight map, then deliver the
+            // already captured command response. Native no longer retains this failed result.
+            await run.completions.observeEngineCompletions();
+            command = run.completions.applyEngineCompletion(completion, run.store);
+        }
+        await expect(command).rejects.toEqual(failure);
+        await expect(run.completions.applyEngineCompletion(completion, run.store)).rejects.toEqual(
+            failure,
+        );
+        expect(native.ack).toHaveBeenCalledExactlyOnceWith(completion.id);
+        expect(native.show).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                title: "Common.Error",
+                message: "Common.RemoteRequest.AccessDenied",
+            }),
+        );
+        expect(localStorage.getItem("engines")).toBeNull();
+        expect(native.retire).not.toHaveBeenCalled();
+    },
+);
 
 test.each(["path", "name"])(
     "reload completion keeps a different UUID with the same %s independent",
@@ -447,8 +576,11 @@ test.each(["path", "name"])(
 );
 
 test("reload completion reports refused startup recovery and retries retained failures after owner repair", async () => {
-    const completion = workflow();
-    completion.outcome = { state: "failed", result: { category: "network", rootFailure: null } };
+    const completion = failedWorkflow({
+        tag: "backend-error",
+        category: "network",
+        message: "Network request failed",
+    });
     retain(completion);
     localStorage.setItem("engines", "invalid original owner");
     const run = await runtime();
@@ -456,17 +588,180 @@ test("reload completion reports refused startup recovery and retries retained fa
         "Engines.SaveError",
     );
     expect(native.records.has(completion.id)).toBe(true);
-    expect(native.notify).toHaveBeenCalledWith(
-        "Common.Error",
-        expect.objectContaining({ message: expect.stringContaining("Engines.SaveError") }),
-        "engine",
+    expect(native.show).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+            title: "Common.Error",
+            message: expect.stringContaining("Engines.SaveError"),
+        }),
     );
     localStorage.setItem("engines", serializeStorageValue([]));
     await run.completions.initializeEngineCompletions(run.store);
-    expect(native.notify).toHaveBeenCalledWith(
-        "Common.Error",
-        expect.objectContaining({ category: "network" }),
-        "engine",
-    );
+    expect(native.show).toHaveBeenCalledTimes(2);
+    expect(native.show).toHaveBeenNthCalledWith(2, {
+        color: "red",
+        title: "Common.Error",
+        message: "Network request failed",
+    });
     expect(native.records.size).toBe(0);
+});
+
+test("reload completion reports an owner-save failure once and retains it for retry", async () => {
+    const completion = workflow();
+    retain(completion);
+    const write = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+        if (key === "engines") throw new Error("quota");
+        write.call(this, key, value);
+    });
+    const run = await runtime();
+    await run.completions.initializeEngineCompletions(run.store);
+    expect(native.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: "Engines.SaveError quota",
+    });
+    expect(native.records.has(completion.id)).toBe(true);
+    expect(native.ack).not.toHaveBeenCalled();
+});
+
+test("shared application reports an owner-save failure once while every caller receives the same error", async () => {
+    const completion = workflow();
+    retain(completion);
+    const preparationFailure = new Error("prepare refused");
+    native.reconcile.mockRejectedValueOnce(preparationFailure);
+    const run = await runtime();
+    const first = run.completions.applyEngineCompletion(completion, run.store);
+    const joined = run.completions.applyEngineCompletion(completion, run.store);
+    expect(joined).toBe(first);
+    const [failure, otherFailure] = await Promise.all([
+        first.catch((error: unknown) => error),
+        joined.catch((error: unknown) => error),
+    ]);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toBe(preparationFailure);
+    expect(otherFailure).toBe(failure);
+    const { notifyUnlessCancelled } = await import("@/components/files/notifyError");
+    notifyUnlessCancelled("Common.Error", failure, "engine");
+    notifyUnlessCancelled("Common.Error", otherFailure, "engine");
+    expect(native.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: "prepare refused",
+    });
+    expect(native.records.has(completion.id)).toBe(true);
+    expect(native.ack).not.toHaveBeenCalled();
+});
+
+test("shared retained failure preserves every safe field for every caller and reports once", async () => {
+    const failure: ErrorPayload = {
+        tag: "engine-failure",
+        category: "engine-timeout",
+        message: "Engine timeout: waiting for uciok",
+        rootFailure: "permission",
+        engineFailure: { kind: "protocol-failure", exitStatus: null, reason: "uciok", entries: [] },
+        remoteHttpRejection: { status: 403, authorizationSent: false },
+    };
+    const completion = failedWorkflow(failure);
+    retain(completion);
+    const run = await runtime();
+    const first = run.completions.applyEngineCompletion(completion, run.store);
+    const joined = run.completions.applyEngineCompletion(completion, run.store);
+    expect(joined).toBe(first);
+    const [received, otherReceived] = await Promise.all([
+        first.catch((error: unknown) => error),
+        joined.catch((error: unknown) => error),
+    ]);
+    expect(received).toEqual(failure);
+    expect(otherReceived).toBe(received);
+    const { notifyUnlessCancelled } = await import("@/components/files/notifyError");
+    notifyUnlessCancelled("Common.Error", received, "engine");
+    notifyUnlessCancelled("Common.Error", otherReceived, "engine");
+    expect(native.show).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: "Engines.LoadError.RootPermission",
+    });
+    expect(native.ack).toHaveBeenCalledExactlyOnceWith(completion.id);
+});
+
+test.each(["subscription", "snapshot"])(
+    "completion initialization still reports its %s failure once",
+    async (boundary) => {
+        const failure = new Error(`${boundary} unavailable`);
+        if (boundary === "subscription") native.subscribe.mockRejectedValueOnce(failure);
+        else native.pending.mockRejectedValueOnce(failure);
+        const run = await runtime();
+        await expect(run.completions.initializeEngineCompletions(run.store)).rejects.toBe(failure);
+        expect(native.show).toHaveBeenCalledExactlyOnceWith({
+            color: "red",
+            title: "Common.Error",
+            message: failure.message,
+        });
+    },
+);
+
+test.each(["network", "cancellation"] as const)(
+    "retained %s reaches its reporting owner before acknowledgement can dispose the document",
+    async (category) => {
+        const failure: ErrorPayload = {
+            tag: "backend-error",
+            category,
+            message: category === "cancellation" ? "Cancellation" : "Network request failed",
+        };
+        const completion = failedWorkflow(failure);
+        retain(completion);
+        const run = await runtime();
+        const { isErrorReported } = await import("@/platform/errors");
+        // Keep this response's identity visible to the native callback so it can observe the
+        // ownership handoff, then simulate losing the document immediately after native removal.
+        native.pending.mockResolvedValueOnce([completion]);
+        const observed: Array<{ notifications: number; reported: boolean }> = [];
+        native.ack.mockImplementationOnce(async (id: string) => {
+            observed.push({
+                notifications: native.show.mock.calls.length,
+                reported: isErrorReported(failure),
+            });
+            native.records.delete(id);
+            run.completions.disposeEngineCompletions();
+        });
+        const first = run.completions.applyEngineCompletion(completion, run.store);
+        const joined = run.completions.applyEngineCompletion(completion, run.store);
+        expect(joined).toBe(first);
+        await expect(first).rejects.toBe(failure);
+        await expect(joined).rejects.toBe(failure);
+        expect(observed).toEqual([
+            { notifications: category === "cancellation" ? 0 : 1, reported: true },
+        ]);
+        expect(native.show).toHaveBeenCalledTimes(category === "cancellation" ? 0 : 1);
+        expect(native.ack).toHaveBeenCalledExactlyOnceWith(completion.id);
+        expect(native.records.size).toBe(0);
+    },
+);
+
+test("a failed acknowledgement reports its own error after the retained failure was reported", async () => {
+    const failure: ErrorPayload = {
+        tag: "backend-error",
+        category: "network",
+        message: "Network request failed",
+    };
+    const completion = failedWorkflow(failure);
+    retain(completion);
+    const acknowledgementFailure = new Error("acknowledgement unavailable");
+    native.ack.mockRejectedValueOnce(acknowledgementFailure);
+    const run = await runtime();
+    await expect(run.completions.applyEngineCompletion(completion, run.store)).rejects.toBe(
+        acknowledgementFailure,
+    );
+    expect(native.show).toHaveBeenCalledTimes(2);
+    expect(native.show).toHaveBeenNthCalledWith(1, {
+        color: "red",
+        title: "Common.Error",
+        message: failure.message,
+    });
+    expect(native.show).toHaveBeenNthCalledWith(2, {
+        color: "red",
+        title: "Common.Error",
+        message: acknowledgementFailure.message,
+    });
+    expect(native.records.has(completion.id)).toBe(true);
 });

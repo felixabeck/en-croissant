@@ -3,7 +3,7 @@ import type { EngineCompletion } from "@/bindings";
 import i18n from "@/i18n";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
-import { warnSafely } from "@/platform/errors";
+import { isErrorReported, markErrorReported, warnSafely } from "@/platform/errors";
 import { enginesAtom, gamePlayer1SettingsAtom, gamePlayer2SettingsAtom } from "./atoms";
 import {
     pruneEngineCompletionReceipts,
@@ -31,7 +31,8 @@ function requireDocument<Value>(value?: Value) {
 }
 
 async function acknowledgeCompletion(id: string) {
-    requireDocument(await tauri.acknowledgeEngineCompletion(id));
+    await tauri.acknowledgeEngineCompletion(id);
+    if (!documentActive) return;
     pending.delete(id);
     publish();
 }
@@ -40,7 +41,8 @@ async function acknowledgeCompletion(id: string) {
 export const engineCompletionState = { pending, listeners, publish, requireDocument };
 
 function notifyCompletionError(error: unknown) {
-    if (documentActive) notifyUnlessCancelled(i18n.t("Common.Error"), error, "engine");
+    if (documentActive && !isErrorReported(error))
+        notifyUnlessCancelled(i18n.t("Common.Error"), error, "engine");
 }
 
 function ownerUpdate<Value>(
@@ -74,6 +76,12 @@ export function applyEngineCompletion(
             if (!retained) {
                 pending.delete(id);
                 publish();
+                // Another observer may have acknowledged this terminal response already. Its
+                // failure still belongs to this caller without retaining document-wide tombstones.
+                if (completion.outcome.state === "failed") {
+                    markErrorReported(completion.outcome.result);
+                    throw completion.outcome.result;
+                }
                 return;
             }
             completion = retained;
@@ -81,12 +89,12 @@ export function applyEngineCompletion(
             pending.set(id, { completion, applying: true });
             publish();
             if (completion.outcome.state === "failed") {
+                // Hand the retained failure to its reporting owner before native removes the
+                // last durable copy. Document disposal during acknowledgement cannot hide it.
+                notifyCompletionError(completion.outcome.result);
+                markErrorReported(completion.outcome.result);
                 await acknowledgeCompletion(id);
-                throw {
-                    tag: "backend-error",
-                    ...completion.outcome.result,
-                    message: i18n.t("Engines.SaveError"),
-                };
+                throw completion.outcome.result;
             }
             const installed = completion.outcome.result;
             const { intent, name, version, elo, downloadSize, url } = completion.request;
@@ -114,7 +122,7 @@ export function applyEngineCompletion(
                     );
                 }),
             );
-            if (!receipt.saved) throw new Error(i18n.t("Engines.SaveError"));
+            if (!receipt.saved) throw receipt.error ?? new Error(i18n.t("Engines.SaveError"));
             requireDocument();
             if (intent.kind === "upgrade") {
                 const target = currentEngine();
@@ -143,13 +151,19 @@ export function applyEngineCompletion(
                             );
                         }),
                     );
-                    if (!saved.saved) throw new Error(i18n.t("Engines.Upgrade.SnapshotSaveError"));
+                    if (!saved.saved)
+                        throw saved.error ?? new Error(i18n.t("Engines.Upgrade.SnapshotSaveError"));
                     requireDocument();
                 }
             }
             await acknowledgeCompletion(id);
+            requireDocument();
         })
         .catch(async (error) => {
+            // The shared application owns reporting. Every observer and live caller still
+            // receives this same rejection, while their notification catches stay silent.
+            notifyCompletionError(error);
+            markErrorReported(error);
             if (documentActive) {
                 // A failed owner write remains a completion, so Install retries application. Its
                 // progress display must not masquerade as a still-running network transfer.
