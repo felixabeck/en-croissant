@@ -90,7 +90,7 @@ export function applyEngineCompletion(
             publish();
             if (completion.outcome.state === "failed") {
                 // Hand the retained failure to its reporting owner before native removes the
-                // last durable copy. Document disposal during acknowledgement cannot hide it.
+                // last retained copy. Document disposal during acknowledgement cannot hide it.
                 notifyCompletionError(completion.outcome.result);
                 markErrorReported(completion.outcome.result);
                 await acknowledgeCompletion(id);

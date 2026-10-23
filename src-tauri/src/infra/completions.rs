@@ -46,23 +46,28 @@ pub struct EngineInstallRequest {
     pub download_size: Option<f64>,
 }
 
+// These three budgets are admission limits for an engine completion request, with shared limits intentional.
+const MAX_COMPLETION_IDENTITY_BYTES: usize = 256;
+const MAX_COMPLETION_TEXT_BYTES: usize = 4096;
+const MAX_COMPLETION_NAME_BYTES: usize = 1024;
+
 impl EngineInstallRequest {
     pub(crate) fn validate(&self, id: &str) -> Result<(), Error> {
         if uuid::Uuid::parse_str(id).is_err()
             || matches!(&self.intent, EngineInstallIntent::Add { engine_id } if uuid::Uuid::parse_str(engine_id).is_err())
             || self.intent.engine_id().is_empty()
-            || self.intent.engine_id().len() > 256
+            || self.intent.engine_id().len() > MAX_COMPLETION_IDENTITY_BYTES
             || self.progress_id.is_empty()
-            || self.progress_id.len() > 4096
-            || self.url.len() > 4096
-            || self.signature.len() > 4096
+            || self.progress_id.len() > MAX_COMPLETION_TEXT_BYTES
+            || self.url.len() > MAX_COMPLETION_TEXT_BYTES
+            || self.signature.len() > MAX_COMPLETION_TEXT_BYTES
             || self.sha256.len() != 64
             || self.relative_path.is_empty()
-            || self.relative_path.len() > 4096
-            || self.name.len() > 1024
-            || self.version.len() > 256
-            || self.root.id.id.len() > 256
-            || matches!(&self.intent, EngineInstallIntent::Upgrade { expected, .. } if expected.id.id.len() > 256)
+            || self.relative_path.len() > MAX_COMPLETION_TEXT_BYTES
+            || self.name.len() > MAX_COMPLETION_NAME_BYTES
+            || self.version.len() > MAX_COMPLETION_IDENTITY_BYTES
+            || self.root.id.id.len() > MAX_COMPLETION_IDENTITY_BYTES
+            || matches!(&self.intent, EngineInstallIntent::Upgrade { expected, .. } if expected.id.id.len() > MAX_COMPLETION_IDENTITY_BYTES)
             || self.elo.is_some_and(|value| !value.is_finite())
             || self.download_size.is_some_and(|value| !value.is_finite())
         {

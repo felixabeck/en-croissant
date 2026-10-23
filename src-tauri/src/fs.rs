@@ -1547,7 +1547,7 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                     &state.progress_state,
                     &app,
                     &progress_lease,
-                    progress * 0.9,
+                    progress * DOWNLOAD_PROGRESS_SHARE,
                     ProgressState::Running,
                 )
             },
@@ -1707,6 +1707,10 @@ async fn run_engine_install_completion<R: tauri::Runtime>(
 }
 
 const MAX_RETAINED_ENGINE_CONFIGURATION_BYTES: usize = 256 * 1024;
+// Download reports occupy the first 90 percent of the bar. Configuration is marked at 95
+// so the last slice stays available for renderer application.
+const DOWNLOAD_PROGRESS_SHARE: f32 = 0.9;
+const CONFIGURATION_READY_PROGRESS: f32 = 95.0;
 
 async fn engine_install_workflow_core<R: tauri::Runtime>(
     snapshot: &crate::infra::operations::completions::EngineCompletion,
@@ -1797,7 +1801,7 @@ async fn engine_install_workflow_core<R: tauri::Runtime>(
         &state.progress_state,
         app,
         &progress,
-        95.0,
+        CONFIGURATION_READY_PROGRESS,
         ProgressState::Running,
     ) {
         log::warn!(
