@@ -112,6 +112,17 @@
 // Git reverse/restore applied without offsets, source hashes matched, fixed build succeeded and
 // restored-native.log passed the whole ordinary verifier at actual exit 0. Canonical polled proof:
 // gate-native-production-control.7vvZ5h/completion.record, exit 0 in this run's DRAIN_GATE_DIR.
+// Current mapping after the private engine helper migration, f-20261023-02:
+// RF0/RF2/RF3/RF8 use install_engine_workflow with real download reservations and catalog
+// metadata, changing only SHA-256 to 64 non-hex characters. Healthy roots reach a retained
+// InvalidInput failure after root acquisition/resolution and before adoption, network or execution.
+// RF3 now covers public workflow root search denial. Later adoption/publication/registration
+// remain in root_failure_engine_later_adoption_publication_and_registration. Former browser RF4
+// child denial belongs to root_failure_engine_healthy_root_child_permission_denial_is_unlabelled,
+// using actual private registration. Historical receipts above describe their original APIs only.
+// Each owned completion must be acknowledged by the production coordinator and its visible
+// notification closed through the DOM before continuing. Changed assertions and settlement
+// timeout paths require fresh input-only staging. No new native-run receipt is claimed here.
 import { chmodSync, existsSync, statSync } from "node:fs";
 import {
   appendFile,
@@ -804,14 +815,94 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
       return null;
     }
   };
-  const safePermission = (response) => {
-    const error = rejection(response);
+  const safePermission = (error) =>
+    error?.tag === "backend-error" &&
+    error.category === "permission" &&
+    error.message === "I/O failure" &&
+    error.rootFailure === "permission";
+  let ownedProbe;
+  const workflowFailure = (response) =>
+    response.value?.id === ownedProbe?.id && response.value?.outcome?.state === "failed"
+      ? response.value.outcome.result
+      : undefined;
+  const healthyWorkflow = (response) => {
+    const error = workflowFailure(response);
     return (
       error?.tag === "backend-error" &&
-      error.category === "permission" &&
-      error.message === "I/O failure" &&
-      error.rootFailure === "permission"
+      error.category === "invalid-input" &&
+      error.message === "invalid input" &&
+      error.rootFailure === undefined
     );
+  };
+  const workflowProbe = async (stage, catalog) => {
+    const ticket = await invoke("prepare_download", {});
+    const id = randomUUID();
+    ownedProbe = { id, stage, ticket: ticket.value };
+    const response = await invoke("install_engine_workflow", {
+      id,
+      jobId: ticket.value,
+      request: {
+        intent: { kind: "add", engine_id: randomUUID() },
+        root: engine,
+        progressId: `verify-root-permission:${id}`,
+        url: catalog.downloadLink,
+        sha256: "z".repeat(64),
+        signature: catalog.signature,
+        relativePath: catalog.path,
+        name: catalog.name,
+        version: catalog.version,
+        elo: catalog.elo ?? null,
+        downloadSize: catalog.downloadSize ?? null,
+      },
+    });
+    const error = workflowFailure(response);
+    if (error)
+      ownedProbe.notification =
+        error.rootFailure === "permission"
+          ? "ChessFable is not allowed to read this engine folder. Choose another in Settings."
+          : error.message;
+    return response;
+  };
+  const dismissNotification = async (stage, notification, allowAbsent = false) => {
+    await waitFor(`root permission ${stage} notification close`, () =>
+      session.execute(
+        `
+        const description = [...document.querySelectorAll('.mantine-Notification-description')].find(node =>
+          node.textContent === arguments[0] && node.getBoundingClientRect().height > 0 &&
+          getComputedStyle(node).visibility !== 'hidden');
+        if (!description) return arguments[1];
+        const close = description?.closest('.mantine-Notification-root')?.querySelector('button.mantine-Notification-closeButton');
+        if (!close || close.disabled) return false;
+        close.click();
+        return true;
+      `,
+        [notification, allowAbsent],
+      ),
+    );
+    await waitFor(`root permission ${stage} notification disappearance`, () =>
+      session.execute(
+        `return ![...document.querySelectorAll('.mantine-Notification-description')].some(node => node.textContent === arguments[0]);`,
+        [notification],
+      ),
+    );
+  };
+  const settleProbe = async () => {
+    if (!ownedProbe) return;
+    const { id, stage, notification, ticket } = ownedProbe;
+    await waitFor(`root permission ${stage} completion acknowledgement`, async () => {
+      const pending = await invoke("pending_engine_completions", {});
+      return Array.isArray(pending.value) && !pending.value.some((entry) => entry.id === id);
+    });
+    // Release is idempotent after admission, and also frees a reservation refused before claim.
+    if (ticket !== undefined) {
+      const released = await invoke("release_download", { id: ticket });
+      if (released.value !== null)
+        throw new Error(
+          `root permission ${stage} reservation release failed: ${JSON.stringify(released)}`,
+        );
+    }
+    ownedProbe = undefined;
+    if (notification) await dismissNotification(stage, notification);
   };
   const visible = (message) =>
     waitFor(message, () =>
@@ -839,14 +930,17 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
     );
   const savedEngines = await session.execute("return localStorage.getItem('engines')");
   try {
+    const catalog = JSON.parse(
+      await readFile(new URL("../src/catalogs/engines.json", import.meta.url), "utf8"),
+    ).find((entry) => entry.type === "local" && entry.os === "linux");
     const before = await invoke("list_puzzle_databases", { ticket: null });
-    const acquired = await invoke("engine_archive_destination", { root: engine });
     const selectedPuzzle = await invoke("get_puzzle_workspace", {});
     const selectedEngine = await invoke("get_engine_workspace", {});
+    const acquired = await workflowProbe("RF0", catalog);
     const ready =
       Array.isArray(before.value) &&
       before.value.length === 0 &&
-      acquired.value?.id === engine.id.id &&
+      healthyWorkflow(acquired) &&
       selectedPuzzle.value?.root?.id?.id === puzzle.id.id &&
       selectedEngine.value?.id?.id === engine.id.id;
     check(
@@ -854,12 +948,13 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
       "RF0 selected puzzle and engine roots accept real IPC before access loss",
       JSON.stringify({ before, acquired, selectedPuzzle, selectedEngine }),
     );
+    await settleProbe();
     if (!ready) return;
 
     chmodSync(puzzleRoot, 0o300);
     const puzzleDenied = await invoke("list_puzzle_databases", { ticket: null });
     check(
-      safePermission(puzzleDenied),
+      safePermission(rejection(puzzleDenied)),
       "RF1 puzzle read denial preserves Permission and I/O failure with a permission root label",
       JSON.stringify(puzzleDenied),
     );
@@ -874,12 +969,13 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
     chmodSync(puzzleRoot, 0o700);
 
     chmodSync(engineRoot, 0o300);
-    const destinationDenied = await invoke("engine_archive_destination", { root: engine });
+    const destinationDenied = await workflowProbe("RF2", catalog);
     check(
-      safePermission(destinationDenied),
+      safePermission(workflowFailure(destinationDenied)),
       "RF2 engine destination read denial preserves Permission and I/O failure with a permission root label",
       JSON.stringify(destinationDenied),
     );
+    await settleProbe();
     await session.execute(`document.querySelector('a[href="/engines"]')?.click(); return true;`);
     await click("Add New");
     await click("Install");
@@ -894,40 +990,25 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
       console.log(`  ..  Add permission guidance screenshot written to ${screenshotPath}`);
     }
     await click("Close dialog");
+    await dismissNotification(
+      "RF6",
+      "ChessFable is not allowed to read this engine folder. Choose another in Settings.",
+      true,
+    );
 
-    // This is a later use of the same selected root after successful destination acquisition.
-    // A denied child gives an independent error with the same safe category/message when the
-    // root is restored. No catalog record is seeded for this child, so the precheck confirms no
-    // pending catalog publication. resolve_unix's descendant stat/open returns Io(PermissionDenied)
-    // for root search loss and child traversal denial. Serialization retains category Permission
-    // and message I/O failure, the root-only probe adds a label only for the first case.
-    // Registration never executes these deliberately non-executable bytes.
-    chmodSync(child, 0o000);
+    // Public workflow search denial now replaces the removed registration IPC probe.
+    // Later private registration is covered by root_failure_engine_later_adoption_publication_and_registration.
+    // Former browser RF4 child denial is covered through actual private registration in
+    // root_failure_engine_healthy_root_child_permission_denial_is_unlabelled.
     chmodSync(engineRoot, 0o400);
-    const laterDenied = await invoke("register_installed_engine", {
-      root: engine,
-      relativePath: "blocked-child/engine",
-    });
+    const laterDenied = await workflowProbe("RF3", catalog);
     check(
-      safePermission(laterDenied),
-      "RF3 later engine registration search denial preserves Permission and I/O failure with a permission root label",
+      safePermission(workflowFailure(laterDenied)),
+      "RF3 public engine workflow root search denial preserves Permission and I/O failure with a permission root label",
       JSON.stringify(laterDenied),
     );
+    await settleProbe();
     chmodSync(engineRoot, 0o700);
-    const childDenied = await invoke("register_installed_engine", {
-      root: engine,
-      relativePath: "blocked-child/engine",
-    });
-    const childError = rejection(childDenied);
-    check(
-      childError?.tag === "backend-error" &&
-        childError.category === "permission" &&
-        childError.message === "I/O failure" &&
-        childError.rootFailure === undefined,
-      "RF4 healthy engine root leaves child permission failure unlabelled",
-      JSON.stringify(childDenied),
-    );
-    chmodSync(child, 0o700);
     check(
       (await session.execute("return localStorage.getItem('engines')")) === savedEngines &&
         (await readFile(join(child, "engine"), "utf8")) === "not an executable\n",
@@ -935,17 +1016,24 @@ async function verifySelectedRootPermissions(session, puzzleRoot, engineRoot) {
     );
     const recovered = await invoke("list_puzzle_databases", { ticket: null });
     const recoveredPuzzle = await invoke("get_puzzle_workspace", {});
-    const destination = await invoke("engine_archive_destination", { root: engine });
+    const recoveredEngine = await invoke("get_engine_workspace", {});
+    const destination = await workflowProbe("RF8", catalog);
     check(
       Array.isArray(recovered.value) &&
         recovered.value.length === 0 &&
         recoveredPuzzle.value?.root?.id?.id === puzzle.id.id &&
-        destination.value?.id === acquired.value.id,
+        recoveredEngine.value?.id?.id === engine.id.id &&
+        healthyWorkflow(destination),
       "RF8 restoring access recovers the same selected roots",
-      JSON.stringify({ recovered, recoveredPuzzle, destination }),
+      JSON.stringify({ recovered, recoveredPuzzle, recoveredEngine, destination }),
     );
+    await settleProbe();
   } finally {
-    restoreRootPermissions();
+    try {
+      restoreRootPermissions();
+    } finally {
+      await settleProbe();
+    }
   }
 }
 

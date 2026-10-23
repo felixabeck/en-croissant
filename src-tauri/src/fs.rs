@@ -3809,6 +3809,61 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn root_failure_engine_healthy_root_child_permission_denial_is_unlabelled() {
+        use crate::infra::path_authority::TestRootPermissionGuard;
+        use std::os::unix::fs::PermissionsExt;
+
+        let uid = unsafe { libc::geteuid() };
+        if uid == 0 {
+            return;
+        }
+        let (_directory, state, destination, path, root) = root_failure_engine_fixture();
+        let _root_permissions = TestRootPermissionGuard::restrict(&path, 0o700);
+        let child = path.join("blocked-child");
+        std::fs::create_dir(&child).unwrap();
+        let engine = child.join("engine");
+        std::fs::write(&engine, b"engine").unwrap();
+        assert_eq!(
+            std::fs::metadata(&engine).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        let child_permissions = TestRootPermissionGuard::restrict(&child, 0o000);
+        crate::engine_archive_destination_blocking(&state.pgn_path_authority, root.clone())
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let error = root_failure_engine_error_preserves_original(&destination, || {
+            crate::register_installed_engine_blocking(
+                &state.pgn_path_authority,
+                root,
+                "blocked-child/engine".into(),
+            )
+        });
+        drop(child_permissions);
+        assert!(
+            matches!(error.unlabelled(), Error::Io(cause)
+            if cause.kind() == std::io::ErrorKind::PermissionDenied),
+            "{error:?}"
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+        assert_eq!(error.to_string(), "I/O failure");
+        assert_eq!(error.root_failure(), None);
+        assert!(serde_json::to_value(&error)
+            .unwrap()
+            .get("rootFailure")
+            .is_none());
+        assert_eq!(std::fs::read(&engine).unwrap(), b"engine");
+        assert_eq!(
+            std::fs::metadata(&engine).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        eprintln!("ENGINE_CHILD_PERMISSION uid={uid} kind=PermissionDenied category=Permission message=I/O failure rootFailure=absent child_bytes=preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn root_failure_engine_write_only_denial_stays_unlabelled_and_probe_cancels() {
         use crate::infra::path_authority::{
             ListingRootFailureHookGuard, TestRootPermissionGuard, LISTING_ROOT_FAILURE_HOOKS,
