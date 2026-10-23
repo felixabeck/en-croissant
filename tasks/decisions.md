@@ -9675,3 +9675,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Final gate x7zjoM reports two exact deadline failures while its full backend coverage passes the same tests. The recorded d-20261017-17 contract requires availability during held streams and retained terminal cleanup, with no 500 ms user promise. The existing OperationRegistry already signals native completion, so polling duplicates its domain concept. The rejected f-20261012-05 explicitly requested refiling on a second independent witness, now recorded through the findings inbox. No host-pressure cause or production deadlock is asserted. Reversal path: replace these test witnesses only with measured evidence and an equivalent bounded check that rejects the original producer regressions. The broader f-20261011-03 remains open.
 * **Decided by:** Codex, autonomously under full auto. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"de5d7fd633fbb5932e3a60e37d77a42dbb05ebf827313606d0136ecec364fe8a","input_sha256":"89b9f5d5518e1fb6c18217b62c790360a5536f8cf64ae6f39b942715be756162","kind":"mutation-receipt","operation":"e230dc0642b8dcbddf3da509f127b83eae440d690ae8271c320a382dbe3c479f","options":{"section":null},"request_id_sha256":null,"results":["d-20261022-27"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-23 — recorded through the decisions lock
+
+### d-20261023-05 — Keep duplicate FEN metadata and move encoding aligned
+
+* **Question:** How should the importer handle a standard starting FEN after a custom FEN?
+* **Governs:** f-20260914-22
+* **Chosen:** Reset the position to Chess::default() when the existing exact-standard-FEN branch clears the stored FEN. Preserve the existing last-valid-tag behavior and sticky rejection after any malformed FEN.
+* **Rejected:** Reject every duplicate FEN, keep the earlier custom position after clearing its FEN, or redesign all PGN header parsing.
+* **Reason:** Importer::end_headers seeds move encoding from game.position, while decoding uses the stored FEN or the standard initial position when absent. Resetting both fields at the existing branch restores that invariant without changing the established duplicate-header policy. Reversal requires a separately authorized duplicate-header contract change and encode/decode regression proof.
+* **Decided by:** Codex, full auto. Plan authorship and arbitration share one root context. Detection runs in fresh Codex sessions on the same OpenAI model family as the code. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"aff975514af9229feb25430ae7c75432f8628bf4efe9a679d3882a3dc42b3c3a","input_sha256":"f80f87c7fa6919c5ee8b1b8c8fcdcf3e5aa8cab3a216d0948ec7724f566ac7a1","kind":"mutation-receipt","operation":"7d51294683d2a932f42d62949d3d7c96e597b3c1c7e8217aa4eca9db39814674","options":{"section":null},"request_id_sha256":null,"results":["d-20261023-05"],"target":"decisions-ledger","v":1} -->
