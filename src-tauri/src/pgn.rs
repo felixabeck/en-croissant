@@ -772,7 +772,7 @@ fn read_bounded_line<R: Read>(reader: &mut BufReader<R>, line: &mut Vec<u8>) -> 
 }
 
 /// Strict, synchronous byte-range scanner. Every range excludes a UTF-8 BOM and is
-/// `[start, end)`, with `end` equal to the next game's first tag byte or EOF.
+/// `[start, end)`, with `end` at the next game's header line start (including accepted indentation) or EOF.
 #[cfg(test)]
 fn scan_games<R: Read + Seek>(reader: R) -> io::Result<Vec<GameRange>> {
     scan_games_cancelled(reader, &CancellationToken::new())
