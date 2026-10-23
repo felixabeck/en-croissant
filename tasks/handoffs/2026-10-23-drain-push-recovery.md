@@ -1,5 +1,157 @@
 # Drain push recovery, 2026-10-23
 
+## Latest delivery checkpoint after final-gate correction G1
+
+Source closure is approved through 7ab44490. Final records R1 adopted two corrections, and R2 explicitly closed both with zero new findings. Decision d-20261023-11 corrects the earlier omission of persisted engine-owner receipts and supersedes d-20261023-03 through the validated writer. The finding's browser status was also superseded through that writer. Native browser proof remains 144 successful checks and 211 container passes, with the screenshot limits recorded below.
+
+The first full final gate, Sl62tf at reviewed 938be537, failed the existing Rust release-surface rule R5 at operations.rs:13 because production declared its child module with a path override. Root verified the owned scheduler and stopped it through its signal handler before editing. Canonical aggregate status is 143. This attempt and its interrupted lanes remain red. It did not attempt a Git push.
+
+G1 relocates the mailbox byte-identically to infra/operations/completions.rs and removes the path attribute, preserving operations::completions and every existing checker rule. Root independently compared the 4,995 bytes and SHA256 f30286edf59cb40aac3280dd5ec629f13fdcdd89cc1859f88e8a765ab23577f3. The existing native-infra coverage glob already covers the destination. Complete pre-review oMJ6cX finished at exit0. Its mutation lane took1529.9s, workspace-storage killed1233 mutants with3 ignored, and tree-path killed170 and timed out6 with13 ignored. Neither package had survivors. The sampled gate memory counters remained zero for OOM events. This one-off6GiB scheduling setting does not close the general accounting finding f-20261022-05.
+
+All six R4 source lenses approved and explicitly closed G1, with no new findings. R4 enclosing stage wall was 185s, including root inspection and arbitration. Active model wall is unknown. Source diff adoptions remain r1=15 r2=3 r3=0 r4=0. G1 was a gate observation rather than a lens adoption. The earlier browser proof carries over this byte-identical relocation with an unchanged namespace and no renderer or visual changes. Final gates will include the container suite again.
+
+This checkpoint supersedes all older statements that source closure, the two records corrections, browser verification or G1 repair are pending. The new records delta still requires its closure check. A fresh full final gate, ordinary master push, required pushed-SHA native CI and reviewed local installation remain pending. No delivery or installation is predicted. Engine Phase1 is the sole delivery scope, account Phase2 is untouched and f-20261005-05 remains open. The published master record commits will be preserved through another pre-gate rebase and range comparison.
+
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. Source repair used Codex gpt-6.1-sol/high, and read-only detection used gpt-6.1-sol/medium in separate sessions.
+
+### Final records review and closure, literal reports
+
+#### lens-records-final-r1
+
+````text
+[should-fix] tasks/decisions.md:9703 — The claim that only artifacts and account-batch receipts survive process exit excludes the new persisted engine completion receipts. `src/state/engineOwnerStorage.ts:251–281` serializes those receipts into localStorage, consistent with d-20261023-02. Clarify that the native mailbox is process-lifetime while owner receipts persist. (confidence: 98)
+
+[should-fix] tasks/findings.md:14633 — The latest delivery boundary still lists browser verification as outstanding. `gate-browser-final.sffa2n/completion.record` records exit 0, and the handoff’s Final browser verification section confirms 144 real-app checks and 211 container passes. Append a superseding ledger update while preserving the remaining delivery obligations. (confidence: 96)
+
+Read-only review. No files changed or services queried. Current live CI state remains unverifiable here.
+
+Detection used Codex’s mechanical role, sharing the implementation’s OpenAI family. Exact model and effort were not exposed in the available launcher context. Plan authorship and arbitration shared one context.
+
+VERDICT: REVISE
+````
+
+#### lens-records-final-r2
+
+````text
+No findings.
+
+R-L1 CLOSED — `tasks/decisions.md:9706` explicitly supersedes d-20261023-03 with d-20261023-11. The correction matches `src/state/engineOwnerStorage.ts:58–62,251–281` at ed50c839, which encodes owner values and receipts together and persists the envelope through `localStorage.setItem`. The native mailbox remains process-local.
+
+R-L2 CLOSED — `tasks/findings.md:14636` explicitly supersedes the earlier pending browser status. The saved completion record confirms exit 0 at 5df912469cbb37504f335b47479665ebe505f48b. Its script and log confirm the native build, 144 successful real-app checks and 211 container passes. The annotation preserves the screenshot limits, remaining delivery duties, engine-only scope and open account phase.
+
+Reviewed the complete correction delta and affected record dependencies. Historical prose is preserved. No files changed, gates run or live services queried. Current hosted CI state was unverifiable within this review.
+
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+VERDICT: APPROVED
+````
+
+### G1 implementation, literal report
+
+````text
+Completed only the authorized changes, all unstaged:
+
+- Moved `src-tauri/src/infra/completions.rs` to `src-tauri/src/infra/operations/completions.rs`.
+- Removed only `#[path = "completions.rs"]` from `operations.rs`, retaining `pub mod completions;`.
+
+Mailbox bytes match HEAD exactly: 4,995 bytes, SHA256 `f30286edf59cb40aac3280dd5ec629f13fdcdd89cc1859f88e8a765ab23577f3`.
+
+| Proof | Exit | Result |
+|---|---:|---|
+| `pnpm rust:surface:check` | 0 | Passed |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | 0 | Passed |
+| `agent-gate cargo test --manifest-path src-tauri/Cargo.toml --locked reload_completion -- --nocapture` | 0 | 10 passed |
+| `pnpm coverage:mapping:backend` | 0 | 51 files across 6 areas |
+
+Counterfactual used Git-generated patches including the new file. Reverse and forward applications exited 0 without offsets. Original HEAD layout reproduced exit 1 with `operations.rs:13: R5: production source may not use a #[path] attribute`. Restored final layout passed with exit 0.
+
+Final scope, byte identity, and empty staging area verified. No limitations or other tracked changes.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+````
+
+### R4 source closure, literal reports
+
+#### correctness
+
+````text
+G1 CLOSED — committed diff removes only the path override and relocates the mailbox with identical Git blob `db86fbd81ea2825908aae3f916e5a10abec62b57`. The `operations::completions` namespace, parent references, callers, event registration and recursive coverage mapping remain valid. Actual pre-review record reports exit 0, confirmed by its log.
+
+No correctness defects found. Limitation: final gates remain pending.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family with session separation only. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### root-cause
+
+````text
+G1 CLOSED — `operations.rs:13` now uses standard child-module discovery. The misplaced mailbox required the forbidden `#[path]` override, which caused R5 rejection. The committed repair removes that cause and relocates the file byte-identically, preserving `operations::completions`, callers, event registration, and coverage inclusion.
+
+Evidence: original gate contract exit 1 and aggregate 143 confirmed. Recorded layout reversal reproduced R5, restoration passed. Actual pre-review completion is 0, with all selected lanes passing. Touched-line history shows no prior-fix regression, and no sibling `#[path]` attributes remain.
+
+No findings. Full final gates and push remain pending. Review changed nothing.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family with session-level separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### tests
+
+````text
+G1 CLOSED — The committed delta is a 100% rename plus removal of `#[path]`. The unchanged R5 check at `scripts/check-rust-release-surface.mjs:832` rejects restoring that attribute. The supplied counterfactual records exit 1 on reversal and exit 0 after restoration. This check runs in the unconditional contract lane locally and in CI.
+
+Pre-review completion and log both confirm exit 0. Native tests retain the same module namespace, and the coverage glob includes the destination. No verification gaps found in this repair. Final gates remain pending.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### code-quality
+
+````text
+G1 CLOSED — committed diff removes only `#[path]` and relocates `completions.rs` with 100% byte similarity. The `operations::completions` namespace, callers and coverage scope remain intact. Actual pre-review completion record is exit 0, corroborated by every selected lane in its log.
+
+No readability or local-consistency findings. No files changed.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family with session-level separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### ipc-contract
+
+````text
+G1 CLOSED — committed rename is 100% identical, with only the path override removed. `operations::completions` remains unchanged. Actual pre-review record and log report exit 0.
+
+No IPC defects found. Traced completion types through Rust commands, Specta registration, generated bindings, platform facade and renderer subscription cleanup. No capability or wire-contract changes.
+
+Read-only review. No files changed.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same-family with session separation. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### tauri-security
+
+````text
+G1 CLOSED — `src-tauri/src/infra/operations.rs:13` retains `pub mod completions` without the forbidden path override. Git confirms a 100% rename to `infra/operations/completions.rs`. Old and new mailbox SHA-256 match `f30286edf59cb40aac3280dd5ec629f13fdcdd89cc1859f88e8a765ab23577f3`.
+
+Actual pre-review completion record is exit 0, corroborated by every selected lane in its log. Callers retain `operations::completions`, and the existing `infra/**` coverage glob includes the destination.
+
+No security findings. NOT APPLICABLE to new security behavior: this closure changes module layout only, preserving mailbox bytes, ownership checks, and diagnostic conversion. Account Phase2 remains outside this closure. No files changed or gates run by this reviewer.
+
+Disclosures: implementation used Codex gpt-6.1-sol/high and detection used Codex gpt-6.1-sol/medium, providing session separation within the same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+### Earlier delivery checkpoint, preserved
+
 ## Delivery checkpoint before final gates
 
 The engine source and verifier corrections passed their actual native/renderer proofs, real running-download controls, four real permission-result controls and the unchanged ordinary verifier. Source closure is approved through 135b9d65. R2 adopted three naming/comment corrections, and all six R3 lenses closed them without new findings after pre-review vhNjoK completed 0. Final browser verification also passed in browser-final.sffa2n: all real-app checks and all 211 container cases, with five screenshots inspected and no baseline changes. The raw source reports, browser evidence and execution corrections below supersede the older runtime-pending, review-pending and browser-pending checkpoints. Final records review, full clean push gates, ordinary master push, required hosted native jobs and local installation remain pending. No final release receipt, remote publication or installation is claimed here. Overall f-20261005-05 remains open for the unstarted account phase. The repaired verifier finding f-20261023-02 is handled in bd822d6c after source closure and actual proof.
