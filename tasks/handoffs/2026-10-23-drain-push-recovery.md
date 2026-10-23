@@ -1,5 +1,1271 @@
 # Drain push recovery, 2026-10-23
 
+## Latest delivery checkpoint after final-gate correction G2
+
+Source closure is approved through 096af1c9. All six R5 source lenses explicitly closed G2 and approved with zero new findings. Source diff adoptions are r1=15 r2=3 r3=0 r4=0 r5=0. G1 and G2 are gate observations, not lens adoptions. R5 enclosing stage wall is 566s, from breadcrumb timestamps 1792777991 through 1792778557. This includes root inspection and arbitration. Active model wall is unknown. Final records R3 also approved with zero new findings, preserving the R-L1 and R-L2 closures. Its literal report is retained below.
+
+The second full final gate, B36PAM at cc3c4a12, ran all 5105 frontend tests successfully but failed production coverage parsing on BRDA:327,36,1,-29 in atoms.ts. Root verified scheduler287311, start21372527 and group287293, then stopped it through its signal handler before edits. Canonical aggregate is143, and the interrupted full mutation lane remains unverified. Contract, bindings, Rust lint, all2697 native tests with two existing ignored, backend coverage, bundle and211 container cases completed successfully in that attempt. B36PAM remains red and did not attempt a Git push.
+
+The unchanged two-file reproduction passed93 tests twice while the unchanged parser rejected the same negative count. Actual retained V8 ranges and the pinned converter replay show condition36 and consequent65, from which converter1.0.5 synthesizes36 minus65. Decision d-20261023-13 chooses explicit selection for the immediately preceding awaited conditional. The synchronous completion branch and the awaited ordinary updater retain their original timing and ordering. Existing normalization, serialization, receipts, persistence, publication and queue recovery remain unchanged. This removes the demonstrated local producer trigger. The precise V8 internal cause is not established, and no general producer fix is claimed.
+
+The exact Git candidate/original/restored control passes all93 tests on every run, with production parser exits0/1/0 and normalization counts[65,37]/[65,-29]/[65,37]. Both patch applications exited0 without offsets and original and restored source bytes were verified. Full frontend coverage then passed5105 tests across227 files in72.57s and passed the unchanged ratchet and area floors. Its full normalization counts are191 and37. The test suite, provider, converter, parser, dependencies, coverage scope, floors and baselines are unchanged.
+
+Combined coverage and pre-review attempt wCPdQS completed0 at launch052f5c78 with the owned one-file repair. Pre-review mutation took1505.8s. Workspace-storage killed1233 mutants with3 ignored. Tree-path killed170 and timed out6 with13 ignored. Neither had survivors. Other selected lanes all passed. Root sampled zero OOM counters in the owned scope. The one-off6GiB scheduling override continues to mitigate this run's memory pressure, and does not close f-20261022-05. Source was committed only after this complete proof.
+
+Fresh browser attempt LMFaM5 completed0 at clean096af1c9. The native release compile took1m28s and recorded tauri-build receipt8787fbacd619. The actual product passed144 checks, including EP1 andEP2 real owner persistence and all applicable RF public permission cases. The container suite passed211 cases in1.6m with no changed snapshots or diff images. Root opened all five PNGs under /tmp/chessfable-drain-recovery-20261023/verify-ui-g2. Permission and storage-quota notices are deliberate refusal scenarios. The Info-panel screenshot captures a transition with the old display and is followed by the successful GO14 owner-replacement assertion. It is not a claim that every capture is a settled pixel baseline. Stable pixel evidence comes from the container suite. No native GTK chrome changed or needs a new manual check.
+
+The diagnostic and repair reports, actual raw-range evidence, focused proof summary and all six R5 reports are preserved literally below. The existing malformed-LCOV assertion was observed failing through the source-only Git reversal. Source-hash and raw-retention diagnostics were observed but were not individually fault-staged. They do not expand the demonstrated regression proof. Earlier native and verifier staging matrices and their explicitly disclosed limits remain unchanged.
+
+This checkpoint supersedes every older source, browser, G1, G2 and final-records-R3 pending statement while retaining history. Only engine Phase1 is in this delivery scope. Account Phase2 is untouched and f-20261005-05 remains open. Separate PGN and native-test work published by another authorized session is upstream context and will be preserved in the pre-gate rebase, without attribution to this recovery. The new records delta requires its own closure check. A new complete final gate, ordinary master push, required pushed-SHA native CI, reviewed installation and exit record remain pending. None is predicted here.
+
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. Implementation used Codex gpt-6.1-sol/high and read-only detection used gpt-6.1-sol/medium in separate sessions.
+
+### G2 evidence and review reports
+
+#### Final records R3, literal report
+
+````text
+No findings. The complete correction delta and affected record dependencies agree with Git, saved reports, gate completions and mutation results. Prior R-L1 and R-L2 closures remain valid. Historical text is preserved and explicitly superseded.
+
+Limitations: scheduler identity verification, sampled OOM counters and the 185s enclosing review duration were not independently verifiable from the inspected artifacts. Live hosted CI was not queried. No files changed, gates run or services contacted.
+
+Plan authorship and arbitration shared one context. Detection used Codex gpt-6.1-sol/medium, the same OpenAI model family as the code.
+
+VERDICT: APPROVED
+````
+
+#### G2 initial diagnostic worker, literal report
+
+````text
+Reproduced twice against unchanged source using only the two requested test files:
+
+```bash
+agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/run-01/coverage --maxWorkers=1
+```
+
+The repeat used `run-02/coverage`.
+
+| Result | Both runs |
+| --- | --- |
+| Vitest exit | **0**, all 93 tests passed |
+| Exported production `parseLcov` exit | **1** |
+| Malformed record | LCOV line 36775, `SF:src/state/atoms.ts`, `BRDA:327,36,1,-29` |
+| JSON branch 36 | `if`, line 327 column 16, counts **`[65, -29]`** |
+
+Parsing the supplied full-gate LCOV separately also exited **1**. These subset runs establish reproduction, not a full ratchet pass.
+
+Retained **actual raw V8 data** establishes the mismatch. The normalization condition occupies raw region `[24367,24394)` with count **36**, while its consequent occupies `[24394,24434)` with count **65**. Converter 1.0.5 samples those regions and calculates the implicit false branch as **36 − 65 = −29**. Replaying the installed converter with the real transformed module, matching source map and merged raw data reproduces the ordinary report exactly. The precise V8 internal reason for that partition remains unestablished.
+
+Optimal: expand the immediately preceding awaited conditional into explicit `if (application)` selection → I recommend this **as an unimplemented candidate pending production proof**. Preserve the ordinary updater’s await, synchronous completion selection, normalization after both paths, queue recovery, error propagation, receipts and publication order. The nearby `?? await` region means this candidate could move the defect, so root must verify actual coverage.
+
+The [diagnostic report](/tmp/chessfable-drain-recovery-20261023/g2-repro/diagnostic-report.md) contains exact commands, existing test names, branch maps, semantic risks and artifact paths. [Raw evidence](/tmp/chessfable-drain-recovery-20261023/g2-repro/run-02/raw-evidence.json) records the observed ranges and converter replay.
+
+Tracked status remains clean and unchanged. Input hashes, supplied LCOV and retained raw hashes verified unchanged. No repair or tooling change was implemented.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+````
+
+#### G2 unchanged-source diagnostic report
+
+````text
+# Unchanged-source coverage reproduction
+
+The two requested existing test files reproduce the exact negative record on unchanged `src/state/atoms.ts`. No additional test files were needed. Both runs passed all 93 tests across 2 files. This is subset diagnostic evidence, not a full coverage ratchet pass.
+
+## Commands and independent results
+
+Executed from `/home/felixb/Projekte/chessfable.worktrees/drain`:
+
+```bash
+agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/run-01/coverage --maxWorkers=1
+```
+
+The second command was identical except for the unique reports directory `/tmp/chessfable-drain-recovery-20261023/g2-repro/run-02/coverage`. `run-02/raw-retention.json` records its complete argument array. A read-only observer retained byte-identical copies of Vitest's ordinary temporary raw V8 files before its normal cleanup. Neither coverage data nor producer code was edited.
+
+| Input | Vitest command exit | Tests | Production parse-only exit | Malformed LCOV |
+| --- | --- | --- | --- | --- |
+| run-01 | 0 | 93 passed | 1 | line 36775, `SF:src/state/atoms.ts`, `BRDA:327,36,1,-29` |
+| run-02 | 0 | 93 passed | 1 | line 36775, same record |
+| supplied g2-failed.lcov | not rerun as a full gate | supplied full-gate evidence | 1 | line 36775, same record |
+
+Actual exported API read and reused: `parseLcov(lcov, identify = file => file, includeLine = () => true)`. Each parse ran in its own Node process, independently of Vitest. Exact run-01 parser invocation:
+
+```bash
+node --input-type=module <<'JS'
+import { readFile } from 'node:fs/promises'
+import { parseLcov } from './scripts/coverage-report.mjs'
+parseLcov(await readFile('/tmp/chessfable-drain-recovery-20261023/g2-repro/run-01/coverage/lcov.info', 'utf8'))
+JS
+```
+
+The other invocations substituted the run-02 LCOV or supplied `/tmp/chessfable-drain-recovery-20261023/g2-failed.lcov`. All produced `BRDA taken must be a canonical decimal or -`. No floor, baseline, scope or ratchet verdict was evaluated by these parse-only commands.
+
+## Existing tests exercised
+
+Every existing test in `src/state/engineCompletions.test.ts` and `src/state/engineOwnerStorage.test.ts` ran. `existing-test-names.txt` records source titles and locations, including parameterized templates. Relevant examples are:
+
+- `reload completion Add replays after save/ack loss without duplicating or restoring a later deletion`
+- `reload completion upgrade resumes after the %s boundary with one UUID and all owners converged`
+- `reload completion refuses %s owner writes and keeps native work`
+- `real atom append waits for pending storage hydration`
+- `real overlapping atom writes preserve updates and return their own receipts`
+- `ordinary real-store saves publish only durable values and recover after refusal`
+- `restricted local removal stays omitted through refused persistence and late field edits`
+- `catalog atom publication waits for its one durable save and serializes with ordinary writes`
+- `assessment is engines-owned for edits, JSON replacements, additions and remotes`
+
+No individual-test minimization was attempted after the requested pair reproduced the defect.
+
+## Producer and observed cause
+
+Current producer: Vitest 4.1.0 with `@vitest/coverage-v8` 4.1.0, pinned `ast-v8-to-istanbul` 1.0.5, Node v24.21.0. The provider starts inspector precise coverage with call counts and detailed ranges, reads per-suite raw files, merges them through the installed `@bcoe/v8-coverage`, parses the transformed module, and calls the pinned AST converter with code, source map, functions and wrapper length. Istanbul's existing reporters emit JSON and LCOV. Vitest then deletes `.tmp`.
+
+The converter source was read in full at `node_modules/.pnpm/ast-v8-to-istanbul@1.0.5/node_modules/ast-v8-to-istanbul/dist/index.mjs`. Its `IfStatement` walker at line 52 synthesizes a block for an unbraced consequent and supplies the absent alternate. `getCount` at line 435 samples only the normalized region containing the requested start offset. `onBranch` at line 522 samples the consequent at its start plus one for a block, then synthesizes the absent alternate with `if-start count - consequent count` at line 543. It assumes the former is a valid parent total.
+
+The retained real run-02 data falsifies that assumption. The installed merge implementation produced these actual ranges, with half-open raw V8 offsets and a wrapper length of 209:
+
+| Actual transformed region | Raw offsets | Count |
+| --- | --- | --- |
+| Entire queued async callback | 24122–24723 | 104 |
+| `?? await storage.getItem(key, initialValue)` | 24170–24213 | 82 |
+| `? application.value` | 24310–24329 | 66 |
+| `: await applyUpdate(current, update)` | 24330–24366 | 36 |
+| Whitespace plus `if (options.normalize) ` | 24367–24394 | 36 |
+| `next = options.normalize(current, next)` and its terminator | 24394–24434 | 65 |
+| Following `if (options.publishOnRefusal` prefix | 24434–24466 | 102 |
+
+The normalization AST `IfStatement` starts at transformed offset 24162, raw offset 24371. Its consequent starts at transformed offset 24185, raw offset 24394. The converter samples raw offset 24395 for that consequent. Consequently it reads 36 for the condition region and 65 for the assignment region, then emits `36 - 65 = -29` for the implicit false branch. The condition region carries the preceding awaited alternate's count, not the total arrivals represented by the following region. These independently sampled regions cannot serve as parent and child totals.
+
+This is grounded in retained real V8 output, not a toy fixture. The cached transformed module's source-map `sourcesContent` equals current `atoms.ts` byte-for-byte. Replaying the installed converter on that module, source map and merged real functions reproduces branch 36 with `[65, -29]`, exactly matching ordinary Vitest JSON. `run-02/raw-evidence.json` records raw per-file functions, merged ranges, AST, offsets, module hash, runtime versions and both matching results.
+
+Branch-map evidence in both runs:
+
+| ID | Kind | Mapped location | Counts |
+| --- | --- | --- | --- |
+| 34 | binary-expr | line 322, columns 32–91 | `[104, 82]` |
+| 35 | cond-expr | line 324 column 34 through line 326 column 66 | `[66, 36]` |
+| 36 | if | line 327 column 16 through end-of-line | `[65, -29]` |
+| 37 | if | line 328 column 16 through end-of-line | `[2, 100]` |
+
+Branch 36 locations are the whole `if` and `{start:{},end:{}}` for its implicit alternate. JSON represents the end-column Infinity as null. The supplied full-gate LCOV has the same negative count and a true count of 191, while each subset has a true count of 65. Full-gate raw V8 data was not supplied or recovered, so its precise raw partition is not claimed. The exact V8 internals responsible for the observed async partition were not established.
+
+[Upstream issue 148](https://github.com/AriPerkkio/ast-v8-to-istanbul/issues/148) describes the same negative implicit-branch class with a different hot-loop example. It supplies context only. This diagnostic does not use its numbers to explain this source.
+
+## Repair recommendation for root adjudication
+
+Optimal: preserve the owner algorithm and replace only the immediately preceding awaited conditional expression with explicit selection → I recommend that as the first repair candidate, pending real production proof.
+
+```ts
+let next: Value
+if (application) {
+    next = application.value
+} else {
+    next = await applyUpdate(current, update as Update)
+}
+```
+
+Keep the existing normalization and all following code after that selection. Do not implement this from diagnostic evidence alone. Its intended semantics preserve the existing truthiness check, synchronous completion-value selection, and the ordinary updater's await even when it returns synchronously. Retain the current-value hydration expression, per-owner queue, receipt lookup, error propagation, rejection recovery, normalization for engines on both completion and ordinary updates, retirement-only early publication, durable publication and native synchronization order.
+
+Semantic risks to check are accidentally awaiting completion values, removing the ordinary path's suspension, evaluating storage or the updater eagerly, normalizing only one selection path, or swallowing a failure. The nearby current-value `?? await` also has a region boundary, so explicit selection alone may move rather than eliminate the producer defect. This candidate is not yet a demonstrated repair. Root needs unchanged semantic tests plus actual production coverage and the existing parser and full ratchets before accepting it. No suppression, clamping, checker, dependency, provider, grammar, scope, floor or baseline change is proposed.
+
+## Artifacts and integrity
+
+All diagnostic writes are under `/tmp/chessfable-drain-recovery-20261023/g2-repro/`. For each run, `coverage/lcov.info` and `coverage/coverage-final.json` are the original reporter output, `vitest.log` and `vitest.exit` record the test command, and `parser.log` and `parser.exit` record the independent production parser. Run-01 also has `branch-evidence.json`. Run-02 has `raw/coverage-0.json`, `raw/coverage-1.json`, `raw-retention.json`, `capture.log` and `raw-evidence.json`. Original-input parsing is in `original-parser.log` and `original-parser.exit`.
+
+`status-before.txt` and `status-after.txt` are empty and identical. `tracked-before.diff` and `tracked-after.diff` are empty and identical. Final `git diff --quiet HEAD` exited 0. `input-integrity.log` confirms unchanged hashes for source, both tests, Vite config, production parser, lockfile, pinned converter and supplied failed LCOV. No tracked file or dependency was changed. Only Vitest's permitted normal ignored cache was used outside the diagnostic directory. No fix, gate scheduling, staging, commit, push or deployment occurred.
+
+Inspected paths include the four assigned rule/document files, the named tests and source, `engineOwnerStorage.ts`, test setup, coverage parser, Vite config, package manifest and lockfile, installed converter, installed coverage-v8 integration, Vitest coverage/cache implementation and matching ignored transformed modules. No additional root rules or environment files were discovered. No additional defect was established outside this assigned failure.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code. This diagnostic is not independent multi-model review.
+````
+
+#### Actual raw V8 ranges and converter replay
+
+````json
+{
+  "cache": "node_modules/.experimental-vitest-cache/df39d6518d611846b73cded735230017e867ee3d",
+  "cacheSha256": "451b10753ad7adf985f533ec96b3c605114b1a90c11117526bf2f3531315a7eb",
+  "cachedSourcesContentExactlyEqualsCurrentSource": true,
+  "nodeVersions": {
+    "node": "24.21.0",
+    "acorn": "8.18.0",
+    "ada": "4.0.0",
+    "amaro": "1.1.11",
+    "ares": "1.34.8",
+    "brotli": "1.2.0",
+    "cldr": "48.0",
+    "icu": "78.3",
+    "llhttp": "9.4.3",
+    "merve": "1.2.2",
+    "modules": "137",
+    "napi": "10",
+    "nbytes": "0.1.4",
+    "ncrypto": "0.0.1",
+    "nghttp2": "1.70.0",
+    "nghttp3": "",
+    "ngtcp2": "",
+    "openssl": "3.5.8",
+    "simdjson": "4.6.7",
+    "simdutf": "6.4.0",
+    "sqlite": "3.53.4",
+    "tz": "2026c",
+    "undici": "7.29.1",
+    "unicode": "17.0",
+    "uv": "1.52.1",
+    "uvwasi": "0.0.23",
+    "v8": "13.6.233.17-node.53",
+    "zlib": "1.3.2.1-motley-8002e91",
+    "zstd": "1.5.7"
+  },
+  "wrapperLength": 209,
+  "offsets": {
+    "ifStart": 24371,
+    "consequentStart": 24394,
+    "converterConsequentSample": 24395
+  },
+  "ast": {
+    "type": "IfStatement",
+    "start": 24162,
+    "end": 24225,
+    "test": {
+      "type": "MemberExpression",
+      "object": {
+        "type": "Identifier",
+        "name": "options",
+        "start": 24166,
+        "end": 24173
+      },
+      "property": {
+        "type": "Identifier",
+        "name": "normalize",
+        "start": 24174,
+        "end": 24183
+      },
+      "optional": false,
+      "computed": false,
+      "start": 24166,
+      "end": 24183
+    },
+    "consequent": {
+      "type": "BlockStatement",
+      "body": [
+        {
+          "type": "ExpressionStatement",
+          "expression": {
+            "type": "AssignmentExpression",
+            "operator": "=",
+            "left": {
+              "type": "Identifier",
+              "name": "next",
+              "start": 24185,
+              "end": 24189
+            },
+            "right": {
+              "type": "CallExpression",
+              "callee": {
+                "type": "MemberExpression",
+                "object": {
+                  "type": "Identifier",
+                  "name": "options",
+                  "start": 24192,
+                  "end": 24199
+                },
+                "property": {
+                  "type": "Identifier",
+                  "name": "normalize",
+                  "start": 24200,
+                  "end": 24209
+                },
+                "optional": false,
+                "computed": false,
+                "start": 24192,
+                "end": 24209
+              },
+              "arguments": [
+                {
+                  "type": "Identifier",
+                  "name": "current",
+                  "start": 24210,
+                  "end": 24217
+                },
+                {
+                  "type": "Identifier",
+                  "name": "next",
+                  "start": 24219,
+                  "end": 24223
+                }
+              ],
+              "optional": false,
+              "start": 24192,
+              "end": 24224
+            },
+            "start": 24185,
+            "end": 24224
+          },
+          "start": 24185,
+          "end": 24225
+        }
+      ],
+      "start": 24185,
+      "end": 24225
+    },
+    "alternate": null
+  },
+  "perFile": [
+    {
+      "artifact": "raw/coverage-0.json",
+      "functions": [
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 0,
+              "endOffset": 138627,
+              "count": 23
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 13,
+              "endOffset": 138627,
+              "count": 23
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "createEngineOwnerAtom",
+          "ranges": [
+            {
+              "startOffset": 23480,
+              "endOffset": 24802,
+              "count": 69
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 24071,
+              "endOffset": 24798,
+              "count": 30
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 24122,
+              "endOffset": 24723,
+              "count": 30
+            },
+            {
+              "startOffset": 24170,
+              "endOffset": 24213,
+              "count": 20
+            },
+            {
+              "startOffset": 24214,
+              "endOffset": 24310,
+              "count": 20
+            },
+            {
+              "startOffset": 24310,
+              "endOffset": 24329,
+              "count": 0
+            },
+            {
+              "startOffset": 24478,
+              "endOffset": 24499,
+              "count": 2
+            },
+            {
+              "startOffset": 24645,
+              "endOffset": 24654,
+              "count": 0
+            },
+            {
+              "startOffset": 24679,
+              "endOffset": 24700,
+              "count": 26
+            }
+          ],
+          "isBlockCoverage": true
+        }
+      ]
+    },
+    {
+      "artifact": "raw/coverage-1.json",
+      "functions": [
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 0,
+              "endOffset": 138627,
+              "count": 42
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 13,
+              "endOffset": 138627,
+              "count": 42
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "createEngineOwnerAtom",
+          "ranges": [
+            {
+              "startOffset": 23480,
+              "endOffset": 24802,
+              "count": 126
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 24071,
+              "endOffset": 24798,
+              "count": 74
+            }
+          ],
+          "isBlockCoverage": true
+        },
+        {
+          "functionName": "",
+          "ranges": [
+            {
+              "startOffset": 24122,
+              "endOffset": 24723,
+              "count": 74
+            },
+            {
+              "startOffset": 24170,
+              "endOffset": 24213,
+              "count": 62
+            },
+            {
+              "startOffset": 24214,
+              "endOffset": 24310,
+              "count": 62
+            },
+            {
+              "startOffset": 24310,
+              "endOffset": 24329,
+              "count": 66
+            },
+            {
+              "startOffset": 24330,
+              "endOffset": 24366,
+              "count": 6
+            },
+            {
+              "startOffset": 24367,
+              "endOffset": 24394,
+              "count": 6
+            },
+            {
+              "startOffset": 24394,
+              "endOffset": 24434,
+              "count": 35
+            },
+            {
+              "startOffset": 24434,
+              "endOffset": 24466,
+              "count": 72
+            },
+            {
+              "startOffset": 24466,
+              "endOffset": 24476,
+              "count": 35
+            },
+            {
+              "startOffset": 24478,
+              "endOffset": 24499,
+              "count": 0
+            },
+            {
+              "startOffset": 24499,
+              "endOffset": 24645,
+              "count": 72
+            },
+            {
+              "startOffset": 24645,
+              "endOffset": 24654,
+              "count": 66
+            },
+            {
+              "startOffset": 24656,
+              "endOffset": 24679,
+              "count": 72
+            },
+            {
+              "startOffset": 24679,
+              "endOffset": 24700,
+              "count": 64
+            },
+            {
+              "startOffset": 24700,
+              "endOffset": 24722,
+              "count": 72
+            }
+          ],
+          "isBlockCoverage": true
+        }
+      ]
+    }
+  ],
+  "mergedFunctions": [
+    {
+      "functionName": "",
+      "ranges": [
+        {
+          "startOffset": 0,
+          "endOffset": 138627,
+          "count": 65
+        }
+      ],
+      "isBlockCoverage": true
+    },
+    {
+      "functionName": "",
+      "ranges": [
+        {
+          "startOffset": 13,
+          "endOffset": 138627,
+          "count": 65
+        }
+      ],
+      "isBlockCoverage": true
+    },
+    {
+      "functionName": "createEngineOwnerAtom",
+      "ranges": [
+        {
+          "startOffset": 23480,
+          "endOffset": 24802,
+          "count": 195
+        }
+      ],
+      "isBlockCoverage": true
+    },
+    {
+      "functionName": "",
+      "ranges": [
+        {
+          "startOffset": 24071,
+          "endOffset": 24798,
+          "count": 104
+        }
+      ],
+      "isBlockCoverage": true
+    },
+    {
+      "functionName": "",
+      "ranges": [
+        {
+          "startOffset": 24122,
+          "endOffset": 24723,
+          "count": 104
+        },
+        {
+          "startOffset": 24170,
+          "endOffset": 24213,
+          "count": 82
+        },
+        {
+          "startOffset": 24214,
+          "endOffset": 24310,
+          "count": 82
+        },
+        {
+          "startOffset": 24310,
+          "endOffset": 24329,
+          "count": 66
+        },
+        {
+          "startOffset": 24330,
+          "endOffset": 24366,
+          "count": 36
+        },
+        {
+          "startOffset": 24367,
+          "endOffset": 24394,
+          "count": 36
+        },
+        {
+          "startOffset": 24394,
+          "endOffset": 24434,
+          "count": 65
+        },
+        {
+          "startOffset": 24434,
+          "endOffset": 24466,
+          "count": 102
+        },
+        {
+          "startOffset": 24466,
+          "endOffset": 24476,
+          "count": 65
+        },
+        {
+          "startOffset": 24478,
+          "endOffset": 24499,
+          "count": 2
+        },
+        {
+          "startOffset": 24499,
+          "endOffset": 24645,
+          "count": 102
+        },
+        {
+          "startOffset": 24645,
+          "endOffset": 24654,
+          "count": 66
+        },
+        {
+          "startOffset": 24656,
+          "endOffset": 24679,
+          "count": 102
+        },
+        {
+          "startOffset": 24679,
+          "endOffset": 24700,
+          "count": 90
+        },
+        {
+          "startOffset": 24700,
+          "endOffset": 24722,
+          "count": 102
+        }
+      ],
+      "isBlockCoverage": true
+    }
+  ],
+  "mergedRanges": [
+    {
+      "startOffset": 24122,
+      "endOffset": 24723,
+      "count": 104,
+      "code": "async () => {\n\t\t\tconst current = get(published) ?? await storage.getItem(key, initialValue);\n\t\t\tconst application = engineOwnerApplication(key, current, update);\n\t\t\tlet next = application ? application.value : await applyUpdate(current, update);\n\t\t\tif (options.normalize) next = options.normalize(current, next);\n\t\t\tif (options.publishOnRefusal?.(update)) set(published, next);\n\t\t\tconst receipt = await (0,__vite_ssr_import_17__.saveEngineOwnerValue)(key, (0,__vite_ssr_import_18__.serializeStorageValue)(next), application?.receipt);\n\t\t\tif (receipt.saved) set(published, next);\n\t\t\treturn receipt;\n\t\t}"
+    },
+    {
+      "startOffset": 24170,
+      "endOffset": 24213,
+      "count": 82,
+      "code": "?? await storage.getItem(key, initialValue)"
+    },
+    {
+      "startOffset": 24214,
+      "endOffset": 24310,
+      "count": 82,
+      "code": "\n\t\t\tconst application = engineOwnerApplication(key, current, update);\n\t\t\tlet next = application "
+    },
+    {
+      "startOffset": 24310,
+      "endOffset": 24329,
+      "count": 66,
+      "code": "? application.value"
+    },
+    {
+      "startOffset": 24330,
+      "endOffset": 24366,
+      "count": 36,
+      "code": ": await applyUpdate(current, update)"
+    },
+    {
+      "startOffset": 24367,
+      "endOffset": 24394,
+      "count": 36,
+      "code": "\n\t\t\tif (options.normalize) "
+    },
+    {
+      "startOffset": 24394,
+      "endOffset": 24434,
+      "count": 65,
+      "code": "next = options.normalize(current, next);"
+    },
+    {
+      "startOffset": 24434,
+      "endOffset": 24466,
+      "count": 102,
+      "code": "\n\t\t\tif (options.publishOnRefusal"
+    },
+    {
+      "startOffset": 24466,
+      "endOffset": 24476,
+      "count": 65,
+      "code": "?.(update)"
+    },
+    {
+      "startOffset": 24478,
+      "endOffset": 24499,
+      "count": 2,
+      "code": "set(published, next);"
+    },
+    {
+      "startOffset": 24499,
+      "endOffset": 24645,
+      "count": 102,
+      "code": "\n\t\t\tconst receipt = await (0,__vite_ssr_import_17__.saveEngineOwnerValue)(key, (0,__vite_ssr_import_18__.serializeStorageValue)(next), application"
+    },
+    {
+      "startOffset": 24645,
+      "endOffset": 24654,
+      "count": 66,
+      "code": "?.receipt"
+    },
+    {
+      "startOffset": 24656,
+      "endOffset": 24679,
+      "count": 102,
+      "code": "\n\t\t\tif (receipt.saved) "
+    },
+    {
+      "startOffset": 24679,
+      "endOffset": 24700,
+      "count": 90,
+      "code": "set(published, next);"
+    },
+    {
+      "startOffset": 24700,
+      "endOffset": 24722,
+      "count": 102,
+      "code": "\n\t\t\treturn receipt;\n\t\t"
+    }
+  ],
+  "actualConverterReplay": {
+    "branchId": "36",
+    "map": {
+      "loc": {
+        "start": {
+          "line": 327,
+          "column": 16
+        },
+        "end": {
+          "line": 327,
+          "column": null
+        }
+      },
+      "type": "if",
+      "locations": [
+        {
+          "start": {
+            "line": 327,
+            "column": 16
+          },
+          "end": {
+            "line": 327,
+            "column": null
+          }
+        },
+        {
+          "start": {},
+          "end": {}
+        }
+      ],
+      "line": 327
+    },
+    "counts": [
+      65,
+      -29
+    ]
+  },
+  "ordinaryVitestReport": {
+    "branchId": "36",
+    "map": {
+      "loc": {
+        "start": {
+          "line": 327,
+          "column": 16
+        },
+        "end": {
+          "line": 327,
+          "column": null
+        }
+      },
+      "type": "if",
+      "locations": [
+        {
+          "start": {
+            "line": 327,
+            "column": 16
+          },
+          "end": {
+            "line": 327,
+            "column": null
+          }
+        },
+        {
+          "start": {},
+          "end": {}
+        }
+      ],
+      "line": 327
+    },
+    "counts": [
+      65,
+      -29
+    ]
+  }
+}
+````
+
+#### G2 repair worker, literal report
+
+````text
+Applied the accepted repair and left it unstaged. Exact one-file diff:
+
+```diff
+diff --git a/src/state/atoms.ts b/src/state/atoms.ts
+index 85267de7..53fd7292 100644
+--- a/src/state/atoms.ts
++++ b/src/state/atoms.ts
+@@ -321,9 +321,12 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
+             const run = updates.then(async () => {
+                 const current = get(published) ?? (await storage.getItem(key, initialValue));
+                 const application = engineOwnerApplication(key, current, update);
+-                let next: Value = application
+-                    ? application.value
+-                    : await applyUpdate(current, update as Update);
++                let next: Value;
++                if (application) {
++                    next = application.value;
++                } else {
++                    next = await applyUpdate(current, update as Update);
++                }
+                 if (options.normalize) next = options.normalize(current, next);
+                 if (options.publishOnRefusal?.(update)) set(published, next);
+                 const receipt = await saveEngineOwnerValue(
+```
+
+All three runs passed the same **93 unchanged tests**.
+
+| Source | Test exit | Parser exit | Normalization counts | Negative branches |
+|---|---:|---:|---|---:|
+| Candidate | 0 | 0 | `[65, 37]` | 0 |
+| Original | 0 | 1 | `[65, -29]` | 1 |
+| Restored candidate | 0 | 0 | `[65, 37]` | 0 |
+
+Original-source parsing failed on exactly `BRDA:327,36,1,-29` at LCOV line 36775.
+
+Git reversal and reapplication both exited **0**, applied cleanly without offsets, and verified byte identity against HEAD and the saved candidate respectively. Final diff equals the saved Git patch.
+
+Scoped **oxfmt**, **oxlint --deny-warnings**, and **git diff --check** passed. Tests, configuration, provider, parser, baseline and dependencies remain unchanged. All 684 prior diagnostic artifacts retain their hashes.
+
+[Full evidence and artifact paths](/tmp/chessfable-drain-recovery-20261023/g2-repro/repair-01/repair-report.md). This is focused proof only. Full coverage and final gates remain root’s responsibility.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+````
+
+#### G2 repair and exact counterfactual report
+
+````text
+# G2 settled repair and focused proof
+
+Only `src/state/atoms.ts` changed. The repair replaces the awaited application-value conditional with typed explicit selection. Current-value hydration, normalization after both selection paths, owner receipts, recovery chain, publish-on-refusal and durable publication remain byte-identical outside this replacement.
+
+Exact Git-generated source-only patch: `candidate.patch`, created with `git diff HEAD -- src/state/atoms.ts`. Final Git diff equals that saved patch byte-for-byte.
+
+```diff
+diff --git a/src/state/atoms.ts b/src/state/atoms.ts
+index 85267de7..53fd7292 100644
+--- a/src/state/atoms.ts
++++ b/src/state/atoms.ts
+@@ -321,9 +321,12 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
+             const run = updates.then(async () => {
+                 const current = get(published) ?? (await storage.getItem(key, initialValue));
+                 const application = engineOwnerApplication(key, current, update);
+-                let next: Value = application
+-                    ? application.value
+-                    : await applyUpdate(current, update as Update);
++                let next: Value;
++                if (application) {
++                    next = application.value;
++                } else {
++                    next = await applyUpdate(current, update as Update);
++                }
+                 if (options.normalize) next = options.normalize(current, next);
+                 if (options.publishOnRefusal?.(update)) set(published, next);
+                 const receipt = await saveEngineOwnerValue(
+```
+
+## Actual green/red/green results
+
+| Source | Vitest exit | Tests | Production parser exit | Normalization branch 36 | Negative branches |
+| --- | --- | --- | --- | --- | --- |
+| candidate-1 | 0 | 93 passed, 2 files | 0 | line 330, `[65, 37]` | 0 |
+| original | 0 | 93 passed, 2 files | 1 | line 327, `[65, -29]` | 1 |
+| candidate-2 | 0 | 93 passed, 2 files | 0 | line 330, `[65, 37]` | 0 |
+
+The original parser failure is exactly LCOV line 36775, `SF:src/state/atoms.ts`, `BRDA:327,36,1,-29`. Both green parses accepted 286 source records. JSON branch counts were inspected across every reported file. The normalization branch maps to column 16 through end-of-line, with the second location empty for the implicit false branch. Selection counts remain `[66, 36]` in all three runs.
+
+The exact first command, from the repository root, was:
+
+```bash
+agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/repair-01/candidate-1/coverage --maxWorkers=1
+```
+
+The original and final commands differed only in the unique reports directory, respectively `repair-01/original/coverage` and `repair-01/candidate-2/coverage` under the same scratch root. All use the unchanged ordinary V8 provider, Vitest and coverage-v8 4.1.0, converter 1.0.5, and unchanged tests. `proof-summary.json` records each full command.
+
+For each run a separate Node process imported the unchanged exported `parseLcov` from `./scripts/coverage-report.mjs`, read that run's original `coverage/lcov.info`, and called `parseLcov(text)`. Native exceptions supplied the red parser exit. No coverage data or parser was edited.
+
+## Reversal, restoration and checks
+
+`git apply -R --verbose candidate.patch` exited 0 and logged `Applied patch src/state/atoms.ts cleanly.` No offsets appeared. The restored original was byte-identical to `git show HEAD:src/state/atoms.ts`. Both tests were byte-identical to HEAD and all recorded measurement inputs matched their initial hashes before the original-source run.
+
+`git apply --verbose candidate.patch` then exited 0 with the same clean-application message and no offsets. Restored source was byte-identical to the saved candidate. Evidence is in `reverse.log`, `reverse.exit`, `reversal-integrity.log`, `reapply.log`, `reapply.exit` and `restoration-integrity.log`.
+
+- HEAD source SHA256: `b8ee507ebe5c507fb6f1df4a175073787195984e43294bca01d4440659e74c2f`
+- Candidate source SHA256: `8f025cef0a22b5732135255ac835f56f2c2a1489ecc2dbe6775446a7d4873379`
+- Git patch SHA256: `1f90df266336a5c93f243b233c38937ec907b0d79167ebe837fa85fa33fe5f18`
+
+After final restoration, `pnpm exec oxfmt --check src/state/atoms.ts` exited 0. `pnpm exec oxlint --deny-warnings src/state/atoms.ts` exited 0 with no warnings or errors. Scoped `git diff --check` also exited 0. Each check has its own log and exit file.
+
+## Artifacts, scope and limits
+
+Each run directory contains original LCOV and JSON output under `coverage/`, plus `vitest.log`, `vitest.exit`, `parser.log`, `parser.exit`, `source.sha256` and `branch-evidence.json`. `proof-summary.json` consolidates actual results and integrity checks. All 684 pre-existing diagnostic artifacts retain their captured hashes.
+
+Final tracked status is exactly ` M src/state/atoms.ts`. The index is unchanged. Tests, Vite config, package manifest, lockfile, frontend coverage scope and baseline, parser, installed coverage-v8 integration and converter retain their initial hashes. No dependencies or tooling were edited. Only the permitted ordinary ignored Vitest cache was used outside the named write scope.
+
+This focused proof establishes the accepted repair against the unchanged real reproduction. It does not establish a full coverage ratchet pass or whole-suite behavior. No full coverage, full gates, mutation, browser, staging, commit, push or deployment was run. Root owns integration and final proof.
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+````
+
+#### G2 focused proof summary
+
+````json
+{
+  "runs": {
+    "candidate-1": {
+      "vitestExit": 0,
+      "parserExit": 0,
+      "testsPassed": 93,
+      "filesPassed": 2,
+      "normalizationBranch": {
+        "map": {
+          "loc": {
+            "start": {
+              "line": 330,
+              "column": 16
+            },
+            "end": {
+              "line": 330,
+              "column": null
+            }
+          },
+          "type": "if",
+          "locations": [
+            {
+              "start": {
+                "line": 330,
+                "column": 16
+              },
+              "end": {
+                "line": 330,
+                "column": null
+              }
+            },
+            {
+              "start": {},
+              "end": {}
+            }
+          ],
+          "line": 330
+        },
+        "counts": [
+          65,
+          37
+        ]
+      },
+      "negativeBranchCount": 0,
+      "sourceHash": "8f025cef0a22b5732135255ac835f56f2c2a1489ecc2dbe6775446a7d4873379  src/state/atoms.ts",
+      "command": "agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/repair-01/candidate-1/coverage --maxWorkers=1"
+    },
+    "original": {
+      "vitestExit": 0,
+      "parserExit": 1,
+      "testsPassed": 93,
+      "filesPassed": 2,
+      "normalizationBranch": {
+        "map": {
+          "loc": {
+            "start": {
+              "line": 327,
+              "column": 16
+            },
+            "end": {
+              "line": 327,
+              "column": null
+            }
+          },
+          "type": "if",
+          "locations": [
+            {
+              "start": {
+                "line": 327,
+                "column": 16
+              },
+              "end": {
+                "line": 327,
+                "column": null
+              }
+            },
+            {
+              "start": {},
+              "end": {}
+            }
+          ],
+          "line": 327
+        },
+        "counts": [
+          65,
+          -29
+        ]
+      },
+      "negativeBranchCount": 1,
+      "sourceHash": "b8ee507ebe5c507fb6f1df4a175073787195984e43294bca01d4440659e74c2f  src/state/atoms.ts",
+      "command": "agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/repair-01/original/coverage --maxWorkers=1"
+    },
+    "candidate-2": {
+      "vitestExit": 0,
+      "parserExit": 0,
+      "testsPassed": 93,
+      "filesPassed": 2,
+      "normalizationBranch": {
+        "map": {
+          "loc": {
+            "start": {
+              "line": 330,
+              "column": 16
+            },
+            "end": {
+              "line": 330,
+              "column": null
+            }
+          },
+          "type": "if",
+          "locations": [
+            {
+              "start": {
+                "line": 330,
+                "column": 16
+              },
+              "end": {
+                "line": 330,
+                "column": null
+              }
+            },
+            {
+              "start": {},
+              "end": {}
+            }
+          ],
+          "line": 330
+        },
+        "counts": [
+          65,
+          37
+        ]
+      },
+      "negativeBranchCount": 0,
+      "sourceHash": "8f025cef0a22b5732135255ac835f56f2c2a1489ecc2dbe6775446a7d4873379  src/state/atoms.ts",
+      "command": "agent-gate pnpm exec vitest run src/state/engineCompletions.test.ts src/state/engineOwnerStorage.test.ts --coverage.enabled --coverage.reporter=lcov --coverage.reporter=json --coverage.reportsDirectory=/tmp/chessfable-drain-recovery-20261023/g2-repro/repair-01/candidate-2/coverage --maxWorkers=1"
+    }
+  },
+  "inputs": {
+    "src/state/atoms.ts": {
+      "sha256": "8f025cef0a22b5732135255ac835f56f2c2a1489ecc2dbe6775446a7d4873379",
+      "unchanged": false
+    },
+    "src/state/engineCompletions.test.ts": {
+      "sha256": "4b0db035614a65aeaf14c0ca14a93cc6ae1705267071b40b896822c258a95abe",
+      "unchanged": true
+    },
+    "src/state/engineOwnerStorage.test.ts": {
+      "sha256": "6e3d399265e2b03fad198d46aa5223a38065a151fea8c227f4bf3717c48122b7",
+      "unchanged": true
+    },
+    "vite.config.ts": {
+      "sha256": "41ff343a193bc59c831f4ea19dcd3499721754566563e4e23727eed9f2533f1c",
+      "unchanged": true
+    },
+    "package.json": {
+      "sha256": "d813851c922f3afb1b0cfc36c1fb24e12f0e54761d8e5dfcf974f52004ec7fbb",
+      "unchanged": true
+    },
+    "pnpm-lock.yaml": {
+      "sha256": "42f9972bec8ae901a4b27ecba353f05df0481031b897d1c65c03efcded50135d",
+      "unchanged": true
+    },
+    "coverage-areas.json": {
+      "sha256": "7b68316581dde145985c5b0891bde7cac6cc88624fcbf812be79e511e03eb97f",
+      "unchanged": true
+    },
+    "coverage-baselines.json": {
+      "sha256": "cc25650169f12509a4aa2ca2c9e8616b3044e4f84b905655dc983cf2a89d5a2f",
+      "unchanged": true
+    },
+    "scripts/coverage-report.mjs": {
+      "sha256": "453fd6de38112a6447eee6e418a8a7aade2ea6c99e09db2bffb37d012ffa799f",
+      "unchanged": true
+    },
+    "node_modules/@vitest/coverage-v8/dist/index.js": {
+      "sha256": "be14126e3dc6e83461555879c53945dd8adbce254d6ffba32e4e83ee04e270e7",
+      "unchanged": true
+    },
+    "node_modules/@vitest/coverage-v8/dist/provider.js": {
+      "sha256": "a22970979c5d3f96ca5d51b33e1b6605dcc5b48461181f6a9ca1be24d3a092fc",
+      "unchanged": true
+    },
+    "node_modules/.pnpm/ast-v8-to-istanbul@1.0.5/node_modules/ast-v8-to-istanbul/dist/index.mjs": {
+      "sha256": "38b181e915255b28462f341c804709843c1366dd6b5ca68ce91749a17def5e58",
+      "unchanged": true
+    }
+  },
+  "priorDiagnosticArtifactsUnchanged": 684,
+  "candidateRestoredByteIdentically": true,
+  "finalDiffEqualsSavedGitPatch": true,
+  "trackedChanges": [
+    "src/state/atoms.ts"
+  ],
+  "indexUnchanged": true,
+  "gitStatus": " M src/state/atoms.ts\n",
+  "patchSha256": "1f90df266336a5c93f243b233c38937ec907b0d79167ebe837fa85fa33fe5f18",
+  "oxfmtExit": 0,
+  "oxlintExit": 0
+}
+````
+
+#### G2 pre-review mutation counts
+
+````json
+{
+  "workspace-storage": {
+    "Ignored": 3,
+    "Killed": 1233
+  },
+  "tree-path": {
+    "Ignored": 13,
+    "Killed": 170,
+    "Timeout": 6
+  }
+}
+````
+
+#### R5 correctness, literal report
+
+````text
+G2 CLOSED — the complete delta preserves synchronous completion selection, the ordinary updater’s await, normalization, receipts, queue recovery, publication and persistence across all three owners. No correctness defects found (confidence: 98).
+
+Retained proof shows 93 tests passing in candidate/original/restored runs, with parser exits `0/1/0`. The required completion record is `0`. Its log confirms 5,105 tests passed, coverage ratchets and floors passed, and all selected pre-review lanes exited `0`.
+
+Limitation: the precise V8 internal cause remains unestablished. This closes the demonstrated G2 failure only.
+
+Read-only review. No changes or gates run.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### R5 root-cause, literal report
+
+````text
+G2 CLOSED — src/state/atoms.ts:324 removes the demonstrated coverage trigger. The awaited conditional produced incompatible region counts, causing converter 1.0.5 to infer `36 − 65 = −29`. Explicit selection preserves synchronous completion assignment, the ordinary updater’s await and subsequent owner operations.
+
+Exact candidate/original/restored runs passed all 93 tests, with parser exits `0/1/0`. Full coverage passed all 5105 tests and unchanged ratchets. The required completion record is actual `0`, including pre-review checks.
+
+History inspection found no reintroduced prior fix. All three owners share the repaired factory.
+
+Named limitation: V8’s internal cause remains unestablished. Evidence supports this local compatibility repair, not a general producer fix (confidence: 99).
+
+No files changed or gates run during review.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### R5 tests, literal report
+
+````text
+G2 CLOSED — no findings in this lens.
+
+The regression anchor is the existing coverage gate. Reverting the repair leaves all 93 tests green but makes production `parseLcov` reject `BRDA:327,36,1,-29` at `scripts/coverage-report.mjs:155`. Candidate/original/restored parser exits are 0/1/0. Both the scheduled frontend coverage gate and CI invoke this parser.
+
+The supplied full-proof record reports exit 0. Its log confirms 5,105 tests passed, coverage ratchets passed, and pre-review checks passed. No commands were rerun during review.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### R5 code-quality, literal report
+
+````text
+G2 CLOSED for this lens. No readability or local-consistency findings in the complete delta, enclosing factory, three owner instances, storage sibling or relevant tests.
+
+The explicit selection is clear and preserves the synchronous completion assignment and awaited ordinary updater. Retained proof shows parser exits 0/1/0 across candidate/original/restored candidate. The required completion record is actual 0, with 5,105 tests, coverage ratchets and pre-review checks passing.
+
+Read-only review. No files changed or gates run. Exact V8 internal cause remains unestablished.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family with session-level separation only. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
+#### R5 error-handling, literal report
+
+````text
+G2 CLOSED — No error-handling defects found in the complete source delta or affected owner paths (confidence: 97).
+
+The explicit selection preserves synchronous completion assignment, the ordinary updater’s await, normalization and failure propagation. Callers receive the original rejected promise or unsuccessful save receipt. Queue recovery does not convert that caller’s failure into success. Persistence failures retain pending completions for retry and reach the existing notification surface.
+
+Evidence examined shows candidate/original/restored parser exits 0/1/0 with all 93 tests passing each time. The prerequisite completion record is actual 0. Its log confirms 5105 tests passed, unchanged coverage ratchets passed and every selected pre-review lane exited 0.
+
+Limitation: the precise V8 internal cause remains unestablished. Closure establishes compatibility for the demonstrated failure (confidence: 99).
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, the same model family. Plan authorship and arbitration shared one context.
+
+Read-only review. No files changed or gates run.
+
+VERDICT: APPROVED
+````
+
+#### R5 persisted-state, literal report
+
+````text
+G2 CLOSED — the explicit selection preserves hydration, updater timing, normalization, receipts, persistence and publication across all three owner instances. Storage writers and readers agree on the compressed version-one envelope, with legacy decoding retained. No persistence or tab-lifecycle defects found.
+
+Verified supplied completion record reports exit 0. Its log confirms 5,105 tests passed, coverage ratchets and floors passed, and every selected pre-review lane passed. Focused candidate/original/restored proof records parser exits 0/1/0.
+
+Read-only review. No changes or gates run.
+
+Implementation: Codex gpt-6.1-sol/high. Detection: Codex gpt-6.1-sol/medium, same model family. Plan authorship and arbitration shared one context.
+
+VERDICT: APPROVED
+````
+
 ## Latest delivery checkpoint after final-gate correction G1
 
 Source closure is approved through 7ab44490. Final records R1 adopted two corrections, and R2 explicitly closed both with zero new findings. Decision d-20261023-11 corrects the earlier omission of persisted engine-owner receipts and supersedes d-20261023-03 through the validated writer. The finding's browser status was also superseded through that writer. Native browser proof remains 144 successful checks and 211 container passes, with the screenshot limits recorded below.
