@@ -540,6 +540,7 @@ impl Visitor for Importer {
         } else if key == b"FEN" {
             if value.as_bytes() == b"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" {
                 self.game.fen = None;
+                self.game.position = Chess::default();
             } else {
                 let fen = Fen::from_ascii(value.as_bytes());
                 if let Ok(fen) = fen {
@@ -12364,6 +12365,89 @@ mod setup_policy_tests {
             "wal"
         );
         eprintln!("contended on_acquire completed in {:?}", origin.elapsed());
+    }
+
+    const IMPORTER_STANDARD_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    const IMPORTER_CUSTOM_FEN: &str = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
+
+    #[test]
+    fn importer_custom_then_standard_fen_matches_ordinary_standard_game() {
+        let custom_fen = Fen::from_ascii(IMPORTER_CUSTOM_FEN.as_bytes()).unwrap();
+        assert_ne!(
+            database_setup_to_chess(custom_fen.into_setup()).unwrap(),
+            Chess::default()
+        );
+        let pgn = format!(
+            "[Event \"Ordinary\"]\n\n1. e4 e5 2. Nf3 *\n\n\
+             [Event \"Repeated FEN\"]\n[FEN \"{IMPORTER_CUSTOM_FEN}\"]\n\
+             [FEN \"{IMPORTER_STANDARD_FEN}\"]\n\n1. e4 e5 2. Nf3 *\n"
+        );
+        let mut reader = BufferedReader::new(pgn.as_bytes());
+        let mut importer = Importer::new(None);
+        let ordinary = reader.read_game(&mut importer).unwrap().unwrap().unwrap();
+        let repeated = reader.read_game(&mut importer).unwrap().unwrap().unwrap();
+
+        assert!(ordinary.fen.is_none());
+        assert!(repeated.fen.is_none());
+        assert_eq!(repeated.moves, ordinary.moves);
+        assert_eq!(repeated.position, ordinary.position);
+        let ordinary_movetext = decode_game_to_movetext(&ordinary.moves, Fen::default()).unwrap();
+        let repeated_movetext = decode_game_to_movetext(&repeated.moves, Fen::default()).unwrap();
+        assert_eq!(ordinary_movetext, "1. e4 e5 2. Nf3");
+        assert_eq!(repeated_movetext, ordinary_movetext);
+        assert!(reader.read_game(&mut importer).unwrap().is_none());
+    }
+
+    #[test]
+    fn importer_custom_then_standard_fen_rejects_custom_only_move() {
+        let pgn = format!(
+            "[Event \"Custom\"]\n[FEN \"{IMPORTER_CUSTOM_FEN}\"]\n\n1. Kf2 *\n\n\
+             [Event \"Repeated FEN\"]\n[FEN \"{IMPORTER_CUSTOM_FEN}\"]\n\
+             [FEN \"{IMPORTER_STANDARD_FEN}\"]\n\n1. Kf2 *\n"
+        );
+        let mut reader = BufferedReader::new(pgn.as_bytes());
+        let mut importer = Importer::new(None);
+        let custom = reader.read_game(&mut importer).unwrap().unwrap().unwrap();
+        let custom_fen = Fen::from_ascii(custom.fen.as_ref().unwrap().as_bytes()).unwrap();
+        assert_eq!(
+            decode_game_to_movetext(&custom.moves, custom_fen).unwrap(),
+            "1. Kf2"
+        );
+        assert!(reader.read_game(&mut importer).unwrap().unwrap().is_none());
+        assert!(reader.read_game(&mut importer).unwrap().is_none());
+    }
+
+    #[test]
+    fn importer_standard_then_custom_fen_preserves_custom_setup() {
+        let pgn = format!(
+            "[FEN \"{IMPORTER_STANDARD_FEN}\"]\n[FEN \"{IMPORTER_CUSTOM_FEN}\"]\n\n\
+             1. Kf2 Kf7 *\n"
+        );
+        let mut reader = BufferedReader::new(pgn.as_bytes());
+        let mut importer = Importer::new(None);
+        let game = reader.read_game(&mut importer).unwrap().unwrap().unwrap();
+
+        assert_eq!(game.fen.as_deref(), Some(IMPORTER_CUSTOM_FEN));
+        let initial_fen = Fen::from_ascii(game.fen.as_ref().unwrap().as_bytes()).unwrap();
+        assert_eq!(
+            decode_game_to_movetext(&game.moves, initial_fen).unwrap(),
+            "1. Kf2 Kf7"
+        );
+        assert!(reader.read_game(&mut importer).unwrap().is_none());
+    }
+
+    #[test]
+    fn importer_malformed_then_standard_fen_remains_skipped() {
+        for malformed_fen in ["invalid fen", "8/8/8/8/8/P7/PPPPPPPP/4K3 w - - 0 1"] {
+            let pgn = format!(
+                "[FEN \"{malformed_fen}\"]\n[FEN \"{IMPORTER_STANDARD_FEN}\"]\n\n\
+                 1. e4 e5 *\n"
+            );
+            let mut reader = BufferedReader::new(pgn.as_bytes());
+            let mut importer = Importer::new(None);
+            assert!(reader.read_game(&mut importer).unwrap().unwrap().is_none());
+            assert!(reader.read_game(&mut importer).unwrap().is_none());
+        }
     }
 
     #[test]
