@@ -121,6 +121,24 @@ test("clears the image and logs one warning when decoding fails", async () => {
   expect(mocks.warn).toHaveBeenCalledTimes(1);
 });
 
+test("ignores a decode error for a different nonempty image source", async () => {
+  const bytes = [1, 2, 3];
+  mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
+
+  await act(async () => renderImage("png-image"));
+
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(bytes)}`);
+  const img = container.querySelector("img")!;
+  const foreignSrc = "data:image/png;base64,QQ==";
+  img.setAttribute("src", foreignSrc);
+  await act(async () => {
+    img.dispatchEvent(new Event("error"));
+  });
+
+  expect(mocks.warn).not.toHaveBeenCalled();
+  expect(renderedSrc()).toBe(foreignSrc);
+});
+
 test("preserves exact base64 across the non-aligned chunk boundary", async () => {
   const bytes = Array.from({ length: INDEPENDENT_CHUNK_SIZE * 2 + 1 }, (_, index) => index % 256);
   mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
@@ -146,6 +164,34 @@ test("uses the native MIME type in the data URL", async () => {
   await act(async () => renderImage("jpeg-image"));
 
   expect(renderedSrc()).toBe(`data:image/jpeg;base64,${independentBase64(bytes)}`);
+});
+
+test("keeps a settled image visible while a different image read is pending", async () => {
+  const first = deferred<EngineImageData>();
+  const second = deferred<EngineImageData>();
+  const firstBytes = [1, 2, 3];
+  const secondBytes = [4, 5, 6];
+  mocks.readEngineImage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+  await act(async () => renderImage("first-image"));
+  await act(async () => {
+    first.resolve({ bytes: firstBytes, mimeType: "image/png" });
+    await first.promise;
+  });
+
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(firstBytes)}`);
+
+  await act(async () => renderImage("second-image"));
+
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(firstBytes)}`);
+  expect(mocks.warn).not.toHaveBeenCalled();
+
+  await act(async () => {
+    second.resolve({ bytes: secondBytes, mimeType: "image/png" });
+    await second.promise;
+  });
+
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(secondBytes)}`);
 });
 
 test("clears a stale image and logs a normalized read failure", async () => {
