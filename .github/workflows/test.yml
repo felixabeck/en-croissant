@@ -132,6 +132,10 @@ jobs:
                 throw "Expected exactly one $filesystem $operation measurement"
               }
             }
+            $pattern = "^$filesystem mapped-replace (- unavailable|-?[0-9]+ (committed|error))$"
+            if (@($lines | Where-Object { $_ -cmatch $pattern }).Count -ne 1) {
+              throw "Expected exactly one $filesystem mapped-replace measurement"
+            }
           }
 
       - name: Dismount measurement volumes

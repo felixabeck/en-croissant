@@ -1573,7 +1573,7 @@ fn windows_rename_uses_rename_information_ex_only() {
     let rename = compact(&source[braced_body(source, "fn rename_child_with_mode(")]);
     assert!(rename.contains("FileRenameInformationEx"), "{rename}");
     assert!(
-        !rename.contains("FileRenameInformation)"),
+        !rename.contains("FileRenameInformation)") && !rename.contains("FileRenameInformation,"),
         "rename must not silently use the legacy class: {rename}"
     );
 }
