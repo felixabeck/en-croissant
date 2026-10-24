@@ -112,18 +112,19 @@ test("parsePGN normalizes FEN headers to match the root", async () => {
         expect(tree.headers.fen).toBe(tree.root.fen);
         expect(tree.headers.fen).toBe(expected);
         expect(tree.root.fen).toBe(expected);
-        if (value === "") {
-            expect(
-                getPGN(tree.root, {
-                    headers: tree.headers,
-                    glyphs: false,
-                    comments: false,
-                    variations: false,
-                    extraMarkups: false,
-                }),
-            ).not.toContain('[FEN ""]');
-        }
     }
+
+    mocks.lexPgn.mockResolvedValueOnce([{ type: "Header", value: { tag: "FEN", value: "" } }]);
+    const emptyTree = await parsePGN("ignored by mocked lexer");
+    expect(
+        getPGN(emptyTree.root, {
+            headers: emptyTree.headers,
+            glyphs: false,
+            comments: false,
+            variations: false,
+            extraMarkups: false,
+        }),
+    ).not.toContain('[FEN ""]');
 });
 
 test("parsePGN initialFen override governs legality instead of a conflicting FEN header", async () => {
