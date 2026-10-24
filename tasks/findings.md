@@ -12134,6 +12134,9 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 * **Left alone:** the other `??` header defaults (`Round ?? "?"`, `Date ?? ""`, names). An empty tag is meaningful there. `setHeaders` and `installRoot` were not edited (`d-20260923-06`). An empty FEN must not call `installRoot`, which would wipe the tree.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"8dd3ab46402b7a550e2d2d5b6c15d857bde52c6ed9b70187c60581dbaa971955","header_sha256":"55256c1446ede1e048bcfb2f0a3c6c2eed3d922875fa926e64a3e190e7d8d23f","header_status":"handled","input_sha256":"5a443f53b2b7d41165adfffafb629fc2f204c61d72dcac8150d56bf9ffe32a88","kind":"mutation-receipt","operation":"b7b8187ab847562777f86c290d729aa19897072a23e5d09d028c00829a0b808a","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-12"],"target":"f-20260922-12","v":1} -->
 
+* **Export claim:** the defect paragraph says export re-emits `[FEN ""]`. That mechanism was already stale. `getPGN` writes the tag from the root `tree.fen`, not from `headers.fen`. Commit `6e1ded91` makes an empty tag's root `INITIAL_FEN`, so that export stays the initial position. Commit `c49d7273` also copies `tree.root.fen` into `headers.fen` after an `initialFen` override. Reverting only that assignment left `headers.fen` at the standard initial FEN while `root.fen` stayed the override (`src/utils/tests/chess.test.ts:138` and `:151`, 2 failed, 76 passed).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"44910dd4068bd7edb67392d84a8dea770aea8d8c6328d3c7f5cdba6cad985f0e","input_sha256":"be8c3968a4607f981bb6a06a7574df48b4b9999f396c60dfa1bb935db4b35ae7","kind":"mutation-receipt","operation":"44cc6f3591b6f01cd04dbab5b5b8b99dd3c4c5df18fe45dcea62607a62592193","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-12"],"target":"f-20260922-12","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
