@@ -9360,6 +9360,9 @@ This supersedes all earlier implementation/review/native-pending status for this
 * **Scope:** Co-located candidates f-20260914-28 and f-20260922-12 stay open at lens tier. The anchor requires only this record closure, so neither candidate edits a file changed by its fix. Plan authorship and arbitration share this context. Detection and code use the same OpenAI model family.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"77676f6f26d5ed1770dedc49f92d1b64e6f5d83f9b64ef8169ce2f4aa40275cc","header_sha256":"18bf52417d601612e88200be7d9133dc33a35c0abab1d512724cbdeb66bdbd50","header_status":"handled","input_sha256":"31bb0a244267acdf58cb751bae0b333240f6c67f2164d2facd20dde18a53ed26","kind":"mutation-receipt","operation":"4e77577a093ab4f2d3991ec54c907692f4ca4c217768d25749cba9b9b3c2f22e","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-17"],"target":"f-20260914-17","v":1} -->
 
+* **Later closure:** the scope sentence above records this entry's own close. `f-20260922-12`, named there as still open, was closed afterwards. Its header is Status handled (`6e1ded91`, `c49d7273`).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"df66be5af07c64b9c63c5b685f1d5b981ba68d13ed68c78c5a0e3689b837c381","input_sha256":"1e922f8509ae3c8d5c08394592bb0318c42fa8d852ec307b4834e49ab3cfea71","kind":"mutation-receipt","operation":"3112626a8e8347bc66073faba643182e38f6af37475c7cb2a68d3ab9caf7bac5","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-17"],"target":"f-20260914-17","v":1} -->
+
 ### Database export ignores cancellation while decoding and writing rows
 
 * **ID:** f-20260914-18 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
