@@ -11954,7 +11954,7 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
 
 ### The migrated `deck-*` browser keys are left in place and need a later deletion pass
 
-* **ID:** f-20260922-06 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260922-06 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/state/practiceStorage.ts` (the startup migration pass planned by
   `tasks/plans/2026-09-22-practice-durable-storage.md`), `src/state/pathOwners.ts:177-191`,
   `src/routes/__root.tsx:143-152`.
@@ -11976,6 +11976,9 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
 * **Found by:** the plan review for `f-20260906-23`, rounds 4 and 5, 2026-09-22 — `review-plan`
   (confidence 98), `review-correctness` (99), `review-root-cause`, `review-error-handling` and
   `review-code-quality` each produced the same loss sequence independently.
+* **Handled (2026-10-24, next-finding inline, drain session 15a015c5-437c-4bcf-aa0a-b3d932341f74, full auto, executor Codex):** a legacy `deck-*` key is removed after its outcome is `migrated` (count-matched) or `alreadyMigrated`, and only after this startup has reconciled path owners from a scan taken while the key still existed (`d-20261024-02`). A failed migration, a count mismatch, and a `removeItem` failure leave the key. The same retirement runs for an inline migration while the file is open and for the migration pass that precedes clearing saved data. The legacy path-owner scan stays for every key that remains, including one inserted during the pass. Rejected: compare-and-swap before removal, and dropping the scan in the same change. Commit `10bae2c5`. Decision `d-20261024-02` is `48426f16`.
+* **Proof:** `pnpm exec vitest run src/state/practiceStorage.test.ts src/state/pathOwners.test.ts src/routes/-root.test.tsx` — 65 passed. Stashing the three production files left the tests in place and failed 9 assertions, including the key still present after startup reconciliation and after inline migration; restoring the fix returned 65 passed.
+<!-- ledger-meta {"command":"close","effect_lines":2,"effect_sha256":"9973dd9de17dea63f239d2c2158348c96c59e44611f094bc37baf1df29ce9b60","header_sha256":"09785c99a917d7409a12affb8ba669d2b3579ead1fb6615af0d9cb69ff33dc25","header_status":"handled","input_sha256":"0c2a5144c3f33f3cc64dafbc2a2a3914998804526ec892b6d186d4f7db0c5da6","kind":"mutation-receipt","operation":"23434b20497dc5f6d18eb76b6d4ab7e34a9b912499ad39f443d4d9581241d580","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-06"],"target":"f-20260922-06","v":1} -->
 
 ---
 
