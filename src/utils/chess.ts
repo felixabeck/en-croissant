@@ -15,6 +15,7 @@ import {
     createNode,
     defaultTree,
     getResolvedPathLength,
+    normalizeFen,
     type GameHeaders,
     type TreeNode,
     type TreeState,
@@ -475,7 +476,7 @@ export async function parsePGN(
     const tree = innerParsePGN(tokens, fen);
     // The validated path replaces the raw tag, so an unresolvable Start never reaches the store.
     const start = parseStartHeader(headers.start, tree.root);
-    tree.headers = { ...headers, start };
+    tree.headers = { ...headers, fen: tree.root.fen, start };
     tree.position = start;
     if (options?.signal?.aborted) {
         throw cancellationError();
@@ -533,7 +534,7 @@ function getPgnHeaders(tokens: Token[]): GameHeaders {
 
     const headers: GameHeaders = {
         id: 0,
-        fen: FEN?.trim() || INITIAL_FEN,
+        fen: normalizeFen(FEN),
         result: isValidOutcome(Result) ? Result : "*",
         black: Black ?? "?",
         white: White ?? "?",

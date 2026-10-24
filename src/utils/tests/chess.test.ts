@@ -135,8 +135,21 @@ test("parsePGN initialFen override governs legality instead of a conflicting FEN
     ] satisfies Token[]);
     const tree = await parsePGN("1. e2e4 e7e5 *", blackFen);
     expect(tree.root.fen).toBe(blackFen);
+    expect(tree.headers.fen).toBe(blackFen);
+    expect(tree.headers.fen).toBe(tree.root.fen);
     expect(tree.root.children).toHaveLength(1);
     expect(tree.root.children[0]).toMatchObject({ san: "e5", halfMoves: 46, children: [] });
+});
+
+test("parsePGN initialFen override works without a FEN header", async () => {
+    const blackFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
+    mocks.lexPgn.mockResolvedValueOnce([{ type: "San", value: "e7e5" }] satisfies Token[]);
+
+    const tree = await parsePGN("1. e7e5 *", blackFen);
+
+    expect(tree.root.fen).toBe(blackFen);
+    expect(tree.headers.fen).toBe(blackFen);
+    expect(tree.root.children[0].san).toBe("e5");
 });
 
 test.each([

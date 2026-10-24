@@ -87,8 +87,12 @@ export function countMainPly(node: TreeNode): number {
     return count;
 }
 
+export function normalizeFen(fen?: string): string {
+    return fen?.trim() || INITIAL_FEN;
+}
+
 export function defaultTree(fen?: string): TreeState {
-    const normalizedFen = fen?.trim() || INITIAL_FEN;
+    const normalizedFen = normalizeFen(fen);
 
     return {
         dirty: false,
