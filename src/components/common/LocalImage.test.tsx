@@ -75,6 +75,52 @@ test("renders a resolved PNG as an independently encoded data URL", async () => 
   expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(bytes)}`);
 });
 
+test("reads an engine image once when a new handle has the same id", async () => {
+  const bytes = [1, 2, 3];
+  mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
+
+  await act(async () => renderImage("same-image"));
+
+  expect(mocks.readEngineImage).toHaveBeenCalledExactlyOnceWith({
+    id: { id: "same-image" },
+    kind: "engineImage",
+  });
+
+  await act(async () => {
+    root.render(
+      <LocalImage image={{ id: { id: "same-image" }, kind: "engineImage" }} alt="updated alt" />,
+    );
+  });
+
+  expect(mocks.readEngineImage).toHaveBeenCalledTimes(1);
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(bytes)}`);
+});
+
+test("clears the image and logs one warning when decoding fails", async () => {
+  const id = "123e4567-e89b-12d3-a456-426614174000";
+  const bytes = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff];
+  mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
+
+  await act(async () => renderImage(id));
+
+  expect(renderedSrc()).toBe(`data:image/png;base64,${independentBase64(bytes)}`);
+  const img = container.querySelector("img")!;
+  await act(async () => {
+    img.dispatchEvent(new Event("error"));
+  });
+
+  expect(renderedSrc()).toBeNull();
+  expect(mocks.warn).toHaveBeenCalledExactlyOnceWith("engine image failed to decode");
+  expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(id);
+  expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain("data:image");
+
+  await act(async () => {
+    img.dispatchEvent(new Event("error"));
+  });
+
+  expect(mocks.warn).toHaveBeenCalledTimes(1);
+});
+
 test("preserves exact base64 across the non-aligned chunk boundary", async () => {
   const bytes = Array.from({ length: INDEPENDENT_CHUNK_SIZE * 2 + 1 }, (_, index) => index % 256);
   mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
