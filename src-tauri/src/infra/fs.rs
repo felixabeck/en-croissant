@@ -2605,6 +2605,140 @@ mod win {
     #[cfg(test)]
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
+    #[cfg(test)]
+    std::thread_local! {
+        static TEST_EX_STATUS: std::cell::Cell<(u64, i32)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    #[cfg(test)]
+    fn note_test_ex_status(status: i32) {
+        TEST_EX_STATUS.with(|slot| slot.set((slot.get().0 + 1, status)));
+    }
+
+    #[cfg(test)]
+    fn test_ex_generation() -> u64 {
+        TEST_EX_STATUS.with(|slot| slot.get().0)
+    }
+
+    #[cfg(test)]
+    fn last_ex_ntstatus() -> i32 {
+        TEST_EX_STATUS.with(|slot| slot.get().1)
+    }
+
+    #[cfg(all(test, windows))]
+    #[test]
+    fn windows_non_ntfs_volume_records_ex_status() {
+        const OLD: &[u8] = b"previous volume generation";
+        const NEW: &[u8] = b"replacement volume generation";
+
+        fn measured_status(before: u64) -> i32 {
+            assert_eq!(
+                test_ex_generation(),
+                before + 1,
+                "measured operation must reach exactly one Ex call"
+            );
+            last_ex_ntstatus()
+        }
+
+        fn measure_replace(
+            parent: &File,
+            path: &Path,
+            mapped: Option<&memmap2::Mmap>,
+        ) -> (i32, &'static str) {
+            let before = test_ex_generation();
+            let result = super::atomic_replace_at(parent, path.file_name().unwrap(), |temp| {
+                temp.write_all(NEW).map_err(io)
+            });
+            let status = measured_status(before);
+            let outcome = match result {
+                Ok(_) => {
+                    assert_eq!(std::fs::read(path).unwrap(), NEW);
+                    "committed"
+                }
+                Err(_) => {
+                    assert_eq!(std::fs::read(path).unwrap(), OLD);
+                    "error"
+                }
+            };
+            if let Some(mapped) = mapped {
+                assert_eq!(&mapped[..], OLD);
+            }
+            (status, outcome)
+        }
+
+        let roots = [
+            ("fat32", std::env::var_os("CHESSFABLE_FAT32_ROOT")),
+            ("exfat", std::env::var_os("CHESSFABLE_EXFAT_ROOT")),
+        ];
+        let missing_root = roots
+            .iter()
+            .any(|(_, root)| root.as_ref().is_none_or(|root| root.is_empty()));
+        if std::env::var_os("GITHUB_ACTIONS").is_none() && missing_root {
+            return;
+        }
+        assert!(!missing_root, "both volume roots are required in CI");
+        let measurement = std::env::var_os("CHESSFABLE_VOLUME_MEASUREMENT")
+            .filter(|path| !path.is_empty())
+            .expect("volume measurement path is required");
+        let mut record = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(measurement)
+            .expect("writable volume measurement file");
+
+        for (filesystem, root) in roots {
+            let root = PathBuf::from(root.unwrap());
+            let metadata = std::fs::symlink_metadata(&root).expect("usable volume root");
+            assert!(metadata.is_dir() && !is_reparse_point(&metadata));
+            let dir = tempfile::tempdir_in(root).expect("writable directory on volume");
+            let parent = super::windows_test_parent(dir.path());
+
+            let replace = dir.path().join("replace");
+            std::fs::write(&replace, OLD).unwrap();
+            let (status, outcome) = measure_replace(&parent, &replace, None);
+            writeln!(record, "{filesystem} replace {status} {outcome}").unwrap();
+
+            let unlink = dir.path().join("unlink");
+            std::fs::write(&unlink, OLD).unwrap();
+            let identity = {
+                let file = File::open(&unlink).unwrap();
+                opened_file_identity(&file).unwrap()
+            };
+            let before = test_ex_generation();
+            let result =
+                super::remove_entry_at(&parent, unlink.file_name().unwrap(), identity, false);
+            let status = measured_status(before);
+            let outcome = match result {
+                Ok(()) | Err(Error::CommittedDurabilityUncertain(_)) => {
+                    assert_eq!(
+                        std::fs::symlink_metadata(&unlink).unwrap_err().kind(),
+                        std::io::ErrorKind::NotFound
+                    );
+                    "committed"
+                }
+                Err(_) => {
+                    assert!(std::fs::symlink_metadata(&unlink).unwrap().is_file());
+                    "error"
+                }
+            };
+            writeln!(record, "{filesystem} unlink {status} {outcome}").unwrap();
+
+            let mapped_path = dir.path().join("mapped-replace");
+            std::fs::write(&mapped_path, OLD).unwrap();
+            let external = File::open(&mapped_path).unwrap();
+            // The fixture never writes through the mapped file. Replacement changes only its name.
+            match unsafe { memmap2::Mmap::map(&external) } {
+                Ok(mapped) => {
+                    let (status, outcome) = measure_replace(&parent, &mapped_path, Some(&mapped));
+                    writeln!(record, "{filesystem} mapped-replace {status} {outcome}").unwrap();
+                }
+                Err(_) => {
+                    writeln!(record, "{filesystem} mapped-replace - unavailable").unwrap();
+                }
+            }
+        }
+    }
+
     const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE;
     const TEMP_ACCESS: u32 = DELETE
         | SYNCHRONIZE
@@ -3130,6 +3264,8 @@ mod win {
                 FileRenameInformationEx,
             )
         };
+        #[cfg(test)]
+        note_test_ex_status(status);
         if status != 0 {
             if (workspace_name || mode == AtomicFileMode::CreateWorkspaceSidecar)
                 && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
@@ -3297,6 +3433,8 @@ mod win {
                 FileDispositionInformationEx,
             )
         };
+        #[cfg(test)]
+        note_test_ex_status(status);
         if status != 0 {
             return Err(windows_open_status_error(status));
         }

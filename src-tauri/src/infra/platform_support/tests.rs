@@ -1568,6 +1568,17 @@ fn windows_workspace_renames_do_not_replace() {
 }
 
 #[test]
+fn windows_rename_uses_rename_information_ex_only() {
+    let source = source_for("infra/fs.rs");
+    let rename = compact(&source[braced_body(source, "fn rename_child_with_mode(")]);
+    assert!(rename.contains("FileRenameInformationEx"), "{rename}");
+    assert!(
+        !rename.contains("FileRenameInformation)"),
+        "rename must not silently use the legacy class: {rename}"
+    );
+}
+
+#[test]
 fn windows_unlink_uses_posix_disposition_ex() {
     let source = source_for("infra/fs.rs");
     let unlink = compact(&source[braced_body(source, "fn unlink_posix(")]);

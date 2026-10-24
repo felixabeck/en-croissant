@@ -98,8 +98,62 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - name: Mount FAT32 and exFAT measurement volumes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($filesystem in @('FAT32', 'exFAT')) {
+            $vhd = Join-Path $env:RUNNER_TEMP "chessfable-$filesystem.vhd"
+            New-VHD -Path $vhd -SizeBytes 260MB -Fixed | Out-Null
+            $disk = Mount-VHD -Path $vhd -Passthru | Get-Disk
+            $disk | Initialize-Disk -PartitionStyle MBR
+            $partition = $disk | New-Partition -UseMaximumSize -AssignDriveLetter
+            $partition | Format-Volume -FileSystem $filesystem -Confirm:$false | Out-Null
+            $root = "$($partition.DriveLetter):\"
+            "CHESSFABLE_$($filesystem.ToUpperInvariant())_ROOT=$root" >> $env:GITHUB_ENV
+          }
+          $measurement = Join-Path $env:RUNNER_TEMP 'chessfable-volume-measurement.txt'
+          "CHESSFABLE_VOLUME_MEASUREMENT=$measurement" >> $env:GITHUB_ENV
+
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Print and check volume measurements
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = Get-Content -LiteralPath $env:CHESSFABLE_VOLUME_MEASUREMENT
+          $lines | Write-Output
+          foreach ($filesystem in @('fat32', 'exfat')) {
+            foreach ($operation in @('replace', 'unlink')) {
+              $pattern = "^$filesystem $operation -?[0-9]+ (committed|error)$"
+              if (@($lines | Where-Object { $_ -cmatch $pattern }).Count -ne 1) {
+                throw "Expected exactly one $filesystem $operation measurement"
+              }
+            }
+          }
+
+      - name: Dismount measurement volumes
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failures = @()
+          foreach ($filesystem in @('FAT32', 'exFAT')) {
+            $vhd = Join-Path $env:RUNNER_TEMP "chessfable-$filesystem.vhd"
+            try {
+              if ((Test-Path -LiteralPath $vhd) -and (Get-VHD -Path $vhd).Attached) {
+                Dismount-VHD -Path $vhd
+              }
+            } catch {
+              $failures += $_
+              Write-Output $_
+            }
+          }
+          if ($failures.Count -gt 0) {
+            throw 'Failed to dismount measurement volumes'
+          }
 
   test:
     runs-on: ubuntu-latest
