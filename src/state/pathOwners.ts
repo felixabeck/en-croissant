@@ -237,6 +237,12 @@ try {
 }
 
 let initialization: Promise<void> | undefined;
+let legacyDeckScanComplete = false;
+
+export function startupLegacyDeckScanComplete(): boolean {
+    return legacyDeckScanComplete;
+}
+
 export function initializePathOwners(): Promise<void> {
     if (!initialization) {
         initialization = (async () => {
@@ -251,6 +257,7 @@ export function initializePathOwners(): Promise<void> {
                 inventoryTrusted = false;
             }
             const scan: PracticeLegacyDeckScan = scanLegacyPracticeDeckKeys();
+            legacyDeckScanComplete = scan.complete;
             const retainedIds = new Set(originalPathOwnersSnapshot.retainedIds.map(({ id }) => id));
             inventory?.decks.forEach(({ fileId }) => retainedIds.add(fileId));
             inventory?.anomalies.forEach((anomaly) => {
@@ -287,4 +294,5 @@ export function initializePathOwners(): Promise<void> {
 
 export function resetPathOwnerInitializationForTests() {
     initialization = undefined;
+    legacyDeckScanComplete = false;
 }

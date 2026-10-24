@@ -18,7 +18,7 @@ import i18n from "@/i18n";
 import { nativeBarAtom, tabsAtom } from "@/state/atoms";
 import { startFileRevisionPoll } from "@/state/fileFreshness";
 import { keyMapAtom } from "@/state/keybinds";
-import { initializePathOwners } from "@/state/pathOwners";
+import { initializePathOwners, startupLegacyDeckScanComplete } from "@/state/pathOwners";
 import {
   ensurePracticeMigration,
   retireMigratedLegacyDeckKeysFromBrowser,
@@ -105,7 +105,9 @@ export async function clearSavedDataAfterConfirmation(
   );
   await ensurePracticeMigration();
   const result = await runPracticeMigrationPass();
-  if (pathOwnersInitialized) retireMigratedLegacyDeckKeysFromBrowser(result.outcomes);
+  if (pathOwnersInitialized && startupLegacyDeckScanComplete()) {
+    retireMigratedLegacyDeckKeysFromBrowser(result.outcomes);
+  }
   const affected = affectedPracticeDecks(result);
   if (affected.length > 0) {
     throw new Error(deps.blockedMessage(affected));

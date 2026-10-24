@@ -2,6 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   initializePathOwners: vi.fn(),
+  startupLegacyDeckScanComplete: vi.fn(),
   ensureMigration: vi.fn(),
   runMigration: vi.fn(),
   retireMigratedKeys: vi.fn(),
@@ -9,7 +10,10 @@ const mocks = vi.hoisted(() => ({
   windowFocus: vi.fn(),
 }));
 
-vi.mock("@/state/pathOwners", () => ({ initializePathOwners: mocks.initializePathOwners }));
+vi.mock("@/state/pathOwners", () => ({
+  initializePathOwners: mocks.initializePathOwners,
+  startupLegacyDeckScanComplete: mocks.startupLegacyDeckScanComplete,
+}));
 vi.mock("@/state/practiceStorage", () => ({
   ensurePracticeMigration: mocks.ensureMigration,
   runPracticeMigrationPass: mocks.runMigration,
@@ -54,6 +58,7 @@ import type { Tab } from "@/utils/tabs";
 
 beforeEach(() => {
   mocks.initializePathOwners.mockReset().mockResolvedValue(undefined);
+  mocks.startupLegacyDeckScanComplete.mockReset().mockReturnValue(true);
   mocks.ensureMigration.mockReset().mockResolvedValue({});
   mocks.runMigration.mockReset();
   mocks.retireMigratedKeys.mockReset();
@@ -178,6 +183,42 @@ test("the production clear path waits for migration and runs a fresh pass before
   migration.resolve();
   await clearing;
   expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(clear).toHaveBeenCalledOnce();
+});
+
+test("the production clear path waits for path owners before migrating and retiring", async () => {
+  const initialization = deferred<void>();
+  const clear = vi.fn();
+  const outcomes = [
+    {
+      key: "deck-migrated-0",
+      identity: { file: "migrated", game: 0 },
+      status: "migrated",
+    },
+  ];
+  mocks.initializePathOwners.mockReturnValueOnce(initialization.promise);
+  mocks.runMigration.mockResolvedValueOnce({
+    outcomes,
+    inventory: { decks: [], anomalies: [] },
+    scanTrusted: true,
+    inventoryTrusted: true,
+  });
+
+  const clearing = clearSavedDataAfterConfirmation({
+    blockedMessage: (decks) => `blocked: ${decks.join(", ")}`,
+    clear,
+  });
+  expect(mocks.initializePathOwners).toHaveBeenCalledOnce();
+  expect(mocks.ensureMigration).not.toHaveBeenCalled();
+  expect(mocks.runMigration).not.toHaveBeenCalled();
+  expect(mocks.retireMigratedKeys).not.toHaveBeenCalled();
+  expect(clear).not.toHaveBeenCalled();
+
+  initialization.resolve();
+  await clearing;
+
+  expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(mocks.retireMigratedKeys).toHaveBeenCalledExactlyOnceWith(outcomes);
   expect(clear).toHaveBeenCalledOnce();
 });
 

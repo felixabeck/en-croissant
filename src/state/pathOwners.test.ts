@@ -21,11 +21,14 @@ vi.mock("@/platform/tauri", () => ({
     },
 }));
 vi.mock("./persistError", () => ({ reportPersistError: persistError.report }));
+vi.mock("@/components/TopBar", () => ({ default: () => null }));
+vi.mock("@/state/keybinds", () => ({ keyMapAtom: {} }));
 
 import {
     collectOriginalPathOwners,
     initializePathOwners,
     resetPathOwnerInitializationForTests,
+    startupLegacyDeckScanComplete,
 } from "./pathOwners";
 import { resetEngineOwnerCoordinatorForTests, saveEngineOwnerValue } from "./engineOwnerStorage";
 import { ensurePracticeMigration, resetPracticeMigrationForTests } from "./practiceStorage";
@@ -518,6 +521,7 @@ test("builds the practice union after migration and keeps a key inserted during 
 });
 
 test("retires an already migrated key while retaining its identity from the inventory", async () => {
+    expect(startupLegacyDeckScanComplete()).toBe(false);
     localStorage.setItem("deck-held-0", JSON.stringify({ positions: [], logs: [] }));
     mocks.list.mockResolvedValue({
         decks: [{ fileId: "held", game: 0 }],
@@ -530,6 +534,7 @@ test("retires an already migrated key while retaining its identity from the inve
     ]);
     await initializePathOwners();
 
+    expect(startupLegacyDeckScanComplete()).toBe(true);
     expect(mocks.migrate).not.toHaveBeenCalled();
     expect(localStorage.getItem("deck-held-0")).toBeNull();
     expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
@@ -555,6 +560,7 @@ test("keeps migrated legacy keys when the startup scan is incomplete", async () 
     }
 
     expect(localStorage.getItem("deck-held-0")).not.toBeNull();
+    expect(startupLegacyDeckScanComplete()).toBe(false);
     expect(mocks.reconcile).toHaveBeenCalledOnce();
     expect(mocks.reconcileAttachments).toHaveBeenCalledOnce();
     expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
@@ -571,9 +577,64 @@ test("retires migrated legacy keys after a complete but untrusted startup scan",
 
     await initializePathOwners();
 
+    expect(startupLegacyDeckScanComplete()).toBe(true);
     expect(localStorage.getItem("deck-held-0")).toBeNull();
     expect(localStorage.getItem("deck-malformed")).not.toBeNull();
     expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
+});
+
+test("refuses clearing without retiring migrated keys after an incomplete startup scan", async () => {
+    vi.resetModules();
+    const practice = await import("./practiceStorage");
+    const owners = await import("./pathOwners");
+    const { clearSavedDataAfterConfirmation } = await import("../routes/__root");
+    const legacy = JSON.stringify({ positions: [], logs: [] });
+    localStorage.setItem("deck-migrated-0", legacy);
+    localStorage.setItem("deck-failed-1", legacy);
+    mocks.list.mockResolvedValue({
+        decks: [
+            { fileId: "migrated", game: 0 },
+            { fileId: "failed", game: 1 },
+        ],
+        anomalies: [],
+    });
+    await practice.ensurePracticeMigration();
+    const key = vi.spyOn(Storage.prototype, "key").mockImplementationOnce(() => {
+        throw new Error("enumeration denied");
+    });
+    try {
+        await expect(owners.initializePathOwners()).resolves.toBeUndefined();
+        expect(key).toHaveBeenCalledOnce();
+    } finally {
+        key.mockRestore();
+    }
+    expect(localStorage.getItem("deck-migrated-0")).toBe(legacy);
+    expect(localStorage.getItem("deck-failed-1")).toBe(legacy);
+    mocks.list.mockResolvedValue({ decks: [], anomalies: [] });
+    mocks.migrate.mockImplementation(async (fileId: string) => {
+        if (fileId === "failed") throw new Error("failed migration");
+        return {
+            status: "migrated",
+            entries: 0,
+            positions: 0,
+            positionsDigest: "positions",
+            entriesDigest: "entries",
+        };
+    });
+    const clear = vi.fn();
+
+    await expect(
+        clearSavedDataAfterConfirmation({
+            blockedMessage: (decks) => `blocked: ${decks.join(", ")}`,
+            clear,
+        }),
+    ).rejects.toThrow("blocked: failed (1)");
+
+    expect(mocks.migrate).toHaveBeenCalledTimes(2);
+    expect(clear).not.toHaveBeenCalled();
+    expect(mocks.reconcile).toHaveBeenCalledOnce();
+    expect(localStorage.getItem("deck-migrated-0")).toBe(legacy);
+    expect(localStorage.getItem("deck-failed-1")).toBe(legacy);
 });
 
 test("retains an orphan identity, distrusts practice data, and reports the anomaly once", async () => {
