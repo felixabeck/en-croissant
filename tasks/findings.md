@@ -16072,7 +16072,7 @@ This entry closes the repaired source obligation after review. Final clean publi
 
 ### The includeLastMove branch is unreachable for every production position caller
 
-* **ID:** f-20261010-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261010-28 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** `src/utils/chess.ts` (`positionFromTree`, around178), `getMainLine` caller.
 * **Defect:** R6 code-quality review reports that all board callers omit `includeLastMove`. Its sole true caller, `getMainLine`, supplies a leaf path whose node has no children. The branch can never include another move. It retains a misleading parameter and unreachable domain behavior.
@@ -16082,6 +16082,9 @@ This entry closes the repaired source obligation after review. Final clean publi
 * **Found by:** Canonical read-only R6 review-code-quality, /tmp/build-game-opening-3b67c3b9/lens-code-quality-r6.txt, 2026-10-10. Plan authorship and arbitration shared one context. Detection used the same model family as the code.
 * **Root source trace and filing correction:** The actual function is `getVariationLine`, not `positionFromTree`. The original finding's function name was a root filing mistake. Root opened the complete actual helper and traced all five production callers. `getMainLine` alone passes true, after `getLastMainlinePosition` walks to a leaf. DetachedEval, AnalysisPanel, EvalListener and Board omit the argument. The flagged branch is unreachable. Remove the parameter/branch and that sole true argument in `src/utils/chess.ts`, preserving all current main-line/start-FEN reconstruction and the512 bound. No position-construction API or caller is renamed. The source correction is part of current R6 arbitration and preserves the original filed record.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e502179a6b1c2ce580884850923ae3dce5cba68a1b5168d980350f4bb88da700","input_sha256":"14b000e542290d7849f8aba29598ac8ac4952e75c92660eb7266397fd8545045","kind":"mutation-receipt","operation":"7372c9b78ca439f1fdee4573a66d45e92c3d9726c8af7202b3f4e8606d0346a5","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-28"],"target":"f-20261010-28","v":1} -->
+
+* **Pickup closure:** `getVariationLine` in `src/utils/chess.ts` no longer takes `includeLastMove` and no longer contains the terminal-child branch. Commit `2968b322` removed both. `getMainLine` calls it with the leaf path only. No caller can pass the old flag, so the unreachable branch cannot recur.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ce1d24cfc3d9a36e137212c7da0b5efd75fa88171e8a118faeca0dcc08c5021c","header_sha256":"8f318ec22097198d8946edd72412e74e5cffdaaab756aaa4481813c0f59d64b9","header_status":"handled","input_sha256":"0f59d2313bc64fc835a0b99526b393c26b119d59c6bbbd0545903ea3df3dfa69","kind":"mutation-receipt","operation":"9cdcd6deea9c09cafb5884204fa01609a49b08c51073ba923c4657538057bc34","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-28"],"target":"f-20261010-28","v":1} -->
 
 ### Add Game publishes the appended page before its blank tree is durable
 
