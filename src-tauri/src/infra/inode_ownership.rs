@@ -1205,26 +1205,33 @@ mod created_tests {
 
     #[test]
     fn created_admission_failure_removes_known_inode_and_closes_under_arbitration() {
-        let root = tempfile::tempdir().unwrap();
-        let parent = File::open(root.path()).unwrap();
-        let identity_slot = std::sync::Arc::new(Mutex::new(None));
-        let recorded = identity_slot.clone();
-        let path = root.path().join("admission");
-        controls(CreateTestControls {
-            admission_failure: Some(()),
-            after_create: Some(Box::new(move || {
-                use std::os::unix::fs::MetadataExt;
-                let metadata = std::fs::metadata(path).unwrap();
-                *recorded.lock().unwrap() = Some((metadata.dev(), metadata.ino()));
-            })),
-            ..Default::default()
-        });
-        let error = create_regular_at(&parent, OsStr::new("admission")).unwrap_err();
-        assert!(error.diagnostic().contains("admission failure"));
-        assert!(!root.path().join("admission").exists());
-        let identity = identity_slot.lock().unwrap().unwrap();
-        assert!(open_descriptor_fds(identity).is_empty());
-        assert!(!lock().unwrap().ordinary.contains_key(&identity));
+        // The descriptor scan reads every fd in this process. A parallel test can reuse the
+        // unlinked inode before the scan, which fails the assertion after the descriptor closed.
+        crate::db::bound_sqlite::run_isolated_ownership_test(
+            "infra::inode_ownership::created_tests::created_admission_failure_removes_known_inode_and_closes_under_arbitration",
+            || {
+                let root = tempfile::tempdir().unwrap();
+                let parent = File::open(root.path()).unwrap();
+                let identity_slot = std::sync::Arc::new(Mutex::new(None));
+                let recorded = identity_slot.clone();
+                let path = root.path().join("admission");
+                controls(CreateTestControls {
+                    admission_failure: Some(()),
+                    after_create: Some(Box::new(move || {
+                        use std::os::unix::fs::MetadataExt;
+                        let metadata = std::fs::metadata(path).unwrap();
+                        *recorded.lock().unwrap() = Some((metadata.dev(), metadata.ino()));
+                    })),
+                    ..Default::default()
+                });
+                let error = create_regular_at(&parent, OsStr::new("admission")).unwrap_err();
+                assert!(error.diagnostic().contains("admission failure"));
+                assert!(!root.path().join("admission").exists());
+                let identity = identity_slot.lock().unwrap().unwrap();
+                assert!(open_descriptor_fds(identity).is_empty());
+                assert!(!lock().unwrap().ordinary.contains_key(&identity));
+            },
+        );
     }
 
     #[test]
