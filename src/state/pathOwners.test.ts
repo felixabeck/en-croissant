@@ -494,6 +494,16 @@ test("builds the practice union after migration and keeps a key inserted during 
             entriesDigest: "entries",
         };
     });
+    mocks.reconcile.mockImplementation(async () => {
+        expect(localStorage.getItem("deck-before-0")).not.toBeNull();
+        expect(localStorage.getItem("deck-during-2")).not.toBeNull();
+        return null;
+    });
+    mocks.reconcileAttachments.mockImplementation(async () => {
+        expect(localStorage.getItem("deck-before-0")).not.toBeNull();
+        expect(localStorage.getItem("deck-during-2")).not.toBeNull();
+        return null;
+    });
 
     await ensurePracticeMigration();
     await initializePathOwners();
@@ -503,6 +513,26 @@ test("builds the practice union after migration and keeps a key inserted during 
         expect.arrayContaining([{ id: "before" }, { id: "during" }, { id: "native" }]),
     );
     expect(owners.trustedFamilies).toContain("practiceDeck");
+    expect(localStorage.getItem("deck-before-0")).toBeNull();
+    expect(localStorage.getItem("deck-during-2")).not.toBeNull();
+});
+
+test("retires an already migrated key while retaining its identity from the inventory", async () => {
+    localStorage.setItem("deck-held-0", JSON.stringify({ positions: [], logs: [] }));
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "held", game: 0 }],
+        anomalies: [],
+    });
+
+    const migration = await ensurePracticeMigration();
+    expect(migration.outcomes).toEqual([
+        { key: "deck-held-0", identity: { file: "held", game: 0 }, status: "alreadyMigrated" },
+    ]);
+    await initializePathOwners();
+
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(localStorage.getItem("deck-held-0")).toBeNull();
+    expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
 });
 
 test("retains an orphan identity, distrusts practice data, and reports the anomaly once", async () => {

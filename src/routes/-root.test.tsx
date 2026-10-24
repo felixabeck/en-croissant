@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   ensureMigration: vi.fn(),
   runMigration: vi.fn(),
+  retireMigratedKeys: vi.fn(),
   fileRevision: vi.fn(),
   windowFocus: vi.fn(),
 }));
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/state/practiceStorage", () => ({
   ensurePracticeMigration: mocks.ensureMigration,
   runPracticeMigrationPass: mocks.runMigration,
+  retireMigratedLegacyDeckKeysFromBrowser: mocks.retireMigratedKeys,
 }));
 vi.mock("@/state/atoms", () => ({ nativeBarAtom: {}, tabsAtom: {} }));
 vi.mock("@/state/keybinds", () => ({ keyMapAtom: {} }));
@@ -51,6 +53,7 @@ import type { Tab } from "@/utils/tabs";
 beforeEach(() => {
   mocks.ensureMigration.mockReset().mockResolvedValue({});
   mocks.runMigration.mockReset();
+  mocks.retireMigratedKeys.mockReset();
   mocks.fileRevision.mockReset().mockResolvedValue("dev:ino:revision");
   mocks.windowFocus.mockReset().mockResolvedValue(vi.fn());
 });
@@ -74,17 +77,18 @@ async function clearThroughProductionPath(
 
 test("the production clear path refuses after a failed migration", async () => {
   const clear = vi.fn();
+  const outcomes = [
+    {
+      key: "deck-failed-0",
+      identity: { file: "failed", game: 0 },
+      status: "failed",
+    },
+  ];
 
   await expect(
     clearThroughProductionPath(
       {
-        outcomes: [
-          {
-            key: "deck-failed-0",
-            identity: { file: "failed", game: 0 },
-            status: "failed",
-          },
-        ],
+        outcomes,
         inventory: { decks: [], anomalies: [] },
         scanTrusted: true,
         inventoryTrusted: true,
@@ -92,6 +96,7 @@ test("the production clear path refuses after a failed migration", async () => {
       clear,
     ),
   ).rejects.toThrow("failed (0)");
+  expect(mocks.retireMigratedKeys).toHaveBeenCalledExactlyOnceWith(outcomes);
   expect(clear).not.toHaveBeenCalled();
 });
 
@@ -117,10 +122,17 @@ test("the production clear path refuses when inventory reports a damaged deck", 
 
 test("the production clear path does not name a repaired native deck", async () => {
   const clear = vi.fn();
+  const outcomes = [
+    {
+      key: "deck-repaired-0",
+      identity: { file: "repaired", game: 0 },
+      status: "migrated",
+    },
+  ];
 
   await clearThroughProductionPath(
     {
-      outcomes: [],
+      outcomes,
       inventory: {
         decks: [{ fileId: "repaired", game: 0 }],
         anomalies: [],
@@ -132,6 +144,7 @@ test("the production clear path does not name a repaired native deck", async () 
   );
 
   expect(clear).toHaveBeenCalledOnce();
+  expect(mocks.retireMigratedKeys).toHaveBeenCalledExactlyOnceWith(outcomes);
 });
 
 test("the production clear path waits for migration and runs a fresh pass before clearing", async () => {

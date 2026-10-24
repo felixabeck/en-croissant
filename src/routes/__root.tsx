@@ -20,6 +20,7 @@ import { startFileRevisionPoll } from "@/state/fileFreshness";
 import { keyMapAtom } from "@/state/keybinds";
 import {
   ensurePracticeMigration,
+  retireMigratedLegacyDeckKeysFromBrowser,
   runPracticeMigrationPass,
   type PracticeMigrationPassResult,
 } from "@/state/practiceStorage";
@@ -99,6 +100,7 @@ export async function clearSavedDataAfterConfirmation(
 ): Promise<void> {
   await ensurePracticeMigration();
   const result = await runPracticeMigrationPass();
+  retireMigratedLegacyDeckKeysFromBrowser(result.outcomes);
   const affected = affectedPracticeDecks(result);
   if (affected.length > 0) {
     throw new Error(deps.blockedMessage(affected));

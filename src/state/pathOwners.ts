@@ -10,6 +10,7 @@ import {
 } from "./expandedDirectories";
 import { tabSchema } from "./workspaceTypes";
 import { reportPreferenceStorageFailure } from "./utils";
+import { reportPersistError } from "./persistError";
 import {
     databaseHandleSchema,
     fileWorkspaceHandleSchema,
@@ -25,6 +26,7 @@ import {
     ensurePracticeMigration,
     listPracticeDecks,
     reportPracticeInventoryAnomalies,
+    retireMigratedLegacyDeckKeysFromBrowser,
     scanLegacyPracticeDeckKeys,
     type PracticeLegacyDeckScan,
 } from "./practiceStorage";
@@ -238,7 +240,7 @@ let initialization: Promise<void> | undefined;
 export function initializePathOwners(): Promise<void> {
     if (!initialization) {
         initialization = (async () => {
-            await ensurePracticeMigration();
+            const migration = await ensurePracticeMigration();
 
             let inventory: Awaited<ReturnType<typeof listPracticeDecks>> | null = null;
             let inventoryTrusted = true;
@@ -272,6 +274,11 @@ export function initializePathOwners(): Promise<void> {
                 trustedFamilies: [...trustedFamilies].sort(),
             });
             await reconcileStartupEngineAttachments(originalEngineAttachmentIds, owners);
+            try {
+                retireMigratedLegacyDeckKeysFromBrowser(migration.outcomes);
+            } catch (error) {
+                reportPersistError(error);
+            }
         })();
     }
     const current = initialization;

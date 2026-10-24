@@ -46,8 +46,11 @@ import {
     PRACTICE_MAX_CONFLICT_RETRIES,
     PRACTICE_SYNC_DEBOUNCE_MS,
     resetPracticeMigrationForTests,
+    retireMigratedLegacyDeckKeys,
+    retireMigratedLegacyDeckKeysFromBrowser,
     runPracticeMigrationPass,
     type PracticeDeckValue,
+    type PracticeMigrationDeckOutcome,
     type PracticeRatingMutation,
 } from "./practiceStorage";
 
@@ -141,6 +144,84 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.useRealTimers();
+});
+
+describe("retiring migrated legacy deck keys", () => {
+    test("removes only migrated and already migrated keys from the outcomes", () => {
+        const outcomes: PracticeMigrationDeckOutcome[] = [
+            { key: "deck-migrated-0", identity: { file: "migrated", game: 0 }, status: "migrated" },
+            { key: "deck-held-0", identity: { file: "held", game: 0 }, status: "alreadyMigrated" },
+            { key: "deck-failed-0", identity: { file: "failed", game: 0 }, status: "failed" },
+        ];
+        for (const key of [...outcomes.map((outcome) => outcome.key), "deck-other-0"]) {
+            localStorage.setItem(key, JSON.stringify(legacyData()));
+        }
+
+        retireMigratedLegacyDeckKeys(localStorage, outcomes);
+
+        expect(localStorage.getItem("deck-migrated-0")).toBeNull();
+        expect(localStorage.getItem("deck-held-0")).toBeNull();
+        expect(localStorage.getItem("deck-failed-0")).toBe(JSON.stringify(legacyData()));
+        expect(localStorage.getItem("deck-other-0")).toBe(JSON.stringify(legacyData()));
+        expect(persistError.report).not.toHaveBeenCalled();
+    });
+
+    test("reports only the first removal failure and continues with later keys", () => {
+        const outcomes: PracticeMigrationDeckOutcome[] = [
+            { key: "deck-first-0", identity: { file: "first", game: 0 }, status: "migrated" },
+            {
+                key: "deck-second-0",
+                identity: { file: "second", game: 0 },
+                status: "alreadyMigrated",
+            },
+            { key: "deck-later-0", identity: { file: "later", game: 0 }, status: "migrated" },
+        ];
+        for (const outcome of outcomes) {
+            localStorage.setItem(outcome.key, JSON.stringify(legacyData()));
+        }
+        const firstError = new Error("first removal denied");
+        const originalRemoveItem = Storage.prototype.removeItem;
+        const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (
+            this: Storage,
+            key: string,
+        ) {
+            if (key === "deck-first-0") throw firstError;
+            if (key === "deck-second-0") throw new Error("second removal denied");
+            originalRemoveItem.call(this, key);
+        });
+        try {
+            retireMigratedLegacyDeckKeys(localStorage, outcomes);
+        } finally {
+            removeItem.mockRestore();
+        }
+
+        expect(localStorage.getItem("deck-first-0")).toBe(JSON.stringify(legacyData()));
+        expect(localStorage.getItem("deck-second-0")).toBe(JSON.stringify(legacyData()));
+        expect(localStorage.getItem("deck-later-0")).toBeNull();
+        expect(outcomes.map(({ status }) => status)).toEqual([
+            "migrated",
+            "alreadyMigrated",
+            "migrated",
+        ]);
+        expect(persistError.report).toHaveBeenCalledExactlyOnceWith(firstError);
+    });
+
+    test("reports an unavailable browser storage getter without throwing", () => {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+        const error = new Error("storage disabled");
+        Object.defineProperty(globalThis, "localStorage", {
+            configurable: true,
+            get: () => {
+                throw error;
+            },
+        });
+        try {
+            expect(() => retireMigratedLegacyDeckKeysFromBrowser([])).not.toThrow();
+        } finally {
+            if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+        }
+        expect(persistError.report).toHaveBeenCalledExactlyOnceWith(error);
+    });
 });
 
 describe("the real practice deck atom", () => {
@@ -896,6 +977,7 @@ describe("the eager legacy migration pass", () => {
 
         expect(native.migrate).toHaveBeenCalledTimes(2);
         expect(result.outcomes.map(({ status }) => status)).toEqual(["failed", "migrated"]);
+        expect(localStorage.getItem("deck-first-0")).toBe(JSON.stringify(legacyData()));
         expect(persistError.report).toHaveBeenCalledOnce();
         const blocked = mountDeck("first", 0);
         await vi.waitFor(() => expect(blocked.store.get(blocked.atom).status).toBe("read-failed"));
@@ -976,6 +1058,7 @@ describe("the eager legacy migration pass", () => {
         const result = await runPracticeMigrationPass();
 
         expect(result.outcomes[0]?.status).toBe("failed");
+        expect(localStorage.getItem("deck-count-0")).toBe(JSON.stringify(legacyData()));
         const mounted = mountDeck("count", 0);
         await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
         mounted.unsubscribe();
@@ -1012,9 +1095,51 @@ describe("the eager legacy migration pass", () => {
         await write;
 
         expect(native.migrate).toHaveBeenCalledWith("appeared", 0, JSON.stringify(legacyData()));
+        expect(localStorage.getItem("deck-appeared-0")).toBeNull();
         expect(native.sync).toHaveBeenCalledOnce();
         expect(native.sync.mock.calls[0][2]).toBe(2);
         expect(native.sync.mock.calls[0][3]).toBe(9);
         mounted.unsubscribe();
+    });
+
+    test("syncs after successful inline migration when removing the legacy key fails", async () => {
+        native.load
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(snapshot([position()], { revision: 9, generation: 2 }));
+        native.migrate.mockResolvedValue(migrationOutcome());
+        const mounted = mountDeck("appeared", 0);
+        await waitForReady(mounted.store, mounted.atom);
+        localStorage.setItem("deck-appeared-0", JSON.stringify(legacyData()));
+        const error = new Error("removal denied");
+        const originalRemoveItem = Storage.prototype.removeItem;
+        const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (
+            this: Storage,
+            key: string,
+        ) {
+            if (key === "deck-appeared-0") throw error;
+            originalRemoveItem.call(this, key);
+        });
+        vi.useFakeTimers();
+
+        try {
+            const write = mounted.store.set(mounted.atom, {
+                type: "sync",
+                positions: [position()],
+            });
+            await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+            await write;
+
+            expect(native.migrate).toHaveBeenCalledExactlyOnceWith(
+                "appeared",
+                0,
+                JSON.stringify(legacyData()),
+            );
+            expect(native.sync).toHaveBeenCalledOnce();
+            expect(localStorage.getItem("deck-appeared-0")).toBe(JSON.stringify(legacyData()));
+            expect(persistError.report).toHaveBeenCalledExactlyOnceWith(error);
+        } finally {
+            removeItem.mockRestore();
+            mounted.unsubscribe();
+        }
     });
 });

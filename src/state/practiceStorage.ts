@@ -476,6 +476,35 @@ export function runPracticeMigrationPass(): Promise<PracticeMigrationPassResult>
     return run;
 }
 
+export function retireMigratedLegacyDeckKeys(
+    storage: Storage,
+    outcomes: readonly PracticeMigrationDeckOutcome[],
+): void {
+    let firstFailure: { error: unknown } | undefined;
+    for (const outcome of outcomes) {
+        if (outcome.status !== "migrated" && outcome.status !== "alreadyMigrated") continue;
+        try {
+            storage.removeItem(outcome.key);
+        } catch (error) {
+            firstFailure ??= { error };
+        }
+    }
+    if (firstFailure) reportPersistError(firstFailure.error);
+}
+
+export function retireMigratedLegacyDeckKeysFromBrowser(
+    outcomes: readonly PracticeMigrationDeckOutcome[],
+): void {
+    let storage: Storage;
+    try {
+        storage = globalThis.localStorage;
+    } catch (error) {
+        reportPersistError(error);
+        return;
+    }
+    retireMigratedLegacyDeckKeys(storage, outcomes);
+}
+
 function migrationBlock(identity: PracticeDeckKey): Error | null {
     if (practiceWritesBlocked) return new Error(i18n.t("Board.Practice.MigrationScanFailed"));
     const failure = practiceMigrationFailures.get(identityKey(identity));
@@ -500,12 +529,16 @@ async function migrateLegacyDeckInline(identity: PracticeDeckKey): Promise<void>
         practiceWritesBlocked = true;
         throw error;
     }
-    if (healthyNativeIdentities(inventory).has(identityKey(identity))) return;
+    if (healthyNativeIdentities(inventory).has(identityKey(identity))) {
+        retireMigratedLegacyDeckKeysFromBrowser([outcomeForHeldDeck(legacy)]);
+        return;
+    }
 
     const outcome = await migrateLegacyDeck(globalThis.localStorage, legacy);
     if (outcome.status === "failed") {
         throw new Error(outcome.error?.message ?? i18n.t("Board.Practice.MigrationFailed"));
     }
+    retireMigratedLegacyDeckKeysFromBrowser([outcome]);
     clearPracticeIdentityState(identity, false);
 }
 
