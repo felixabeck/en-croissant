@@ -95,6 +95,37 @@ test("parsePGN tests UCI legality at the evolving target rather than the initial
     );
 });
 
+test("parsePGN normalizes FEN headers to match the root", async () => {
+    const customFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
+    for (const { value, expected } of [
+        { value: "", expected: INITIAL_FEN },
+        { value: "   ", expected: INITIAL_FEN },
+        { value: ` ${customFen} `, expected: customFen },
+        { value: undefined, expected: INITIAL_FEN },
+    ]) {
+        mocks.lexPgn.mockResolvedValueOnce(
+            value === undefined
+                ? []
+                : ([{ type: "Header", value: { tag: "FEN", value } }] satisfies Token[]),
+        );
+        const tree = await parsePGN("ignored by mocked lexer");
+        expect(tree.headers.fen).toBe(tree.root.fen);
+        expect(tree.headers.fen).toBe(expected);
+        expect(tree.root.fen).toBe(expected);
+        if (value === "") {
+            expect(
+                getPGN(tree.root, {
+                    headers: tree.headers,
+                    glyphs: false,
+                    comments: false,
+                    variations: false,
+                    extraMarkups: false,
+                }),
+            ).not.toContain('[FEN ""]');
+        }
+    }
+});
+
 test("parsePGN initialFen override governs legality instead of a conflicting FEN header", async () => {
     const blackFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23";
     mocks.lexPgn.mockResolvedValueOnce([

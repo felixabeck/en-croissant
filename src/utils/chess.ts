@@ -533,7 +533,7 @@ function getPgnHeaders(tokens: Token[]): GameHeaders {
 
     const headers: GameHeaders = {
         id: 0,
-        fen: FEN ?? INITIAL_FEN,
+        fen: FEN?.trim() || INITIAL_FEN,
         result: isValidOutcome(Result) ? Result : "*",
         black: Black ?? "?",
         white: White ?? "?",
