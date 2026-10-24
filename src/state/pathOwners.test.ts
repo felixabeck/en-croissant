@@ -535,6 +535,47 @@ test("retires an already migrated key while retaining its identity from the inve
     expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
 });
 
+test("keeps migrated legacy keys when the startup scan is incomplete", async () => {
+    localStorage.setItem("deck-held-0", JSON.stringify({ positions: [], logs: [] }));
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "held", game: 0 }],
+        anomalies: [],
+    });
+    const migration = await ensurePracticeMigration();
+    expect(migration.outcomes[0]?.status).toBe("alreadyMigrated");
+    const key = vi.spyOn(Storage.prototype, "key").mockImplementationOnce(() => {
+        throw new Error("enumeration denied");
+    });
+
+    try {
+        await initializePathOwners();
+        expect(key).toHaveBeenCalledOnce();
+    } finally {
+        key.mockRestore();
+    }
+
+    expect(localStorage.getItem("deck-held-0")).not.toBeNull();
+    expect(mocks.reconcile).toHaveBeenCalledOnce();
+    expect(mocks.reconcileAttachments).toHaveBeenCalledOnce();
+    expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
+});
+
+test("retires migrated legacy keys after a complete but untrusted startup scan", async () => {
+    localStorage.setItem("deck-held-0", JSON.stringify({ positions: [], logs: [] }));
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "held", game: 0 }],
+        anomalies: [],
+    });
+    await ensurePracticeMigration();
+    localStorage.setItem("deck-malformed", JSON.stringify({ positions: [], logs: [] }));
+
+    await initializePathOwners();
+
+    expect(localStorage.getItem("deck-held-0")).toBeNull();
+    expect(localStorage.getItem("deck-malformed")).not.toBeNull();
+    expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "held" });
+});
+
 test("retains an orphan identity, distrusts practice data, and reports the anomaly once", async () => {
     mocks.list.mockResolvedValue({
         decks: [],

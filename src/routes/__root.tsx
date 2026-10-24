@@ -18,6 +18,7 @@ import i18n from "@/i18n";
 import { nativeBarAtom, tabsAtom } from "@/state/atoms";
 import { startFileRevisionPoll } from "@/state/fileFreshness";
 import { keyMapAtom } from "@/state/keybinds";
+import { initializePathOwners } from "@/state/pathOwners";
 import {
   ensurePracticeMigration,
   retireMigratedLegacyDeckKeysFromBrowser,
@@ -98,9 +99,13 @@ function affectedPracticeDecks(result: PracticeMigrationPassResult): string[] {
 export async function clearSavedDataAfterConfirmation(
   deps: ClearSavedDataAfterConfirmationDeps,
 ): Promise<void> {
+  const pathOwnersInitialized = await initializePathOwners().then(
+    () => true,
+    () => false,
+  );
   await ensurePracticeMigration();
   const result = await runPracticeMigrationPass();
-  retireMigratedLegacyDeckKeysFromBrowser(result.outcomes);
+  if (pathOwnersInitialized) retireMigratedLegacyDeckKeysFromBrowser(result.outcomes);
   const affected = affectedPracticeDecks(result);
   if (affected.length > 0) {
     throw new Error(deps.blockedMessage(affected));

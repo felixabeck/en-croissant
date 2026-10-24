@@ -1102,6 +1102,35 @@ describe("the eager legacy migration pass", () => {
         mounted.unsubscribe();
     });
 
+    test("retires the legacy key and syncs when inline inventory already contains the deck", async () => {
+        native.load
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(snapshot([position()], { revision: 9, generation: 2 }));
+        const mounted = mountDeck("held", 0);
+        await waitForReady(mounted.store, mounted.atom);
+        localStorage.setItem("deck-held-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({
+            decks: [{ fileId: "held", game: 0 }],
+            anomalies: [],
+        });
+        vi.useFakeTimers();
+
+        try {
+            const write = mounted.store.set(mounted.atom, {
+                type: "sync",
+                positions: [position()],
+            });
+            await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+            await write;
+
+            expect(native.migrate).not.toHaveBeenCalled();
+            expect(localStorage.getItem("deck-held-0")).toBeNull();
+            expect(native.sync).toHaveBeenCalledOnce();
+        } finally {
+            mounted.unsubscribe();
+        }
+    });
+
     test("syncs after successful inline migration when removing the legacy key fails", async () => {
         native.load
             .mockResolvedValueOnce(null)

@@ -275,7 +275,7 @@ export function initializePathOwners(): Promise<void> {
             });
             await reconcileStartupEngineAttachments(originalEngineAttachmentIds, owners);
             try {
-                retireMigratedLegacyDeckKeysFromBrowser(migration.outcomes);
+                if (scan.complete) retireMigratedLegacyDeckKeysFromBrowser(migration.outcomes);
             } catch (error) {
                 reportPersistError(error);
             }

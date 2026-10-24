@@ -1,6 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  initializePathOwners: vi.fn(),
   ensureMigration: vi.fn(),
   runMigration: vi.fn(),
   retireMigratedKeys: vi.fn(),
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   windowFocus: vi.fn(),
 }));
 
+vi.mock("@/state/pathOwners", () => ({ initializePathOwners: mocks.initializePathOwners }));
 vi.mock("@/state/practiceStorage", () => ({
   ensurePracticeMigration: mocks.ensureMigration,
   runPracticeMigrationPass: mocks.runMigration,
@@ -51,6 +53,7 @@ import { clearSavedDataFromMenu } from "./-appMenu";
 import type { Tab } from "@/utils/tabs";
 
 beforeEach(() => {
+  mocks.initializePathOwners.mockReset().mockResolvedValue(undefined);
   mocks.ensureMigration.mockReset().mockResolvedValue({});
   mocks.runMigration.mockReset();
   mocks.retireMigratedKeys.mockReset();
@@ -175,6 +178,65 @@ test("the production clear path waits for migration and runs a fresh pass before
   migration.resolve();
   await clearing;
   expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(clear).toHaveBeenCalledOnce();
+});
+
+test("the production clear path still refuses failed migration when path owners reject", async () => {
+  const clear = vi.fn();
+  mocks.initializePathOwners.mockRejectedValueOnce(new Error("path owners failed"));
+
+  await expect(
+    clearThroughProductionPath(
+      {
+        outcomes: [
+          {
+            key: "deck-migrated-0",
+            identity: { file: "migrated", game: 0 },
+            status: "migrated",
+          },
+          {
+            key: "deck-failed-0",
+            identity: { file: "failed", game: 0 },
+            status: "failed",
+          },
+        ],
+        inventory: { decks: [], anomalies: [] },
+        scanTrusted: true,
+        inventoryTrusted: true,
+      },
+      clear,
+    ),
+  ).rejects.toThrow("blocked: failed (0)");
+
+  expect(mocks.ensureMigration).toHaveBeenCalledOnce();
+  expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(mocks.retireMigratedKeys).not.toHaveBeenCalled();
+  expect(clear).not.toHaveBeenCalled();
+});
+
+test("the production clear path clears clean migration without retirement when path owners reject", async () => {
+  const clear = vi.fn();
+  mocks.initializePathOwners.mockRejectedValueOnce(new Error("path owners failed"));
+
+  await clearThroughProductionPath(
+    {
+      outcomes: [
+        {
+          key: "deck-migrated-0",
+          identity: { file: "migrated", game: 0 },
+          status: "migrated",
+        },
+      ],
+      inventory: { decks: [], anomalies: [] },
+      scanTrusted: true,
+      inventoryTrusted: true,
+    },
+    clear,
+  );
+
+  expect(mocks.ensureMigration).toHaveBeenCalledOnce();
+  expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(mocks.retireMigratedKeys).not.toHaveBeenCalled();
   expect(clear).toHaveBeenCalledOnce();
 });
 
