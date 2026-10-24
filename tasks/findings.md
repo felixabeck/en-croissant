@@ -12434,12 +12434,14 @@ The fresh full verifier passed 83 checks and failed the three existing $8 hint s
 
 ### Transposition fallback stops at a leaf before a later matching continuation
 
-* **ID:** f-20260925-03 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260925-03 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tree.ts`, `goToNext` transposition fallback.
 * **Defect:** The fallback chooses the first other node with the same board state, then returns if that node has no children. A later matching node with a continuation is never considered, so Next cannot reach a recorded move from a transposed position.
 * **Proof:** Construct two matching transposition nodes in traversal order, first a leaf and second with a continuation; navigate to another occurrence and invoke `goToNext`. Assert it follows the available continuation.
 * **Relation:** Existing `chess-tree` entries sharing `tree.ts` concern different path-rebasing and FEN defects; no common root is evidenced.
 * **Found by:** `review-chess-semantics` during plan review of `f-20260924-03`, 2026-09-25, confidence 98. Independent of unreadable-tree recovery.
+* **Pickup closure:** The reported stop no longer exists. `nextContinuation` in `src/state/store/tree.ts` now chooses the first other board-state entry whose node has children, so a leaf that sorts first is skipped and Next still reaches a later continuation. Commit `98f1f885` introduced that filter. No removed navigation machinery is restored.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"639e314a7eff0cc7eaa25643529aad7fb2004637975c0ef9d526308f4bbc19ef","header_sha256":"899331143be4af71c68c344f424033c6e11436cdddb9b627906ecf3a0a4bd069","header_status":"handled","input_sha256":"55a3eb280edae0756b35b5892b2e4e66bbe19affddd16c7a1044709a7539a7ae","kind":"mutation-receipt","operation":"efa2f938a509f0cd962b278cb3dfd420658b211c5da12adef9e607425fda0196","options":{"section":null},"request_id_sha256":null,"results":["f-20260925-03"],"target":"f-20260925-03","v":1} -->
 
 ### PGN edit lock registry retains idle keys and repeats keyed lease ownership
 
