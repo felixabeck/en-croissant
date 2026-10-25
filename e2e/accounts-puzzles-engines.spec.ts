@@ -1742,6 +1742,65 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
     await capture("engine-add-reopened-idle");
 });
 
+test("accounts-puzzles-engines: retained failed engine download has no partial fill", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({
+        commands: {
+            is_bmi2_compatible: { result: false },
+            verify_signed_bytes: { result: null },
+            get_progress: { result: null },
+        },
+    });
+    await page.goto("/engines");
+    await page.getByRole("button", { name: "Add New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Add Engine", exact: true });
+    const install = dialog.getByRole("button", { name: "Install", exact: true }).first();
+    await expect(install).toBeEnabled();
+    await expect
+        .poll(() =>
+            page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .some(({ command }) => command === "get_progress"),
+            ),
+        )
+        .toBe(true);
+    await page.evaluate(() => {
+        const call = window.__E2E_TAURI__
+            .invocations()
+            .find(({ command }) => command === "get_progress")!;
+        const { id } = call.args as { id: string };
+        window.__E2E_TAURI__.emit("progress-event", {
+            id,
+            generation: "7",
+            state: "running",
+            progress: 37,
+            finished: false,
+            cleared: false,
+        });
+    });
+    await expect(dialog.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "37");
+    await page.evaluate(() => {
+        const call = window.__E2E_TAURI__
+            .invocations()
+            .find(({ command }) => command === "get_progress")!;
+        const { id } = call.args as { id: string };
+        window.__E2E_TAURI__.emit("progress-event", {
+            id,
+            generation: "7",
+            state: "failed",
+            progress: 37,
+            finished: true,
+            cleared: false,
+        });
+    });
+    await expect(install).toBeEnabled();
+    await expect(install.getByRole("progressbar")).toHaveCount(0);
+    await expect(dialog.getByRole("progressbar")).toHaveCount(0);
+});
+
 for (const kind of ["add", "upgrade"] as const) {
     test(`accounts-puzzles-engines: ${kind} completion recovers after a real page reload without reseeding`, async ({
         page,

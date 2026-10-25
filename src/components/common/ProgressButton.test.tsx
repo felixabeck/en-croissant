@@ -129,6 +129,26 @@ test("a failed download does not mark the engine as installed", async () => {
   const button = host.querySelector("button");
   expect(button?.textContent).toContain("Install");
   expect(button?.disabled).toBe(false);
+  expect(host.querySelector("[data-testid='progress']")).toBeNull();
+});
+
+test("failed partial progress has no fill while showProgress is set", async () => {
+  progress.progress = 37;
+  progress.item = { ...progress.item, progress: 37, state: "failed" };
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="job"
+        initInstalled={false}
+        completeOnProgressSuccess={false}
+        onClick={() => undefined}
+        labels={{ completed: "Done", action: "Install", inProgress: "Downloading" }}
+        inProgress
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  expect(host.querySelector("[data-testid='progress']")).toBeNull();
 });
 
 test("cancelled progress does not mark the action completed", async () => {
@@ -520,7 +540,7 @@ test("a rejected cancel keeps the running UI and is not reported by the button",
 
 test.each([
   ["cancelled", false],
-  ["failed", true],
+  ["failed", false],
   ["running", true],
 ] as const)("renders the progress bar for %s according to its state", async (state, hasBar) => {
   progress.progress = 50;

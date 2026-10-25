@@ -13,6 +13,7 @@ import { tauri } from "./platform/tauri";
 import { initializeWorkspace } from "./state/atoms";
 import { initializePathOwners } from "./state/pathOwners";
 import { initializeEngineCompletions } from "./state/engineCompletions";
+import { initializeDownloadFailures } from "./hooks/downloadJobs";
 
 initializeWorkspace();
 
@@ -97,6 +98,19 @@ export const applicationStartup = (async () => {
       "Session sanitization failed",
     );
     return;
+  }
+
+  try {
+    await initializeDownloadFailures();
+  } catch (error) {
+    await logFailureSafely(
+      "StartupDownloadFailureObserverError",
+      {
+        operation: "initializeDownloadFailures",
+        primaryFailure: safeFailureContext(error),
+      },
+      "Download failure recovery failed",
+    );
   }
 
   try {

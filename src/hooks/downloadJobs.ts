@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from "react";
+import type { ProgressEvent, ProgressItem } from "@/bindings";
+import i18n from "@/i18n";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { errorUnlessCancelled, warnSafely } from "@/platform/errors";
-import { cancellationError, tauri, withDownloadTicket } from "@/platform/tauri";
+import { errorUnlessCancelled, normalizeError, warnSafely } from "@/platform/errors";
+import { cancellationError, tauri, tauriSubscriptions, withDownloadTicket } from "@/platform/tauri";
 
 /**
  * Why a cancellation did not take effect. `lost` means the download settled on its own
@@ -29,11 +31,76 @@ type DownloadJobEntry = {
     ticket: string | null;
     settlement: Promise<unknown>;
     clearedGeneration: bigint | null;
+    failures: Map<bigint, ProgressItem>;
 };
 
 const jobs = new Map<string, DownloadJobEntry>();
 const subscribers = new Set<() => void>();
 const publish = () => subscribers.forEach((subscriber) => subscriber());
+
+// Receipts belong to this document and survive job settlement. Reload releases them all.
+const owned = new Set<string>();
+const announced = new Set<string>();
+const identity = (item: { id: string; generation: string | bigint }) =>
+    JSON.stringify([item.id, item.generation.toString()]);
+let initialization: Promise<void> | undefined;
+let unlisten: (() => void) | undefined;
+let documentActive = true;
+
+function announceFailure(item: ProgressItem): void {
+    const key = identity(item);
+    if (!documentActive || owned.has(key) || announced.has(key)) return;
+    announced.add(key);
+    notifyUnlessCancelled(i18n.t("Common.Error"), item.failure);
+    void clearDownloadProgress(item.id);
+}
+
+function observeFailure(item: ProgressItem | ProgressEvent): void {
+    if (
+        !documentActive ||
+        item.state !== "failed" ||
+        !item.failure ||
+        ("cleared" in item && item.cleared)
+    )
+        return;
+    const entry = jobs.get(item.id);
+    if (entry && entry.ticket !== null) {
+        entry.failures.set(item.generation, item);
+    } else {
+        announceFailure(item);
+    }
+}
+
+/** Subscribe before taking the snapshot so failures on either side of startup are observed. */
+export function initializeDownloadFailures(): Promise<void> {
+    if (initialization) return initialization;
+    initialization = (async () => {
+        const dispose = await tauriSubscriptions.progress(({ payload }) => observeFailure(payload));
+        if (!documentActive) {
+            dispose();
+            return;
+        }
+        unlisten = dispose;
+        window.addEventListener("pagehide", disposeDownloadFailures, { once: true });
+        try {
+            const snapshot = await tauri.failedProgressSnapshot();
+            snapshot.forEach(observeFailure);
+        } catch (error) {
+            warnSafely(`failed progress snapshot: ${normalizeError(error).message}`);
+        }
+    })();
+    return initialization;
+}
+
+export function disposeDownloadFailures(): void {
+    documentActive = false;
+    unlisten?.();
+    unlisten = undefined;
+    window.removeEventListener("pagehide", disposeDownloadFailures);
+    owned.clear();
+    announced.clear();
+    for (const entry of jobs.values()) entry.failures.clear();
+}
 
 /**
  * Clears a job's progress entry, best effort: the result of a download is never a failure to
@@ -59,6 +126,7 @@ export function runDownloadJob<T>(
         ticket: null,
         settlement: Promise.resolve(),
         clearedGeneration: null,
+        failures: new Map(),
     };
     jobs.set(progressId, entry);
     publish();
@@ -82,11 +150,22 @@ export function runDownloadJob<T>(
         // nothing was cleared. Clearing before releasing this entry keeps a retry's own bar safe:
         // no local start is accepted for this id until the clear has been answered.
         .catch(async (error) => {
+            const normalized = normalizeError(error);
+            if (
+                documentActive &&
+                entry.ticket !== null &&
+                normalized.message !== "Conflict: download progress is already active" &&
+                normalized.progress_generation !== undefined
+            ) {
+                owned.add(identity({ id: progressId, generation: normalized.progress_generation }));
+            }
             entry.clearedGeneration = await clearDownloadProgress(progressId);
             throw error;
         })
         .finally(() => {
             jobs.delete(progressId);
+            entry.failures.forEach(announceFailure);
+            entry.failures.clear();
             publish();
         });
     return entry.settlement as Promise<T>;

@@ -143,9 +143,10 @@ type NativeReadFacade<T> = T extends (
     : never;
 type TauriCommands = Omit<
     GeneratedCommands,
-    "startGame" | NativeReadCommandName | "getProgress" | "clearProgress"
+    "startGame" | NativeReadCommandName | "getProgress" | "failedProgressSnapshot" | "clearProgress"
 > & {
     getProgress: (id: string) => Promise<ProgressItem | null>;
+    failedProgressSnapshot: () => Promise<ProgressItem[]>;
     clearProgress: (id: string) => Promise<bigint>;
     startGame: (
         gameId: string,
@@ -427,6 +428,9 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 if (property === "clearProgress") return decodeProgressGeneration(value);
                 if (property === "getProgress") {
                     return value === null ? null : normalizeProgressGeneration(value);
+                }
+                if (property === "failedProgressSnapshot") {
+                    return value.map(normalizeProgressGeneration);
                 }
                 return GAME_STATE_COMMANDS.has(property) ? normalizeGameState(value) : value;
             } catch (error) {

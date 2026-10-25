@@ -7,7 +7,21 @@ const mocks = vi.hoisted(() => ({
     notifyUnlessCancelled: vi.fn(),
     warn: vi.fn(),
     withDownloadTicket: vi.fn(),
+    snapshot: vi.fn(),
+    listen: vi.fn(),
+    unlisten: vi.fn(),
 }));
+
+vi.mock("@/bindings/generated", async (original) => {
+    const actual = await original<typeof import("@/bindings/generated")>();
+    return {
+        ...actual,
+        commands: { ...actual.commands, failedProgressSnapshot: mocks.snapshot },
+        events: { ...actual.events, progressEvent: { listen: mocks.listen } },
+    };
+});
+
+vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 
 vi.mock("@/components/files/notifyError", () => ({
     notifyUnlessCancelled: mocks.notifyUnlessCancelled,
@@ -29,7 +43,8 @@ vi.mock("@/platform/tauri", async () => {
     };
 });
 
-import { cancellationError } from "@/platform/tauri";
+import { cancellationError, unwrapCommand } from "@/platform/tauri";
+import { normalizeError } from "@/platform/errors";
 import { cancelDownloadJob, runDownloadJob } from "./downloadJobs";
 
 beforeEach(() => {
@@ -38,11 +53,286 @@ beforeEach(() => {
     mocks.clearProgress.mockReset().mockResolvedValue(42n);
     mocks.notifyUnlessCancelled.mockReset();
     mocks.warn.mockReset().mockResolvedValue(undefined);
+    mocks.snapshot.mockReset().mockResolvedValue({ status: "ok", data: [] });
+    mocks.listen.mockReset().mockResolvedValue(mocks.unlisten);
+    mocks.unlisten.mockReset();
     mocks.withDownloadTicket
         .mockReset()
         .mockImplementation(async (run: (ticket: string) => Promise<unknown>) =>
             run("prepared-ticket"),
         );
+});
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+function commandFailure(progressGeneration?: unknown, message = "I/O failure") {
+    try {
+        unwrapCommand({
+            status: "error",
+            error: {
+                tag: "backend-error",
+                category: message.startsWith("Conflict:") ? "conflict" : "io",
+                message,
+                ...(progressGeneration === undefined ? {} : { progressGeneration }),
+            },
+        });
+    } catch (error) {
+        return error;
+    }
+    throw new Error("expected command failure");
+}
+
+const failurePayload = { tag: "backend-error", category: "io", message: "I/O failure" } as const;
+const failedEvent = (generation = "9007199254740993", id = "observed") => ({
+    id,
+    generation,
+    progress: 37,
+    finished: true,
+    state: "failed" as const,
+    cleared: false,
+    failure: failurePayload,
+});
+
+describe("download failure observer", () => {
+    let observer: typeof import("./downloadJobs");
+    const emit = (payload: object) => mocks.listen.mock.calls[0]![0]({ payload });
+
+    beforeEach(async () => {
+        vi.resetModules();
+        observer = await import("./downloadJobs");
+    });
+
+    afterEach(() => observer.disposeDownloadFailures());
+
+    test("subscribes before snapshot and announces one unowned event per generation", async () => {
+        await observer.initializeDownloadFailures();
+        await observer.initializeDownloadFailures();
+        expect(mocks.listen).toHaveBeenCalledOnce();
+        expect(mocks.listen.mock.invocationCallOrder[0]).toBeLessThan(
+            mocks.snapshot.mock.invocationCallOrder[0]!,
+        );
+        emit(failedEvent());
+        emit(failedEvent());
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+            "Common.Error",
+            failurePayload,
+        );
+        expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith("observed");
+        emit(failedEvent("9007199254740994"));
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+    });
+
+    test("snapshot uses the facade's wire generation normalization and deduplicates event delivery", async () => {
+        mocks.snapshot.mockResolvedValue({ status: "ok", data: [failedEvent()] });
+        await observer.initializeDownloadFailures();
+        emit(failedEvent());
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+            "Common.Error",
+            failurePayload,
+        );
+        expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith("observed");
+    });
+
+    test("ignores absent payloads, clears, cancellation and running items", async () => {
+        await observer.initializeDownloadFailures();
+        emit({ ...failedEvent(), failure: undefined });
+        emit({ ...failedEvent(), cleared: true });
+        emit({ ...failedEvent(), state: "cancelled" });
+        emit({ ...failedEvent(), state: "running", finished: false });
+        expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+        expect(mocks.clearProgress).not.toHaveBeenCalled();
+    });
+
+    test("snapshot failure logs and leaves the listener usable", async () => {
+        mocks.snapshot.mockRejectedValue(new Error("snapshot refused"));
+        await observer.initializeDownloadFailures();
+        expect(mocks.warn).toHaveBeenCalledExactlyOnceWith(
+            "failed progress snapshot: snapshot refused",
+        );
+        emit(failedEvent());
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+    });
+
+    test("a failed clear leaves one announcement and document disposal removes the listener", async () => {
+        mocks.clearProgress.mockRejectedValue(new Error("clear refused"));
+        await observer.initializeDownloadFailures();
+        emit(failedEvent());
+        emit(failedEvent());
+        await vi.waitFor(() => expect(mocks.warn).toHaveBeenCalledOnce());
+        observer.disposeDownloadFailures();
+        emit(failedEvent("9007199254740994"));
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+        expect(mocks.unlisten).toHaveBeenCalledOnce();
+    });
+
+    test.each([true, false])(
+        "command-owned generation stays silent with failure before settlement %s",
+        async (before) => {
+            await observer.initializeDownloadFailures();
+            const result = deferred<void>();
+            const error = commandFailure("9007199254740993");
+            const attempt = observer
+                .runDownloadJob("observed", () => result.promise)
+                .catch((cause) => {
+                    mocks.notifyUnlessCancelled("Live wrapper", cause);
+                });
+            if (before) emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+            result.reject(error);
+            await attempt;
+            emit({ ...failedEvent(), state: "running", finished: false, progress: 0 });
+            emit(failedEvent());
+            emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+                "Live wrapper",
+                error,
+            );
+            emit(failedEvent("9007199254740994"));
+            expect(mocks.notifyUnlessCancelled).toHaveBeenLastCalledWith(
+                "Common.Error",
+                failurePayload,
+            );
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+        },
+    );
+
+    test.each([true, false])(
+        "refused duplicate admission owns no survivor, buffered %s",
+        async (before) => {
+            await observer.initializeDownloadFailures();
+            const result = deferred<void>();
+            // Even a misplaced generation cannot turn this specific refusal into ownership.
+            const conflict = commandFailure(
+                "9007199254740993",
+                "Conflict: download progress is already active",
+            );
+            const attempt = observer
+                .runDownloadJob("observed", () => result.promise)
+                .catch((cause) => {
+                    mocks.notifyUnlessCancelled("Live wrapper", cause);
+                });
+            emit({ ...failedEvent(), state: "running", finished: false, progress: 0 });
+            if (before) emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+            result.reject(conflict);
+            await attempt;
+            emit(failedEvent());
+            emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled.mock.calls).toEqual(
+                before
+                    ? [
+                          ["Common.Error", failurePayload],
+                          ["Live wrapper", conflict],
+                      ]
+                    : [
+                          ["Live wrapper", conflict],
+                          ["Common.Error", failurePayload],
+                      ],
+            );
+        },
+    );
+
+    test.each([true, false])(
+        "preparation cancellation owns no running generation, failure during preparation %s",
+        async (during) => {
+            await observer.initializeDownloadFailures();
+            const preparation = deferred<string>();
+            mocks.withDownloadTicket.mockImplementation(
+                (run: (ticket: string) => Promise<unknown>) => preparation.promise.then(run),
+            );
+            const run = vi.fn();
+            const attempt = observer.runDownloadJob("observed", run);
+            const caught = attempt.catch((error) => error);
+            const cancel = observer.cancelDownloadJob("observed");
+            emit({ ...failedEvent(), state: "running", finished: false, progress: 0 });
+            if (during) emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(during ? 1 : 0);
+            preparation.resolve("unused-ticket");
+            expect(await caught).toMatchObject({ message: "Cancellation" });
+            await cancel;
+            expect(run).not.toHaveBeenCalled();
+            emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+                "Common.Error",
+                failurePayload,
+            );
+            emit(failedEvent("9007199254740994"));
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+        },
+    );
+
+    test.each(["before error", "during clear", "after settlement"])(
+        "pre-begin failure commits nothing: survivor delivery %s",
+        async (delivery) => {
+            await observer.initializeDownloadFailures();
+            const result = deferred<void>();
+            const clear = deferred<bigint>();
+            mocks.clearProgress.mockReturnValueOnce(clear.promise);
+            const error = commandFailure();
+            expect(normalizeError(error)).not.toHaveProperty("progress_generation");
+            const caught = observer
+                .runDownloadJob("observed", () => result.promise)
+                .catch((cause) => cause);
+            const survivor = () => {
+                emit({ ...failedEvent(), state: "running", finished: false, progress: 0 });
+                emit(failedEvent());
+            };
+            if (delivery === "before error") survivor();
+            result.reject(error);
+            await vi.waitFor(() => expect(mocks.clearProgress).toHaveBeenCalledOnce());
+            if (delivery === "during clear") survivor();
+            expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+            clear.resolve(42n);
+            expect(await caught).toBe(error);
+            if (delivery === "after settlement") survivor();
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+                "Common.Error",
+                failurePayload,
+            );
+            emit(failedEvent());
+            expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+        },
+    );
+
+    test("buffers only the invoked id and flushes every unowned generation", async () => {
+        await observer.initializeDownloadFailures();
+        const result = deferred<void>();
+        const caught = observer
+            .runDownloadJob("observed", () => result.promise)
+            .catch((cause) => cause);
+        emit(failedEvent());
+        emit(failedEvent("9007199254740994"));
+        emit(failedEvent("9007199254740995", "other"));
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+        result.reject(commandFailure("9007199254740993"));
+        await caught;
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+        emit(failedEvent("9007199254740994"));
+        expect(mocks.notifyUnlessCancelled).toHaveBeenCalledTimes(2);
+    });
+
+    test.each([42, 42n, null, {}, true])(
+        "normalization drops a generation with the wrong wire type: %s",
+        (generation) => {
+            expect(normalizeError(commandFailure(generation))).not.toHaveProperty(
+                "progress_generation",
+            );
+        },
+    );
+
+    test("normalization retains the wire string through unwrapCommand", () => {
+        expect(normalizeError(commandFailure("9007199254740993"))).toMatchObject({
+            progress_generation: "9007199254740993",
+        });
+    });
 });
 
 afterEach(() => vi.restoreAllMocks());

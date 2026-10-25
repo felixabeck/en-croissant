@@ -49,7 +49,7 @@ use db::{
 };
 use engine::EngineSupervisor;
 use game::GameManager;
-use progress::{clear_progress, get_progress, ProgressEvent};
+use progress::{clear_progress, failed_progress_snapshot, get_progress, ProgressEvent};
 
 use log::LevelFilter;
 use oauth::AuthLifecycle;
@@ -2208,6 +2208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_game_engine_logs,
             preload_reference_db,
             get_progress,
+            failed_progress_snapshot,
             clear_progress,
             get_sound_server_port,
             download_chess_com_games,

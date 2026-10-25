@@ -6,6 +6,7 @@ import type {
     RemoteHttpRejection,
     RootFailure,
 } from "@/bindings";
+import type { ProgressEvent } from "@/bindings/generated";
 import { error as logError, warn as logWarn } from "./native";
 
 export type AppErrorCategory =
@@ -26,6 +27,7 @@ export type AppError = {
     engineFailure?: EngineTerminalSnapshot;
     remoteHttpRejection?: RemoteHttpRejection;
     nameTaken?: true;
+    progress_generation?: ProgressEvent["generation"];
 };
 
 const reportedErrors = new WeakSet<object>();
@@ -242,6 +244,9 @@ export function normalizeError(error: unknown): AppError {
             backendCategory: error.category,
             message: redact(error.message),
             ...(error.nameTaken === true ? { nameTaken: true } : {}),
+            ...(typeof error.progressGeneration === "string"
+                ? { progress_generation: error.progressGeneration }
+                : {}),
             ...(typeof rejection === "object" &&
             rejection !== null &&
             typeof rejection.status === "number" &&

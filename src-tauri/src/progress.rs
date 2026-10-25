@@ -357,6 +357,20 @@ impl ProgressStore {
         self.get_at(id, Instant::now())
     }
 
+    pub fn failed_snapshot(&self) -> Result<Vec<ProgressItem>, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
+        Self::purge_expired_at(&mut state, Instant::now());
+        Ok(state
+            .entries
+            .values()
+            .filter(|stored| stored.item.failure.is_some())
+            .map(|stored| stored.item.clone())
+            .collect())
+    }
+
     /// Clearing removes visible state and advances the global generation clock,
     /// preventing an old producer from recreating the cleared ID.
     pub fn clear(&self, id: &str) -> Result<ProgressGeneration, Error> {
@@ -621,6 +635,14 @@ pub fn get_progress(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Option<ProgressItem>, Error> {
     state.progress_state.get(&id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn failed_progress_snapshot(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<ProgressItem>, Error> {
+    state.progress_state.failed_snapshot()
 }
 
 #[tauri::command]
@@ -1160,6 +1182,42 @@ mod tests {
                 terminal
             );
         }
+    }
+
+    #[test]
+    fn failed_progress_snapshot_returns_payload_without_clearing() {
+        let store = ProgressStore::default();
+        let lease = store.start("file".into()).unwrap();
+        let (failed, _) = store
+            .transition_with_failure_at(
+                &lease,
+                37.0,
+                ProgressState::Failed,
+                Some(Error::InvalidInput("Download failed".into()).renderer_payload()),
+                Instant::now(),
+            )
+            .unwrap();
+        let without_payload = store.start("without-payload".into()).unwrap();
+        store
+            .transition(&without_payload, 12.0, ProgressState::Failed)
+            .unwrap();
+        store.start("running".into()).unwrap();
+        let cleared = store.start("cleared".into()).unwrap();
+        store
+            .transition_with_failure_at(
+                &cleared,
+                15.0,
+                ProgressState::Failed,
+                failed.failure.clone(),
+                Instant::now(),
+            )
+            .unwrap();
+        store.clear("cleared").unwrap();
+
+        assert_eq!(store.failed_snapshot().unwrap(), vec![failed.clone()]);
+        assert_eq!(store.get("file").unwrap(), Some(failed.clone()));
+        assert_eq!(store.failed_snapshot().unwrap(), vec![failed]);
+        assert!(store.get("cleared").unwrap().is_none());
     }
 
     #[test]

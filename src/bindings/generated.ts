@@ -1208,6 +1208,14 @@ async getProgress(id: string) : Promise<Result<ProgressItem | null, ErrorPayload
     else return { status: "error", error: e  as any };
 }
 },
+async failedProgressSnapshot() : Promise<Result<ProgressItem[], ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("failed_progress_snapshot") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async clearProgress(id: string) : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("clear_progress", { id }) };

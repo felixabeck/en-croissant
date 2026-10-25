@@ -12,6 +12,8 @@ const {
   initializeI18n,
   releasePreviousDocumentOperations,
   initializeWorkspace,
+  initializeDownloadFailures,
+  initializeEngineCompletions,
 } = vi.hoisted(() => {
   const render = vi.fn();
   return {
@@ -22,6 +24,8 @@ const {
     initializeI18n: vi.fn().mockResolvedValue(undefined),
     releasePreviousDocumentOperations: vi.fn().mockResolvedValue(null),
     initializeWorkspace: vi.fn(),
+    initializeDownloadFailures: vi.fn().mockResolvedValue(undefined),
+    initializeEngineCompletions: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -31,8 +35,9 @@ vi.mock("./state/pathOwners", () => ({
   initializePathOwners: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./state/engineCompletions", () => ({
-  initializeEngineCompletions: vi.fn().mockResolvedValue(undefined),
+  initializeEngineCompletions,
 }));
+vi.mock("./hooks/downloadJobs", () => ({ initializeDownloadFailures }));
 vi.mock("./state/atoms", () => ({ initializeWorkspace }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
 vi.mock("./platform/errors", async (importOriginal) => ({
@@ -62,6 +67,8 @@ beforeEach(() => {
   closeSplashscreen.mockClear();
   releasePreviousDocumentOperations.mockReset().mockResolvedValue(null);
   initializeWorkspace.mockReset();
+  initializeDownloadFailures.mockReset().mockResolvedValue(undefined);
+  initializeEngineCompletions.mockReset().mockResolvedValue(undefined);
   localStorage.clear();
   vi.resetModules();
 });
@@ -142,6 +149,26 @@ test("initialises the browser application root", async () => {
   expect(renderedChild().type).toBe(App);
   expect(closeSplashscreen).not.toHaveBeenCalled();
   expect(logFailureSafely).not.toHaveBeenCalled();
+  expect(initializeDownloadFailures).toHaveBeenCalledExactlyOnceWith();
+  expect(initializeDownloadFailures.mock.invocationCallOrder[0]).toBeLessThan(
+    initializeEngineCompletions.mock.invocationCallOrder[0] ?? 0,
+  );
+  expect(initializeDownloadFailures.mock.invocationCallOrder[0]).toBeLessThan(
+    render.mock.invocationCallOrder[0] ?? 0,
+  );
+});
+
+test.each(["observer", "engine"])("isolates %s recovery failure", async (failure) => {
+  (failure === "observer"
+    ? initializeDownloadFailures
+    : initializeEngineCompletions
+  ).mockRejectedValueOnce(new Error("recovery failed"));
+  const { applicationStartup } = await import("./index");
+  await applicationStartup;
+  expect(initializeDownloadFailures).toHaveBeenCalledExactlyOnceWith();
+  expect(initializeEngineCompletions).toHaveBeenCalledExactlyOnceWith();
+  expect(renderedChild().type).toBe(App);
+  expect(logFailureSafely).toHaveBeenCalledTimes(1);
 });
 
 function renderedChild() {

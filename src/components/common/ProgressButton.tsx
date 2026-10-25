@@ -111,6 +111,7 @@ function ProgressButton({
         {!completed &&
           progress !== 0 &&
           item?.state !== "cancelled" &&
+          item?.state !== "failed" &&
           (item?.state !== "succeeded" || showProgress) && (
             <Progress
               pos="absolute"
