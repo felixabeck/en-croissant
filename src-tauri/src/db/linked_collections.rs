@@ -39,6 +39,37 @@ const BACKUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 const MIGRATION_SOURCE_OWNER_RETRY: std::time::Duration = std::time::Duration::from_millis(25);
 const SOURCE_REBUILD_ATTEMPTS: usize = 3;
 
+#[cfg(test)]
+pub(crate) static RECORD_DOWNLOAD_FAILURE: crate::infra::test_hooks::KeyedTestValues<
+    (String, String),
+    Error,
+> = crate::infra::test_hooks::KeyedTestValues::new();
+
+pub(crate) async fn record_download_receipt(
+    authority: &SharedPathAuthority,
+    file: FileWorkspaceHandle,
+    provider: &str,
+    account: &str,
+    since_ms: Option<i64>,
+    cancellation: CancellationToken,
+) -> Option<Error> {
+    async {
+        if let Some(service) = authority.collections()? {
+            let authority = authority.clone();
+            let provider = provider.to_owned();
+            let account = account.to_owned();
+            crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |token| {
+                    service.record_download(&authority, file, &provider, &account, since_ms, token)
+                })
+                .await?;
+        }
+        Ok::<_, Error>(())
+    }
+    .await
+    .err()
+}
+
 pub(crate) fn supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
@@ -652,6 +683,10 @@ impl CollectionService {
         since_ms: Option<i64>,
         token: &CancellationToken,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        if let Some(error) = RECORD_DOWNLOAD_FAILURE.take(&(provider.into(), account.into())) {
+            return Err(error);
+        }
         let path = authority.with_mut(|authority| {
             authority.workspace_entry_path(&file, PathOperation::ReadPgn)
         })??;

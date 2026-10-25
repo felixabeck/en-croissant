@@ -456,31 +456,19 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
             Some(&commit_gate),
         )
         .await?;
-        let receipt_error = async {
-            if let Some(service) = state.pgn_path_authority.collections()? {
-                let authority = state.pgn_path_authority.clone();
-                let file = publication.handle.clone();
-                let since_ms = first_month
-                    .and_then(|(year, month)| chrono::NaiveDate::from_ymd_opt(year, month, 1))
-                    .and_then(|date| date.and_hms_opt(0, 0, 0))
-                    .map(|date| date.and_utc().timestamp_millis());
-                crate::infra::blocking::BLOCKING_GATEWAY
-                    .spawn_cancellable(cancellation.clone(), move |token| {
-                        service.record_download(
-                            &authority,
-                            file,
-                            "chesscom",
-                            &lower_player,
-                            since_ms,
-                            token,
-                        )
-                    })
-                    .await?;
-            }
-            Ok::<_, Error>(())
-        }
-        .await
-        .err();
+        let since_ms = first_month
+            .and_then(|(year, month)| chrono::NaiveDate::from_ymd_opt(year, month, 1))
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .map(|date| date.and_utc().timestamp_millis());
+        let receipt_error = crate::db::linked_collections::record_download_receipt(
+            &state.pgn_path_authority,
+            publication.handle.clone(),
+            "chesscom",
+            &lower_player,
+            since_ms,
+            cancellation.clone(),
+        )
+        .await;
         Ok(RuntimeDownload {
             publication,
             receipt_error,

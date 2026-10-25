@@ -1377,20 +1377,15 @@ pub(crate) async fn download_lichess_games_runtime<R: tauri::Runtime>(
     )
     .await?
     .ok_or_else(|| Error::Conflict("Lichess download did not register an artifact".into()))?;
-    let receipt_error = async {
-        if let Some(service) = state.pgn_path_authority.collections()? {
-            let authority = state.pgn_path_authority.clone();
-            let file = publication.handle.clone();
-            crate::infra::blocking::BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation, move |token| {
-                    service.record_download(&authority, file, "lichess", &player, since_ms, token)
-                })
-                .await?;
-        }
-        Ok::<_, Error>(())
-    }
-    .await
-    .err();
+    let receipt_error = crate::db::linked_collections::record_download_receipt(
+        &state.pgn_path_authority,
+        publication.handle.clone(),
+        "lichess",
+        &player,
+        since_ms,
+        cancellation,
+    )
+    .await;
     Ok(crate::infra::operations::RuntimeDownload {
         publication,
         receipt_error,
@@ -4638,6 +4633,99 @@ mod tests {
     pub struct MockTransport {
         pub responses: std::sync::Mutex<Vec<Result<DownloadResponse, Error>>>,
         pub requests_seen: std::sync::Mutex<Vec<(String, HeaderMap)>>,
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reload_completion_lichess_runtime_retains_publication_after_receipt_failure() {
+        use crate::db::linked_collections::{tests::Fixture, RECORD_DOWNLOAD_FAILURE};
+
+        struct ResetReceiptFailure((String, String));
+        impl Drop for ResetReceiptFailure {
+            fn drop(&mut self) {
+                RECORD_DOWNLOAD_FAILURE.clear(&self.0);
+            }
+        }
+
+        let fixture = Fixture::new();
+        let player = "reload-receipt-failure";
+        let body = crate::db::linked_collections::tests::game(
+            None,
+            "e4 e5",
+            "published before receipt failure",
+        )
+        .replace("https://www.chess.com", "https://lichess.org/AbCd1234");
+        let length = body.len() as u64;
+        let transport = Arc::new(MockTransport {
+            responses: Mutex::new(vec![Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: None,
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(bytes::Bytes::from(
+                    body,
+                ))])),
+            })]),
+            requests_seen: Mutex::new(vec![]),
+        });
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                &fixture.directory.path().join("credentials-app"),
+            ))
+            .unwrap();
+        let account = credentials
+            .store_lichess_token(player.into(), "disposable-fixture-token".into())
+            .unwrap()
+            .account;
+        let state = AppState {
+            credentials,
+            http_transport: transport,
+            ..fixture.state.clone()
+        };
+        let app = test_progress_app();
+        let job = state.operations.prepare_download("fixture-window").unwrap();
+        let key = ("lichess".into(), player.into());
+        let _reset = ResetReceiptFailure(key.clone());
+        RECORD_DOWNLOAD_FAILURE.arm(key, Error::Conflict("receipt recording failed".into()));
+
+        let result = download_lichess_games_runtime(
+            account.handle,
+            fixture.download_destination(),
+            "receipt-failure.pgn".into(),
+            player.into(),
+            None,
+            job,
+            "fixture-window",
+            app.handle(),
+            &state,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "published download was discarded: {result:?}"
+        );
+        let downloaded = result.unwrap();
+        assert!(matches!(
+            downloaded.receipt_error,
+            Some(Error::Conflict(ref message)) if message == "receipt recording failed"
+        ));
+        let snapshot = state
+            .pgn_path_authority
+            .with_mut(|authority| {
+                authority
+                    .resolve(
+                        downloaded.publication.handle.path_ref(),
+                        crate::infra::path_authority::PathOperation::ReadPgn,
+                        &[],
+                    )
+                    .unwrap()
+                    .pgn_snapshot()
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.revision.size, length);
     }
 
     #[cfg(unix)]

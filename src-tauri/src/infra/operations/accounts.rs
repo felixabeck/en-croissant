@@ -332,7 +332,7 @@ async fn download_account<R: tauri::Runtime>(
             handle,
             request.destination,
             filename,
-            request.account,
+            request.account.clone(),
             request.since_ms,
             ticket.clone(),
             &owner,
@@ -344,7 +344,7 @@ async fn download_account<R: tauri::Runtime>(
         crate::chesscom::download_chess_com_games_runtime(
             request.destination,
             filename,
-            request.account,
+            request.account.clone(),
             request.since_ms,
             ticket.clone(),
             app,
@@ -354,15 +354,23 @@ async fn download_account<R: tauri::Runtime>(
         )
         .await
     };
-    adopt_account_download(downloaded)
+    adopt_account_download(downloaded, &request.provider, &request.account)
 }
 
 fn adopt_account_download(
     downloaded: Result<RuntimeDownload, Error>,
+    provider: &str,
+    account: &str,
 ) -> Result<ArtifactPublication, Error> {
     let downloaded = downloaded?;
     if let Some(error) = downloaded.receipt_error {
-        log::warn!("account download receipt failed: {}", error.diagnostic());
+        log::warn!(
+            "account download receipt failed for provider {} account {} publication {}: {}",
+            provider,
+            account,
+            downloaded.publication.handle.path_ref().id,
+            error.diagnostic()
+        );
     }
     Ok(downloaded.publication)
 }
@@ -602,7 +610,7 @@ mod tests {
             "download_lichess_games_runtime(",
             "download_chess_com_games_runtime(",
             "since_ms",
-            "adopt_account_download(downloaded)",
+            "adopt_account_download(downloaded, &request.provider, &request.account)",
         ] {
             assert!(body.contains(required), "missing {required}: {body}");
         }
@@ -616,10 +624,34 @@ mod tests {
             }),
             durability: CommitDurability::Durable,
         };
-        let adopted = adopt_account_download(Ok(RuntimeDownload {
-            publication: publication.clone(),
-            receipt_error: Some(Error::Conflict("receipt recording failed".into())),
-        }));
+        let adopted = adopt_account_download(
+            Ok(RuntimeDownload {
+                publication: publication.clone(),
+                receipt_error: Some(Error::Conflict("receipt recording failed".into())),
+            }),
+            "lichess",
+            "receipt-failure-account",
+        );
         assert_eq!(adopted.unwrap(), publication);
+    }
+
+    #[test]
+    fn reload_completion_provider_runtimes_share_receipt_recording() {
+        for (source, signature) in [
+            (
+                include_str!("../../fs.rs"),
+                "async fn download_lichess_games_runtime<",
+            ),
+            (
+                include_str!("../../chesscom.rs"),
+                "async fn download_chess_com_games_core<",
+            ),
+        ] {
+            let body = crate::infra::blocking::source_scan::body_at_indent(source, signature);
+            assert!(
+                body.contains("crate::db::linked_collections::record_download_receipt("),
+                "{signature} must use shared receipt recording: {body}"
+            );
+        }
     }
 }
