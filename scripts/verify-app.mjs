@@ -222,8 +222,6 @@ const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
 // interval, or WebKitGTK delivers two single clicks and the scenario proves nothing.
 const DOUBLE_CLICK_GAP_MS = 60;
-// Allow a queued native frame and React render to settle before observing the stale event.
-const PROGRESS_STALE_EVENT_OBSERVATION_DELAY_MS = 100;
 const filesWorkspaceId = "verify-files-workspace";
 const filesRowName = "verify-sample";
 const filesMetadataRowName = "verify-metadata-only";
@@ -1334,7 +1332,7 @@ async function verifyConversionCancellation(session, ownedRoot) {
   });
 }
 
-async function verifyProgressContract(session, { cancellation = false } = {}) {
+async function verifyProgressContract(session) {
   const id = `verify-progress:${randomUUID()}`;
   const ipc = (command, args) =>
     `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`;
@@ -1378,73 +1376,12 @@ async function verifyProgressContract(session, { cancellation = false } = {}) {
     return observed;
   };
   try {
-    const start = await invoke("start_progress", { id });
-    const generation = start.value?.generation;
+    // Native jobs mint progress. This probe only reads, clears, and listens.
+    const absent = await invoke("get_progress", { id });
     check(
-      canonical(generation) &&
-        start.value.id === id &&
-        (expectedProgressGeneration === undefined || generation === expectedProgressGeneration),
-      "progress start lease has exact canonical string generation",
-      JSON.stringify(start),
-    );
-    if (!canonical(generation)) return;
-    console.log(`  ..  progress start wire: ${JSON.stringify(start.value)}`);
-    await event(
-      "progress running event has exact canonical string generation",
-      'payload.state === "running" && payload.progress === 0',
-      generation,
-      (payload) => payload.finished === false && payload.cleared === false,
-    );
-    const running = await invoke("set_progress_state", {
-      lease: start.value,
-      progress: 35,
-      progressState: "running",
-    });
-    const snapshot = await invoke("get_progress", { id });
-    check(
-      running.value === null &&
-        exact(snapshot.value?.generation, generation) &&
-        snapshot.value?.progress === 35 &&
-        snapshot.value?.state === "running",
-      "progress state-update string lease reaches native with exact identity",
-      JSON.stringify({ running, snapshot }),
-    );
-    check(
-      exact(snapshot.value?.generation, generation) &&
-        snapshot.value?.id === id &&
-        snapshot.value?.finished === false,
-      "progress snapshot has exact canonical string generation",
-      JSON.stringify(snapshot),
-    );
-    const terminal = await invoke("set_progress_state", {
-      lease: start.value,
-      progress: 100,
-      progressState: "failed",
-    });
-    check(
-      terminal.value === null,
-      "progress terminal state update accepts the string lease",
-      JSON.stringify(terminal),
-    );
-    await event(
-      "progress terminal event has exact canonical string generation",
-      'payload.state === "failed"',
-      generation,
-      (payload) =>
-        payload.finished === true && payload.progress === 100 && payload.cleared === false,
-    );
-    const invalid = await invoke("set_progress_state", {
-      lease: { id, generation: "01" },
-      progress: 50,
-      progressState: "running",
-    });
-    const unchanged = await invoke("get_progress", { id });
-    check(
-      typeof invalid.result.rejected === "string" &&
-        JSON.stringify(unchanged.value) ===
-          JSON.stringify({ ...snapshot.value, progress: 100, finished: true, state: "failed" }),
-      "progress malformed lease rejects without changing the snapshot",
-      JSON.stringify({ invalid, unchanged }),
+      absent.value === null,
+      "progress absent id has no native snapshot",
+      JSON.stringify(absent),
     );
     const malformedClear = await invoke("clear_progress", { id: null });
     check(
@@ -1467,16 +1404,18 @@ async function verifyProgressContract(session, { cancellation = false } = {}) {
         JSON.stringify(cleared),
       );
     } else {
-      const floor = (BigInt(generation) + 1n).toString();
+      const generation = cleared.value;
       check(
-        exact(cleared.value, floor),
+        canonical(generation) &&
+          (expectedProgressGeneration === undefined || generation === expectedProgressGeneration),
         "progress clear return has exact canonical string generation",
         JSON.stringify(cleared),
       );
+      if (!canonical(generation)) return;
       await event(
         "progress cleared event has exact canonical string generation",
         "payload.cleared === true",
-        floor,
+        generation,
         (payload) =>
           payload.finished === true && payload.state === "cancelled" && payload.progress === 0,
       );
@@ -1487,7 +1426,6 @@ async function verifyProgressContract(session, { cancellation = false } = {}) {
         JSON.stringify(empty),
       );
     }
-    if (cancellation && expectClearRejection) await verifyProgressCancellation(session, invoke);
   } finally {
     await session.execute(
       `window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("progress-event", arguments[0]); return true;`,
@@ -1508,128 +1446,6 @@ async function verifyProgressContract(session, { cancellation = false } = {}) {
       `window.__TAURI_INTERNALS__.unregisterCallback(window.__verifyProgressHandler); delete window.__verifyProgressEvents; delete window.__verifyProgressHandler; return true;`,
     );
   }
-}
-
-async function verifyProgressCancellation(session, invoke) {
-  const catalog = JSON.parse(
-    await readFile(new URL("../src/catalogs/databases.json", import.meta.url), "utf8"),
-  )[0];
-  const id = `db:${catalog.downloadLink}`;
-  await showLibraryOverview(session);
-  await waitFor("progress database catalog opener", () =>
-    session.execute(
-      `const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === "Import or download database"); if (!button) return false; button.click(); return true;`,
-    ),
-  );
-  await waitFor("progress database catalog card", () =>
-    session.execute(
-      `
-    const title = [...document.querySelectorAll('[role="dialog"] p')].find(node => node.textContent === arguments[0]);
-    const card = title?.closest('.mantine-Paper-root');
-    const action = card && [...card.querySelectorAll('button')].find(button => button.textContent.trim() === "Install");
-    if (!action || action.disabled) return false;
-    window.__verifyProgressCard = card;
-    window.__verifyProgressAction = action[Object.keys(action).find(key => key.startsWith('__reactProps$'))]?.onClick;
-    return typeof window.__verifyProgressAction === 'function';
-  `,
-      [catalog.title],
-    ),
-  );
-  const lease = await invoke("start_progress", { id });
-  await invoke("set_progress_state", {
-    lease: lease.value,
-    progress: 35,
-    progressState: "running",
-  });
-  const card = async () =>
-    session.execute(`
-    const card = window.__verifyProgressCard;
-    return { progress: card.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') ?? null,
-      cancel: !!card.querySelector('button[aria-label="Cancel"]'),
-      action: [...card.querySelectorAll('button')].some(button => button.textContent.trim() === 'Install' && !button.disabled) };
-  `);
-  const visible = await waitFor("progress high-generation running UI", async () => {
-    const state = await card();
-    return state.progress === "35" && state.cancel ? state : false;
-  }).catch((error) => ({ error: error.message }));
-  check(
-    visible.progress === "35" &&
-      canonicalProgressLease(lease.value) &&
-      BigInt(lease.value.generation) > 9007199254740991n,
-    "progress high-generation wire event drives the real renderer bar",
-    JSON.stringify({ lease, visible }),
-  );
-  const pressed = await session.execute(`
-    window.__verifyProgressAction();
-    const cancel = window.__verifyProgressCard.querySelector('button[aria-label="Cancel"]');
-    if (!cancel) return false;
-    cancel.click();
-    return true;
-  `);
-  check(pressed === true, "progress cancellation presses the production pre-claim job button");
-  const hidden = await waitFor("progress rejected-clear cancellation fence", async () => {
-    const state = await card();
-    return state.progress === null && !state.cancel && state.action ? state : false;
-  }).catch((error) => ({ error: error.message }));
-  check(
-    hidden.progress === null && hidden.cancel === false && hidden.action === true,
-    "progress rejected-clear null acknowledgement hides the cancelled generation",
-    JSON.stringify(hidden),
-  );
-  await invoke("set_progress_state", {
-    lease: lease.value,
-    progress: 75,
-    progressState: "running",
-  });
-  await new Promise((resolve) => setTimeout(resolve, PROGRESS_STALE_EVENT_OBSERVATION_DELAY_MS));
-  const delayed = await card();
-  check(
-    delayed.progress === null && !delayed.cancel,
-    "progress fenced old native event cannot resurrect the bar",
-    JSON.stringify(delayed),
-  );
-  const retry = await invoke("start_progress", { id });
-  await invoke("set_progress_state", {
-    lease: retry.value,
-    progress: 45,
-    progressState: "running",
-  });
-  const retryVisible = await waitFor("progress retry UI", async () => {
-    const state = await card();
-    return state.progress === "45" && state.cancel ? state : false;
-  }).catch((error) => ({ error: error.message }));
-  check(
-    canonicalProgressLease(retry.value) &&
-      canonicalProgressLease(lease.value) &&
-      BigInt(retry.value.generation) === BigInt(lease.value.generation) + 1n &&
-      retryVisible.progress === "45" &&
-      retryVisible.cancel === true,
-    "progress newer retry remains distinct and visible after rejected clear",
-    JSON.stringify({ retry, retryVisible }),
-  );
-  await invoke("set_progress_state", {
-    lease: retry.value,
-    progress: 65,
-    progressState: "running",
-  });
-  const updating = await waitFor("progress retry update UI", async () => {
-    const state = await card();
-    return state.progress === "65" ? state : false;
-  }).catch((error) => ({ error: error.message }));
-  check(
-    updating.progress === "65",
-    "progress newer retry continues updating through the real facade",
-    JSON.stringify(updating),
-  );
-  if (screenshotPath)
-    await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
-  await session.execute(
-    "delete window.__verifyProgressAction; delete window.__verifyProgressCard; return true;",
-  );
-}
-
-function canonicalProgressLease(lease) {
-  return canonicalProgressGeneration(lease?.generation);
 }
 
 function canonicalProgressGeneration(value) {
@@ -5464,7 +5280,7 @@ async function main() {
         await waitFor("progress renderer startup", () =>
           progressSession.execute(closeControlProbe),
         );
-        await verifyProgressContract(progressSession, { cancellation: true });
+        await verifyProgressContract(progressSession);
         if (screenshotPath && !expectClearRejection) {
           await writeFile(
             screenshotPath,

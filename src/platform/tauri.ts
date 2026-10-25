@@ -11,7 +11,7 @@ import {
     type Result as GeneratedResult,
     type TimeControl,
 } from "@/bindings/generated";
-import type { ProgressEvent, ProgressItem, ProgressLease, ProgressState } from "@/bindings";
+import type { ProgressEvent, ProgressItem } from "@/bindings";
 import { normalizeError } from "./errors";
 import { error as logError, getCurrentWindow } from "./native";
 
@@ -94,13 +94,6 @@ function decodeProgressGeneration(value: unknown): bigint {
     throw new TypeError("generation must be a canonical unsigned u64 decimal string");
 }
 
-function encodeProgressGeneration(value: bigint): string {
-    if (typeof value !== "bigint" || value < 0n || value > MAX_PROGRESS_GENERATION) {
-        throw new TypeError("generation must be an unsigned u64 bigint");
-    }
-    return value.toString();
-}
-
 function normalizeProgressGeneration<T extends { generation: string }>(
     value: T,
 ): Omit<T, "generation"> & { generation: bigint } {
@@ -150,21 +143,10 @@ type NativeReadFacade<T> = T extends (
     : never;
 type TauriCommands = Omit<
     GeneratedCommands,
-    | "startGame"
-    | NativeReadCommandName
-    | "startProgress"
-    | "getProgress"
-    | "setProgressState"
-    | "clearProgress"
+    "startGame" | NativeReadCommandName | "getProgress" | "clearProgress"
 > & {
-    startProgress: (id: string) => Promise<ProgressLease>;
     getProgress: (id: string) => Promise<ProgressItem | null>;
     clearProgress: (id: string) => Promise<bigint>;
-    setProgressState: (
-        lease: ProgressLease,
-        progress: number,
-        progressState: ProgressState,
-    ) => ReturnType<GeneratedCommands["setProgressState"]>;
     startGame: (
         gameId: string,
         config: GameConfigInput,
@@ -440,20 +422,12 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 if (sinceMsIndex !== undefined && args[sinceMsIndex] !== null) {
                     args[sinceMsIndex] = encodeCounter(args[sinceMsIndex] as bigint, "sinceMs");
                 }
-                if (property === "setProgressState") {
-                    const lease = args[0] as ProgressLease;
-                    args[0] = {
-                        ...lease,
-                        generation: encodeProgressGeneration(lease.generation),
-                    };
-                }
                 const result = await command(...args);
                 const value = isCommandResult(result) ? unwrapCommand(result) : result;
                 if (property === "clearProgress") return decodeProgressGeneration(value);
                 if (property === "getProgress") {
                     return value === null ? null : normalizeProgressGeneration(value);
                 }
-                if (property === "startProgress") return normalizeProgressGeneration(value);
                 return GAME_STATE_COMMANDS.has(property) ? normalizeGameState(value) : value;
             } catch (error) {
                 if (error instanceof TauriCommandError) throw error;

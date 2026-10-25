@@ -573,39 +573,11 @@ impl<R: tauri::Runtime> Drop for JobProgress<R> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn start_progress(
-    id: String,
-    state: tauri::State<'_, crate::AppState>,
-    app: tauri::AppHandle,
-) -> Result<ProgressLease, Error> {
-    begin_progress(&state.progress_state, &app, id)
-}
-
-#[tauri::command]
-#[specta::specta]
 pub fn get_progress(
     id: String,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Option<ProgressItem>, Error> {
     state.progress_state.get(&id)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn set_progress_state(
-    lease: ProgressLease,
-    progress: f32,
-    progress_state: ProgressState,
-    state: tauri::State<'_, crate::AppState>,
-    app: tauri::AppHandle,
-) -> Result<(), Error> {
-    update_progress_with_state(
-        &state.progress_state,
-        &app,
-        &lease,
-        progress,
-        progress_state,
-    )
 }
 
 #[tauri::command]
