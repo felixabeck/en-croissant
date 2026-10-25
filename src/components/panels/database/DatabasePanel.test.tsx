@@ -5,10 +5,21 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import { MantineProvider } from "@mantine/core";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
-import { SWRConfig } from "swr";
+import { SWRConfig, useSWRConfig, type ScopedMutator } from "swr";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
-import { dbTypeFamily, dbTabFamily, sessionsAtom, tabsAtom, activeTabAtom } from "@/state/atoms";
+import {
+  dbTypeFamily,
+  dbTabFamily,
+  sessionsAtom,
+  tabsAtom,
+  activeTabAtom,
+  localOptionsFamily,
+  referenceDbAtom,
+} from "@/state/atoms";
+import type { DatabaseHandle } from "@/bindings";
+import { type DatabaseList, type ManagedDatabaseInfo } from "@/utils/db";
+import { DATABASE_LIST_KEY } from "@/hooks/useDatabaseList";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +28,9 @@ const mocks = vi.hoisted(() => ({
   getMasterGames: vi.fn(),
   getPublicLichessJson: vi.fn(),
   lexPgn: vi.fn(),
+  getDatabases: vi.fn(),
+  searchPosition: vi.fn(),
+  collectionForDatabase: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -48,6 +62,11 @@ vi.mock("@/utils/lichess/api", async () => {
   };
 });
 
+vi.mock("@/utils/db", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
+  return { ...actual, getDatabases: mocks.getDatabases };
+});
+
 vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
   return {
@@ -56,6 +75,8 @@ vi.mock("@/platform/tauri", async () => {
       ...actual.tauri,
       getPublicLichessJson: mocks.getPublicLichessJson,
       lexPgn: mocks.lexPgn,
+      searchPosition: mocks.searchPosition,
+      collectionForDatabase: mocks.collectionForDatabase,
     },
   };
 });
@@ -70,9 +91,10 @@ class MockResizeObserver {
 }
 globalThis.ResizeObserver = MockResizeObserver;
 
-installMatchMediaStub();
+// DataTable checks an empty media query for columns without a visibility restriction.
+installMatchMediaStub({ matches: (query) => query === "" });
 
-describe("DatabasePanel online explorer branches", () => {
+describe("DatabasePanel", () => {
   let container: HTMLDivElement;
   let root: Root;
   let treeStore: TreeStore;
@@ -89,6 +111,9 @@ describe("DatabasePanel online explorer branches", () => {
     mocks.getMasterGames.mockReset();
     mocks.getPublicLichessJson.mockReset();
     mocks.lexPgn.mockReset();
+    mocks.getDatabases.mockReset();
+    mocks.searchPosition.mockReset().mockResolvedValue([[], []]);
+    mocks.collectionForDatabase.mockReset().mockResolvedValue(null);
   });
 
   afterEach(async () => {
@@ -235,6 +260,250 @@ describe("DatabasePanel online explorer branches", () => {
     type: "analysis" as const,
     gameOrigin: { kind: "none" as const },
   };
+
+  const reference: DatabaseHandle = { id: { id: "saved-reference" }, kind: "database" };
+  const stalePath: DatabaseHandle = { id: { id: "old-tab-reference" }, kind: "database" };
+  const readable: ManagedDatabaseInfo = {
+    type: "success",
+    file: reference,
+    title: "Saved reference",
+    filename: "reference.db3",
+    description: "",
+    indexed: false,
+    player_count: 2,
+    event_count: 1,
+    game_count: 1,
+    storage_size: "4096",
+  };
+  const unreadable: ManagedDatabaseInfo = {
+    type: "error",
+    file: reference,
+    filename: "reference.db3",
+    indexed: false,
+    error: "Database is unreadable",
+  };
+  const databaseList = (databases: ManagedDatabaseInfo[]): DatabaseList => ({
+    databases,
+    unread: [],
+    root: { id: { id: "database-root" }, kind: "databaseRoot" },
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function mountLocal() {
+    const store = createJotaiStore();
+    store.set(tabsAtom, [validTab]);
+    store.set(activeTabAtom, tabId);
+    store.set(dbTypeFamily(tabId), "local");
+    store.set(dbTabFamily(tabId), "stats");
+    // Hydrate the real persisted atom and seed an unrelated old per-tab search path.
+    localStorage.setItem("reference-database", JSON.stringify(reference));
+    store.set(localOptionsFamily(tabId), {
+      ...store.get(localOptionsFamily(tabId)),
+      path: stalePath,
+      fen: treeStore.getState().currentNode().fen,
+      result: "draw",
+      elo: [1800, 2400],
+      exclude_fast_events: true,
+    });
+    let mutate!: ScopedMutator;
+    function CacheControl() {
+      mutate = useSWRConfig().mutate;
+      return null;
+    }
+    await act(async () => {
+      root.render(
+        <MantineProvider>
+          <JotaiProvider store={store}>
+            <TreeStateContext.Provider value={treeStore}>
+              <WorkspaceTabScope tabId={tabId}>
+                <SWRConfig
+                  value={{
+                    provider: () => new Map(),
+                    dedupingInterval: 0,
+                    shouldRetryOnError: false,
+                    revalidateOnFocus: false,
+                    revalidateOnReconnect: false,
+                  }}
+                >
+                  <CacheControl />
+                  <DatabasePanel />
+                </SWRConfig>
+              </WorkspaceTabScope>
+            </TreeStateContext.Provider>
+          </JotaiProvider>
+        </MantineProvider>,
+      );
+    });
+    return {
+      store,
+      revalidate: async () => {
+        await act(async () => {
+          await mutate(DATABASE_LIST_KEY);
+        });
+      },
+    };
+  }
+
+  function expectSavedChoice(store: ReturnType<typeof createJotaiStore>) {
+    expect(store.get(referenceDbAtom)).toEqual(reference);
+    expect(JSON.parse(localStorage.getItem("reference-database")!)).toEqual(reference);
+  }
+
+  function expectNoReference() {
+    expect(container.textContent).toContain("Board.Database.NoReference1");
+    expect(container.querySelector<HTMLInputElement>(".mantine-Select-input")?.value).toBe("");
+  }
+
+  test("local: readable persisted handle searches with preserved filters and overrides stale tab path", async () => {
+    mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+    const { store } = await mountLocal();
+
+    expect(mocks.searchPosition).toHaveBeenCalled();
+    for (const call of mocks.searchPosition.mock.calls) {
+      expect(call).toEqual([
+        reference,
+        expect.objectContaining({
+          wanted_result: "draw",
+          range1: [1800, 2400],
+          range2: [1800, 2400],
+          exclude_fast_events: true,
+        }),
+        tabId,
+        { signal: expect.any(AbortSignal) },
+      ]);
+    }
+    expect(container.querySelector<HTMLInputElement>(".mantine-Select-input")?.value).toBe(
+      "Saved reference",
+    );
+    expect(container.textContent).not.toContain("Board.Database.NoReference1");
+    expect(store.get(localOptionsFamily(tabId)).path).toEqual(reference);
+    expectSavedChoice(store);
+  });
+
+  test.each([
+    ["absent", []],
+    ["unreadable", [unreadable]],
+  ] as const)(
+    "local: %s persisted handle never searches a stale tab path",
+    async (_name, entries) => {
+      mocks.getDatabases.mockResolvedValue(databaseList([...entries]));
+      const { store } = await mountLocal();
+
+      expect(mocks.searchPosition).not.toHaveBeenCalled();
+      expect(store.get(localOptionsFamily(tabId)).path).toBeNull();
+      expectSavedChoice(store);
+      for (const value of ["stats", "games", "options"]) {
+        await act(async () => {
+          store.set(dbTabFamily(tabId), value);
+        });
+        expectNoReference();
+      }
+    },
+  );
+
+  test("local: pending list and transient failure preserve the saved choice until successful recovery", async () => {
+    const pending = deferred<DatabaseList>();
+    mocks.getDatabases.mockReturnValueOnce(pending.promise);
+    const { store, revalidate } = await mountLocal();
+    expectNoReference();
+    expectSavedChoice(store);
+    expect(mocks.searchPosition).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pending.reject(new Error("Temporary list failure"));
+    });
+    expectNoReference();
+    expectSavedChoice(store);
+    expect(mocks.searchPosition).not.toHaveBeenCalled();
+
+    mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+    await revalidate();
+    expect(mocks.searchPosition).toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>(".mantine-Select-input")?.value).toBe(
+      "Saved reference",
+    );
+    expectSavedChoice(store);
+  });
+
+  test.each(["absent", "unreadable", "list failure"] as const)(
+    "local: becoming %s cancels the pending owner and hides a late result",
+    async (unavailable) => {
+      const pending = deferred<[import("@/utils/db").Opening[], []]>();
+      let signal!: AbortSignal;
+      mocks.searchPosition.mockImplementation((_path, _query, _tab, options) => {
+        signal = options.signal;
+        // Model the native facade's abort guard even when the IPC reply arrives late.
+        return pending.promise.then((result) => {
+          if (options.signal.aborted) throw cancellationError();
+          return result;
+        });
+      });
+      mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+      const { store, revalidate } = await mountLocal();
+      expect(mocks.searchPosition).toHaveBeenCalledOnce();
+      expect(signal.aborted).toBe(false);
+
+      if (unavailable === "list failure")
+        mocks.getDatabases.mockRejectedValue(new Error("Temporary list failure"));
+      else
+        mocks.getDatabases.mockResolvedValue(
+          databaseList(unavailable === "absent" ? [] : [unreadable]),
+        );
+      await revalidate();
+      expect(signal.aborted).toBe(true);
+      expectNoReference();
+      expectSavedChoice(store);
+      expect(mocks.searchPosition).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        pending.resolve([[{ move: "STALE", white: 999, black: 0, draw: 0 }], []]);
+      });
+      expectNoReference();
+      expect(container.textContent).not.toContain("STALE");
+      expect(container.textContent).not.toContain("999");
+
+      mocks.searchPosition.mockResolvedValue([[{ move: "e4", white: 1, black: 0, draw: 0 }], []]);
+      mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+      await revalidate();
+      expect(mocks.searchPosition).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("e4");
+      });
+      expect(container.textContent).not.toContain("STALE");
+      expectSavedChoice(store);
+    },
+  );
+
+  test("local: admitted search failures retain their native error presentation", async () => {
+    mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+    mocks.searchPosition.mockRejectedValue(new Error("Native position search failed"));
+    await mountLocal();
+    expect(container.textContent).toContain("Native position search failed");
+    expect(container.textContent).not.toContain("Board.Database.NoReference1");
+  });
+
+  test("local: collection-unavailable presentation yields to the missing effective reference warning", async () => {
+    mocks.getDatabases.mockResolvedValue(databaseList([readable]));
+    mocks.collectionForDatabase.mockRejectedValue(new Error("Collection unavailable"));
+    const { store, revalidate } = await mountLocal();
+    expect(container.textContent).toContain("Collections.Unavailable");
+    expect(container.textContent).not.toContain("Board.Database.NoReference1");
+
+    mocks.getDatabases.mockResolvedValue(databaseList([unreadable]));
+    await revalidate();
+    expectNoReference();
+    expect(container.textContent).not.toContain("Collections.Unavailable");
+    expectSavedChoice(store);
+  });
 
   test("mounted lch_all: unmount during lexing aborts active lexPgn signal without diagnostic", async () => {
     sessionStorage.setItem(

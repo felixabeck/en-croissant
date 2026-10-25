@@ -31,6 +31,86 @@ for (const oldRoute of ["/files", "/databases"] as const) {
     });
 }
 
+test("database-files: unreadable saved reference stays unselected and resumes search after library revalidation", async ({
+    page,
+    mockScenario,
+    capture,
+}, testInfo) => {
+    const reference = { id: { id: gameOpeningFixture.databaseId }, kind: "database" };
+    await page.addInitScript((saved) => {
+        localStorage.setItem("reference-database", JSON.stringify(saved));
+        localStorage.setItem("font-size", "100");
+    }, reference);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const commands = filesWorkspaceCommands([[]], {
+        ...gameOpeningCommands,
+        get_progress: { result: null },
+        linked_collections_supported: { result: true },
+        list_linked_collections: { result: [] },
+        search_position: { result: [[{ move: "e4", white: 10, black: 5, draw: 2 }], []] },
+    });
+    await mockScenario({
+        commands: {
+            ...commands,
+            get_db_info: {
+                error: {
+                    tag: "backend-error",
+                    category: "database",
+                    message: "Unreadable reference",
+                },
+            },
+        },
+    });
+    await page.goto("/library");
+    // Wait for metadata admission to finish before inspecting the board's effective choice.
+    await expect(page.getByRole("treeitem", { name: "opening.db3", exact: true })).toBeVisible();
+    const navbar = page.locator("nav.mantine-AppShell-navbar");
+    await navbar.getByRole("link", { name: "Board", exact: true }).click();
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await page.getByRole("tab", { name: "Database", exact: true }).click();
+    const stats = page.getByRole("tabpanel", { name: "Stats", exact: true });
+    const picker = stats.getByPlaceholder("add a database", { exact: true });
+    await expect(picker).toHaveValue("");
+    await expect(stats.getByText("No reference database selected.", { exact: true })).toBeVisible();
+    const searches = () =>
+        page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "search_position"),
+        );
+    const savedChoice = () =>
+        page.evaluate(() => JSON.parse(localStorage.getItem("reference-database")!));
+    expect(await searches()).toHaveLength(0);
+    expect(await savedChoice()).toEqual(reference);
+    await expect(page.getByText(/Unexpected Tauri IPC command:/)).toHaveCount(0);
+    await capture("reference-database-unavailable");
+    await testInfo.attach("reference-database-unavailable.png", {
+        path: testInfo.outputPath("reference-database-unavailable.png"),
+        contentType: "image/png",
+    });
+
+    await page.evaluate((next) => window.__E2E_TAURI__.configure({ commands: next }), commands);
+    await navbar.getByRole("link", { name: "Library", exact: true }).click();
+    // Choosing the existing workspace loads its files and revalidates the shared database list.
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Open database", exact: true })).toBeVisible();
+    await navbar.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(picker).toHaveValue(gameOpeningFixture.databaseTitle);
+    await expect(stats.getByText("No reference database selected.", { exact: true })).toHaveCount(
+        0,
+    );
+    await expect.poll(async () => (await searches()).length).toBeGreaterThan(0);
+    expect(
+        (await searches()).every(
+            ({ args }) =>
+                JSON.stringify((args as { file: unknown }).file) === JSON.stringify(reference),
+        ),
+    ).toBe(true);
+    await expect(stats.getByText("e4", { exact: true })).toBeVisible();
+    expect(await savedChoice()).toEqual(reference);
+    await expect(page.getByText(/Unexpected Tauri IPC command:/)).toHaveCount(0);
+});
+
 function linkedLibraryFixture() {
     const file = { ...gameOpeningFixture.file, metadata: { type: "game", tags: [] } };
     const database = { id: { id: gameOpeningFixture.databaseId }, kind: "database" };

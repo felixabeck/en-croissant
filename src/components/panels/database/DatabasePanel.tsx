@@ -149,12 +149,22 @@ function DatabasePanel() {
   const explorerHandle = sessions.find((session) => session.lichess?.handle)?.lichess?.handle;
   const missingExplorerAuthentication = db !== "local" && !explorerHandle;
 
-  const { data: databases } = useDatabaseList(db === "local");
+  const { data: databases, error: databasesError } = useDatabaseList(db === "local");
 
-  const dbSelectData = (databases?.databases ?? [])
-    .filter((d) => d.type === "success")
-    .map((d) => ({ value: databaseHandleKey(d.file), label: d.title || d.filename }));
-  const selectedReferenceDatabase = referenceDatabase ? databaseHandleKey(referenceDatabase) : null;
+  const readableDatabases = databasesError
+    ? []
+    : (databases?.databases ?? []).filter((d) => d.type === "success");
+  const effectiveReferenceDatabase = databaseHandleFromKey(
+    readableDatabases,
+    referenceDatabase ? databaseHandleKey(referenceDatabase) : null,
+  );
+  const dbSelectData = readableDatabases.map((d) => ({
+    value: databaseHandleKey(d.file),
+    label: d.title || d.filename,
+  }));
+  const selectedReferenceDatabase = effectiveReferenceDatabase
+    ? databaseHandleKey(effectiveReferenceDatabase)
+    : null;
 
   useEffect(() => {
     if (db === "local") {
@@ -164,14 +174,14 @@ function DatabasePanel() {
 
   useEffect(() => {
     if (db === "local") {
-      setLocalOptions((q) => ({ ...q, path: referenceDatabase }));
+      setLocalOptions((q) => ({ ...q, path: effectiveReferenceDatabase }));
     }
-  }, [referenceDatabase, setLocalOptions, db]);
+  }, [effectiveReferenceDatabase, setLocalOptions, db]);
 
   const dbType: DBType = match(db)
     .with("local", (v) => ({
       type: v,
-      options: localOptions,
+      options: { ...localOptions, path: effectiveReferenceDatabase },
     }))
     .with("lch_all", (v) => ({
       type: v,
@@ -193,7 +203,10 @@ function DatabasePanel() {
     db === "local" &&
     (!!currency.error || (!!currency.collection && currency.collection.status !== "ready"));
   const openingKey =
-    tabType !== "options" && !missingExplorerAuthentication && !collectionUnavailable
+    tabType !== "options" &&
+    !missingExplorerAuthentication &&
+    !collectionUnavailable &&
+    (db !== "local" || !!effectiveReferenceDatabase)
       ? currency.collection
         ? ([dbType, currency.collection.generation] as const)
         : dbType
@@ -241,7 +254,7 @@ function DatabasePanel() {
               value={selectedReferenceDatabase}
               onChange={async (value) => {
                 await tauri.clearGames();
-                setReferenceDatabase(databaseHandleFromKey(databases?.databases ?? [], value));
+                setReferenceDatabase(databaseHandleFromKey(readableDatabases, value));
               }}
               placeholder={t("Board.Database.SelectReference")}
               size="sm"
@@ -293,6 +306,7 @@ function DatabasePanel() {
           type={db}
           header={header}
           missingExplorerAuthentication={missingExplorerAuthentication}
+          hasReferenceDatabase={!!effectiveReferenceDatabase}
         >
           <OpeningsTable openings={openingData?.openings || []} loading={isLoading} />
         </PanelWithError>
@@ -302,6 +316,7 @@ function DatabasePanel() {
           type={db}
           header={header}
           missingExplorerAuthentication={missingExplorerAuthentication}
+          hasReferenceDatabase={!!effectiveReferenceDatabase}
         >
           <GamesTable
             games={openingData?.games || []}
@@ -315,6 +330,7 @@ function DatabasePanel() {
           type={db}
           header={header}
           missingExplorerAuthentication={missingExplorerAuthentication}
+          hasReferenceDatabase={!!effectiveReferenceDatabase}
         >
           <ScrollArea flex={1} offsetScrollbars pt="sm">
             {match(db)
@@ -331,18 +347,15 @@ function DatabasePanel() {
 
 function PanelWithError(props: {
   value: string;
-  error: string;
+  error: Error | string | undefined;
   type: string;
   header: React.ReactNode;
   children: React.ReactNode;
   missingExplorerAuthentication: boolean;
+  hasReferenceDatabase: boolean;
 }) {
-  const referenceDatabase = useAtomValue(referenceDbAtom);
   const { t } = useTranslation();
   let children = props.children;
-  if (props.type === "local" && !referenceDatabase) {
-    children = <NoDatabaseWarning />;
-  }
   if (props.missingExplorerAuthentication && props.type !== "local") {
     children = (
       <Alert color="yellow">
@@ -354,6 +367,9 @@ function PanelWithError(props: {
   }
   if (props.error) {
     children = <Alert color="red">{props.error.toString()}</Alert>;
+  }
+  if (props.type === "local" && !props.hasReferenceDatabase) {
+    children = <NoDatabaseWarning />;
   }
 
   return (
