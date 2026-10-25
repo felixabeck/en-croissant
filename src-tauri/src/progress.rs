@@ -13,7 +13,11 @@ use tauri::Manager;
 use tauri_specta::Event;
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::Error, infra::operations::OperationRegistry, AppState};
+use crate::{
+    error::{Error, ErrorPayload},
+    infra::operations::OperationRegistry,
+    AppState,
+};
 
 const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
@@ -119,6 +123,9 @@ pub struct ProgressItem {
     pub progress: f32,
     pub finished: bool,
     pub state: ProgressState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub failure: Option<ErrorPayload>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, Type, Event)]
@@ -129,6 +136,9 @@ pub struct ProgressEvent {
     pub finished: bool,
     pub state: ProgressState,
     pub cleared: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub failure: Option<ErrorPayload>,
 }
 
 #[derive(Clone)]
@@ -231,6 +241,7 @@ impl ProgressStore {
             progress: 0.0,
             finished: false,
             state: ProgressState::Running,
+            failure: None,
         };
         state.entries.insert(
             id.clone(),
@@ -268,6 +279,17 @@ impl ProgressStore {
         requested_state: ProgressState,
         now: Instant,
     ) -> Result<(ProgressItem, bool), Error> {
+        self.transition_with_failure_at(lease, progress, requested_state, None, now)
+    }
+
+    fn transition_with_failure_at(
+        &self,
+        lease: &ProgressLease,
+        progress: f32,
+        requested_state: ProgressState,
+        failure: Option<ErrorPayload>,
+        now: Instant,
+    ) -> Result<(ProgressItem, bool), Error> {
         let mut state = self
             .state
             .lock()
@@ -297,6 +319,7 @@ impl ProgressStore {
                 progress: progress.max(existing.progress),
                 finished: state.is_terminal(),
                 state,
+                failure,
             }
         };
         let changed = item.progress != existing.progress || item.state != existing.state;
@@ -380,6 +403,7 @@ fn emit<R: tauri::Runtime>(
         finished: item.finished,
         state: item.state,
         cleared,
+        failure: item.failure,
     }
     .emit(app)?;
     Ok(())
@@ -423,6 +447,25 @@ pub fn update_progress_with_state<R: tauri::Runtime>(
     state: ProgressState,
 ) -> Result<(), Error> {
     update_progress_with_emitter(store, lease, progress, state, |item| emit(app, item, false))
+}
+
+pub(crate) fn publish_download_failure<R: tauri::Runtime>(
+    store: &ProgressStore,
+    app: &tauri::AppHandle<R>,
+    lease: &ProgressLease,
+    failure: ErrorPayload,
+) -> Result<(), Error> {
+    let (item, changed) = store.transition_with_failure_at(
+        lease,
+        0.0,
+        ProgressState::Failed,
+        Some(failure),
+        Instant::now(),
+    )?;
+    if changed {
+        emit(app, item, false)?;
+    }
+    Ok(())
 }
 
 fn update_progress_with_emitter(
@@ -615,6 +658,7 @@ fn clear_progress_with(
         progress: 0.0,
         finished: true,
         state: ProgressState::Cancelled,
+        failure: None,
     };
     if let Err(error) = emit_cleared(item) {
         log::warn!(
@@ -760,6 +804,7 @@ mod tests {
                 progress: 30.0,
                 finished: false,
                 state: ProgressState::Running,
+                failure: None,
             };
             let event = ProgressEvent {
                 id: "job".into(),
@@ -768,6 +813,7 @@ mod tests {
                 finished: false,
                 state: ProgressState::Running,
                 cleared: false,
+                failure: None,
             };
             assert_eq!(serde_json::to_value(&item).unwrap()["generation"], digits);
             assert_generation_protocol_case(
@@ -1114,6 +1160,102 @@ mod tests {
                 terminal
             );
         }
+    }
+
+    #[test]
+    fn download_failure_payload_keeps_high_water() {
+        let app = job_progress_test_app();
+        let store = ProgressStore::default();
+        let lease = begin_progress(&store, &app, "file".into()).unwrap();
+        update_progress_with_state(&store, &app, &lease, 37.0, ProgressState::Running).unwrap();
+        let payload = Error::RemoteHttpRejection(crate::error::RemoteHttpRejection {
+            status: 403,
+            authorization_sent: true,
+        })
+        .renderer_payload();
+        let events = Arc::new(Mutex::new(Vec::<ProgressEvent>::new()));
+        let observed = events.clone();
+        let listener = ProgressEvent::listen(&app, move |event| {
+            observed.lock().unwrap().push(event.payload);
+        });
+        publish_download_failure(&store, &app, &lease, payload.clone()).unwrap();
+        let failed = store.get("file").unwrap().unwrap();
+        assert_eq!(failed.progress, 37.0);
+        assert_eq!(failed.state, ProgressState::Failed);
+        assert!(failed.finished);
+        assert_eq!(failed.failure, Some(payload.clone()));
+        assert_eq!(events.lock().unwrap().len(), 1);
+        let event = events.lock().unwrap()[0].clone();
+        assert_eq!(event.failure, Some(payload));
+        assert_eq!(event.progress, 37.0);
+        assert_eq!(event.state, ProgressState::Failed);
+        let wire = serde_json::to_value(&event).unwrap();
+        assert!(wire["failure"].get("progressGeneration").is_none());
+        assert_eq!(
+            serde_json::from_value::<ProgressEvent>(wire).unwrap(),
+            event
+        );
+
+        publish_download_failure(&store, &app, &lease, Error::Cancellation.renderer_payload())
+            .unwrap();
+        update_progress_with_state(&store, &app, &lease, 100.0, ProgressState::Succeeded).unwrap();
+        assert_eq!(store.get("file").unwrap().unwrap(), failed);
+        assert_eq!(events.lock().unwrap().len(), 1);
+        clear_progress_with(
+            &store,
+            &OperationRegistry::default(),
+            "file".into(),
+            &mut |item| {
+                assert!(item.failure.is_none());
+                emit(&app, item, true)
+            },
+        )
+        .unwrap();
+        let cleared = events.lock().unwrap().last().unwrap().clone();
+        assert!(cleared.cleared);
+        assert!(cleared.failure.is_none());
+        assert!(serde_json::to_value(cleared)
+            .unwrap()
+            .get("failure")
+            .is_none());
+        tauri::Listener::unlisten(&app, listener);
+
+        for terminal in [
+            ProgressState::Succeeded,
+            ProgressState::Cancelled,
+            ProgressState::Failed,
+        ] {
+            let lease = store.start("terminal".into()).unwrap();
+            let (original, _) = store.transition(&lease, 15.0, terminal).unwrap();
+            publish_download_failure(&store, &app, &lease, Error::Cancellation.renderer_payload())
+                .unwrap();
+            assert_eq!(store.get("terminal").unwrap().unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn stale_lease_cannot_attach_download_failure() {
+        let app = job_progress_test_app();
+        let store = ProgressStore::default();
+        let stale = store.start("file".into()).unwrap();
+        let current = store.start("file".into()).unwrap();
+        let original = store.get("file").unwrap().unwrap();
+        assert!(matches!(
+            publish_download_failure(&store, &app, &stale, Error::Cancellation.renderer_payload()),
+            Err(Error::StaleProgressLease)
+        ));
+        assert_eq!(store.get("file").unwrap().unwrap(), original);
+        store.clear("file").unwrap();
+        assert!(matches!(
+            publish_download_failure(
+                &store,
+                &app,
+                &current,
+                Error::Cancellation.renderer_payload()
+            ),
+            Err(Error::StaleProgressLease)
+        ));
+        assert!(store.get("file").unwrap().is_none());
     }
 
     #[test]

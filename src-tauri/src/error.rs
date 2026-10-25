@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shakmaty::Chess;
 use specta::Type;
 
@@ -63,7 +63,7 @@ impl std::fmt::Display for DurabilityStage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorCategory {
     Io,
@@ -121,14 +121,14 @@ impl std::fmt::Display for ErrorCategory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorPayloadTag {
     BackendError,
     EngineFailure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteHttpRejection {
     pub status: u16,
@@ -145,7 +145,7 @@ impl std::fmt::Display for RemoteHttpRejection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Type)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
     pub tag: ErrorPayloadTag,
@@ -163,9 +163,12 @@ pub struct ErrorPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub name_taken: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub progress_generation: Option<crate::progress::ProgressGeneration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum RootFailure {
     Changed,
@@ -1052,6 +1055,7 @@ impl Error {
             name_taken:
                 matches!(self, Self::Conflict(message) if message == WORKSPACE_FILE_NAME_TAKEN)
                     .then_some(true),
+            progress_generation: None,
         }
     }
 }

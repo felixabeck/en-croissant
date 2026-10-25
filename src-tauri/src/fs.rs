@@ -16,8 +16,11 @@ use specta::Type;
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Error;
-use crate::progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState};
+use crate::error::{Error, ErrorPayload};
+use crate::progress::{
+    begin_progress, publish_download_failure, update_progress_with_state, ProgressGeneration,
+    ProgressLease, ProgressState,
+};
 use crate::AppState;
 
 pub(crate) const MAX_ACTIVE_DOWNLOADS: usize = 32;
@@ -833,42 +836,86 @@ pub async fn download_file(
     total_size: Option<u32>,
     job_id: String,
     integrity: Option<ArtifactIntegrity>,
-) -> Result<(), Error> {
-    let lease = state.operations.claim_download(
-        &job_id,
+) -> Result<(), ErrorPayload> {
+    download_file_runtime(
+        id,
+        url,
+        destination,
+        filename,
+        &app,
         window.label(),
-        "download publication",
-        &id,
-        &id,
-        false,
-        MAX_ACTIVE_DOWNLOADS,
-    )?;
-    download_to_destination(
+        state.inner(),
+        total_size,
+        job_id,
+        integrity,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_file_runtime<R: tauri::Runtime>(
+    id: String,
+    url: String,
+    destination: crate::infra::path_authority::PathRef,
+    filename: String,
+    app: &tauri::AppHandle<R>,
+    owner: &str,
+    state: &AppState,
+    total_size: Option<u32>,
+    job_id: String,
+    integrity: Option<ArtifactIntegrity>,
+) -> Result<(), ErrorPayload> {
+    let lease = state
+        .operations
+        .claim_download(
+            &job_id,
+            owner,
+            "download publication",
+            &id,
+            &id,
+            false,
+            MAX_ACTIVE_DOWNLOADS,
+        )
+        .map_err(|error| error.renderer_payload())?;
+    // The native continuation owns publication after its command receiver disappears.
+    // This per-call cell carries only the admitted generation back to a surviving receiver.
+    let generation = std::sync::Arc::new(std::sync::OnceLock::new());
+    download_to_destination_with_failure(
         &id,
         &url,
         destination,
         filename,
-        &app,
-        state.inner(),
+        app,
+        state,
         None,
         total_size,
         job_id,
         lease,
         false,
         integrity.as_ref(),
+        Some(generation.clone()),
     )
     .await
     .map(|_| ())
+    .map_err(|error| {
+        let mut payload = error.renderer_payload();
+        payload.progress_generation = generation.get().copied();
+        payload
+    })
 }
 
 fn sanitize_download_error(error: Error) -> Error {
     match error {
-        Error::Io(source) => Error::Io(Box::new(crate::error::sanitized_io_error(
-            &source,
-            "I/O failure".into(),
-        ))),
+        Error::Io(source) => sanitized_download_io_error(&source),
         error => error,
     }
+}
+
+fn sanitized_download_io_error(source: &std::io::Error) -> Error {
+    Error::Io(Box::new(crate::error::sanitized_io_error(
+        source,
+        "I/O failure".into(),
+    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -885,6 +932,40 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
     lease: crate::infra::operations::OperationLease,
     register_pgn_artifact: bool,
     integrity: Option<&ArtifactIntegrity>,
+) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
+    download_to_destination_with_failure(
+        id,
+        url,
+        destination,
+        filename,
+        app,
+        state,
+        bearer_token,
+        total_size,
+        job_id,
+        lease,
+        register_pgn_artifact,
+        integrity,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_to_destination_with_failure<R: tauri::Runtime>(
+    id: &str,
+    url: &str,
+    destination: crate::infra::path_authority::PathRef,
+    filename: String,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    bearer_token: Option<&str>,
+    total_size: Option<u32>,
+    job_id: String,
+    lease: crate::infra::operations::OperationLease,
+    register_pgn_artifact: bool,
+    integrity: Option<&ArtifactIntegrity>,
+    file_generation: Option<std::sync::Arc<std::sync::OnceLock<ProgressGeneration>>>,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
     let cancellation = lease.token();
     let commit_gate = lease.commit_gate();
@@ -909,6 +990,7 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
             integrity.as_ref(),
             cancellation.clone(),
             commit_gate,
+            file_generation.as_deref(),
         )
         .await
         .map_err(sanitize_download_error)
@@ -968,6 +1050,33 @@ fn report_download_error<R: tauri::Runtime>(
     report_download_terminal_progress(state, app, progress_lease, job_id, 0.0, terminal);
 }
 
+fn report_file_or_provider_download_error<R: tauri::Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    progress_lease: &ProgressLease,
+    job_id: &str,
+    primary_error: &Error,
+    file_download: bool,
+) {
+    if !file_download || matches!(primary_error, Error::Cancellation) {
+        report_download_error(state, app, progress_lease, job_id, primary_error);
+        return;
+    }
+    let payload = match primary_error {
+        Error::Io(source) => sanitized_download_io_error(source).renderer_payload(),
+        error => error.renderer_payload(),
+    };
+    if let Err(secondary) =
+        publish_download_failure(&state.progress_state, app, progress_lease, payload)
+    {
+        log::warn!(
+            "download {job_id} progress report generation {} failed: {}",
+            progress_lease.generation,
+            secondary.category()
+        );
+    }
+}
+
 fn report_download_success<R: tauri::Runtime>(
     state: &AppState,
     app: &tauri::AppHandle<R>,
@@ -999,6 +1108,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     integrity: Option<&ArtifactIntegrity>,
     cancellation: CancellationToken,
     commit_gate: crate::infra::operations::OperationCommitGate,
+    file_generation: Option<&std::sync::OnceLock<ProgressGeneration>>,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
     // Validate and reserve all fallible producer prerequisites before starting
     // visible progress. No failed setup may leave a running progress entry.
@@ -1026,6 +1136,19 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         return Err(Error::Cancellation);
     }
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
+    if let Some(generation) = file_generation {
+        let _ = generation.set(progress_lease.generation);
+    }
+    let report_error = |error: &Error| {
+        report_file_or_provider_download_error(
+            state,
+            app,
+            &progress_lease,
+            &job_id,
+            error,
+            file_generation.is_some(),
+        );
+    };
     let result = await_staging_deadline(
         DOWNLOAD_DEADLINE,
         &cancellation,
@@ -1067,7 +1190,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     let mut staged_file = match result {
         Ok(file) => file,
         Err(error) => {
-            report_download_error(state, app, &progress_lease, &job_id, &error);
+            report_error(&error);
             return Err(error);
         }
     };
@@ -1084,7 +1207,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 payload
             }
             Err(error) => {
-                report_download_error(state, app, &progress_lease, &job_id, &error);
+                report_error(&error);
                 return Err(error);
             }
         };
@@ -1102,7 +1225,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         match reservation_result {
             Ok(reservation) => Some(reservation),
             Err(error) => {
-                report_download_error(state, app, &progress_lease, &job_id, &error);
+                report_error(&error);
                 return Err(error);
             }
         }
@@ -1149,7 +1272,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             if let Some(reservation) = reservation.as_ref() {
                 cleanup_download_reservation_best_effort(&state.pgn_path_authority, reservation);
             }
-            report_download_error(state, app, &progress_lease, &job_id, &error);
+            report_error(&error);
             return Err(error);
         }
     };
@@ -1157,7 +1280,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         let target_durability = download_target_durability(target_durability);
         let Some((installed_identity, installed_ctime_nanos)) = installed_identity else {
             let error = Error::Conflict("artifact install has no inode marker".into());
-            report_download_error(state, app, &progress_lease, &job_id, &error);
+            report_error(&error);
             return Err(error);
         };
         match crate::infra::path_authority::activate_download_artifact_runtime(
@@ -1175,7 +1298,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 Some(artifact)
             }
             Err(error) => {
-                report_download_error(state, app, &progress_lease, &job_id, &error);
+                report_error(&error);
                 return Err(error);
             }
         }
@@ -1183,7 +1306,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         download_target_durability(target_durability)
     {
         let error = Error::CommittedDurabilityUncertain(stage);
-        report_download_error(state, app, &progress_lease, &job_id, &error);
+        report_error(&error);
         return Err(error);
     } else {
         None
@@ -1302,23 +1425,30 @@ pub async fn download_lichess_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
-    download_lichess_games_runtime(
-        handle,
-        destination,
-        filename,
-        player,
-        since_ms,
-        job_id,
-        window.label(),
-        &app,
-        state.inner(),
+    download_publication_result(
+        download_lichess_games_runtime(
+            handle,
+            destination,
+            filename,
+            player,
+            since_ms,
+            job_id,
+            window.label(),
+            &app,
+            state.inner(),
+        )
+        .await,
     )
-    .await
-    .and_then(|downloaded| match downloaded.receipt_error {
+    .map_err(sanitize_download_error)
+}
+
+pub(crate) fn download_publication_result(
+    result: Result<crate::infra::operations::RuntimeDownload, Error>,
+) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    result.and_then(|downloaded| match downloaded.receipt_error {
         Some(error) => Err(error),
         None => Ok(downloaded.publication),
     })
-    .map_err(sanitize_download_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3516,8 +3646,12 @@ mod tests {
         let source = include_str!("fs.rs");
         let body = body_at_indent(source, "pub async fn download_file(");
         assert!(!body.contains("off_unix_refusal("), "{body}");
+        assert_eq!(body.matches("download_file_runtime(").count(), 1, "{body}");
+        let body = body_at_indent(source, "async fn download_file_runtime<");
+        assert!(!body.contains("off_unix_refusal("), "{body}");
         assert_eq!(
-            body.matches("download_to_destination(").count(),
+            body.matches("download_to_destination_with_failure(")
+                .count(),
             1,
             "{body}"
         );
@@ -8801,6 +8935,312 @@ mod tests {
             ))
             .mount_events(&app);
         app
+    }
+
+    #[tokio::test]
+    async fn file_download_failure_publishes_sanitized_payload() {
+        use tauri_specta::Event as _;
+        let dir = tempdir().unwrap();
+        let (authority, destination, root) = test_downloads_destination(&dir);
+        let transport = Arc::new(MockTransport {
+            responses: Mutex::new(vec![
+                Ok(DownloadResponse {
+                    status: 200,
+                    headers: HeaderMap::new(),
+                    content_length: Some(10),
+                    stream: Box::pin(futures_util::stream::iter(vec![
+                        Ok(bytes::Bytes::from_static(b"part")),
+                        Err(Error::Io(Box::new(std::io::Error::other(
+                            "/native/private/download.pgn token=fixture-secret",
+                        )))),
+                    ])),
+                }),
+                Err(Error::Cancellation),
+            ]),
+            requests_seen: Mutex::new(vec![]),
+        });
+        let state = AppState {
+            http_transport: transport.clone(),
+            ..Default::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let events = Arc::new(Mutex::new(Vec::<crate::progress::ProgressEvent>::new()));
+        let observed = events.clone();
+        let listener = crate::progress::ProgressEvent::listen(app.handle(), move |event| {
+            observed.lock().unwrap().push(event.payload);
+        });
+        let job = state.operations.prepare_download("test").unwrap();
+        let error = download_file_runtime(
+            "file-failure".into(),
+            "https://example.com/download.pgn?token=fixture-secret".into(),
+            destination.clone(),
+            "download.pgn".into(),
+            app.handle(),
+            "test",
+            &state,
+            Some(10),
+            job,
+            None,
+        )
+        .await
+        .unwrap_err();
+        let item = state.progress_state.get("file-failure").unwrap().unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert_eq!(item.progress, 40.0);
+        assert!(item.finished);
+        let expected =
+            serde_json::json!({"tag":"backend-error", "category":"io", "message":"I/O failure"});
+        assert_eq!(
+            serde_json::to_value(item.failure.as_ref().unwrap()).unwrap(),
+            expected
+        );
+        let mut command_wire = expected.clone();
+        command_wire["progressGeneration"] = serde_json::to_value(item.generation).unwrap();
+        assert_eq!(serde_json::to_value(error).unwrap(), command_wire);
+        let failed = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event.state == ProgressState::Failed)
+            .cloned()
+            .unwrap();
+        assert_eq!(failed.failure, item.failure);
+        assert_eq!(failed.generation, item.generation);
+        assert_eq!(failed.progress, 40.0);
+        assert_eq!(serde_json::to_value(&failed).unwrap()["failure"], expected);
+        assert!(!root.join("download.pgn").exists());
+
+        // An admitted command can still fail validation before it owns a progress generation.
+        let job = state.operations.prepare_download("test").unwrap();
+        let before_begin = download_file_runtime(
+            "pre-begin".into(),
+            "https://example.com/download.pgn".into(),
+            destination.clone(),
+            "../invalid.pgn".into(),
+            app.handle(),
+            "test",
+            &state,
+            None,
+            job,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(serde_json::to_value(before_begin)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        assert!(state.progress_state.get("pre-begin").unwrap().is_none());
+
+        let refused = download_file_runtime(
+            "refused".into(),
+            "https://example.com/download.pgn".into(),
+            destination.clone(),
+            "refused.pgn".into(),
+            app.handle(),
+            "test",
+            &state,
+            None,
+            "unprepared-ticket".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(serde_json::to_value(refused)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        assert!(state.progress_state.get("refused").unwrap().is_none());
+
+        let job = state.operations.prepare_download("test").unwrap();
+        let cancelled = download_file_runtime(
+            "file-cancelled".into(),
+            "https://example.com/download.pgn".into(),
+            destination.clone(),
+            "cancelled.pgn".into(),
+            app.handle(),
+            "test",
+            &state,
+            None,
+            job,
+            None,
+        )
+        .await
+        .unwrap_err();
+        let cancelled_item = state.progress_state.get("file-cancelled").unwrap().unwrap();
+        assert_eq!(cancelled_item.state, ProgressState::Cancelled);
+        assert!(cancelled_item.failure.is_none());
+        assert_eq!(
+            cancelled.category,
+            crate::error::ErrorCategory::Cancellation
+        );
+        assert_eq!(
+            cancelled.progress_generation,
+            Some(cancelled_item.generation)
+        );
+
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                &dir.path().join("credentials-app"),
+            ))
+            .unwrap();
+        let account = credentials
+            .store_lichess_token("player".into(), "fixture-secret".into())
+            .unwrap()
+            .account;
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push(Err(Error::Io(Box::new(std::io::Error::other(
+                "/native/private/lichess.pgn token=fixture-secret",
+            )))));
+        let state = AppState {
+            credentials,
+            ..state
+        };
+        let job = state.operations.prepare_download("test").unwrap();
+        let result = download_lichess_games_runtime(
+            account.handle,
+            destination,
+            "lichess.pgn".into(),
+            "player".into(),
+            None,
+            job.clone(),
+            "test",
+            app.handle(),
+            &state,
+        )
+        .await;
+        let runtime_error = result.as_ref().unwrap_err();
+        assert!(serde_json::to_value(runtime_error)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        let item = state.progress_state.get(&job).unwrap().unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert!(item.failure.is_none());
+        let command_error = download_publication_result(result)
+            .map_err(sanitize_download_error)
+            .unwrap_err();
+        assert!(serde_json::to_value(command_error)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        let events = events.lock().unwrap();
+        let failed = events
+            .iter()
+            .find(|event| event.id == job && event.state == ProgressState::Failed)
+            .unwrap();
+        assert!(failed.failure.is_none());
+        tauri::Listener::unlisten(app.handle(), listener);
+    }
+
+    #[tokio::test]
+    async fn engine_download_failure_progress_has_no_payload() {
+        use crate::infra::operations::completions::{
+            CompletionOutcome, EngineInstallIntent, EngineInstallRequest,
+        };
+        let dir = tempdir().unwrap();
+        let (authority, destination, _, root) = engine_destination(&dir);
+        let state = AppState {
+            http_transport: Arc::new(MockTransport {
+                responses: Mutex::new(vec![
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "archive transport failed",
+                    )))),
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "completion transport failed",
+                    )))),
+                ]),
+                requests_seen: Mutex::new(vec![]),
+            }),
+            ..Default::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let progress =
+            begin_progress(&state.progress_state, app.handle(), "engine-core".into()).unwrap();
+        let (job, lease) = test_download_lease(&state);
+        let integrity = unsigned_test_integrity(b"unused");
+        let error = download_engine_archive_core(
+            progress,
+            "https://example.com/engine.zip".into(),
+            destination,
+            "engine".into(),
+            job,
+            integrity.clone(),
+            app.handle().clone(),
+            state.clone(),
+            lease.token(),
+            lease.commit_gate(),
+            Box::new(accept_any_integrity),
+        )
+        .await
+        .unwrap_err();
+        assert!(serde_json::to_value(&error)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        let item = state.progress_state.get("engine-core").unwrap().unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert!(item.failure.is_none());
+        drop(lease);
+
+        let request = EngineInstallRequest {
+            intent: EngineInstallIntent::Add {
+                engine_id: uuid::Uuid::new_v4().to_string(),
+            },
+            root,
+            progress_id: "engine-completion".into(),
+            url: "https://example.com/engine.zip".into(),
+            sha256: integrity.sha256,
+            signature: integrity.signature,
+            relative_path: "engine".into(),
+            name: "Engine".into(),
+            version: "1".into(),
+            elo: None,
+            download_size: None,
+        };
+        let job = state.operations.prepare_download("test").unwrap();
+        let (snapshot, lease) = state
+            .operations
+            .admit_engine_completion(
+                &uuid::Uuid::new_v4().to_string(),
+                "test",
+                &job,
+                request,
+                MAX_ACTIVE_DOWNLOADS,
+            )
+            .unwrap();
+        let terminal = run_engine_install_completion(
+            snapshot,
+            lease.unwrap(),
+            app.handle().clone(),
+            state.clone(),
+            Box::new(accept_any_integrity),
+            "test".into(),
+        )
+        .await
+        .unwrap();
+        let CompletionOutcome::Failed(payload) = terminal.outcome else {
+            panic!("engine completion must retain its failure")
+        };
+        assert!(serde_json::to_value(payload)
+            .unwrap()
+            .get("progressGeneration")
+            .is_none());
+        let item = state
+            .progress_state
+            .get("engine-completion")
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert!(item.failure.is_none());
     }
 
     fn mock_successful_response(payload: &'static [u8]) -> DownloadResponse {

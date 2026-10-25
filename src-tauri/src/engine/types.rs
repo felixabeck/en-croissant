@@ -8,7 +8,7 @@ use crate::{
     infra::path_authority::{EngineResourceHandle, EngineResourceHandleKind},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineFailureKind {
     Disconnected,
@@ -17,14 +17,14 @@ pub enum EngineFailureKind {
 }
 
 /// Observed process status. Signals stay absent on platforms without Unix exit signals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineExitStatus {
     pub code: Option<i32>,
     pub signal: Option<i32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum EngineTerminalEntry {
     InfoString(String),
@@ -34,7 +34,7 @@ pub enum EngineTerminalEntry {
 
 /// Engine text is sanitized and bounded natively before entering this payload.
 /// An absent reason asks the renderer to localize the failure kind/status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineTerminalSnapshot {
     pub kind: EngineFailureKind,

@@ -246,22 +246,20 @@ pub async fn download_chess_com_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
-    download_chess_com_games_runtime(
-        destination,
-        filename,
-        player,
-        since_ms,
-        job_id,
-        app,
-        window.label(),
-        state.inner().clone(),
-        true,
+    crate::fs::download_publication_result(
+        download_chess_com_games_runtime(
+            destination,
+            filename,
+            player,
+            since_ms,
+            job_id,
+            app,
+            window.label(),
+            state.inner().clone(),
+            true,
+        )
+        .await,
     )
-    .await
-    .and_then(|downloaded| match downloaded.receipt_error {
-        Some(error) => Err(error),
-        None => Ok(downloaded.publication),
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -776,6 +774,67 @@ mod tests {
             ))
             .mount_events(&app);
         (dir, state, destination, download_root, app)
+    }
+
+    #[tokio::test]
+    async fn chesscom_failed_export_has_no_payload() {
+        struct FailureTransport(bool);
+        #[async_trait]
+        impl DownloadTransport for FailureTransport {
+            async fn request(&self, _: &str, _: HeaderMap) -> Result<DownloadResponse, Error> {
+                if self.0 {
+                    Err(Error::Cancellation)
+                } else {
+                    Err(Error::RemoteHttpRejection(
+                        crate::error::RemoteHttpRejection {
+                            status: 403,
+                            authorization_sent: false,
+                        },
+                    ))
+                }
+            }
+        }
+        for cancelled in [false, true] {
+            let (_dir, state, destination, root, app) =
+                export_fixture(Arc::new(FailureTransport(cancelled)));
+            let job = state.operations.prepare_download("test").unwrap();
+            let result = download_chess_com_games_runtime(
+                destination,
+                "failed.pgn".into(),
+                "felix".into(),
+                None,
+                job.clone(),
+                app.handle().clone(),
+                "test",
+                state.clone(),
+                true,
+            )
+            .await;
+            let runtime_error = result.as_ref().unwrap_err();
+            assert!(serde_json::to_value(runtime_error)
+                .unwrap()
+                .get("progressGeneration")
+                .is_none());
+            let command_error = crate::fs::download_publication_result(result).unwrap_err();
+            assert!(serde_json::to_value(&command_error)
+                .unwrap()
+                .get("progressGeneration")
+                .is_none());
+            assert_eq!(matches!(command_error, Error::Cancellation), cancelled);
+            let item = state.progress_state.get(&job).unwrap().unwrap();
+            assert_eq!(
+                item.state,
+                if cancelled {
+                    ProgressState::Cancelled
+                } else {
+                    ProgressState::Failed
+                }
+            );
+            assert!(item.finished);
+            assert!(item.failure.is_none());
+            assert!(serde_json::to_value(item).unwrap().get("failure").is_none());
+            assert!(!root.join("failed.pgn").exists());
+        }
     }
 
     async fn run_owned_export(
