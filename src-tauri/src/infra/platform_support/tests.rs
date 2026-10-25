@@ -3537,7 +3537,10 @@ fn check_declaration(
     let start = starts[0];
     if attribute_lines_before(source, start)
         .iter()
-        .any(|attribute| attribute.contains("#[cfg") || attribute.contains("cfg_attr"))
+        .any(|attribute| {
+            (attribute.contains("#[cfg") || attribute.contains("cfg_attr"))
+                && !(signature == "fn paired_rename(" && *attribute == "#[cfg(test)]")
+        })
     {
         errors.push(format!("{file}: {signature}: declaration carries cfg"));
     }
@@ -3577,6 +3580,9 @@ fn check_helper(
 /// path-authority or descriptor-relative call that does the work. Restoring a
 /// `#[cfg(not(unix))]` counterpart makes it two declarations and gates the survivor, so this
 /// reddens the Linux run rather than only `rust-windows-test`.
+/// The descriptor-relative primary rollback lives in `reverse_workspace_primary_rename`,
+/// and the forward helpers return `WorkspaceSidecarDisposition`.
+/// The ordinary-path wrapper is test-only, and a platform cfg on it is still refused.
 #[test]
 fn workspace_bodies_are_single_ungated_delegations() {
     // Pin each wrapper's delegation and the shared implementation's descriptor-relative
@@ -3609,18 +3615,26 @@ fn workspace_bodies_are_single_ungated_delegations() {
         ),
         (
             "fn paired_workspace_rename(",
-            "fnpaired_workspace_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,metadata_bytes:&[u8],cancellation:&CancellationToken,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>",
+            "fnpaired_workspace_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,metadata_bytes:&[u8],cancellation:&CancellationToken,)->Result<(crate::infra::fs::AtomicFileOutcome,WorkspaceSidecarDisposition,),Error,>",
             &["paired_rename_inner(source,target_parent,target_leaf,Some((metadata_bytes,cancellation)),)"],
         ),
         (
             "fn paired_rename_inner(",
-            "fnpaired_rename_inner(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,forward_metadata:Option<(&[u8],&CancellationToken)>,)->Result<(crate::infra::fs::AtomicFileOutcome,bool),Error>",
+            "fnpaired_rename_inner(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,forward_metadata:Option<(&[u8],&CancellationToken)>,)->Result<(crate::infra::fs::AtomicFileOutcome,WorkspaceSidecarDisposition,),Error,>",
             &[
                 "letrename_entry_at=ifforward_metadata.is_some(){rename_workspace_entry_at}else{rename_entry_at};",
                 "letrename_optional_regular_at=ifforward_metadata.is_some(){rename_workspace_sidecar_at}else{rename_optional_regular_at};",
                 "letprimary=rename_entry_at(&source.parent,&source.leaf,source.identity,source.is_dir,target_parent,target_leaf,)?;",
-                "rename_optional_regular_at(&source.parent,&source_info,target_parent,&target_info)?",
+                "rename_optional_regular_at(&source.parent,&source_info,target_parent,&target_info,)?",
+                "reverse_workspace_primary_rename(source,target_parent,target_leaf)",
+            ],
+        ),
+        (
+            "fn reverse_workspace_primary_rename(",
+            "fnreverse_workspace_primary_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&OsStr,)->Result<(),Error>",
+            &[
                 "crate::infra::fs::rename_entry_at(target_parent,target_leaf,source.identity,source.is_dir,&source.parent,&source.leaf,)",
+                "crate::infra::fs::require_durable(outcome,crate::error::DurabilityStage::WorkspaceRename)",
             ],
         ),
     ];
