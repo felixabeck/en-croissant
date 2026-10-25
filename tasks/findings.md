@@ -12312,7 +12312,7 @@ Found by `review-persisted-state` (blocker, confidence 91) in round 12 of the pl
 
 ### The file freshness recovery panels use text below WCAG AA contrast
 
-* **ID:** f-20260924-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260924-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/tabs/FileFreshnessGate.tsx`, conflict and unavailable panels.
 * **Defect:** The recovery action labels render white text on `#228be6` at a 3.55:1 contrast ratio (Axe 4.12; 14px normal text, required 4.5:1). In the unavailable panel, the red inline failure text renders `#fa5252` on white at 3.28:1 (16px normal text). The Playwright `assertAccessible` check reports these as serious `color-contrast` violations.
 * **Why it matters:** The labels for Reload from disk and Save my version as a new game are the only recovery actions while the board is withheld. Low contrast also makes the unavailable error harder to read.
@@ -12320,6 +12320,11 @@ Found by `review-persisted-state` (blocker, confidence 91) in round 12 of the pl
 * **Proof:** Restore `assertAccessible` coverage for both file freshness journeys and run `pnpm test:e2e:container`. The phase-3 captures were `artifacts/frontend-audit/test-results/file-freshness-file-freshn-757ab-edited-game-changed-on-disk-file-freshness/file-freshness-conflict.png` and `artifacts/frontend-audit/test-results/file-freshness-file-freshn-77646--the-source-file-disappears-file-freshness/file-freshness-unavailable.png`.
 * **Related:** `f-20260829-02` is same-area viewport clipping but has no evidenced shared cause; this contrast defect remains a singleton.
 * **Found by:** Codex during phase 3 of the stale-file-tab implementation, 2026-09-24. The assertion was omitted from this phase's spec because product source changes are out of scope.
+* **Resolution (2026-10-25):** a877fde7 uses the existing blue.8 library-action shade for recovery buttons and explicit light/dark red shades for inline errors. Handlers, recovery behavior and labels are preserved. The two recovery journeys again run full-page Axe and now also exercise dark mode through Settings. The only moved committed snapshot is file-freshness-unavailable-file-freshness.png.
+* **Proof:** With the new browser assertions retained and the source fix removed through a path-scoped Git stash, both recovery journeys failed Axe on the original 3.55:1 button labels and 3.28:1 error text. After the final repair, pnpm test:e2e:container --project=file-freshness passed all three journeys. Root inspected the light and dark captures and their intended error-text diff. pnpm checks:pre-review passed. Final push gates and publication are still pending the push workflow.
+* **Rejected alternatives:** Default Mantine autoContrast and semantic error colors did not meet the requirement. Production lowering made light-dark() invalid here, so the implementation uses the project's existing explicit theme-selector convention. A transient Sidebar tooltip fade observed during navigation was recorded as f-20261025-01 and rejected with source and settled-screenshot evidence. The test now waits for tooltip cleanup before scanning the recovery panel.
+* **Attribution:** Codex selected and integrated this inline slice through bounded Codex write leaves. Plan authorship and arbitration share one context. Detection uses the same model family as the code.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"8ae6d3d78e3517f48657be68e8ef461537b73f8423647851ff16de58d638835a","header_sha256":"52e6a32debca9ec4e797c66fe6f85282f4557e4b272b417d96a9b4e73c7cad15","header_status":"handled","input_sha256":"8b552c5813f307ff833c930d2e5cc1b77cabe680ec047974f427c8e8d80f6a14","kind":"mutation-receipt","operation":"bec395806a4a99e5fdf0a46928aab56cdddcfff805cabe376b662b71f4a3bb86","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-04"],"target":"f-20260924-04","v":1} -->
 
 ### delete_game removes whatever game is at index n, so a stale game list can delete the wrong game
 
