@@ -6,7 +6,6 @@ import type {
     RemoteHttpRejection,
     RootFailure,
 } from "@/bindings";
-import type { ProgressEvent } from "@/bindings/generated";
 import { error as logError, warn as logWarn } from "./native";
 
 export type AppErrorCategory =
@@ -27,7 +26,7 @@ export type AppError = {
     engineFailure?: EngineTerminalSnapshot;
     remoteHttpRejection?: RemoteHttpRejection;
     nameTaken?: true;
-    progress_generation?: ProgressEvent["generation"];
+    progress_generation?: string;
 };
 
 const reportedErrors = new WeakSet<object>();

@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/bindings/generated", async (original) => {
-    const actual = await original<typeof import("@/bindings/generated")>();
+    const actual = (await original()) as {
+        commands: Record<string, unknown>;
+        events: Record<string, unknown>;
+    };
     return {
         ...actual,
         commands: { ...actual.commands, failedProgressSnapshot: mocks.snapshot },

@@ -4083,11 +4083,27 @@ mod blocking_offload_scans {
     #[test]
     fn download_claims_record_their_progress_id_and_webview_owner_once() {
         let fs = include_str!("fs.rs");
+        let file_command = body_at_indent(fs, "pub async fn download_file(");
+        assert_eq!(
+            file_command.matches("download_file_runtime(").count(),
+            1,
+            "{file_command}"
+        );
+        assert_eq!(
+            file_command.matches("window.label()").count(),
+            1,
+            "{file_command}"
+        );
+        assert_eq!(
+            file_command.matches("claim_download(").count(),
+            0,
+            "{file_command}"
+        );
         for (source, signature, owner, label, progress_id, admission_key, exclusive) in [
             (
                 fs,
-                "pub async fn download_file(",
-                "window.label()",
+                "async fn download_file_runtime<",
+                "owner",
                 "download publication",
                 "id",
                 "id",
@@ -4126,9 +4142,6 @@ mod blocking_offload_scans {
                 )),
                 "{signature}: {body}"
             );
-            if owner == "window.label()" {
-                assert_eq!(body.matches(owner).count(), 1, "{signature}: {body}");
-            }
         }
 
         let lichess_command = body_at_indent(
@@ -4283,11 +4296,6 @@ mod blocking_offload_scans {
 
         for (source, command, route) in [
             (
-                include_str!("fs.rs"),
-                "download_file",
-                "download_to_destination(",
-            ),
-            (
                 include_str!("main.rs"),
                 "save_board_snapshot",
                 "save_native_export(",
@@ -4303,7 +4311,15 @@ mod blocking_offload_scans {
         }
 
         let fs = include_str!("fs.rs");
-        let download_owner = body_at_indent(fs, "async fn download_to_destination");
+        let file_runtime = body_at_indent(fs, "async fn download_file_runtime<");
+        assert_eq!(
+            file_runtime
+                .matches("download_to_destination_with_failure(")
+                .count(),
+            1,
+            "{file_runtime}"
+        );
+        let download_owner = body_at_indent(fs, "async fn download_to_destination_with_failure<");
         assert!(
             download_owner.contains("run_native_operation("),
             "{download_owner}"
