@@ -1,9 +1,7 @@
 use std::{hash::Hash, sync::Arc};
 
 use dashmap::{mapref::entry::Entry, DashMap};
-#[cfg(test)]
-use tokio::sync::TryLockError;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, TryLockError};
 
 /// Per-key exclusion whose registry retains only outstanding leases.
 ///
@@ -77,7 +75,6 @@ where
             .await
     }
 
-    #[cfg(test)]
     pub(crate) fn try_lock(&self) -> Result<MutexGuard<'_, ()>, TryLockError> {
         // Construction always stores one Arc, and only Drop takes it.
         self.lock.as_ref().expect("lease owns its lock").try_lock()

@@ -3496,8 +3496,10 @@ pub(crate) async fn reselect_linked_collection(
             };
             #[cfg(test)]
             service.pgn_repository.notify_edit_lock_acquired()?;
+            let worker_service = Arc::clone(&service);
             BLOCKING_GATEWAY
                 .spawn_cancellable(cancellation, move |token| {
+                    let service = worker_service;
                     let captured = record.binding();
                     service.validate_captured_binding(&captured, token)?;
                     if record.file != source || record.workspace != workspace {

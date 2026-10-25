@@ -9,12 +9,15 @@ use std::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use specta::Type;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::Error,
-    infra::{blocking::BLOCKING_GATEWAY, operations::OperationLease},
+    infra::{
+        blocking::BLOCKING_GATEWAY,
+        keyed_locks::{KeyedLockLease, KeyedLocks},
+        operations::OperationLease,
+    },
     AppState,
 };
 
@@ -97,11 +100,11 @@ impl PgnCapabilityRebind {
         Ok(())
     }
 
-    pub(crate) fn edit_lock(
+    pub(crate) fn edit_lock<'a>(
         &self,
-        repository: &PgnRepository,
+        repository: &'a PgnRepository,
         identity: crate::infra::path_authority::PgnSnapshotIdentity,
-    ) -> Result<Arc<Mutex<()>>, Error> {
+    ) -> Result<KeyedLockLease<'a, EditOwner>, Error> {
         if let Some(Some(binding)) = &self.binding {
             repository.collection_edit_lock(binding.collection())
         } else {
@@ -331,7 +334,7 @@ fn current_scan_line_hook() -> Option<BoundedHook> {
 pub(crate) type CreatePostRegisterHook = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-enum EditOwner {
+pub(crate) enum EditOwner {
     File(crate::infra::path_authority::PgnSnapshotIdentity),
     Collection(uuid::Uuid),
 }
@@ -339,7 +342,6 @@ enum EditOwner {
 #[derive(Default)]
 struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
-    locks: HashMap<EditOwner, Arc<Mutex<()>>>,
     clock: u64,
     retained_bytes: usize,
     #[cfg(test)]
@@ -366,11 +368,12 @@ struct PgnRepositoryInner {
     create_post_register_hook: Option<CreatePostRegisterHook>,
 }
 
-/// Bounded PGN state. Cache entries are revision-specific; edit locks are retained only while
-/// another caller still owns an `Arc` for that exact canonical path.
+/// Bounded PGN state. Cache entries are revision-specific. Clones share edit locks keyed by
+/// snapshot identity or collection UUID, with entries removed when the final lease drops.
 #[derive(Clone)]
 pub struct PgnRepository {
     inner: Arc<std::sync::Mutex<PgnRepositoryInner>>,
+    edit_locks: Arc<KeyedLocks<EditOwner>>,
     cache_byte_limit: usize,
 }
 
@@ -378,6 +381,7 @@ impl Default for PgnRepository {
     fn default() -> Self {
         Self {
             inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
+            edit_locks: Arc::new(KeyedLocks::default()),
             cache_byte_limit: MAX_CACHE_BYTES,
         }
     }
@@ -414,6 +418,12 @@ impl PgnRepository {
         self.inner
             .lock()
             .map_err(|_| Error::Conflict("PGN repository lock was poisoned".into()))
+    }
+
+    #[cfg(test)]
+    fn retained_edit_lock_count(&self) -> Result<usize, Error> {
+        let _inner = self.inner()?;
+        Ok(self.edit_locks.len())
     }
 
     #[cfg(test)]
@@ -554,26 +564,21 @@ impl PgnRepository {
     pub(crate) fn edit_lock(
         &self,
         identity: crate::infra::path_authority::PgnSnapshotIdentity,
-    ) -> Result<Arc<Mutex<()>>, Error> {
+    ) -> Result<KeyedLockLease<'_, EditOwner>, Error> {
         self.edit_owner(EditOwner::File(identity))
     }
 
     pub(crate) fn collection_edit_lock(
         &self,
         collection: uuid::Uuid,
-    ) -> Result<Arc<Mutex<()>>, Error> {
+    ) -> Result<KeyedLockLease<'_, EditOwner>, Error> {
         self.edit_owner(EditOwner::Collection(collection))
     }
 
-    fn edit_owner(&self, identity: EditOwner) -> Result<Arc<Mutex<()>>, Error> {
-        let mut inner = self.inner()?;
-        let lock = inner
-            .locks
-            .entry(identity)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
-        inner.locks.retain(|_, value| Arc::strong_count(value) > 1);
-        Ok(lock)
+    fn edit_owner(&self, identity: EditOwner) -> Result<KeyedLockLease<'_, EditOwner>, Error> {
+        // Preserve poisoned-repository admission refusal without lending the cache mutex.
+        let _inner = self.inner()?;
+        Ok(self.edit_locks.lease(identity))
     }
 
     fn get(&self, key: &CacheKey) -> Result<Option<Arc<[GameRange]>>, Error> {
@@ -639,7 +644,6 @@ impl PgnRepository {
             .sum::<usize>();
         inner.cache.retain(|key, _| &key.identity != identity);
         inner.retained_bytes = inner.retained_bytes.saturating_sub(removed_bytes);
-        inner.locks.retain(|_, value| Arc::strong_count(value) > 1);
         Ok(())
     }
 }
@@ -2523,6 +2527,222 @@ mod tests {
                 &[],
             )
             .expect("resolve writable PGN")
+    }
+
+    #[test]
+    fn pgn_edit_lock_registry_preserves_identity_and_key_domains_across_clones() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first_path = directory.path().join("first.pgn");
+        let second_path = directory.path().join("second.pgn");
+        for path in [&first_path, &second_path] {
+            std::fs::write(path, "[Event \"Lock fixture\"]\n\n1. e4 *\n")
+                .expect("write PGN fixture");
+        }
+        let first = writable_for(&directory, &first_path)
+            .pgn_snapshot()
+            .expect("first snapshot")
+            .identity;
+        let second = writable_for(&directory, &second_path)
+            .pgn_snapshot()
+            .expect("second snapshot")
+            .identity;
+        assert_ne!(first, second);
+
+        let repository = PgnRepository::default();
+        let cloned = repository.clone();
+        let file = repository.edit_lock(first.clone()).expect("file lock");
+        let file_guard = file.try_lock().expect("hold first file");
+        let same_file = cloned.edit_lock(first).expect("same file lock");
+        assert!(same_file.try_lock().is_err());
+        let other_file = cloned.edit_lock(second).expect("other file lock");
+        let other_file_guard = other_file.try_lock().expect("distinct snapshot progresses");
+
+        let collection = repository
+            .collection_edit_lock(uuid::Uuid::nil())
+            .expect("collection lock");
+        let collection_guard = collection
+            .try_lock()
+            .expect("collection progresses while file locks are held");
+        let same_collection = cloned
+            .collection_edit_lock(uuid::Uuid::nil())
+            .expect("same collection lock");
+        assert!(same_collection.try_lock().is_err());
+        assert!(same_file.try_lock().is_err());
+        let other_collection = cloned
+            .collection_edit_lock(uuid::Uuid::from_u128(1))
+            .expect("other collection lock");
+        let other_collection_guard = other_collection
+            .try_lock()
+            .expect("distinct collection progresses");
+        assert_eq!(
+            repository.retained_edit_lock_count().expect("lock count"),
+            4
+        );
+
+        drop((
+            file_guard,
+            other_file_guard,
+            collection_guard,
+            other_collection_guard,
+        ));
+        drop((
+            file,
+            same_file,
+            other_file,
+            collection,
+            same_collection,
+            other_collection,
+        ));
+        assert_eq!(
+            cloned.retained_edit_lock_count().expect("final lock count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pgn_edit_lock_registry_cancelled_waiter_preserves_surviving_owner() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cancelled-waiter.pgn");
+        std::fs::write(&path, "[Event \"Lock fixture\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let identity = writable_for(&directory, &path)
+            .pgn_snapshot()
+            .expect("snapshot")
+            .identity;
+        let repository = PgnRepository::default();
+        let owner = repository.edit_lock(identity.clone()).expect("owner lock");
+        let held = owner.try_lock().expect("hold owner lock");
+        let waiter_repository = repository.clone();
+        let waiter_identity = identity.clone();
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let waiter = waiter_repository
+                .edit_lock(waiter_identity)
+                .expect("waiter lock");
+            let mut waiting = Box::pin(waiter.lock());
+            assert!(futures_util::poll!(&mut waiting).is_pending());
+            waiting_tx.send(()).expect("report polled waiter");
+            let _guard = waiting.await;
+        });
+        tokio::time::timeout(Duration::from_secs(5), waiting_rx)
+            .await
+            .expect("waiter poll timeout")
+            .expect("waiter is queued");
+        task.abort();
+        let error = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("waiter cancellation timeout")
+            .expect_err("waiting task must cancel");
+        assert!(error.is_cancelled());
+
+        let fresh = repository.edit_lock(identity).expect("fresh owner lock");
+        assert!(fresh.try_lock().is_err());
+        assert_eq!(
+            repository.retained_edit_lock_count().expect("lock count"),
+            1
+        );
+        drop(held);
+        let fresh_guard = fresh.try_lock().expect("surviving owner progresses");
+        assert!(owner.try_lock().is_err());
+        drop(fresh_guard);
+        drop((owner, fresh));
+        assert_eq!(
+            repository
+                .retained_edit_lock_count()
+                .expect("final lock count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pgn_edit_lock_registry_cancelled_holder_preserves_surviving_owner() {
+        let repository = PgnRepository::default();
+        let collection = uuid::Uuid::nil();
+        let survivor = repository
+            .collection_edit_lock(collection)
+            .expect("surviving collection lock");
+        let holder_repository = repository.clone();
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let holder = holder_repository
+                .collection_edit_lock(collection)
+                .expect("holder collection lock");
+            let guard = holder.lock().await;
+            held_tx.send(()).expect("report held guard");
+            std::future::pending::<()>().await;
+            drop(guard);
+        });
+        tokio::time::timeout(Duration::from_secs(5), held_rx)
+            .await
+            .expect("holder acquisition timeout")
+            .expect("holder owns guard");
+        assert!(survivor.try_lock().is_err());
+        let mut waiting = Box::pin(survivor.lock());
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        task.abort();
+        let error = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("holder cancellation timeout")
+            .expect_err("holding task must cancel");
+        assert!(error.is_cancelled());
+        let surviving_guard = tokio::time::timeout(Duration::from_secs(5), waiting.as_mut())
+            .await
+            .expect("surviving owner must progress after holder cancellation");
+        let fresh = repository
+            .collection_edit_lock(collection)
+            .expect("fresh collection lock");
+        assert!(fresh.try_lock().is_err());
+        assert_eq!(
+            repository.retained_edit_lock_count().expect("lock count"),
+            1
+        );
+        drop(surviving_guard);
+        drop(waiting);
+        drop((survivor, fresh));
+        assert_eq!(
+            repository
+                .retained_edit_lock_count()
+                .expect("final lock count"),
+            0
+        );
+    }
+
+    #[test]
+    fn pgn_edit_lock_registry_distinct_key_burst_returns_to_zero() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let repository = PgnRepository::default();
+        let cloned = repository.clone();
+        let mut locks = Vec::new();
+        for index in 0..16 {
+            let path = directory.path().join(format!("history-{index}.pgn"));
+            std::fs::write(&path, "[Event \"Lock fixture\"]\n\n1. e4 *\n")
+                .expect("write PGN fixture");
+            let identity = writable_for(&directory, &path)
+                .pgn_snapshot()
+                .expect("snapshot")
+                .identity;
+            locks.push(repository.edit_lock(identity).expect("file lock"));
+            locks.push(
+                cloned
+                    .collection_edit_lock(uuid::Uuid::from_u128(index))
+                    .expect("collection lock"),
+            );
+        }
+        let guards: Vec<_> = locks
+            .iter()
+            .map(|lock| lock.try_lock().expect("distinct key progresses"))
+            .collect();
+        assert_eq!(
+            repository
+                .retained_edit_lock_count()
+                .expect("burst lock count"),
+            32
+        );
+        drop(guards);
+        drop(locks);
+        assert_eq!(
+            cloned.retained_edit_lock_count().expect("final lock count"),
+            0
+        );
     }
 
     async fn delete_with_snapshot(
@@ -5053,6 +5273,7 @@ mod tests {
         let range_bytes = std::mem::size_of::<GameRange>();
         let repository = PgnRepository {
             inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
+            edit_locks: Arc::new(KeyedLocks::default()),
             cache_byte_limit: range_bytes * 4,
         };
         let key_one = key_with_size(&base, 1);
@@ -5110,6 +5331,7 @@ mod tests {
         let range_bytes = std::mem::size_of::<GameRange>();
         let repository = PgnRepository {
             inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
+            edit_locks: Arc::new(KeyedLocks::default()),
             cache_byte_limit: range_bytes,
         };
         let (key, ranges) = scan_current(snapshot, &repository, &CancellationToken::new())
