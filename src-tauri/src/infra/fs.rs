@@ -807,6 +807,27 @@ enum AtomicFileMode {
     CreateWorkspaceSidecar,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+enum RenameOutcome {
+    Committed,
+    RetryWithoutDestinationPin,
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn dos_error_means_ex_unsupported(error: u32) -> bool {
+    matches!(error, 87 | 50 | 1)
+}
+
+#[test]
+fn windows_ex_fallback_dos_predicate() {
+    for error in [87, 50, 1] {
+        assert!(dos_error_means_ex_unsupported(error), "{error}");
+    }
+    for error in [0, 5, 32, 183, 1224] {
+        assert!(!dos_error_means_ex_unsupported(error), "{error}");
+    }
+}
+
 trait AtomicReplaceAdapter {
     type Target;
 
@@ -841,6 +862,14 @@ trait AtomicReplaceAdapter {
         temp_name: &OsStr,
         target: &OsStr,
         replace: bool,
+        mode: AtomicFileMode,
+    ) -> Result<RenameOutcome, Error>;
+    fn rename_classic(
+        &self,
+        dir: &File,
+        temp: &mut OwnedFile,
+        temp_name: &OsStr,
+        target: &OsStr,
         mode: AtomicFileMode,
     ) -> Result<(), Error>;
     fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error>;
@@ -1351,14 +1380,30 @@ where
             &adapter, &dir, &temp_name, &mut temp, error,
         ));
     }
-    if let Err(error) = adapter.rename(
+    let replacing = mode == AtomicFileMode::Replace && original.is_some();
+    let rename = adapter.rename(
         &dir,
         &mut temp,
         &temp_name,
         target_name_ref,
-        mode == AtomicFileMode::Replace && original.is_some(),
+        replacing,
         mode,
-    ) {
+    );
+    let rename = match rename {
+        Ok(RenameOutcome::Committed) => Ok(()),
+        Ok(RenameOutcome::RetryWithoutDestinationPin) => {
+            if replacing {
+                drop(original);
+                adapter.rename_classic(&dir, &mut temp, &temp_name, target_name_ref, mode)
+            } else {
+                Err(Error::Conflict(
+                    "rename retry requires a destination pin".into(),
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = rename {
         return Err(cleanup_with_adapter(
             &adapter, &dir, &temp_name, &mut temp, error,
         ));
@@ -2175,7 +2220,7 @@ mod unix {
             target: &OsStr,
             replace: bool,
             mode: AtomicFileMode,
-        ) -> Result<(), Error> {
+        ) -> Result<RenameOutcome, Error> {
             if replace {
                 fs::renameat(dir, temp_name, dir, target).map_err(|error| io(error.into()))
             } else {
@@ -2198,6 +2243,19 @@ mod unix {
                     },
                 )
             }
+            .map(|()| RenameOutcome::Committed)
+        }
+
+        fn rename_classic(
+            &self,
+            dir: &File,
+            temp: &mut OwnedFile,
+            temp_name: &OsStr,
+            target: &OsStr,
+            mode: AtomicFileMode,
+        ) -> Result<(), Error> {
+            self.rename(dir, temp, temp_name, target, true, mode)
+                .map(|_| ())
         }
 
         fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {
@@ -2556,19 +2614,17 @@ mod win {
     use windows_sys::{
         Wdk::Storage::FileSystem::{
             FileDispositionInformation, FileDispositionInformationEx,
-            FileIdBothDirectoryInformation, FileRenameInformationEx, NtQueryDirectoryFile,
-            NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_DELETE,
+            FileIdBothDirectoryInformation, FileRenameInformation, FileRenameInformationEx,
+            NtQueryDirectoryFile, NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_DELETE,
             FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
             FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
             FILE_ID_BOTH_DIR_INFORMATION, FILE_OPEN, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
             FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
         },
         Win32::{
-            // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
-            // in path_authority::windows_open_status_error, which this module now routes to.
             Foundation::{
-                ERROR_DIRECTORY, HANDLE, INVALID_HANDLE_VALUE, STATUS_BUFFER_OVERFLOW,
-                STATUS_NO_MORE_FILES,
+                RtlNtStatusToDosError, ERROR_DIRECTORY, HANDLE, INVALID_HANDLE_VALUE,
+                STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES,
             },
             Security::{
                 AddAccessAllowedAce, CopySid, GetAce, GetKernelObjectSecurity, GetLengthSid,
@@ -2608,6 +2664,225 @@ mod win {
     #[cfg(test)]
     std::thread_local! {
         static TEST_EX_STATUS: std::cell::Cell<(u64, i32)> = const { std::cell::Cell::new((0, 0)) };
+        static TEST_NT_SET_INFORMATION_STATUS: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+        static TEST_CLASSIC_NT_STATUS: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+        static TEST_POSIX_EX_FALLBACK_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    fn set_test_nt_set_information_status(status: Option<i32>) {
+        TEST_NT_SET_INFORMATION_STATUS.with(|slot| slot.set(status));
+    }
+
+    #[cfg(test)]
+    fn set_test_classic_nt_status(status: Option<i32>) {
+        TEST_CLASSIC_NT_STATUS.with(|slot| slot.set(status));
+    }
+
+    #[cfg(test)]
+    struct NtStatusReset;
+
+    #[cfg(test)]
+    impl Drop for NtStatusReset {
+        fn drop(&mut self) {
+            set_test_nt_set_information_status(None);
+            set_test_classic_nt_status(None);
+        }
+    }
+
+    #[cfg(test)]
+    fn posix_ex_fallback_count() -> u64 {
+        TEST_POSIX_EX_FALLBACK_COUNT.with(|slot| slot.get())
+    }
+
+    fn ex_nt_status(call: impl FnOnce() -> i32) -> i32 {
+        #[cfg(test)]
+        if let Some(status) = TEST_NT_SET_INFORMATION_STATUS.with(|slot| slot.take()) {
+            return status;
+        }
+        call()
+    }
+
+    fn classic_nt_status(call: impl FnOnce() -> i32) -> i32 {
+        #[cfg(test)]
+        {
+            TEST_POSIX_EX_FALLBACK_COUNT.with(|slot| slot.set(slot.get() + 1));
+            if let Some(status) = TEST_CLASSIC_NT_STATUS.with(|slot| slot.take()) {
+                return status;
+            }
+        }
+        call()
+    }
+
+    fn ex_status_is_unsupported(status: i32) -> bool {
+        dos_error_means_ex_unsupported(unsafe { RtlNtStatusToDosError(status) })
+    }
+
+    #[cfg(test)]
+    mod ex_fallback_tests {
+        use super::*;
+        use windows_sys::Win32::Foundation::{
+            STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_OBJECT_NAME_COLLISION,
+            STATUS_SHARING_VIOLATION,
+        };
+
+        const OLD: &[u8] = b"previous generation";
+        const NEW: &[u8] = b"replacement generation";
+
+        fn fixture() -> (NtStatusReset, tempfile::TempDir, File) {
+            let reset = NtStatusReset;
+            TEST_POSIX_EX_FALLBACK_COUNT.with(|slot| slot.set(0));
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("target"), OLD).unwrap();
+            let parent = super::super::windows_test_parent(dir.path());
+            (reset, dir, parent)
+        }
+
+        fn replace(parent: &File) -> Result<AtomicFileOutcome, Error> {
+            super::super::atomic_replace_at(parent, OsStr::new("target"), |temp| {
+                temp.write_all(NEW).map_err(io)
+            })
+        }
+
+        fn identity(dir: &Path) -> (u64, u64) {
+            let file = File::open(dir.join("target")).unwrap();
+            opened_file_identity(&file).unwrap()
+        }
+
+        fn unlink(parent: &File, expected: (u64, u64)) -> Result<(), Error> {
+            super::super::remove_entry_at(parent, OsStr::new("target"), expected, false)
+        }
+
+        fn rename(parent: &File, expected: (u64, u64)) -> Result<AtomicFileOutcome, Error> {
+            super::super::rename_entry_at(
+                parent,
+                OsStr::new("target"),
+                expected,
+                false,
+                parent,
+                OsStr::new("renamed"),
+            )
+        }
+
+        fn assert_unlinked(result: Result<(), Error>, path: &Path) {
+            assert!(
+                matches!(result, Ok(()) | Err(Error::CommittedDurabilityUncertain(_))),
+                "{result:?}"
+            );
+            assert_eq!(
+                std::fs::symlink_metadata(path).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+        }
+
+        #[test]
+        fn windows_ex_fallback_ntfs_replace_does_not_fall_back() {
+            let (_reset, dir, parent) = fixture();
+            replace(&parent).unwrap().expect_durable();
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), NEW);
+            assert_eq!(posix_ex_fallback_count(), 0);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_invalid_parameter_replace_commits() {
+            let (_reset, dir, parent) = fixture();
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            replace(&parent).unwrap().expect_durable();
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), NEW);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_collision_does_not_fall_back() {
+            let (_reset, dir, parent) = fixture();
+            set_test_nt_set_information_status(Some(STATUS_OBJECT_NAME_COLLISION));
+            assert!(
+                matches!(replace(&parent), Err(Error::Conflict(message)) if message == "Windows object name collision")
+            );
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), OLD);
+            assert_eq!(posix_ex_fallback_count(), 0);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_invalid_parameter_unlink_commits() {
+            let (_reset, dir, parent) = fixture();
+            let expected = identity(dir.path());
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            assert_unlinked(unlink(&parent, expected), &dir.path().join("target"));
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_sharing_unlink_keeps_name() {
+            let (_reset, dir, parent) = fixture();
+            let expected = identity(dir.path());
+            set_test_nt_set_information_status(Some(STATUS_SHARING_VIOLATION));
+            assert!(
+                matches!(unlink(&parent, expected), Err(Error::Conflict(message)) if message == "Windows sharing violation")
+            );
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), OLD);
+            assert_eq!(posix_ex_fallback_count(), 0);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_invalid_parameter_noreplace_commits() {
+            let (_reset, dir, parent) = fixture();
+            let expected = identity(dir.path());
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            rename(&parent, expected).unwrap().expect_durable();
+            assert_eq!(std::fs::read(dir.path().join("renamed")).unwrap(), OLD);
+            assert_eq!(
+                std::fs::symlink_metadata(dir.path().join("target"))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_invalid_parameter_noreplace_keeps_occupied() {
+            let (_reset, dir, parent) = fixture();
+            std::fs::write(dir.path().join("renamed"), NEW).unwrap();
+            let expected = identity(dir.path());
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            assert!(
+                matches!(rename(&parent, expected), Err(Error::Conflict(message)) if message == "Windows object name collision")
+            );
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), OLD);
+            assert_eq!(std::fs::read(dir.path().join("renamed")).unwrap(), NEW);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_classic_replace_failure_cleans_up() {
+            let (_reset, dir, parent) = fixture();
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            set_test_classic_nt_status(Some(STATUS_SHARING_VIOLATION));
+            assert!(
+                matches!(replace(&parent), Err(Error::Conflict(message)) if message == "Windows sharing violation")
+            );
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), OLD);
+            let entries: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(entries, vec![OsString::from("target")]);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_classic_unlink_failure_keeps_name() {
+            let (_reset, dir, parent) = fixture();
+            let expected = identity(dir.path());
+            set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            set_test_classic_nt_status(Some(STATUS_ACCESS_DENIED));
+            assert!(
+                matches!(unlink(&parent, expected), Err(Error::Io(error)) if error.raw_os_error() == Some(5))
+            );
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), OLD);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
     }
 
     #[cfg(test)]
@@ -2697,6 +2972,7 @@ mod win {
             std::fs::write(&replace, OLD).unwrap();
             let (status, outcome) = measure_replace(&parent, &replace, None);
             writeln!(record, "{filesystem} replace {status} {outcome}").unwrap();
+            assert_eq!(outcome, "committed");
 
             let unlink = dir.path().join("unlink");
             std::fs::write(&unlink, OLD).unwrap();
@@ -2722,6 +2998,7 @@ mod win {
                 }
             };
             writeln!(record, "{filesystem} unlink {status} {outcome}").unwrap();
+            assert_eq!(outcome, "committed");
 
             let mapped_path = dir.path().join("mapped-replace");
             std::fs::write(&mapped_path, OLD).unwrap();
@@ -3199,6 +3476,7 @@ mod win {
             AtomicFileMode::Replace,
             false,
         )
+        .map(|_| ())
     }
 
     fn rename_child_with_mode(
@@ -3209,8 +3487,46 @@ mod win {
         replace: bool,
         mode: AtomicFileMode,
         workspace_name: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<RenameOutcome, Error> {
         super::single_leaf(target)?;
+        let flags = if replace {
+            FILE_RENAME_REPLACE_IF_EXISTS
+                | FILE_RENAME_POSIX_SEMANTICS
+                | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
+        } else {
+            FILE_RENAME_POSIX_SEMANTICS
+        };
+        let buffer = rename_information_buffer(dir, target, flags);
+        let status =
+            ex_nt_status(|| set_rename_information(temp, &buffer, FileRenameInformationEx));
+        #[cfg(test)]
+        note_test_ex_status(status);
+        classify_rename_status(status, dir, target, mode, workspace_name).or_else(|error| {
+            if ex_status_is_unsupported(status) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })?;
+        if status == 0 {
+            return Ok(RenameOutcome::Committed);
+        }
+        if replace {
+            return Ok(RenameOutcome::RetryWithoutDestinationPin);
+        }
+        let buffer = classic_rename_information_buffer(dir, target, replace);
+        let status =
+            classic_nt_status(|| set_rename_information(temp, &buffer, FileRenameInformation));
+        classify_rename_status(status, dir, target, mode, workspace_name)?;
+        Ok(RenameOutcome::Committed)
+    }
+
+    fn classic_rename_information_buffer(dir: &File, target: &OsStr, replace: bool) -> Vec<u8> {
+        let replace_if_exists = if replace { 1_u32 } else { 0_u32 };
+        rename_information_buffer(dir, target, replace_if_exists)
+    }
+
+    fn rename_information_buffer(dir: &File, target: &OsStr, flags: u32) -> Vec<u8> {
         // FILE_RENAME_INFORMATION is a variable-length structure: FileName is declared [u16; 1]
         // but carries the whole leaf, so it cannot be written as a plain value and the buffer is
         // laid out by hand. The offsets are taken from the crate's own struct rather than spelled
@@ -3225,13 +3541,6 @@ mod win {
         let name_bytes = wide.len() * std::mem::size_of::<u16>();
         let buffer_len = FILE_NAME_OFFSET + name_bytes;
         let mut buffer = vec![0_u8; buffer_len];
-        let flags = if replace {
-            FILE_RENAME_REPLACE_IF_EXISTS
-                | FILE_RENAME_POSIX_SEMANTICS
-                | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
-        } else {
-            FILE_RENAME_POSIX_SEMANTICS
-        };
         unsafe {
             std::ptr::write_unaligned(buffer.as_mut_ptr().cast::<u32>(), flags);
             std::ptr::write_unaligned(
@@ -3254,18 +3563,33 @@ mod win {
                 name_bytes,
             );
         }
+        buffer
+    }
+
+    fn set_rename_information(
+        temp: &impl crate::infra::inode_ownership::NativeFile,
+        buffer: &[u8],
+        information_class: windows_sys::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
+    ) -> i32 {
         let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-        let status = unsafe {
+        unsafe {
             NtSetInformationFile(
                 temp.as_raw_handle() as HANDLE,
                 &mut status_block,
                 buffer.as_ptr().cast(),
                 buffer.len() as u32,
-                FileRenameInformationEx,
+                information_class,
             )
-        };
-        #[cfg(test)]
-        note_test_ex_status(status);
+        }
+    }
+
+    fn classify_rename_status(
+        status: i32,
+        dir: &File,
+        target: &OsStr,
+        mode: AtomicFileMode,
+        workspace_name: bool,
+    ) -> Result<(), Error> {
         if status != 0 {
             if (workspace_name || mode == AtomicFileMode::CreateWorkspaceSidecar)
                 && status == windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION
@@ -3292,11 +3616,19 @@ mod win {
                 "injected created-file disposition failure",
             ))));
         }
+        let status = classic_disposition(temp);
+        if status != 0 {
+            return Err(windows_open_status_error(status));
+        }
+        Ok(())
+    }
+
+    fn classic_disposition(temp: &impl std::os::windows::io::AsRawHandle) -> i32 {
         // FILE_DISPOSITION_INFORMATION is a single BOOLEAN DeleteFile; the struct says that,
         // where a bare [1_u8] left the reader to infer both the layout and the meaning.
         let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
         let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-        let status = unsafe {
+        unsafe {
             NtSetInformationFile(
                 temp.as_raw_handle() as HANDLE,
                 &mut status_block,
@@ -3304,11 +3636,7 @@ mod win {
                 std::mem::size_of::<FILE_DISPOSITION_INFORMATION>() as u32,
                 FileDispositionInformation,
             )
-        };
-        if status != 0 {
-            return Err(windows_open_status_error(status));
         }
-        Ok(())
     }
 
     fn map_create_collision(error: Error) -> Error {
@@ -3424,7 +3752,7 @@ mod win {
                 | FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE,
         };
         let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-        let status = unsafe {
+        let status = ex_nt_status(|| unsafe {
             NtSetInformationFile(
                 file.as_raw_handle() as HANDLE,
                 &mut status_block,
@@ -3432,9 +3760,14 @@ mod win {
                 std::mem::size_of::<FILE_DISPOSITION_INFORMATION_EX>() as u32,
                 FileDispositionInformationEx,
             )
-        };
+        });
         #[cfg(test)]
         note_test_ex_status(status);
+        let status = if status != 0 && ex_status_is_unsupported(status) {
+            classic_nt_status(|| classic_disposition(file))
+        } else {
+            status
+        };
         if status != 0 {
             return Err(windows_open_status_error(status));
         }
@@ -4871,8 +5204,23 @@ mod win {
             target: &OsStr,
             replace: bool,
             mode: AtomicFileMode,
-        ) -> Result<(), Error> {
+        ) -> Result<RenameOutcome, Error> {
             rename_child_with_mode(dir, temp, temp_name, target, replace, mode, false)
+        }
+
+        fn rename_classic(
+            &self,
+            dir: &File,
+            temp: &mut OwnedFile,
+            _temp_name: &OsStr,
+            target: &OsStr,
+            mode: AtomicFileMode,
+        ) -> Result<(), Error> {
+            super::single_leaf(target)?;
+            let buffer = classic_rename_information_buffer(dir, target, true);
+            let status =
+                classic_nt_status(|| set_rename_information(temp, &buffer, FileRenameInformation));
+            classify_rename_status(status, dir, target, mode, false)
         }
 
         fn metadata(&self, temp: &OwnedFile) -> Result<TempMetadata, std::io::Error> {

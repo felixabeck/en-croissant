@@ -1571,11 +1571,70 @@ fn windows_workspace_renames_do_not_replace() {
 fn windows_rename_uses_rename_information_ex_only() {
     let source = source_for("infra/fs.rs");
     let rename = compact(&source[braced_body(source, "fn rename_child_with_mode(")]);
-    assert!(rename.contains("FileRenameInformationEx"), "{rename}");
-    assert!(
-        !rename.contains("FileRenameInformation)") && !rename.contains("FileRenameInformation,"),
-        "rename must not silently use the legacy class: {rename}"
+    let ex = rename.find("FileRenameInformationEx").expect("Ex attempt");
+    let classic = rename
+        .find("FileRenameInformation)")
+        .expect("classic attempt");
+    assert!(ex < classic, "{rename}");
+    assert_eq!(
+        rename.matches("classify_rename_status(").count(),
+        2,
+        "{rename}"
     );
+    let classic_buffer =
+        compact(&source[braced_body(source, "fn classic_rename_information_buffer(")]);
+    assert!(
+        classic_buffer.contains("ifreplace{1_u32}else{0_u32}"),
+        "{classic_buffer}"
+    );
+    assert!(
+        !classic_buffer.contains("FILE_RENAME_POSIX_SEMANTICS")
+            && !classic_buffer.contains("FILE_RENAME_IGNORE_READONLY_ATTRIBUTE"),
+        "{classic_buffer}"
+    );
+    let buffer = compact(&source[braced_body(source, "fn rename_information_buffer(")]);
+    assert!(buffer.contains("vec![0_u8;buffer_len]"), "{buffer}");
+    assert!(
+        buffer.contains("write_unaligned(buffer.as_mut_ptr().cast::<u32>(),flags)"),
+        "{buffer}"
+    );
+}
+
+#[test]
+fn windows_ex_fallback_drops_only_destination_pin_after_ex_refusal() {
+    let source = source_for("infra/fs.rs");
+    let driver = compact(&source[braced_body(source, "fn replace_at_driver<A, F, P>(")]);
+    let replacing = driver
+        .find("letreplacing=mode==AtomicFileMode::Replace&&original.is_some();")
+        .expect("live destination pin");
+    let first = driver
+        .find("adapter.rename(&dir,&muttemp,&temp_name,target_name_ref,replacing,mode,)")
+        .expect("Ex-first rename");
+    let retry = driver
+        .find("Ok(RenameOutcome::RetryWithoutDestinationPin)=>")
+        .expect("retry outcome");
+    let drop_pin = driver
+        .find("drop(original);")
+        .expect("destination pin release");
+    let classic = driver
+        .find("adapter.rename_classic(")
+        .expect("classic-only retry");
+    assert!(
+        replacing < first && first < retry && retry < drop_pin && drop_pin < classic,
+        "{driver}"
+    );
+    assert!(driver[retry..drop_pin].contains("ifreplacing{"), "{driver}");
+    assert!(!driver[..first].contains("drop(original)"), "{driver}");
+    assert!(!driver[retry..classic].contains("drop(temp)"), "{driver}");
+    let unix = &source[braced_body(source, "mod unix")];
+    let rename = compact(&unix[braced_body(unix, "fn rename(")]);
+    assert!(
+        rename.contains(".map(|()|RenameOutcome::Committed)"),
+        "{rename}"
+    );
+    let volume = &source[braced_body(source, "fn windows_non_ntfs_volume_records_ex_status(")];
+    assert!(!volume.contains("set_test_nt_set_information_status"));
+    assert!(!volume.contains("set_test_classic_nt_status"));
 }
 
 #[test]
@@ -1592,13 +1651,22 @@ fn windows_unlink_uses_posix_disposition_ex() {
         unlink.contains("FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE"),
         "{unlink}"
     );
+    assert!(!unlink.contains("cleanup_failure"), "{unlink}");
+    assert!(unlink.contains("classic_disposition(file)"), "{unlink}");
+    let classic = compact(&source[braced_body(source, "fn classic_disposition(")]);
     assert!(
-        !unlink.contains("FileDispositionInformation)"),
-        "new unlink must not silently use the legacy class: {unlink}"
+        classic.contains("FILE_DISPOSITION_INFORMATION{DeleteFile:true}"),
+        "{classic}"
+    );
+    assert!(classic.contains("FileDispositionInformation,"), "{classic}");
+    assert!(
+        !classic.contains("FileDispositionInformationEx"),
+        "{classic}"
     );
     let delete_temp = compact(&source[braced_body(source, "fn delete_temp(")]);
     assert!(
-        delete_temp.contains("FileDispositionInformation"),
+        delete_temp.contains("classic_disposition(temp)")
+            && delete_temp.contains("cleanup_failure"),
         "{delete_temp}"
     );
     assert!(

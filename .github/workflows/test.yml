@@ -127,7 +127,7 @@ jobs:
           $lines | Write-Output
           foreach ($filesystem in @('fat32', 'exfat')) {
             foreach ($operation in @('replace', 'unlink')) {
-              $pattern = "^$filesystem $operation -?[0-9]+ (committed|error)$"
+              $pattern = "^$filesystem $operation -?[0-9]+ committed$"
               if (@($lines | Where-Object { $_ -cmatch $pattern }).Count -ne 1) {
                 throw "Expected exactly one $filesystem $operation measurement"
               }
