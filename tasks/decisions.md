@@ -9896,3 +9896,34 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** That is the current order, minus the document. A failure that committed nothing may still be removed after the document has reported it. Reversal path: a different cleanup policy needs the same one-import proof.
 * **Decided by:** Grok, drain session c6573184-fbc0-4fd5-a7e5-4fd7acdd1499 (drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6), full auto, adopted plan tasks/plans/2026-10-24-account-import-completion.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"2097aa1671af14073fdca4785d32317fd141b24bc747e974ba282197ba145428","input_sha256":"8f1fac79a80984a71556647ed331653f2a55f158e717f7051c755401a57a107d","kind":"mutation-receipt","operation":"ac8ba47caf41fc6c4564a78f37d5263d97522293142aa02d2d4a51bde31bdb01","options":{"section":"2026-10-25 \u2014 recorded through the decisions lock"},"request_id_sha256":null,"results":["d-20261025-02","d-20261025-03","d-20261025-04","d-20261025-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261025-06 — Should the restored card surface a generic failure from progress state, or should the native cause reach the renderer on a typed owner-scoped channel?
+
+* **Question:** Should the restored card surface a generic failure from progress state, or should the native cause reach the renderer on a typed owner-scoped channel?
+* **Governs:** f-20261005-06
+* **Chosen:** An optional `failure: ErrorPayload` on the existing `ProgressItem` and `ProgressEvent`, present only for a non-cancellation `download_file` failure, built from `renderer_payload()` after the Io sanitize rule, never from `diagnostic()`.
+* **Rejected:** A generic message with no payload; a new event; a second query channel that can diverge from the item the card renders; reusing the engine completion mailbox for database downloads; publishing `failure` on Lichess, Chess.com, or account-conversion progress.
+* **Reason:** The live toast already shows this payload, including remote-HTTP guidance. The progress generation is the owner the finding names. `ipc-events` allows only the existing `ProgressEvent`. The engine mailbox is an install-application protocol and already notifies. Account import already notifies from `CompletionOutcome::Failed` (`d-20261025-02`, `d-20261025-04`).
+* **Reversal path:** a reviewed design that still announces the specific failure after reload, hides the failed fill when clear fails, and does not double-toast the live owner, the engine completion applier, or the account completion observer.
+* **Decided by:** drain session 2441188f-1ef5-44bb-b775-36d87c08d9d9 · **Superseded-by:** -
+
+### d-20261025-07 — Does the shared button keep drawing a failed partial fill?
+
+* **Question:** Does the shared button keep drawing a failed partial fill?
+* **Governs:** f-20261005-06
+* **Chosen:** No fill for `state === "failed"` on every `ProgressButton` consumer. The shared test expectation changes from a bar to no bar.
+* **Rejected:** A download-only prop that leaves the shared test asserting the fill.
+* **Reason:** `d-20261017-04` preserves the failed bar only for the succeeded-fill fix and points the reversal at independently authorized failed-progress work. This finding is that work. The store still keeps the high-water percentage, so the predicate has to hide it even when `clearProgress` fails.
+* **Reversal path:** restore the failed-bar assertion only under a new decision that a failed terminal should show its partial fill.
+* **Decided by:** drain session 2441188f-1ef5-44bb-b775-36d87c08d9d9 · **Superseded-by:** -
+
+### d-20261025-08 — How does the live document avoid a second toast without hiding a survivor it did not start?
+
+* **Question:** How does the live document avoid a second toast without hiding a survivor it did not start?
+* **Governs:** f-20261005-06
+* **Chosen:** Commit generation H only when the settled command error, after `normalizeError`, carries `progress_generation` H. A `running` event is not ownership, including one observed while the attempt's clear is still pending. The command error carries that generation only after `begin_progress`. A pre-begin error carries none, commits nothing, and the buffered or later survivor failure is announced. There is no binding on the next `running` event. While invoked, buffer a `failed` payload for that progress id instead of announcing it. No invocation, or the duplicate-admission conflict, owns nothing and announces the buffered survivor payload once. A different generation is not owned. The owned generation survives deletion of the job entry. The field survives the real command facade.
+* **Rejected:** A document-lifetime set of progress ids registered before the native call; `markErrorReported` across the command error and the progress payload; announcing nothing and only clearing.
+* **Reason:** The two error objects are not the same reference. Clearing can fail, and the finding requires a message. The duplicate-admission conflict is returned before `begin_progress`, and the survivor continues under the same card id. Permanent id ownership would hide that survivor's later payload. Registration stays in `runDownloadJob`, which knows the card id. `AccountCard.tsx` stays untouched because account import is outside this observer.
+* **Reversal path:** an owner token inside the payload that a reloaded document can check without a document-local generation set.
+* **Decided by:** drain session 2441188f-1ef5-44bb-b775-36d87c08d9d9 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":29,"effect_sha256":"4b30e20e2fca9b19886222532ca1d69067ea11cb8918fc3d6365736005c09622","input_sha256":"657d961f5f3b3577d775e14d1ba0a6e3f0ec1f197a01615bfec441763d7917fb","kind":"mutation-receipt","operation":"19b8c5466c55de9dd2aa8136b869689e9c216833a4888ea62a6f5ca19835db4c","options":{"section":null},"request_id_sha256":null,"results":["d-20261025-06","d-20261025-07","d-20261025-08"],"target":"decisions-ledger","v":1} -->
