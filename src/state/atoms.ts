@@ -626,6 +626,11 @@ export const databaseConversionRefreshFailedAtom = atom(false);
 /** In-memory only: account keys mapped to their pending download ticket; owned by AccountCard's download action. */
 export const accountDownloadsInFlightAtom = atom<ReadonlyMap<string, string | null>>(new Map());
 
+/** Native account workflows survive the document's in-memory download tickets. */
+export const accountCompletionsAtom = atom<
+    ReadonlyMap<string, import("@/bindings").AccountCompletion>
+>(new Map());
+
 /** Retains one entry per active owner, in start order, until that owner's work settles. */
 export async function runDatabaseConversion<T>(
     setState: (update: (previous: DatabaseConversionEntry[]) => DatabaseConversionEntry[]) => void,

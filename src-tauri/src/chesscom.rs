@@ -232,7 +232,7 @@ pub async fn get_public_chess_com_json(
 
 #[tauri::command]
 #[specta::specta]
-#[allow(clippy::too_many_arguments)] // IPC contract is generated and intentionally stable.
+#[allow(clippy::too_many_arguments)]
 pub async fn download_chess_com_games(
     destination: PathRef,
     filename: String,
@@ -243,10 +243,34 @@ pub async fn download_chess_com_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
+    download_chess_com_games_runtime(
+        destination,
+        filename,
+        player,
+        since_ms,
+        job_id,
+        app,
+        window.label(),
+        state.inner().clone(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn download_chess_com_games_runtime<R: tauri::Runtime>(
+    destination: PathRef,
+    filename: String,
+    player: String,
+    since_ms: Option<i64>,
+    job_id: String,
+    app: tauri::AppHandle<R>,
+    owner: &str,
+    state: AppState,
+) -> Result<ArtifactPublication, Error> {
     let admission_key = format!("chesscom_{}", player.to_ascii_lowercase());
     let lease = state.operations.claim_download(
         &job_id,
-        window.label(),
+        owner,
         "download_chess_com_games",
         &job_id,
         &admission_key,
@@ -257,7 +281,6 @@ pub async fn download_chess_com_games(
     let first_month = first_archive_month(since_ms)?;
     let cancellation = lease.token();
     let commit_gate = lease.commit_gate();
-    let state = state.inner().clone();
     crate::infra::operations::run_native_operation(
         lease,
         "download_chess_com_games",
@@ -907,10 +930,10 @@ mod tests {
     }
 
     #[test]
-    fn production_command_dispatches_the_runtime_core_under_native_ownership() {
+    fn production_runtime_dispatches_the_core_under_native_ownership() {
         let source = include_str!("chesscom.rs");
         let command = source
-            .split("pub async fn download_chess_com_games(")
+            .split("async fn download_chess_com_games_runtime<")
             .nth(1)
             .unwrap()
             .split("fn report_terminal_progress")
@@ -922,9 +945,12 @@ mod tests {
     }
 
     #[test]
-    fn download_chess_com_games_command_publishes_on_windows() {
+    fn download_chess_com_games_runtime_publishes_on_windows() {
         let source = include_str!("chesscom.rs");
-        let body = body_at_indent(source, "pub async fn download_chess_com_games(");
+        let body = body_at_indent(
+            source,
+            "pub(crate) async fn download_chess_com_games_runtime<R: tauri::Runtime>(",
+        );
         assert!(!body.contains("off_unix_refusal("), "{body}");
         assert_eq!(body.matches("run_native_operation(").count(), 1, "{body}");
         assert_eq!(

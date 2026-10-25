@@ -1318,7 +1318,7 @@ pub async fn download_lichess_games(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn download_lichess_games_runtime<R: tauri::Runtime>(
+pub(crate) async fn download_lichess_games_runtime<R: tauri::Runtime>(
     handle: crate::credentials::LichessAccountHandle,
     destination: crate::infra::path_authority::PathRef,
     filename: String,
@@ -3517,12 +3517,12 @@ mod tests {
     }
 
     #[test]
-    fn download_lichess_games_command_publishes_on_windows() {
+    fn download_lichess_games_runtime_publishes_on_windows() {
         let source = include_str!("fs.rs");
-        let body = body_at_indent(source, "pub async fn download_lichess_games(");
+        let body = body_at_indent(source, "async fn download_lichess_games_runtime<");
         assert!(!body.contains("off_unix_refusal("), "{body}");
         assert_eq!(
-            body.matches("download_lichess_games_runtime(").count(),
+            body.matches("download_to_destination(").count(),
             1,
             "{body}"
         );

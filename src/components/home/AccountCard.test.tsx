@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   getDatabases: vi.fn(),
   progress: vi.fn(),
   notifyListenerError: vi.fn(),
+  pendingAccountCompletions: vi.fn(async () => []),
+  acknowledgeAccountCompletion: vi.fn(),
+  completionChanged: vi.fn(async () => vi.fn()),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -22,7 +25,7 @@ vi.mock("@/platform/tauri", async () => {
   return {
     ...actual,
     tauri: mocks,
-    tauriSubscriptions: { progress: mocks.progress },
+    tauriSubscriptions: { progress: mocks.progress, completionChanged: mocks.completionChanged },
   };
 });
 vi.mock("@/utils/db", () => ({ getDatabases: mocks.getDatabases }));

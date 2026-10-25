@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     clearProgress: vi.fn(),
     cancelDownload: vi.fn(),
     cancelDownloadForProgress: vi.fn(),
+    importAccountGames: vi.fn(),
     downloadLichessGames: vi.fn(),
     downloadChessComGames: vi.fn(),
     prepareNativeRead: vi.fn(),
@@ -61,6 +62,7 @@ vi.mock("@/bindings/generated", () => ({
         clearProgress: mocks.clearProgress,
         cancelDownload: mocks.cancelDownload,
         cancelDownloadForProgress: mocks.cancelDownloadForProgress,
+        importAccountGames: mocks.importAccountGames,
         downloadLichessGames: mocks.downloadLichessGames,
         downloadChessComGames: mocks.downloadChessComGames,
         prepareNativeRead: mocks.prepareNativeRead,
@@ -127,6 +129,7 @@ describe("tauri command facade", () => {
         mocks.cancelNativeRead.mockReset();
         mocks.prepareDownload.mockReset();
         mocks.releaseDownload.mockReset();
+        mocks.importAccountGames.mockReset().mockResolvedValue({ status: "ok", data: null });
         mocks.downloadLichessGames.mockReset().mockResolvedValue({ status: "ok", data: null });
         mocks.downloadChessComGames.mockReset().mockResolvedValue({ status: "ok", data: null });
         mocks.prepareAnalysis.mockReset();
@@ -323,40 +326,25 @@ describe("tauri command facade", () => {
 
     describe("download sinceMs encoding", () => {
         const destination = { id: "destination" };
+        const accountRequest = {
+            provider: "lichess",
+            account: "Player",
+            accountHandle: "opaque-account",
+            destination,
+            pendingBatch: null,
+            target: {
+                kind: "unlinked" as const,
+                database: { id: { id: "database" }, kind: "database" as const },
+                title: "Player Lichess",
+            },
+        };
         describe.each([
             {
-                name: "downloadLichessGames",
-                command: mocks.downloadLichessGames,
+                name: "importAccountGames",
+                command: mocks.importAccountGames,
                 call: (sinceMs: bigint | null) =>
-                    tauri.downloadLichessGames(
-                        "account",
-                        destination,
-                        "games.pgn",
-                        "player",
-                        sinceMs,
-                        "job",
-                    ),
-                wireArgs: (sinceMs: number | null) => [
-                    "account",
-                    destination,
-                    "games.pgn",
-                    "player",
-                    sinceMs,
-                    "job",
-                ],
-            },
-            {
-                name: "downloadChessComGames",
-                command: mocks.downloadChessComGames,
-                call: (sinceMs: bigint | null) =>
-                    tauri.downloadChessComGames(destination, "games.pgn", "player", sinceMs, "job"),
-                wireArgs: (sinceMs: number | null) => [
-                    destination,
-                    "games.pgn",
-                    "player",
-                    sinceMs,
-                    "job",
-                ],
+                    tauri.importAccountGames({ ...accountRequest, sinceMs }),
+                wireArgs: (sinceMs: number | null) => [{ ...accountRequest, sinceMs }],
             },
         ])("$name", ({ command, call, wireArgs }) => {
             test("encodes a timestamp as a JSON number and preserves other arguments", async () => {

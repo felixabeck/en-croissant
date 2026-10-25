@@ -2147,6 +2147,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             db::linked_collections::collection_for_database,
             db::linked_collections::migrate_linked_collection,
             db::linked_collections::prepare_account_collection,
+            infra::operations::accounts::import_account_games,
+            infra::operations::accounts::pending_account_completions,
+            infra::operations::accounts::acknowledge_account_completion,
             db::linked_collections::batch::append_collection_games,
             db::linked_collections::edit_linked_collection,
             db::linked_collections::linked_collections_supported,
@@ -4102,8 +4105,8 @@ mod blocking_offload_scans {
             ),
             (
                 include_str!("chesscom.rs"),
-                "pub async fn download_chess_com_games(",
-                "window.label()",
+                "async fn download_chess_com_games_runtime<",
+                "owner",
                 "download_chess_com_games",
                 "job_id",
                 "admission_key",
@@ -4129,7 +4132,10 @@ mod blocking_offload_scans {
             }
         }
 
-        let lichess_command = body_at_indent(fs, "pub async fn download_lichess_games(");
+        let lichess_command = body_at_indent(
+            include_str!("infra/operations/accounts.rs"),
+            "async fn import_account_games(",
+        );
         assert_eq!(
             lichess_command.matches("window.label()").count(),
             1,
@@ -4168,7 +4174,7 @@ mod blocking_offload_scans {
         );
 
         let chesscom = include_str!("chesscom.rs");
-        let command = body_at_indent(chesscom, "pub async fn download_chess_com_games(");
+        let command = body_at_indent(chesscom, "async fn download_chess_com_games_runtime<");
         assert_eq!(
             command.matches("format!(\"chesscom_").count(),
             1,
@@ -4266,10 +4272,10 @@ mod blocking_offload_scans {
             (
                 "chesscom.rs",
                 include_str!("chesscom.rs"),
-                "download_chess_com_games",
+                "download_chess_com_games_runtime<R: tauri::Runtime>",
             ),
         ] {
-            let body = body_at_indent(source, &format!("pub async fn {command}("));
+            let body = body_at_indent(source, &format!("async fn {command}("));
             assert!(
                 body.contains("run_native_operation(") || body.contains("run_accepted_blocking("),
                 "{file}::{command} must dispatch through one native owner: {body}"
@@ -4281,11 +4287,6 @@ mod blocking_offload_scans {
                 include_str!("fs.rs"),
                 "download_file",
                 "download_to_destination(",
-            ),
-            (
-                include_str!("fs.rs"),
-                "download_lichess_games",
-                "download_lichess_games_runtime(",
             ),
             (
                 include_str!("main.rs"),

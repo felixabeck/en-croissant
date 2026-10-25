@@ -4,6 +4,7 @@ import { act, Component, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { AccountCompletion, AccountImportRequest } from "@/bindings";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { accountDownloadsInFlightAtom, sessionsAtom } from "@/state/atoms";
 import { installMatchMediaStub } from "@/tests/matchMedia";
@@ -22,7 +23,10 @@ const mocks = vi.hoisted(() => ({
   linkedCollectionsSupported: vi.fn(async () => false),
   listLinkedCollections: vi.fn(async () => [] as import("@/bindings").CollectionDescriptor[]),
   prepareAccountCollection: vi.fn(),
-  appendCollectionGames: vi.fn(),
+  importAccountGames: vi.fn(),
+  pendingAccountCompletions: vi.fn(),
+  acknowledgeAccountCompletion: vi.fn(),
+  completionChanged: vi.fn(),
   collectionForDatabase: vi.fn(
     async () => null as import("@/bindings").CollectionDescriptor | null,
   ),
@@ -31,12 +35,7 @@ const mocks = vi.hoisted(() => ({
   getDbInfo: vi.fn(),
   getLatestGameTimestamp: vi.fn(),
   issueDownloadDestination: vi.fn(),
-  startProgress: vi.fn(),
-  convertPgn: vi.fn(),
-  setProgressState: vi.fn(),
-  deleteEmptyGames: vi.fn(),
   progress: vi.fn(),
-  downloadChessCom: vi.fn(),
   notify: vi.fn(),
   warn: vi.fn(),
   listLichessAccounts: vi.fn(),
@@ -44,24 +43,13 @@ const mocks = vi.hoisted(() => ({
   getAuthenticatedLichessAccount: vi.fn(),
   removeLichessAccount: vi.fn(),
   createWorkspaceDatabase: vi.fn(),
-  downloadLichessGames: vi.fn(),
 }));
 
-vi.mock("@/platform/tauri", () => ({
+vi.mock("@/platform/tauri", async (original) => ({
+  ...(await original<typeof import("@/platform/tauri")>()),
   tauri: mocks,
-  tauriSubscriptions: { progress: mocks.progress },
+  tauriSubscriptions: { progress: mocks.progress, completionChanged: mocks.completionChanged },
 }));
-vi.mock("@/utils/chess.com/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/utils/chess.com/api")>("@/utils/chess.com/api");
-  return {
-    ...actual,
-    downloadChessCom: (...args: Parameters<typeof actual.downloadChessCom>) => {
-      args[3]("download:chesscom:Felix");
-      return mocks.downloadChessCom(...args);
-    },
-  };
-});
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
@@ -76,6 +64,28 @@ let store: ReturnType<typeof createStore>;
 let revalidate: ReturnType<typeof useSWRConfig>["mutate"];
 let cache: ReturnType<typeof useSWRConfig>["cache"];
 let switchRoot: () => Promise<void>;
+let accountSnapshot: AccountCompletion[];
+let accountCompletionChanged: (() => void) | undefined;
+
+function accountCompletion(request: AccountImportRequest, running = false): AccountCompletion {
+  const completion: AccountCompletion = {
+    id: "account-import",
+    request,
+    progressId: "account-download",
+    attempt: 1,
+    importing: false,
+    outcome: running
+      ? { state: "running" }
+      : { state: "succeeded", result: { collectionNotice: false } },
+    publication: running
+      ? null
+      : { handle: { id: { id: "pgn" }, kind: "fileWorkspace" }, durability: "Durable" },
+    committedDatabase: null,
+    deletionPending: false,
+  };
+  accountSnapshot = [completion];
+  return completion;
+}
 
 function RevalidationControl() {
   const config = useSWRConfig();
@@ -153,6 +163,8 @@ function downloadButton() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.linkedCollectionsSupported.mockResolvedValue(false);
+  mocks.listLinkedCollections.mockResolvedValue([]);
+  mocks.collectionForDatabase.mockResolvedValue(null);
   localStorage.clear();
   sessionStorage.clear();
   store = createStore();
@@ -172,14 +184,19 @@ beforeEach(() => {
   });
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
   mocks.issueDownloadDestination.mockResolvedValue({ id: "destination" });
-  mocks.downloadChessCom.mockResolvedValue({
-    handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
-    durability: "Durable",
+  accountSnapshot = [];
+  accountCompletionChanged = undefined;
+  mocks.completionChanged.mockImplementation(async (listener) => {
+    accountCompletionChanged = listener;
+    return () => {
+      accountCompletionChanged = undefined;
+    };
   });
-  mocks.startProgress.mockResolvedValue({ id: "download:chesscom:Felix", generation: 1n });
-  mocks.convertPgn.mockResolvedValue(undefined);
-  mocks.setProgressState.mockResolvedValue(undefined);
-  mocks.deleteEmptyGames.mockResolvedValue(undefined);
+  mocks.pendingAccountCompletions.mockImplementation(async () => accountSnapshot);
+  mocks.acknowledgeAccountCompletion.mockImplementation(async (id) => {
+    accountSnapshot = accountSnapshot.filter((completion) => completion.id !== id);
+  });
+  mocks.importAccountGames.mockImplementation(async (request) => accountCompletion(request));
   mocks.progress.mockResolvedValue(vi.fn());
   host = document.createElement("div");
   document.body.append(host);
@@ -226,7 +243,7 @@ test.each([{}, { username: "Felix" }, { username: "Foreign" }])(
       { provider: "lichess", account: "felix" },
       handle,
     );
-    expect(mocks.downloadLichessGames).not.toHaveBeenCalled();
+    expect(mocks.importAccountGames).not.toHaveBeenCalled();
   },
 );
 
@@ -283,11 +300,8 @@ test.each(["conflict-readable", "conflict-unread", "unread-only", "loading", "fa
     expect(host.textContent).toContain("Home.Accounts.Add");
     await act(async () => downloadButton().click());
     expect(mocks.prepareAccountCollection).not.toHaveBeenCalled();
-    expect(mocks.downloadChessCom).not.toHaveBeenCalled();
-    expect(mocks.downloadLichessGames).not.toHaveBeenCalled();
+    expect(mocks.importAccountGames).not.toHaveBeenCalled();
     expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
-    expect(mocks.convertPgn).not.toHaveBeenCalled();
-    expect(mocks.appendCollectionGames).not.toHaveBeenCalled();
     if (state === "loading") {
       await act(async () => held.resolve({ id: { id: "root" }, kind: "databaseRoot" }));
     }
@@ -357,7 +371,7 @@ test("unavailable history still refreshes and removes the owned partial profile 
   expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("owned-handle");
   expect(store.get(sessionsAtom)).toEqual([accepted[1]]);
   expect(mocks.prepareAccountCollection).not.toHaveBeenCalled();
-  expect(mocks.downloadLichessGames).not.toHaveBeenCalled();
+  expect(mocks.importAccountGames).not.toHaveBeenCalled();
   expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
 });
 
@@ -376,7 +390,7 @@ test("a failed refresh cannot authorize downloads from a retained older listing"
   expect(host.textContent).toContain("Common.Unknown");
   await act(async () => downloadButton().click());
   expect(mocks.prepareAccountCollection).not.toHaveBeenCalled();
-  expect(mocks.downloadChessCom).not.toHaveBeenCalled();
+  expect(mocks.importAccountGames).not.toHaveBeenCalled();
   expect(mocks.createWorkspaceDatabase).not.toHaveBeenCalled();
 });
 
@@ -501,7 +515,7 @@ test.each([{}, { username: "DisplaySpelling" }, { username: 17 }])(
       account: { id: "e2e-player", username: "E2E-Player" },
     });
     expect(host.textContent).toContain("Common.Unknown");
-    expect(mocks.appendCollectionGames).not.toHaveBeenCalled();
+    expect(mocks.importAccountGames).not.toHaveBeenCalled();
   },
 );
 
@@ -588,7 +602,7 @@ test.each([false, true])(
     await renderAccounts();
     expect(host.textContent).toContain("Common.Unknown");
     expect(host.querySelector('[role="alert"]')).not.toBeNull();
-    expect(mocks.appendCollectionGames).not.toHaveBeenCalled();
+    expect(mocks.importAccountGames).not.toHaveBeenCalled();
   },
 );
 
@@ -617,10 +631,10 @@ test("linked account append survives an unsaved public list, consumer remount an
     pendingBatch: null,
     destination: { id: "private-batch-directory" },
   });
-  mocks.appendCollectionGames.mockImplementation(async () => {
+  mocks.importAccountGames.mockImplementation(async (request) => {
     mocks.getDbInfo.mockResolvedValue({ ...oldInfo, game_count: 8 });
     mocks.listLinkedCollections.mockResolvedValue([{ ...linked, generation: "after" }]);
-    return { appended: 5, committed: true, indexReady: true, durabilityConfirmed: true };
+    return accountCompletion(request);
   });
   const fileAtoms = await import("@/state/atoms");
   store.set(fileAtoms.fileWorkspaceAtom, { id: { id: "library" }, kind: "fileWorkspace" });
@@ -639,11 +653,15 @@ test("linked account append survives an unsaved public list, consumer remount an
   try {
     await renderAccounts();
     await act(async () => downloadButton().click());
-    expect(mocks.appendCollectionGames).toHaveBeenCalledExactlyOnceWith(linked.id, {
-      id: { id: "pgn" },
-      kind: "fileWorkspace",
+    expect(mocks.importAccountGames).toHaveBeenCalledExactlyOnceWith({
+      provider: "chesscom",
+      account: "Felix",
+      accountHandle: null,
+      destination: { id: "private-batch-directory" },
+      pendingBatch: null,
+      sinceMs: null,
+      target: { kind: "linked", collection: linked.id },
     });
-    expect(mocks.convertPgn).not.toHaveBeenCalled();
     expect(host.textContent).toContain("8 / 8");
     const latest = [
       { player: "Latest alias", updatedAt: 2, chessCom: { username: "Felix", stats: {} } },
@@ -664,7 +682,7 @@ test("linked account append survives an unsaved public list, consumer remount an
     expect(getSessionPersistenceSnapshot().status).toBe("saved");
     expect(deserializeStorageValue(localStorage.getItem("sessions")!)).toEqual(latest);
     expect(host.textContent).not.toContain("Accounts.Persistence.Unsaved");
-    expect(mocks.appendCollectionGames).toHaveBeenCalledOnce();
+    expect(mocks.importAccountGames).toHaveBeenCalledOnce();
   } finally {
     refusal.mockRestore();
     savePublicSessions([]);
@@ -672,14 +690,19 @@ test("linked account append survives an unsaved public list, consumer remount an
 });
 
 test("real Accounts retain post-cleanup counts across remount and revalidation of an older listing", async () => {
-  const deletion = deferred<void>();
+  const nativeImport = deferred<void>();
   const listing = deferred<typeof oldInfo>();
   const refresh = deferred<typeof oldInfo>();
   const newInfo = { ...oldInfo, game_count: 8 };
   const newDatabases = [
     { type: "success", ...newInfo, file: { id: { id: "database" }, kind: "database" } },
   ];
-  mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
+  mocks.importAccountGames.mockImplementation(async (request) => {
+    accountCompletion(request, true);
+    accountCompletionChanged?.();
+    await nativeImport.promise;
+    return accountCompletion(request);
+  });
   mocks.getDbInfo
     .mockResolvedValueOnce(oldInfo)
     .mockReturnValueOnce(listing.promise)
@@ -689,7 +712,19 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
   expect(host.textContent).toContain("3 / 3");
 
   await act(async () => downloadButton().click());
-  expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+  expect(mocks.importAccountGames).toHaveBeenCalledExactlyOnceWith({
+    provider: "chesscom",
+    account: "Felix",
+    accountHandle: null,
+    destination: { id: "destination" },
+    pendingBatch: null,
+    sinceMs: null,
+    target: {
+      kind: "unlinked",
+      database: { id: { id: "database" }, kind: "database" },
+      title: "Felix Chess.com",
+    },
+  });
   expect(mocks.getDbInfo).toHaveBeenCalledTimes(1);
   expect(mocks.getLatestGameTimestamp).toHaveBeenCalledWith({
     id: { id: "database" },
@@ -707,7 +742,7 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
   expect(host.textContent).toContain("3 / 3");
   expect(downloadButton().disabled).toBe(true);
 
-  await act(async () => deletion.resolve());
+  await act(async () => nativeImport.resolve());
   expect(mocks.getDbInfo).toHaveBeenCalledTimes(3);
   expect(downloadButton().disabled).toBe(true);
   await act(async () => refresh.resolve(newInfo));
@@ -748,8 +783,7 @@ test("a remount that retires a pending import refresh receives the new counts af
     expect(host.textContent).toContain("3 / 3");
 
     await act(async () => downloadButton().click());
-    expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
-    expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+    expect(mocks.importAccountGames).toHaveBeenCalledTimes(1);
     expect(mocks.getDbInfo).toHaveBeenCalledTimes(2);
     expect(downloadButton().disabled).toBe(true);
 
@@ -804,8 +838,7 @@ test("a root switch retires a pending successful import refresh and keeps root B
     expect(host.textContent).toContain("3 / 3");
 
     await act(async () => downloadButton().click());
-    expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
-    expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+    expect(mocks.importAccountGames).toHaveBeenCalledTimes(1);
     expect(mocks.getDbInfo).toHaveBeenCalledTimes(2);
     expect(downloadButton().disabled).toBe(true);
 

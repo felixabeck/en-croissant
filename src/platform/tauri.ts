@@ -427,6 +427,16 @@ export const tauri: TauriCommands = new Proxy(commands, {
                     args[1] = encodeCounter(args[1] as bigint, "expectedSession");
                 }
                 const sinceMsIndex = DOWNLOAD_SINCE_MS_ARGUMENTS.get(property);
+                if (property === "importAccountGames") {
+                    const request = args[0] as import("@/bindings").AccountImportRequest;
+                    args[0] = {
+                        ...request,
+                        sinceMs:
+                            request.sinceMs === null
+                                ? null
+                                : encodeCounter(request.sinceMs, "sinceMs"),
+                    };
+                }
                 if (sinceMsIndex !== undefined && args[sinceMsIndex] !== null) {
                     args[sinceMsIndex] = encodeCounter(args[sinceMsIndex] as bigint, "sinceMs");
                 }

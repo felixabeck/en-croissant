@@ -1084,7 +1084,7 @@ fn read_import_games(
 // `'static` and AppState is not Clone. A bundle type was rejected (plan
 // decision D-B).
 #[allow(clippy::too_many_arguments)]
-fn convert_pgn_blocking<R: tauri::Runtime>(
+pub(crate) fn convert_pgn_blocking<R: tauri::Runtime>(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
@@ -3590,7 +3590,7 @@ pub async fn delete_empty_games(
     .await
 }
 
-fn delete_empty_games_blocking(
+pub(crate) fn delete_empty_games_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,

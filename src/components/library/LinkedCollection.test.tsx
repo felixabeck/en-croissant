@@ -39,9 +39,7 @@ vi.mock("react-i18next", async () => {
   return {
     useTranslation: () => ({
       t: (key: string, options?: { defaultValue?: string }) =>
-        (key === "Collections.MigrationExplanation" ? options?.defaultValue : english[key]) ??
-        options?.defaultValue ??
-        key,
+        english[key] ?? options?.defaultValue ?? key,
     }),
   };
 });

@@ -723,6 +723,30 @@ async prepareAccountCollection(workspace: FileWorkspaceHandle, account: AccountI
     else return { status: "error", error: e  as any };
 }
 },
+async importAccountGames(request: AccountImportRequest) : Promise<Result<AccountCompletion, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_account_games", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async pendingAccountCompletions() : Promise<Result<AccountCompletion[], ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pending_account_completions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async acknowledgeAccountCompletion(id: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("acknowledge_account_completion", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async appendCollectionGames(collection: string, source: FileWorkspaceHandle) : Promise<Result<AppendOutcome, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("append_collection_games", { collection, source }) };
@@ -1264,7 +1288,11 @@ progressEvent: "progress-event"
 /** user-defined types **/
 
 export type AccountCollectionPreparation = { collection: CollectionDescriptor | null; migrationRequired: boolean; destination: PathRef; pendingBatch: FileWorkspaceHandle | null }
+export type AccountCompletion = { id: string; request: AccountImportRequest; progressId: string; attempt: number; outcome: CompletionOutcome<AccountImportResult>; publication: ArtifactPublication | null; committedDatabase: DatabaseHandle | null; deletionPending: boolean; importing: boolean }
 export type AccountIdentity = { provider: string; account: string }
+export type AccountImportRequest = { provider: string; account: string; accountHandle: LichessAccountHandle | null; destination: PathRef; pendingBatch: FileWorkspaceHandle | null; sinceMs: bigint | null; target: AccountImportTarget }
+export type AccountImportResult = { collectionNotice: boolean }
+export type AccountImportTarget = { kind: "linked"; collection: string } | { kind: "unlinked"; database: DatabaseHandle; title: string }
 export type AnalysisOptions = { fen: string; moves: string[]; annotateNovelties: boolean; referenceDb: DatabaseHandle | null; reversed: boolean }
 export type AppendOutcome = { appended: number; committed: boolean; indexReady: boolean; durabilityConfirmed: boolean }
 /**

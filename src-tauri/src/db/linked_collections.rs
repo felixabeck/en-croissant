@@ -459,7 +459,7 @@ pub(crate) struct CollectionService {
     batch_preparation_injector:
         Mutex<Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>>,
     #[cfg(test)]
-    append_admission_hook: Mutex<Option<pgn::BoundedHook>>,
+    pub(crate) append_admission_hook: Mutex<Option<pgn::BoundedHook>>,
 }
 
 impl CollectionService {

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi, type MockInstance } from "vitest";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
-import type { DatabaseHandle } from "@/bindings";
+import type { AccountCompletion, AccountImportRequest, DatabaseHandle } from "@/bindings";
 import {
   databaseConversionStateAtom,
   databaseConversionRefreshFailedAtom,
@@ -29,9 +29,7 @@ const mocks = vi.hoisted(() => ({
   pickPgnFile: vi.fn(),
   editDbInfo: vi.fn(),
   issueDownloadDestination: vi.fn(),
-  downloadChessCom: vi.fn(),
-  startProgress: vi.fn(),
-  setProgressState: vi.fn(),
+  beginNativeImport: vi.fn(),
   deleteEmptyGames: vi.fn(),
   deleteDuplicatedGames: vi.fn(),
   mergePlayers: vi.fn(),
@@ -39,6 +37,10 @@ const mocks = vi.hoisted(() => ({
   deleteIndexes: vi.fn(),
   convertProgress: vi.fn(),
   progress: vi.fn(),
+  importAccountGames: vi.fn(),
+  pendingAccountCompletions: vi.fn(),
+  acknowledgeAccountCompletion: vi.fn(),
+  completionChanged: vi.fn(),
   notify: vi.fn(),
   logError: vi.fn(),
 }));
@@ -51,6 +53,9 @@ vi.mock("@/platform/tauri", async () => {
     tauri: {
       ...actual.tauri,
       linkedCollectionsSupported: vi.fn(async () => false),
+      importAccountGames: mocks.importAccountGames,
+      pendingAccountCompletions: mocks.pendingAccountCompletions,
+      acknowledgeAccountCompletion: mocks.acknowledgeAccountCompletion,
       convertPgn: mocks.convertPgn,
       cancelConversion: mocks.cancelConversion,
       getDatabaseWorkspace: mocks.getDatabaseWorkspace,
@@ -59,8 +64,6 @@ vi.mock("@/platform/tauri", async () => {
       issuePgnWorkspace: mocks.issuePgnWorkspace,
       editDbInfo: mocks.editDbInfo,
       issueDownloadDestination: mocks.issueDownloadDestination,
-      startProgress: mocks.startProgress,
-      setProgressState: mocks.setProgressState,
       deleteEmptyGames: mocks.deleteEmptyGames,
       deleteDatabase: mocks.deleteDatabase,
       exportToPgn: vi.fn(),
@@ -76,6 +79,7 @@ vi.mock("@/platform/tauri", async () => {
       ...actual.tauriSubscriptions,
       convertProgress: mocks.convertProgress,
       progress: mocks.progress,
+      completionChanged: mocks.completionChanged,
     },
   };
 });
@@ -87,8 +91,6 @@ vi.mock("@/utils/files", async () => {
   const actual = await vi.importActual<typeof import("@/utils/files")>("@/utils/files");
   return { ...actual, pickPgnFile: mocks.pickPgnFile };
 });
-vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
-vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("react-i18next", () => {
@@ -96,6 +98,10 @@ vi.mock("react-i18next", () => {
     options?.number === undefined ? key : `${key}:${options.number}`;
   return { useTranslation: () => ({ t }) };
 });
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: { t: (key: string) => key },
+}));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   Link: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -404,6 +410,75 @@ beforeEach(() => {
     },
   );
   mocks.progress.mockResolvedValue(() => undefined);
+  let accountSnapshot: AccountCompletion[] = [];
+  let accountChanged: (() => void) | undefined;
+  mocks.completionChanged.mockImplementation(async (listener) => {
+    accountChanged = listener;
+    return () => {
+      accountChanged = undefined;
+    };
+  });
+  mocks.pendingAccountCompletions.mockImplementation(async () => accountSnapshot);
+  mocks.acknowledgeAccountCompletion.mockImplementation(async () => {
+    accountSnapshot = [];
+  });
+  // Model the new native boundary while preserving this suite's real conversion-state consumers.
+  mocks.importAccountGames.mockImplementation(async (request: AccountImportRequest) => {
+    const id = crypto.randomUUID();
+    const running: AccountCompletion = {
+      id,
+      request,
+      progressId: `download:${id}`,
+      attempt: 1,
+      importing: true,
+      outcome: { state: "running" },
+      publication: null,
+      committedDatabase: null,
+      deletionPending: false,
+    };
+    accountSnapshot = [running];
+    accountChanged?.();
+    for (
+      let turn = 0;
+      turn < 100 && !conversionState().some((entry) => entry.id === `conversion:${id}`);
+      turn++
+    )
+      await Promise.resolve();
+    if (!conversionState().some((entry) => entry.id === `conversion:${id}`))
+      throw new Error("The native conversion snapshot was not observed");
+    let outcome: AccountCompletion["outcome"] = {
+      state: "succeeded",
+      result: { collectionNotice: false },
+    };
+    try {
+      await mocks.beginNativeImport(running.progressId);
+      await mocks.convertPgn(
+        `conversion:${id}`,
+        [{ id: { id: "account-pgn" }, kind: "fileWorkspace" }],
+        accountHandle,
+        null,
+        "Felix Chess.com",
+        null,
+        null,
+      );
+    } catch {
+      outcome = {
+        state: "failed",
+        result: { tag: "backend-error", category: "database", message: "convert failed" },
+      };
+    }
+    const terminal: AccountCompletion = {
+      ...running,
+      outcome,
+      importing: false,
+      publication: {
+        handle: { id: { id: "account-pgn" }, kind: "fileWorkspace" },
+        durability: "Durable",
+      },
+    };
+    accountSnapshot = [terminal];
+    return terminal;
+  });
   mocks.getDatabases.mockResolvedValue({
     databases: [successDatabase(handleB, "Existing")],
     unread: [],
@@ -419,12 +494,7 @@ beforeEach(() => {
   mocks.pickPgnFile.mockResolvedValue({ handle: addGamesPgn, name: "more.pgn" });
   mocks.editDbInfo.mockResolvedValue(undefined);
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-  mocks.downloadChessCom.mockResolvedValue({
-    handle: { id: { id: "account-pgn" }, kind: "fileWorkspace" },
-    durability: "Durable",
-  });
-  mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
-  mocks.setProgressState.mockResolvedValue(undefined);
+  mocks.beginNativeImport.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
   mocks.deleteDuplicatedGames.mockResolvedValue(undefined);
   mocks.mergePlayers.mockResolvedValue(undefined);
@@ -801,7 +871,7 @@ test.each(
       startup: [startAddDatabase, selectExistingDatabase],
     },
     {
-      route: "AccountCard convert()",
+      route: "AccountCard native import",
       account: true,
       target: accountHandle,
       title: "Account target",
@@ -875,7 +945,7 @@ test.each(
   },
 );
 
-test("AccountCard convert() throw clears the conversion it owns", async () => {
+test("AccountCard native import failure clears the conversion it owns", async () => {
   await renderRoute(true);
   const download = host.querySelector(
     'button[aria-label="Home.Accounts.DownloadGames"]',
@@ -989,7 +1059,7 @@ test.each(
   },
 );
 
-test.each(["create", "startProgress"] as const)(
+test.each(["create", "native progress"] as const)(
   "%s failure before convertPgn removes only its registered entry",
   async (stage) => {
     let rejectSetup: ((error: unknown) => void) | undefined;
@@ -997,8 +1067,8 @@ test.each(["create", "startProgress"] as const)(
       rejectSetup = reject;
     });
     if (stage === "create") mocks.createWorkspaceDatabase.mockReturnValue(setup);
-    else mocks.startProgress.mockReturnValue(setup);
-    await renderRoute(stage === "startProgress");
+    else mocks.beginNativeImport.mockReturnValue(setup);
+    await renderRoute(stage === "native progress");
     await selectExistingDatabase();
     if (stage === "create") {
       const pick = [...host.querySelectorAll("button")].find((button) =>

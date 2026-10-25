@@ -4,6 +4,381 @@ use super::operations::completions::{
 use super::operations::{run_native_operation, OperationRegistry, MAX_ACCEPTED_OPERATIONS};
 use crate::error::Error;
 
+use super::operations::accounts::{self, AccountImportRequest, AccountImportTarget};
+use super::path_authority::{ArtifactPublication, CommitDurability, PathOperation, PathRef};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+fn reload_completion_mount_account_events(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
+    tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+        .events(tauri_specta::collect_events!(
+            crate::progress::ProgressEvent,
+            crate::db::ConvertProgress,
+            super::operations::completions::CompletionChanged
+        ))
+        .mount_events(app);
+}
+
+fn reload_completion_account_fixture() -> (
+    tempfile::TempDir,
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    std::path::PathBuf,
+    AccountImportRequest,
+    ArtifactPublication,
+) {
+    use tauri::Manager as _;
+    let (directory, app, database, path) = crate::db::schema_database_case(
+        "account",
+        vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+        ],
+    );
+    reload_completion_mount_account_events(&app);
+    let pgn = directory.path().join("account.pgn");
+    std::fs::write(&pgn, "[Event \"Import\"]\n[White \"Player\"]\n[Black \"Opponent\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0\n\n[Event \"Empty\"]\n[White \"Player\"]\n[Black \"Opponent\"]\n[Result \"*\"]\n\n*\n").unwrap();
+    let handle = app
+        .state::<crate::AppState>()
+        .pgn_path_authority
+        .with_mut(|authority| {
+            authority.get_or_create_persistent_file(
+                &pgn,
+                "account.pgn",
+                vec![PathOperation::ReadPgn],
+            )
+        })
+        .unwrap()
+        .unwrap()
+        .id;
+    let publication = ArtifactPublication {
+        handle: super::path_authority::FileWorkspaceHandle::new(handle),
+        durability: CommitDurability::DurabilityUncertain(
+            crate::error::DurabilityStage::DownloadTargetReplacement,
+        ),
+    };
+    let request = AccountImportRequest {
+        provider: "chesscom".into(),
+        account: "Player".into(),
+        account_handle: None,
+        destination: PathRef {
+            id: "destination".into(),
+        },
+        pending_batch: None,
+        since_ms: None,
+        target: AccountImportTarget::Unlinked {
+            database,
+            title: "Player Chess.com".into(),
+        },
+    };
+    (directory, app, path, request, publication)
+}
+
+fn reload_completion_account_rows(path: &std::path::Path) -> i64 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM Games", [], |row| row.get(0))
+        .unwrap()
+}
+
+async fn reload_completion_drain(registry: OperationRegistry) {
+    assert!(
+        tokio::task::spawn_blocking(move || registry.wait_for_drain(Duration::from_secs(10)))
+            .await
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_completion_account_unlinked_commits_before_reconnect_and_retains_result() {
+    use tauri::Manager as _;
+    let (_directory, app, path, request, publication) = reload_completion_account_fixture();
+    let state = app.state::<crate::AppState>().inner().clone();
+    let (attempt, start) = state
+        .operations
+        .admit_account_completion("main", request.clone())
+        .unwrap();
+    let start = start.unwrap();
+    let id = start.snapshot.id.clone();
+    let (_, joined) = state
+        .operations
+        .admit_account_completion("main", request.clone())
+        .unwrap();
+    assert!(
+        joined.is_none(),
+        "a running identical request joins without another lease"
+    );
+    let (hook, entered, release) = crate::pgn::BoundedHook::new();
+    accounts::BEFORE_CONVERT.arm(id.clone(), Box::new(move || hook.notify_and_wait()));
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let observed_downloads = downloads.clone();
+    let native = state.clone();
+    let command_app = app.clone();
+    let mut command = Box::pin(async move {
+        accounts::start_account_completion(
+            start,
+            command_app,
+            "main".into(),
+            native,
+            move |_, _, _, _, _| async move {
+                observed_downloads.fetch_add(1, Ordering::SeqCst);
+                Ok(publication)
+            },
+        )
+        .await;
+        attempt.await
+    });
+    assert!(futures_util::poll!(&mut command).is_pending());
+    tokio::time::timeout(Duration::from_secs(10), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reload_completion_account_rows(&path),
+        0,
+        "the receiver is dropped before import can commit"
+    );
+    drop(command);
+    state.operations.cancel_owner_reservations("main").unwrap();
+    release.send(()).unwrap();
+    reload_completion_drain(state.operations.clone()).await;
+    // No replacement command, snapshot or acknowledgement has run since the receiver dropped.
+    assert_eq!(reload_completion_account_rows(&path), 1);
+    let retained = state.operations.account_completions("main").unwrap();
+    assert_eq!(
+        retained.len(),
+        1,
+        "account completion must remain retained after command receiver loss"
+    );
+    assert_eq!(retained[0].id, id);
+    assert!(matches!(
+        retained[0].outcome,
+        CompletionOutcome::Succeeded(_)
+    ));
+    assert!(matches!(
+        retained[0].publication.as_ref().unwrap().durability,
+        CommitDurability::DurabilityUncertain(_)
+    ));
+    let mut second = request;
+    second.account = "PLAYER".into();
+    second.destination.id = "another-destination".into();
+    let joined = accounts::import_account_games_with_download(
+        second,
+        app,
+        "main".into(),
+        state.clone(),
+        |_, _, _, _, _| async { panic!("a second account start must not download") },
+    )
+    .await
+    .unwrap();
+    assert_eq!(joined.id, id);
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(reload_completion_account_rows(&path), 1);
+    assert!(state
+        .operations
+        .account_completions("other")
+        .unwrap()
+        .is_empty());
+    assert!(state
+        .operations
+        .acknowledge_account_completion(&id, "other")
+        .is_err());
+    state
+        .operations
+        .acknowledge_account_completion(&id, "main")
+        .unwrap();
+    state
+        .operations
+        .acknowledge_account_completion(&id, "main")
+        .unwrap();
+    assert_eq!(reload_completion_account_rows(&path), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_completion_account_deletion_checkpoint_survives_ack_and_retries_only_deletion() {
+    use tauri::Manager as _;
+    let (_directory, app, path, request, publication) = reload_completion_account_fixture();
+    let state = app.state::<crate::AppState>().inner().clone();
+    let (attempt, start) = state
+        .operations
+        .admit_account_completion("main", request.clone())
+        .unwrap();
+    let start = start.unwrap();
+    let id = start.snapshot.id.clone();
+    let conversions = Arc::new(AtomicUsize::new(0));
+    let count = conversions.clone();
+    accounts::BEFORE_CONVERT.arm(
+        id.clone(),
+        Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    accounts::DELETE_FAILURE.arm(
+        id.clone(),
+        Error::Conflict("empty-game deletion failed".into()),
+    );
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let count = downloads.clone();
+    accounts::start_account_completion(
+        start,
+        app.clone(),
+        "main".into(),
+        state.clone(),
+        move |_, _, _, _, _| async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(publication)
+        },
+    )
+    .await;
+    let failed = attempt.await.unwrap();
+    assert!(matches!(failed.outcome, CompletionOutcome::Failed(_)));
+    assert!(failed.deletion_pending);
+    assert!(failed.committed_database.is_some());
+    assert!(matches!(
+        failed.publication.as_ref().unwrap().durability,
+        CommitDurability::DurabilityUncertain(_)
+    ));
+    assert_eq!(reload_completion_account_rows(&path), 2);
+    state
+        .operations
+        .acknowledge_account_completion(&id, "main")
+        .unwrap();
+    assert_eq!(
+        state.operations.account_completions("main").unwrap().len(),
+        1
+    );
+    let deletions = Arc::new(AtomicUsize::new(0));
+    let count = deletions.clone();
+    accounts::BEFORE_DELETE.arm(
+        id.clone(),
+        Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let count = conversions.clone();
+    accounts::BEFORE_CONVERT.arm(
+        id.clone(),
+        Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let count = downloads.clone();
+    let success = accounts::import_account_games_with_download(
+        request,
+        app,
+        "main".into(),
+        state.clone(),
+        move |_, _, _, _, _| async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Conflict("must not redownload".into()))
+        },
+    )
+    .await
+    .unwrap();
+    accounts::BEFORE_CONVERT.clear(&id);
+    assert!(matches!(success.outcome, CompletionOutcome::Succeeded(_)));
+    assert!(!success.deletion_pending);
+    assert_eq!(deletions.load(Ordering::SeqCst), 1);
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(conversions.load(Ordering::SeqCst), 1);
+    assert_eq!(reload_completion_account_rows(&path), 1);
+    state
+        .operations
+        .acknowledge_account_completion(&id, "main")
+        .unwrap();
+    assert!(state
+        .operations
+        .account_completions("main")
+        .unwrap()
+        .is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_completion_account_pending_batch_appends_without_transfer_before_reconnect() {
+    use crate::db::linked_collections::tests::{game, Fixture};
+    use crate::file_workspace::WorkspaceFileType;
+    let fixture = Fixture::new();
+    fixture.create(
+        "source",
+        &game(Some("1"), "e4 e5", "original"),
+        WorkspaceFileType::Game,
+    );
+    let collection = fixture.list().pop().unwrap();
+    fixture.account(&collection.id, "chesscom");
+    let batch = fixture.create(
+        "batch",
+        &game(Some("2"), "d4 d5", "incoming"),
+        WorkspaceFileType::Other,
+    );
+    let request = AccountImportRequest {
+        provider: "chesscom".into(),
+        account: "player".into(),
+        account_handle: None,
+        destination: fixture.download_destination(),
+        pending_batch: Some(batch),
+        since_ms: None,
+        target: AccountImportTarget::Linked {
+            collection: collection.id.clone(),
+        },
+    };
+    let app = fixture.app();
+    reload_completion_mount_account_events(app.handle());
+    let (hook, entered, release) = crate::pgn::BoundedHook::new();
+    *fixture.service.append_admission_hook.lock().unwrap() = Some(hook);
+    let mut command = Box::pin(accounts::import_account_games_with_download(
+        request.clone(),
+        app.handle().clone(),
+        "main".into(),
+        fixture.state.clone(),
+        |_, _, _, _, _| async { panic!("a prepared pending batch must not transfer") },
+    ));
+    assert!(futures_util::poll!(&mut command).is_pending());
+    tokio::time::timeout(Duration::from_secs(10), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!std::fs::read_to_string(fixture.path("source"))
+        .unwrap()
+        .contains("incoming"));
+    drop(command);
+    release.send(()).unwrap();
+    reload_completion_drain(fixture.state.operations.clone()).await;
+    let committed = std::fs::read_to_string(fixture.path("source")).unwrap();
+    assert_eq!(
+        committed.matches("incoming").count(),
+        1,
+        "append commits while there is no command receiver"
+    );
+    let retained = fixture
+        .state
+        .operations
+        .account_completions("main")
+        .unwrap();
+    assert_eq!(retained.len(), 1);
+    assert!(matches!(
+        retained[0].outcome,
+        CompletionOutcome::Succeeded(_)
+    ));
+    let joined = accounts::import_account_games_with_download(
+        request,
+        app.handle().clone(),
+        "main".into(),
+        fixture.state.clone(),
+        |_, _, _, _, _| async { panic!("a joined pending batch must not transfer") },
+    )
+    .await
+    .unwrap();
+    assert_eq!(joined.id, retained[0].id);
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("source")).unwrap(),
+        committed
+    );
+}
+
 #[tokio::test]
 async fn reload_completion_command_returns_terminal_snapshot_after_event_consumer_acknowledges() {
     use super::operations::completions::CompletionChanged;
@@ -348,6 +723,63 @@ fn reload_completion_request(upgrade: bool) -> EngineInstallRequest {
         elo: None,
         download_size: None,
     }
+}
+
+#[test]
+fn reload_completion_account_capacity_is_separate_and_never_evicts_unacknowledged_records() {
+    let registry = OperationRegistry::default();
+    let request = AccountImportRequest {
+        provider: "chesscom".into(),
+        account: "player".into(),
+        account_handle: None,
+        destination: PathRef {
+            id: "destination".into(),
+        },
+        pending_batch: None,
+        since_ms: None,
+        target: AccountImportTarget::Unlinked {
+            database: super::path_authority::DatabaseHandle::new(PathRef {
+                id: "database".into(),
+            }),
+            title: "Player Chess.com".into(),
+        },
+    };
+    let mut ids = Vec::new();
+    for index in 0..MAX_ACCEPTED_OPERATIONS {
+        let mut next = request.clone();
+        next.account = format!("player{index}");
+        let (_, start) = registry.admit_account_completion("main", next).unwrap();
+        let start = start.unwrap();
+        let mut snapshot = start.snapshot.clone();
+        ids.push(snapshot.id.clone());
+        snapshot.outcome = CompletionOutcome::Failed(Error::Cancellation.renderer_payload());
+        registry.finish_account_completion(snapshot).unwrap();
+        drop(start);
+    }
+    assert!(matches!(
+        registry.admit_account_completion("main", request.clone()),
+        Err(Error::ResourceLimit(_))
+    ));
+    assert_eq!(
+        registry.account_completions("main").unwrap().len(),
+        MAX_ACCEPTED_OPERATIONS
+    );
+    let ticket = registry.prepare_download("main").unwrap();
+    let (_, engine) = registry
+        .admit_engine_completion(
+            &Uuid::new_v4().to_string(),
+            "main",
+            &ticket,
+            reload_completion_request(false),
+            32,
+        )
+        .unwrap();
+    drop(engine);
+    assert_eq!(registry.engine_completions("main").unwrap().len(), 1);
+    registry
+        .acknowledge_account_completion(&ids[0], "main")
+        .unwrap();
+    assert!(registry.admit_account_completion("main", request).is_ok());
 }
 
 #[tokio::test]

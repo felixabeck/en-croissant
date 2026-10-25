@@ -14,7 +14,6 @@ import {
 } from "@mantine/core";
 import { CollectionMigration } from "@/components/library/LinkedCollection";
 import { ensureFileWorkspace } from "@/utils/files";
-import { notifications } from "@mantine/notifications";
 import {
   IconArrowDownRight,
   IconArrowRight,
@@ -25,13 +24,13 @@ import {
   IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
-import { useAtom, useStore } from "jotai";
-import { useState } from "react";
+import { useAtom, useAtomValue, useStore } from "jotai";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { DATABASE_LIST_KEY, refreshDatabaseList } from "@/hooks/useDatabaseList";
-import type { ArtifactPublication, DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
+import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
   notifyListenerError,
@@ -40,15 +39,13 @@ import {
 } from "@/components/files/notifyError";
 import {
   accountDownloadsInFlightAtom,
-  databaseConversionStateAtom,
+  accountCompletionsAtom,
   downloadDestinationAtom,
-  runDatabaseConversion,
 } from "@/state/atoms";
-import { downloadChessCom } from "@/utils/chess.com/api";
+import { observeAccountCompletions, runAccountImport } from "@/state/accountCompletions";
 import { type ManagedDatabaseInfo } from "@/utils/db";
 import { accountDatabaseFilename, type AccountDatabaseIssue } from "./accountDatabase";
 import { capitalize } from "@/utils/format";
-import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { logFailureSafely, runWithAppliedRecovery, safeFailureContext } from "@/platform/errors";
 import LichessLogo from "./LichessLogo";
@@ -110,21 +107,6 @@ export async function ensureAccountDatabaseHandle(
   );
 }
 
-function logProgressUpdateFailure(context: {
-  conversionId: string;
-  progressId: string;
-  state: "failed" | "succeeded";
-}): (cause: unknown) => Promise<void> {
-  return async (cause) => {
-    const primaryFailure = safeFailureContext(cause);
-    await logFailureSafely(
-      `Account import progress update (${context.state}) failed for ${context.progressId} [${context.conversionId}]: ${primaryFailure.message}`,
-      { operation: "account import progress update", primaryFailure },
-      `Account import progress logging failed (${context.state}) for ${context.progressId} [${context.conversionId}]`,
-    );
-  };
-}
-
 export function AccountCard({
   type,
   database,
@@ -181,70 +163,20 @@ export function AccountCard({
     );
   });
   const [downloadsInFlight, setDownloadsInFlight] = useAtom(accountDownloadsInFlightAtom);
-  const pending = downloadsInFlight.has(accountKey);
+  const completions = useAtomValue(accountCompletionsAtom);
+  const retained = completions.get(accountKey);
+  const pending = downloadsInFlight.has(accountKey) || retained?.outcome.state === "running";
   const [progress, setProgress] = useState<number | null>(null);
   const [migrationWorkspace, setMigrationWorkspace] = useState<FileWorkspaceHandle | null>(null);
   const [collectionNotice, setCollectionNotice] = useState(false);
   const [downloadDestination, setDownloadDestination] = useAtom(downloadDestinationAtom);
-  const [, setConversionState] = useAtom(databaseConversionStateAtom);
-
-  async function ensureDatabaseHandle(): Promise<DatabaseHandle> {
-    return ensureAccountDatabaseHandle(database?.file, accountUsername, type);
-  }
-
-  async function convert(
-    source: FileWorkspaceHandle,
-    timestamp: number | null,
-    ticket: string,
-  ): Promise<DatabaseHandle> {
-    const databaseTitle = title + (type === "lichess" ? " Lichess" : " Chess.com");
-    return runDatabaseConversion(
-      setConversionState,
-      {
-        targetDatabase: database?.file ?? null,
-        targetDatabaseTitle: databaseTitle,
-        sourceFileName: `${title}_${type}.pgn`,
-      },
-      async ({ id, setTarget }) => {
-        const databaseHandle = await ensureDatabaseHandle();
-        setTarget(databaseHandle);
-        const progressLease = await tauri.startProgress(ticket);
-        try {
-          await tauri.convertPgn(
-            id,
-            [source],
-            databaseHandle,
-            timestamp === null ? null : timestamp / 1000,
-            databaseTitle,
-            null,
-            null,
-          );
-        } catch (caught) {
-          await tauri.setProgressState(progressLease, 0, "failed").catch(
-            logProgressUpdateFailure({
-              conversionId: id,
-              progressId: ticket,
-              state: "failed",
-            }),
-          );
-          throw caught;
-        }
-        await tauri.setProgressState(progressLease, 100, "succeeded").catch(
-          logProgressUpdateFailure({
-            conversionId: id,
-            progressId: ticket,
-            state: "succeeded",
-          }),
-        );
-        return databaseHandle;
-      },
-    );
-  }
 
   useTauriListener(
     tauriSubscriptions.progress,
     (e) => {
-      const ticket = store.get(accountDownloadsInFlightAtom).get(accountKey);
+      const ticket =
+        store.get(accountCompletionsAtom).get(accountKey)?.progressId ??
+        store.get(accountDownloadsInFlightAtom).get(accountKey);
       if (typeof ticket === "string" && e.payload.id === ticket) {
         setProgress(e.payload.progress);
       }
@@ -255,19 +187,13 @@ export function AccountCard({
   const downloadedGames = database?.type === "success" ? database.game_count : 0;
   const effectiveTotal = Math.max(total, downloadedGames);
 
-  async function getLastGameDate({ database }: { database: ManagedDatabaseInfo }) {
-    return await tauri.getLatestGameTimestamp(database.file);
-  }
-
   async function ensureDownloadDestination(): Promise<PathRef> {
-    if (isPathRef(downloadDestination)) {
-      if (await tauri.downloadDestinationIsKnown(downloadDestination)) {
-        return downloadDestination;
-      }
-      setDownloadDestination(null);
-    } else if (downloadDestination !== null) {
-      setDownloadDestination(null);
-    }
+    if (
+      isPathRef(downloadDestination) &&
+      (await tauri.downloadDestinationIsKnown(downloadDestination))
+    )
+      return downloadDestination;
+    if (downloadDestination !== null) setDownloadDestination(null);
     const result = await tauri.issueDownloadDestination();
     setDownloadDestination(result);
     return result;
@@ -288,6 +214,17 @@ export function AccountCard({
       );
     }
   }
+
+  const refreshRef = useRef(refreshDatabases);
+  refreshRef.current = refreshDatabases;
+  useEffect(
+    () =>
+      observeAccountCompletions(store, accountKey, {
+        refresh: (failed) => refreshRef.current(failed),
+        collectionNotice: setCollectionNotice,
+      }),
+    [store, accountKey],
+  );
 
   return (
     <Card
@@ -347,16 +284,11 @@ export function AccountCard({
               }
               onClick={async () => {
                 if (associationIssue || associationPending) return;
+                if (store.get(accountCompletionsAtom).get(accountKey)?.outcome.state === "running")
+                  return;
                 if (store.get(accountDownloadsInFlightAtom).has(accountKey)) return;
                 setDownloadsInFlight((previous) => new Map(previous).set(accountKey, null));
                 try {
-                  let ticket!: string;
-                  const onTicket = (downloadTicket: string) => {
-                    ticket = downloadTicket;
-                    setDownloadsInFlight((previous) =>
-                      new Map(previous).set(accountKey, downloadTicket),
-                    );
-                  };
                   let preparation: Awaited<ReturnType<typeof tauri.prepareAccountCollection>> =
                     null;
                   if (await tauri.linkedCollectionsSupported()) {
@@ -371,79 +303,43 @@ export function AccountCard({
                       setMigrationWorkspace(workspace);
                       return;
                     }
-                    if (!preparation?.collection || preparation.collection.status !== "ready")
-                      throw new Error(
-                        t("Collections.Unavailable", {
-                          defaultValue:
-                            "The search index is unavailable. Retry, or select the collection's source file again.",
-                        }),
-                      );
+                    if (
+                      preparation &&
+                      (!preparation.collection || preparation.collection.status !== "ready")
+                    )
+                      throw new Error(t("Collections.Unavailable"));
                   }
                   const lastGameDate = preparation
                     ? preparation.collection?.fetchSinceMs
                       ? Number(preparation.collection.fetchSinceMs)
                       : null
                     : database
-                      ? await getLastGameDate({ database })
+                      ? await tauri.getLatestGameTimestamp(database.file)
                       : null;
-                  let publication: ArtifactPublication;
-                  if (preparation?.pendingBatch) {
-                    publication = { handle: preparation.pendingBatch, durability: "Durable" };
-                  } else if (type === "lichess") {
-                    if (!accountHandle)
-                      throw new Error(
-                        t("Home.Accounts.AuthenticationRequired", {
-                          defaultValue: "An authenticated Lichess account is required.",
-                        }),
-                      );
-                    const destination =
-                      preparation?.destination ?? (await ensureDownloadDestination());
-                    publication = await downloadLichess(
-                      accountHandle,
-                      destination,
-                      accountUsername,
-                      lastGameDate,
-                      onTicket,
-                    );
-                  } else {
-                    const destination =
-                      preparation?.destination ?? (await ensureDownloadDestination());
-                    publication = await downloadChessCom(
-                      destination,
-                      accountUsername,
-                      lastGameDate,
-                      onTicket,
-                    );
-                  }
-                  if (publication.durability !== "Durable") {
-                    notifications.show({
-                      message: t("Home.Accounts.DownloadDurabilityUncertain", {
-                        defaultValue:
-                          "The games were downloaded, but the save could not be fully confirmed. Do not retry.",
-                      }),
-                      color: "orange",
-                    });
-                  }
-                  let importFailed = true;
-                  try {
-                    if (preparation?.collection) {
-                      const outcome = await tauri.appendCollectionGames(
-                        preparation.collection.id,
-                        publication.handle,
-                      );
-                      setCollectionNotice(!outcome.indexReady || !outcome.durabilityConfirmed);
-                    } else {
-                      const databaseHandle = await convert(
-                        publication.handle,
-                        lastGameDate,
-                        ticket,
-                      );
-                      await tauri.deleteEmptyGames(databaseHandle);
-                    }
-                    importFailed = false;
-                  } finally {
-                    await refreshDatabases(importFailed);
-                  }
+                  if (type === "lichess" && !accountHandle && !preparation?.pendingBatch)
+                    throw new Error(t("Home.Accounts.AuthenticationRequired"));
+                  const target = preparation?.collection
+                    ? { kind: "linked" as const, collection: preparation.collection.id }
+                    : {
+                        kind: "unlinked" as const,
+                        database: await ensureAccountDatabaseHandle(
+                          database?.file,
+                          accountUsername,
+                          type,
+                        ),
+                        title: title + (type === "lichess" ? " Lichess" : " Chess.com"),
+                      };
+                  const destination =
+                    preparation?.destination ?? (await ensureDownloadDestination());
+                  await runAccountImport(store, {
+                    provider: type,
+                    account: accountUsername,
+                    accountHandle: accountHandle ?? null,
+                    destination,
+                    pendingBatch: preparation?.pendingBatch ?? null,
+                    sinceMs: lastGameDate === null ? null : BigInt(lastGameDate),
+                    target,
+                  });
                 } catch (cause) {
                   notifyUnlessCancelled(t("Common.Error"), cause, "database");
                 } finally {
@@ -504,14 +400,7 @@ export function AccountCard({
           </Alert>
         )}
         {database?.type === "error" && <Alert color="yellow">{database.error}</Alert>}
-        {collectionNotice && (
-          <Alert color="yellow">
-            {t("Collections.CommittedPending", {
-              defaultValue:
-                "The PGN was committed, but completion could not be fully confirmed. Refresh the index before continuing. Do not repeat the append.",
-            })}
-          </Alert>
-        )}
+        {collectionNotice && <Alert color="yellow">{t("Collections.CommittedPending")}</Alert>}
         {migrationWorkspace && database?.type === "success" && (
           <CollectionMigration
             opened
@@ -538,7 +427,7 @@ export function AccountCard({
             </Text>
             <Text size="xs" fw={500} miw={0} className="wrap-anywhere">
               {associationIssue || database?.type === "error"
-                ? t("Common.Unknown", { defaultValue: "Unknown" })
+                ? t("Common.Unknown")
                 : `${downloadedGames} / ${effectiveTotal}`}
             </Text>
           </Group>

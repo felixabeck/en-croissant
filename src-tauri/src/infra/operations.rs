@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use futures_util::FutureExt;
 
+pub(crate) mod accounts;
 pub mod completions;
 
 use self::completions::{
@@ -169,6 +170,7 @@ struct RegistryState {
     reads: HashMap<String, ReadEntry>,
     accepted: HashMap<String, AcceptedEntry>,
     completions: HashMap<String, EngineCompletionEntry>,
+    accounts: HashMap<String, accounts::AccountCompletionEntry>,
     sealed: bool,
 }
 
@@ -686,12 +688,21 @@ impl OperationRegistry {
 
     fn accept_bounded_with_id(&self, id: &str, label: &str) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
+        self.accept_in_state(&mut state, id, label)
+    }
+
+    fn accept_in_state(
+        &self,
+        state: &mut RegistryState,
+        id: &str,
+        label: &str,
+    ) -> Result<OperationLease, Error> {
         if state.sealed {
             return Err(Error::Conflict(
                 "native operation admission is sealed".into(),
             ));
         }
-        if Self::occupied(&state) >= MAX_ACCEPTED_OPERATIONS {
+        if Self::occupied(state) >= MAX_ACCEPTED_OPERATIONS {
             return Err(Error::ResourceLimit(
                 "too many accepted native operations".into(),
             ));

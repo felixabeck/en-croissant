@@ -88,12 +88,7 @@ export function LinkedCollection({
   async function append(input: FileWorkspaceHandle) {
     const outcome = await tauri.appendCollectionGames(current.id, input);
     if ((!outcome.indexReady || !outcome.durabilityConfirmed) && mounted.current)
-      setMessage(
-        t("Collections.CommittedPending", {
-          defaultValue:
-            "The PGN was committed, but completion could not be fully confirmed. Refresh the index before continuing. Do not repeat the append.",
-        }),
-      );
+      setMessage(t("Collections.CommittedPending"));
   }
   const ready =
     !currency.error && !currency.pending && current.status === "ready" && current.database;
@@ -111,40 +106,21 @@ export function LinkedCollection({
     );
   return (
     <Stack gap="xs" miw={0} className="wrap-anywhere" data-linked-collection={current.id}>
-      <Text fw={600}>
-        {t("Collections.Linked", { defaultValue: "PGN collection with a linked search index" })}
-      </Text>
-      {!ready && (
-        <Alert color="yellow">
-          {t("Collections.Unavailable", {
-            defaultValue:
-              "The search index is unavailable. Retry, or select the collection's source file again.",
-          })}
-        </Alert>
-      )}
+      <Text fw={600}>{t("Collections.Linked")}</Text>
+      {!ready && <Alert color="yellow">{t("Collections.Unavailable")}</Alert>}
       {current.omitted > 0 && (
-        <Alert color="yellow">
-          {t("Collections.Omitted", {
-            defaultValue:
-              "Games omitted from search: {{omitted}}. Their original PGN data remains in the file.",
-            omitted: current.omitted,
-          })}
-        </Alert>
+        <Alert color="yellow">{t("Collections.Omitted", { omitted: current.omitted })}</Alert>
       )}
       {message && <Alert color="yellow">{message}</Alert>}
       {current.pendingBatch && (
         <Alert color="yellow">
-          <Text>
-            {t("Collections.PendingAppend", {
-              defaultValue: "A preserved batch is waiting for completion.",
-            })}
-          </Text>
+          <Text>{t("Collections.PendingAppend")}</Text>
           <Button
             {...libraryButtonProps}
             loading={pending}
             onClick={() => void run(() => append(current.pendingBatch!))}
           >
-            {t("Common.Retry", { defaultValue: "Retry" })}
+            {t("Common.Retry")}
           </Button>
         </Alert>
       )}
@@ -160,7 +136,7 @@ export function LinkedCollection({
             })
           }
         >
-          {t("Databases.Explore", { defaultValue: "Explore" })}
+          {t("Databases.Explore")}
         </Button>
         <Button
           {...libraryButtonProps}
@@ -171,7 +147,7 @@ export function LinkedCollection({
             })
           }
         >
-          {t("Collections.Rebuild", { defaultValue: "Rebuild search index" })}
+          {t("Collections.Rebuild")}
         </Button>
         <Button
           {...libraryButtonProps}
@@ -245,14 +221,14 @@ export function LinkedCollection({
         <TextInput
           miw={0}
           styles={playerFieldStyles}
-          label={t("Collections.PlayerFrom", { defaultValue: "Existing player name" })}
+          label={t("Collections.PlayerFrom")}
           value={from}
           onChange={(event) => setFrom(event.currentTarget.value)}
         />
         <TextInput
           miw={0}
           styles={playerFieldStyles}
-          label={t("Collections.PlayerTo", { defaultValue: "Replacement player name" })}
+          label={t("Collections.PlayerTo")}
           value={to}
           onChange={(event) => setTo(event.currentTarget.value)}
         />
@@ -276,7 +252,7 @@ export function LinkedCollection({
         <Group align="end" grow>
           <Select
             miw={0}
-            label={t("Collections.Source", { defaultValue: "Source PGN" })}
+            label={t("Collections.Source")}
             value={source}
             onChange={setSource}
             data={files.map((file) => ({ value: fileWorkspaceKey(file.handle), label: file.name }))}
@@ -291,7 +267,7 @@ export function LinkedCollection({
               })
             }
           >
-            {t("Collections.Relink", { defaultValue: "Use selected source" })}
+            {t("Collections.Relink")}
           </Button>
         </Group>
       )}
@@ -310,9 +286,7 @@ export function LinkedCollection({
             })
           }
         >
-          {t("Collections.Restore", {
-            defaultValue: "Restore archived database as a separate reference",
-          })}
+          {t("Collections.Restore")}
         </Button>
       )}
     </Stack>
@@ -395,28 +369,17 @@ function CollectionMigrationForm({
     }
   }
   return (
-    <AppModal
-      opened={opened}
-      onClose={onClose}
-      pending={pending}
-      title={t("Collections.Migrate", { defaultValue: "Link existing collection" })}
-    >
+    <AppModal opened={opened} onClose={onClose} pending={pending} title={t("Collections.Migrate")}>
       <Stack>
-        <Text>
-          {t("Collections.MigrationExplanation", {
-            defaultValue:
-              "Choose the future source. Original versions are preserved before linking, and games are never silently merged. A database can be migrated without an existing PGN.",
-          })}
-        </Text>
+        <Text>{t("Collections.MigrationExplanation")}</Text>
         <Text>
           {t("Collections.DatabaseCount", {
-            defaultValue: "Database games: {{games}}",
             games: database.game_count,
           })}
         </Text>
         <Select
           clearable
-          label={t("Collections.Source", { defaultValue: "Source PGN" })}
+          label={t("Collections.Source")}
           value={source}
           onChange={setSource}
           data={files.map((file) => ({
@@ -425,21 +388,19 @@ function CollectionMigrationForm({
           }))}
         />
         <Select
-          label={t("Collections.FutureSource", { defaultValue: "Future authoritative version" })}
+          label={t("Collections.FutureSource")}
           value={choice}
           onChange={(value) => setChoice(value === "pgn" ? "pgn" : "database")}
           data={[
             {
               value: "database",
-              label: t("Collections.DatabaseVersion", {
-                defaultValue: "Export the complete database into a new PGN",
-              }),
+              label: t("Collections.DatabaseVersion"),
             },
             ...(file
               ? [
                   {
                     value: "pgn",
-                    label: t("Collections.PgnVersion", { defaultValue: "Use the selected PGN" }),
+                    label: t("Collections.PgnVersion"),
                   },
                 ]
               : []),
@@ -458,7 +419,7 @@ function CollectionMigrationForm({
             disabled={pending || (choice === "pgn" && !file) || !name}
             onClick={() => void migrate()}
           >
-            {t("Collections.Migrate", { defaultValue: "Link existing collection" })}
+            {t("Collections.Migrate")}
           </Button>
           <Button
             styles={wrappingButton}
@@ -466,7 +427,7 @@ function CollectionMigrationForm({
             disabled={pending}
             onClick={() => void migrate(true)}
           >
-            {t("Collections.Decline", { defaultValue: "Keep independent versions" })}
+            {t("Collections.Decline")}
           </Button>
         </Group>
       </Stack>
