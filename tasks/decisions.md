@@ -9859,3 +9859,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The 2026-10-24 rust-windows-test job 120995443825 on 607837501b3198c861522409c112bf8740ad6885 measured FAT32 and exFAT replace, unlink, and mapped replace as NTSTATUS -1073741811 (STATUS_INVALID_PARAMETER) with public outcome error. A typed refusal would leave a user-chosen database or workspace on those volumes unusable. Rust already treats DOS 87, 50, and 1 as the unsupported-class set. The destination pin is the one live handle at the rename call, so the classic replace waits until that handle is dropped, and the NTFS Ex call happens before that drop.
 * **Decided by:** Grok, drain session 29f86c1f-bc3b-4967-91fa-0fdc15ae094c, full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6bb63cb9450a24738bce90bbc84b97e839bf7f773f5f5d5ff4e767c467cc86df","input_sha256":"ece2016efbd8863ac349459206a0e41fe268bf2fd6e49c4bf4d9e4c1bce80d09","kind":"mutation-receipt","operation":"dacb098451aeea7ffb7b82829be95db168bf1c037451ea8f6417d6e590ddc00e","options":{"section":null},"request_id_sha256":null,"results":["d-20261025-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261025-02 — Where do account completion records live?
+
+* **Question:** Where do account completion records live?
+* **Governs:** f-20261005-05
+* **Chosen:** A separate account completion map with the same MAX_ACCEPTED_OPERATIONS cap, using the existing shared CompletionOutcome and CompletionChanged event.
+* **Rejected:** Storing account records in EngineCompletionEntry. That would change engine admission and retirement.
+* **Reason:** The shared outcome type and event already exist. The engine entry does not fit an account workflow, and engine admission tests must stay unchanged. Reversal path: a later change may unify the maps only with the same engine admission tests and the same account exactly-once tests.
+* **Decided by:** Grok, drain session c6573184-fbc0-4fd5-a7e5-4fd7acdd1499 (drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6), full auto, adopted plan tasks/plans/2026-10-24-account-import-completion.md · **Superseded-by:** -
+
+### d-20261025-03 — When is the account database handle chosen?
+
+* **Question:** When is the account database handle chosen?
+* **Governs:** f-20261005-05
+* **Chosen:** The renderer resolves migration, association, and the unlinked database handle before admission, using the existing helper. The handle is then part of the retained request.
+* **Rejected:** Creating the database inside the download workflow, which would copy the existing recovery helper.
+* **Reason:** d-20261023-04 leaves that choice on the renderer. Reversal path: move creation into the workflow only together with the existing create-and-recover behavior and its tests.
+* **Decided by:** Grok, drain session c6573184-fbc0-4fd5-a7e5-4fd7acdd1499 (drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6), full auto, adopted plan tasks/plans/2026-10-24-account-import-completion.md · **Superseded-by:** -
+
+### d-20261025-04 — What does a second account-download click do after reload?
+
+* **Question:** What does a second account-download click do after reload?
+* **Governs:** f-20261005-05
+* **Chosen:** The card shows pending from the running record, and a duplicate command joins that record.
+* **Rejected:** Showing the existing conflict error. That is what a click does today only because the in-memory guard was wiped by the reload.
+* **Reason:** d-20261023-04 forbids a second transfer, and the pre-reload card already disables the button. Reversal path: surface the conflict only if the product wants a second click to be an error while the first import is still running.
+* **Decided by:** Grok, drain session c6573184-fbc0-4fd5-a7e5-4fd7acdd1499 (drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6), full auto, adopted plan tasks/plans/2026-10-24-account-import-completion.md · **Superseded-by:** -
+
+### d-20261025-05 — Where does empty-game deletion run for an account import?
+
+* **Question:** Where does empty-game deletion run for an account import?
+* **Governs:** f-20261005-05
+* **Chosen:** Inside the unlinked native workflow, after convert commits. A failed deletion keeps the committed database handle and the published artefact, and a later join retries that deletion only. Acknowledge while deletion is unfinished returns success and leaves the checkpoint in the map.
+* **Rejected:** Leaving deletion in the click handler, which a reload destroys, or rolling back a committed convert.
+* **Reason:** That is the current order, minus the document. A failure that committed nothing may still be removed after the document has reported it. Reversal path: a different cleanup policy needs the same one-import proof.
+* **Decided by:** Grok, drain session c6573184-fbc0-4fd5-a7e5-4fd7acdd1499 (drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6), full auto, adopted plan tasks/plans/2026-10-24-account-import-completion.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"2097aa1671af14073fdca4785d32317fd141b24bc747e974ba282197ba145428","input_sha256":"8f1fac79a80984a71556647ed331653f2a55f158e717f7051c755401a57a107d","kind":"mutation-receipt","operation":"ac8ba47caf41fc6c4564a78f37d5263d97522293142aa02d2d4a51bde31bdb01","options":{"section":"2026-10-25 \u2014 recorded through the decisions lock"},"request_id_sha256":null,"results":["d-20261025-02","d-20261025-03","d-20261025-04","d-20261025-05"],"target":"decisions-ledger","v":1} -->
