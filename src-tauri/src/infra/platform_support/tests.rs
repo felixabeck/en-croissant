@@ -2382,7 +2382,7 @@ fn legacy_index_mapping_is_dropped_before_removal() {
 /// The live guard-row count at the current phase boundary. Every
 /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
 /// count in exactly one place instead of five copies.
-const LIVE_GUARD_ROW_COUNT: usize = 10;
+const LIVE_GUARD_ROW_COUNT: usize = 11;
 
 fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
     let mut failures = Vec::new();
@@ -2964,6 +2964,12 @@ fn guard_rows() -> &'static [GuardRow] {
         },
         GuardRow {
             file: "db/linked_collections/batch.rs",
+            signature: "pub(crate) async fn append_collection_batch(",
+            operation: "PGN atomic replacement",
+            effects: &["append_batch("],
+        },
+        GuardRow {
+            file: "db/linked_collections/batch.rs",
             signature: "pub(crate) async fn append_collection_games(",
             operation: "PGN atomic replacement",
             effects: &["operations.accept("],
@@ -3118,7 +3124,10 @@ fn production_replace_pgn_atomic_calls_are_only_edit_existing_and_export_to_pgn_
 
 /// Pin (2) of the `f-20260914-15` completeness unit (d-20260918-13). Every node on the
 /// `replace_pgn_atomic` path may be called from production code only by the functions that
-/// lead to the guarded commands, including linked collection writes. A callee's own definition sits outside any body and is
+/// lead to the guarded commands, including linked collection writes. `append_batch`'s only
+/// production caller is `append_collection_batch`, which refuses before appending.
+/// `append_collection_games` refuses before `operations.accept` and then calls it.
+/// A callee's own definition sits outside any body and is
 /// allowed. This is what catches a new `#[tauri::command]` in any file that calls a `pub`
 /// core, or a new private wrapper around `commit_pgn_mutation`. Enclosing identity is the
 /// nearest preceding `fn <name>` whose brace region still contains the call offset.
@@ -3138,7 +3147,7 @@ fn production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers(
             "transform_file_core",
             &["append_batch", "edit_linked_collection"],
         ),
-        ("append_batch", &["append_collection_games"]),
+        ("append_batch", &["append_collection_batch"]),
         ("delete_game_core", &["delete_game"]),
         ("write_game_core", &["write_game"]),
         ("export_to_pgn_blocking", &["export_to_pgn"]),

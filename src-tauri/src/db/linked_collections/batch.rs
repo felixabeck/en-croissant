@@ -613,6 +613,29 @@ pub(super) fn digest_file(
     Ok(format!("{:x}", digest.finalize()))
 }
 
+pub(crate) async fn append_collection_batch(
+    state: &AppState,
+    collection: &str,
+    source: FileWorkspaceHandle,
+    cancellation: CancellationToken,
+) -> Result<AppendOutcome, Error> {
+    crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
+    let service = state
+        .pgn_path_authority
+        .collections()?
+        .ok_or_else(|| Error::Conflict("linked collections are unavailable".into()))?;
+    let collection = Uuid::parse_str(collection)
+        .map_err(|_| Error::InvalidInput("invalid collection ID".into()))?;
+    service
+        .append_batch(
+            state.pgn_path_authority.clone(),
+            collection,
+            source,
+            cancellation,
+        )
+        .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn append_collection_games(
@@ -622,21 +645,12 @@ pub(crate) async fn append_collection_games(
 ) -> Result<AppendOutcome, Error> {
     crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let operation = state.operations.accept("append_collection_games")?;
+    let state = state.inner().clone();
     let cancellation = operation.token();
-    let authority = state.pgn_path_authority.clone();
-    let service = authority
-        .collections()?
-        .ok_or_else(|| Error::Conflict("linked collections are unavailable".into()))?;
-    let collection = Uuid::parse_str(&collection)
-        .map_err(|_| Error::InvalidInput("invalid collection ID".into()))?;
     crate::infra::operations::run_native_operation(
         operation,
         "append_collection_games",
-        async move {
-            service
-                .append_batch(authority, collection, source, cancellation)
-                .await
-        },
+        async move { append_collection_batch(&state, &collection, source, cancellation).await },
     )
     .await
 }

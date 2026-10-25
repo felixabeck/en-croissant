@@ -435,20 +435,10 @@ pub(crate) async fn start_account_completion<R, D, F>(
                     snapshot.publication = Some(publication.clone());
                     match &snapshot.request.target {
                         AccountImportTarget::Linked { collection } => {
-                            crate::infra::platform_support::off_unix_refusal(
-                                "PGN atomic replacement",
-                                cfg!(unix),
-                            )?;
-                            let service =
-                                state.pgn_path_authority.collections()?.ok_or_else(|| {
-                                    Error::Conflict("linked collections are unavailable".into())
-                                })?;
-                            let outcome = service
-                                .append_batch(
-                                    state.pgn_path_authority.clone(),
-                                    Uuid::parse_str(collection).map_err(|_| {
-                                        Error::InvalidInput("invalid collection ID".into())
-                                    })?,
+                            let outcome =
+                                crate::db::linked_collections::batch::append_collection_batch(
+                                    &state,
+                                    collection,
                                     publication.handle,
                                     cancellation.clone(),
                                 )
