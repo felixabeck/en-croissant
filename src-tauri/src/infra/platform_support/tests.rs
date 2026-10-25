@@ -1568,7 +1568,7 @@ fn windows_workspace_renames_do_not_replace() {
 }
 
 #[test]
-fn windows_rename_uses_rename_information_ex_only() {
+fn windows_rename_tries_ex_before_classic() {
     let source = source_for("infra/fs.rs");
     let rename = compact(&source[braced_body(source, "fn rename_child_with_mode(")]);
     let ex = rename.find("FileRenameInformationEx").expect("Ex attempt");

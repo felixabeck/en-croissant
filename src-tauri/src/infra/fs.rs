@@ -815,7 +815,7 @@ enum RenameOutcome {
 
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn dos_error_means_ex_unsupported(error: u32) -> bool {
-    matches!(error, 87 | 50 | 1)
+    matches!(error, 87 | 50 | 1) // ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION
 }
 
 #[test]
@@ -2722,8 +2722,8 @@ mod win {
     mod ex_fallback_tests {
         use super::*;
         use windows_sys::Win32::Foundation::{
-            STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_OBJECT_NAME_COLLISION,
-            STATUS_SHARING_VIOLATION,
+            STATUS_ACCESS_DENIED, STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_PARAMETER,
+            STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_SHARING_VIOLATION,
         };
 
         const OLD: &[u8] = b"previous generation";
@@ -2787,6 +2787,24 @@ mod win {
         fn windows_ex_fallback_injected_invalid_parameter_replace_commits() {
             let (_reset, dir, parent) = fixture();
             set_test_nt_set_information_status(Some(STATUS_INVALID_PARAMETER));
+            replace(&parent).unwrap().expect_durable();
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), NEW);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_not_supported_replace_commits() {
+            let (_reset, dir, parent) = fixture();
+            set_test_nt_set_information_status(Some(STATUS_NOT_SUPPORTED));
+            replace(&parent).unwrap().expect_durable();
+            assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), NEW);
+            assert_eq!(posix_ex_fallback_count(), 1);
+        }
+
+        #[test]
+        fn windows_ex_fallback_injected_invalid_device_request_replace_commits() {
+            let (_reset, dir, parent) = fixture();
+            set_test_nt_set_information_status(Some(STATUS_INVALID_DEVICE_REQUEST));
             replace(&parent).unwrap().expect_durable();
             assert_eq!(std::fs::read(dir.path().join("target")).unwrap(), NEW);
             assert_eq!(posix_ex_fallback_count(), 1);
