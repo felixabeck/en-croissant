@@ -80,6 +80,16 @@ async function makeEditedMove(page: Page) {
     );
 }
 
+async function switchTheme(page: Page, scheme: "light" | "dark") {
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.getByRole("tab", { name: "Appearance", exact: true }).click();
+    await page.getByText(scheme === "dark" ? "Dark" : "Light", { exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-mantine-color-scheme", scheme);
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await page.mouse.move(400, 650);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+}
+
 test("file-freshness: a linked save refuses an obsolete generation and keeps the dirty tree recoverable", async ({
     page,
     mockScenario,
@@ -106,6 +116,7 @@ test("file-freshness: shows the conflict panel for an edited game changed on dis
     page,
     mockScenario,
     assertNoHorizontalOverflow,
+    assertAccessible,
     capture,
 }) => {
     await openFileTab(page, mockScenario);
@@ -148,14 +159,21 @@ test("file-freshness: shows the conflict panel for an edited game changed on dis
         page.getByText("Unexpected Tauri IPC command: write_game", { exact: true }),
     ).toHaveCount(0);
     await assertNoHorizontalOverflow();
+    await assertAccessible();
     await capture("file-freshness-conflict");
     await expect(page).toHaveScreenshot("file-freshness-conflict.png", { fullPage: true });
+
+    await switchTheme(page, "dark");
+    await expect(gate).toHaveAttribute("data-file-freshness", /^conflict:/);
+    await assertAccessible();
+    await capture("file-freshness-conflict-dark");
 });
 
 test("file-freshness: shows the unavailable panel when the source file disappears", async ({
     page,
     mockScenario,
     assertNoHorizontalOverflow,
+    assertAccessible,
     capture,
 }) => {
     await openFileTab(page, mockScenario);
@@ -185,6 +203,12 @@ test("file-freshness: shows the unavailable panel when the source file disappear
     await expect(gate.getByRole("button", { name: "Close tab" })).toBeVisible();
     await expect(page.getByRole("grid")).toHaveCount(0);
     await assertNoHorizontalOverflow();
+    await assertAccessible();
     await capture("file-freshness-unavailable");
     await expect(page).toHaveScreenshot("file-freshness-unavailable.png", { fullPage: true });
+
+    await switchTheme(page, "dark");
+    await expect(gate).toHaveAttribute("data-file-freshness", /^unavailable:/);
+    await assertAccessible();
+    await capture("file-freshness-unavailable-dark");
 });

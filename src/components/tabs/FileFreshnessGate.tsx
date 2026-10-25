@@ -451,7 +451,7 @@ function FileBackedGate({
         ) : errorMessage ? (
           <>
             <Text>{errorMessage}</Text>
-            <Button onClick={() => setRetryCount((count) => count + 1)}>
+            <Button color="blue.8" onClick={() => setRetryCount((count) => count + 1)}>
               {t("FileFreshness.Retry")}
             </Button>
           </>
@@ -471,14 +471,18 @@ function FileBackedGate({
     <Stack className={classes.panel} align="center" justify="center" h="100%" gap="sm">
       <Text>{t(conflict ? "FileFreshness.Changed" : "FileFreshness.Unavailable")}</Text>
       {uncertainMessage && <Text c="dimmed">{uncertainMessage}</Text>}
-      {errorMessage && <Text c="red">{errorMessage}</Text>}
+      {errorMessage && <Text className={classes.error}>{errorMessage}</Text>}
       <Group>
         {(conflict || appendAttempted) && (
-          <Button onClick={() => void reloadFromDisk()} disabled={disabled}>
+          <Button color="blue.8" onClick={() => void reloadFromDisk()} disabled={disabled}>
             {t("FileFreshness.ReloadFromDisk")}
           </Button>
         )}
-        <Button onClick={() => void appendAsNewGame()} disabled={disabled || appendAttempted}>
+        <Button
+          color="blue.8"
+          onClick={() => void appendAsNewGame()}
+          disabled={disabled || appendAttempted}
+        >
           {t("FileFreshness.SaveAsNewGame")}
         </Button>
         {!conflict && (
