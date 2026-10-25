@@ -9938,3 +9938,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** lower limits.total in bundle-budgets.json once a later production build is at or under 1,640,000 B.
 * **Decided by:** drain session 2441188f-1ef5-44bb-b775-36d87c08d9d9 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"6fe5821ac6a9cc2ad92fc1e14175bb6c078a8bcb9d525fdf4268495cb9257431","input_sha256":"d6a254cad4e93368fb6c335d4b5048162610c50921da8330432a648f6f918e60","kind":"mutation-receipt","operation":"31958c552c5d72467f194bf350099a9e1413fd2eae28cf2a63a7b00a4d98250d","options":{"section":null},"request_id_sha256":null,"results":["d-20261025-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261025-10 — Which sentences of the failed-fill and total-ceiling decisions remain standing?
+
+* **Question:** Which sentences of d-20261017-04 and d-20261019-18 remain standing after f-20261005-06?
+* **Governs:** f-20261005-06
+* **Chosen:** Keep d-20261017-04's succeeded-only fill predicate. Replace only its failed-terminal fill sentence with d-20261025-07. Keep d-20261019-18's gzip entry ceiling of 555,000 B and its largestLazy ceiling of 550,000 B. Replace only its total ceiling of 1,640,000 B with d-20261025-09. This entry is the forward pointer for both earlier entries.
+* **Rejected:** Marking either earlier entry superseded without restating the sentences that stay binding. Also rejected: leaving both Superseded-by markers as `-` while their chosen text still requires the failed fill and the 1,640,000 B total.
+* **Reason:** A Superseded-by trailer covers a whole entry. d-20261017-04 still requires the succeeded-only predicate, and its reversal path already authorized later failed-progress work. d-20261025-07 removes the failed fill and does not restate that predicate. d-20261019-18 still requires the 555,000 B entry ceiling. d-20261025-09 raises only the total and restates the entry and largest-lazy ceilings. Pointing both trailers here keeps one standing instruction for each replaced sentence and for each sentence that stays.
+* **Reversal path:** A later decision may change the succeeded-only predicate, the 555,000 B entry ceiling, or the 550,000 B largest-lazy ceiling only by restating the replacement and moving these trailers.
+* **Decided by:** drain session 2441188f-1ef5-44bb-b775-36d87c08d9d9 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"8fd28e3f74054d8903909d48c1c8ee555b94c7ab55b8ffca02cc17181bfc3d1b","input_sha256":"6d6951fb2f63eacada8dcc3017cac5a11978e2e38d8d8e59e6ee7dd783f3893f","kind":"mutation-receipt","operation":"72e1bafed061b4753e7062cc2431c05ee11d98225df151ad8590e05dd83a768e","options":{"section":null},"request_id_sha256":"1eecc8ec7e8f1f4de19f7b75602d102ec2c7679c7c1b41d9424eadf64f80519b","results":["d-20261025-10"],"target":"decisions-ledger","v":1} -->
