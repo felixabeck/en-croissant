@@ -1314,6 +1314,10 @@ pub async fn download_lichess_games(
         state.inner(),
     )
     .await
+    .and_then(|downloaded| match downloaded.receipt_error {
+        Some(error) => Err(error),
+        None => Ok(downloaded.publication),
+    })
     .map_err(sanitize_download_error)
 }
 
@@ -1328,7 +1332,7 @@ pub(crate) async fn download_lichess_games_runtime<R: tauri::Runtime>(
     owner: &str,
     app: &tauri::AppHandle<R>,
     state: &AppState,
-) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+) -> Result<crate::infra::operations::RuntimeDownload, Error> {
     let admission_key = format!(
         "lichess_{}",
         crate::lichess::lichess_user_segment(&player)?.to_ascii_lowercase()
@@ -1373,16 +1377,24 @@ pub(crate) async fn download_lichess_games_runtime<R: tauri::Runtime>(
     )
     .await?
     .ok_or_else(|| Error::Conflict("Lichess download did not register an artifact".into()))?;
-    if let Some(service) = state.pgn_path_authority.collections()? {
-        let authority = state.pgn_path_authority.clone();
-        let file = publication.handle.clone();
-        crate::infra::blocking::BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |token| {
-                service.record_download(&authority, file, "lichess", &player, since_ms, token)
-            })
-            .await?;
+    let receipt_error = async {
+        if let Some(service) = state.pgn_path_authority.collections()? {
+            let authority = state.pgn_path_authority.clone();
+            let file = publication.handle.clone();
+            crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |token| {
+                    service.record_download(&authority, file, "lichess", &player, since_ms, token)
+                })
+                .await?;
+        }
+        Ok::<_, Error>(())
     }
-    Ok(publication)
+    .await
+    .err();
+    Ok(crate::infra::operations::RuntimeDownload {
+        publication,
+        receipt_error,
+    })
 }
 
 #[cfg(test)]
@@ -4695,6 +4707,8 @@ mod tests {
             )
             .await
             .unwrap();
+            assert!(publication.receipt_error.is_none());
+            let publication = publication.publication;
             let snapshot = state
                 .pgn_path_authority
                 .with_mut(|authority| {

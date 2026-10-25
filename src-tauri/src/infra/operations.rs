@@ -19,6 +19,12 @@ use self::completions::{
 };
 use crate::error::Error;
 
+#[derive(Debug)]
+pub(crate) struct RuntimeDownload {
+    pub(crate) publication: crate::infra::path_authority::ArtifactPublication,
+    pub(crate) receipt_error: Option<Error>,
+}
+
 pub const READ_RESERVATION_TTL: Duration = Duration::from_secs(60);
 pub const MAX_NATIVE_READS: usize = 128;
 pub const MAX_ACCEPTED_OPERATIONS: usize = 128;

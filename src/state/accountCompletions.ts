@@ -7,7 +7,7 @@ import { notifications } from "@mantine/notifications";
 import i18n from "@/i18n";
 import { accountCompletionsAtom, databaseConversionStateAtom } from "./atoms";
 
-const accountCompletionKey = (request: Pick<AccountImportRequest, "provider" | "account">) =>
+export const accountCompletionKey = (request: Pick<AccountImportRequest, "provider" | "account">) =>
     `${request.provider}_${request.account.toLowerCase()}`;
 
 type Surface = {

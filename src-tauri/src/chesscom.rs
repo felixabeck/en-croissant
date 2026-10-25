@@ -5,7 +5,10 @@
 
 use crate::{
     error::Error,
-    infra::path_authority::{ArtifactPublication, PathRef},
+    infra::{
+        operations::RuntimeDownload,
+        path_authority::{ArtifactPublication, PathRef},
+    },
     progress::{
         begin_progress, complete_preserving_result, update_progress_with_state, ProgressLease,
         ProgressState,
@@ -252,8 +255,13 @@ pub async fn download_chess_com_games(
         app,
         window.label(),
         state.inner().clone(),
+        true,
     )
     .await
+    .and_then(|downloaded| match downloaded.receipt_error {
+        Some(error) => Err(error),
+        None => Ok(downloaded.publication),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -266,7 +274,8 @@ pub(crate) async fn download_chess_com_games_runtime<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     owner: &str,
     state: AppState,
-) -> Result<ArtifactPublication, Error> {
+    fail_progress_on_receipt_error: bool,
+) -> Result<RuntimeDownload, Error> {
     let admission_key = format!("chesscom_{}", player.to_ascii_lowercase());
     let lease = state.operations.claim_download(
         &job_id,
@@ -295,6 +304,7 @@ pub(crate) async fn download_chess_com_games_runtime<R: tauri::Runtime>(
             cancellation,
             commit_gate,
             EXPORT_TIMEOUT,
+            fail_progress_on_receipt_error,
         ),
     )
     .await
@@ -337,7 +347,8 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
     cancellation: CancellationToken,
     commit_gate: crate::infra::operations::OperationCommitGate,
     export_timeout: Duration,
-) -> Result<ArtifactPublication, Error> {
+    fail_progress_on_receipt_error: bool,
+) -> Result<RuntimeDownload, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -445,31 +456,47 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
             Some(&commit_gate),
         )
         .await?;
-        if let Some(service) = state.pgn_path_authority.collections()? {
-            let authority = state.pgn_path_authority.clone();
-            let file = publication.handle.clone();
-            let since_ms = first_month
-                .and_then(|(year, month)| chrono::NaiveDate::from_ymd_opt(year, month, 1))
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .map(|date| date.and_utc().timestamp_millis());
-            crate::infra::blocking::BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation.clone(), move |token| {
-                    service.record_download(
-                        &authority,
-                        file,
-                        "chesscom",
-                        &lower_player,
-                        since_ms,
-                        token,
-                    )
-                })
-                .await?;
+        let receipt_error = async {
+            if let Some(service) = state.pgn_path_authority.collections()? {
+                let authority = state.pgn_path_authority.clone();
+                let file = publication.handle.clone();
+                let since_ms = first_month
+                    .and_then(|(year, month)| chrono::NaiveDate::from_ymd_opt(year, month, 1))
+                    .and_then(|date| date.and_hms_opt(0, 0, 0))
+                    .map(|date| date.and_utc().timestamp_millis());
+                crate::infra::blocking::BLOCKING_GATEWAY
+                    .spawn_cancellable(cancellation.clone(), move |token| {
+                        service.record_download(
+                            &authority,
+                            file,
+                            "chesscom",
+                            &lower_player,
+                            since_ms,
+                            token,
+                        )
+                    })
+                    .await?;
+            }
+            Ok::<_, Error>(())
         }
-        Ok(publication)
+        .await
+        .err();
+        Ok(RuntimeDownload {
+            publication,
+            receipt_error,
+        })
     }
     .await;
 
+    let receipt_failed = result
+        .as_ref()
+        .is_ok_and(|downloaded| downloaded.receipt_error.is_some());
     complete_preserving_result(result, |terminal| {
+        let terminal = if fail_progress_on_receipt_error && receipt_failed {
+            ProgressState::Failed
+        } else {
+            terminal
+        };
         report_terminal_progress(&state, &app, &progress, terminal)
     })
 }
@@ -602,10 +629,13 @@ mod tests {
                     token,
                     gate,
                     Duration::from_secs(30),
+                    true,
                 ),
             )
             .await
             .unwrap();
+            assert!(publication.receipt_error.is_none());
+            let publication = publication.publication;
             let result = Arc::clone(&fixture.service)
                 .append_batch(
                     state.pgn_path_authority.clone(),
@@ -767,7 +797,7 @@ mod tests {
         app: tauri::AppHandle<tauri::test::MockRuntime>,
         state: AppState,
         timeout: Duration,
-    ) -> Result<ArtifactPublication, Error> {
+    ) -> Result<RuntimeDownload, Error> {
         let lease = state.operations.claim_download(
             &job_id,
             "test",
@@ -793,6 +823,7 @@ mod tests {
                 cancellation,
                 commit_gate,
                 timeout,
+                true,
             ),
         )
         .await
@@ -1252,6 +1283,8 @@ mod tests {
         assert!(!state.operations.cancel_download(&job_id, "test").unwrap());
         release.send(()).unwrap();
         let artifact = task.await.unwrap().unwrap();
+        assert!(artifact.receipt_error.is_none());
+        let artifact = artifact.publication;
         assert_eq!(std::fs::read(root.join("late.pgn")).unwrap(), b"1. e4 e5\n");
         assert!(state
             .pgn_path_authority
@@ -1289,6 +1322,8 @@ mod tests {
         state.progress_state.clear(&job_id).unwrap();
         release.send(()).unwrap();
         let artifact = task.await.unwrap().unwrap();
+        assert!(artifact.receipt_error.is_none());
+        let artifact = artifact.publication;
         assert_eq!(
             std::fs::read(root.join("cleared.pgn")).unwrap(),
             b"1. e4 e5\n"

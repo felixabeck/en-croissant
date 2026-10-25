@@ -30,7 +30,7 @@ use batch::digest_file;
 const REGISTRY: &str = "registry.json";
 const MAX_RECORDS: usize = 4096;
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ACCOUNT_NAME_BYTES: usize = 64;
+pub(crate) const MAX_ACCOUNT_NAME_BYTES: usize = 64;
 const MAX_SELECTED_GAMES: usize = 1000;
 const MAX_PLAYER_NAME_BYTES: usize = 1024;
 const BACKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

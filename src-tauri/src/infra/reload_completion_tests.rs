@@ -753,7 +753,7 @@ fn reload_completion_account_capacity_is_separate_and_never_evicts_unacknowledge
         let mut snapshot = start.snapshot.clone();
         ids.push(snapshot.id.clone());
         snapshot.outcome = CompletionOutcome::Failed(Error::Cancellation.renderer_payload());
-        registry.finish_account_completion(snapshot).unwrap();
+        registry.update_account_completion(snapshot).unwrap();
         drop(start);
     }
     assert!(matches!(

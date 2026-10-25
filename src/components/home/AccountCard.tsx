@@ -42,7 +42,11 @@ import {
   accountCompletionsAtom,
   downloadDestinationAtom,
 } from "@/state/atoms";
-import { observeAccountCompletions, runAccountImport } from "@/state/accountCompletions";
+import {
+  accountCompletionKey,
+  observeAccountCompletions,
+  runAccountImport,
+} from "@/state/accountCompletions";
 import { type ManagedDatabaseInfo } from "@/utils/db";
 import { accountDatabaseFilename, type AccountDatabaseIssue } from "./accountDatabase";
 import { capitalize } from "@/utils/format";
@@ -129,7 +133,7 @@ export function AccountCard({
   const { t } = useTranslation();
   const { mutate } = useSWRConfig();
   const databaseOwner = useNativeRequestOwner(DATABASE_LIST_KEY);
-  const accountKey = `${type}_${accountUsername.toLowerCase()}`;
+  const accountKey = accountCompletionKey({ provider: type, account: accountUsername });
   const store = useStore();
   const items = stats.map((stat) => {
     let color = "gray.5";

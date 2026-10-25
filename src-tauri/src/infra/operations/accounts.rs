@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     credentials::LichessAccountHandle,
+    db::linked_collections::MAX_ACCOUNT_NAME_BYTES,
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
@@ -17,6 +18,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event as _;
+
+const MAX_ACCOUNT_ID_BYTES: usize = 256;
+const MAX_ACCOUNT_TITLE_BYTES: usize = 4096;
 
 #[cfg(test)]
 pub(crate) static BEFORE_CONVERT: crate::infra::test_hooks::KeyedTestHooks<String> =
@@ -56,22 +60,22 @@ impl AccountImportRequest {
     fn validate(&self) -> Result<(), Error> {
         if !matches!(self.provider.as_str(), "lichess" | "chesscom")
             || self.account.is_empty()
-            || self.account.len() > 64
+            || self.account.len() > MAX_ACCOUNT_NAME_BYTES
             || !self
                 .account
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || self.destination.id.len() > 256
+            || self.destination.id.len() > MAX_ACCOUNT_ID_BYTES
             || self
                 .account_handle
                 .as_ref()
-                .is_some_and(|handle| handle.0.len() > 256)
+                .is_some_and(|handle| handle.0.len() > MAX_ACCOUNT_ID_BYTES)
             || matches!(&self.target, AccountImportTarget::Linked { collection } if Uuid::parse_str(collection).is_err())
-            || matches!(&self.target, AccountImportTarget::Unlinked { database, title } if database.id.id.len() > 256 || title.len() > 4096)
+            || matches!(&self.target, AccountImportTarget::Unlinked { database, title } if database.id.id.len() > MAX_ACCOUNT_ID_BYTES || title.len() > MAX_ACCOUNT_TITLE_BYTES)
             || self
                 .pending_batch
                 .as_ref()
-                .is_some_and(|handle| handle.id.id.len() > 256)
+                .is_some_and(|handle| handle.id.id.len() > MAX_ACCOUNT_ID_BYTES)
         {
             return Err(Error::InvalidInput(
                 "invalid account completion request".into(),
@@ -206,7 +210,7 @@ impl OperationRegistry {
             .collect())
     }
 
-    pub(crate) fn finish_account_completion(
+    pub(crate) fn update_account_completion(
         &self,
         snapshot: AccountCompletion,
     ) -> Result<(), Error> {
@@ -320,7 +324,7 @@ async fn download_account<R: tauri::Runtime>(
     state: AppState,
 ) -> Result<ArtifactPublication, Error> {
     let filename = format!("{}_{}.pgn", request.account, request.provider);
-    if request.provider == "lichess" {
+    let downloaded = if request.provider == "lichess" {
         let handle = request.account_handle.ok_or_else(|| {
             Error::OAuthFailure("authenticated Lichess account unavailable".into())
         })?;
@@ -346,9 +350,21 @@ async fn download_account<R: tauri::Runtime>(
             app,
             &owner,
             state.clone(),
+            false,
         )
         .await
+    };
+    adopt_account_download(downloaded)
+}
+
+fn adopt_account_download(
+    downloaded: Result<RuntimeDownload, Error>,
+) -> Result<ArtifactPublication, Error> {
+    let downloaded = downloaded?;
+    if let Some(error) = downloaded.receipt_error {
+        log::warn!("account download receipt failed: {}", error.diagnostic());
     }
+    Ok(downloaded.publication)
 }
 
 pub(crate) async fn start_account_completion<R, D, F>(
@@ -388,7 +404,7 @@ pub(crate) async fn start_account_completion<R, D, F>(
                             snapshot.progress_id = ticket.clone();
                             state
                                 .operations
-                                .finish_account_completion(snapshot.clone())?;
+                                .update_account_completion(snapshot.clone())?;
                             if let Err(error) = (CompletionChanged {
                                 id: snapshot.id.clone(),
                             })
@@ -444,7 +460,7 @@ pub(crate) async fn start_account_completion<R, D, F>(
                             snapshot.importing = true;
                             state
                                 .operations
-                                .finish_account_completion(snapshot.clone())?;
+                                .update_account_completion(snapshot.clone())?;
                             if let Err(error) = (CompletionChanged {
                                 id: snapshot.id.clone(),
                             })
@@ -556,7 +572,7 @@ pub(crate) async fn start_account_completion<R, D, F>(
             };
             state
                 .operations
-                .finish_account_completion(snapshot.clone())?;
+                .update_account_completion(snapshot.clone())?;
             if let Err(error) = (CompletionChanged {
                 id: snapshot.id.clone(),
             })
@@ -570,4 +586,40 @@ pub(crate) async fn start_account_completion<R, D, F>(
         .map_err(Arc::new);
         let _ = result.send(terminal);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_completion_account_download_uses_provider_runtimes_and_adopts_publication() {
+        let body = crate::infra::blocking::source_scan::body_at_indent(
+            include_str!("accounts.rs"),
+            "async fn download_account<",
+        );
+        for required in [
+            "download_lichess_games_runtime(",
+            "download_chess_com_games_runtime(",
+            "since_ms",
+            "adopt_account_download(downloaded)",
+        ] {
+            assert!(body.contains(required), "missing {required}: {body}");
+        }
+    }
+
+    #[test]
+    fn reload_completion_account_adopts_publication_after_receipt_failure() {
+        let publication = ArtifactPublication {
+            handle: FileWorkspaceHandle::new(PathRef {
+                id: "published-account-download".into(),
+            }),
+            durability: CommitDurability::Durable,
+        };
+        let adopted = adopt_account_download(Ok(RuntimeDownload {
+            publication: publication.clone(),
+            receipt_error: Some(Error::Conflict("receipt recording failed".into())),
+        }));
+        assert_eq!(adopted.unwrap(), publication);
+    }
 }
