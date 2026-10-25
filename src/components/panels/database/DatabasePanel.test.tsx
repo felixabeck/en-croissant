@@ -1,11 +1,11 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import { MantineProvider } from "@mantine/core";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
-import { SWRConfig, useSWRConfig, type ScopedMutator } from "swr";
+import { SWRConfig, useSWRConfig, type ScopedMutator, type SWRConfiguration } from "swr";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import {
@@ -298,6 +298,29 @@ describe("DatabasePanel", () => {
     return { promise, resolve, reject };
   }
 
+  async function renderPanel(
+    store: ReturnType<typeof createJotaiStore>,
+    swrConfig: SWRConfiguration,
+    children?: ReactNode,
+  ) {
+    await act(async () => {
+      root.render(
+        <MantineProvider>
+          <JotaiProvider store={store}>
+            <TreeStateContext.Provider value={treeStore}>
+              <WorkspaceTabScope tabId={tabId}>
+                <SWRConfig value={swrConfig}>
+                  {children}
+                  <DatabasePanel />
+                </SWRConfig>
+              </WorkspaceTabScope>
+            </TreeStateContext.Provider>
+          </JotaiProvider>
+        </MantineProvider>,
+      );
+    });
+  }
+
   async function mountLocal() {
     const store = createJotaiStore();
     store.set(tabsAtom, [validTab]);
@@ -319,30 +342,17 @@ describe("DatabasePanel", () => {
       mutate = useSWRConfig().mutate;
       return null;
     }
-    await act(async () => {
-      root.render(
-        <MantineProvider>
-          <JotaiProvider store={store}>
-            <TreeStateContext.Provider value={treeStore}>
-              <WorkspaceTabScope tabId={tabId}>
-                <SWRConfig
-                  value={{
-                    provider: () => new Map(),
-                    dedupingInterval: 0,
-                    shouldRetryOnError: false,
-                    revalidateOnFocus: false,
-                    revalidateOnReconnect: false,
-                  }}
-                >
-                  <CacheControl />
-                  <DatabasePanel />
-                </SWRConfig>
-              </WorkspaceTabScope>
-            </TreeStateContext.Provider>
-          </JotaiProvider>
-        </MantineProvider>,
-      );
-    });
+    await renderPanel(
+      store,
+      {
+        provider: () => new Map(),
+        dedupingInterval: 0,
+        shouldRetryOnError: false,
+        revalidateOnFocus: false,
+        revalidateOnReconnect: false,
+      },
+      <CacheControl />,
+    );
     return {
       store,
       revalidate: async () => {
@@ -358,9 +368,25 @@ describe("DatabasePanel", () => {
     expect(JSON.parse(localStorage.getItem("reference-database")!)).toEqual(reference);
   }
 
-  function expectNoReference() {
-    expect(container.textContent).toContain("Board.Database.NoReference1");
-    expect(container.querySelector<HTMLInputElement>(".mantine-Select-input")?.value).toBe("");
+  function expectNoReference(value: "stats" | "games" | "options" = "stats") {
+    const labels = { stats: "Stats", games: "Games", options: "Options" };
+    const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (element) => element.textContent === `Board.Database.${labels[value]}`,
+    );
+    expect(tab).toBeDefined();
+    expect(tab!.getAttribute("aria-selected")).toBe("true");
+    const panelId = tab!.getAttribute("aria-controls");
+    expect(panelId).toBeTruthy();
+    const panel = document.getElementById(panelId!);
+    expect(container.contains(panel)).toBe(true);
+    expect(panel!.getAttribute("role")).toBe("tabpanel");
+    expect(panel!.getAttribute("aria-labelledby")).toBe(tab!.id);
+    expect({ [value]: panel!.textContent }).toEqual({
+      [value]: expect.stringContaining("Board.Database.NoReference1"),
+    });
+    expect({
+      [value]: panel!.querySelector<HTMLInputElement>(".mantine-Select-input")?.value,
+    }).toEqual({ [value]: "" });
   }
 
   test("local: readable persisted handle searches with preserved filters and overrides stale tab path", async () => {
@@ -401,11 +427,11 @@ describe("DatabasePanel", () => {
       expect(mocks.searchPosition).not.toHaveBeenCalled();
       expect(store.get(localOptionsFamily(tabId)).path).toBeNull();
       expectSavedChoice(store);
-      for (const value of ["stats", "games", "options"]) {
+      for (const value of ["stats", "games", "options"] as const) {
         await act(async () => {
           store.set(dbTabFamily(tabId), value);
         });
-        expectNoReference();
+        expectNoReference(value);
       }
     },
   );
@@ -535,21 +561,7 @@ describe("DatabasePanel", () => {
       });
     });
 
-    await act(async () => {
-      root.render(
-        <MantineProvider>
-          <JotaiProvider store={jotaiStore}>
-            <TreeStateContext.Provider value={treeStore}>
-              <WorkspaceTabScope tabId={tabId}>
-                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                  <DatabasePanel />
-                </SWRConfig>
-              </WorkspaceTabScope>
-            </TreeStateContext.Provider>
-          </JotaiProvider>
-        </MantineProvider>,
-      );
-    });
+    await renderPanel(jotaiStore, { provider: () => new Map(), dedupingInterval: 0 });
 
     await vi.waitFor(() => {
       expect(mocks.getLichessGames).toHaveBeenCalled();
@@ -600,21 +612,7 @@ describe("DatabasePanel", () => {
       });
     });
 
-    await act(async () => {
-      root.render(
-        <MantineProvider>
-          <JotaiProvider store={jotaiStore}>
-            <TreeStateContext.Provider value={treeStore}>
-              <WorkspaceTabScope tabId={tabId}>
-                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                  <DatabasePanel />
-                </SWRConfig>
-              </WorkspaceTabScope>
-            </TreeStateContext.Provider>
-          </JotaiProvider>
-        </MantineProvider>,
-      );
-    });
+    await renderPanel(jotaiStore, { provider: () => new Map(), dedupingInterval: 0 });
 
     await vi.waitFor(() => {
       expect(mocks.lexPgn).toHaveBeenCalled();
@@ -662,21 +660,7 @@ describe("DatabasePanel", () => {
       });
     });
 
-    await act(async () => {
-      root.render(
-        <MantineProvider>
-          <JotaiProvider store={jotaiStore}>
-            <TreeStateContext.Provider value={treeStore}>
-              <WorkspaceTabScope tabId={tabId}>
-                <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-                  <DatabasePanel />
-                </SWRConfig>
-              </WorkspaceTabScope>
-            </TreeStateContext.Provider>
-          </JotaiProvider>
-        </MantineProvider>,
-      );
-    });
+    await renderPanel(jotaiStore, { provider: () => new Map(), dedupingInterval: 0 });
 
     await vi.waitFor(() => {
       expect(mocks.lexPgn).toHaveBeenCalled();
