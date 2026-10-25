@@ -1193,6 +1193,7 @@ pub async fn list_file_workspace(
 #[cfg(test)]
 std::thread_local! {
     static PAIRED_RENAME_POST_PRIMARY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static PAIRED_RENAME_PRE_ALIAS_OBSERVATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -1292,6 +1293,24 @@ fn rewrite_moved_workspace_metadata(
     result
 }
 
+fn reverse_workspace_primary_rename(
+    source: &WorkspaceMutationTarget,
+    target_parent: &fs::File,
+    target_leaf: &OsStr,
+) -> Result<(), Error> {
+    crate::infra::fs::rename_entry_at(
+        target_parent,
+        target_leaf,
+        source.identity,
+        source.is_dir,
+        &source.parent,
+        &source.leaf,
+    )
+    .and_then(|outcome| {
+        crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::WorkspaceRename)
+    })
+}
+
 fn reverse_workspace_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -1336,17 +1355,7 @@ fn reverse_workspace_rename(
             _ => Ok(()),
         };
         finish_committed_workspace_step(sidecar, || {
-            let primary = rename_entry_at(
-                target_parent,
-                target_leaf,
-                source.identity,
-                source.is_dir,
-                &source.parent,
-                &source.leaf,
-            )
-            .and_then(|outcome| {
-                require_durable(outcome, crate::error::DurabilityStage::WorkspaceRename)
-            });
+            let primary = reverse_workspace_primary_rename(source, target_parent, target_leaf);
             finish_committed_workspace_step(primary, || match bucket {
                 Some((parent, leaf, identity)) => remove_empty_directory_at(parent, leaf, identity),
                 None => Ok(()),
@@ -1472,15 +1481,21 @@ fn paired_rename_inner(
             }
             Ok(())
         };
-        if source.is_dir
-            && matches!(
+        if source.is_dir {
+            #[cfg(test)]
+            PAIRED_RENAME_PRE_ALIAS_OBSERVATION_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            if matches!(
                 entry_identity_at(target_parent, &target_info, true),
                 Ok(identity) if identity == source.identity
-            )
-        {
-            precommit()?;
-            disposition = WorkspaceSidecarDisposition::PrimaryAlias;
-            return Ok(None);
+            ) {
+                precommit()?;
+                disposition = WorkspaceSidecarDisposition::PrimaryAlias;
+                return Ok(None);
+            }
         }
         let installed =
             atomic_create_workspace_sidecar_at(target_parent, &target_info, precommit, |file| {
@@ -1497,20 +1512,7 @@ fn paired_rename_inner(
                 log::warn!("primary rename parent sync failed before sidecar refusal: {cause}");
             }
             // The same retained descriptors are used for rollback; never reopen a mutable pathname.
-            let rollback = crate::infra::fs::rename_entry_at(
-                target_parent,
-                target_leaf,
-                source.identity,
-                source.is_dir,
-                &source.parent,
-                &source.leaf,
-            )
-            .and_then(|outcome| {
-                crate::infra::fs::require_durable(
-                    outcome,
-                    crate::error::DurabilityStage::WorkspaceRename,
-                )
-            });
+            let rollback = reverse_workspace_primary_rename(source, target_parent, target_leaf);
             if let Err(rollback) = &rollback {
                 log::error!(
                     "paired rename failed: {}; rollback cleanup reported: {}",
@@ -5177,6 +5179,29 @@ mod tests {
                         let payload = serde_json::to_value(&error).unwrap();
                         assert_eq!(payload["category"], "operation-and-cleanup");
                         assert!(payload.get("nameTaken").is_none());
+                    } else if matches!(mode, MetadataEdit::Rename) {
+                        // The sidecar returns before the primary reverse refuses the changed PGN.
+                        let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                            panic!("{mode:?} {change}: {error}");
+                        };
+                        if change == "remove" {
+                            assert!(
+                                primary.starts_with(
+                                    "I/O failure: No such file or directory (os error 2)"
+                                ),
+                                "{primary}"
+                            );
+                        } else {
+                            assert!(
+                                primary
+                                    .starts_with("Conflict: workspace entry changed concurrently"),
+                                "{primary}"
+                            );
+                        }
+                        assert!(!cleanup.is_empty());
+                        let payload = serde_json::to_value(&error).unwrap();
+                        assert_eq!(payload["category"], "operation-and-cleanup");
+                        assert!(payload.get("nameTaken").is_none());
                     } else if change == "remove" {
                         assert!(error.is_missing_entry(), "{mode:?}: {error}");
                     } else {
@@ -5189,8 +5214,17 @@ mod tests {
                     if change == "directory" {
                         assert!(target.is_dir());
                     }
+                    if matches!(mode, MetadataEdit::Rename) && existing && change == "remove" {
+                        assert!(!target.exists());
+                    }
                     let sidecar = root.join(format!("{leaf}.info"));
-                    if existing {
+                    if matches!(mode, MetadataEdit::Rename) && existing {
+                        assert_eq!(
+                            fs::read(root.join("before.info")).unwrap(),
+                            b"original-sidecar"
+                        );
+                        assert!(!sidecar.exists());
+                    } else if existing {
                         assert_eq!(fs::read(sidecar).unwrap(), b"original-sidecar");
                     } else {
                         assert!(!sidecar.exists());
@@ -5202,7 +5236,9 @@ mod tests {
                     // No failed metadata publication rebinds the registry or moves a substitute.
                     if matches!(mode, MetadataEdit::Rename) {
                         assert!(!source.exists());
-                        assert!(!root.join("before.info").exists());
+                        if !existing {
+                            assert!(!root.join("before.info").exists());
+                        }
                         assert!(registry_has_display_name(&directory, "before"));
                     }
                     assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
@@ -6165,7 +6201,7 @@ mod tests {
                 registered_child_directory(&state, &workspace, "destination");
             let foreign = destination.join("before.info");
             if failed_probe {
-                PAIRED_RENAME_POST_PRIMARY_HOOK.with(|slot| {
+                PAIRED_RENAME_PRE_ALIAS_OBSERVATION_HOOK.with(|slot| {
                     assert!(slot
                         .replace(Some(Box::new(|| {
                             crate::infra::fs::set_entry_observation_fault(Some(Error::Conflict(
@@ -6593,7 +6629,13 @@ mod tests {
 
     #[test]
     fn rename_metadata_compensation_tracks_each_installed_identity() {
-        for uncertain_sync in [None, Some(2), Some(3)] {
+        const METADATA_REWRITE_PARENT_SYNC: usize = 2;
+        const BYTE_RESTORATION_PARENT_SYNC: usize = 3;
+        for uncertain_sync in [
+            None,
+            Some(METADATA_REWRITE_PARENT_SYNC),
+            Some(BYTE_RESTORATION_PARENT_SYNC),
+        ] {
             let (temporary, state, workspace) = workspace_state();
             let created = create_named_text(&state, &workspace, "before", "*").unwrap();
             let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
@@ -6643,7 +6685,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-            if uncertain_sync == Some(3) {
+            if uncertain_sync == Some(BYTE_RESTORATION_PARENT_SYNC) {
                 let Error::OperationAndCleanup { primary, cleanup } = &error else {
                     panic!("{error:?}")
                 };
@@ -7511,15 +7553,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rename_workspace_file_lets_a_failed_rebind_outrank_the_sidecar_uncertainty() {
-        // The sidecar rewrite loses its parent sync; the registry rebind that follows fails
-        // outright at its rename, so the hard error is the one reported, not the uncertainty.
+        // The sidecar rewrite loses its parent sync, then the registry rebind rename fails.
+        // The hard error stays primary and the faulted reverse is the cleanup failure.
         let (_directory, _state, root, _handle, result) = rename_under_injector(Some(Arc::new(
             FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 2)
                 .and(FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, 1)),
         )));
         assert!(
-            matches!(result, Err(Error::Io(_))),
-            "a failed rebind must not be reported as an uncertainty: {result:?}"
+            matches!(&result, Err(Error::OperationAndCleanup { primary, cleanup })
+                if primary.contains("injected atomic-file fault")
+                    && cleanup.contains("injected atomic-file fault")),
+            "the failed rebind must stay primary with its failed reverse as cleanup: {result:?}"
         );
         assert!(root.join("after.pgn").is_file());
         assert!(root.join("after.info").is_file());
