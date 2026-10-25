@@ -4636,6 +4636,41 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn authenticated_lichess_runtime_setup(
+        fixture: &crate::db::linked_collections::tests::Fixture,
+        player: &str,
+        response: DownloadResponse,
+    ) -> (
+        AppState,
+        tauri::App<tauri::test::MockRuntime>,
+        crate::credentials::LichessAccountMetadata,
+        Arc<MockTransport>,
+    ) {
+        let transport = Arc::new(MockTransport {
+            responses: Mutex::new(vec![Ok(response)]),
+            requests_seen: Mutex::new(vec![]),
+        });
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                &fixture.directory.path().join("credentials-app"),
+            ))
+            .unwrap();
+        let account = credentials
+            .store_lichess_token(player.into(), "disposable-fixture-token".into())
+            .unwrap()
+            .account;
+        let state = AppState {
+            credentials,
+            http_transport: transport.clone(),
+            ..fixture.state.clone()
+        };
+        (state, test_progress_app(), account, transport)
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn reload_completion_lichess_runtime_retains_publication_after_receipt_failure() {
         use crate::db::linked_collections::{tests::Fixture, RECORD_DOWNLOAD_FAILURE};
@@ -4656,35 +4691,18 @@ mod tests {
         )
         .replace("https://www.chess.com", "https://lichess.org/AbCd1234");
         let length = body.len() as u64;
-        let transport = Arc::new(MockTransport {
-            responses: Mutex::new(vec![Ok(DownloadResponse {
+        let (state, app, account, _) = authenticated_lichess_runtime_setup(
+            &fixture,
+            player,
+            DownloadResponse {
                 status: 200,
                 headers: HeaderMap::new(),
                 content_length: None,
                 stream: Box::pin(futures_util::stream::iter(vec![Ok(bytes::Bytes::from(
                     body,
                 ))])),
-            })]),
-            requests_seen: Mutex::new(vec![]),
-        });
-        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
-            crate::credentials::MemoryCredentialStore::default(),
-        )));
-        credentials
-            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
-                &fixture.directory.path().join("credentials-app"),
-            ))
-            .unwrap();
-        let account = credentials
-            .store_lichess_token(player.into(), "disposable-fixture-token".into())
-            .unwrap()
-            .account;
-        let state = AppState {
-            credentials,
-            http_transport: transport,
-            ..fixture.state.clone()
-        };
-        let app = test_progress_app();
+            },
+        );
         let job = state.operations.prepare_download("fixture-window").unwrap();
         let key = ("lichess".into(), player.into());
         let _reset = ResetReceiptFailure(key.clone());
@@ -4743,8 +4761,10 @@ mod tests {
                 .replace("https://www.chess.com", "https://lichess.org/AbCd1234");
             assert_ne!(body.len(), 900);
             let length = body.len() as u64;
-            let transport = Arc::new(MockTransport {
-                responses: Mutex::new(vec![Ok(DownloadResponse {
+            let (state, app, account, transport) = authenticated_lichess_runtime_setup(
+                &fixture,
+                "player",
+                DownloadResponse {
                     status: 200,
                     headers: if has_length {
                         let mut headers = HeaderMap::new();
@@ -4760,27 +4780,8 @@ mod tests {
                     stream: Box::pin(futures_util::stream::iter(vec![Ok(bytes::Bytes::from(
                         body.clone(),
                     ))])),
-                })]),
-                requests_seen: Mutex::new(vec![]),
-            });
-            let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
-                crate::credentials::MemoryCredentialStore::default(),
-            )));
-            credentials
-                .initialize(&crate::infra::path_authority::AppDataDir::for_test(
-                    &fixture.directory.path().join("credentials-app"),
-                ))
-                .unwrap();
-            let account = credentials
-                .store_lichess_token("player".into(), "disposable-fixture-token".into())
-                .unwrap()
-                .account;
-            let state = AppState {
-                credentials,
-                http_transport: transport.clone(),
-                ..fixture.state.clone()
-            };
-            let app = test_progress_app();
+                },
+            );
             let job = state.operations.prepare_download("fixture-window").unwrap();
             let publication = download_lichess_games_runtime(
                 account.handle,
