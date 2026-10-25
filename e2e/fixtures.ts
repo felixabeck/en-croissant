@@ -666,6 +666,8 @@ const tauriBootstrap = () => {
         reconcile_engine_attachments: { result: null },
         pending_engine_completions: { result: [] },
         acknowledge_engine_completion: { result: null },
+        pending_account_completions: { result: [] },
+        acknowledge_account_completion: { result: null },
         retire_engine_completion: { result: null },
         list_lichess_accounts: { result: [] },
         get_puzzle_workspace: {
@@ -739,6 +741,15 @@ const tauriBootstrap = () => {
         JSON.parse(sessionStorage.getItem(completionKey) ?? "[]");
     const writeCompletions = (records: EngineCompletion[]) =>
         sessionStorage.setItem(completionKey, JSON.stringify(records));
+    const accountCompletionKey = "__E2E_ACCOUNT_COMPLETIONS__";
+    const readAccountCompletions = (): { id?: string; deletionPending?: boolean }[] =>
+        JSON.parse(sessionStorage.getItem(accountCompletionKey) ?? "[]");
+    const writeAccountCompletions = (records: { id?: string; deletionPending?: boolean }[]) =>
+        sessionStorage.setItem(accountCompletionKey, JSON.stringify(records));
+    const scriptedAccountPending = () => {
+        const response = state.commands.pending_account_completions;
+        return response && Array.isArray(response.result) ? response : null;
+    };
 
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
@@ -835,6 +846,38 @@ const tauriBootstrap = () => {
                   : response.result;
         if (command === "pending_engine_completions" && !state.commands[command])
             return readCompletions();
+        if (command === "pending_account_completions" && !state.commands[command])
+            return readAccountCompletions();
+        if (
+            command === "import_account_games" &&
+            result &&
+            typeof result === "object" &&
+            "id" in result
+        ) {
+            const scripted = scriptedAccountPending();
+            if (scripted) {
+                if (!scripted.result.some((entry) => entry?.id === result.id))
+                    scripted.result.push(result);
+            } else {
+                const retained = readAccountCompletions();
+                if (!retained.some((entry) => entry?.id === result.id))
+                    writeAccountCompletions([...retained, result]);
+            }
+        }
+        if (command === "acknowledge_account_completion") {
+            const scripted = scriptedAccountPending();
+            if (scripted) {
+                scripted.result = scripted.result.filter(
+                    (entry) => entry?.id !== args.id || entry?.deletionPending,
+                );
+            } else if (!state.commands[command]) {
+                writeAccountCompletions(
+                    readAccountCompletions().filter(
+                        (entry) => entry.id !== args.id || entry.deletionPending,
+                    ),
+                );
+            }
+        }
         if (command === "install_engine_workflow" && response.engineInstall) {
             const records = readCompletions();
             const existing = records.find((record) => record.id === args.id);
@@ -882,6 +925,13 @@ const tauriBootstrap = () => {
                 return true;
             },
             invocations: () => [...state.invocations],
+            retainAccountCompletion(record: { id?: string; deletionPending?: boolean }) {
+                const retained = readAccountCompletions();
+                writeAccountCompletions([
+                    ...retained.filter((entry) => entry.id !== record.id),
+                    record,
+                ]);
+            },
             engineSearchState: (): MockEngineSearchState => ({
                 pending: [...actors.values()]
                     .filter(({ pending }) => pending)
@@ -1056,6 +1106,7 @@ declare global {
             configure(scenario: MockScenario): void;
             emit(event: string, payload: unknown): void;
             invocations(): { command: string; args: unknown }[];
+            retainAccountCompletion(record: { id?: string; deletionPending?: boolean }): void;
             engineSearchState(): MockEngineSearchState;
             failEngineSearch(
                 engine: string,

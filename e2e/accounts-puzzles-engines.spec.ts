@@ -742,14 +742,25 @@ test("accounts-puzzles-engines: a linked account downloads privately and appends
                     pendingBatch: null,
                 },
             },
-            prepare_download: { result: "linked-account-download" },
-            download_chess_com_games: { result: { handle: publication, durability: "Durable" } },
-            append_collection_games: {
+            import_account_games: {
                 result: {
-                    appended: 5,
-                    committed: true,
-                    indexReady: true,
-                    durabilityConfirmed: true,
+                    id: "linked-account-import",
+                    request: {
+                        provider: "chesscom",
+                        account: "download-player",
+                        accountHandle: null,
+                        destination: { id: "private-account-staging" },
+                        pendingBatch: null,
+                        sinceMs: Number(collection.fetchSinceMs),
+                        target: { kind: "linked", collection: collection.id },
+                    },
+                    progressId: "linked-account-download",
+                    attempt: 1,
+                    importing: false,
+                    outcome: { state: "succeeded", result: { collectionNotice: false } },
+                    publication: { handle: publication, durability: "Durable" },
+                    committedDatabase: null,
+                    deletionPending: false,
                 },
             },
         },
@@ -762,7 +773,7 @@ test("accounts-puzzles-engines: a linked account downloads privately and appends
             const invoke = window.__TAURI_INTERNALS__.invoke;
             window.__TAURI_INTERNALS__.invoke = async (command, args) => {
                 const result = await invoke(command, args);
-                if (command === "append_collection_games") {
+                if (command === "import_account_games") {
                     // Publish the committed count before the caller starts its freshness rereads.
                     window.__E2E_TAURI__.configure({
                         commands: { ...commands, get_db_info: { result: updatedInfo } },
@@ -782,21 +793,30 @@ test("accounts-puzzles-engines: a linked account downloads privately and appends
     await expect(page.getByText("8 / 8", { exact: true })).toBeVisible();
     await expect(download).toBeEnabled();
     const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
-    expect(calls.filter(({ command }) => command === "append_collection_games")).toMatchObject([
-        { args: { collection: collection.id, source: publication } },
-    ]);
-    expect(calls.filter(({ command }) => command === "download_chess_com_games")).toMatchObject([
+    expect(calls.filter(({ command }) => command === "import_account_games")).toMatchObject([
         {
             args: {
-                destination: { id: "private-account-staging" },
-                sinceMs: Number(collection.fetchSinceMs),
-                jobId: "linked-account-download",
+                request: {
+                    provider: "chesscom",
+                    account: "download-player",
+                    accountHandle: null,
+                    destination: { id: "private-account-staging" },
+                    pendingBatch: null,
+                    sinceMs: Number(collection.fetchSinceMs),
+                    target: { kind: "linked", collection: collection.id },
+                },
             },
         },
     ]);
     expect(
         calls.filter(({ command }) =>
-            ["convert_pgn", "create_workspace_database", "delete_empty_games"].includes(command),
+            [
+                "append_collection_games",
+                "download_chess_com_games",
+                "convert_pgn",
+                "create_workspace_database",
+                "delete_empty_games",
+            ].includes(command),
         ),
     ).toEqual([]);
 });
@@ -831,18 +851,35 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
     await mockScenario({
         commands: {
             issue_download_destination: { result: { id: "download-destination" } },
-            prepare_download: { result: "chesscom-download-ticket" },
-            download_chess_com_games: {
+            create_workspace_database: { result: databaseHandle },
+            import_account_games: {
                 result: {
-                    handle: publicationHandle,
-                    durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+                    id: "uncertain-import",
+                    request: {
+                        provider: "chesscom",
+                        account: "download-player",
+                        accountHandle: null,
+                        destination: { id: "download-destination" },
+                        pendingBatch: null,
+                        sinceMs: null,
+                        target: {
+                            kind: "unlinked",
+                            database: databaseHandle,
+                            title: "download-player Chess.com",
+                        },
+                    },
+                    progressId: "uncertain-ticket",
+                    attempt: 1,
+                    importing: false,
+                    outcome: { state: "succeeded", result: { collectionNotice: false } },
+                    publication: {
+                        handle: publicationHandle,
+                        durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+                    },
+                    committedDatabase: databaseHandle,
+                    deletionPending: false,
                 },
             },
-            create_workspace_database: { result: databaseHandle },
-            start_progress: { result: { id: "chesscom_download-player", generation: "1" } },
-            convert_pgn: { result: null },
-            set_progress_state: { result: null },
-            delete_empty_games: { result: null },
         },
     });
     await page.goto("/accounts");
@@ -860,27 +897,144 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
     await expectNotificationSettled(notification);
 
     const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
-    expect(invocations.filter(({ command }) => command === "convert_pgn")).toEqual([
+    expect(invocations.filter(({ command }) => command === "import_account_games")).toMatchObject([
         {
-            command: "convert_pgn",
             args: {
-                progressId: expect.any(String),
-                files: [publicationHandle],
-                database: databaseHandle,
-                timestamp: null,
-                title: "download-player Chess.com",
-                description: null,
-                ticket: null,
+                request: {
+                    provider: "chesscom",
+                    account: "download-player",
+                    destination: { id: "download-destination" },
+                    pendingBatch: null,
+                    sinceMs: null,
+                    target: {
+                        kind: "unlinked",
+                        database: databaseHandle,
+                        title: "download-player Chess.com",
+                    },
+                },
             },
         },
     ]);
-    expect(invocations.filter(({ command }) => command === "delete_empty_games")).toEqual([
-        { command: "delete_empty_games", args: { file: databaseHandle } },
-    ]);
+    expect(
+        invocations.filter(({ command }) =>
+            ["download_chess_com_games", "convert_pgn", "delete_empty_games"].includes(command),
+        ),
+    ).toEqual([]);
     await capture("account-download-durability-uncertain");
     await expect(page).toHaveScreenshot("account-download-durability-uncertain.png", {
         fullPage: true,
     });
+});
+
+const retainedAccountRequest = {
+    provider: "chesscom",
+    account: "download-player",
+    accountHandle: null,
+    destination: { id: "retained-destination" },
+    pendingBatch: null,
+    sinceMs: null,
+    target: {
+        kind: "unlinked" as const,
+        database: { id: { id: "retained-database" }, kind: "database" as const },
+        title: "download-player Chess.com",
+    },
+};
+
+async function openDownloadPlayerAccount(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+) {
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "download-player",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    chessCom: {
+                        username: "download-player",
+                        stats: {
+                            chess_rapid: {
+                                last: { rating: 1500, date: 1791072000, rd: 50 },
+                                record: { win: 1, loss: 0, draw: 0 },
+                            },
+                        },
+                    },
+                },
+            ]),
+        );
+    });
+    await mockScenario({ commands: {} });
+    await page.goto("/accounts");
+}
+
+test("accounts-puzzles-engines: a retained running completion keeps download unavailable after reload", async ({
+    page,
+    mockScenario,
+}) => {
+    await openDownloadPlayerAccount(page, mockScenario);
+    const download = page.getByRole("button", { name: "Download games", exact: true });
+    await expect(download).toBeEnabled();
+    await page.evaluate((request) => {
+        window.__E2E_TAURI__.retainAccountCompletion({
+            id: "retained-running",
+            request,
+            progressId: "retained-ticket",
+            attempt: 1,
+            importing: false,
+            outcome: { state: "running" },
+            publication: null,
+            committedDatabase: null,
+            deletionPending: false,
+        });
+    }, retainedAccountRequest);
+    await preserveStorageForReload(page);
+    await expect(download).toBeDisabled();
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(calls.filter(({ command }) => command === "import_account_games")).toEqual([]);
+});
+
+test("accounts-puzzles-engines: a retained uncertain failure shows the do-not-retry notice after reload", async ({
+    page,
+    mockScenario,
+}) => {
+    await openDownloadPlayerAccount(page, mockScenario);
+    const download = page.getByRole("button", { name: "Download games", exact: true });
+    await expect(download).toBeEnabled();
+    await page.evaluate((request) => {
+        window.__E2E_TAURI__.retainAccountCompletion({
+            id: "retained-uncertain",
+            request,
+            progressId: "retained-ticket",
+            attempt: 1,
+            importing: false,
+            outcome: {
+                state: "failed",
+                result: {
+                    tag: "backend-error",
+                    category: "database",
+                    message: "import failed",
+                },
+            },
+            publication: {
+                handle: { id: { id: "retained-publication" }, kind: "fileWorkspace" },
+                durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+            },
+            committedDatabase: null,
+            deletionPending: false,
+        });
+    }, retainedAccountRequest);
+    await preserveStorageForReload(page);
+    await expect(
+        page.getByText(
+            "The games were downloaded, but the save could not be fully confirmed. Do not retry.",
+            { exact: true },
+        ),
+    ).toBeVisible();
+    await expect(page.getByText("import failed", { exact: true })).toBeVisible();
+    await expect(download).toBeEnabled();
+    const calls = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(calls.filter(({ command }) => command === "import_account_games")).toEqual([]);
 });
 
 async function seedUnerasableLegacySessions(page: Page, tokens: string[]) {

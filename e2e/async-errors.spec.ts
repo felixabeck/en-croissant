@@ -92,8 +92,6 @@ for (const scenario of [
             },
             { locale, service },
         );
-        const command =
-            service === "lichess" ? "download_lichess_games" : "download_chess_com_games";
         const error: ErrorPayload = {
             tag: "backend-error",
             category: status === 401 ? "authentication" : "network",
@@ -109,8 +107,10 @@ for (const scenario of [
                             : [],
                 },
                 issue_download_destination: { result: { id: "download-destination" } },
-                prepare_download: { result: "download-ticket" },
-                [command]: { delay: 120, error },
+                create_workspace_database: {
+                    result: { id: { id: "download-database" }, kind: "database" },
+                },
+                import_account_games: { delay: 120, error },
             },
         });
         await page.goto("/accounts");
@@ -131,8 +131,16 @@ for (const scenario of [
         await expectNotificationSettled(notification);
         await expect(download).toBeEnabled();
         const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
-        expect(invocations.filter(({ command: invoked }) => invoked === command)).toHaveLength(1);
-        expect(invocations.filter(({ command }) => command === "convert_pgn")).toEqual([]);
+        expect(
+            invocations.filter(({ command: invoked }) => invoked === "import_account_games"),
+        ).toHaveLength(1);
+        expect(
+            invocations.filter(({ command: invoked }) =>
+                ["download_lichess_games", "download_chess_com_games", "convert_pgn"].includes(
+                    invoked,
+                ),
+            ),
+        ).toEqual([]);
         await assertNoHorizontalOverflow();
         await assertNothingClipped(notification, { mode: "reachable" });
         await expect(guidance).toBeInViewport({ ratio: 1 });
