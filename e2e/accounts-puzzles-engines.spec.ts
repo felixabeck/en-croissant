@@ -682,6 +682,29 @@ for (const state of ["partial", "failed"] as const) {
     });
 }
 
+function seedDownloadPlayerSession(page: Page) {
+    return page.addInitScript(() => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "download-player",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    chessCom: {
+                        username: "download-player",
+                        stats: {
+                            chess_rapid: {
+                                last: { rating: 1500, date: 1791072000, rd: 50 },
+                                record: { win: 1, loss: 0, draw: 0 },
+                            },
+                        },
+                    },
+                },
+            ]),
+        );
+    });
+}
+
 test("accounts-puzzles-engines: a linked account downloads privately and appends once with refreshed accumulated counts", async ({
     page,
     mockScenario,
@@ -706,25 +729,8 @@ test("accounts-puzzles-engines: a linked account downloads privately and appends
             "file-workspace",
             JSON.stringify({ id: { id: "account-library" }, kind: "fileWorkspace" }),
         );
-        localStorage.setItem(
-            "sessions",
-            JSON.stringify([
-                {
-                    player: "download-player",
-                    updatedAt: Date.UTC(2026, 9, 4),
-                    chessCom: {
-                        username: "download-player",
-                        stats: {
-                            chess_rapid: {
-                                last: { rating: 1500, date: 1791072000, rd: 50 },
-                                record: { win: 1, loss: 0, draw: 0 },
-                            },
-                        },
-                    },
-                },
-            ]),
-        );
     });
+    await seedDownloadPlayerSession(page);
     const scenario = {
         commands: {
             linked_collections_supported: { result: true },
@@ -828,26 +834,7 @@ test("accounts-puzzles-engines: warns when a downloaded game file's save is not 
 }) => {
     const publicationHandle = { id: { id: "uncertain-chesscom-download" }, kind: "fileWorkspace" };
     const databaseHandle = { id: { id: "chesscom-import" }, kind: "database" };
-    await page.addInitScript(() => {
-        localStorage.setItem(
-            "sessions",
-            JSON.stringify([
-                {
-                    player: "download-player",
-                    updatedAt: Date.UTC(2026, 9, 4),
-                    chessCom: {
-                        username: "download-player",
-                        stats: {
-                            chess_rapid: {
-                                last: { rating: 1500, date: 1791072000, rd: 50 },
-                                record: { win: 1, loss: 0, draw: 0 },
-                            },
-                        },
-                    },
-                },
-            ]),
-        );
-    });
+    await seedDownloadPlayerSession(page);
     await mockScenario({
         commands: {
             issue_download_destination: { result: { id: "download-destination" } },
@@ -944,26 +931,7 @@ async function openDownloadPlayerAccount(
     page: Page,
     mockScenario: (scenario: MockScenario) => Promise<void>,
 ) {
-    await page.addInitScript(() => {
-        localStorage.setItem(
-            "sessions",
-            JSON.stringify([
-                {
-                    player: "download-player",
-                    updatedAt: Date.UTC(2026, 9, 4),
-                    chessCom: {
-                        username: "download-player",
-                        stats: {
-                            chess_rapid: {
-                                last: { rating: 1500, date: 1791072000, rd: 50 },
-                                record: { win: 1, loss: 0, draw: 0 },
-                            },
-                        },
-                    },
-                },
-            ]),
-        );
-    });
+    await seedDownloadPlayerSession(page);
     await mockScenario({ commands: {} });
     await page.goto("/accounts");
 }

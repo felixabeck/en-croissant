@@ -746,10 +746,6 @@ const tauriBootstrap = () => {
         JSON.parse(sessionStorage.getItem(accountCompletionKey) ?? "[]");
     const writeAccountCompletions = (records: { id?: string; deletionPending?: boolean }[]) =>
         sessionStorage.setItem(accountCompletionKey, JSON.stringify(records));
-    const scriptedAccountPending = () => {
-        const response = state.commands.pending_account_completions;
-        return response && Array.isArray(response.result) ? response : null;
-    };
 
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
@@ -854,29 +850,16 @@ const tauriBootstrap = () => {
             typeof result === "object" &&
             "id" in result
         ) {
-            const scripted = scriptedAccountPending();
-            if (scripted) {
-                if (!scripted.result.some((entry) => entry?.id === result.id))
-                    scripted.result.push(result);
-            } else {
-                const retained = readAccountCompletions();
-                if (!retained.some((entry) => entry?.id === result.id))
-                    writeAccountCompletions([...retained, result]);
-            }
+            const retained = readAccountCompletions();
+            if (!retained.some((entry) => entry?.id === result.id))
+                writeAccountCompletions([...retained, result]);
         }
-        if (command === "acknowledge_account_completion") {
-            const scripted = scriptedAccountPending();
-            if (scripted) {
-                scripted.result = scripted.result.filter(
-                    (entry) => entry?.id !== args.id || entry?.deletionPending,
-                );
-            } else if (!state.commands[command]) {
-                writeAccountCompletions(
-                    readAccountCompletions().filter(
-                        (entry) => entry.id !== args.id || entry.deletionPending,
-                    ),
-                );
-            }
+        if (command === "acknowledge_account_completion" && !state.commands[command]) {
+            writeAccountCompletions(
+                readAccountCompletions().filter(
+                    (entry) => entry.id !== args.id || entry.deletionPending,
+                ),
+            );
         }
         if (command === "install_engine_workflow" && response.engineInstall) {
             const records = readCompletions();
