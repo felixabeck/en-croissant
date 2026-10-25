@@ -2529,6 +2529,50 @@ mod tests {
             .expect("resolve writable PGN")
     }
 
+    fn poisoned_pgn_repository() -> PgnRepository {
+        let repository = PgnRepository::default();
+        let inner = Arc::clone(&repository.inner);
+        let poisoner = std::thread::spawn(move || {
+            let _guard = inner.lock().expect("repository lock");
+            panic!("poison the PGN repository lock");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(repository.inner.is_poisoned());
+        repository
+    }
+
+    #[test]
+    fn pgn_edit_lock_registry_refuses_file_admission_after_poison() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("poisoned-admission.pgn");
+        std::fs::write(&path, "[Event \"Lock fixture\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let identity = snapshot_for(&directory, &path).identity;
+        let repository = poisoned_pgn_repository();
+
+        let error = repository
+            .edit_lock(identity)
+            .err()
+            .expect("poisoned repository must refuse file admission");
+        assert!(
+            matches!(&error, Error::Conflict(message) if message == "PGN repository lock was poisoned"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn pgn_edit_lock_registry_refuses_collection_admission_after_poison() {
+        let repository = poisoned_pgn_repository();
+
+        let error = repository
+            .collection_edit_lock(uuid::Uuid::nil())
+            .err()
+            .expect("poisoned repository must refuse collection admission");
+        assert!(
+            matches!(&error, Error::Conflict(message) if message == "PGN repository lock was poisoned"),
+            "unexpected error: {error:?}"
+        );
+    }
+
     #[test]
     fn pgn_edit_lock_registry_preserves_identity_and_key_domains_across_clones() {
         let directory = tempfile::tempdir().expect("temporary directory");
