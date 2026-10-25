@@ -8424,8 +8424,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Broadening this fix to hide failed fill, or treating the portrait joiner as authority for failed-terminal behavior.
 * **Reason:** The pinned mandate concerns retained success. ProgressButton.test.tsx explicitly expects a failed-terminal fill and that contract is unchanged. The co-located f-20261001-05 concerns missing installed engine portraits, as its entry and EnginesPage.tsx show. The adopted plan incorrectly associated that unrelated joiner with failed-progress presentation, and that detail was copied into d-20261017-03. This corrects the factual premise without changing the chosen implementation or reversing a behavior decision.
 * **Reversal path:** Change failed-terminal presentation only through independently authorized failed-progress work with its own proof.
-* **Decided by:** Codex, autonomously under full auto in drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"dfd258e23a5c0c2b349fce2abf43e636644cb23c4cfbf2eceb19e10d5971e869","input_sha256":"b99d98a0880df55c0b72c1586267f1d1856f2271ed3c2ca1bd6477eef5465e48","kind":"mutation-receipt","operation":"8b6d07dee96bb5f7add109a4ec6cd9b42b90ca9972658ff36639a3bda354d241","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-04"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex, autonomously under full auto in drain 70cf6b9c-198c-470c-ab65-8ef53ff6ecc6 · **Superseded-by:** d-20261025-10
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"bf9a79c1b5e87648f08ad0acdac69505dd3fc0fae42cea59ed708389a852a71e","input_sha256":"b99d98a0880df55c0b72c1586267f1d1856f2271ed3c2ca1bd6477eef5465e48","kind":"mutation-receipt","operation":"8b6d07dee96bb5f7add109a4ec6cd9b42b90ca9972658ff36639a3bda354d241","options":{"section":null},"request_id_sha256":null,"results":["d-20261017-04"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261017-05 — Workspace cleanup renderer contract, choice 1
 
