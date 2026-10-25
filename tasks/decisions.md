@@ -9980,3 +9980,44 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Four regression tests against the current implementation retained 1, 1, 4 and 32 keys after all owners dropped. The shared lease passes them and 130 focused consumer tests. A Git reversal of only the fix reproduces the same failures with the tests intact. Reversal path: replace PGN's registry only with a mechanism that preserves exact identity keys, same-key exclusion, distinct-key progress, cancellation and zero entries after final drop. Keep the existing shared cleanup algorithm authoritative.
 * **Decided by:** Codex, authorized unattended independent lane, 2026-10-25. Plan authorship and arbitration share one context. Detection uses the same OpenAI model family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5874a116fcf468bab54080d2cfd0b437d63b0e1db6cec1fd8f0f7a1fa11c4c09","input_sha256":"38fa7e3a56a42d12e705a97448aa8a9d18a53a7607e776dc2ad5652892eb0eaa","kind":"mutation-receipt","operation":"55c662c68e4fa77785416557baa8c27d4d37e27ce8ad037007b090f7494c11d1","options":{"section":null},"request_id_sha256":null,"results":["d-20261025-17"],"target":"decisions-ledger","v":1} -->
+
+### d-20261025-13 — after a committed move, rename, trash, or restore, does an ordinary later failure roll the namespace change back?
+
+* **Question:** After a committed move, rename, trash, or restore, does an ordinary later failure roll the namespace change back, or surface as applied-despite-error?
+* **Governs:** f-20261006-03
+* **Chosen:** Identity-checked compensation of exactly the objects this call moved or created, then the original ordinary error.
+* **Rejected:** applied-despite-error. d-20261006-05 rejected that for create because a relist registers an unregistered object behind the user, and this finding's correction shows trash is not relisted at all and a failed restore leaves two records.
+* **Reason:** The user was told the operation failed while the files sat at the new path and the registry still named the old one. Compensation restores the pre-call bytes and registry id when every cleanup step succeeds, and reports OperationAndCleanup when it does not.
+* **Reversal path:** replace this compensation with an applied-despite-error return on these four commands.
+* **Decided by:** Grok, full auto, adopted reviewed plan tasks/plans/2026-10-25-post-rename-ordinary-failure.md · **Superseded-by:** -
+
+### d-20261025-14 — does parent-sync uncertainty of the committed rename itself get rolled back when a later ordinary error occurs?
+
+* **Question:** Does parent-sync uncertainty of the committed rename itself get rolled back when a later ordinary error occurs?
+* **Governs:** f-20261006-03
+* **Chosen:** Compensate the later ordinary error and keep it as the surfaced primary, including when the forward outcome was uncertain. Do not compensate uncertainty alone. An uncertain reverse is a cleanup failure.
+* **Rejected:** Leaving the files at the destination whenever the forward sync was uncertain, and replacing the later ordinary error with durability.
+* **Reason:** d-20261022-16 and commit_registry_with_baseline adopt an uncertain rebind, so reversing uncertainty alone would point the adopted registry at a path the files no longer occupy. d-20261022-17 and d-20261004-20 already keep a later ordinary error as the primary. The pair's existing rollback already treats an uncertain reverse as cleanup failure.
+* **Reversal path:** skip compensation when the forward AtomicFileOutcome was CommittedDurabilityUncertain.
+* **Decided by:** Grok, full auto, adopted reviewed plan tasks/plans/2026-10-25-post-rename-ordinary-failure.md · **Superseded-by:** -
+
+### d-20261025-15 — which primitive reverses a sidecar?
+
+* **Question:** Which primitive reverses a sidecar after a committed workspace rename?
+* **Governs:** f-20261006-03
+* **Chosen:** rename_entry_at with the identity this call currently owns, and remove_entry_at for a sidecar this call created. A failed identity check is OperationAndCleanup, not Conflict.
+* **Rejected:** rename_optional_regular_at, which checks kind only.
+* **Reason:** d-20261007-05 issues I4 and I6 require a reversal to move a sidecar back only while it is the object the rename moved, and an identity-checked primary reversal after substitution to be a cleanup failure. The existing primitives already return those outcomes. Removals keep their Result and WorkspaceRemoval. Reverses use require_durable at WorkspaceRename.
+* **Reversal path:** one new identity-checked sidecar rename in infra/fs.rs, with the same outcomes.
+* **Decided by:** Grok, full auto, adopted reviewed plan tasks/plans/2026-10-25-post-rename-ordinary-failure.md · **Superseded-by:** -
+
+### d-20261025-16 — does the renderer gain a category or a notice for failed rename compensation?
+
+* **Question:** Does the renderer gain a category or a notice for failed rename compensation?
+* **Governs:** f-20261006-03
+* **Chosen:** No new IPC variant and no new notice. Move and rename already relist operation-and-cleanup. Trash and restore confirm handlers refresh on that category and still show the error.
+* **Rejected:** Switching trash and restore to runAppliedMutationWithRefresh, which would treat applied-despite-error as success.
+* **Reason:** d-20261022-15 keeps AtomicFileOutcome. runDestructiveWithRefresh is shared with puzzles and databases, so it stays unchanged. f-20261006-07 owns the durability dialog. Successful compensation adds no Files refresh. Move and rename keep their existing conflict and not-found reconcile.
+* **Reversal path:** a reviewed renderer notice for OperationAndCleanup on these four commands.
+* **Decided by:** Grok, full auto, adopted reviewed plan tasks/plans/2026-10-25-post-rename-ordinary-failure.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":39,"effect_sha256":"a73cb28be9a4d0dac13f3d4e809dae9019a24d8ad1cc78a2cbb43632fa2f3d3b","input_sha256":"32f84fbf935c125a092c7e4e52eb5d74352d3d01c04150141beb646ed00f5ddf","kind":"mutation-receipt","operation":"2cda7e9b996561c937c3a4328bdfbc1cd91e77e1f89391549c5f97f0e550a7d6","options":{"section":null},"request_id_sha256":null,"results":["d-20261025-13","d-20261025-14","d-20261025-15","d-20261025-16"],"target":"decisions-ledger","v":1} -->
