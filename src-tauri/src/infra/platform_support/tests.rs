@@ -3519,6 +3519,7 @@ fn named_items<'a>(normalised: &'a str, keyword: &str) -> Vec<(usize, &'a str, u
 /// `workspace_bodies_are_single_ungated_delegations` needs precisely these three checks —
 /// a reappearing `#[cfg(not(unix))]` counterpart is a second declaration, and gating the
 /// survivor is a `cfg` on the one that is left — for bodies far too large to pin verbatim.
+/// `paired_rename` may carry exactly `#[cfg(test)]`. A platform `cfg` on it still fails.
 fn check_declaration(
     file: &str,
     source: &str,
