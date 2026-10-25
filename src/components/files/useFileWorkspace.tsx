@@ -2,7 +2,7 @@ import { libraryButtonProps } from "@/components/library/presentation";
 import { tauri } from "@/platform/tauri";
 import { listingFailure, rootFailureMessage } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
-import { runDestructiveWithRefresh } from "@/platform/errors";
+import { isOperationAndCleanup, runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import { Box, Button, Center, Group, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useAtom } from "jotai";
@@ -45,6 +45,25 @@ const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // below this width the shared create/rename/edit dialog goes full-screen.
 // The threshold follows the app font scale, measured in scaled root-em.
 const COMPACT_DIALOG_WIDTH_EM = 30;
+
+async function runTrashMutationWithRefresh(
+  run: () => Promise<void>,
+  refresh: () => void | Promise<void>,
+  refreshCleanup: () => unknown | Promise<unknown> = refresh,
+) {
+  try {
+    await runDestructiveWithRefresh(run, refresh);
+  } catch (cause) {
+    if (isOperationAndCleanup(cause)) {
+      try {
+        await refreshCleanup();
+      } catch {
+        // The listing cannot replace the operation and cleanup failure.
+      }
+    }
+    throw cause;
+  }
+}
 
 function findEntry(entries: Entry[], key: string, kind: Entry["type"]): UsableEntry | null {
   for (const entry of entries) {
@@ -658,7 +677,7 @@ export function useFileWorkspace(
             opened
             onClose={() => setDeleteTarget(null)}
             onConfirm={async () => {
-              await runDestructiveWithRefresh(
+              await runTrashMutationWithRefresh(
                 () => tauri.trashWorkspaceEntry(workspace!, deleteTarget.handle),
                 async () => {
                   setTrashed(deleteTarget);
@@ -666,6 +685,7 @@ export function useFileWorkspace(
                   setDeleteTarget(null);
                   await mutate();
                 },
+                mutate,
               );
             }}
           />
@@ -681,7 +701,7 @@ export function useFileWorkspace(
             opened
             onClose={() => setRestoreTarget(null)}
             onConfirm={async () => {
-              await runDestructiveWithRefresh(
+              await runTrashMutationWithRefresh(
                 () => tauri.restoreWorkspaceEntry(workspace!, restoreTarget.handle),
                 clearTrashAndRelist,
               );

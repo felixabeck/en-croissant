@@ -570,7 +570,7 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
-    static WORKSPACE_REBIND_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    static WORKSPACE_REBIND_PRE_REGISTER_HOOK: std::cell::RefCell<Option<WorkspaceRebindHook>> =
         const { std::cell::RefCell::new(None) };
     static WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -581,6 +581,9 @@ std::thread_local! {
 #[cfg(test)]
 type WorkspaceFileWriteHook =
     Box<dyn FnOnce(&crate::infra::inode_ownership::OwnedFile) -> Result<(), Error>>;
+
+#[cfg(test)]
+type WorkspaceRebindHook = Box<dyn FnOnce() -> Result<(), Error>>;
 
 #[cfg(all(test, unix))]
 std::thread_local! {
@@ -600,7 +603,14 @@ fn set_workspace_created_child_pre_register_hook(hook: Option<Box<dyn FnOnce()>>
 
 #[cfg(all(test, unix))]
 fn set_workspace_rebind_pre_register_hook(hook: Option<Box<dyn FnOnce()>>) {
-    WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
+    WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+        *slot.borrow_mut() = hook.map(|hook| {
+            Box::new(move || {
+                hook();
+                Ok(())
+            }) as WorkspaceRebindHook
+        });
+    });
 }
 
 #[cfg(all(test, unix))]
@@ -1185,6 +1195,7 @@ std::thread_local! {
     static PAIRED_RENAME_POST_PRIMARY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
 fn paired_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -1193,17 +1204,191 @@ fn paired_rename(
     paired_rename_inner(source, target_parent, target_leaf, None).map(|(outcome, _)| outcome)
 }
 
+#[derive(Debug)]
+enum WorkspaceSidecarDisposition {
+    Absent,
+    PrimaryAlias,
+    Moved {
+        identity: (u64, u64),
+        saved_bytes: Option<Vec<u8>>,
+    },
+    Created((u64, u64)),
+}
+
+fn replace_owned_workspace_metadata(
+    parent: &fs::File,
+    leaf: &OsStr,
+    identity: &mut (u64, u64),
+    bytes: &[u8],
+    precommit: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let installed = crate::infra::fs::atomic_replace_at_identified_with_precommit(
+        parent,
+        leaf,
+        || {
+            crate::infra::fs::assert_entry_identity(parent, leaf, *identity, false)?;
+            precommit()
+        },
+        |file| {
+            use std::io::Write;
+            file.write_all(bytes).map_err(Error::from)
+        },
+    )?;
+    *identity = installed.identity;
+    crate::infra::fs::require_durable(
+        installed.outcome,
+        crate::error::DurabilityStage::WorkspaceSidecarReplacement,
+    )
+}
+
+fn rewrite_moved_workspace_metadata(
+    source: &WorkspaceMutationTarget,
+    target_leaf: &OsStr,
+    disposition: &mut WorkspaceSidecarDisposition,
+    bytes: &[u8],
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    let WorkspaceSidecarDisposition::Moved {
+        identity,
+        saved_bytes,
+    } = disposition
+    else {
+        return Ok(());
+    };
+    let info = sidecar_leaf(target_leaf)?;
+    let mut file =
+        crate::infra::fs::open_regular_at(&source.parent, &info, RegularFileAccess::ReadOnly)?;
+    if crate::infra::path_authority::opened_file_identity(&file)? != *identity {
+        return Err(Error::Conflict(
+            "workspace sidecar changed before metadata rewrite".into(),
+        ));
+    }
+    let declared = file.metadata()?.len();
+    let original = crate::infra::fs::read_bounded_bytes(
+        &mut file,
+        declared,
+        MAX_WORKSPACE_METADATA_BYTES,
+        METADATA_LIMIT_MESSAGE,
+        || Ok(()),
+    )?;
+    let result = replace_owned_workspace_metadata(&source.parent, &info, identity, bytes, || {
+        crate::infra::fs::assert_entry_identity(
+            &source.parent,
+            target_leaf,
+            source.identity,
+            false,
+        )?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        Ok(())
+    });
+    if matches!(
+        &result,
+        Ok(()) | Err(Error::CommittedDurabilityUncertain(_))
+    ) {
+        *saved_bytes = Some(original);
+    }
+    result
+}
+
+fn reverse_workspace_rename(
+    source: &WorkspaceMutationTarget,
+    target_parent: &fs::File,
+    target_leaf: &OsStr,
+    disposition: &mut WorkspaceSidecarDisposition,
+    bucket: Option<(&fs::File, &OsStr, (u64, u64))>,
+) -> Result<(), Error> {
+    use crate::infra::fs::{
+        remove_empty_directory_at, remove_entry_at, rename_entry_at, require_durable,
+    };
+    let target_info = sidecar_leaf(target_leaf)?;
+    let restoration =
+        match disposition {
+            WorkspaceSidecarDisposition::Moved {
+                identity,
+                saved_bytes: Some(bytes),
+            } => replace_owned_workspace_metadata(
+                target_parent,
+                &target_info,
+                identity,
+                bytes,
+                || Ok(()),
+            ),
+            _ => Ok(()),
+        };
+    finish_committed_workspace_step(restoration, || {
+        let sidecar = match disposition {
+            WorkspaceSidecarDisposition::Moved { identity, .. } => rename_entry_at(
+                target_parent,
+                &target_info,
+                *identity,
+                false,
+                &source.parent,
+                &sidecar_leaf(&source.leaf)?,
+            )
+            .and_then(|outcome| {
+                require_durable(outcome, crate::error::DurabilityStage::WorkspaceRename)
+            }),
+            WorkspaceSidecarDisposition::Created(identity) => {
+                remove_entry_at(target_parent, &target_info, *identity, false)
+            }
+            _ => Ok(()),
+        };
+        finish_committed_workspace_step(sidecar, || {
+            let primary = rename_entry_at(
+                target_parent,
+                target_leaf,
+                source.identity,
+                source.is_dir,
+                &source.parent,
+                &source.leaf,
+            )
+            .and_then(|outcome| {
+                require_durable(outcome, crate::error::DurabilityStage::WorkspaceRename)
+            });
+            finish_committed_workspace_step(primary, || match bucket {
+                Some((parent, leaf, identity)) => remove_empty_directory_at(parent, leaf, identity),
+                None => Ok(()),
+            })
+        })
+    })
+}
+
+fn compensate_workspace_rename(
+    result: Result<(), Error>,
+    source: &WorkspaceMutationTarget,
+    target_parent: &fs::File,
+    target_leaf: &OsStr,
+    disposition: &mut WorkspaceSidecarDisposition,
+    bucket: Option<(&fs::File, &OsStr, (u64, u64))>,
+) -> Result<(), Error> {
+    match result {
+        Err(error) if !matches!(error, Error::CommittedDurabilityUncertain(_)) => {
+            Err(Error::with_cleanup(
+                error,
+                reverse_workspace_rename(source, target_parent, target_leaf, disposition, bucket),
+            ))
+        }
+        result => result,
+    }
+}
+
 /// Forward Files mutations own the destination sidecar even when there was none to move.
 /// Publication refusal belongs to the pair so only its retained primary object is reversed.
-/// The returned bool is true when metadata was newly published for an absent source sidecar,
-/// and false when the existing source sidecar was moved or its name aliases the owned primary.
 fn paired_workspace_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
     target_leaf: &OsStr,
     metadata_bytes: &[u8],
     cancellation: &CancellationToken,
-) -> Result<(crate::infra::fs::AtomicFileOutcome, bool), Error> {
+) -> Result<
+    (
+        crate::infra::fs::AtomicFileOutcome,
+        WorkspaceSidecarDisposition,
+    ),
+    Error,
+> {
     paired_rename_inner(
         source,
         target_parent,
@@ -1217,7 +1402,13 @@ fn paired_rename_inner(
     target_parent: &fs::File,
     target_leaf: &OsStr,
     forward_metadata: Option<(&[u8], &CancellationToken)>,
-) -> Result<(crate::infra::fs::AtomicFileOutcome, bool), Error> {
+) -> Result<
+    (
+        crate::infra::fs::AtomicFileOutcome,
+        WorkspaceSidecarDisposition,
+    ),
+    Error,
+> {
     use crate::infra::fs::{
         assert_entry_identity, atomic_create_workspace_sidecar_at, entry_identity_at,
         rename_entry_at, rename_optional_regular_at, rename_workspace_entry_at,
@@ -1249,12 +1440,27 @@ fn paired_rename_inner(
             hook();
         }
     });
-    let mut created_metadata = false;
+    let mut disposition = WorkspaceSidecarDisposition::Absent;
     let sidecar_result: Result<Option<AtomicFileOutcome>, Error> = (|| {
-        let sidecar =
-            rename_optional_regular_at(&source.parent, &source_info, target_parent, &target_info)?;
-        if sidecar.is_some() {
-            return Ok(sidecar);
+        let identity = match entry_identity_at(&source.parent, &source_info, false) {
+            Ok(identity) => Some(identity),
+            Err(error) if error.is_missing_entry() => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(identity) = identity {
+            assert_entry_identity(&source.parent, &source_info, identity, false)?;
+            if let Some(sidecar) = rename_optional_regular_at(
+                &source.parent,
+                &source_info,
+                target_parent,
+                &target_info,
+            )? {
+                disposition = WorkspaceSidecarDisposition::Moved {
+                    identity,
+                    saved_bytes: None,
+                };
+                return Ok(Some(sidecar));
+            }
         }
         let Some((bytes, cancellation)) = forward_metadata else {
             return Ok(None);
@@ -1273,6 +1479,7 @@ fn paired_rename_inner(
             )
         {
             precommit()?;
+            disposition = WorkspaceSidecarDisposition::PrimaryAlias;
             return Ok(None);
         }
         let installed =
@@ -1280,7 +1487,7 @@ fn paired_rename_inner(
                 use std::io::Write;
                 file.write_all(bytes).map_err(Error::from)
             })?;
-        created_metadata = true;
+        disposition = WorkspaceSidecarDisposition::Created(installed.identity);
         Ok(Some(installed.outcome))
     })();
     let sidecar = match sidecar_result {
@@ -1325,7 +1532,7 @@ fn paired_rename_inner(
         (AtomicFileOutcome::DurableCommit, Some(sidecar)) => sidecar,
         (primary, _) => primary,
     };
-    Ok((outcome, created_metadata))
+    Ok((outcome, disposition))
 }
 
 fn rebind_after_move(
@@ -1336,15 +1543,16 @@ fn rebind_after_move(
     target_parent_identity: (u64, u64),
 ) -> Result<(), Error> {
     pgn_path_authority.with_mut(|authority| {
+        #[cfg(test)]
+        WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook()?;
+            }
+            Ok::<(), Error>(())
+        })?;
         if source.is_dir {
             authority.rebase_workspace_entries(source.path(), target)
         } else {
-            #[cfg(test)]
-            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
-                }
-            });
             authority.rebind_workspace_entry(
                 entry,
                 target,
@@ -1794,14 +2002,17 @@ fn move_workspace_entry_blocking(
         return Err(Error::Cancellation);
     }
     let metadata_bytes = serialize_metadata(&WorkspaceMetadata::default())?;
-    let (outcome, _) = paired_workspace_rename(
+    let (outcome, mut disposition) = paired_workspace_rename(
         &source,
         destination.directory()?,
         &name,
         &metadata_bytes,
         cancellation,
     )?;
-    finish_workspace_rename(outcome, || {
+    let result = finish_workspace_rename(outcome, || {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         rebind_after_move(
             pgn_path_authority,
             &entry,
@@ -1809,7 +2020,15 @@ fn move_workspace_entry_blocking(
             &target,
             destination.identity,
         )
-    })
+    });
+    compensate_workspace_rename(
+        result,
+        &source,
+        destination.directory()?,
+        &name,
+        &mut disposition,
+        None,
+    )
 }
 
 #[tauri::command]
@@ -1891,29 +2110,24 @@ pub(crate) fn rename_workspace_file_blocking(
     }
     let target_parent_identity =
         crate::infra::path_authority::opened_file_identity(&source.parent)?;
-    let (outcome, created_metadata) = paired_workspace_rename(
+    let (outcome, mut disposition) = paired_workspace_rename(
         &source,
         &source.parent,
         &target_leaf,
         &metadata_bytes,
         cancellation,
     )?;
-    finish_workspace_rename(outcome, || {
-        let sidecar = if created_metadata {
-            Ok(())
-        } else {
-            replace_workspace_file_metadata(
-                &source.parent,
-                &target_leaf,
-                source.identity,
-                &metadata_bytes,
-                cancellation,
-            )
-            .and_then(|stage| match stage {
-                Some(stage) => Err(Error::CommittedDurabilityUncertain(stage)),
-                None => Ok(()),
-            })
-        };
+    let result = finish_workspace_rename(outcome, || {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let sidecar = rewrite_moved_workspace_metadata(
+            &source,
+            &target_leaf,
+            &mut disposition,
+            &metadata_bytes,
+            cancellation,
+        );
         finish_committed_workspace_step(sidecar, || {
             rebind_after_move(
                 pgn_path_authority,
@@ -1923,7 +2137,15 @@ pub(crate) fn rename_workspace_file_blocking(
                 target_parent_identity,
             )
         })
-    })
+    });
+    compensate_workspace_rename(
+        result,
+        &source,
+        &source.parent,
+        &target_leaf,
+        &mut disposition,
+        None,
+    )
 }
 
 #[tauri::command]
@@ -1981,23 +2203,30 @@ fn trash_entry(
     let trash_path = root.path().join(TRASH_DIRECTORY);
     let bucket = std::ffi::OsString::from(uuid::Uuid::new_v4().to_string());
     crate::infra::fs::create_dir_at(&trash_dir, &bucket)?;
+    let bucket_identity = crate::infra::fs::entry_identity_at(&trash_dir, &bucket, true)?;
     let bucket_path = trash_path.join(&bucket);
     let bucket_dir = crate::infra::fs::open_directory_at(&trash_dir, &bucket, true)?;
     let target = bucket_path.join(&source.leaf);
     let target_parent_identity = crate::infra::path_authority::opened_file_identity(&bucket_dir)?;
-    let outcome = if source.is_dir {
-        crate::infra::fs::rename_entry_at(
-            &source.parent,
-            &source.leaf,
-            source.identity,
-            true,
-            &bucket_dir,
-            &source.leaf,
-        )?
+    let (outcome, mut disposition) = if source.is_dir {
+        (
+            crate::infra::fs::rename_entry_at(
+                &source.parent,
+                &source.leaf,
+                source.identity,
+                true,
+                &bucket_dir,
+                &source.leaf,
+            )?,
+            WorkspaceSidecarDisposition::Absent,
+        )
     } else {
-        paired_rename(&source, &bucket_dir, &source.leaf)?
+        paired_rename_inner(&source, &bucket_dir, &source.leaf, None)?
     };
-    finish_workspace_rename(outcome, || {
+    let result = finish_workspace_rename(outcome, || {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         rebind_after_move(
             pgn_path_authority,
             entry,
@@ -2005,7 +2234,15 @@ fn trash_entry(
             &target,
             target_parent_identity,
         )
-    })
+    });
+    compensate_workspace_rename(
+        result,
+        &source,
+        &bucket_dir,
+        &source.leaf,
+        &mut disposition,
+        Some((&trash_dir, &bucket, bucket_identity)),
+    )
 }
 
 #[tauri::command]
@@ -2065,21 +2302,35 @@ fn restore_entry(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let outcome = if source.is_dir {
-        crate::infra::fs::rename_entry_at(
-            &source.parent,
-            &source.leaf,
-            source.identity,
-            true,
-            root.directory()?,
-            &source.leaf,
-        )?
+    let (outcome, mut disposition) = if source.is_dir {
+        (
+            crate::infra::fs::rename_entry_at(
+                &source.parent,
+                &source.leaf,
+                source.identity,
+                true,
+                root.directory()?,
+                &source.leaf,
+            )?,
+            WorkspaceSidecarDisposition::Absent,
+        )
     } else {
-        paired_rename(&source, root.directory()?, &source.leaf)?
+        paired_rename_inner(&source, root.directory()?, &source.leaf, None)?
     };
-    finish_workspace_rename(outcome, || {
+    let result = finish_workspace_rename(outcome, || {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         rebind_after_move(pgn_path_authority, entry, &source, &target, root.identity)
-    })
+    });
+    compensate_workspace_rename(
+        result,
+        &source,
+        root.directory()?,
+        &source.leaf,
+        &mut disposition,
+        None,
+    )
 }
 
 #[tauri::command]
@@ -6172,17 +6423,644 @@ mod tests {
         // The sidecar rewrite and registry rebind remain the two atomic Rename points.
         for rename in [0, 1] {
             let capture = crate::error::LogCaptureScope::start();
-            let (_directory, _state, root, _handle, result) =
-                rename_under_injector(Some(Arc::new(
-                    FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0).and(
-                        FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, rename),
-                    ),
-                )));
-            assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
-            assert!(root.join("after.pgn").is_file());
-            assert!(root.join("after.info").is_file());
+            let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
+                FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0).and(
+                    FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, rename),
+                ),
+            )));
+            let error = result.unwrap_err();
+            if rename == 0 {
+                assert!(matches!(error, Error::Io(_)), "{error:?}");
+                assert!(root.join("before.pgn").is_file());
+                assert!(root.join("before.info").is_file());
+                assert!(!root.join("after.pgn").exists());
+                assert!(!root.join("after.info").exists());
+                assert_eq!(
+                    mutation_target(&state.pgn_path_authority, &handle)
+                        .unwrap()
+                        .path(),
+                    root.join("before.pgn")
+                );
+            } else {
+                let Error::OperationAndCleanup { primary, .. } = &error else {
+                    panic!("{error:?}")
+                };
+                assert!(primary.contains("injected atomic-file fault"));
+                // The same fault also refuses the byte restoration before publication.
+                assert!(root.join("after.pgn").is_file());
+                assert!(root.join("after.info").is_file());
+            }
             assert!(capture.messages().iter().any(|line| line
                 .contains("workspace completion failed after uncertainty at workspace rename")));
+        }
+    }
+
+    #[test]
+    fn durable_workspace_renames_compensate_rebind_failure() {
+        for (operation, is_dir, missing_sidecar) in [
+            ("rename", false, false),
+            ("rename", false, true),
+            ("move", false, false),
+            ("move", false, true),
+            ("move", true, false),
+            ("move", true, true),
+            ("trash", false, false),
+            ("trash", false, true),
+            ("trash", true, true),
+            ("restore", false, false),
+            ("restore", false, true),
+            ("restore", true, true),
+        ] {
+            let (temporary, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let created = if is_dir {
+                create_named_directory(&state, &workspace, "before").unwrap()
+            } else {
+                create_named_text(&state, &workspace, "before", "*").unwrap()
+            };
+            let child = if is_dir {
+                let path = root.join("before/child.pgn");
+                fs::write(&path, b"child bytes").unwrap();
+                Some(registered_child_file(&state, &workspace, &path))
+            } else {
+                None
+            };
+            if !missing_sidecar {
+                fs::write(root.join("before.info"), b"original metadata bytes").unwrap();
+            } else if root.join("before.info").exists() {
+                fs::remove_file(root.join("before.info")).unwrap();
+            }
+            let (destination, parent) =
+                registered_child_directory(&state, &workspace, "destination");
+            if operation == "restore" {
+                trash_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &workspace,
+                    &created.handle,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            }
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let child_before = child
+                .as_ref()
+                .map(|handle| mutation_target(&state.pgn_path_authority, handle).unwrap());
+            let source_info = source.path().with_extension("info");
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|| {
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            let result = match operation {
+                "rename" => rename_workspace_file_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    "after".into(),
+                    WorkspaceMetadata::default(),
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &CancellationToken::new(),
+                ),
+                "move" => move_workspace_entry_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    parent,
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &CancellationToken::new(),
+                ),
+                "trash" => trash_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &workspace,
+                    &created.handle,
+                    &CancellationToken::new(),
+                ),
+                "restore" => restore_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &workspace,
+                    &created.handle,
+                    &CancellationToken::new(),
+                ),
+                _ => unreachable!(),
+            };
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error, Error::Io(_)),
+                "{operation} {is_dir} {missing_sidecar}: {error:?}"
+            );
+            let retained = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            assert_eq!(retained.path(), source.path());
+            assert_eq!(retained.identity, source.identity);
+            if let Some(child_before) = child_before {
+                let retained =
+                    mutation_target(&state.pgn_path_authority, child.as_ref().unwrap()).unwrap();
+                assert_eq!(retained.path(), child_before.path());
+                assert_eq!(retained.identity, child_before.identity);
+                assert_eq!(fs::read(retained.path()).unwrap(), b"child bytes");
+            } else {
+                assert_eq!(fs::read(source.path()).unwrap(), b"*");
+            }
+            if missing_sidecar {
+                assert!(!source_info.exists());
+            } else {
+                assert_eq!(fs::read(source_info).unwrap(), b"original metadata bytes");
+            }
+            assert!(!root.join("after.pgn").exists());
+            assert!(!root.join("after.info").exists());
+            assert!(!destination.join(&source.leaf).exists());
+            assert!(!destination
+                .join(sidecar_leaf(&source.leaf).unwrap())
+                .exists());
+            if operation == "trash" {
+                assert!(root.join(TRASH_DIRECTORY).is_dir());
+                assert_eq!(fs::read_dir(root.join(TRASH_DIRECTORY)).unwrap().count(), 0);
+            }
+            if operation == "restore" {
+                assert!(!root.join(&source.leaf).exists());
+            }
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[test]
+    fn rename_metadata_compensation_tracks_each_installed_identity() {
+        for uncertain_sync in [None, Some(2), Some(3)] {
+            let (temporary, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let original = b" { \"type\": \"game\", \"tags\": [\"saved\"] } \n";
+            fs::write(root.join("before.info"), original).unwrap();
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let old_identity = crate::infra::fs::entry_identity_at(
+                &source.parent,
+                OsStr::new("before.info"),
+                false,
+            )
+            .unwrap();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            let observed = root.clone();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    assert_ne!(fs::read(observed.join("after.info")).unwrap(), original);
+                    let parent =
+                        crate::infra::fs::open_parent_no_follow(&observed.join("after.info"))
+                            .unwrap();
+                    assert_ne!(
+                        crate::infra::fs::entry_identity_at(
+                            &parent,
+                            OsStr::new("after.info"),
+                            false
+                        )
+                        .unwrap(),
+                        old_identity
+                    );
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            let _injector = uncertain_sync.map(|index| {
+                crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                    FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, index),
+                ))
+            });
+            let error = rename_workspace_file_blocking(
+                workspace.clone(),
+                created.handle.clone(),
+                "after".into(),
+                WorkspaceMetadata::default(),
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            if uncertain_sync == Some(3) {
+                let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                    panic!("{error:?}")
+                };
+                assert!(primary.contains("ordinary rebind failure"));
+                assert!(cleanup.contains("workspace sidecar replacement"));
+            } else {
+                assert!(matches!(error, Error::Io(_)), "{error:?}");
+                assert!(error.diagnostic().contains("ordinary rebind failure"));
+            }
+            assert_eq!(fs::read(root.join("before.info")).unwrap(), original);
+            assert_eq!(fs::read(root.join("before.pgn")).unwrap(), b"*");
+            assert!(!root.join("after.info").exists());
+            assert!(!root.join("after.pgn").exists());
+            assert_eq!(
+                mutation_target(&state.pgn_path_authority, &created.handle)
+                    .unwrap()
+                    .identity,
+                source.identity
+            );
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_rename_compensation_leaves_substituted_objects() {
+        for object in ["primary", "moved", "created", "rewritten"] {
+            let (temporary, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            if object == "created" {
+                fs::remove_file(root.join("before.info")).unwrap();
+            }
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let (destination, parent) =
+                registered_child_directory(&state, &workspace, "destination");
+            let target = if object == "rewritten" {
+                root.join("after.pgn")
+            } else {
+                destination.join("before.pgn")
+            };
+            let substituted = if object == "primary" {
+                target.clone()
+            } else {
+                target.with_extension("info")
+            };
+            let parked = root.join("parked");
+            let observed = substituted.clone();
+            let parked_hook = parked.clone();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    fs::rename(&observed, &parked_hook).unwrap();
+                    fs::write(&observed, b"substitute bytes").unwrap();
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            let result = if object == "rewritten" {
+                rename_workspace_file_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    "after".into(),
+                    WorkspaceMetadata::default(),
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &CancellationToken::new(),
+                )
+            } else {
+                move_workspace_entry_blocking(
+                    workspace.clone(),
+                    created.handle.clone(),
+                    parent,
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &CancellationToken::new(),
+                )
+            };
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.category(),
+                ErrorCategory::OperationAndCleanup,
+                "{object}: {error:?}"
+            );
+            let Error::OperationAndCleanup { primary, .. } = &error else {
+                panic!("{error:?}")
+            };
+            assert!(primary.contains("ordinary rebind failure"));
+            assert_eq!(fs::read(&substituted).unwrap(), b"substitute bytes");
+            assert!(parked.is_file());
+            assert!(!source.path().exists());
+            if object != "primary" {
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(
+                        &crate::infra::fs::open_parent_no_follow(&target).unwrap(),
+                        target.file_name().unwrap(),
+                        false
+                    )
+                    .unwrap(),
+                    source.identity
+                );
+                assert!(!root.join("before.info").exists());
+            } else {
+                assert!(root.join("before.info").is_file());
+                assert_eq!(fs::read(&parked).unwrap(), b"*");
+            }
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[test]
+    fn sidecar_reverse_uncertainty_continues_primary_but_precommit_failure_stops_it() {
+        for precommit_failure in [false, true] {
+            let (temporary, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let (destination, parent) =
+                registered_child_directory(&state, &workspace, "destination");
+            let sidecar_identity = crate::infra::fs::entry_identity_at(
+                &source.parent,
+                OsStr::new("before.info"),
+                false,
+            )
+            .unwrap();
+            let observed = root.clone();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    if precommit_failure {
+                        fs::write(observed.join("before.info"), b"occupied source").unwrap();
+                    }
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            // Each cross-directory forward rename syncs both parents. The fifth sync belongs to the sidecar reverse.
+            let _injector = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+                FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 4),
+            ));
+            let error = move_workspace_entry_blocking(
+                workspace.clone(),
+                created.handle.clone(),
+                parent,
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::OperationAndCleanup);
+            let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                panic!("{error:?}")
+            };
+            assert!(primary.contains("ordinary rebind failure"));
+            if precommit_failure {
+                assert!(!source.path().exists());
+                let destination_parent = crate::infra::fs::open_directory_at(
+                    &source.parent,
+                    OsStr::new("destination"),
+                    true,
+                )
+                .unwrap();
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(&destination_parent, &source.leaf, false)
+                        .unwrap(),
+                    source.identity
+                );
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(
+                        &destination_parent,
+                        OsStr::new("before.info"),
+                        false
+                    )
+                    .unwrap(),
+                    sidecar_identity
+                );
+                assert_eq!(
+                    fs::read(root.join("before.info")).unwrap(),
+                    b"occupied source"
+                );
+            } else {
+                assert!(cleanup.contains("workspace rename"));
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(&source.parent, &source.leaf, false)
+                        .unwrap(),
+                    source.identity
+                );
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(
+                        &source.parent,
+                        OsStr::new("before.info"),
+                        false
+                    )
+                    .unwrap(),
+                    sidecar_identity
+                );
+                assert!(!destination.join("before.pgn").exists());
+                assert!(!destination.join("before.info").exists());
+            }
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_after_workspace_pair_compensates() {
+        let (temporary, state, workspace) = workspace_state();
+        let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let (destination, parent) = registered_child_directory(&state, &workspace, "destination");
+        let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        PAIRED_RENAME_POST_PRIMARY_HOOK
+            .with(|slot| *slot.borrow_mut() = Some(Box::new(move || cancel.cancel())));
+        let error = move_workspace_entry_blocking(
+            workspace.clone(),
+            created.handle.clone(),
+            parent,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &token,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation), "{error:?}");
+        assert_eq!(fs::read(root.join("before.pgn")).unwrap(), b"*");
+        assert!(root.join("before.info").is_file());
+        assert!(!destination.join("before.pgn").exists());
+        assert!(!destination.join("before.info").exists());
+        assert_eq!(
+            mutation_target(&state.pgn_path_authority, &created.handle)
+                .unwrap()
+                .path(),
+            root.join("before.pgn")
+        );
+        assert_eq!(
+            fs::read(temporary.path().join("registry.json")).unwrap(),
+            registry
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_sidecar_removal_uncertainty_continues_primary() {
+        for point in [
+            RemovalFaultPoint::BeforeTopOpen,
+            RemovalFaultPoint::ParentSync,
+        ] {
+            let (temporary, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            fs::remove_file(root.join("before.info")).unwrap();
+            let source = mutation_target(&state.pgn_path_authority, &created.handle).unwrap();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|| {
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            set_test_removal_injector(Some(Arc::new(RemovalFault(point))));
+            let result = rename_workspace_file_blocking(
+                workspace.clone(),
+                created.handle.clone(),
+                "after".into(),
+                WorkspaceMetadata::default(),
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            );
+            set_test_removal_injector(None);
+            let error = result.unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::OperationAndCleanup);
+            let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                panic!("{error:?}")
+            };
+            assert!(primary.contains("ordinary rebind failure"));
+            assert!(!root.join("before.info").exists());
+            if matches!(point, RemovalFaultPoint::ParentSync) {
+                assert!(cleanup.contains("workspace removal"));
+                assert!(!root.join("after.info").exists());
+                assert!(!root.join("after.pgn").exists());
+                assert_eq!(
+                    mutation_target(&state.pgn_path_authority, &created.handle)
+                        .unwrap()
+                        .identity,
+                    source.identity
+                );
+            } else {
+                assert!(root.join("after.info").is_file());
+                assert!(!source.path().exists());
+                assert_eq!(
+                    crate::infra::fs::entry_identity_at(
+                        &source.parent,
+                        OsStr::new("after.pgn"),
+                        false
+                    )
+                    .unwrap(),
+                    source.identity
+                );
+            }
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
+        }
+    }
+
+    #[test]
+    fn directory_alias_compensation_reverses_only_primary() {
+        let (temporary, state, workspace) = workspace_state();
+        let (source_path, created) = registered_child_directory(&state, &workspace, "games.info");
+        fs::write(source_path.join("child.pgn"), b"child bytes").unwrap();
+        let source = mutation_target(&state.pgn_path_authority, &created).unwrap();
+        let (destination, parent) = registered_child_directory(&state, &workspace, "destination");
+        let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+        WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(|| {
+                Err(Error::Io(Box::new(std::io::Error::other(
+                    "ordinary rebind failure",
+                ))))
+            }))
+        });
+        let error = move_workspace_entry_blocking(
+            workspace.clone(),
+            created.clone(),
+            parent,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+        assert_eq!(
+            fs::read(source_path.join("child.pgn")).unwrap(),
+            b"child bytes"
+        );
+        assert!(!destination.join("games.info").exists());
+        assert_eq!(
+            mutation_target(&state.pgn_path_authority, &created)
+                .unwrap()
+                .identity,
+            source.identity
+        );
+        assert_eq!(
+            fs::read(temporary.path().join("registry.json")).unwrap(),
+            registry
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trash_compensation_bucket_removal_failure_preserves_restored_entry() {
+        for point in [
+            RemovalFaultPoint::BeforeTopOpen,
+            RemovalFaultPoint::ParentSync,
+        ] {
+            let (temporary, state, workspace) = workspace_state();
+            let created = create_named_text(&state, &workspace, "before", "*").unwrap();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let registry = fs::read(temporary.path().join("registry.json")).unwrap();
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|| {
+                    Err(Error::Io(Box::new(std::io::Error::other(
+                        "ordinary rebind failure",
+                    ))))
+                }))
+            });
+            set_test_removal_injector(Some(Arc::new(RemovalFault(point))));
+            let result = trash_entry(
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &workspace,
+                &created.handle,
+                &CancellationToken::new(),
+            );
+            set_test_removal_injector(None);
+            let error = result.unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::OperationAndCleanup);
+            let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                panic!("{error:?}")
+            };
+            assert!(primary.contains("ordinary rebind failure"));
+            if matches!(point, RemovalFaultPoint::ParentSync) {
+                assert!(cleanup.contains("workspace removal"));
+            }
+            assert_eq!(fs::read(root.join("before.pgn")).unwrap(), b"*");
+            assert!(root.join("before.info").is_file());
+            assert!(root.join(TRASH_DIRECTORY).is_dir());
+            assert_eq!(
+                fs::read_dir(root.join(TRASH_DIRECTORY)).unwrap().count(),
+                if matches!(point, RemovalFaultPoint::BeforeTopOpen) {
+                    1
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                mutation_target(&state.pgn_path_authority, &created.handle)
+                    .unwrap()
+                    .path(),
+                root.join("before.pgn")
+            );
+            assert_eq!(
+                fs::read(temporary.path().join("registry.json")).unwrap(),
+                registry
+            );
         }
     }
 

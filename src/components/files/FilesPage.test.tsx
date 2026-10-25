@@ -1363,6 +1363,51 @@ test("trash and restore refresh after applied-despite-error", async () => {
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
 });
 
+test.each(["trash", "restore"] as const)(
+  "operation_and_cleanup_relists_trash_and_restore %s",
+  async (action) => {
+    if (action === "restore") {
+      await completeTrash();
+      click("Undo");
+    } else {
+      click("Select sample file");
+      click("Trash");
+    }
+    const command = action === "trash" ? mocks.trashWorkspaceEntry : mocks.restoreWorkspaceEntry;
+    mocks.mutate.mockClear();
+    command.mockRejectedValueOnce(commandError("operation-and-cleanup", "private cleanup failure"));
+    mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    await act(async () => button(action === "trash" ? "Common.Delete" : "Restore").click());
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "The action could not be completed. Please try again.",
+    );
+    expect(container.textContent).not.toContain("list unavailable");
+
+    // Assert the handlers' rejection even when the trash refresh unmounts its confirmation.
+    const confirmation = (
+      controller.dialogs.props.children as Array<
+        { props: { title: string; onConfirm: () => Promise<void> } } | null | false
+      >
+    ).find(
+      (child) =>
+        child && child.props.title === (action === "trash" ? "Move to trash" : "Restore file"),
+    );
+    if (!confirmation) throw new Error("Missing confirmation");
+    for (const category of ["operation-and-cleanup", "durability"] as const) {
+      const cause = commandError(category, "original mutation failure");
+      command.mockRejectedValueOnce(cause);
+      mocks.mutate.mockClear();
+      mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+      await act(async () => {
+        await expect(confirmation.props.onConfirm()).rejects.toBe(cause);
+      });
+      expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    }
+  },
+);
+
 test("failed collection selection notifies without changing the workspace", async () => {
   mocks.issueFileWorkspace.mockRejectedValueOnce(new Error("permission denied"));
 
