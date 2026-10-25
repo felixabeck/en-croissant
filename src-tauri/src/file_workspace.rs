@@ -5164,39 +5164,23 @@ mod tests {
                     );
                     set_test_atomic_file_injector(None);
                     let error = result.unwrap_err();
-                    if matches!(mode, MetadataEdit::Rename) && !existing {
-                        // An absent sidecar is published inside the pair. If its primary is
-                        // displaced before publication, exact-object compensation also refuses.
-                        let Error::OperationAndCleanup { primary, cleanup } = &error else {
-                            panic!("{mode:?}: {error}");
-                        };
-                        if change == "remove" {
-                            assert!(primary.starts_with("I/O failure:"), "{primary}");
-                        } else {
-                            assert!(primary.starts_with("Conflict:"), "{primary}");
-                        }
-                        assert!(!cleanup.is_empty());
-                        let payload = serde_json::to_value(&error).unwrap();
-                        assert_eq!(payload["category"], "operation-and-cleanup");
-                        assert!(payload.get("nameTaken").is_none());
-                    } else if matches!(mode, MetadataEdit::Rename) {
-                        // The sidecar returns before the primary reverse refuses the changed PGN.
+                    if matches!(mode, MetadataEdit::Rename) {
                         let Error::OperationAndCleanup { primary, cleanup } = &error else {
                             panic!("{mode:?} {change}: {error}");
                         };
                         if change == "remove" {
-                            assert!(
-                                primary.starts_with(
-                                    "I/O failure: No such file or directory (os error 2)"
-                                ),
-                                "{primary}"
-                            );
-                        } else {
+                            assert!(primary.starts_with("I/O failure:"), "{primary}");
+                            if existing {
+                                assert!(primary.contains("(os error 2)"), "{primary}");
+                            }
+                        } else if existing {
                             assert!(
                                 primary
                                     .starts_with("Conflict: workspace entry changed concurrently"),
                                 "{primary}"
                             );
+                        } else {
+                            assert!(primary.starts_with("Conflict:"), "{primary}");
                         }
                         assert!(!cleanup.is_empty());
                         let payload = serde_json::to_value(&error).unwrap();
