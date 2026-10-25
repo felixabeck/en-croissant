@@ -8938,6 +8938,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_download_install_error_publishes_sanitized_payload() {
+        use tauri_specta::Event as _;
+
+        const SECRET: &str = "fixture-install-secret";
+        struct InstallWriteFault(Arc<AtomicBool>);
+        impl crate::infra::fs::AtomicWriterInjector for InstallWriteFault {
+            fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == crate::infra::fs::AtomicFileFaultPoint::Write {
+                    self.0.store(true, Ordering::SeqCst);
+                    return Err(std::io::Error::other(format!(
+                        "/native/private/download.pgn token={SECRET}"
+                    )));
+                }
+                Ok(())
+            }
+        }
+
+        let _guard = ResetAtomicInjectorGuard;
+        let dir = tempdir().unwrap();
+        let (authority, destination, root) = test_downloads_destination(&dir);
+        let body = b"1. e4 c5 2. Nf3 d6";
+        let state = AppState {
+            http_transport: mock_successful_transport(body),
+            ..Default::default()
+        };
+        state.pgn_path_authority.install(authority).unwrap();
+        let app = test_progress_app();
+        let events = Arc::new(Mutex::new(Vec::<crate::progress::ProgressEvent>::new()));
+        let observed = events.clone();
+        let listener = crate::progress::ProgressEvent::listen(app.handle(), move |event| {
+            observed.lock().unwrap().push(event.payload);
+        });
+        let job = state.operations.prepare_download("test").unwrap();
+        let write_reached = Arc::new(AtomicBool::new(false));
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(InstallWriteFault(
+            write_reached.clone(),
+        ))));
+        let error = download_file_runtime(
+            "file-install-failure".into(),
+            "https://example.com/download.pgn".into(),
+            destination,
+            "download.pgn".into(),
+            app.handle(),
+            "test",
+            &state,
+            Some(body.len() as u32),
+            job,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(write_reached.load(Ordering::SeqCst));
+        let item = state
+            .progress_state
+            .get("file-install-failure")
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Failed);
+        assert_eq!(item.progress, 100.0);
+        assert!(item.finished);
+        let expected =
+            serde_json::json!({"tag":"backend-error", "category":"io", "message":"I/O failure"});
+        let failure = serde_json::to_value(item.failure.as_ref().unwrap()).unwrap();
+        assert_eq!(failure, expected);
+        assert!(!failure.to_string().contains(SECRET));
+        let mut command_wire = expected.clone();
+        command_wire["progressGeneration"] = serde_json::to_value(item.generation).unwrap();
+        assert_eq!(serde_json::to_value(error).unwrap(), command_wire);
+        let failed = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event.state == ProgressState::Failed)
+            .cloned()
+            .unwrap();
+        assert_eq!(failed.failure, item.failure);
+        assert_eq!(failed.generation, item.generation);
+        assert_eq!(failed.progress, 100.0);
+        assert_eq!(serde_json::to_value(&failed).unwrap()["failure"], expected);
+        assert!(!serde_json::to_string(&failed).unwrap().contains(SECRET));
+        assert!(!root.join("download.pgn").exists());
+        tauri::Listener::unlisten(app.handle(), listener);
+    }
+
+    #[tokio::test]
     async fn file_download_failure_publishes_sanitized_payload() {
         use tauri_specta::Event as _;
         let dir = tempdir().unwrap();
