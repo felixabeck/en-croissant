@@ -47,7 +47,7 @@ const EMPTY_PANE_MIN_HEIGHT = "12rem";
 const COMPACT_DIALOG_WIDTH_EM = 30;
 
 async function runTrashMutationWithRefresh(
-  run: () => Promise<void>,
+  run: () => Promise<unknown>,
   refresh: () => void | Promise<void>,
   refreshCleanup: () => unknown | Promise<unknown> = refresh,
 ) {
