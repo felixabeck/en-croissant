@@ -1085,44 +1085,51 @@ test.each(["read", "decode", "hydrate"] as const)(
     },
 );
 
-test.each(["read", "decode", "hydrate"] as const)(
-    "a full engines replacement repairs invalid content but preserves unreadable storage: %s",
+test("a full engines replacement does not write when the engines storage read throws", async () => {
+    const seeded = seedFailedEngines("read");
+    const run = await runtime();
+    await hydratePlayer(run);
+    const picker = await mountPicker(run);
+    picker.unmount();
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const receipt = await run.store.set(run.atoms.enginesAtom, [
+        { ...engine, legacyAssessment: { identity: "untrusted", ambiguous: false } },
+    ]);
+    expect(receipt.saved).toBe(false);
+    expect(writes).not.toHaveBeenCalled();
+    expect(seeded.readRaw("engines")).toBe(seeded.raw);
+    expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
+    expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+    expect(seeded.readRaw("game-player1-settings")).toBe(seeded.playerRaw);
+});
+
+test.each(["decode", "hydrate"] as const)(
+    "a full engines replacement repairs invalid engines content: %s",
     async (mode) => {
         const seeded = seedFailedEngines(mode);
         const run = await runtime();
         await hydratePlayer(run);
         const picker = await mountPicker(run);
         picker.unmount();
-        const writes = vi.spyOn(Storage.prototype, "setItem");
         const receipt = await run.store.set(run.atoms.enginesAtom, [
             { ...engine, legacyAssessment: { identity: "untrusted", ambiguous: false } },
         ]);
-        if (mode === "read") {
-            expect(receipt.saved).toBe(false);
-            expect(writes).not.toHaveBeenCalled();
-            expect(seeded.readRaw("engines")).toBe(seeded.raw);
-            expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
-            expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
-        } else {
-            expect(receipt).toMatchObject({ saved: true, synchronized: true });
-            const saved = decodeEngineOwnerValue(
-                decodeCompressedOrJson(seeded.readRaw("engines")!),
-            );
-            expect(saved).toEqual({
-                value: [{ ...engine, legacyAssessment: null }],
-                receipts: mode === "hydrate" ? seeded.receipts : {},
-            });
-            expect(run.store.get(run.atoms.enginesAtom)).toEqual(saved?.value);
-            expect(mocks.report).not.toHaveBeenCalled();
-            const added = { ...engine, id: "added-after-repair" };
-            const append = vi.fn((current: Engine[]) => [...current, added]);
-            expect((await run.store.set(run.atoms.enginesAtom, append)).saved).toBe(true);
-            expect(append).toHaveBeenCalledExactlyOnceWith(saved?.value);
-            expect(run.store.get(run.atoms.enginesAtom)).toMatchObject([
-                { id: engine.id },
-                { id: added.id },
-            ]);
-        }
+        expect(receipt).toMatchObject({ saved: true, synchronized: true });
+        const saved = decodeEngineOwnerValue(decodeCompressedOrJson(seeded.readRaw("engines")!));
+        expect(saved).toEqual({
+            value: [{ ...engine, legacyAssessment: null }],
+            receipts: mode === "hydrate" ? seeded.receipts : {},
+        });
+        expect(run.store.get(run.atoms.enginesAtom)).toEqual(saved?.value);
+        expect(mocks.report).not.toHaveBeenCalled();
+        const added = { ...engine, id: "added-after-repair" };
+        const append = vi.fn((current: Engine[]) => [...current, added]);
+        expect((await run.store.set(run.atoms.enginesAtom, append)).saved).toBe(true);
+        expect(append).toHaveBeenCalledExactlyOnceWith(saved?.value);
+        expect(run.store.get(run.atoms.enginesAtom)).toMatchObject([
+            { id: engine.id },
+            { id: added.id },
+        ]);
         expect(seeded.readRaw("game-player1-settings")).toBe(seeded.playerRaw);
     },
 );
