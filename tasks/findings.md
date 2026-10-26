@@ -15181,7 +15181,7 @@ Handled. delete_database now recovers a registered database whose primary is alr
 
 ### The Files Move dialog clips its destination Select at 320px / 200%, even full-screen
 
-* **ID:** f-20261007-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261007-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 14f3c3e5-96b4-42a6-9360-923747ebf378
 * **Where:** `src/components/files/FilesPage.tsx`, the Move `AppModal` and its "Destination folder" `Select` (data: `Files.CollectionRoot` plus every directory label of the collection).
 * **Defect:** at a 320px viewport and a 200% font scale (the `database-files` e2e project) the dialog's destination input cannot show its default value: `assertNothingClipped(dialog)` (`e2e/fixtures.ts`) reports `mantine-Select-input: x 271px > 220px` for "Collection root" in the default modal, and still 271px > 252px when the modal is made `fullScreen` below 30em (measured 2026-10-07 in the pinned container by the f-20260919-07 fix leaf, test "Move dialog fits 320px and selects a destination", not committed). Directory labels are user-chosen and unbounded, so any single-line Select clips a long one; the user cannot read which destination is selected.
@@ -15189,6 +15189,9 @@ Handled. delete_database now recovers a registered database whose primary is alr
 * **Why it matters:** `d-20260919-12` holds the Files page to the 320px / 200% layout discipline; this dialog is the one Files form that still fails it, and the e2e suite has no assertion over it.
 * **Related:** `f-20260919-07` (its push review, tests lens R2-3, asked for the browser assertion that exposed this; that change makes only the edit/create/rename dialog full-screen below 30em, constant `COMPACT_DIALOG_QUERY`), `f-20260829-02` (handled; the 320px / 200% clipping class and `assertNothingClipped`).
 * **Found by:** the f-20260919-07 cumulative diff review, closure round 2, 2026-10-07.
+
+Handled. The Move dialog lists each destination as a wrapping radio, so an unbroken directory name stays readable at 320px and 200%. Opening Move still selects the collection root. Decision d-20261026-12. Product commit 0f905b92. The unconditional radio assertion is b9fdd90d. The ellipsis rejection is d7f3b884. The decision commit is 3da06e88. Handoff tasks/handoffs/2026-10-26-f-20261007-04-review.md records review through d7f3b884 and does not claim final gates. The pinned container passed 31 database-files tests after d7f3b884, including the Move wrap test. An earlier database-files and async-errors run passed 87. pnpm verify:app was not run. Drag-move, the file-type Select, and locale catalogues were not changed. Drain session 06ca0603-4f34-444e-8832-d5fc751403b7, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"144c080255ef9d4b9882344766083413cef375128758edebefca4d6f95cc46db","header_sha256":"8e73e9495f3f7101bca3b7525863d3b53307bbc72973bc5d0bb22e513f4d7b9b","header_status":"handled","input_sha256":"199e0b97e69a699d3e81b10f23d2a9b961f93578626d44fe401fafa2221ac189","kind":"mutation-receipt","operation":"3a871ca56aa9ec6fe12a704d29a40932c6cf0865eb19a074c9e87ca4cd65c54e","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-04"],"target":"f-20261007-04","v":1} -->
 
 ---
 
