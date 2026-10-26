@@ -75,7 +75,7 @@ const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 const POOL_WORKER_THREADS: usize = 3;
 // Ordinary lazy pools need the same establishment budget in every build.
 const POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const SHORT_POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 // Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
 // contended write completes rather than tripping retirement.
@@ -302,6 +302,44 @@ struct PoolBarrier {
     retire_wait: Duration,
 }
 
+#[derive(Debug)]
+enum BoundPoolError {
+    Admission(Error),
+    Binding(Error),
+    Establish(diesel::ConnectionError),
+    Customize(diesel::r2d2::Error),
+    Validate(diesel::result::Error),
+}
+
+impl std::fmt::Display for BoundPoolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission(error) | Self::Binding(error) => {
+                formatter.write_str(&error.diagnostic())
+            }
+            Self::Establish(error) => error.fmt(formatter),
+            Self::Customize(error) => error.fmt(formatter),
+            Self::Validate(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BoundPoolError {}
+
+// Keep the existing pooled error category and renderer-safe payload while retaining
+// the concrete query error or native connection diagnostic.
+fn pooled_diesel_error(error: diesel::r2d2::Error) -> Error {
+    match error {
+        diesel::r2d2::Error::QueryError(error) => Error::from(error),
+        diesel::r2d2::Error::ConnectionError(error) => {
+            Error::from(diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::Unknown,
+                Box::new(error.to_string()),
+            ))
+        }
+    }
+}
+
 impl std::fmt::Debug for BoundConnectionManager {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -313,7 +351,7 @@ impl std::fmt::Debug for BoundConnectionManager {
 
 impl ManageConnection for BoundConnectionManager {
     type Connection = BoundSqliteConnection;
-    type Error = diesel::r2d2::Error;
+    type Error = BoundPoolError;
 
     fn connect(&self) -> Result<Self::Connection, Self::Error> {
         #[cfg(test)]
@@ -321,14 +359,12 @@ impl ManageConnection for BoundConnectionManager {
             run_test_hook(TestHook::WorkerBeforeAdmission, &barrier.key.path);
         }
         let ticket = self.connections.enter().ok_or_else(|| {
-            diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
-                "database pool is retiring".into(),
-            ))
+            BoundPoolError::Admission(Error::Conflict("database pool is retiring".into()))
         })?;
         if self.connections.snapshot().closed {
-            return Err(diesel::r2d2::Error::ConnectionError(
-                diesel::ConnectionError::BadConnection("database pool is retiring".into()),
-            ));
+            return Err(BoundPoolError::Admission(Error::Conflict(
+                "database pool is retiring".into(),
+            )));
         }
         #[cfg(test)]
         if let Some(barrier) = &self.barrier {
@@ -354,27 +390,22 @@ impl ManageConnection for BoundConnectionManager {
                 )
             })
             .transpose()
-            .map_err(|error| {
-                diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
-                    error.to_string(),
-                ))
-            })?;
+            .map_err(BoundPoolError::Admission)?;
         if self.connections.snapshot().closed {
-            return Err(diesel::r2d2::Error::ConnectionError(
-                diesel::ConnectionError::BadConnection("database pool is retiring".into()),
-            ));
+            return Err(BoundPoolError::Admission(Error::Conflict(
+                "database pool is retiring".into(),
+            )));
         }
         #[cfg(test)]
         if let Some(barrier) = &self.barrier {
             run_test_hook(TestHook::WorkerBeforeEstablish, &barrier.key.path);
         }
-        let binding = self.database.connection_lifetime().map_err(|error| {
-            diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
-                error.diagnostic(),
-            ))
-        })?;
+        let binding = self
+            .database
+            .connection_lifetime()
+            .map_err(BoundPoolError::Binding)?;
         let connection =
-            SqliteConnection::establish(&self.uri).map_err(diesel::r2d2::Error::ConnectionError)?;
+            SqliteConnection::establish(&self.uri).map_err(BoundPoolError::Establish)?;
         Ok(BoundSqliteConnection {
             connection: binding.wrap(connection),
             _connection: ticket,
@@ -383,7 +414,7 @@ impl ManageConnection for BoundConnectionManager {
 
     fn is_valid(&self, connection: &mut Self::Connection) -> Result<(), Self::Error> {
         <SqliteConnection as diesel::r2d2::R2D2Connection>::ping(&mut connection.connection)
-            .map_err(diesel::r2d2::Error::QueryError)
+            .map_err(BoundPoolError::Validate)
     }
 
     fn has_broken(&self, connection: &mut Self::Connection) -> bool {
@@ -394,15 +425,12 @@ impl ManageConnection for BoundConnectionManager {
     }
 }
 
-impl CustomizeConnection<BoundSqliteConnection, diesel::r2d2::Error> for ConnectionOptions {
-    fn on_acquire(
-        &self,
-        connection: &mut BoundSqliteConnection,
-    ) -> Result<(), diesel::r2d2::Error> {
+impl CustomizeConnection<BoundSqliteConnection, BoundPoolError> for ConnectionOptions {
+    fn on_acquire(&self, connection: &mut BoundSqliteConnection) -> Result<(), BoundPoolError> {
         <ConnectionOptions as CustomizeConnection<SqliteConnection, diesel::r2d2::Error>>::on_acquire(
             self,
             &mut connection.connection,
-        )
+        ).map_err(BoundPoolError::Customize)
     }
 }
 /// A pooled connection cannot outlive the repository lifecycle lease which
@@ -468,13 +496,25 @@ struct DatabaseEntry {
 struct PoolWake {
     generation: ParkingMutex<u64>,
     changed: ParkingCondvar,
-    failure: ParkingMutex<Option<Arc<Error>>>,
+    failure: ParkingMutex<PoolFailureState>,
+}
+
+#[derive(Debug, Default)]
+struct PoolFailureState {
+    latest: Option<CachedPoolFailure>,
+    reported: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CachedPoolFailure {
+    error: Arc<Error>,
+    native_open: bool,
 }
 
 #[derive(Debug)]
 struct PoolEvents {
     wake: Arc<PoolWake>,
-    leaf: std::ffi::OsString,
+    path: PathBuf,
 }
 
 impl PoolWake {
@@ -494,7 +534,7 @@ impl PoolWake {
 
 impl diesel::r2d2::HandleEvent for PoolEvents {
     fn handle_acquire(&self, _: diesel::r2d2::event::AcquireEvent) {
-        self.wake.failure.lock().take();
+        *self.wake.failure.lock() = PoolFailureState::default();
         self.wake.notify();
     }
 
@@ -503,19 +543,31 @@ impl diesel::r2d2::HandleEvent for PoolEvents {
     }
 }
 
-impl diesel::r2d2::HandleError<diesel::r2d2::Error> for PoolEvents {
-    fn handle_error(&self, error: diesel::r2d2::Error) {
-        log::error!("database pool error for {:?}: {error}", self.leaf);
+impl diesel::r2d2::HandleError<BoundPoolError> for PoolEvents {
+    fn handle_error(&self, error: BoundPoolError) {
+        let mut failure = self.wake.failure.lock();
+        if !failure.reported {
+            log::error!("database pool error for {:?}: {error}", self.path);
+            failure.reported = true;
+        }
         let error = match error {
-            diesel::r2d2::Error::QueryError(error) => Error::from(error),
-            diesel::r2d2::Error::ConnectionError(error) => {
-                Error::from(diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::Unknown,
-                    Box::new(error.to_string()),
-                ))
-            }
+            // Worker admission belongs to that worker. Callers observe their own barriers.
+            BoundPoolError::Admission(_) => None,
+            BoundPoolError::Binding(error) => Some((error, true)),
+            BoundPoolError::Establish(error) => Some((
+                pooled_diesel_error(diesel::r2d2::Error::ConnectionError(error)),
+                true,
+            )),
+            BoundPoolError::Customize(error) => Some((pooled_diesel_error(error), false)),
+            BoundPoolError::Validate(error) => Some((Error::from(error), false)),
         };
-        *self.wake.failure.lock() = Some(Arc::new(error));
+        if let Some((error, native_open)) = error {
+            failure.latest = Some(CachedPoolFailure {
+                error: Arc::new(error),
+                native_open,
+            });
+        }
+        drop(failure);
         self.wake.notify();
     }
 }
@@ -784,7 +836,7 @@ impl DatabaseRepository {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_pool_connection_timeout(pool_connection_timeout: Duration) -> Self {
         Self {
             pool_connection_timeout,
@@ -1442,11 +1494,11 @@ impl DatabaseRepository {
                 .connection_customizer(Box::new(ConnectionOptions))
                 .event_handler(Box::new(PoolEvents {
                     wake: Arc::clone(&pool_wake),
-                    leaf: target.leaf().to_os_string(),
+                    path: target.path().to_path_buf(),
                 }))
                 .error_handler(Box::new(PoolEvents {
                     wake: Arc::clone(&pool_wake),
-                    leaf: target.leaf().to_os_string(),
+                    path: target.path().to_path_buf(),
                 }))
                 .build(BoundConnectionManager {
                     database: bound.clone(),
@@ -2388,8 +2440,7 @@ impl DatabaseEntry {
         let mut requested = false;
         let mut pool_failure = None;
         loop {
-            // Each caller observes its own barrier, token and absolute deadline. Manager errors
-            // transported as text by r2d2 never carry another caller's cancellation into this one.
+            // Each caller observes its own barrier, token and absolute deadline.
             drop(predecessor_admission(
                 state,
                 key,
@@ -2398,6 +2449,9 @@ impl DatabaseEntry {
                 cancellation,
             )?);
             let generation = *self.pool_wake.generation.lock();
+            // Sample before availability. AcquireEvent clears stale failure before r2d2
+            // inserts its connection, so it is not itself an availability notification.
+            let failure = self.pool_wake.failure.lock().latest.clone();
             let remaining = pool_deadline.saturating_duration_since(Instant::now());
             #[cfg(test)]
             if Instant::now() >= deadline && remaining > RETIRE_CANCELLATION_POLL {
@@ -2428,7 +2482,7 @@ impl DatabaseEntry {
                 )?;
                 return Ok(connection);
             }
-            if remaining.is_zero() {
+            if failure.as_ref().is_some_and(|failure| failure.native_open) || remaining.is_zero() {
                 let _admission = predecessor_admission(
                     state,
                     key,
@@ -2436,11 +2490,17 @@ impl DatabaseEntry {
                     deadline,
                     cancellation,
                 )?;
-                // These are ordinary factory diagnostics, never operation-scoped cancellation
-                // or predecessor outcomes. Each caller obtains those from its own barrier.
-                if let Some(error) = self.pool_wake.failure.lock().clone() {
-                    return Err(Error::Shared(error));
+                // A success or newer failure since the availability observation requires
+                // another observation. There is no atomic publication seam across r2d2.
+                let current = self.pool_wake.failure.lock();
+                match (failure, current.latest.as_ref()) {
+                    (Some(failure), Some(latest)) if Arc::ptr_eq(&latest.error, &failure.error) => {
+                        return Err(Error::Shared(failure.error));
+                    }
+                    (None, None) => {}
+                    _ => continue,
                 }
+                drop(current);
                 return Err(pool_failure.take().map(Error::from).unwrap_or_else(|| {
                     Error::Conflict("database connection acquisition timed out".into())
                 }));
@@ -4104,7 +4164,7 @@ mod retirement_tests {
                     entry.pool.read().as_ref().unwrap().state(),
                     entry.connections.snapshot(),
                     state.retired.len(),
-                    entry.pool_wake.failure.lock().as_ref().map(|error| error.diagnostic())
+                    entry.pool_wake.failure.lock().latest.as_ref().map(|failure| failure.error.diagnostic())
                 );
             }
             healthy_outcome.unwrap();
@@ -8163,7 +8223,7 @@ mod bound_sqlite_witnesses {
 
     #[test]
     fn pool_refusal_counter_maps_r2d2_failure_to_conflict_and_retires_entry() {
-        const SHORT_BUDGET_COMPLETION_BOUND: Duration = Duration::from_secs(10);
+        const PROMPT_OPEN_COMPLETION_BOUND: Duration = Duration::from_secs(10);
 
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());
@@ -8172,8 +8232,8 @@ mod bound_sqlite_witnesses {
         seed_database(&path, 1, "WAL");
         seed_database(&b_path, 9, "DELETE");
         let target = test_target(&path);
-        let repository =
-            DatabaseRepository::with_pool_connection_timeout(SHORT_POOL_CONNECTION_TIMEOUT);
+        let repository = DatabaseRepository::default();
+        assert_eq!(repository.pool_connection_timeout, Duration::from_secs(30));
         let leaf_swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path, &b_path)));
         let before_pool = Arc::clone(&leaf_swap);
         let after_failure = Arc::clone(&leaf_swap);
@@ -8198,11 +8258,12 @@ mod bound_sqlite_witnesses {
         let result = repository.initialization_connection(&target, None);
         let elapsed = started.elapsed();
         assert!(
-            elapsed < SHORT_BUDGET_COMPLETION_BOUND,
-            "short-budget failing acquisition took {elapsed:?}, exceeding {SHORT_BUDGET_COMPLETION_BOUND:?} completion bound"
+            elapsed < PROMPT_OPEN_COMPLETION_BOUND,
+            "IDENTITY_NATIVE_OPEN_NOT_PROMPT: acquisition took {elapsed:?}, exceeding {PROMPT_OPEN_COMPLETION_BOUND:?} under the production budget"
         );
         eprintln!(
-            "short-budget failing acquisition completed in {elapsed:?} with {SHORT_POOL_CONNECTION_TIMEOUT:?} pool budget and {SHORT_BUDGET_COMPLETION_BOUND:?} completion bound"
+            "identity native open returned in {elapsed:?} with {:?} pool budget",
+            repository.pool_connection_timeout
         );
         assert!(matches!(
             result,
@@ -8214,6 +8275,286 @@ mod bound_sqlite_witnesses {
         assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
         assert_eq!(journal_mode(&b_path), "delete");
         leaf_swap.lock().unwrap().restore();
+    }
+
+    // Unix permissions give a real native open failure without changing the bound identity.
+    // The fixture requires the unprivileged test user, as do the permission witnesses below.
+    #[cfg(unix)]
+    #[test]
+    fn non_identity_native_open_is_prompt_and_pool_recovers() {
+        use std::os::unix::fs::PermissionsExt;
+        const PROMPT_OPEN_COMPLETION_BOUND: Duration = Duration::from_secs(10);
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("native-permission.db3");
+        seed_database(&path, 17, "WAL");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (key, entry, _) = repository.entry(&target, None).unwrap();
+        assert_eq!(repository.pool_connection_timeout, Duration::from_secs(30));
+        let deny_path = path.clone();
+        let restore_path = path.clone();
+        let observed_failure = Arc::new(Mutex::new(None));
+        let capture_failure = Arc::clone(&observed_failure);
+        let failed_entry = Arc::clone(&entry);
+        let _hooks = configure_test_hooks(&path, |hooks| {
+            hooks.before_pool_get = Some(Box::new(move || {
+                fs::set_permissions(&deny_path, fs::Permissions::from_mode(0o000)).unwrap();
+            }));
+            hooks.pool_get_failed = Some(Box::new(move || {
+                *capture_failure.lock().unwrap() =
+                    failed_entry.pool_wake.failure.lock().latest.clone();
+                fs::set_permissions(&restore_path, fs::Permissions::from_mode(0o600)).unwrap();
+            }));
+        });
+        let started = Instant::now();
+        let result = repository.initialization_connection(&target, None);
+        let elapsed = started.elapsed();
+        // Restore even if the boundary is broken, before any assertion or worker cleanup.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        eprintln!(
+            "non-identity native acquisition outcome: {:?}",
+            result.as_ref().map(|_| ())
+        );
+        assert!(
+            elapsed < PROMPT_OPEN_COMPLETION_BOUND,
+            "NON_IDENTITY_NATIVE_OPEN_NOT_PROMPT: acquisition took {elapsed:?} under the production budget"
+        );
+        assert!(
+            matches!(&result, Err(error) if matches!(error.unlabelled(),
+                Error::Diesel(source) if matches!(source.as_ref(), diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::Unknown, info
+                ) if info.message() == "Unable to open the database file")
+            )),
+            "native open retains concrete pooled SQLite diagnostic"
+        );
+        let failure = observed_failure.lock().unwrap().take().unwrap();
+        assert!(
+            failure.native_open,
+            "real failure must originate in native establishment"
+        );
+        assert_eq!(
+            entry.bound.refusal_count(),
+            0,
+            "permission is not identity refusal"
+        );
+        assert_eq!(target.probe_current().unwrap().identity, target.identity());
+        assert!(Arc::ptr_eq(
+            &repository.state.lock().unwrap().entries[&key],
+            &entry
+        ));
+        drop(_hooks);
+
+        // The existing r2d2 retry recovers this very pool without another controller.
+        let deadline = Instant::now() + PROMPT_OPEN_COMPLETION_BOUND;
+        while entry.pool.read().as_ref().unwrap().state().idle_connections == 0 {
+            let generation = *entry.pool_wake.generation.lock();
+            assert!(
+                Instant::now() < deadline,
+                "native-open pool did not recover"
+            );
+            entry
+                .pool_wake
+                .wait_since(generation, RETIRE_CANCELLATION_POLL);
+        }
+        assert!(
+            entry.pool_wake.failure.lock().latest.is_none(),
+            "success clears stale native failure"
+        );
+        let mut recovered = repository.initialization_connection(&target, None).unwrap();
+        assert_eq!(read_data_revision(&mut recovered).unwrap(), 17);
+        eprintln!(
+            "non-identity native open returned in {elapsed:?} with {:?} pool budget and recovered",
+            repository.pool_connection_timeout
+        );
+    }
+
+    #[test]
+    fn writer_customization_failure_retries_for_the_same_waiting_caller() {
+        use std::sync::mpsc;
+        const COMPLETION_BOUND: Duration = Duration::from_secs(10);
+        const FAILURE_OBSERVATION_WAIT: Duration = Duration::from_millis(200);
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("writer-customization.db3");
+        seed_database(&path, 23, "DELETE");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (_, entry, _) = repository.entry(&target, None).unwrap();
+        assert_eq!(repository.pool_connection_timeout, Duration::from_secs(30));
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let (done, result) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                done.send(
+                    repository
+                        .initialization_connection(&target, None)
+                        .map(|_| ()),
+                )
+                .unwrap();
+            });
+            let deadline = Instant::now() + COMPLETION_BOUND;
+            let observed = loop {
+                let generation = *entry.pool_wake.generation.lock();
+                if let Some(failure) = entry.pool_wake.failure.lock().latest.clone() {
+                    break Some(failure);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                entry
+                    .pool_wake
+                    .wait_since(generation, RETIRE_CANCELLATION_POLL);
+            };
+            let early = result.recv_timeout(FAILURE_OBSERVATION_WAIT);
+            // Release before asserting, including the deliberately terminal-customization control.
+            writer.execute_batch("ROLLBACK;").unwrap();
+            let failure = observed.expect("writer must cause a real pool setup failure");
+            assert!(
+                !failure.native_open,
+                "writer error is customization, not establishment"
+            );
+            assert!(
+                matches!(failure.error.unlabelled(), Error::Diesel(source) if matches!(
+                    source.as_ref(), diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown, info
+                    ) if info.message() == "database is locked"
+                )),
+                "writer must exercise the actual WAL customization error: {:?}",
+                failure.error
+            );
+            assert_eq!(entry.bound.refusal_count(), 0);
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+                "CUSTOMIZATION_RETRY_LOST: same caller returned while valid writer held the lock: {early:?}");
+            let outcome = result.recv_timeout(COMPLETION_BOUND).unwrap();
+            assert!(outcome.is_ok(), "CUSTOMIZATION_RETRY_LOST: same waiting caller failed after writer release: {outcome:?}");
+        });
+        assert_eq!(journal_mode(&path), "wal");
+        assert!(entry.pool_wake.failure.lock().latest.is_none());
+    }
+
+    fn report_test_native_failure(events: &PoolEvents) {
+        diesel::r2d2::HandleError::handle_error(
+            events,
+            BoundPoolError::Establish(diesel::ConnectionError::BadConnection(
+                "native-open test diagnostic".into(),
+            )),
+        );
+    }
+
+    #[test]
+    fn pool_failure_diagnostics_are_deduplicated() {
+        let capture = crate::error::LogCaptureScope::start();
+        let events = PoolEvents {
+            wake: Arc::new(PoolWake::default()),
+            path: PathBuf::from("/diagnostic/one/database.db3"),
+        };
+        for _ in 0..3 {
+            report_test_native_failure(&events);
+        }
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            1,
+            "POOL_DIAGNOSTIC_DUPLICATED: one diagnostic per episode"
+        );
+        assert_eq!(records[0].level, log::Level::Error);
+        assert!(records[0].message.contains("native-open test diagnostic"));
+    }
+
+    #[test]
+    fn pool_failure_diagnostics_distinguish_equal_leaf_names() {
+        let root = tempfile::tempdir().unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let paths = [
+            root.path().join("one/database.db3"),
+            root.path().join("two/database.db3"),
+        ];
+        for path in &paths {
+            report_test_native_failure(&PoolEvents {
+                wake: Arc::new(PoolWake::default()),
+                path: path.clone(),
+            });
+        }
+        let records = capture.records();
+        assert_eq!(records.len(), 2);
+        for (record, path) in records.iter().zip(&paths) {
+            assert!(
+                record.message.contains(&format!("{path:?}")),
+                "POOL_DIAGNOSTIC_CONTEXT_LOST: equal leaf names need bound directory context: {}",
+                record.message
+            );
+        }
+    }
+
+    #[test]
+    fn pool_failure_success_resets_suppression_and_available_connection_wins() {
+        const COMPLETION_BOUND: Duration = Duration::from_secs(10);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("episode.db3");
+        seed_database(&path, 31, "WAL");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (key, entry, _) = repository.entry(&target, None).unwrap();
+        let events = PoolEvents {
+            wake: Arc::clone(&entry.pool_wake),
+            path: path.clone(),
+        };
+        let capture = crate::error::LogCaptureScope::start();
+        report_test_native_failure(&events);
+        report_test_native_failure(&events);
+        // A real establishment drives the production success event on its worker thread.
+        drop(entry.get_connection().unwrap());
+        assert!(
+            entry.pool_wake.failure.lock().latest.is_none(),
+            "POOL_STALE_FAILURE_NOT_RESET"
+        );
+        report_test_native_failure(&events);
+        report_test_native_failure(&events);
+        assert_eq!(
+            capture.records().len(),
+            2,
+            "POOL_DIAGNOSTIC_RESET_LOST: recovery permits one new diagnostic"
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(
+            matches!(
+                entry.get_connection_cancellable(
+                    &repository.state,
+                    &key,
+                    Instant::now() + COMPLETION_BOUND,
+                    Some(&cancellation)
+                ),
+                Err(Error::Cancellation)
+            ),
+            "cached native failure cannot replace caller cancellation"
+        );
+        let mut available = entry
+            .get_connection_cancellable(
+                &repository.state,
+                &key,
+                Instant::now() + COMPLETION_BOUND,
+                None,
+            )
+            .expect("AVAILABLE_CONNECTION_LOST_TO_CACHED_FAILURE");
+        assert_eq!(read_data_revision(&mut available).unwrap(), 31);
+        diesel::r2d2::HandleError::handle_error(
+            &events,
+            BoundPoolError::Admission(Error::Cancellation),
+        );
+        assert!(
+            entry
+                .pool_wake
+                .failure
+                .lock()
+                .latest
+                .as_ref()
+                .unwrap()
+                .native_open,
+            "worker admission cannot replace the pool's native failure"
+        );
     }
 
     #[test]
@@ -8964,9 +9305,8 @@ mod bound_sqlite_witnesses {
         connections.close();
         assert!(matches!(
             <BoundConnectionManager as ManageConnection>::connect(&manager),
-            Err(diesel::r2d2::Error::ConnectionError(
-                diesel::ConnectionError::BadConnection(message)
-            )) if message == "database pool is retiring"
+            Err(BoundPoolError::Admission(Error::Conflict(message)))
+                if message == "database pool is retiring"
         ));
         assert_eq!(connections.snapshot().outstanding, 0);
     }
