@@ -1409,6 +1409,21 @@ mod tests {
         String::from_utf8(request).unwrap()
     }
 
+    fn assert_revocation_delete_request(request: &str) {
+        assert!(request.starts_with("DELETE /api/token HTTP/1.1\r\n"));
+        assert!(request.contains("authorization: Bearer loopback-private-secret\r\n"));
+    }
+
+    fn assert_revocation_confirmation_request(request: &str) {
+        assert!(request.starts_with("POST /api/token/test HTTP/1.1\r\n"));
+        assert!(request.contains("content-type: text/plain\r\n"));
+        assert!(!request.contains("authorization:"));
+        assert_eq!(
+            request.split_once("\r\n\r\n").unwrap().1,
+            "loopback-private-secret"
+        );
+    }
+
     fn revocation_response(status: &str, body: &str) -> String {
         format!(
             "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1462,8 +1477,7 @@ mod tests {
                 loopback_revocation(vec![revocation_response(status, "No such token")]).await;
             assert_eq!(outcome, expected);
             assert_eq!(requests.len(), 1);
-            assert!(requests[0].starts_with("DELETE /api/token HTTP/1.1\r\n"));
-            assert!(requests[0].contains("authorization: Bearer loopback-private-secret\r\n"));
+            assert_revocation_delete_request(&requests[0]);
         }
     }
 
@@ -1510,13 +1524,7 @@ mod tests {
             .await;
             assert_eq!(outcome, expected);
             assert_eq!(requests.len(), 2);
-            assert!(requests[1].starts_with("POST /api/token/test HTTP/1.1\r\n"));
-            assert!(requests[1].contains("content-type: text/plain\r\n"));
-            assert!(!requests[1].contains("authorization:"));
-            assert_eq!(
-                requests[1].split_once("\r\n\r\n").unwrap().1,
-                "loopback-private-secret"
-            );
+            assert_revocation_confirmation_request(&requests[1]);
         }
     }
 
@@ -1641,8 +1649,7 @@ mod tests {
             "DELETE receipt",
         )
         .await;
-        assert!(delete_request.starts_with("DELETE /api/token HTTP/1.1\r\n"));
-        assert!(delete_request.contains("authorization: Bearer loopback-private-secret\r\n"));
+        assert_revocation_delete_request(&delete_request);
         let first_consumption = REVOCATION_TIMEOUT / 2;
         assert!(delete_received + first_consumption < deadline);
         // No stage watchdog survives a jump, and only this controller advances time.
@@ -1683,13 +1690,7 @@ mod tests {
             "401 response and POST receipt",
         )
         .await;
-        assert!(post_request.starts_with("POST /api/token/test HTTP/1.1\r\n"));
-        assert!(post_request.contains("content-type: text/plain\r\n"));
-        assert!(!post_request.contains("authorization:"));
-        assert_eq!(
-            post_request.split_once("\r\n\r\n").unwrap().1,
-            "loopback-private-secret"
-        );
+        assert_revocation_confirmation_request(&post_request);
         let body_entered = checkpoint(
             client.as_mut(),
             async {
