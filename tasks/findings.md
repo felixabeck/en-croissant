@@ -18487,7 +18487,7 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 
 ### The shared-deadline revocation test blocks on its second accept when the first request uses the budget
 
-* **ID:** f-20261026-03 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261026-03 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 12100003-de22-488c-b30e-133be7529fc8
 * **Impact class:** tooling
 * **Where:** `src-tauri/src/oauth.rs:1611-1642`, test `oauth::tests::production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads`. The panic is the `timeout(...).await.unwrap()` at line 1642.
@@ -18499,3 +18499,6 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 * **Related:** f-20261004-04 added this shared-deadline outcome. f-20261011-03 tracks other wall-clock `Elapsed(())` failures under local gate pressure. This one is the server blocking on `accept`, not that gate-design question. f-20261008-05 is credential removal, not this test.
 * **Follow-up of:** f-20261004-04
 * **Found by:** Grok, drain session 12100003-de22-488c-b30e-133be7529fc8, push of f-20261006-07, 2026-10-26. Job log retained at `/tmp/f-20261006-07-lenses/macos-job.log.zip` (UTF-8 text, not a zip).
+
+Duplicate of handled f-20261026-02. Both name the same hosted witness: Test run 40251763823, job 121345009122, Elapsed on the shared-deadline revocation test. f-20261026-02 repaired the fixture in 3e92e0c3 and 04a89cd1. Its handled note records hosted proof on 1e740f52, Test run 40272480247, with that test passing on Mac and Windows. This entry does not add a second defect. The Proof line uses --exact with the bare name production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads. Measured 2026-10-26 on this tree, cargo test --manifest-path src-tauri/Cargo.toml --bin chessfable with that filter and --exact --list printed 0 tests. Without --exact, --list printed oauth::tests::production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads. oauth.rs was not edited. Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ff26baf2ab4174227df420a076fe047c4d04b6ffc78b78888edcef4483135d46","header_sha256":"2765ada55d0c447830425005bff5ffea62620c745508ab363b90c9872ebc10f2","header_status":"handled","input_sha256":"101a1f49db51ca80cf5188a28e07702ab23c8634236f121eb9371c2f5af684d4","kind":"mutation-receipt","operation":"6645b215da9bd2f7f97939ebd3183837f2d3e839c104c99bc78c57298280469f","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-03"],"target":"f-20261026-03","v":1} -->
