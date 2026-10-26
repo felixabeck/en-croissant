@@ -157,8 +157,8 @@ export function syncDeck(
         }
     }
 
-    const freshFens = new Set(freshPositions.map((p) => getBoardState(p.fen)));
-    const removed = existing.filter((p) => !freshFens.has(getBoardState(p.fen))).length;
+    // Each retained fresh position keeps one existing card, discarding equivalent duplicates.
+    const removed = existing.length - (freshPositions.length - added);
 
     // The deck's order follows the tree's (full-repertoire order, due-date ties), so a reordering of
     // the same cards is also a change to persist.

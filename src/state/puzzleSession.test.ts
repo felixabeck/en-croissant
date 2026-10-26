@@ -214,7 +214,7 @@ test("EP-equivalent puzzle attempts retain their selected UUID and require the a
 });
 
 test.each(["unique", "ambiguous"] as const)(
-    "legacy EP ownership is inferred only when %s",
+    "legacy EP ownership handles %s matches",
     (ownership) => {
         const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
         const puzzle = {

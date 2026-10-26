@@ -1,4 +1,5 @@
 import { WorkspaceTabScope } from "@/state/tabScope";
+import { parseUci } from "chessops";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -124,24 +125,31 @@ vi.mock("@/utils/tabs", () => ({
   getTabGameNumber: () => 0,
 }));
 vi.mock("@/utils/pathCapabilities", () => ({ fileWorkspaceKey: () => "file-a" }));
-vi.mock("@/utils/treeReducer", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/utils/treeReducer")>()),
-  findFen: (fen: string) => (fen === "gone" || fen === "root" ? null : [0]),
-  getNodeAtPath: () => fixtures.node,
-  treeIterator: function* () {
-    // The isolated harness supplies card frames. Gameplay tests use the real tree iterator.
-    for (const card of [
-      ...fixtures.deck.positions,
-      { fen: fixtures.tree.currentNode().fen, answer: "e4" },
-    ]) {
-      if (card.fen === "gone" || card.fen === "root") continue;
-      yield {
-        position: [0],
-        node: { ...fixtures.node, fen: card.fen, children: [{ san: card.answer }] },
-      };
-    }
-  },
-}));
+vi.mock("@/utils/treeReducer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/treeReducer")>();
+  return {
+    ...actual,
+    findFen: (fen: string) => (fen === "gone" || fen === "root" ? null : [0]),
+    getNodeAtPath: () => fixtures.node,
+    treeIterator: function* (root: TreeNode) {
+      if (Array.isArray(root.children)) {
+        yield* actual.treeIterator(root);
+        return;
+      }
+      // The isolated harness supplies card frames. Gameplay tests use the real tree iterator.
+      for (const card of [
+        ...fixtures.deck.positions,
+        { fen: fixtures.tree.currentNode().fen, answer: "e4" },
+      ]) {
+        if (card.fen === "gone" || card.fen === "root") continue;
+        yield {
+          position: [0],
+          node: { ...fixtures.node, fen: card.fen, children: [{ san: card.answer }] },
+        };
+      }
+    },
+  };
+});
 vi.mock("@/components/common/AppModal", () => ({
   default: ({ opened, onClose, title, children }: any) =>
     opened ? (
@@ -233,12 +241,14 @@ vi.mock("react-i18next", () => ({
       options?.count === undefined ? key : `${key}:${options.count}`,
   }),
 }));
-vi.mock("ts-fsrs", () => ({
+vi.mock("ts-fsrs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ts-fsrs")>()),
   formatDate: () => "date",
   formatReviewLog: () => "",
 }));
 
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { createNode, defaultTree, type TreeNode } from "@/utils/treeReducer";
 import PracticePanel from "./PracticePanel";
 
 const position = (fen: string, card = { due: "2026-09-22T00:00:00.000Z", reps: 0 }) => ({
@@ -293,6 +303,7 @@ beforeEach(() => {
     .mockReset()
     .mockReturnValue({ added: 0, positions: [], removed: 0, updated: 0, reordered: false });
   fixtures.tree.headers = { orientation: "white", start: [] };
+  fixtures.tree.root = {};
   fixtures.practiceState = { phase: "idle" };
   fixtures.practiceStats = {
     mode: "anki",
@@ -405,6 +416,52 @@ test("re-diffs the same tree once a new hydration lands", async () => {
   expect(fixtures.setDeck).toHaveBeenCalledTimes(1);
   const update = fixtures.setDeck.mock.calls[0][0] as (value: unknown) => { positions: unknown };
   expect(update(fixtures.deck).positions).toBe(extended);
+});
+
+test("persists an unchanged-answer EP duplicate removal from real syncDeck", async () => {
+  const actual = await vi.importActual<typeof import("@/components/files/opening")>(
+    "@/components/files/opening",
+  );
+  const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
+  const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
+  const tree = defaultTree().root;
+  const node = createNode({
+    fen: canonical,
+    move: parseUci("d7d5")!,
+    san: "d5",
+    halfMoves: 14,
+  });
+  node.children.push(
+    createNode({ fen: canonical, move: parseUci("e2e4")!, san: "e4", halfMoves: 15 }),
+  );
+  tree.children.push(node);
+  const [fresh] = actual.buildFromTree(tree, "white", []);
+  expect(fresh).toMatchObject({ fen: canonical, answer: "e4" });
+  const first = { ...fresh, fen: raw, card: { ...fresh.card, reps: 4 } };
+  const last = { ...fresh, card: { ...fresh.card, reps: 9 } };
+  fixtures.deck = deck({ positions: [first, last] });
+  const inputBefore = structuredClone(fixtures.deck);
+  fixtures.tree.root = tree;
+  fixtures.setDeck.mockClear();
+  fixtures.syncDeck
+    .mockClear()
+    .mockImplementation((...args) =>
+      actual.syncDeck(...(args as Parameters<typeof actual.syncDeck>)),
+    );
+
+  await rerenderPracticePanel();
+
+  expect(fixtures.syncDeck).toHaveBeenCalledOnce();
+  const result = fixtures.syncDeck.mock.results[0].value;
+  expect(result).toMatchObject({ added: 0, updated: 0, reordered: false });
+  expect(result.positions).toEqual([last]);
+  expect(result.positions[0].card).toBe(last.card);
+  expect(fixtures.deck).toEqual(inputBefore);
+  expect(fixtures.setDeck).toHaveBeenCalledOnce();
+  const update = fixtures.setDeck.mock.calls[0][0];
+  expect(typeof update).toBe("function");
+  expect(update(fixtures.deck)).toEqual({ ...fixtures.deck, positions: [last] });
+  expect(result.removed).toBe(1);
 });
 
 test("re-diffs an unchanged tree when the practised side or start changes", async () => {

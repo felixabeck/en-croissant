@@ -112,6 +112,36 @@ test("deck synchronization reports a reordering of the same cards", () => {
     expect(syncDeck(existing, originalTree, "white", []).reordered).toBe(false);
 });
 
+test.each([
+    { name: "addition", existing: [], fresh: [0], added: 1, removed: 0 },
+    { name: "removal", existing: [0, 1], fresh: [1], added: 0, removed: 1 },
+    { name: "replacement", existing: [0], fresh: [1], added: 1, removed: 1 },
+    { name: "empty tree", existing: [0, 1], fresh: [], added: 0, removed: 2 },
+    { name: "empty deck and tree", existing: [], fresh: [], added: 0, removed: 0 },
+    { name: "unchanged deck", existing: [0, 1], fresh: [0, 1], added: 0, removed: 0 },
+    { name: "duplicate and absent card", existing: [0, 0, 1], fresh: [0], added: 0, removed: 2 },
+])("deck synchronization counts $name", ({ existing, fresh, added, removed }) => {
+    const nodes = [
+        practiceNode("8/8/8/8/8/8/4P3/K6k w - - 0 12", "e5"),
+        practiceNode("8/8/8/8/8/8/3P4/K6k w - - 0 12", "d5"),
+    ];
+    const original = defaultTree().root;
+    original.children.push(...nodes);
+    const cards = buildFromTree(original, "white", []);
+    const refreshed = defaultTree().root;
+    refreshed.children.push(...fresh.map((index) => nodes[index]));
+
+    const result = syncDeck(
+        existing.map((index) => cards[index]),
+        refreshed,
+        "white",
+        [],
+    );
+
+    expect(result).toMatchObject({ added, removed, updated: 0, reordered: false });
+    expect(result.positions.map(({ fen }) => fen)).toEqual(fresh.map((index) => cards[index].fen));
+});
+
 test.each([false, true])(
     "EP-equivalent deck refresh retains scheduling with an admissible duplicate=%s",
     (duplicate) => {
@@ -130,7 +160,12 @@ test.each([false, true])(
         ).toEqual([{ fen: canonical, answer: "Kf2" }]);
 
         const result = syncDeck(existing, refreshed, "white", []);
-        expect(result).toMatchObject({ added: 0, removed: 0, updated: 1, reordered: false });
+        expect(result).toMatchObject({
+            added: 0,
+            removed: duplicate ? 1 : 0,
+            updated: 1,
+            reordered: false,
+        });
         expect(result.positions).toHaveLength(1);
         expect(result.positions[0]).toEqual({
             ...first,
@@ -145,3 +180,36 @@ test.each([false, true])(
         expect(review.positions[0].fen).toBe(raw);
     },
 );
+
+test("deck synchronization signals an unchanged-answer EP duplicate removal", () => {
+    const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
+    const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
+    const original = defaultTree().root;
+    original.children.push(practiceNode(raw, "e4"));
+    const [first] = buildFromTree(original, "white", []);
+    first.card.reps = 4;
+    const last = { ...first, fen: canonical, card: { ...first.card, reps: 9 } };
+    const existing = [first, last];
+    const review = updateCardPerformance([first], 0, first.card, 3)!;
+    const inputBefore = structuredClone(existing);
+    const reviewBefore = structuredClone(review);
+    const refreshed = defaultTree().root;
+    refreshed.children.push(practiceNode(canonical, "e4"));
+
+    const result = syncDeck(existing, refreshed, "white", []);
+
+    expect(result.positions).toEqual([last]);
+    expect(result.positions[0].card).toBe(last.card);
+    expect(existing).toEqual(inputBefore);
+    expect(review).toEqual(reviewBefore);
+    expect(review.entry.fen).toBe(raw);
+    expect(review.entryId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result).toMatchObject({ added: 0, removed: 1, updated: 0, reordered: false });
+    expect(syncDeck(result.positions, refreshed, "white", [])).toEqual({
+        positions: result.positions,
+        added: 0,
+        removed: 0,
+        updated: 0,
+        reordered: false,
+    });
+});
