@@ -153,6 +153,22 @@
 // notification close/disappearance, source/catalog/inspector and cleanup diagnostics were not
 // individually staged. Existing seven-test native proof covers actual private-child
 // PermissionDenied and root-label semantics on Linux UID 1000 only.
+// f-20261026-04 practice-retirement staging: 2026-10-26, existing release producer 70587c92.
+// Producer: successful tauri-build in gate-browser-r1.MEoUp8, with no subsequent rebuild.
+// Evidence: /home/felixb/.local/state/chessfable-codex-lane/f-20260930-02/practice-retirement-staging/.
+// full.log records both distinct messages below and actual-exit.txt records observed child exit 1:
+// FAIL  successful startup migration retires the legacy practice localStorage key
+// FAIL  renderer ratings create no legacy keys and do not recreate the retired key
+// Input-only blocks used the existing session to write the unchanged legacyPracticeDocument
+// to the disposable profile's legacyPracticeKey immediately before each existing read.
+// Both previous raw values were null and were restored exactly after their unchanged checks.
+// No predicates, helpers, libraries or fixtures changed. The five production initialization
+// sources and existing release binary retained their hashes. No other checks failed.
+// The corrected consumer was restored byte-identically before this receipt was appended.
+// corrected-verifier.mjs/.sha256, staged-verifier.mjs and input-only.patch retain that proof.
+// cleanup.json records profile removal and closed driver ports 4444/4445 after child exit.
+// Staging covers these two changed predicates only, with no fresh staging claim for inherited
+// assertions or error exits. Root owns ordinary restored native verification after review.
 import { chmodSync, existsSync, statSync } from "node:fs";
 import {
   appendFile,
@@ -3428,8 +3444,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     [legacyPracticeKey],
   );
   check(
-    legacyValueBeforeWriter === legacyPracticeDocument,
-    "migration leaves the legacy practice localStorage key untouched",
+    legacyValueBeforeWriter === null,
+    "successful startup migration retires the legacy practice localStorage key",
   );
 
   let ratingIndex = -1;
@@ -3639,19 +3655,16 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     `ratings: ${JSON.stringify(writerNewRatings)}`,
   );
   check(
-    deckKeysAfterWriter.length === 1 &&
-      deckKeysAfterWriter[0] === legacyPracticeKey &&
-      legacyValueAfterWriter === legacyPracticeDocument,
-    "renderer ratings create no new legacy key and do not grow the existing key",
+    deckKeysAfterWriter.length === 0 && legacyValueAfterWriter === null,
+    "renderer ratings create no legacy keys and do not recreate the retired key",
     deckKeysAfterWriter.join(", "),
   );
 
-  await session.execute("localStorage.removeItem(arguments[0]); return true", [legacyPracticeKey]);
-  const retentionStartupRegistry = await reopenAssertionSession("legacy-key removal");
+  const retentionStartupRegistry = await reopenAssertionSession("legacy-key retirement");
   check(
     (await session.execute("return localStorage.getItem(arguments[0])", [legacyPracticeKey])) ===
       null && retentionStartupRegistry.entries.some(({ id }) => id.id === legacyPracticeId),
-    "list_practice_decks retains the legacy capability after its browser key is removed and fresh startup reconciliation",
+    "list_practice_decks retains the migrated capability after legacy-key retirement and fresh startup reconciliation",
   );
 
   await reopenAssertionSession("large-deck extension");
