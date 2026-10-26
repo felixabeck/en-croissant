@@ -2137,6 +2137,7 @@ pub(crate) enum TestHook {
     ScanAfterEstablish,
     ScanValidationCheckpoint,
     PoolBeyondRetireDeadline,
+    PoolBeforeFailureArbitration,
     #[cfg(unix)]
     AfterBumpOp,
     #[cfg(unix)]
@@ -2291,7 +2292,8 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::ScanBeforeAdmission
         | TestHook::ScanAfterEstablish
         | TestHook::ScanValidationCheckpoint
-        | TestHook::PoolBeyondRetireDeadline => run_noarg_test_hook(hook, path),
+        | TestHook::PoolBeyondRetireDeadline
+        | TestHook::PoolBeforeFailureArbitration => run_noarg_test_hook(hook, path),
         #[cfg(unix)]
         TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
         #[cfg(unix)]
@@ -2324,7 +2326,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
             TestHook::PoolGetFailed => hooks.pool_get_failed.take(),
             TestHook::BoundRefusal => hooks.bound_refusal.take(),
             TestHook::PostGet => hooks.post_get.take(),
-            TestHook::AfterProbeCurrent => None,
+            TestHook::AfterProbeCurrent | TestHook::PoolBeforeFailureArbitration => None,
             TestHook::AfterReadRevision => hooks.after_read_revision.take(),
             TestHook::WorkerBeforeAdmission => hooks.worker_before_admission.take(),
             TestHook::WorkerAfterAdmission => hooks.worker_after_admission.take(),
@@ -2375,7 +2377,8 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 | TestHook::ScanBeforeAdmission
                 | TestHook::ScanAfterEstablish
                 | TestHook::ScanValidationCheckpoint
-                | TestHook::PoolBeyondRetireDeadline => {}
+                | TestHook::PoolBeyondRetireDeadline
+                | TestHook::PoolBeforeFailureArbitration => {}
                 TestHook::PredecessorWait => hooks.predecessor_wait = Some(callback_fn),
                 #[cfg(unix)]
                 TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
@@ -2492,6 +2495,8 @@ impl DatabaseEntry {
                 )?;
                 // A success or newer failure since the availability observation requires
                 // another observation. There is no atomic publication seam across r2d2.
+                #[cfg(test)]
+                run_test_hook(TestHook::PoolBeforeFailureArbitration, &key.path);
                 let current = self.pool_wake.failure.lock();
                 match (failure, current.latest.as_ref()) {
                     (Some(failure), Some(latest)) if Arc::ptr_eq(&latest.error, &failure.error) => {
@@ -8486,6 +8491,163 @@ mod bound_sqlite_witnesses {
                 record.message
             );
         }
+    }
+
+    #[test]
+    fn built_pool_validation_diagnostics_distinguish_equal_leaf_names() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = [
+            root.path().join("one/database.db3"),
+            root.path().join("two/database.db3"),
+        ];
+        let mut diagnostic_paths = Vec::new();
+        let capture = crate::error::LogCaptureScope::start();
+        for path in &paths {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            seed_database(path, 37, "WAL");
+            let target = test_target(path);
+            diagnostic_paths.push(target.path().to_path_buf());
+            let repository = DatabaseRepository::default();
+            let (_, entry, _) = repository.entry(&target, None).unwrap();
+            let pool = entry.pool.read().as_ref().unwrap().clone();
+            // Establish outside the fault scope so checkout validates an actual idle connection.
+            drop(entry.get_connection().unwrap());
+            assert_eq!(pool.state().idle_connections, 1);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            // Deliberate test fault only. r2d2 validates and invokes its configured error
+            // handler synchronously here, on the thread observed by LogCaptureScope.
+            let result =
+                crate::db::sqlite_cancellation::with_sqlite_cancellation(&cancellation, || {
+                    pool.try_get().ok_or_else(|| {
+                        Error::Conflict("test checkout validation refused the connection".into())
+                    })
+                });
+            let failure = entry.pool_wake.failure.lock().latest.clone();
+            // The cancellation scope has exited before healthy recovery and teardown.
+            let mut recovered = entry.get_connection().unwrap();
+            assert_eq!(read_data_revision(&mut recovered).unwrap(), 37);
+            assert!(
+                matches!(result, Err(Error::Cancellation)),
+                "{:?}",
+                result.as_ref().map(|_| ())
+            );
+            let failure = failure.expect("BUILT_POOL_VALIDATION_FAILURE_NOT_OBSERVED");
+            assert!(
+                !failure.native_open,
+                "checkout must fail validation, not opening"
+            );
+            assert!(
+                matches!(failure.error.unlabelled(), Error::Diesel(source) if matches!(
+                    source.as_ref(), diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown, info
+                    ) if info.message() == "interrupted"
+                )),
+                "BUILT_POOL_VALIDATION_FAILURE_NOT_OBSERVED: {:?}",
+                failure.error
+            );
+        }
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            2,
+            "BUILT_POOL_DIAGNOSTIC_CALLBACK_NOT_OBSERVED"
+        );
+        for (record, path) in records.iter().zip(&diagnostic_paths) {
+            assert_eq!(record.level, log::Level::Error);
+            assert!(record.message.contains("interrupted"), "{}", record.message);
+            assert!(
+                record.message.contains(&format!("{path:?}")),
+                "BUILT_POOL_DIAGNOSTIC_CONTEXT_LOST: actual builder callback needs full directory context: {}",
+                record.message
+            );
+        }
+    }
+
+    #[test]
+    fn pool_recovery_between_sample_and_arbitration_serves_the_same_acquisition() {
+        use std::sync::mpsc;
+        const COMPLETION_BOUND: Duration = Duration::from_secs(10);
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("arbitration-recovery.db3");
+        seed_database(&path, 41, "WAL");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let (key, entry, _) = repository.entry(&target, None).unwrap();
+        let pool = entry.pool.read().as_ref().unwrap().clone();
+        let (entered, worker_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let boundary_seen = Arc::new(AtomicBool::new(false));
+        let observed_boundary = Arc::clone(&boundary_seen);
+        let recovering_entry = Arc::clone(&entry);
+        let recovering_pool = pool.clone();
+        let _hooks = configure_test_hooks(&path, |hooks| {
+            hooks.by_path.insert(
+                (
+                    TestHook::WorkerBeforeEstablish,
+                    normalize_test_hook_path(&path),
+                ),
+                Box::new(move || {
+                    entered.send(()).unwrap();
+                    // Disconnection or the bound also releases this fixture on a failed test.
+                    let _ = released.recv_timeout(COMPLETION_BOUND);
+                }),
+            );
+            hooks.by_path.insert(
+                (
+                    TestHook::PoolBeforeFailureArbitration,
+                    normalize_test_hook_path(&path),
+                ),
+                Box::new(move || {
+                    observed_boundary.store(true, Ordering::SeqCst);
+                    let entered = worker_entered.recv_timeout(COMPLETION_BOUND);
+                    // Release before assertions even if the worker signal is missing.
+                    let released = release.send(());
+                    entered.expect("ARBITRATION_WORKER_NOT_HELD_BEFORE_ESTABLISHMENT");
+                    released.unwrap();
+                    let deadline = Instant::now() + COMPLETION_BOUND;
+                    loop {
+                        let generation = *recovering_entry.pool_wake.generation.lock();
+                        // AcquireEvent precedes publication. Observe both real success/reset
+                        // and an idle connection before resuming terminal arbitration.
+                        if recovering_pool.state().idle_connections > 0
+                            && recovering_entry.pool_wake.failure.lock().latest.is_none()
+                        {
+                            break;
+                        }
+                        assert!(
+                            Instant::now() < deadline,
+                            "ARBITRATION_WORKER_RECOVERY_NOT_OBSERVED"
+                        );
+                        recovering_entry
+                            .pool_wake
+                            .wait_since(generation, RETIRE_CANCELLATION_POLL);
+                    }
+                }),
+            );
+        });
+        // The acquisition makes the sole replenishment request. Its worker is held before
+        // native establishment so it cannot reset this injected sample before the boundary.
+        report_test_native_failure(&PoolEvents {
+            wake: Arc::clone(&entry.pool_wake),
+            path: path.clone(),
+        });
+        let result = entry.get_connection_cancellable(
+            &repository.state,
+            &key,
+            Instant::now() + COMPLETION_BOUND,
+            None,
+        );
+        // The boundary releases the worker before the deliberate stale-return assertion.
+        drop(_hooks);
+        assert!(
+            boundary_seen.load(Ordering::SeqCst),
+            "ARBITRATION_BOUNDARY_NOT_OBSERVED"
+        );
+        let mut recovered = result.expect("STALE_SAMPLED_FAILURE_RETURNED_AFTER_REAL_RECOVERY");
+        assert_eq!(read_data_revision(&mut recovered).unwrap(), 41);
+        assert!(entry.pool_wake.failure.lock().latest.is_none());
     }
 
     #[test]
