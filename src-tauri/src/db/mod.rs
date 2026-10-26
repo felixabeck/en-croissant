@@ -4857,8 +4857,9 @@ mod tests {
             .split("#[cfg(all(test, unix))]\nmod tests")
             .next()
             .unwrap();
-        // Includes the two collection-service admission checks as well as the authority door.
-        assert_eq!(production.matches("resolve_database(").count(), 21);
+        // Includes the two collection-service admission checks, the authority door,
+        // and the deletion recovery present-arm re-resolve.
+        assert_eq!(production.matches("resolve_database(").count(), 22);
         let resolver = production
             .split("pub(crate) fn resolve_database(")
             .nth(1)

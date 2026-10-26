@@ -16099,10 +16099,12 @@ mod tests {
             .split("pub(crate) struct DatabaseFileTarget {")
             .nth(1)
             .unwrap()
-            .split("}\n\nimpl DatabaseFileTarget")
+            .split("\n}")
             .next()
             .unwrap();
         assert!(!target.contains("pub"));
+        assert!(production.contains("pub(crate) enum DatabaseDeleteRecovery {"));
+        assert!(!production.contains("pub enum DatabaseDeleteRecovery"));
         assert!(production.contains("fn assemble("));
         assert!(!production.contains("pub fn assemble("));
         assert!(!production.contains("pub(crate) fn assemble("));
