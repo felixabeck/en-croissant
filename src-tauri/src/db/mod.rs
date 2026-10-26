@@ -12560,6 +12560,28 @@ mod deletion_tests {
             }
         }
 
+        fn install_empty_collection_service(&self) {
+            use crate::infra::path_authority::{
+                ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
+            };
+            let state = self.app.state::<AppState>();
+            let root = ensure_app_owned_default_dir(
+                &AppDataDir::for_test(&self.directory.path().join("app")),
+                AppOwnedDefaultRoot::Collections,
+            )
+            .unwrap();
+            state
+                .pgn_path_authority
+                .install_collections(linked_collections::CollectionService::open(
+                    root,
+                    Arc::clone(&state.workspace_mutation),
+                    Arc::clone(&state.database_repository),
+                    Arc::clone(&state.search_cache),
+                    state.pgn_repository.clone(),
+                ))
+                .unwrap();
+        }
+
         fn delete(&self, cancellation: &CancellationToken) -> Result<(), Error> {
             let state = self.app.state::<AppState>();
             delete_database_blocking(
@@ -12873,26 +12895,8 @@ mod deletion_tests {
 
     #[test]
     fn absent_primary_database_delete_succeeds_with_empty_collection_service() {
-        use crate::infra::path_authority::{
-            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
-        };
         let case = AbsentPrimaryCase::new();
-        let state = case.app.state::<AppState>();
-        let root = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(&case.directory.path().join("app")),
-            AppOwnedDefaultRoot::Collections,
-        )
-        .unwrap();
-        state
-            .pgn_path_authority
-            .install_collections(linked_collections::CollectionService::open(
-                root,
-                Arc::clone(&state.workspace_mutation),
-                Arc::clone(&state.database_repository),
-                Arc::clone(&state.search_cache),
-                state.pgn_repository.clone(),
-            ))
-            .unwrap();
+        case.install_empty_collection_service();
         let preferred = case.preferred();
         std::fs::remove_file(&case.database).unwrap();
         case.delete(&CancellationToken::new()).unwrap();
@@ -12902,9 +12906,6 @@ mod deletion_tests {
 
     #[test]
     fn absent_primary_database_delete_rechecks_collection_guard_after_absence() {
-        use crate::infra::path_authority::{
-            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
-        };
         struct HookReset;
         impl Drop for HookReset {
             fn drop(&mut self) {
@@ -12917,21 +12918,7 @@ mod deletion_tests {
         let bytes = std::fs::read(&preferred).unwrap();
         std::fs::remove_file(&case.database).unwrap();
         let state = case.app.state::<AppState>();
-        let root = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(&case.directory.path().join("app")),
-            AppOwnedDefaultRoot::Collections,
-        )
-        .unwrap();
-        state
-            .pgn_path_authority
-            .install_collections(linked_collections::CollectionService::open(
-                root,
-                Arc::clone(&state.workspace_mutation),
-                Arc::clone(&state.database_repository),
-                Arc::clone(&state.search_cache),
-                state.pgn_repository.clone(),
-            ))
-            .unwrap();
+        case.install_empty_collection_service();
         let collections = state.pgn_path_authority.collections().unwrap().unwrap();
         let handle = case.handle.clone();
         let ran = std::rc::Rc::new(std::cell::Cell::new(false));
