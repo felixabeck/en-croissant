@@ -1259,8 +1259,7 @@ describe("trash confirmations", () => {
           : "Part of the operation was completed, and what is shown may no longer match.",
       );
       expect(container.querySelector('[role="dialog"]')).not.toBeNull();
-      if (category === "partial-removal")
-        expect(container.textContent).not.toContain(durabilityCopy);
+      expect(container.textContent?.includes(durabilityCopy)).toBe(category === "durability");
       expect(mocks.notify).not.toHaveBeenCalled();
       expect(container.textContent).not.toContain("list unavailable");
     },

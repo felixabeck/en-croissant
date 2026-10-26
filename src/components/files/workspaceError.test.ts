@@ -249,6 +249,10 @@ test.each([false, true])(
         );
         const reconcile = vi.fn();
         let settled = false;
+        let settledResult:
+            | { status: "fulfilled"; value: unknown }
+            | { status: "rejected"; reason: unknown }
+            | undefined;
         const outcome = runFilesMutationWithRefresh(
             async () => {
                 throw cause;
@@ -256,21 +260,25 @@ test.each([false, true])(
             refresh,
             reconcile,
         );
-        const assertion = fails
-            ? expect(outcome).rejects.toBe(cause)
-            : expect(outcome).resolves.toEqual({ kind: "durability-uncertain" });
         void outcome.then(
-            () => {
+            (value) => {
                 settled = true;
+                settledResult = { status: "fulfilled", value };
             },
-            () => {
+            (reason) => {
                 settled = true;
+                settledResult = { status: "rejected", reason };
             },
         );
         await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
         expect(settled).toBe(false);
         finish();
-        await assertion;
+        await vi.waitFor(() => expect(settled).toBe(true));
+        expect(settledResult).toEqual(
+            fails
+                ? { status: "rejected", reason: cause }
+                : { status: "fulfilled", value: { kind: "durability-uncertain" } },
+        );
         expect(reconcile).not.toHaveBeenCalled();
     },
 );

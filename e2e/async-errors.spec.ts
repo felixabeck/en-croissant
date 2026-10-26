@@ -1160,11 +1160,10 @@ async function assertPurgeWarning(
     page: Page,
     dialog: Locator,
     diagnostic: string,
+    warning: string,
     assertAccessible: () => Promise<void>,
     assertNoHorizontalOverflow: () => Promise<void>,
 ) {
-    const warning =
-        "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.";
     await expect(dialog).toBeVisible();
     const alert = dialog.getByRole("alert");
     await expect(alert).toBeVisible();
@@ -1201,8 +1200,9 @@ async function assertPurgeWarning(
         };
     });
     if (!alertBounds) throw new Error("Permanent-delete warning is outside its modal dialog");
-    expect(alertBounds.alertTop).toBeGreaterThanOrEqual(alertBounds.viewportTop);
-    expect(alertBounds.alertBottom).toBeLessThanOrEqual(alertBounds.viewportBottom);
+    expect(alertBounds.alertTop).toBeGreaterThanOrEqual(alertBounds.viewportTop - 1);
+    // A wrapped line box can extend a fraction of a pixel past the scrollport.
+    expect(alertBounds.alertBottom).toBeLessThanOrEqual(alertBounds.viewportBottom + 1);
     await expect(page.locator("body")).not.toContainText(diagnostic);
     await expect(page.getByText("Openings wurde in den Papierkorb verschoben.")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Rückgängig", exact: true })).toHaveCount(0);
@@ -1231,6 +1231,7 @@ test("async-errors: keeps the partial-removal warning after permanent delete", a
         page,
         dialog,
         "typed native diagnostic",
+        "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.",
         assertAccessible,
         assertNoHorizontalOverflow,
     );
@@ -1253,12 +1254,107 @@ test("async-errors: keeps the durability warning after permanent delete", async 
         page,
         dialog,
         "typed durability diagnostic",
+        germanCatalogue.translation["Common.DurabilityUncertain"],
         assertAccessible,
         assertNoHorizontalOverflow,
     );
     await assertPurgeInvocationAndRefresh(page);
     await expect(page).toHaveScreenshot("purge-durability-uncertain.png", { fullPage: true });
 });
+
+for (const locale of ["en-US", "de-DE"] as const) {
+    for (const width of [320, 1280] as const) {
+        test(`Files create durability notice: ${locale} at ${width}px`, async ({
+            page,
+            mockScenario,
+            assertNoHorizontalOverflow,
+        }) => {
+            const copy =
+                locale === "de-DE" ? germanCatalogue.translation : englishCatalogue.translation;
+            await page.setViewportSize({ width, height: 720 });
+            await page.addInitScript((language) => {
+                localStorage.setItem("i18nextLng", language);
+            }, locale);
+            await mockScenario({
+                commands: filesWorkspaceCommands([[pgnFile], [pgnFile]], {
+                    create_workspace_file: { error: durabilityUncertainPayload },
+                }),
+            });
+            await page.goto("/library");
+            await page
+                .getByRole("button", { name: copy["Files.ChooseCollection"], exact: true })
+                .click();
+            await page.getByRole("button", { name: copy["Files.CreateFile"], exact: true }).click();
+            const dialog = page.getByRole("dialog", {
+                name: copy["Files.CreateFile"],
+                exact: true,
+            });
+            await dialog
+                .getByRole("textbox", { name: copy["Common.Name"], exact: true })
+                .fill("Durability note");
+            await dialog.getByRole("button", { name: copy["Common.Confirm"], exact: true }).click();
+            await expect(dialog).toHaveCount(0);
+            const notification = page.locator(".mantine-Notification-root");
+            await expect(notification).toHaveCount(1);
+            await expect(notification).toContainText(copy["Common.DurabilityUncertain"]);
+            await expect(notification).not.toContainText("typed durability diagnostic");
+            await expect(page.locator("body")).not.toContainText(copy["Files.OperationFailed"]);
+            await expectNotificationSettled(notification);
+            await assertNothingClipped(notification, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            await expect(notification).toBeInViewport({ ratio: 1 });
+            await expect(notification).toHaveScreenshot(
+                `files-create-durability-${locale}-${width}.png`,
+                {
+                    stylePath: fileURLToPath(
+                        new URL("./notification-screenshot.css", import.meta.url),
+                    ),
+                },
+            );
+        });
+
+        test(`Files trash durability confirm: ${locale} at ${width}px`, async ({
+            page,
+            mockScenario,
+            assertNoHorizontalOverflow,
+        }) => {
+            const copy =
+                locale === "de-DE" ? germanCatalogue.translation : englishCatalogue.translation;
+            await page.setViewportSize({ width, height: 720 });
+            await page.addInitScript((language) => {
+                localStorage.setItem("i18nextLng", language);
+            }, locale);
+            await mockScenario({
+                commands: filesWorkspaceCommands([[pgnFile], [pgnFile]], {
+                    ...pgnFileCommands,
+                    trash_workspace_entry: { error: durabilityUncertainPayload },
+                }),
+            });
+            await page.goto("/library");
+            await page
+                .getByRole("button", { name: copy["Files.ChooseCollection"], exact: true })
+                .click();
+            await selectFilesTreeRow(page, pgnFile.name);
+            await page.getByRole("button", { name: copy["Files.Trash"], exact: true }).click();
+            const dialog = page.getByRole("dialog", {
+                name: copy["Files.MoveToTrash"],
+                exact: true,
+            });
+            await dialog.getByRole("button", { name: copy["Common.Delete"], exact: true }).click();
+            await expect(dialog).toBeVisible();
+            await expect(dialog.getByRole("alert")).toHaveText(copy["Common.DurabilityUncertain"]);
+            await expect(page.locator(".mantine-Notification-root")).toHaveCount(0);
+            await expect(page.locator("body")).not.toContainText("typed durability diagnostic");
+            await expect(page.locator("body")).toContainText(
+                copy["Files.MovedToTrash"].replaceAll("{{name}}", pgnFile.name),
+            );
+            await assertDialogWithinViewport(dialog);
+            await assertNothingClipped(dialog, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            await expect(dialog).toHaveScreenshot(`files-trash-durability-${locale}-${width}.png`);
+        });
+    }
+}
 
 test("async-errors: verifies German navigation and a delayed native rejection at 200% font scale", async ({
     page,
