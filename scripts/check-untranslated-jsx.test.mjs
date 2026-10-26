@@ -110,6 +110,33 @@ describe("untranslated UI literal gate", () => {
     expect(findLiterals(`const menu = { label: { fontWeight: "normal" } };`)).toEqual([]);
   });
 
+  test.each([
+    `<Radio classNames={{ label: "wrap-anywhere" }} />`,
+    `<Radio classNames={{ label: ready ? "wrap-anywhere" : "other-class" }} />`,
+    `const styles = { className: "wrap-anywhere" };`,
+    `const styles = { classNames: { label: "wrap-anywhere", title: "title-class", description: "description-class", placeholder: "placeholder-class", alt: "alt-class" } };`,
+    `<Radio classNames={ready ? { nested: { label: "wrap-anywhere" } } : { title: "other-class" }} />`,
+    `const styles = { "className": { nested: { label: ready ? "wrap-anywhere" : "other-class" } } };`,
+    `<Radio classNames={{ label: \`wrap-\${size}\` }} />`,
+  ])("does not mistake CSS class configuration for copy: %s", (source) => {
+    expect(findLiterals(source)).toEqual([]);
+  });
+
+  test.each([
+    `<Text>Destination folder</Text>`,
+    `<Radio label="Destination folder" />`,
+    `const menu = { label: "Destination folder" };`,
+    `<Radio aria-label="Destination folder" />`,
+    `<Radio classNames={{ label: "wrap-anywhere" }} label="Destination folder" />`,
+    `const menu = { classNames: { label: "wrap-anywhere" }, label: "Destination folder" };`,
+  ])("still rejects user-facing copy outside class configuration: %s", (source) => {
+    expect(findLiterals(source)).toEqual(["Destination folder"]);
+  });
+
+  test("does not exempt a class string when used as copy", () => {
+    expect(findLiterals(`<Radio label="wrap-anywhere" />`)).toEqual(["wrap-anywhere"]);
+  });
+
   test("does not treat a UI ternary's state discriminator as copy", () => {
     expect(
       findLiterals(

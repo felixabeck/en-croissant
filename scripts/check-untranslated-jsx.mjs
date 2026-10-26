@@ -99,10 +99,10 @@ export function findLiterals(source, filename = "source.tsx") {
   const literals = [];
   const ast = parseTsSource(source, filename);
 
-  function visit(node, userFacing = false) {
+  function visit(node, userFacing = false, classConfiguration = false) {
     if (!node || typeof node !== "object") return;
     if (isTranslationCall(node)) return;
-    if (node.type === "JSXText") {
+    if (node.type === "JSXText" && !classConfiguration) {
       const value = node.value.trim();
       if (
         value &&
@@ -112,7 +112,7 @@ export function findLiterals(source, filename = "source.tsx") {
       )
         literals.push(value);
     }
-    if (node.type === "StringLiteral" && userFacing) {
+    if (node.type === "StringLiteral" && userFacing && !classConfiguration) {
       const value = node.value.trim();
       if (
         value &&
@@ -123,7 +123,7 @@ export function findLiterals(source, filename = "source.tsx") {
         literals.push(value);
       return;
     }
-    if (node.type === "TemplateLiteral" && userFacing) {
+    if (node.type === "TemplateLiteral" && userFacing && !classConfiguration) {
       for (const quasi of node.quasis) {
         const value = quasi.value.cooked?.trim() ?? "";
         if (
@@ -138,18 +138,31 @@ export function findLiterals(source, filename = "source.tsx") {
     }
     if (node.type === "ConditionalExpression") {
       // The condition is application state; only the two rendered outcomes are copy.
-      visit(node.test, false);
-      visit(node.consequent, userFacing);
-      visit(node.alternate, userFacing);
+      visit(node.test, false, classConfiguration);
+      visit(node.consequent, userFacing, classConfiguration);
+      visit(node.alternate, userFacing, classConfiguration);
       return;
     }
     if (node.type === "JSXExpressionContainer") {
-      visit(node.expression, userFacing);
+      visit(node.expression, userFacing, classConfiguration);
       return;
     }
     if (node.type === "JSXElement" || node.type === "JSXFragment") {
-      for (const child of node.children ?? []) visit(child, false);
-      if (node.openingElement) visit(node.openingElement, false);
+      for (const child of node.children ?? []) visit(child, false, classConfiguration);
+      if (node.openingElement) visit(node.openingElement, false, classConfiguration);
+      return;
+    }
+    const key =
+      node.type === "JSXAttribute"
+        ? node.name
+        : node.type === "ObjectProperty"
+          ? node.key
+          : undefined;
+    const propertyName = key?.type === "StringLiteral" ? key.value : key?.name;
+    // Class-slot names can overlap copy fields. Keep their entire value in CSS
+    // configuration context, including conditional branches and nested objects.
+    if (propertyName === "classNames" || propertyName === "className") {
+      visit(node.value, false, true);
       return;
     }
     const isAttribute =
@@ -161,10 +174,10 @@ export function findLiterals(source, filename = "source.tsx") {
       ((node.key?.type === "Identifier" && userFacingObjectProperties.has(node.key.name)) ||
         (node.key?.type === "StringLiteral" && userFacingObjectProperties.has(node.key.value)));
     if (node.type === "ObjectProperty") {
-      visit(node.key, false);
+      visit(node.key, false, classConfiguration);
       // A recognized field is a UI sink, but its nested object is not. This keeps
       // `{ label: { fontWeight: "normal" } }` from mistaking CSS configuration for copy.
-      visit(node.value, isObjectProperty);
+      visit(node.value, isObjectProperty, classConfiguration);
       return;
     }
     if (isUserFacingCall(node)) {
@@ -172,13 +185,15 @@ export function findLiterals(source, filename = "source.tsx") {
         visit(
           argument,
           node.callee?.type === "Identifier" && userFacingCalls.has(node.callee.name),
+          classConfiguration,
         );
       return;
     }
     const nextUserFacing = userFacing || isAttribute;
     for (const value of Object.values(node)) {
-      if (Array.isArray(value)) value.forEach((child) => visit(child, nextUserFacing));
-      else visit(value, nextUserFacing);
+      if (Array.isArray(value))
+        value.forEach((child) => visit(child, nextUserFacing, classConfiguration));
+      else visit(value, nextUserFacing, classConfiguration);
     }
   }
   visit(ast);
