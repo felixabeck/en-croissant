@@ -18525,7 +18525,7 @@ Duplicate of handled f-20261026-05. Both name the same hosted witness: Test run 
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"9729f489650e81aa7abe4351ad5d478399d3e4ed89cef80c40f63525164494da","header_sha256":"49d5cc861e0d36bf3120e831d560216b4102596c2f86c9f8394a70c19133a2ef","header_status":"handled","input_sha256":"24268f1429bc9983f105d6493c1887a69956eaecc56678511e8e94f7a3990ea0","kind":"mutation-receipt","operation":"432aaf2d9836107f702051671ee02a082fdbb1232650fce7ea9611bc7d27b21b","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-06"],"target":"f-20261026-06","v":1} -->
 
 ### Remote CI repair: Test
-* **ID:** f-20261026-07 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261026-07 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 2763cffc-cfef-4201-ab7b-eca30b9caeda
 
 * **Impact class:** tooling
@@ -18535,3 +18535,6 @@ Duplicate of handled f-20261026-05. Both name the same hosted witness: Test run 
 * **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/40294415121
 * **Proof:** `gh run view 40294415121 --log-failed`
 * **CI run:** 40294415121
+
+Duplicate of handled f-20261026-05. This stub names the same red Test run 40294415121 on 5122842865a27495664e1ee8436e9bad482a535a and the same Linux test job. f-20261026-05 recorded that failure, ca7fe9c4 changed the witness, and the finding is handled on aef03a2655bfe33021d9e63f89ab6ad33edb592b. This entry adds no separate defect. Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ea9fdd7a3454a118e82b3a696bd75f9148ea58c6cd5eb56663bcea96e540e160","header_sha256":"559340288a824cc6cd6905328ab3dc8ef4aabfcc0ac210243510d8cb3c20b949","header_status":"handled","input_sha256":"14b8578c2da8c3ad073fdc1e3cfb41ee1aad0e584565be6c2ed6eda7a3adf7f7","kind":"mutation-receipt","operation":"6b558c2c6ae6e5793287eceb8f57922bca67b244777b44d60e715c70e9839630","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-07"],"target":"f-20261026-07","v":1} -->
