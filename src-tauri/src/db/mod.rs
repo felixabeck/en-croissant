@@ -873,13 +873,25 @@ fn seed_search_cache_for_database(
 
 #[cfg(test)]
 fn assert_database_registry_entry_removed(root: &std::path::Path, handle: &DatabaseHandle) {
+    assert_database_registry_entry_present(root, handle, false);
+}
+
+#[cfg(test)]
+fn assert_database_registry_entry_present(
+    root: &std::path::Path,
+    handle: &DatabaseHandle,
+    expected: bool,
+) {
     let registry: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("registry.json")).unwrap()).unwrap();
-    assert!(!registry["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry["id"]["id"] == handle.path_ref().id));
+    assert_eq!(
+        registry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"]["id"] == handle.path_ref().id),
+        expected
+    );
 }
 
 #[cfg(test)]
@@ -3042,6 +3054,14 @@ pub async fn delete_database(
     .await
 }
 
+// index_sidecar_removal_identity compares only source.object for preferred sidecars,
+// but requires source == *expected_source for legacy (preferred=false) sidecars.
+// IndexSource::from_database never carries these sentinels, so full equality fails
+// and the legacy file stays. The object field still uses the recovered target identity.
+const ABSENT_PRIMARY_INDEX_REVISION: u64 = u64::MAX;
+const ABSENT_PRIMARY_INDEX_DATABASE_LENGTH: u64 = u64::MAX;
+const ABSENT_PRIMARY_INDEX_DATABASE_MODIFIED_NANOS: u128 = u128::MAX;
+
 fn delete_database_blocking(
     authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
@@ -3071,9 +3091,9 @@ fn delete_database_blocking(
     let expected_source = if absent {
         IndexSource {
             object: target.identity(),
-            revision: u64::MAX,
-            database_length: u64::MAX,
-            database_modified_nanos: u128::MAX,
+            revision: ABSENT_PRIMARY_INDEX_REVISION,
+            database_length: ABSENT_PRIMARY_INDEX_DATABASE_LENGTH,
+            database_modified_nanos: ABSENT_PRIMARY_INDEX_DATABASE_MODIFIED_NANOS,
         }
     } else {
         let identity = match repository.identity_from_probe(&target, cancellation, true) {
@@ -12552,18 +12572,7 @@ mod deletion_tests {
         }
 
         fn assert_registered(&self, expected: bool) {
-            let registry: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(self.directory.path().join("registry.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                registry["entries"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|entry| entry["id"]["id"] == self.handle.path_ref().id),
-                expected
-            );
+            assert_database_registry_entry_present(self.directory.path(), &self.handle, expected);
             let state = self.app.state::<AppState>();
             assert_eq!(
                 state
@@ -12863,6 +12872,35 @@ mod deletion_tests {
     }
 
     #[test]
+    fn absent_primary_database_delete_succeeds_with_empty_collection_service() {
+        use crate::infra::path_authority::{
+            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
+        };
+        let case = AbsentPrimaryCase::new();
+        let state = case.app.state::<AppState>();
+        let root = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(&case.directory.path().join("app")),
+            AppOwnedDefaultRoot::Collections,
+        )
+        .unwrap();
+        state
+            .pgn_path_authority
+            .install_collections(linked_collections::CollectionService::open(
+                root,
+                Arc::clone(&state.workspace_mutation),
+                Arc::clone(&state.database_repository),
+                Arc::clone(&state.search_cache),
+                state.pgn_repository.clone(),
+            ))
+            .unwrap();
+        let preferred = case.preferred();
+        std::fs::remove_file(&case.database).unwrap();
+        case.delete(&CancellationToken::new()).unwrap();
+        assert!(!preferred.exists());
+        case.assert_registered(false);
+    }
+
+    #[test]
     fn absent_primary_database_delete_rechecks_collection_guard_after_absence() {
         use crate::infra::path_authority::{
             ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
@@ -12874,7 +12912,8 @@ mod deletion_tests {
             }
         }
         let case = AbsentPrimaryCase::new();
-        let preferred = case.preferred();
+        let key = seed_search_cache_for_database(&case.app, &case.database);
+        let preferred = get_index_path(&case.database);
         let bytes = std::fs::read(&preferred).unwrap();
         std::fs::remove_file(&case.database).unwrap();
         let state = case.app.state::<AppState>();
@@ -12910,6 +12949,7 @@ mod deletion_tests {
         );
         assert!(ran.get());
         assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+        assert!(state.search_cache.get_result(&key).is_some());
         case.assert_registered(true);
     }
     use std::path::Path;
