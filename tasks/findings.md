@@ -18502,3 +18502,33 @@ The actual native prerequisite is now reproduced without timing. Three root_prer
 
 Duplicate of handled f-20261026-02. Both name the same hosted witness: Test run 40251763823, job 121345009122, Elapsed on the shared-deadline revocation test. f-20261026-02 repaired the fixture in 3e92e0c3 and 04a89cd1. Its handled note records hosted proof on 1e740f52, Test run 40272480247, with that test passing on Mac and Windows. This entry does not add a second defect. The Proof line uses --exact with the bare name production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads. Measured 2026-10-26 on this tree, cargo test --manifest-path src-tauri/Cargo.toml --bin chessfable with that filter and --exact --list printed 0 tests. Without --exact, --list printed oauth::tests::production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads. oauth.rs was not edited. Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ff26baf2ab4174227df420a076fe047c4d04b6ffc78b78888edcef4483135d46","header_sha256":"2765ada55d0c447830425005bff5ffea62620c745508ab363b90c9872ebc10f2","header_status":"handled","input_sha256":"101a1f49db51ca80cf5188a28e07702ab23c8634236f121eb9371c2f5af684d4","kind":"mutation-receipt","operation":"6645b215da9bd2f7f97939ebd3183837f2d3e839c104c99bc78c57298280469f","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-03"],"target":"f-20261026-03","v":1} -->
+
+---
+
+## 2026-10-26 — filed through the inbox spool
+
+### Hosted coverage leaves chessfable-bound VFS registered after pooled connection drop
+
+* **ID:** f-20261026-06 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 2763cffc-cfef-4201-ab7b-eca30b9caeda
+* **Impact class:** tooling
+* **Where:** src-tauri/src/db/repository.rs:9038, test db::repository::bound_sqlite_witnesses::pooled_connection_keeps_the_vfs_registered_until_connection_close.
+* **Defect:** The Linux test job of Test run 40294415121 failed on upstream master 5122842865a27495664e1ee8436e9bad482a535a. Step "Run Rust tests with coverage" (job 121476865122) panicked at repository.rs:9038:9 because sqlite3_vfs_find of chessfable-bound-{token} was not null after the pooled connection was dropped. Cargo reported FAILED, 2746 passed, 1 failed, 2 ignored. The same coverage lane of pnpm gates:push -- --rust on descendant fec83eab2d64fbb56273fc87c5814c68df94040a passed locally (artifacts/gates/20261026T104320035Z-124115), so this checkout did not reproduce the failure. No cause is asserted: a late unregister, a real registration leak, or a coverage-timing difference are all still open. The assertion must not be weakened to clear the job.
+* **Spotted outside diff:** Observed while pushing f-20261007-01. That change does not edit repository.rs and does not repair this job.
+* **Failure scenario:** The newest completed Linux test job on origin/master is red, so pnpm ci:remote:check exits 1 and refuses every later push, including a change that does not touch this test, until a commit repairs this finding or a newer completed result of that job is success.
+* **Proof:** gh run view 40294415121 --repo felixabeck/en-croissant --log-failed --job 121476865122 shows the panic and "test result: FAILED. 2746 passed; 1 failed; 2 ignored". The job command is cargo test --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target/llvm-cov-target --bin chessfable --locked through scripts/rust-branch-coverage.mjs:98 on nightly-2025-06-01. A repair needs a failing-before witness and a passing rerun of that command. The local green coverage lane is a non-reproduction, not a passing-after proof.
+* **Open question:** Which close path still holds the chessfable-bound VFS registration when this witness calls sqlite3_vfs_find, and what deterministic unregister makes the witness pass without weakening it?
+* **Related:** f-20261002-02 (handled) is a process-global binding-registry inode collision with a different Conflict message and different tests. f-20260929-07 (handled) is an intermittent sidecar listing on a different witness. Neither root is shared. f-20261007-01 does not own this job.
+* **Found by:** Grok drain push check for f-20261007-01, session 2763cffc-cfef-4201-ab7b-eca30b9caeda, drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6, 2026-10-26. Log copy: /tmp/build-absent-primary-f-20261007-01-20261026-074735-c6361089/linux-test-failed.log.
+
+### Remote CI repair: Test
+* **ID:** f-20261026-07 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 2763cffc-cfef-4201-ab7b-eca30b9caeda
+
+* **Impact class:** tooling
+* **Found by:** drain remote-CI check (Grok)
+* **Where:** workflow `Test`, jobs `test`.
+* **Defect:** failed jobs on `5122842865a27495664e1ee8436e9bad482a535a`: `test`.
+* **Run URL:** https://github.com/felixabeck/en-croissant/actions/runs/40294415121
+* **Proof:** `gh run view 40294415121 --log-failed`
+* **CI run:** 40294415121
