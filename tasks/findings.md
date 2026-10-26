@@ -18509,7 +18509,7 @@ Duplicate of handled f-20261026-02. Both name the same hosted witness: Test run 
 
 ### Hosted coverage leaves chessfable-bound VFS registered after pooled connection drop
 
-* **ID:** f-20261026-06 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261026-06 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** 2763cffc-cfef-4201-ab7b-eca30b9caeda
 * **Impact class:** tooling
 * **Where:** src-tauri/src/db/repository.rs:9038, test db::repository::bound_sqlite_witnesses::pooled_connection_keeps_the_vfs_registered_until_connection_close.
@@ -18520,6 +18520,9 @@ Duplicate of handled f-20261026-02. Both name the same hosted witness: Test run 
 * **Open question:** Which close path still holds the chessfable-bound VFS registration when this witness calls sqlite3_vfs_find, and what deterministic unregister makes the witness pass without weakening it?
 * **Related:** f-20261002-02 (handled) is a process-global binding-registry inode collision with a different Conflict message and different tests. f-20260929-07 (handled) is an intermittent sidecar listing on a different witness. Neither root is shared. f-20261007-01 does not own this job.
 * **Found by:** Grok drain push check for f-20261007-01, session 2763cffc-cfef-4201-ab7b-eca30b9caeda, drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6, 2026-10-26. Log copy: /tmp/build-absent-primary-f-20261007-01-20261026-074735-c6361089/linux-test-failed.log.
+
+Duplicate of handled f-20261026-05. Both name the same hosted witness: Test run 40294415121, Linux job 121476865122, sqlite3_vfs_find still registered after drop(pooled) in pooled_connection_keeps_the_vfs_registered_until_connection_close. Upstream repaired that witness in ca7fe9c4 and closed f-20261026-05 on aef03a2655bfe33021d9e63f89ab6ad33edb592b. This entry does not add a second defect. The qualified test passed locally on the rebased tree d2af44f4 (1 passed). Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"9729f489650e81aa7abe4351ad5d478399d3e4ed89cef80c40f63525164494da","header_sha256":"49d5cc861e0d36bf3120e831d560216b4102596c2f86c9f8394a70c19133a2ef","header_status":"handled","input_sha256":"24268f1429bc9983f105d6493c1887a69956eaecc56678511e8e94f7a3990ea0","kind":"mutation-receipt","operation":"432aaf2d9836107f702051671ee02a082fdbb1232650fce7ea9611bc7d27b21b","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-06"],"target":"f-20261026-06","v":1} -->
 
 ### Remote CI repair: Test
 * **ID:** f-20261026-07 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
