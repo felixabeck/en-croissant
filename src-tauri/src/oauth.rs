@@ -1599,7 +1599,24 @@ mod tests {
 
     #[tokio::test]
     async fn production_revocation_uses_one_absolute_deadline_for_both_requests_and_reads() {
+        use std::{future::Future, pin::Pin};
         use tokio::io::AsyncWriteExt;
+        use tokio::time::Instant;
+
+        async fn checkpoint<T>(
+            client: Pin<&mut impl Future<Output = LichessRevocationOutcome>>,
+            stage: impl Future<Output = T>,
+            name: &str,
+        ) -> T {
+            tokio::select! {
+                biased;
+                outcome = client => panic!("revocation completed before {name}: {outcome:?}"),
+                result = tokio::time::timeout(REVOCATION_TIMEOUT / 3, stage) => {
+                    result.unwrap_or_else(|_| panic!("revocation checkpoint timed out: {name}"))
+                }
+            }
+        }
+
         assert_eq!(REVOCATION_TIMEOUT, Duration::from_secs(30));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1608,39 +1625,120 @@ mod tests {
             format!("{url}/api/token"),
             format!("{url}/api/token/test"),
         );
-        let server = async {
-            let (mut delete, _) = listener.accept().await.unwrap();
-            read_revocation_request(&mut delete).await;
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            delete
-                .write_all(revocation_response("401 Unauthorized", "").as_bytes())
-                .await
-                .unwrap();
-            let (mut confirmation, _) = listener.accept().await.unwrap();
-            read_revocation_request(&mut confirmation).await;
-            confirmation
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\n\r\n")
-                .await
-                .unwrap();
-            // A fresh second budget would accept this body. The shared budget expires first.
-            tokio::time::sleep(Duration::from_millis(90)).await;
-            let _ = confirmation
-                .write_all(b"{\"loopback-private-secret\":null}")
-                .await;
-        };
-        let (_, outcome) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(
-                server,
-                services.revoke_token_before(
-                    "loopback-private-secret",
-                    tokio::time::Instant::now() + Duration::from_millis(120),
-                    None,
-                )
-            )
-        })
-        .await
-        .unwrap();
+        let retained = AtomicUsize::new(0);
+        let started = Instant::now();
+        let deadline = started + REVOCATION_TIMEOUT;
+        let client =
+            services.revoke_token_before("loopback-private-secret", deadline, Some(&retained));
+        tokio::pin!(client);
+        let (mut delete, delete_request, delete_received) = checkpoint(
+            client.as_mut(),
+            async {
+                let (mut delete, _) = listener.accept().await.unwrap();
+                let request = read_revocation_request(&mut delete).await;
+                (delete, request, Instant::now())
+            },
+            "DELETE receipt",
+        )
+        .await;
+        assert!(delete_request.starts_with("DELETE /api/token HTTP/1.1\r\n"));
+        assert!(delete_request.contains("authorization: Bearer loopback-private-secret\r\n"));
+        let first_consumption = REVOCATION_TIMEOUT / 2;
+        assert!(delete_received + first_consumption < deadline);
+        // No stage watchdog survives a jump, and only this controller advances time.
+        tokio::time::pause();
+        tokio::time::advance(first_consumption).await;
+        tokio::time::resume();
+
+        // POST cannot begin before we release DELETE's 401. This lower bound is
+        // earlier than POST receipt and also bounds any renewed body-read budget.
+        let second_request_not_before = Instant::now();
+        let earliest_renewed_deadline = second_request_not_before + REVOCATION_TIMEOUT;
+        let body = r#"{"loopback-private-secret":null}"#;
+        let prefix = r#"{"loopback-private-secret":"#;
+        assert!(!prefix.is_empty() && prefix.len() < body.len());
+        let (confirmation, post_request, post_received) = checkpoint(
+            client.as_mut(),
+            async {
+                delete
+                    .write_all(revocation_response("401 Unauthorized", "").as_bytes())
+                    .await
+                    .unwrap();
+                drop(delete);
+                let (mut confirmation, _) = listener.accept().await.unwrap();
+                let request = read_revocation_request(&mut confirmation).await;
+                let received = Instant::now();
+                confirmation
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{prefix}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                (confirmation, request, received)
+            },
+            "401 response and POST receipt",
+        )
+        .await;
+        assert!(post_request.starts_with("POST /api/token/test HTTP/1.1\r\n"));
+        assert!(post_request.contains("content-type: text/plain\r\n"));
+        assert!(!post_request.contains("authorization:"));
+        assert_eq!(
+            post_request.split_once("\r\n\r\n").unwrap().1,
+            "loopback-private-secret"
+        );
+        let body_entered = checkpoint(
+            client.as_mut(),
+            async {
+                while retained.load(Ordering::Relaxed) != prefix.len() {
+                    tokio::task::yield_now().await;
+                }
+                Instant::now()
+            },
+            "client retention of the incomplete body prefix",
+        )
+        .await;
+        assert_eq!(retained.load(Ordering::Relaxed), prefix.len());
+        assert!(delete_received + first_consumption <= second_request_not_before);
+        assert!(second_request_not_before <= post_received && post_received <= body_entered);
+        assert!(body_entered < deadline);
+
+        let margin = REVOCATION_TIMEOUT / 6;
+        let expiry_probe = deadline + margin;
+        let observation_limit = earliest_renewed_deadline - margin;
+        assert!(body_entered < expiry_probe);
+        assert!(deadline < expiry_probe && expiry_probe < observation_limit);
+        assert!(observation_limit < earliest_renewed_deadline);
+        tokio::time::pause();
+        tokio::time::advance(expiry_probe - Instant::now()).await;
+        tokio::time::resume();
+
+        // Keep the incomplete response and its socket open. Tokio advance does
+        // not guarantee immediate timer readiness, so await with time running.
+        let outcome = tokio::time::timeout_at(observation_limit, client.as_mut())
+            .await
+            .expect("original revocation deadline must expire before any renewed budget");
+        let completed = Instant::now();
+        drop(confirmation);
+        drop(listener);
+        assert!(deadline < completed && completed < observation_limit);
+        assert!(completed < earliest_renewed_deadline);
         assert_eq!(outcome, LichessRevocationOutcome::Unreachable);
+        assert_token_free_outcome(outcome, "loopback-private-secret");
+        eprintln!(
+            "revocation boundaries from start: DELETE={:?}, before401={:?}, POST={:?}, body={:?}, original={:?}, completed={:?}, observation_limit={:?}, earliest_renewed={:?}",
+            delete_received - started,
+            second_request_not_before - started,
+            post_received - started,
+            body_entered - started,
+            deadline - started,
+            completed - started,
+            observation_limit - started,
+            earliest_renewed_deadline - started,
+        );
     }
 
     #[tokio::test]
