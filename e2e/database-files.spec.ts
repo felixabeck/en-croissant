@@ -1482,6 +1482,27 @@ test("database-files: Move destination wraps at 320px and 200% and submits the s
     await expect(label).toBeVisible();
     await assertNothingClipped(dialog);
     await assertNothingClipped(label, { mode: "reachable" });
+    const wrapping = await label.evaluate((element) => {
+        const offenders = [];
+        const dialog = element.closest('[role="dialog"]');
+        for (let node: Element | null = element; node; node = node.parentElement) {
+            if (
+                getComputedStyle(node).textOverflow === "ellipsis" &&
+                node.scrollWidth > node.clientWidth + 1
+            ) {
+                offenders.push({
+                    tag: node.tagName,
+                    className: node.className,
+                    scrollWidth: node.scrollWidth,
+                    clientWidth: node.clientWidth,
+                });
+            }
+            if (node === dialog) break;
+        }
+        return { offenders, overflowWrap: getComputedStyle(element).overflowWrap };
+    });
+    expect(wrapping.offenders).toEqual([]);
+    expect(wrapping.overflowWrap).toBe("anywhere");
     await dialog.getByRole("button", { name: "Move", exact: true }).click();
     await expect(dialog).toBeHidden();
     const moves = await page.evaluate(() =>
